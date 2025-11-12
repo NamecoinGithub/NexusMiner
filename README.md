@@ -1,107 +1,303 @@
 # NexusMiner
 
-Mining software for Nexus supporting GPU, FPGA, prime, hash, pool and solo mining. 
+[![Build Status](https://github.com/NamecoinGithub/NexusMiner/workflows/Build%20and%20Test/badge.svg)](https://github.com/NamecoinGithub/NexusMiner/actions)
+[![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](COPYING)
 
-## Windows Quickstart
-Have an Nvidia GPU and a windows machine?  Start mining in 3 steps. 
-1. Download NexusMiner.exe and miner.conf from the [latest release](https://github.com/Nexusoft/NexusMiner/releases). 
-2. Edit miner.conf and add your Nexus wallet address
-3. Run NexusMiner.exe
+High-performance mining software for Nexus blockchain supporting GPU, FPGA, CPU mining on both HASH and PRIME channels.
 
-## FPGA Mining
-FPGAs are the most efficient hardware for mining the Nexus Hash channel.  Blackminer users see [these instructions](docs/blackminer_instructions.md).  Other users see the list of supported [FPGA boards](docs/fpga_support.md). 
+## ✨ Features
 
-## GPU Mining
-GPUs are the most efficient hardware for mining the Nexus Prime channel.  Supported GPUs are Nvidia GTX/RTX 10x0, 20x0, and 30x0 series, and Radeon RX6000 series.  Nvidia RTX 20x0 and 30x0 GPUs have the best performance.  Hash channel mining with Nvidia GPUs is also supported. 
+- 🖥️ **Multi-Hardware Support**: CPU, GPU (NVIDIA/AMD), and FPGA mining
+- ⛏️ **Dual Channel Mining**: HASH and PRIME channel support
+- 🌐 **Pool & Solo Mining**: Connect to pools or mine solo with your own wallet
+- 🚀 **High Performance**: Optimized mining algorithms for maximum hash rate
+- 📊 **Real-time Statistics**: Monitor your mining performance
+- 🐳 **Docker Support**: Easy deployment with Docker containers
 
-## Pools
-* [primepool.nexus.io](https://primepool.nexus.io)
-* [hashpool.nexus.io](http://hashpool.nexus.io)  
-Connect to either pool on port 50000
+## 🚀 Quick Start
 
-## Prime Pool
-To use the prime pool, set the following address and port in miner.conf:
-```
-    "wallet_ip" : "primepool.nexus.io",
-    "port" : 50000,
-```
+### Windows Users
 
- ## miner.conf Configuration File
+1. Download `NexusMiner.exe` and `miner.conf` from the [latest release](https://github.com/Nexusoft/NexusMiner/releases)
+2. Edit `miner.conf` and add your Nexus wallet address
+3. Run `NexusMiner.exe`
 
-  Some important config options in miner.conf
+### Linux Users - Using Docker (Recommended)
 
-  ```
-    "wallet_ip"             // the ip the NXS wallet (solo mining) or ip address/dns name of Pool  
-    "wallet_port"           // port of the NXS wallet (solo mining) or port of the Pool  
-    "mining_mode"           // mine the HASH or PRIME channel  
-    "pool"                  // Pool option group, if present then pool mining is active  
-        "username"          // NXS address  
-        "display_name"      // display_name for the pool website  
-```
-
-## Command line option arguments
-```
-    <miner_config_file> Default=miner.conf
-    -c --check          run config file check before miner startup
-    -v --version        Show NexusMiner version
-```
-
-  `./NexusMiner ../../myownminer.conf -c`
-  
-## Solo Mining Wallet Setup
-For solo mining use the latest wallet daemon release 5.0.5 or greater and ensure the wallet has been unlocked for mining.
-
-```
-    -llpallowip=<ip-port>   ex: -llpallowip=192.168.0.1:9325 
-                            note: this is not needed if you mine to localhost (127.0.0.1). This is primarily used for a local-area-network setup
-
-    -mining                 Ensure mining LLP servers are initialized.
-```
-## Building NexusMiner (Cmake) 
-Optional cmake build options are
-* `WITH_GPU_CUDA`       to enable Nvidia gpu mining. CUDA Toolkit required
-* `WITH_GPU_AMD`        to enable AMD (Radeon) gpu mining (see below). 
-* `WITH_PRIME`          to enable PRIME channel mining. GMP and boost required
-Example commands to build NexusMiner for Nvidia GPUs: 
-```
-git clone https://github.com/Nexusoft/NexusMiner.git
+```bash
+# Clone the repository
+git clone https://github.com/NamecoinGithub/NexusMiner.git
 cd NexusMiner
-mkdir build
-cd build
+
+# Edit miner.conf with your wallet address
+nano miner.conf
+
+# Start mining with Docker
+docker-compose up -d
+```
+
+### Linux Users - Building from Source
+
+```bash
+# Install dependencies
+sudo apt-get update
+sudo apt-get install -y build-essential cmake libssl-dev libgmp-dev libboost-all-dev
+
+# Clone and build
+git clone https://github.com/NamecoinGithub/NexusMiner.git
+cd NexusMiner
+mkdir build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j$(nproc)
+
+# Copy config and run
+cp ../miner.conf .
+./NexusMiner
+```
+
+## 📝 Configuration
+
+### Basic Pool Mining Setup
+
+Edit `miner.conf`:
+
+```json
+{
+    "wallet_ip": "primepool.nexus.io",
+    "port": 50000,
+    "mining_mode": "HASH",
+    "pool": {
+        "username": "YOUR_NEXUS_WALLET_ADDRESS",
+        "display_name": "my_miner"
+    }
+}
+```
+
+### Configuration Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `wallet_ip` | Pool address or wallet IP | `127.0.0.1` |
+| `port` | Pool or wallet port | `8325` |
+| `mining_mode` | Mining channel: `HASH` or `PRIME` | `HASH` |
+| `pool.username` | Your Nexus wallet address | - |
+| `pool.display_name` | Display name on pool website | - |
+| `log_level` | Logging verbosity (0-6) | `2` |
+
+See `example_configs/` directory for more configuration examples.
+
+## ⛏️ Mining Options
+
+### Pool Mining (Recommended for Beginners)
+
+**Prime Pool:**
+```json
+{
+    "wallet_ip": "primepool.nexus.io",
+    "port": 50000,
+    "mining_mode": "PRIME"
+}
+```
+
+**Hash Pool:**
+```json
+{
+    "wallet_ip": "hashpool.nexus.io",
+    "port": 50000,
+    "mining_mode": "HASH"
+}
+```
+
+### Solo Mining
+
+For solo mining, run a Nexus wallet daemon (v5.0.5+) with mining enabled:
+
+```bash
+./nexus -mining -llpallowip=YOUR_MINER_IP:9325
+```
+
+Then configure `miner.conf`:
+```json
+{
+    "wallet_ip": "127.0.0.1",
+    "port": 9325,
+    "mining_mode": "HASH"
+}
+```
+
+## 🛠️ Building from Source
+
+### Build Options
+
+NexusMiner supports multiple build configurations using CMake presets:
+
+```bash
+# Basic build (CPU and FPGA only)
+cmake --preset default
+cmake --build --preset default
+
+# With NVIDIA GPU support
+cmake --preset cuda-prime
+cmake --build --preset cuda-prime
+
+# With AMD GPU support (Linux only)
+cmake --preset amd-prime
+cmake --build --preset amd-prime
+```
+
+### CMake Build Flags
+
+- `WITH_GPU_CUDA` - Enable NVIDIA GPU mining (requires CUDA Toolkit)
+- `WITH_GPU_AMD` - Enable AMD GPU mining (requires ROCm)
+- `WITH_PRIME` - Enable PRIME channel mining (requires GMP and Boost)
+
+### Platform-Specific Instructions
+
+<details>
+<summary><b>Ubuntu/Debian</b></summary>
+
+```bash
+# Install build dependencies
+sudo apt-get install -y build-essential cmake libssl-dev
+
+# For PRIME mining
+sudo apt-get install -y libgmp-dev libboost-all-dev
+
+# Build
+mkdir build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release -DWITH_PRIME=On ..
+make -j$(nproc)
+```
+</details>
+
+<details>
+<summary><b>Windows</b></summary>
+
+**Prerequisites:**
+- Visual Studio 2019 or newer
+- [CMake](https://cmake.org/download/) 3.25+
+- [OpenSSL](https://slproweb.com/products/Win32OpenSSL.html)
+- [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) (for GPU mining)
+
+For PRIME mining, you'll also need:
+- [MPIR](http://www.mpir.org/) (copy `gmp*.lib` and `mpir.lib` to `NexusMiner/libs`)
+- [Boost](https://www.boost.org/users/download/) (extract to `C:\boost`)
+
+```cmd
+mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release -DWITH_GPU_CUDA=On -DWITH_PRIME=On ..
-make -j4
+cmake --build . --config Release
 ```
-Before running `NexusMiner` copy miner.conf to the build folder and edit it with your settings.
+</details>
 
-## AMD GPU Build 
-Prime mining with Radeon RX6000 series GPUs is supported on Linux systems.  The [Rocm](https://rocmdocs.amd.com/en/latest/Installation_Guide/Installation_new.html) toolkit is required. Rocm uses a special version of clang who's path must be passed to cmake. Example cmake command for Radeon support:  
-`cmake -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ -DCMAKE_BUILD_TYPE=Release -DWITH_GPU_AMD=On -DWITH_PRIME=On ..`
+<details>
+<summary><b>AMD GPU (ROCm) on Linux</b></summary>
 
-When using Arch linux you may have to run a build using the following:
-```
-cmake -DOPENSSL_ROOT_DIR=/usr \
-      -DOPENSSL_SSL_LIBRARY=/usr/lib/libssl.so \
-      -DOPENSSL_CRYPTO_LIBRARY=/usr/lib/libcrypto.so \
-      -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
+```bash
+# Install ROCm (see: https://rocmdocs.amd.com/)
+# Then build with ROCm clang
+cmake -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
       -DCMAKE_BUILD_TYPE=Release \
       -DWITH_GPU_AMD=On \
       -DWITH_PRIME=On ..
+make -j$(nproc)
+```
+</details>
+
+## 💻 Supported Hardware
+
+### GPUs
+- **NVIDIA**: GTX/RTX 10x0, 20x0, 30x0 series (best performance on RTX 20x0/30x0)
+- **AMD**: Radeon RX 6000 series (Linux only, requires ROCm)
+
+### FPGAs
+FPGAs offer the best efficiency for HASH channel mining.
+- See [FPGA Support Documentation](docs/fpga_support.md) for supported boards
+- Blackminer users: [Setup Instructions](docs/blackminer_instructions.md)
+
+## 📊 Command Line Options
+
+```bash
+./NexusMiner [options] [config_file]
+
+Options:
+  -h, --help       Show help message
+  -c, --check      Validate config file before starting
+  -v, --version    Show NexusMiner version
+
+Examples:
+  ./NexusMiner                    # Use default miner.conf
+  ./NexusMiner custom.conf        # Use custom config
+  ./NexusMiner --check            # Validate miner.conf
 ```
 
-### Windows Build Dependencies
-* OpenSSL: 
-    * Download and run OpenSSL [installer](https://slproweb.com/products/Win32OpenSSL.html)
-* [MPIR](http://www.mpir.org/) (required for WITH_PRIME):
-    * Download and build.  Copy gmp*.lib and mpir.lib to NexusMiner/libs
-* [boost](https://www.boost.org/users/download/) (required for WITH_PRIME):
-    * Download and extract to C:\boost
-### Ubuntu/Debian Dependencies
-* OpenSSL:
-    * `sudo apt-get install libssl-dev`
-* gmp (required for WITH_PRIME):  
-    * `sudo apt-get install libgmp-dev`
-* boost (required for WITH_PRIME):
-    * `sudo apt-get install libboost-all-dev`
-## Support
-* [Nexus Miners](https://t.me/NexusMiners) on telegram.
+## 🐳 Docker Deployment
 
+### Quick Start with Docker
+
+```bash
+# Build the image
+docker build -t nexusminer .
+
+# Run with your config
+docker run -v $(pwd)/miner.conf:/app/miner.conf:ro nexusminer
+```
+
+### Docker Compose
+
+```bash
+# Edit miner.conf with your settings
+nano miner.conf
+
+# Start container
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop container
+docker-compose down
+```
+
+## 🔍 Troubleshooting
+
+### Common Issues
+
+**"Unable to read miner.conf"**
+- Ensure `miner.conf` is in the same directory as NexusMiner executable
+- Check file permissions
+- Validate JSON syntax with `./NexusMiner --check`
+
+**"Connection declined"**
+- Verify pool address and port are correct
+- Check your internet connection
+- For solo mining, ensure wallet daemon is running with `-mining` flag
+
+**"No worker created" (GPU mining)**
+- Ensure you built with `WITH_GPU_CUDA` or `WITH_GPU_AMD`
+- Check CUDA/ROCm installation
+- Verify GPU drivers are up to date
+
+### Getting Help
+
+- 💬 [Telegram: Nexus Miners](https://t.me/NexusMiners)
+- 🐛 [GitHub Issues](https://github.com/NamecoinGithub/NexusMiner/issues)
+
+## 📜 License
+
+NexusMiner is released under the [GNU General Public License v3.0](COPYING).
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit pull requests or open issues.
+
+## 🔗 Links
+
+- [Nexus Website](https://nexus.io/)
+- [Prime Pool](https://primepool.nexus.io)
+- [Hash Pool](https://hashpool.nexus.io)
+- [Nexus Explorer](https://nexus.io/explorer)
+
+---
+
+**Happy Mining! ⛏️**

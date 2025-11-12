@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  nexusminer:
+    build: .
+    container_name: nexusminer
+    volumes:
+      # Mount your custom config file
+      - ./miner.conf:/app/miner.conf:ro
+      # Mount logs directory
+      - ./logs:/app/logs
+    restart: unless-stopped
+    # Uncomment and configure for GPU mining
+    # For NVIDIA GPUs:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    # For AMD GPUs, you may need to add device mapping
+    # devices:
+    #   - /dev/kfd:/dev/kfd
+    #   - /dev/dri:/dev/dri
+    network_mode: host

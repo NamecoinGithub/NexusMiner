@@ -1,0 +1,103 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Default Config",
+      "description": "Default build using Ninja generator",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug Build",
+      "description": "Debug build with full symbols",
+      "inherits": "default",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "cuda",
+      "displayName": "CUDA GPU Support",
+      "description": "Build with NVIDIA GPU (CUDA) support",
+      "inherits": "default",
+      "cacheVariables": {
+        "WITH_GPU_CUDA": "ON"
+      }
+    },
+    {
+      "name": "amd",
+      "displayName": "AMD GPU Support",
+      "description": "Build with AMD GPU (ROCm) support",
+      "inherits": "default",
+      "cacheVariables": {
+        "WITH_GPU_AMD": "ON"
+      }
+    },
+    {
+      "name": "prime",
+      "displayName": "Prime Mining",
+      "description": "Build with PRIME channel mining support",
+      "inherits": "default",
+      "cacheVariables": {
+        "WITH_PRIME": "ON"
+      }
+    },
+    {
+      "name": "cuda-prime",
+      "displayName": "CUDA + Prime",
+      "description": "Build with NVIDIA GPU and PRIME support",
+      "inherits": "default",
+      "cacheVariables": {
+        "WITH_GPU_CUDA": "ON",
+        "WITH_PRIME": "ON"
+      }
+    },
+    {
+      "name": "amd-prime",
+      "displayName": "AMD + Prime",
+      "description": "Build with AMD GPU and PRIME support",
+      "inherits": "default",
+      "cacheVariables": {
+        "WITH_GPU_AMD": "ON",
+        "WITH_PRIME": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "jobs": 4
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "jobs": 4
+    },
+    {
+      "name": "cuda",
+      "configurePreset": "cuda",
+      "jobs": 4
+    },
+    {
+      "name": "prime",
+      "configurePreset": "prime",
+      "jobs": 4
+    },
+    {
+      "name": "cuda-prime",
+      "configurePreset": "cuda-prime",
+      "jobs": 4
+    }
+  ]
+}
