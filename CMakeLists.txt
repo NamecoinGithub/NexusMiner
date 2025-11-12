@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.25)
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules")
 
 set(CMAKE_LIBRARY_PATH "${CMAKE_SOURCE_DIR}/libs")
@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 configure_file(src/version.h.in version.h)
 
-set(CPM_DOWNLOAD_VERSION 0.35.0) 
+set(CPM_DOWNLOAD_VERSION 0.40.2) 
 set(CPM_DOWNLOAD_LOCATION "${CMAKE_BINARY_DIR}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
 
 if(NOT (EXISTS ${CPM_DOWNLOAD_LOCATION}))
@@ -20,13 +20,16 @@ endif()
 
 include(${CPM_DOWNLOAD_LOCATION})
 
+# Use new FetchContent API to avoid deprecation warnings
+cmake_policy(SET CMP0169 NEW)
+
 find_package(Threads REQUIRED)
 
 #spdlog
-CPMAddPackage(NAME spdlog GITHUB_REPOSITORY gabime/spdlog VERSION 1.9.2 OPTIONS "SPDLOG_BUILD_SHARED OFF")
+CPMAddPackage(NAME spdlog GITHUB_REPOSITORY gabime/spdlog VERSION 1.10.0 OPTIONS "SPDLOG_BUILD_SHARED OFF")
 
 #nlohmann json
-CPMAddPackage(NAME nlohmann_json GITHUB_REPOSITORY nlohmann/json  VERSION 3.10.5)
+CPMAddPackage(NAME nlohmann_json GITHUB_REPOSITORY nlohmann/json VERSION 3.11.3)
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
 link_directories(${CMAKE_SOURCE_DIR}/libs)
@@ -52,7 +55,7 @@ find_package(OpenSSL REQUIRED)
 include_directories(${OPENSSL_INCLUDE_DIR})
 
 #ASIO
-CPMAddPackage("gh:chriskohlhoff/asio#asio-1-18-1@1.18.1")
+CPMAddPackage("gh:chriskohlhoff/asio#asio-1-30-2@1.30.2")
 
 # ASIO doesn't use CMake, we have to configure it manually. Extra notes for using on Windows:
 #

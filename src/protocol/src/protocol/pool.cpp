@@ -64,7 +64,7 @@ void Pool::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         std::uint8_t const result_code = j.at("result_code");
         auto const result_message = j.at("result_message");
 
-        m_logger->error("Login to Pool not successful. Result_code: {} message: {}", result_code, result_message);
+        m_logger->error("Login to Pool not successful. Result_code: {} message: {}", result_code, result_message.dump());
         if(m_login_handler)
         {
             m_login_handler(false);
