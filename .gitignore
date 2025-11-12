@@ -10,6 +10,7 @@ miner_profile
 *.vscode
 Makefile
 build/
+_codeql_build_dir/
 .vs/
 CMakeSettings.json
 out/
