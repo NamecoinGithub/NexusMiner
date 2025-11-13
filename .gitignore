@@ -20,3 +20,4 @@ include/gmpxx.h
 *.log
 _codeql_build_dir/
 _codeql_detected_source_root
+build_test/
