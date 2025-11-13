@@ -8,17 +8,19 @@
 #include "hash_helper.cuh"
 
 #include <LLC/hash/SK.h>
-
+#include <gpu/cuda_memory.hpp>
 
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 
 #define ROL64(x, n) (((x) << (n)) | ((x) >> (64 - (n))))
 
-uint64_t* h_sknonce[GPU_MAX];
-uint64_t* d_SKNonce[GPU_MAX];
-uint64_t* d_SKLowerHash[GPU_MAX];
+// RAII-managed CUDA memory arrays
+nexusminer::gpu::cuda_host_unique_ptr<uint64_t> h_sknonce[GPU_MAX];
+nexusminer::gpu::cuda_unique_ptr<uint64_t> d_SKNonce[GPU_MAX];
+nexusminer::gpu::cuda_unique_ptr<uint64_t> d_SKLowerHash[GPU_MAX];
 uint32_t nBestHeight = 0;
 
 const uint64_t cpu_SKEIN1024_IV_1024[16] =
@@ -560,34 +562,43 @@ __global__ void  sk1024_gpu_hash(int threads, uint64_t startNonce, uint64_t* res
 __host__ uint64_t sk1024_cpu_hash(uint32_t thr_id, uint32_t threads, uint64_t startNonce, uint32_t threadsperblock)
 {
 	uint64_t result = 0xFFFFFFFFFFFFFFFF;
-	cudaMemset(d_SKNonce[thr_id], 0xFF, sizeof(uint64_t));
-	cudaMemset(d_SKLowerHash[thr_id], result, sizeof(uint64_t));
+	cudaMemset(d_SKNonce[thr_id].get(), 0xFF, sizeof(uint64_t));
+	cudaMemset(d_SKLowerHash[thr_id].get(), result, sizeof(uint64_t));
 
 	//dim3 grid(threads / threadsperblock);
 	dim3 block(threadsperblock);
 	dim3 grid((threads + block.x - 1) / block.x);
 
 
-	sk1024_gpu_hash << <grid, block >> > (threads, startNonce, d_SKNonce[thr_id], d_SKLowerHash[thr_id]);
-	cudaMemcpy(h_sknonce[thr_id], d_SKNonce[thr_id], sizeof(uint64_t), cudaMemcpyDeviceToHost);
+	sk1024_gpu_hash << <grid, block >> > (threads, startNonce, d_SKNonce[thr_id].get(), d_SKLowerHash[thr_id].get());
+	cudaMemcpy(h_sknonce[thr_id].get(), d_SKNonce[thr_id].get(), sizeof(uint64_t), cudaMemcpyDeviceToHost);
 
-	result = *h_sknonce[thr_id];
+	result = *h_sknonce[thr_id].get();
 
 	return result;
 }
 
 __host__ void cuda_sk1024_init(uint32_t thr_id)
 {
-	cudaMalloc(&d_SKNonce[thr_id], sizeof(uint64_t));
-	cudaMalloc(&d_SKLowerHash[thr_id], sizeof(uint64_t));
-	cudaMallocHost(&h_sknonce[thr_id], 1 * sizeof(uint64_t));
+	uint64_t* d_nonce = nullptr;
+	uint64_t* d_lower_hash = nullptr;
+	uint64_t* h_nonce = nullptr;
+	
+	cudaMalloc(&d_nonce, sizeof(uint64_t));
+	cudaMalloc(&d_lower_hash, sizeof(uint64_t));
+	cudaMallocHost(&h_nonce, sizeof(uint64_t));
+	
+	d_SKNonce[thr_id].reset(d_nonce);
+	d_SKLowerHash[thr_id].reset(d_lower_hash);
+	h_sknonce[thr_id].reset(h_nonce);
 }
 
 __host__ void cuda_sk1024_free(uint32_t thr_id)
 {
-	cudaFree(d_SKNonce[thr_id]);
-	cudaFree(d_SKLowerHash[thr_id]);
-	cudaFreeHost(h_sknonce[thr_id]);
+	// Smart pointers automatically free memory when reset or destroyed
+	d_SKNonce[thr_id].reset();
+	d_SKLowerHash[thr_id].reset();
+	h_sknonce[thr_id].reset();
 }
 
 

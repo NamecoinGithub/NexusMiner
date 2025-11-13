@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 configure_file(src/version.h.in version.h)
 
-set(CPM_DOWNLOAD_VERSION 0.35.0) 
+set(CPM_DOWNLOAD_VERSION 0.40.0) 
 set(CPM_DOWNLOAD_LOCATION "${CMAKE_BINARY_DIR}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
 
 if(NOT (EXISTS ${CPM_DOWNLOAD_LOCATION}))
@@ -23,10 +23,10 @@ include(${CPM_DOWNLOAD_LOCATION})
 find_package(Threads REQUIRED)
 
 #spdlog
-CPMAddPackage(NAME spdlog GITHUB_REPOSITORY gabime/spdlog VERSION 1.9.2 OPTIONS "SPDLOG_BUILD_SHARED OFF")
+CPMAddPackage(NAME spdlog GITHUB_REPOSITORY gabime/spdlog VERSION 1.13.0 OPTIONS "SPDLOG_BUILD_SHARED OFF")
 
 #nlohmann json
-CPMAddPackage(NAME nlohmann_json GITHUB_REPOSITORY nlohmann/json  VERSION 3.10.5)
+CPMAddPackage(NAME nlohmann_json GITHUB_REPOSITORY nlohmann/json  VERSION 3.11.3)
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
 link_directories(${CMAKE_SOURCE_DIR}/libs)
@@ -51,8 +51,25 @@ endif()
 find_package(OpenSSL REQUIRED)
 include_directories(${OPENSSL_INCLUDE_DIR})
 
+# Detect OpenSSL version and set appropriate compile definitions
+if(OPENSSL_FOUND)
+    message(STATUS "OpenSSL version: ${OPENSSL_VERSION}")
+    if(OPENSSL_VERSION VERSION_GREATER_EQUAL "3.0.0")
+        message(STATUS "OpenSSL 3.0+ detected - adding compatibility flags")
+        add_definitions(-DOPENSSL_3_0_OR_LATER)
+        # Suppress deprecation warnings for OpenSSL 3.0 when using legacy APIs
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            add_compile_options(-Wno-deprecated-declarations)
+        elseif(MSVC)
+            add_compile_options(/wd4996)
+        endif()
+    else()
+        message(STATUS "OpenSSL 1.1.1 detected - using legacy API")
+    endif()
+endif()
+
 #ASIO
-CPMAddPackage("gh:chriskohlhoff/asio#asio-1-18-1@1.18.1")
+CPMAddPackage("gh:chriskohlhoff/asio#asio-1-30-2@1.30.2")
 
 # ASIO doesn't use CMake, we have to configure it manually. Extra notes for using on Windows:
 #
