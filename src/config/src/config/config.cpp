@@ -83,6 +83,23 @@ namespace config
 				}
 			}
 
+			// Auto-detect port if set to 0 (port fallback feature)
+			if (m_port == 0)
+			{
+				if (m_pool_config.m_use_pool)
+				{
+					// Pool mining default port
+					m_port = 50000;
+					m_logger->info("Port auto-detection: Using pool port 50000");
+				}
+				else
+				{
+					// Solo mining default port
+					m_port = 9325;
+					m_logger->info("Port auto-detection: Using solo mining port 9325");
+				}
+			}
+
 			// read stats printer config
 			if (!read_stats_printer_config(j))
 			{

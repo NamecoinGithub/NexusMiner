@@ -1,129 +1,220 @@
-# NexusMiner
+# NexusMiner - Prime Mining Edition
 
 [![Build Status](https://github.com/NamecoinGithub/NexusMiner/workflows/Build%20and%20Test/badge.svg)](https://github.com/NamecoinGithub/NexusMiner/actions)
 [![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](COPYING)
 
-High-performance mining software for Nexus blockchain supporting GPU, FPGA, CPU mining on both HASH and PRIME channels.
+Production-ready Prime mining software for Nexus blockchain. Optimized for GPU mining with simple configuration.
 
-## ✨ Features
+## ✨ Key Features
 
-- 🖥️ **Multi-Hardware Support**: CPU, GPU (NVIDIA/AMD), and FPGA mining
-- ⛏️ **Dual Channel Mining**: HASH and PRIME channel support
-- 🌐 **Pool & Solo Mining**: Connect to pools or mine solo with your own wallet
-- 🚀 **High Performance**: Optimized mining algorithms for maximum hash rate
+- ⛏️ **Prime Channel Mining**: Optimized for PRIME channel (GPU recommended)
+- 🔌 **Auto Port Detection**: Set port to 0 for automatic pool/solo port selection
+- 🌐 **Pool & Solo Mining**: Simple configs for both mining modes
+- 🖥️ **Multi-Hardware**: GPU (NVIDIA/AMD), CPU, and FPGA support
 - 📊 **Real-time Statistics**: Monitor your mining performance
-- 🐳 **Docker Support**: Easy deployment with Docker containers
+- 🚀 **Easy Setup**: Simple configuration files ready to use
 
-## 🚀 Quick Start
+## 🚀 Quick Start - Prime Pool Mining
 
-### Windows Users
+### 1. Get NexusMiner
 
-1. Download `NexusMiner.exe` and `miner.conf` from the [latest release](https://github.com/Nexusoft/NexusMiner/releases)
-2. Edit `miner.conf` and add your Nexus wallet address
-3. Run `NexusMiner.exe`
+**Windows:** Download `NexusMiner.exe` from [releases](https://github.com/Nexusoft/NexusMiner/releases)
 
-### Linux Users - Using Docker (Recommended)
+**Linux:** Build from source (see below)
 
-```bash
-# Clone the repository
-git clone https://github.com/NamecoinGithub/NexusMiner.git
-cd NexusMiner
+### 2. Configure for Pool Mining
 
-# Edit miner.conf with your wallet address
-nano miner.conf
-
-# Start mining with Docker
-docker-compose up -d
-```
-
-### Linux Users - Building from Source
-
-```bash
-# Install dependencies
-sudo apt-get update
-sudo apt-get install -y build-essential cmake libssl-dev libgmp-dev libboost-all-dev
-
-# Clone and build
-git clone https://github.com/NamecoinGithub/NexusMiner.git
-cd NexusMiner
-mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-make -j$(nproc)
-
-# Copy config and run
-cp ../miner.conf .
-./NexusMiner
-```
-
-## 📝 Configuration
-
-### Basic Pool Mining Setup
-
-Edit `miner.conf`:
+Use the included `prime-pool.conf`:
 
 ```json
 {
+    "version": 1,
     "wallet_ip": "primepool.nexus.io",
     "port": 50000,
-    "mining_mode": "HASH",
+    "mining_mode": "PRIME",
     "pool": {
-        "username": "YOUR_NEXUS_WALLET_ADDRESS",
+        "username": "YOUR_NXS_ADDRESS_HERE",
         "display_name": "my_miner"
     }
 }
 ```
 
-### Configuration Options
+**Or use auto-port detection** with `prime-pool-auto.conf` (port 0):
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `wallet_ip` | Pool address or wallet IP | `127.0.0.1` |
-| `port` | Pool or wallet port | `8325` |
-| `mining_mode` | Mining channel: `HASH` or `PRIME` | `HASH` |
-| `pool.username` | Your Nexus wallet address | - |
-| `pool.display_name` | Display name on pool website | - |
-| `log_level` | Logging verbosity (0-6) | `2` |
-
-See `example_configs/` directory for more configuration examples.
-
-## ⛏️ Mining Options
-
-### Pool Mining (Recommended for Beginners)
-
-**Prime Pool:**
 ```json
 {
     "wallet_ip": "primepool.nexus.io",
-    "port": 50000,
-    "mining_mode": "PRIME"
+    "port": 0,
+    "mining_mode": "PRIME",
+    "pool": {
+        "username": "YOUR_NXS_ADDRESS_HERE"
+    }
 }
 ```
 
-**Hash Pool:**
-```json
-{
-    "wallet_ip": "hashpool.nexus.io",
-    "port": 50000,
-    "mining_mode": "HASH"
-}
+When port is set to `0`, NexusMiner automatically selects:
+- Port **50000** for pool mining
+- Port **9325** for solo mining
+
+### 3. Run the Miner
+
+```bash
+# Windows
+NexusMiner.exe prime-pool.conf
+
+# Linux
+./NexusMiner prime-pool.conf
 ```
 
-### Solo Mining
+## 🏠 Solo Mining Setup
 
-For solo mining, run a Nexus wallet daemon (v5.0.5+) with mining enabled:
+### 1. Start Your Nexus Wallet
 
 ```bash
 ./nexus -mining -llpallowip=YOUR_MINER_IP:9325
 ```
 
-Then configure `miner.conf`:
+### 2. Configure Solo Mining
+
+Use the included `prime-solo.conf`:
+
+```json
+{
+    "version": 1,
+    "wallet_ip": "127.0.0.1",
+    "port": 9325,
+    "mining_mode": "PRIME"
+}
+```
+
+**Or use auto-port** with `prime-solo-auto.conf`:
+
 ```json
 {
     "wallet_ip": "127.0.0.1",
-    "port": 9325,
-    "mining_mode": "HASH"
+    "port": 0,
+    "mining_mode": "PRIME"
 }
 ```
+
+### 3. Run the Miner
+
+```bash
+./NexusMiner prime-solo.conf
+```
+
+
+## 🛠️ Building from Source (Linux)
+
+### Install Dependencies
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential cmake libssl-dev libgmp-dev libboost-all-dev
+```
+
+### Build for GPU Prime Mining
+
+```bash
+git clone https://github.com/NamecoinGithub/NexusMiner.git
+cd NexusMiner
+mkdir build && cd build
+
+# For NVIDIA GPUs
+cmake -DCMAKE_BUILD_TYPE=Release -DWITH_GPU_CUDA=On -DWITH_PRIME=On ..
+
+# For AMD GPUs
+cmake -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
+      -DCMAKE_BUILD_TYPE=Release -DWITH_GPU_AMD=On -DWITH_PRIME=On ..
+
+make -j$(nproc)
+```
+
+### Quick Build with Presets
+
+```bash
+# NVIDIA + Prime
+cmake --preset cuda-prime
+cmake --build --preset cuda-prime
+
+# AMD + Prime
+cmake --preset amd-prime
+cmake --build --preset amd-prime
+```
+
+## 📝 Configuration Files Included
+
+| File | Purpose | Port |
+|------|---------|------|
+| `prime-pool.conf` | Pool mining with explicit port | 50000 |
+| `prime-pool-auto.conf` | Pool mining with auto port | 0 → 50000 |
+| `prime-solo.conf` | Solo mining with explicit port | 9325 |
+| `prime-solo-auto.conf` | Solo mining with auto port | 0 → 9325 |
+
+## 🔧 Configuration Options
+
+### Required Settings
+
+```json
+{
+    "version": 1,
+    "wallet_ip": "primepool.nexus.io",
+    "port": 0,
+    "mining_mode": "PRIME"
+}
+```
+
+### Pool Mining (add pool section)
+
+```json
+{
+    "pool": {
+        "username": "YOUR_NXS_ADDRESS",
+        "display_name": "my_miner"
+    }
+}
+```
+
+### Worker Configuration
+
+```json
+{
+    "workers": [
+        {
+            "worker": {
+                "id": "gpu0",
+                "mode": {
+                    "hardware": "gpu",
+                    "device": 0
+                }
+            }
+        }
+    ]
+}
+```
+
+**Hardware options:**
+- `"gpu"` - GPU mining (NVIDIA/AMD)
+- `"cpu"` - CPU mining  
+- `"fpga"` - FPGA mining
+
+### Port Auto-Detection Feature
+
+Set `"port": 0` for automatic port selection:
+- **Pool mining**: Automatically uses port 50000
+- **Solo mining**: Automatically uses port 9325
+
+This eliminates configuration errors when switching between pool and solo mining.
+
+## 💻 Supported Hardware
+
+### GPUs (Recommended for Prime Mining)
+- **NVIDIA**: GTX/RTX 10x0, 20x0, 30x0, 40x0 series
+- **AMD**: Radeon RX 6000, 7000 series (Linux only)
+
+### Other Hardware
+- **CPU**: All modern CPUs (less efficient for Prime)
+- **FPGA**: Custom FPGA boards (see docs)
 
 ## 🛠️ Building from Source
 
@@ -204,16 +295,6 @@ make -j$(nproc)
 ```
 </details>
 
-## 💻 Supported Hardware
-
-### GPUs
-- **NVIDIA**: GTX/RTX 10x0, 20x0, 30x0 series (best performance on RTX 20x0/30x0)
-- **AMD**: Radeon RX 6000 series (Linux only, requires ROCm)
-
-### FPGAs
-FPGAs offer the best efficiency for HASH channel mining.
-- See [FPGA Support Documentation](docs/fpga_support.md) for supported boards
-- Blackminer users: [Setup Instructions](docs/blackminer_instructions.md)
 
 ## 📊 Command Line Options
 
@@ -226,78 +307,43 @@ Options:
   -v, --version    Show NexusMiner version
 
 Examples:
-  ./NexusMiner                    # Use default miner.conf
-  ./NexusMiner custom.conf        # Use custom config
-  ./NexusMiner --check            # Validate miner.conf
-```
-
-## 🐳 Docker Deployment
-
-### Quick Start with Docker
-
-```bash
-# Build the image
-docker build -t nexusminer .
-
-# Run with your config
-docker run -v $(pwd)/miner.conf:/app/miner.conf:ro nexusminer
-```
-
-### Docker Compose
-
-```bash
-# Edit miner.conf with your settings
-nano miner.conf
-
-# Start container
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop container
-docker-compose down
+  ./NexusMiner prime-pool.conf        # Use pool config
+  ./NexusMiner prime-solo.conf        # Use solo config  
+  ./NexusMiner --check                # Validate default miner.conf
 ```
 
 ## 🔍 Troubleshooting
 
-### Common Issues
+### "Connection declined"
+- **Pool mining**: Check pool address and port are correct
+- **Solo mining**: Ensure wallet daemon is running with `-mining` flag
 
-**"Unable to read miner.conf"**
-- Ensure `miner.conf` is in the same directory as NexusMiner executable
-- Check file permissions
-- Validate JSON syntax with `./NexusMiner --check`
+### "No worker created"
+- Build with GPU support: `-DWITH_GPU_CUDA=On` or `-DWITH_GPU_AMD=On`
+- Ensure CUDA/ROCm drivers are installed
 
-**"Connection declined"**
-- Verify pool address and port are correct
-- Check your internet connection
-- For solo mining, ensure wallet daemon is running with `-mining` flag
+### Low hash rate
+- Update GPU drivers
+- Check GPU isn't thermal throttling
+- Try different worker configurations
 
-**"No worker created" (GPU mining)**
-- Ensure you built with `WITH_GPU_CUDA` or `WITH_GPU_AMD`
-- Check CUDA/ROCm installation
-- Verify GPU drivers are up to date
+**More help**: See [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 
-### Getting Help
+## 🔗 Resources
 
+- 🌐 [Nexus Website](https://nexus.io/)
+- ⛏️ [Prime Pool](https://primepool.nexus.io)
 - 💬 [Telegram: Nexus Miners](https://t.me/NexusMiners)
-- 🐛 [GitHub Issues](https://github.com/NamecoinGithub/NexusMiner/issues)
+- 📖 [Full Documentation](docs/)
 
 ## 📜 License
 
-NexusMiner is released under the [GNU General Public License v3.0](COPYING).
+GNU General Public License v3.0 - See [COPYING](COPYING)
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit pull requests or open issues.
-
-## 🔗 Links
-
-- [Nexus Website](https://nexus.io/)
-- [Prime Pool](https://primepool.nexus.io)
-- [Hash Pool](https://hashpool.nexus.io)
-- [Nexus Explorer](https://nexus.io/explorer)
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 ---
 
-**Happy Mining! ⛏️**
+**Happy Prime Mining! ⛏️💎**
