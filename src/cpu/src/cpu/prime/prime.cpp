@@ -30,7 +30,8 @@ unsigned int* make_primes(unsigned int prime_limit)
 	unsigned long       i, j;
 	unsigned long       s = sqrtld(prime_limit);
 	unsigned long       n = 0;
-	bool* bit_array_sieve = (bool*)malloc((prime_limit + 1) * sizeof(bool));
+	// Use unique_ptr with custom deleter for temporary array
+	std::unique_ptr<bool[]> bit_array_sieve(new bool[prime_limit + 1]);
 	bit_array_sieve[0] = 0;
 	bit_array_sieve[1] = 0;
 	for (i = 2; i <= prime_limit; i++) bit_array_sieve[i] = 1;
@@ -56,7 +57,7 @@ unsigned int* make_primes(unsigned int prime_limit)
 		primes[j] = i;
 		j++;
 	}
-	free(bit_array_sieve);
+	// bit_array_sieve automatically freed by unique_ptr
 	return primes;
 }
 
@@ -64,6 +65,8 @@ unsigned int* make_primes(unsigned int prime_limit)
 
 Prime::Prime()
 	: m_logger{ spdlog::get("logger") }
+	, primes(nullptr, free)  // Initialize with free as deleter
+	, inverses(nullptr, free)  // Initialize with free as deleter
 	, nBitArray_Size{ 1024 * 1024 * 16}
 	, prime_limit{ 71378571 }
 	, nPrimeLimit{ 4194304 }
@@ -95,12 +98,18 @@ Prime::Prime()
 {
 }
 
+Prime::~Prime()
+{
+	// Smart pointers automatically clean up the memory
+	// No manual cleanup needed
+}
+
 void Prime::InitializePrimes()
 {
 	m_logger->info("Generating primes...");
 	// generate prime table
 
-	primes = make_primes(prime_limit);
+	primes.reset(make_primes(prime_limit));
 
 	printf("\n%d primes generated\n", primes[0]);
 
@@ -125,8 +134,10 @@ void Prime::InitializePrimes()
 	int nSize = boost::multiprecision::msb(zPrimorial) + 1;
 	m_logger->debug("Primorial Size = {}-bit", nSize);
 
-	inverses = (unsigned int*)malloc((nPrimeLimit + 1) * sizeof(unsigned int));
-	memset(inverses, 0, (nPrimeLimit + 1) * sizeof(unsigned int));
+	// Allocate inverses array with smart pointer
+	unsigned int* raw_inverses = (unsigned int*)malloc((nPrimeLimit + 1) * sizeof(unsigned int));
+	memset(raw_inverses, 0, (nPrimeLimit + 1) * sizeof(unsigned int));
+	inverses.reset(raw_inverses);
 
 	//mpz_t zPrime, zInverse, zResult;
 
