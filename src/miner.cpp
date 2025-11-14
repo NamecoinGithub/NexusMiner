@@ -40,7 +40,10 @@ namespace nexusminer
 		m_signals->async_wait([this](auto, auto)
 		{
 			m_logger->info("Shutting down NexusMiner");
-			m_worker_manager->stop();
+			if (m_worker_manager)
+			{
+				m_worker_manager->stop();
+			}
 			m_io_context->stop();
 			exit(1);
 		});
@@ -97,7 +100,7 @@ namespace nexusminer
 		chrono::Timer_factory::Sptr timer_factory = std::make_shared<chrono::Timer_factory>(m_io_context);
 
 		// network initialisation
-		m_network_component = network::create_component(m_io_context);
+		m_worker_manager = std::make_shared<Worker_manager>(m_io_context, m_config, timer_factory,
 
 		auto const local_endpoint = get_local_ip();
 		m_worker_manager = std::make_unique<Worker_manager>(m_io_context, m_config, timer_factory, 
@@ -123,6 +126,12 @@ namespace nexusminer
 			}
 		}
 
+		if (!m_worker_manager)
+		{
+			m_logger->error("Worker manager is not initialized");
+			return;
+		}
+		
 		auto result = m_worker_manager->connect(wallet_endpoint);
 		if (!result)
 		{
