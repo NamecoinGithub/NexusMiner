@@ -21,7 +21,7 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
 , m_met_difficulty_count {0}
 , m_pool_nbits{0}
 {
-	
+	m_logger->info(m_log_leader + "Initialized (Internal ID: {})", m_config.m_internal_id);
 }
 
 Worker_hash::~Worker_hash() 
@@ -54,54 +54,104 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 		std::vector<unsigned char> headerB = m_block.GetHeaderBytes();
 		//calculate midstate
 		m_skein.setMessage(headerB);
+		
+		// Reset statistics for new block
+		reset_statistics();
 	}
 	//restart the mining loop
 	m_stop = false;
+	m_logger->info(m_log_leader + "Starting hashing loop (Starting nonce: 0x{:016x})", m_starting_nonce);
 	m_run_thread = std::thread(&Worker_hash::run, this);
 }
 
 void Worker_hash::run()
 {
+	m_logger->info(m_log_leader + "Hashing thread started");
+	uint64_t last_log_hash_count = 0;
+	constexpr uint64_t log_interval = 1000000;  // Log every 1M hashes
+	constexpr int max_retries = 3;
+	
 	while (!m_stop)
 	{
-		std::scoped_lock<std::mutex> lck(m_mtx);
-		//calculate the remainder of the skein hash starting from the midstate.
-		m_skein.calculateHash();
-		//run keccak on the result from skein
-		NexusKeccak keccak(m_skein.getHash());
-		keccak.calculateHash();
-		uint64_t keccakHash = keccak.getResult();
-		uint64_t nonce = m_skein.getNonce();
-		//check the result for leading zeros
-		if ((keccakHash & leading_zero_mask()) == 0)
+		uint64_t nonce;
+		bool hash_calculated = false;
+		int retry_count = 0;
+		
+		// Retry mechanism for hash calculation
+		while (!hash_calculated && retry_count < max_retries && !m_stop)
 		{
-			m_logger->info(m_log_leader + "Found a nonce candidate {}", nonce);
-			m_skein.setNonce(nonce);
-			//verify the difficulty
-			if (difficulty_check())
+			try
 			{
-				++m_met_difficulty_count;
-				//update the block with the nonce and call the callback function;
-				m_block.nNonce = nonce;
+				std::scoped_lock<std::mutex> lck(m_mtx);
+				//calculate the remainder of the skein hash starting from the midstate.
+				m_skein.calculateHash();
+				//run keccak on the result from skein
+				NexusKeccak keccak(m_skein.getHash());
+				keccak.calculateHash();
+				uint64_t keccakHash = keccak.getResult();
+				nonce = m_skein.getNonce();
+				
+				//check the result for leading zeros
+				if ((keccakHash & leading_zero_mask()) == 0)
 				{
-					if (m_found_nonce_callback)
+					m_logger->info(m_log_leader + "Found a nonce candidate {}", nonce);
+					m_skein.setNonce(nonce);
+					//verify the difficulty
+					if (difficulty_check())
 					{
-						::asio::post([self = shared_from_this()]()
+						++m_met_difficulty_count;
+						//update the block with the nonce and call the callback function;
+						m_block.nNonce = nonce;
 						{
-							self->m_found_nonce_callback(self->m_config.m_internal_id, std::make_unique<Block_data>(self->m_block));
-						});
-					}
-					else
-					{
-						m_logger->debug(m_log_leader + "Miner callback function not set.");
+							if (m_found_nonce_callback)
+							{
+								::asio::post([self = shared_from_this()]()
+								{
+									self->m_found_nonce_callback(self->m_config.m_internal_id, std::make_unique<Block_data>(self->m_block));
+								});
+							}
+							else
+							{
+								m_logger->debug(m_log_leader + "Miner callback function not set.");
+							}
+						}
+
 					}
 				}
-
+				m_skein.setNonce(++nonce);	
+				++m_hash_count;
+				hash_calculated = true;
+				
+				// Log progress periodically
+				if (m_hash_count - last_log_hash_count >= log_interval)
+				{
+					m_logger->debug(m_log_leader + "Hashing progress: {} hashes computed, current nonce: 0x{:016x}", 
+						m_hash_count, nonce);
+					last_log_hash_count = m_hash_count;
+				}
+			}
+			catch (const std::exception& e)
+			{
+				++retry_count;
+				if (retry_count < max_retries)
+				{
+					m_logger->warn(m_log_leader + "Hash calculation failed (attempt {}/{}): {}. Retrying...", 
+						retry_count, max_retries, e.what());
+					std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				}
+				else
+				{
+					m_logger->error(m_log_leader + "Hash calculation failed after {} retries: {}. Skipping nonce.", 
+						max_retries, e.what());
+					// Skip this nonce and continue
+					std::scoped_lock<std::mutex> lck(m_mtx);
+					nonce = m_skein.getNonce();
+					m_skein.setNonce(++nonce);
+				}
 			}
 		}
-		m_skein.setNonce(++nonce);	
-		++m_hash_count;
 	}
+	m_logger->info(m_log_leader + "Hashing thread stopped. Total hashes: {}", m_hash_count);
 }
 
 void Worker_hash::update_statistics(stats::Collector& stats_collector)
