@@ -40,7 +40,10 @@ namespace nexusminer
 		m_signals->async_wait([this](auto, auto)
 		{
 			m_logger->info("Shutting down NexusMiner");
-			m_worker_manager->stop();
+			if (m_worker_manager)
+			{
+				m_worker_manager->stop();
+			}
 			m_io_context->stop();
 			exit(1);
 		});
@@ -100,7 +103,7 @@ namespace nexusminer
 		m_network_component = network::create_component(m_io_context);
 
 		auto const local_endpoint = get_local_ip();
-		m_worker_manager = std::make_unique<Worker_manager>(m_io_context, m_config, timer_factory, 
+		m_worker_manager = std::make_shared<Worker_manager>(m_io_context, m_config, timer_factory, 
 			m_network_component->get_socket_factory()->create_socket(local_endpoint));
 		
 		return true;
@@ -121,6 +124,12 @@ namespace nexusminer
 				m_logger->error("Failed to resolve DNS name: {}", ip_address);
 				return;
 			}
+		}
+
+		if (!m_worker_manager)
+		{
+			m_logger->error("Worker manager is not initialized");
+			return;
 		}
 
 		auto result = m_worker_manager->connect(wallet_endpoint);
