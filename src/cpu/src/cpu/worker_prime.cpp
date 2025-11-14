@@ -20,78 +20,147 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 	, m_prime_helper{std::make_unique<Prime>()}
 	, m_segmented_sieve{std::make_unique<Sieve>()}
 	, m_stop{ true }
+	, m_initialized{ false }
 	, m_log_leader{ "CPU Worker " + m_config.m_id + ": " }
 	, m_primes{ 0 }
 	, m_chains{ 0 }
 	, m_difficulty{ 0 }
 	, m_pool_nbits{ 0 }
 {
-	m_segmented_sieve->generate_sieving_primes();
-	fermat_performance_test();
-	m_chain_histogram = std::vector<std::uint32_t>(10, 0);
-	m_segmented_sieve->reset_stats();
+	try {
+		m_logger->debug("Worker_prime constructor: Initializing worker {}", m_config.m_id);
+		
+		// Initialize segmented sieve with error handling
+		m_segmented_sieve->generate_sieving_primes();
+		
+		// Run performance test
+		fermat_performance_test();
+		
+		// Initialize data structures
+		m_chain_histogram = std::vector<std::uint32_t>(10, 0);
+		m_segmented_sieve->reset_stats();
+		
+		// Mark as initialized
+		m_initialized = true;
+		m_logger->info("Worker_prime {}: Initialization complete", m_config.m_id);
+		
+	} catch (const std::exception& e) {
+		m_logger->error("Worker_prime constructor: Failed to initialize worker {}: {}", 
+		                m_config.m_id, e.what());
+		m_initialized = false;
+		throw;
+	} catch (...) {
+		m_logger->error("Worker_prime constructor: Unknown exception during initialization of worker {}", 
+		                m_config.m_id);
+		m_initialized = false;
+		throw;
+	}
 }
 
 Worker_prime::~Worker_prime() noexcept
 {
-	//make sure the run thread exits the loop
-	m_stop = true;
-	if (m_run_thread.joinable())
-		m_run_thread.join();
+	try {
+		m_logger->debug("Worker_prime destructor: Cleaning up worker {}", m_config.m_id);
+		
+		// Stop the mining thread
+		m_stop = true;
+		
+		// Wait for thread to complete with timeout protection
+		if (m_run_thread.joinable())
+		{
+			m_logger->debug("Worker_prime destructor: Waiting for worker {} thread to finish", m_config.m_id);
+			m_run_thread.join();
+		}
+		
+		m_logger->debug("Worker_prime destructor: Worker {} cleanup complete", m_config.m_id);
+		
+	} catch (const std::exception& e) {
+		// Log but don't propagate exceptions from destructor
+		if (m_logger) {
+			m_logger->error("Worker_prime destructor: Exception during cleanup of worker {}: {}", 
+			                m_config.m_id, e.what());
+		}
+	} catch (...) {
+		if (m_logger) {
+			m_logger->error("Worker_prime destructor: Unknown exception during cleanup of worker {}", 
+			                m_config.m_id);
+		}
+	}
 }
 
 void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result)
 {
-	//stop the existing mining loop if it is running
-	m_stop = true;
-	if (m_run_thread.joinable())
-	{
-		m_run_thread.join();
+	// Validate worker is properly initialized
+	if (!m_initialized) {
+		m_logger->error("Worker_prime::set_block: Worker {} not properly initialized, cannot set block", 
+		                m_config.m_id);
+		return;
 	}
-
-	{
-		std::scoped_lock<std::mutex> lck(m_mtx);
-		m_found_nonce_callback = result;
-		m_block = Block_data{ block };
-		if (nbits != 0)	// take nBits provided from pool
+	
+	try {
+		m_logger->debug("Worker_prime::set_block: Setting new block for worker {}", m_config.m_id);
+		
+		//stop the existing mining loop if it is running
+		m_stop = true;
+		if (m_run_thread.joinable())
 		{
-			m_pool_nbits = nbits;
+			m_logger->debug("Worker_prime::set_block: Waiting for previous thread to finish for worker {}", 
+			                m_config.m_id);
+			m_run_thread.join();
 		}
 
-		m_difficulty = m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
-		bool excludeNonce = true;  //prime block hash excludes the nonce
-		std::vector<unsigned char> headerB = m_block.GetHeaderBytes(excludeNonce);
-		//calculate the block hash
-		NexusSkein skein;
-		skein.setMessage(headerB);
-		skein.calculateHash();
-		NexusSkein::stateType hash = skein.getHash();
+		{
+			std::scoped_lock<std::mutex> lck(m_mtx);
+			m_found_nonce_callback = result;
+			m_block = Block_data{ block };
+			if (nbits != 0)	// take nBits provided from pool
+			{
+				m_pool_nbits = nbits;
+			}
 
-		//keccak
-		NexusKeccak keccak(hash);
-		keccak.calculateHash();
-		NexusKeccak::k_1024 keccakFullHash_i = keccak.getHashResult();
-		keccakFullHash_i.isBigInt = true;
-		uint1k keccakFullHash("0x" + keccakFullHash_i.toHexString(true));
-		m_base_hash = keccakFullHash;
-		//Now we have the hash of the block header.  We use this to feed the miner. 
+			m_difficulty = m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
+			bool excludeNonce = true;  //prime block hash excludes the nonce
+			std::vector<unsigned char> headerB = m_block.GetHeaderBytes(excludeNonce);
+			//calculate the block hash
+			NexusSkein skein;
+			skein.setMessage(headerB);
+			skein.calculateHash();
+			NexusSkein::stateType hash = skein.getHash();
 
-		//set the starting nonce for each worker to something different that won't overlap with the others
-		m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
-		m_nonce = m_starting_nonce;
+			//keccak
+			NexusKeccak keccak(hash);
+			keccak.calculateHash();
+			NexusKeccak::k_1024 keccakFullHash_i = keccak.getHashResult();
+			keccakFullHash_i.isBigInt = true;
+			uint1k keccakFullHash("0x" + keccakFullHash_i.toHexString(true));
+			m_base_hash = keccakFullHash;
+			//Now we have the hash of the block header.  We use this to feed the miner. 
 
-		//set the sieve start range
-		uint1k startprime = m_base_hash + m_nonce;
-		m_segmented_sieve->set_sieve_start(startprime);
-		//update the starting nonce to reflect the actual sieve start used
-		m_nonce = static_cast<uint64_t>(m_segmented_sieve->get_sieve_start() - m_base_hash);
-		//m_logger->debug("starting nonce: {}", m_nonce);
-		//clear out any old chains from the last block
-		m_segmented_sieve->clear_chains();
+			//set the starting nonce for each worker to something different that won't overlap with the others
+			m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
+			m_nonce = m_starting_nonce;
+
+			//set the sieve start range
+			uint1k startprime = m_base_hash + m_nonce;
+			m_segmented_sieve->set_sieve_start(startprime);
+			//update the starting nonce to reflect the actual sieve start used
+			m_nonce = static_cast<uint64_t>(m_segmented_sieve->get_sieve_start() - m_base_hash);
+			//m_logger->debug("starting nonce: {}", m_nonce);
+			//clear out any old chains from the last block
+			m_segmented_sieve->clear_chains();
+		}
+		//restart the mining loop
+		m_stop = false;
+		m_logger->debug("Worker_prime::set_block: Starting mining thread for worker {}", m_config.m_id);
+		m_run_thread = std::thread(&Worker_prime::run, this);
+		
+	} catch (const std::exception& e) {
+		m_logger->error("Worker_prime::set_block: Exception for worker {}: {}", m_config.m_id, e.what());
+		m_stop = true;
+	} catch (...) {
+		m_logger->error("Worker_prime::set_block: Unknown exception for worker {}", m_config.m_id);
+		m_stop = true;
 	}
-	//restart the mining loop
-	m_stop = false;
-	m_run_thread = std::thread(&Worker_prime::run, this);
 }
 
 void Worker_prime::run()

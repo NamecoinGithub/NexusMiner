@@ -23,6 +23,7 @@ public:
 	~Prime(); // Add destructor for proper cleanup
 
 	void InitializePrimes();
+	bool is_initialized() const { return primes != nullptr && inverses != nullptr; }
 	unsigned int SetBits(double nDiff);
 	double GetPrimeDifficulty(LLC::CBigNum prime, int checks, std::vector<unsigned int>& vPrimes);
 	double GetSieveDifficulty(LLC::CBigNum next, unsigned int clusterSize);
