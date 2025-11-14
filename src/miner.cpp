@@ -100,10 +100,17 @@ namespace nexusminer
 		chrono::Timer_factory::Sptr timer_factory = std::make_shared<chrono::Timer_factory>(m_io_context);
 
 		// network initialisation
-		m_worker_manager = std::make_shared<Worker_manager>(m_io_context, m_config, timer_factory,
-
+		m_logger->debug("Initializing network component");
+		m_network_component = network::create_component(m_io_context);
+		
+		m_logger->debug("Getting local IP address");
 		auto const local_endpoint = get_local_ip();
-		m_worker_manager = std::make_unique<Worker_manager>(m_io_context, m_config, timer_factory, 
+		std::string local_addr;
+		local_endpoint.address(local_addr);
+		m_logger->debug("Local endpoint: {}:{}", local_addr, local_endpoint.port());
+		
+		m_logger->debug("Creating worker manager");
+		m_worker_manager = std::make_shared<Worker_manager>(m_io_context, m_config, timer_factory, 
 			m_network_component->get_socket_factory()->create_socket(local_endpoint));
 		
 		return true;
@@ -168,25 +175,40 @@ namespace nexusminer
 				asio::error_code error;
 				asio::ip::udp::resolver resolver(*m_io_context);
 				auto results = resolver.resolve("google.com", "80", error);
+				
+				if (error)
+				{
+					m_logger->warn("Failed to resolve DNS for google.com: {}. Fallback to 127.0.0.1.", error.message());
+					return network::Endpoint{ network::Transport_protocol::tcp, "127.0.0.1", 0 };
+				}
+				
+				if (results.empty())
+				{
+					m_logger->warn("DNS resolution returned no results. Fallback to 127.0.0.1.");
+					return network::Endpoint{ network::Transport_protocol::tcp, "127.0.0.1", 0 };
+				}
+				
 				for (auto const& endpoint : results)
 				{
 					asio::ip::udp::socket socket(*m_io_context);
 					socket.connect(endpoint);
 					asio::ip::address addr = socket.local_endpoint().address();
+					m_logger->debug("Auto-detected local IP: {}", addr.to_string());
 					return network::Endpoint{ network::Transport_protocol::tcp, addr.to_string(), 0 };
 				}
 
-				m_logger->error("Failed to resolve address google.com. Fallback to 127.0.0.1.");
+				m_logger->warn("Failed to determine local IP from DNS resolution. Fallback to 127.0.0.1.");
 				return network::Endpoint{ network::Transport_protocol::tcp, "127.0.0.1", 0 };
 			}
 			catch (std::exception& e) 
 			{
-				m_logger->error("Failed to set local_ip with auto mode. Fallback to 127.0.0.1. Exception: {}", e.what());
+				m_logger->error("Exception during local IP auto-detection. Fallback to 127.0.0.1. Exception: {}", e.what());
 				return network::Endpoint{ network::Transport_protocol::tcp, "127.0.0.1", 0};
 			}
 		}
 		else
 		{
+			m_logger->debug("Using configured local IP: {}", m_config.get_local_ip());
 			return network::Endpoint{ network::Transport_protocol::tcp, m_config.get_local_ip(), 0 };
 		}
 	}
