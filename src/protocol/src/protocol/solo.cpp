@@ -16,6 +16,9 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_set_block_handler{}
 , m_stats_collector{std::move(stats_collector)}
 {
+    // Log constructor call with requested channel value
+    m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
+    
     // Clamp channel to valid LLL-TAO channels: 1 = prime, 2 = hash
     if (m_channel != 1 && m_channel != 2) {
         m_logger->warn("Invalid channel {} specified. Valid channels: 1 (prime), 2 (hash). Defaulting to 2 (hash).", 
