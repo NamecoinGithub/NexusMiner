@@ -1,4 +1,5 @@
 #include "protocol/solo.hpp"
+#include "protocol/protocol.hpp"
 #include "packet.hpp"
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
@@ -15,6 +16,12 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_set_block_handler{}
 , m_stats_collector{std::move(stats_collector)}
 {
+    // Clamp channel to valid LLL-TAO channels: 1 = prime, 2 = hash
+    if (m_channel != 1 && m_channel != 2)
+    {
+        m_logger->warn("Invalid channel {} specified. Defaulting to hash channel (2)", m_channel);
+        m_channel = 2;
+    }
 }
 
 void Solo::reset()
@@ -24,6 +31,16 @@ void Solo::reset()
 
 network::Shared_payload Solo::login(Login_handler handler)
 {
+    // Safety net: clamp channel to valid values (1 = prime, 2 = hash)
+    if (m_channel != 1 && m_channel != 2)
+    {
+        m_logger->warn("Channel {} invalid in login, clamping to 2 (hash)", m_channel);
+        m_channel = 2;
+    }
+
+    std::string channel_name = (m_channel == 1) ? "prime" : "hash";
+    m_logger->info("Logging in with channel {} ({})", m_channel, channel_name);
+
     Packet packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(uint2bytes(m_channel)) };
     // call the login handler here because for solo mining this is always a "success"
     handler(true);
@@ -54,12 +71,26 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
 
 void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> connection)  
 {
+    // Reject invalid packets
+    if (!packet.m_is_valid)
+    {
+        m_logger->warn("Invalid packet received: header={}, length={}", packet.m_header, packet.m_length);
+        return;
+    }
+
     if (packet.m_header == Packet::BLOCK_HEIGHT)
     {
+        // Validate packet data
+        if (!packet.m_data || packet.m_length < 4)
+        {
+            m_logger->warn("BLOCK_HEIGHT packet has invalid data (null or size < 4)");
+            return;
+        }
+
         auto const height = bytes2uint(*packet.m_data);
         if (height > m_current_height)
         {
-            m_logger->info("Nexus Network: New height {}", height);
+            m_logger->info("Nexus Network: New height {} (old: {})", height, m_current_height);
             m_current_height = height;
             connection->transmit(get_work());          
         }			
@@ -67,22 +98,42 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     // Block from wallet received
     else if(packet.m_header == Packet::BLOCK_DATA)
     {
-        auto block = deserialize_block(std::move(packet.m_data));
-        if (block.nHeight == m_current_height)
+        // Validate packet data
+        if (!packet.m_data || packet.m_length < MIN_BLOCK_HEADER_SIZE)
         {
-            if(m_set_block_handler)
+            m_logger->warn("BLOCK_DATA packet has invalid data (null or size {} < {})", 
+                         packet.m_length, MIN_BLOCK_HEADER_SIZE);
+            return;
+        }
+
+        try
+        {
+            auto block = deserialize_block(std::move(packet.m_data));
+            
+            // Log parsed header fields
+            m_logger->info("Block received: nVersion={}, nChannel={}, nHeight={}, nBits={}, nNonce={}",
+                         block.nVersion, block.nChannel, block.nHeight, block.nBits, block.nNonce);
+
+            if (block.nHeight == m_current_height)
             {
-                m_set_block_handler(block, 0);
+                if(m_set_block_handler)
+                {
+                    m_set_block_handler(block, 0);
+                }
+                else
+                {
+                    m_logger->error("No Block handler set");
+                }
             }
             else
             {
-                m_logger->error("No Block handler set");
+                m_logger->warn("Block Obsolete Height = {} current_height = {}, Skipping over.", block.nHeight, m_current_height);
+                connection->transmit(get_work());
             }
         }
-        else
+        catch (const std::exception& e)
         {
-            m_logger->warn("Block Obsolete Height = {} current_height = {}, Skipping over.", block.nHeight, m_current_height);
-            connection->transmit(get_work());
+            m_logger->warn("Failed to deserialize block: {}", e.what());
         }
     }
     else if(packet.m_header == Packet::ACCEPT)
@@ -91,6 +142,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         global_stats.m_accepted_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
         m_logger->info("Block Accepted By Nexus Network.");
+        connection->transmit(get_work());
     }
     else if(packet.m_header == Packet::REJECT)
     {

@@ -7,11 +7,15 @@
 #include <vector>
 #include <memory>
 #include <functional>
+#include <stdexcept>
 
 namespace nexusminer {
 namespace network { class Connection; }
 namespace protocol
 {
+
+// Minimum block header size: nVersion (4) + hashPrevBlock (128) + hashMerkleRoot (64) + footer (20)
+constexpr std::size_t MIN_BLOCK_HEADER_SIZE = 4 + 128 + 64 + 20;
 
 class Protocol {
 public:
@@ -34,18 +38,37 @@ protected:
 /** Convert the Header of a Block into a Byte Stream for Reading and Writing Across Sockets. **/
     LLP::CBlock deserialize_block(network::Shared_payload data)
     {
-        LLP::CBlock block;
-        block.nVersion = bytes2uint(std::vector<uint8_t>(data->begin(), data->begin() + 4));
+        // Validate input
+        if (!data)
+        {
+            throw std::runtime_error("deserialize_block: null data payload");
+        }
+        
+        if (data->size() < MIN_BLOCK_HEADER_SIZE)
+        {
+            throw std::runtime_error("deserialize_block: payload size " + std::to_string(data->size()) + 
+                                   " is less than minimum block header size " + std::to_string(MIN_BLOCK_HEADER_SIZE));
+        }
 
-        block.hashPrevBlock.SetBytes(std::vector<uint8_t>(data->begin() + 4, data->begin() + 132));
-        block.hashMerkleRoot.SetBytes(std::vector<uint8_t>(data->begin() + 132, data->end() - 20));
+        try
+        {
+            LLP::CBlock block;
+            block.nVersion = bytes2uint(std::vector<uint8_t>(data->begin(), data->begin() + 4));
 
-        block.nChannel = bytes2uint(std::vector<uint8_t>(data->end() - 20, data->end() - 16));
-        block.nHeight = bytes2uint(std::vector<uint8_t>(data->end() - 16, data->end() - 12));
-        block.nBits = bytes2uint(std::vector<uint8_t>(data->end() - 12, data->end() - 8));
-        block.nNonce = bytes2uint64(std::vector<uint8_t>(data->end() - 8, data->end()));
+            block.hashPrevBlock.SetBytes(std::vector<uint8_t>(data->begin() + 4, data->begin() + 132));
+            block.hashMerkleRoot.SetBytes(std::vector<uint8_t>(data->begin() + 132, data->end() - 20));
 
-        return block;
+            block.nChannel = bytes2uint(std::vector<uint8_t>(data->end() - 20, data->end() - 16));
+            block.nHeight = bytes2uint(std::vector<uint8_t>(data->end() - 16, data->end() - 12));
+            block.nBits = bytes2uint(std::vector<uint8_t>(data->end() - 12, data->end() - 8));
+            block.nNonce = bytes2uint64(std::vector<uint8_t>(data->end() - 8, data->end()));
+
+            return block;
+        }
+        catch (const std::exception& e)
+        {
+            throw std::runtime_error(std::string("deserialize_block: parse error - ") + e.what());
+        }
     }
 };
 

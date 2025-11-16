@@ -29,6 +29,7 @@ public:
 
     Global get_global_stats() const { return m_global_stats; }
 
+    void log_summary();
 
 private:
 
