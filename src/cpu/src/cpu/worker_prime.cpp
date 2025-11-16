@@ -177,8 +177,16 @@ void Worker_prime::run()
 
 	auto start = std::chrono::steady_clock::now();
 	auto interval_start = std::chrono::steady_clock::now();
+	
+	// Initialize CPU tracking
+	m_cpu_tracking_start = std::chrono::steady_clock::now();
+	m_cpu_active_time = std::chrono::milliseconds{0};
+	m_cpu_total_time = std::chrono::milliseconds{0};
+	
 	while (!m_stop)
 	{
+		auto iteration_start = std::chrono::steady_clock::now();
+		
 		m_segmented_sieve->reset_sieve();
 		m_segmented_sieve->clear_chains();
 
@@ -230,6 +238,16 @@ void Worker_prime::run()
 			}
 		}
 		low += segment_size;
+		
+		// Track CPU active time for this iteration
+		auto iteration_end = std::chrono::steady_clock::now();
+		auto iteration_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(iteration_end - iteration_start);
+		m_cpu_active_time += iteration_elapsed;
+		
+		// Update total time
+		m_cpu_total_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+			iteration_end - m_cpu_tracking_start);
+		
 		//debug
 		auto end = std::chrono::steady_clock::now();
 		auto interval_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - interval_start);
@@ -304,7 +322,16 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 	prime_stats.m_chain_histogram = m_segmented_sieve->m_chain_histogram;
 	prime_stats.m_range_searched = m_range_searched;
 	prime_stats.m_most_difficult_chain = m_segmented_sieve->m_best_chain;
-
+	
+	// Calculate CPU load as ratio of active time to total time
+	if (m_cpu_total_time.count() > 0) {
+		prime_stats.m_cpu_load = static_cast<double>(m_cpu_active_time.count()) / 
+		                          static_cast<double>(m_cpu_total_time.count());
+		// Clamp to [0.0, 1.0]
+		prime_stats.m_cpu_load = std::max(0.0, std::min(1.0, prime_stats.m_cpu_load));
+	} else {
+		prime_stats.m_cpu_load = 0.0;
+	}
 
 	stats_collector.update_worker_stats(m_config.m_internal_id, prime_stats);
 
