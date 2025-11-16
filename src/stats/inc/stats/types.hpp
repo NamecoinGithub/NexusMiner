@@ -69,6 +69,7 @@ struct Prime
     std::uint32_t m_difficulty{ 0 };
     std::uint64_t m_range_searched { 0 };
     double m_most_difficult_chain{ 0.0 };
+    double m_cpu_load{ 0.0 };  // estimated CPU load in [0.0, 1.0]
     std::vector<std::uint32_t> m_chain_histogram{0,0,0,0,0,0,0,0,0,0};
 
     Prime& operator+=(Prime const& other)

@@ -28,6 +28,9 @@ public:
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - m_start_time); }
 
     Global get_global_stats() const { return m_global_stats; }
+    
+    // Log summary of all worker statistics
+    void log_summary();
 
 
 private:
