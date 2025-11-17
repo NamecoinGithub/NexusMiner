@@ -1,48 +1,36 @@
 #include "miner_keys.hpp"
 #include <iomanip>
 #include <sstream>
-#include <random>
 #include <cstring>
 #include "spdlog/spdlog.h"
+#include <LLC/flkey.h>
 
 namespace nexusminer
 {
 namespace keys
 {
 
-// NOTE: This is a STUB implementation for protocol testing.
-// TODO: Replace with actual Falcon-512 implementation from Nexus LLL-TAO
-// The actual Falcon library files should be copied from:
-// https://github.com/Nexusoft/LLL-TAO/tree/master/src/LLC/falcon
-
 bool generate_falcon_keypair(std::vector<uint8_t>& pubkey, std::vector<uint8_t>& privkey)
 {
-    // Falcon-512 key sizes (from NIST PQC standard):
-    // Public key: 897 bytes
-    // Private key: 1281 bytes
-    
-    const size_t FALCON512_PUBKEY_SIZE = 897;
-    const size_t FALCON512_PRIVKEY_SIZE = 1281;
-    
     try {
-        // Initialize random number generator
-        std::random_device rd;
-        std::mt19937_64 gen(rd());
-        std::uniform_int_distribution<uint16_t> dis(0, 255);
+        // Create a new Falcon key using LLC::FLKey
+        LLC::FLKey key;
+        key.MakeNewKey();
         
-        // Generate public key
-        pubkey.resize(FALCON512_PUBKEY_SIZE);
-        for (size_t i = 0; i < FALCON512_PUBKEY_SIZE; ++i) {
-            pubkey[i] = static_cast<uint8_t>(dis(gen));
+        if (!key.IsValid()) {
+            spdlog::error("Failed to generate valid Falcon keypair");
+            return false;
         }
         
-        // Generate private key
-        privkey.resize(FALCON512_PRIVKEY_SIZE);
-        for (size_t i = 0; i < FALCON512_PRIVKEY_SIZE; ++i) {
-            privkey[i] = static_cast<uint8_t>(dis(gen));
-        }
+        // Get the public and private keys
+        pubkey = key.GetPubKey();
         
-        spdlog::warn("WARNING: Using STUB Falcon key generation. Replace with real Falcon library!");
+        // Convert secure_allocator vector to regular vector
+        LLC::CPrivKey securePrivKey = key.GetPrivKey();
+        privkey.assign(securePrivKey.begin(), securePrivKey.end());
+        
+        spdlog::info("Generated Falcon-512 keypair (pubkey: {} bytes, privkey: {} bytes)", 
+            pubkey.size(), privkey.size());
         
         return true;
     }
@@ -56,21 +44,25 @@ bool falcon_sign(const std::vector<uint8_t>& privkey,
                  const std::vector<uint8_t>& data, 
                  std::vector<uint8_t>& signature)
 {
-    // Falcon-512 signature size: variable, up to ~690 bytes
-    // For stub, use a fixed size
-    const size_t FALCON512_SIG_SIZE = 690;
-    
     try {
-        std::random_device rd;
-        std::mt19937_64 gen(rd());
-        std::uniform_int_distribution<uint16_t> dis(0, 255);
+        // Create a Falcon key and set the private key
+        LLC::FLKey key;
         
-        signature.resize(FALCON512_SIG_SIZE);
-        for (size_t i = 0; i < FALCON512_SIG_SIZE; ++i) {
-            signature[i] = static_cast<uint8_t>(dis(gen));
+        // Convert std::vector to LLC::CPrivKey (secure_allocator vector)
+        LLC::CPrivKey securePrivKey(privkey.begin(), privkey.end());
+        
+        if (!key.SetPrivKey(securePrivKey)) {
+            spdlog::error("Failed to set Falcon private key");
+            return false;
         }
         
-        spdlog::warn("WARNING: Using STUB Falcon signing. Replace with real Falcon library!");
+        // Sign the data
+        if (!key.Sign(data, signature)) {
+            spdlog::error("Failed to sign data with Falcon key");
+            return false;
+        }
+        
+        spdlog::debug("Signed {} bytes of data, signature: {} bytes", data.size(), signature.size());
         
         return true;
     }
@@ -84,10 +76,29 @@ bool falcon_verify(const std::vector<uint8_t>& pubkey,
                    const std::vector<uint8_t>& data,
                    const std::vector<uint8_t>& signature)
 {
-    // STUB: Always return true for testing
-    // Real implementation would verify the signature
-    spdlog::warn("WARNING: Using STUB Falcon verification. Replace with real Falcon library!");
-    return true;
+    try {
+        // Create a Falcon key and set the public key
+        LLC::FLKey key;
+        
+        if (!key.SetPubKey(pubkey)) {
+            spdlog::error("Failed to set Falcon public key");
+            return false;
+        }
+        
+        // Verify the signature
+        if (!key.Verify(data, signature)) {
+            spdlog::debug("Falcon signature verification failed");
+            return false;
+        }
+        
+        spdlog::debug("Falcon signature verified successfully");
+        
+        return true;
+    }
+    catch (const std::exception& e) {
+        spdlog::error("Failed to verify Falcon signature: {}", e.what());
+        return false;
+    }
 }
 
 std::string to_hex(const std::vector<uint8_t>& data)
