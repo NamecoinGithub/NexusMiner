@@ -3,6 +3,7 @@
 #include "packet.hpp"
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
+#include "../miner_keys.hpp"
 
 namespace nexusminer
 {
@@ -15,6 +16,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_current_height{0}
 , m_set_block_handler{}
 , m_stats_collector{std::move(stats_collector)}
+, m_authenticated{false}
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -30,6 +32,8 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 void Solo::reset()
 {
     m_current_height = 0;
+    m_authenticated = false;
+    m_auth_nonce.clear();
 }
 
 network::Shared_payload Solo::login(Login_handler handler)
@@ -40,18 +44,35 @@ network::Shared_payload Solo::login(Login_handler handler)
         m_channel = 2;
     }
     
-    // Log channel being sent with human-readable label
-    std::string channel_name = (m_channel == 1) ? "prime" : "hash";
-    m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
-    
-    Packet packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(uint2bytes(m_channel)) };
-    
-    // Log that we're waiting for server response after SET_CHANNEL
-    m_logger->info("[Solo] Waiting for server response after SET_CHANNEL");
-    
-    // call the login handler here because for solo mining this is always a "success"
-    handler(true);
-    return packet.get_bytes();
+    // Check if we have Falcon miner keys configured
+    if (!m_miner_pubkey.empty() && !m_miner_privkey.empty()) {
+        m_logger->info("[Solo] Starting Falcon miner authentication handshake");
+        m_logger->info("[Solo] Sending MINER_AUTH_INIT with public key ({} bytes)", m_miner_pubkey.size());
+        
+        // Send MINER_AUTH_INIT with our public key
+        Packet packet{ Packet::MINER_AUTH_INIT, m_miner_pubkey };
+        
+        // Login handler will be called after successful authentication in MINER_AUTH_RESULT handler
+        // For now, mark as "success" since the auth process has started
+        handler(true);
+        
+        return packet.get_bytes();
+    }
+    else {
+        // No Falcon keys configured - use legacy path
+        m_logger->info("[Solo] No Falcon keys configured, using legacy authentication");
+        
+        std::string channel_name = (m_channel == 1) ? "prime" : "hash";
+        m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
+        
+        Packet packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(uint2bytes(m_channel)) };
+        
+        m_logger->info("[Solo] Waiting for server response after SET_CHANNEL");
+        
+        // call the login handler here because for solo mining this is always a "success"
+        handler(true);
+        return packet.get_bytes();
+    }
 }
 
 network::Shared_payload Solo::get_work()
@@ -161,10 +182,72 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->warn("Block Rejected by Nexus Network.");
         connection->transmit(get_work());
     }
+    else if (packet.m_header == Packet::MINER_AUTH_CHALLENGE)
+    {
+        m_logger->info("[Solo] Received MINER_AUTH_CHALLENGE from node");
+        
+        // Extract the nonce from the challenge
+        if (!packet.m_data || packet.m_length < 32) {
+            m_logger->error("MINER_AUTH_CHALLENGE packet has invalid data or length < 32");
+            return;
+        }
+        
+        m_auth_nonce.assign(packet.m_data->begin(), packet.m_data->begin() + 32);
+        m_logger->debug("[Solo] Challenge nonce: {} bytes", m_auth_nonce.size());
+        
+        // Sign the nonce with our private key
+        std::vector<uint8_t> signature;
+        if (!keys::falcon_sign(m_miner_privkey, m_auth_nonce, signature)) {
+            m_logger->error("Failed to sign auth challenge with Falcon private key");
+            return;
+        }
+        
+        m_logger->info("[Solo] Sending MINER_AUTH_RESPONSE with signature ({} bytes)", signature.size());
+        
+        // Send the signature back
+        Packet response_packet{ Packet::MINER_AUTH_RESPONSE, signature };
+        connection->transmit(response_packet.get_bytes());
+    }
+    else if (packet.m_header == Packet::MINER_AUTH_RESULT)
+    {
+        // Check if auth succeeded
+        if (!packet.m_data || packet.m_length < 1) {
+            m_logger->error("MINER_AUTH_RESULT packet has invalid data");
+            return;
+        }
+        
+        bool auth_success = (*packet.m_data)[0] != 0;
+        
+        if (auth_success) {
+            m_authenticated = true;
+            m_logger->info("[Solo] ✓ Miner authentication SUCCEEDED");
+            m_logger->info("[Solo] Now sending SET_CHANNEL channel={} ({})", 
+                static_cast<int>(m_channel), 
+                (m_channel == 1) ? "prime" : "hash");
+            
+            // Now send SET_CHANNEL since we're authenticated
+            Packet packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(uint2bytes(m_channel)) };
+            connection->transmit(packet.get_bytes());
+        }
+        else {
+            m_authenticated = false;
+            m_logger->error("[Solo] ✗ Miner authentication FAILED");
+            m_logger->error("[Solo] Check your Falcon keys in miner.conf");
+            m_logger->error("[Solo] Ensure node has whitelisted your public key with -minerallowkey=");
+        }
+    }
     else
     {
         m_logger->debug("Invalid header received.");
     } 
+}
+
+void Solo::set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_t> const& privkey)
+{
+    m_miner_pubkey = pubkey;
+    m_miner_privkey = privkey;
+    m_logger->info("[Solo] Miner Falcon keys configured (pubkey: {} bytes, privkey: {} bytes)", 
+        pubkey.size(), privkey.size());
 }
 
 }

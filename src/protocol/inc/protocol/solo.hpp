@@ -22,6 +22,10 @@ public:
     void set_block_handler(Set_block_handler handler) override { m_set_block_handler = std::move(handler); }
 
     void process_messages(Packet packet, std::shared_ptr<network::Connection> connection) override;
+    
+    // Falcon miner authentication
+    void set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_t> const& privkey);
+    bool is_authenticated() const { return m_authenticated; }
 
 private:
 
@@ -30,6 +34,12 @@ private:
     std::uint32_t m_current_height;
     Set_block_handler m_set_block_handler;
     std::shared_ptr<stats::Collector> m_stats_collector;
+    
+    // Falcon miner authentication state
+    std::vector<uint8_t> m_miner_pubkey;
+    std::vector<uint8_t> m_miner_privkey;
+    std::vector<uint8_t> m_auth_nonce;
+    bool m_authenticated;
 };
 
 }

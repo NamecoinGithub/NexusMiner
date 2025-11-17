@@ -18,6 +18,7 @@
 #include "stats/stats_printer_console.hpp"
 #include "stats/stats_printer_file.hpp"
 #include "stats/stats_collector.hpp"
+#include "miner_keys.hpp"
 #include "protocol/solo.hpp"
 #include "protocol/pool.hpp"
 #include "protocol/pool_legacy.hpp"
@@ -48,7 +49,31 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
     }
     else
     {
-        m_miner_protocol = std::make_shared<protocol::Solo>(m_config.get_mining_mode() == config::Mining_mode::PRIME ? 1U : 2U, m_stats_collector);
+        auto solo_protocol = std::make_shared<protocol::Solo>(m_config.get_mining_mode() == config::Mining_mode::PRIME ? 1U : 2U, m_stats_collector);
+        
+        // Configure Falcon miner authentication if keys are available
+        if (m_config.has_miner_falcon_keys())
+        {
+            m_logger->info("[Worker_manager] Configuring Falcon miner authentication");
+            
+            std::vector<uint8_t> pubkey, privkey;
+            if (keys::from_hex(m_config.get_miner_falcon_pubkey(), pubkey) &&
+                keys::from_hex(m_config.get_miner_falcon_privkey(), privkey))
+            {
+                solo_protocol->set_miner_keys(pubkey, privkey);
+                m_logger->info("[Worker_manager] Falcon keys loaded from config");
+            }
+            else
+            {
+                m_logger->error("[Worker_manager] Failed to parse Falcon keys from config - invalid hex format");
+            }
+        }
+        else
+        {
+            m_logger->info("[Worker_manager] No Falcon keys configured - using legacy authentication");
+        }
+        
+        m_miner_protocol = solo_protocol;
     } 
   
     create_stats_printers();

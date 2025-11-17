@@ -41,12 +41,25 @@ To use the prime pool, set the following address and port in miner.conf:
 
 ## Command line option arguments
 ```
-    <miner_config_file> Default=miner.conf
-    -c --check          run config file check before miner startup
-    -v --version        Show NexusMiner version
+    <miner_config_file>  Default=miner.conf
+    -c --check           run config file check before miner startup
+    -v --version         Show NexusMiner version
+    --create-keys        Generate Falcon miner keypair for authentication
 ```
 
   `./NexusMiner ../../myownminer.conf -c`
+
+## Falcon Miner Authentication (SOLO Mode)
+NexusMiner supports quantum-resistant Falcon-based authentication for SOLO mining. This provides session-independent, stateless authentication with enhanced security.
+
+**Generate miner keys:**
+```bash
+./NexusMiner --create-keys
+```
+
+Add the generated keys to your `miner.conf` and have the node operator whitelist your public key. See [docs/falcon_authentication.md](docs/falcon_authentication.md) for detailed instructions.
+
+**Note:** Falcon authentication is optional and backward compatible. If not configured, legacy authentication is used.
   
 ## Solo Mining Wallet Setup
 For solo mining use the latest wallet daemon release 5.0.5 or greater and ensure the wallet has been unlocked for mining.

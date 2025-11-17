@@ -37,6 +37,12 @@ namespace nexusminer
 			LOGIN_V2_FAIL = 12,
 			POOL_NOTIFICATION = 13,
 
+			//MINER AUTH (Falcon-based stateless authentication)
+			MINER_AUTH_INIT = 14,
+			MINER_AUTH_CHALLENGE = 15,
+			MINER_AUTH_RESPONSE = 16,
+			MINER_AUTH_RESULT = 17,
+
 			/** REQUEST PACKETS **/
 			GET_BLOCK = 129,
 			GET_HEIGHT = 130,

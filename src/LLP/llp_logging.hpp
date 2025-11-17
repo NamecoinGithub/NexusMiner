@@ -32,6 +32,12 @@ namespace nexusminer
 			LOGIN_V2_FAIL = 12,
 			POOL_NOTIFICATION = 13,
 
+			//MINER AUTH (Falcon-based stateless authentication)
+			MINER_AUTH_INIT = 14,
+			MINER_AUTH_CHALLENGE = 15,
+			MINER_AUTH_RESPONSE = 16,
+			MINER_AUTH_RESULT = 17,
+
 			/** REQUEST PACKETS **/
 			GET_BLOCK = 129,
 			GET_HEIGHT = 130,
@@ -74,6 +80,10 @@ namespace nexusminer
 			case LLP_Headers::LOGIN_V2_SUCCESS: return "LOGIN_V2_SUCCESS";
 			case LLP_Headers::LOGIN_V2_FAIL: return "LOGIN_V2_FAIL";
 			case LLP_Headers::POOL_NOTIFICATION: return "POOL_NOTIFICATION";
+			case LLP_Headers::MINER_AUTH_INIT: return "MINER_AUTH_INIT";
+			case LLP_Headers::MINER_AUTH_CHALLENGE: return "MINER_AUTH_CHALLENGE";
+			case LLP_Headers::MINER_AUTH_RESPONSE: return "MINER_AUTH_RESPONSE";
+			case LLP_Headers::MINER_AUTH_RESULT: return "MINER_AUTH_RESULT";
 			case LLP_Headers::GET_BLOCK: return "GET_BLOCK";
 			case LLP_Headers::GET_HEIGHT: return "GET_HEIGHT";
 			case LLP_Headers::GET_REWARD: return "GET_REWARD";
