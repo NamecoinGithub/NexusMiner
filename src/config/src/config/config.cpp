@@ -123,6 +123,16 @@ namespace config
 				j.at("logfile").get_to(m_logfile);
 			}
 
+			// Falcon miner authentication keys (optional)
+			if (j.count("miner_falcon_pubkey") != 0)
+			{
+				j.at("miner_falcon_pubkey").get_to(m_miner_falcon_pubkey);
+			}
+			if (j.count("miner_falcon_privkey") != 0)
+			{
+				j.at("miner_falcon_privkey").get_to(m_miner_falcon_privkey);
+			}
+
 			print_global_config();
 			print_worker_config();
 			return true;

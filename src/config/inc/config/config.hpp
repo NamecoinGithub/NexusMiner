@@ -38,6 +38,9 @@ public:
 	std::vector<Worker_config>& get_worker_config() { return m_worker_config; }
 	std::vector<Stats_printer_config>& get_stats_printer_config() { return m_stats_printer_config; }
 	Pool const& get_pool_config() const { return m_pool_config; }
+	std::string const& get_miner_falcon_pubkey() const { return m_miner_falcon_pubkey; }
+	std::string const& get_miner_falcon_privkey() const { return m_miner_falcon_privkey; }
+	bool has_miner_falcon_keys() const { return !m_miner_falcon_pubkey.empty() && !m_miner_falcon_privkey.empty(); }
 
 private:
 
@@ -67,6 +70,10 @@ private:
 	std::uint16_t m_print_statistics_interval;
 	std::uint16_t m_get_height_interval;
 	std::uint16_t m_ping_interval;
+
+	// Falcon miner authentication keys (optional)
+	std::string m_miner_falcon_pubkey;
+	std::string m_miner_falcon_privkey;
 
 };
 }
