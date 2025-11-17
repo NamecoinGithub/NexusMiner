@@ -42,9 +42,13 @@ network::Shared_payload Solo::login(Login_handler handler)
     
     // Log channel being sent with human-readable label
     std::string channel_name = (m_channel == 1) ? "prime" : "hash";
-    m_logger->info("Solo::login: Setting channel to {} ({})", static_cast<int>(m_channel), channel_name);
+    m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
     
     Packet packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(uint2bytes(m_channel)) };
+    
+    // Log that we're waiting for server response after SET_CHANNEL
+    m_logger->info("[Solo] Waiting for server response after SET_CHANNEL");
+    
     // call the login handler here because for solo mining this is always a "success"
     handler(true);
     return packet.get_bytes();
@@ -80,6 +84,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             static_cast<int>(packet.m_header), packet.m_length);
         return;
     }
+    
+    // Log received packet for diagnostics
+    m_logger->debug("[Solo] Processing packet: header={} ({}), length={}", 
+        static_cast<int>(packet.m_header), get_packet_header_name(packet.m_header), packet.m_length);
     
     if (packet.m_header == Packet::BLOCK_HEIGHT)
     {

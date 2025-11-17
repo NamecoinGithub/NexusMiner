@@ -208,6 +208,8 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
 
 bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 {
+    m_logger->info("[Solo] Connecting to wallet {}", wallet_endpoint.to_string());
+    
     std::weak_ptr<Worker_manager> weak_self = shared_from_this();
     auto connection = m_socket->connect(wallet_endpoint, [weak_self, wallet_endpoint](auto result, auto receive_buffer)
     {
@@ -219,12 +221,13 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                 result == network::Result::connection_closed ||
                 result == network::Result::connection_error)
             {
-                self->m_logger->error("Connection to wallet {} not sucessful. Result: {}", wallet_endpoint.to_string(), network::Result::code_to_string(result));
+                self->m_logger->error("[Solo] Connection to wallet {} not successful. Result: {} - This may indicate wallet lock, sync issues, or network problems", 
+                    wallet_endpoint.to_string(), network::Result::code_to_string(result));
                 self->retry_connect(wallet_endpoint);
             }
             else if (result == network::Result::connection_ok)
             {
-                self->m_logger->info("Connection to wallet {} established", wallet_endpoint.to_string());
+                self->m_logger->info("[Solo] Connected to wallet {}", wallet_endpoint.to_string());
 
                 // login
                 self->m_connection->transmit(self->m_miner_protocol->login([self, wallet_endpoint](bool login_result)
