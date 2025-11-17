@@ -179,6 +179,7 @@ endif()
 
 set(MAIN_SOURCE_FILES src/main.cpp
                 src/miner.cpp 
+                src/miner_keys.cpp
                 src/worker_manager.cpp 
                 src/timer_manager.cpp)
 
