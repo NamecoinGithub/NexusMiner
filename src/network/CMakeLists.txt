@@ -8,6 +8,7 @@ target_include_directories(network
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>
         $<INSTALL_INTERFACE:inc>
     PRIVATE src
+        ${CMAKE_SOURCE_DIR}/src
 )
 
-target_link_libraries(network asio)
+target_link_libraries(network asio spdlog)

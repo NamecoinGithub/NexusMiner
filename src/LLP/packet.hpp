@@ -8,6 +8,7 @@
 #include "network/types.hpp"
 #include "block.hpp"
 #include "utils.hpp"
+#include "llp_logging.hpp"
 
 namespace nexusminer
 {
@@ -218,6 +219,18 @@ namespace nexusminer
 
 
 		return packet;
+	}
+
+	/** Wrapper for backward compatibility - delegates to llp_logging.hpp **/
+	inline const char* get_packet_header_name(std::uint8_t header)
+	{
+		return get_llp_header_name(header);
+	}
+
+	/** Wrapper for backward compatibility - delegates to llp_logging.hpp **/
+	inline std::string format_payload_hex(network::Shared_payload const& payload, std::size_t max_bytes = 16)
+	{
+		return format_llp_payload_hex(payload, max_bytes);
 	}
 
 }

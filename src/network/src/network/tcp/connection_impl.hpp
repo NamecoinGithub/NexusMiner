@@ -5,6 +5,8 @@
 #include "asio/write.hpp"
 #include "network/connection.hpp"
 #include "network/tcp/protocol_description.hpp"
+#include "LLP/llp_logging.hpp"
+#include <spdlog/spdlog.h>
 #include <queue>
 #include <memory>
 
@@ -59,6 +61,7 @@ private:
     Endpoint m_local_endpoint;
     std::queue<Shared_payload> m_tx_queue;
     Connection::Handler m_connection_handler;
+    std::shared_ptr<spdlog::logger> m_logger;
 };
 
 
@@ -72,6 +75,7 @@ inline Connection_impl<ProtocolDescriptionType>::Connection_impl(
     , m_local_endpoint{std::move(local_endpoint)}
     , m_tx_queue{}
     , m_connection_handler{std::move(handler)}
+    , m_logger{spdlog::get("logger")}
 {
 }
 
@@ -85,6 +89,7 @@ inline Connection_impl<ProtocolDescriptionType>::Connection_impl(
     , m_local_endpoint{}     // will be set later, this constructor is called in accept/listen case
     , m_tx_queue{}
 	, m_connection_handler{} // will be set later, this constructor is called in accept/listen case
+    , m_logger{spdlog::get("logger")}
 {
 }
 
@@ -162,6 +167,10 @@ inline void Connection_impl<ProtocolDescriptionType>::receive()
                 auto const length = self->m_asio_socket->available();
                 if (length == 0)
                 {
+                    if (self->m_logger)
+                    {
+                        self->m_logger->warn("[LLP RECV] Connection closed by remote (EOF, no data available)");
+                    }
                     self->change(Result::Code::connection_closed);
                     return;
                 }
@@ -172,23 +181,97 @@ inline void Connection_impl<ProtocolDescriptionType>::receive()
                 self->m_asio_socket->receive(asio::buffer(*receive_buffer, receive_buffer->size()), 0, error);
                 if (!error)
                 {
+                    // Log received LLP packets
+                    if (self->m_logger && receive_buffer && !receive_buffer->empty())
+                    {
+                        // Try to parse packet(s) from buffer for logging
+                        std::size_t offset = 0;
+                        while (offset < receive_buffer->size())
+                        {
+                            if (offset + 1 > receive_buffer->size()) break;
+                            
+                            std::uint8_t header = (*receive_buffer)[offset];
+                            std::uint32_t pkt_length = 0;
+                            
+                            // Check if it's a data packet (has length field)
+                            if (offset + 5 <= receive_buffer->size())
+                            {
+                                pkt_length = ((*receive_buffer)[offset + 1] << 24) + 
+                                           ((*receive_buffer)[offset + 2] << 16) + 
+                                           ((*receive_buffer)[offset + 3] << 8) + 
+                                           (*receive_buffer)[offset + 4];
+                            }
+                            
+                            // Create data payload for hex preview
+                            network::Shared_payload data_payload;
+                            if (offset + 5 < receive_buffer->size())
+                            {
+                                std::size_t data_end = std::min(offset + 5 + pkt_length, receive_buffer->size());
+                                data_payload = std::make_shared<network::Payload>(
+                                    receive_buffer->begin() + offset + 5, 
+                                    receive_buffer->begin() + data_end);
+                            }
+                            
+                            std::string hex_preview = format_llp_payload_hex(data_payload, 16);
+                            if (!hex_preview.empty())
+                            {
+                                self->m_logger->info("[LLP RECV] header={} (0x{:02x}) {} length={} payload=[{}]", 
+                                    static_cast<int>(header), header, get_llp_header_name(header), 
+                                    pkt_length, hex_preview);
+                            }
+                            else
+                            {
+                                self->m_logger->info("[LLP RECV] header={} (0x{:02x}) {} length={}", 
+                                    static_cast<int>(header), header, get_llp_header_name(header), pkt_length);
+                            }
+                            
+                            // Move to next packet (header + 4 bytes length + data)
+                            if (pkt_length > 0 && offset + 5 + pkt_length <= receive_buffer->size())
+                            {
+                                offset += 5 + pkt_length;
+                            }
+                            else if (pkt_length == 0)
+                            {
+                                // Request packet (no data)
+                                offset += 1;
+                            }
+                            else
+                            {
+                                // Incomplete packet, stop logging
+                                break;
+                            }
+                        }
+                    }
+                    
                     self->m_connection_handler(Result::receive_ok, std::move(receive_buffer));
                     self->receive();
                 }
                 else
                 {
                     // established connection fails for any other reason
+                    if (self->m_logger)
+                    {
+                        self->m_logger->error("[LLP RECV] Socket receive error: {}", error.message());
+                    }
                     self->change(Result::Code::connection_aborted);
                 }
             }
             else if ((error == ::asio::error::eof) || (error == ::asio::error::connection_reset))
             {
                 // established connection closed by remote
+                if (self->m_logger)
+                {
+                    self->m_logger->warn("[LLP RECV] Connection closed by remote: {}", error.message());
+                }
                 self->change(Result::Code::connection_closed);
             }
             else
             {
                 // established connection fails for any other reason
+                if (self->m_logger)
+                {
+                    self->m_logger->error("[LLP RECV] Connection error: {}", error.message());
+                }
                 self->change(Result::Code::connection_aborted);
             }
         }
@@ -237,6 +320,41 @@ template<typename ProtocolDescriptionType>
 void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
 {
     auto const payload = m_tx_queue.front();
+    
+    // Log LLP packet send
+    if (m_logger && payload && !payload->empty())
+    {
+        // Parse LLP packet header
+        std::uint8_t header = (*payload)[0];
+        std::uint32_t length = 0;
+        
+        // If payload has length field (data packets), extract it
+        if (payload->size() >= 5)
+        {
+            length = ((*payload)[1] << 24) + ((*payload)[2] << 16) + 
+                     ((*payload)[3] << 8) + (*payload)[4];
+        }
+        
+        // Create a shared pointer to the data portion for hex formatting
+        network::Shared_payload data_payload;
+        if (payload->size() > 5)
+        {
+            data_payload = std::make_shared<network::Payload>(payload->begin() + 5, payload->end());
+        }
+        
+        std::string hex_preview = format_llp_payload_hex(data_payload, 16);
+        if (!hex_preview.empty())
+        {
+            m_logger->info("[LLP SEND] header={} (0x{:02x}) {} length={} payload=[{}]", 
+                static_cast<int>(header), header, get_llp_header_name(header), length, hex_preview);
+        }
+        else
+        {
+            m_logger->info("[LLP SEND] header={} (0x{:02x}) {} length={}", 
+                static_cast<int>(header), header, get_llp_header_name(header), length);
+        }
+    }
+    
     ::asio::async_write(*m_asio_socket, ::asio::buffer(*payload, payload->size()),
         // don't forget to keep the payload until transmission has been completed!!!
         [weak_self = get_weak_self(), payload](auto, auto) 
