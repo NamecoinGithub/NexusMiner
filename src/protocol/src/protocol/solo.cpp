@@ -155,29 +155,14 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     auto const nonce_data = uint2bytes64(nonce);
     packet.m_data->insert(packet.m_data->end(), nonce_data.begin(), nonce_data.end());
     
-    // If Falcon keys are configured, sign the block to prove miner identity
-    // This eliminates ambiguity about reward destination
-    if (!m_miner_privkey.empty()) {
-        // Create data to sign: block_data + nonce
-        std::vector<uint8_t> data_to_sign = block_data;
-        data_to_sign.insert(data_to_sign.end(), nonce_data.begin(), nonce_data.end());
-        
-        // Sign the block with miner's Falcon private key
-        std::vector<uint8_t> signature;
-        if (keys::falcon_sign(m_miner_privkey, data_to_sign, signature)) {
-            m_logger->info("[Solo] Block signed with Falcon key (signature: {} bytes)", signature.size());
-            
-            // Append signature to packet data
-            // Format: block_data (64 bytes) + nonce (8 bytes) + signature (variable, ~690 bytes)
-            packet.m_data->insert(packet.m_data->end(), signature.begin(), signature.end());
-            packet.m_length = 72 + signature.size();
-        } else {
-            m_logger->error("[Solo] Failed to sign block with Falcon key - submitting unsigned");
-            packet.m_length = 72;
-        }
+    // Phase 2: Block submission doesn't need signing - the session is already authenticated
+    // Expected format: merkle_root (64 bytes) + nonce (8 bytes) = 72 bytes total
+    packet.m_length = 72;
+    
+    if (m_authenticated) {
+        m_logger->info("[Solo Phase 2] Submitting authenticated block (session: 0x{:08x})", m_session_id);
     } else {
-        // No Falcon keys configured - submit unsigned block (legacy mode)
-        packet.m_length = 72;
+        m_logger->info("[Solo] Submitting block (legacy mode - no authentication)");
     }
 
     return packet.get_bytes();  
