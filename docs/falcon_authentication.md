@@ -6,6 +6,40 @@ This document describes how to use Falcon-based stateless miner authentication w
 
 Falcon miner authentication provides a quantum-resistant, session-independent way for miners to authenticate with Nexus LLL-TAO nodes. This eliminates the dependency on TAO::API sessions and provides stronger security for mining operations.
 
+## Quick Start (Recommended)
+
+The easiest way to get started with Falcon SOLO mining is to use the automated config generator:
+
+```bash
+./NexusMiner --create-falcon-config
+```
+
+This will:
+1. Generate a new Falcon-512 keypair
+2. Create `falconminer.conf` with all required settings for SOLO PRIME mining
+3. Print the private key to stdout (save it securely!)
+4. Display the public key for the node operator to whitelist
+
+The generated config targets `127.0.0.1:8323` (localhost LLL-TAO) and is ready to use. Just:
+1. Share the public key with your node operator
+2. Have them add it to `nexus.conf`: `-minerallowkey=<your_public_key>`
+3. (Optional) Edit the private key into `falconminer.conf` if you want it embedded
+4. Start mining: `./NexusMiner -c falconminer.conf`
+
+### Security Options
+
+By default, `--create-falcon-config` does NOT write the private key to the config file for security. The private key is printed once to stdout. If you prefer to embed it in the config (less secure but more convenient):
+
+```bash
+./NexusMiner --create-falcon-config-with-privkey
+```
+
+**Warning:** With this option, your private key will be stored in `falconminer.conf`. Protect this file like a wallet!
+
+## Manual Setup (Alternative)
+
+If you prefer to add Falcon authentication to an existing config file, follow these steps.
+
 ## Prerequisites
 
 - NexusMiner with Falcon authentication support
@@ -109,7 +143,61 @@ If you see `✗ Miner authentication FAILED`:
 If you see `No Falcon keys configured, using legacy authentication`:
 - This is normal if you haven't added the Falcon key fields to miner.conf
 - Legacy authentication (SET_CHANNEL only) will be used
-- To enable Falcon auth, generate keys with `--create-keys` and add to config
+- To enable Falcon auth, generate keys with `--create-keys` or `--create-falcon-config`
+
+### Failed to Parse Falcon Keys
+
+If you see `Failed to parse Falcon keys from config - invalid hex format`:
+- Check that you replaced `PUT_PRIVKEY_HEX_HERE` with your actual private key
+- Ensure the keys are valid hexadecimal strings (no spaces or invalid characters)
+- If using `--create-falcon-config`, copy the private key from stdout into the config
+
+## Generated Config Structure
+
+The `--create-falcon-config` command generates a complete configuration with these defaults:
+
+```json
+{
+    "version": 1,
+    "wallet_ip": "127.0.0.1",          // Localhost LLL-TAO node
+    "port": 8323,                       // Default SOLO PRIME port
+    "local_ip": "127.0.0.1",
+    "mining_mode": "PRIME",
+    "connection_retry_interval": 5,
+    "get_height_interval": 2,
+    "ping_interval": 10,
+    "log_level": 2,
+    "logfile": "miner.log",
+    "print_statistics_interval": 10,
+    
+    "miner_falcon_pubkey": "<generated>",
+    "miner_falcon_privkey": "PUT_PRIVKEY_HEX_HERE",  // or <generated> with --with-privkey
+    
+    "stats_printers": [
+        {
+            "stats_printer": {
+                "mode": "console"
+            }
+        }
+    ],
+    
+    "workers": [
+        {
+            "worker": {
+                "id": "worker0",
+                "mode": {
+                    "hardware": "cpu"
+                }
+            }
+        }
+    ]
+}
+```
+
+You can customize:
+- Worker configuration (add GPU workers, adjust thread counts)
+- Connection settings if not using localhost
+- Logging settings and output
 
 ## Example Configuration
 

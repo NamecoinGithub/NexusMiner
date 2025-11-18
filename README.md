@@ -45,6 +45,8 @@ To use the prime pool, set the following address and port in miner.conf:
     -c --check           run config file check before miner startup
     -v --version         Show NexusMiner version
     --create-keys        Generate Falcon miner keypair for authentication
+    --create-falcon-config                Generate complete Falcon SOLO config file
+    --create-falcon-config-with-privkey   Generate Falcon config with private key embedded (less secure)
 ```
 
   `./NexusMiner ../../myownminer.conf -c`
@@ -52,7 +54,14 @@ To use the prime pool, set the following address and port in miner.conf:
 ## Falcon Miner Authentication (SOLO Mode)
 NexusMiner supports quantum-resistant Falcon-based authentication for SOLO mining. This provides session-independent, stateless authentication with enhanced security.
 
-**Generate miner keys:**
+**Quick Start - Generate complete config for SOLO PRIME mining:**
+```bash
+./NexusMiner --create-falcon-config
+```
+
+This creates `falconminer.conf` ready for SOLO PRIME mining against a local LLL-TAO node on `127.0.0.1:8323`. The private key is printed to stdout (keep it safe!). Start mining with `./NexusMiner -c falconminer.conf`.
+
+**Alternative - Generate keys only:**
 ```bash
 ./NexusMiner --create-keys
 ```
