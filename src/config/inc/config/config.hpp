@@ -26,6 +26,8 @@ public:
 
 	std::uint16_t get_version() const { return m_version; }
 	std::string const& get_wallet_ip() const { return m_wallet_ip; }
+	// Phase 2: port refers to the stateless miner LLP port (miningport in nexus.conf)
+	// Default is 8323 to match LLL-TAO's default miningport
 	std::uint16_t get_port() const { return m_port; }
 	std::string const& get_local_ip() const { return m_local_ip; }
 	Mining_mode get_mining_mode() const { return m_mining_mode; }

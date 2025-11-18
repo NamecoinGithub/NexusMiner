@@ -279,9 +279,20 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     }
                     else
                     {
-                        // only solo miner uses GET_HEIGHT message
-                        auto const get_height_interval = self->m_config.get_height_interval();
-                        self->m_timer_manager.start_get_height_timer(get_height_interval, self->m_connection);
+                        // Phase 2: Solo mining with Falcon auth uses stateless protocol (no GET_HEIGHT)
+                        // Legacy solo mining (no Falcon keys) still uses GET_HEIGHT
+                        if (self->m_config.has_miner_falcon_keys())
+                        {
+                            self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
+                            self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
+                        }
+                        else
+                        {
+                            // Legacy solo mining uses GET_HEIGHT to poll for new blocks
+                            self->m_logger->info("[Solo Legacy] Using GET_HEIGHT polling for legacy mining");
+                            auto const get_height_interval = self->m_config.get_height_interval();
+                            self->m_timer_manager.start_get_height_timer(get_height_interval, self->m_connection);
+                        }
                     }
 
                     self->m_miner_protocol->set_block_handler([self, wallet_endpoint](auto block, auto nBits)
