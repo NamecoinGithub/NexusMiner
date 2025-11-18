@@ -26,6 +26,7 @@ public:
     // Falcon miner authentication
     void set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_t> const& privkey);
     bool is_authenticated() const { return m_authenticated; }
+    void set_address(std::string const& address) { m_address = address; }
 
 private:
 
@@ -35,11 +36,13 @@ private:
     Set_block_handler m_set_block_handler;
     std::shared_ptr<stats::Collector> m_stats_collector;
     
-    // Falcon miner authentication state
+    // Falcon miner authentication state (Phase 2)
     std::vector<uint8_t> m_miner_pubkey;
     std::vector<uint8_t> m_miner_privkey;
-    std::vector<uint8_t> m_auth_nonce;
     bool m_authenticated;
+    std::uint32_t m_session_id;
+    std::string m_address;  // Miner's network address for auth message
+    std::uint64_t m_auth_timestamp;  // Timestamp for auth message
 };
 
 }

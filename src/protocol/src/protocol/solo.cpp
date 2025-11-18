@@ -4,6 +4,7 @@
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
 #include "../miner_keys.hpp"
+#include <chrono>
 
 namespace nexusminer
 {
@@ -17,6 +18,9 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_set_block_handler{}
 , m_stats_collector{std::move(stats_collector)}
 , m_authenticated{false}
+, m_session_id{0}
+, m_address{"127.0.0.1"}  // Default address, can be overridden
+, m_auth_timestamp{0}
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -33,7 +37,8 @@ void Solo::reset()
 {
     m_current_height = 0;
     m_authenticated = false;
-    m_auth_nonce.clear();
+    m_session_id = 0;
+    m_auth_timestamp = 0;
 }
 
 network::Shared_payload Solo::login(Login_handler handler)
@@ -44,28 +49,85 @@ network::Shared_payload Solo::login(Login_handler handler)
         m_channel = 2;
     }
     
-    // Check if we have Falcon miner keys configured
+    // Phase 2: Check if we have Falcon miner keys configured
     if (!m_miner_pubkey.empty() && !m_miner_privkey.empty()) {
-        m_logger->info("[Solo] Starting Falcon miner authentication handshake");
-        m_logger->info("[Solo] Sending MINER_AUTH_INIT with public key ({} bytes)", m_miner_pubkey.size());
+        m_logger->info("[Solo Phase 2] Starting Falcon authentication handshake");
+        m_logger->info("[Solo] Public key size: {} bytes", m_miner_pubkey.size());
         
-        // Send MINER_AUTH_INIT with our public key
-        Packet packet{ Packet::MINER_AUTH_INIT, m_miner_pubkey };
+        // Get current timestamp (using system time in seconds since epoch)
+        auto now = std::chrono::system_clock::now();
+        m_auth_timestamp = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
         
-        // Login handler will be called after successful authentication in MINER_AUTH_RESULT handler
-        // For now, mark as "success" since the auth process has started
+        // Build auth message: address + timestamp (matching LLL-TAO's BuildAuthMessage)
+        std::vector<uint8_t> auth_message;
+        auth_message.insert(auth_message.end(), m_address.begin(), m_address.end());
+        
+        // Append timestamp as 8 bytes, little-endian
+        uint64_t ts = m_auth_timestamp;
+        for(int i = 0; i < 8; ++i) {
+            auth_message.push_back(static_cast<uint8_t>(ts & 0xFF));
+            ts >>= 8;
+        }
+        
+        m_logger->debug("[Solo] Auth message: address='{}' + timestamp={} ({} bytes total)", 
+            m_address, m_auth_timestamp, auth_message.size());
+        
+        // Sign the auth message with miner's Falcon private key
+        std::vector<uint8_t> signature;
+        if (!keys::falcon_sign(m_miner_privkey, auth_message, signature)) {
+            m_logger->error("[Solo] Failed to sign auth message with Falcon private key");
+            handler(false);
+            return nullptr;
+        }
+        
+        m_logger->info("[Solo] Signed auth message (signature: {} bytes)", signature.size());
+        
+        // Build MINER_AUTH_RESPONSE packet payload:
+        // Format: [pubkey_len(2)][pubkey][sig_len(2)][signature][optional_genesis(32)]
+        std::vector<uint8_t> payload;
+        
+        // Public key length (2 bytes, little-endian)
+        uint16_t pubkey_len = static_cast<uint16_t>(m_miner_pubkey.size());
+        payload.push_back(pubkey_len & 0xFF);
+        payload.push_back((pubkey_len >> 8) & 0xFF);
+        
+        // Public key bytes
+        payload.insert(payload.end(), m_miner_pubkey.begin(), m_miner_pubkey.end());
+        
+        // Signature length (2 bytes, little-endian)
+        uint16_t sig_len = static_cast<uint16_t>(signature.size());
+        payload.push_back(sig_len & 0xFF);
+        payload.push_back((sig_len >> 8) & 0xFF);
+        
+        // Signature bytes
+        payload.insert(payload.end(), signature.begin(), signature.end());
+        
+        // Optional: genesis hash (32 bytes) - for now, omit unless configured
+        // If we had a genesis to bind, we would append it here
+        
+        m_logger->info("[Solo] Sending MINER_AUTH_RESPONSE (payload: {} bytes)", payload.size());
+        m_logger->debug("[Solo] Payload breakdown: pubkey_len={}, pubkey={}, sig_len={}, sig={}", 
+            pubkey_len, pubkey_len, sig_len, sig_len);
+        
+        // Create and send the packet
+        Packet packet{ Packet::MINER_AUTH_RESPONSE, std::make_shared<network::Payload>(payload) };
+        
+        // Login handler will be called after successful authentication in MINER_AUTH_RESULT
+        // For now, mark as "in progress"
         handler(true);
         
         return packet.get_bytes();
     }
     else {
-        // No Falcon keys configured - use legacy path
-        m_logger->info("[Solo] No Falcon keys configured, using legacy authentication");
+        // No Falcon keys configured - use legacy path (direct SET_CHANNEL)
+        m_logger->info("[Solo Legacy] No Falcon keys configured, using legacy authentication");
         
         std::string channel_name = (m_channel == 1) ? "prime" : "hash";
         m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
         
-        Packet packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(uint2bytes(m_channel)) };
+        // LLL-TAO expects 1-byte payload for SET_CHANNEL (Phase 2 update)
+        std::vector<uint8_t> channel_data(1, m_channel);
+        Packet packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(channel_data) };
         
         m_logger->info("[Solo] Waiting for server response after SET_CHANNEL");
         
@@ -93,29 +155,14 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     auto const nonce_data = uint2bytes64(nonce);
     packet.m_data->insert(packet.m_data->end(), nonce_data.begin(), nonce_data.end());
     
-    // If Falcon keys are configured, sign the block to prove miner identity
-    // This eliminates ambiguity about reward destination
-    if (!m_miner_privkey.empty()) {
-        // Create data to sign: block_data + nonce
-        std::vector<uint8_t> data_to_sign = block_data;
-        data_to_sign.insert(data_to_sign.end(), nonce_data.begin(), nonce_data.end());
-        
-        // Sign the block with miner's Falcon private key
-        std::vector<uint8_t> signature;
-        if (keys::falcon_sign(m_miner_privkey, data_to_sign, signature)) {
-            m_logger->info("[Solo] Block signed with Falcon key (signature: {} bytes)", signature.size());
-            
-            // Append signature to packet data
-            // Format: block_data (64 bytes) + nonce (8 bytes) + signature (variable, ~690 bytes)
-            packet.m_data->insert(packet.m_data->end(), signature.begin(), signature.end());
-            packet.m_length = 72 + signature.size();
-        } else {
-            m_logger->error("[Solo] Failed to sign block with Falcon key - submitting unsigned");
-            packet.m_length = 72;
-        }
+    // Phase 2: Block submission doesn't need signing - the session is already authenticated
+    // Expected format: merkle_root (64 bytes) + nonce (8 bytes) = 72 bytes total
+    packet.m_length = 72;
+    
+    if (m_authenticated) {
+        m_logger->info("[Solo Phase 2] Submitting authenticated block (session: 0x{:08x})", m_session_id);
     } else {
-        // No Falcon keys configured - submit unsigned block (legacy mode)
-        packet.m_length = 72;
+        m_logger->info("[Solo] Submitting block (legacy mode - no authentication)");
     }
 
     return packet.get_bytes();  
@@ -206,37 +253,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->warn("Block Rejected by Nexus Network.");
         connection->transmit(get_work());
     }
-    else if (packet.m_header == Packet::MINER_AUTH_CHALLENGE)
+    else if (packet.m_header == Packet::MINER_AUTH_RESPONSE)
     {
-        m_logger->info("[Solo] Received MINER_AUTH_CHALLENGE from node");
+        // Phase 2: Handle MINER_AUTH_RESPONSE (actually the node's response to our auth)
+        // The node sends back: [status(1)][session_id(4)]
+        m_logger->info("[Solo Phase 2] Received MINER_AUTH_RESPONSE (auth result) from node");
         
-        // Extract the nonce from the challenge
-        if (!packet.m_data || packet.m_length < 32) {
-            m_logger->error("MINER_AUTH_CHALLENGE packet has invalid data or length < 32");
-            return;
-        }
-        
-        m_auth_nonce.assign(packet.m_data->begin(), packet.m_data->begin() + 32);
-        m_logger->debug("[Solo] Challenge nonce: {} bytes", m_auth_nonce.size());
-        
-        // Sign the nonce with our private key
-        std::vector<uint8_t> signature;
-        if (!keys::falcon_sign(m_miner_privkey, m_auth_nonce, signature)) {
-            m_logger->error("Failed to sign auth challenge with Falcon private key");
-            return;
-        }
-        
-        m_logger->info("[Solo] Sending MINER_AUTH_RESPONSE with signature ({} bytes)", signature.size());
-        
-        // Send the signature back
-        Packet response_packet{ Packet::MINER_AUTH_RESPONSE, signature };
-        connection->transmit(response_packet.get_bytes());
-    }
-    else if (packet.m_header == Packet::MINER_AUTH_RESULT)
-    {
-        // Check if auth succeeded
         if (!packet.m_data || packet.m_length < 1) {
-            m_logger->error("MINER_AUTH_RESULT packet has invalid data");
+            m_logger->error("MINER_AUTH_RESPONSE packet has invalid data");
             return;
         }
         
@@ -244,21 +268,62 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         
         if (auth_success) {
             m_authenticated = true;
-            m_logger->info("[Solo] ✓ Miner authentication SUCCEEDED");
-            m_logger->info("[Solo] Now sending SET_CHANNEL channel={} ({})", 
-                static_cast<int>(m_channel), 
-                (m_channel == 1) ? "prime" : "hash");
+            
+            // Extract session ID if present (4 bytes, little-endian)
+            if (packet.m_length >= 5) {
+                m_session_id = (*packet.m_data)[1] | 
+                               ((*packet.m_data)[2] << 8) | 
+                               ((*packet.m_data)[3] << 16) | 
+                               ((*packet.m_data)[4] << 24);
+                m_logger->info("[Solo Phase 2] ✓ Authentication SUCCEEDED - Session ID: 0x{:08x}", m_session_id);
+            } else {
+                m_logger->info("[Solo Phase 2] ✓ Authentication SUCCEEDED");
+            }
             
             // Now send SET_CHANNEL since we're authenticated
-            Packet packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(uint2bytes(m_channel)) };
-            connection->transmit(packet.get_bytes());
+            std::string channel_name = (m_channel == 1) ? "prime" : "hash";
+            m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
+            
+            // Phase 2: Send 1-byte payload for SET_CHANNEL
+            std::vector<uint8_t> channel_data(1, m_channel);
+            Packet set_channel_packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(channel_data) };
+            connection->transmit(set_channel_packet.get_bytes());
         }
         else {
             m_authenticated = false;
-            m_logger->error("[Solo] ✗ Miner authentication FAILED");
-            m_logger->error("[Solo] Check your Falcon keys in miner.conf");
-            m_logger->error("[Solo] Ensure node has whitelisted your public key with -minerallowkey=");
+            m_logger->error("[Solo Phase 2] ✗ Authentication FAILED");
+            m_logger->error("[Solo] Check your Falcon keys in miner config");
+            m_logger->error("[Solo] Ensure node has Phase 2 stateless miner support");
         }
+    }
+    else if (packet.m_header == Packet::CHANNEL_ACK)
+    {
+        // Phase 2: Handle CHANNEL_ACK response
+        m_logger->info("[Solo Phase 2] Received CHANNEL_ACK from node");
+        
+        if (packet.m_data && packet.m_length >= 1) {
+            uint8_t acked_channel = (*packet.m_data)[0];
+            m_logger->info("[Solo] Channel acknowledged: {} ({})", 
+                static_cast<int>(acked_channel), 
+                (acked_channel == 1) ? "prime" : "hash");
+        }
+        
+        // Channel is set, now we can request work
+        m_logger->info("[Solo] Channel set successfully, requesting initial work");
+        connection->transmit(get_work());
+    }
+    else if (packet.m_header == Packet::MINER_AUTH_CHALLENGE)
+    {
+        // Legacy auth flow (kept for backward compatibility)
+        m_logger->warn("[Solo Legacy] Received MINER_AUTH_CHALLENGE - this is legacy flow");
+        m_logger->warn("[Solo] Phase 2 nodes should not send MINER_AUTH_CHALLENGE");
+        m_logger->warn("[Solo] Ensure node is running Phase 2 stateless miner implementation");
+    }
+    else if (packet.m_header == Packet::MINER_AUTH_RESULT)
+    {
+        // Legacy auth result (kept for backward compatibility)
+        m_logger->warn("[Solo Legacy] Received MINER_AUTH_RESULT - this is legacy flow");
+        m_logger->warn("[Solo] Phase 2 uses MINER_AUTH_RESPONSE (209) for auth results");
     }
     else
     {

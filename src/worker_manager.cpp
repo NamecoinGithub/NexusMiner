@@ -61,7 +61,10 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 keys::from_hex(m_config.get_miner_falcon_privkey(), privkey))
             {
                 solo_protocol->set_miner_keys(pubkey, privkey);
+                // Set the local IP address for the auth message
+                solo_protocol->set_address(m_config.get_local_ip());
                 m_logger->info("[Worker_manager] Falcon keys loaded from config");
+                m_logger->info("[Worker_manager] Auth address: {}", m_config.get_local_ip());
             }
             else
             {

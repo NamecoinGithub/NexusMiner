@@ -17,6 +17,8 @@ namespace nexusminer
 	{
 	public:
 
+		// Packet headers synchronized with LLL-TAO Phase 2 (src/LLP/types/miner.h)
+		// These values MUST match the node implementation exactly for protocol compatibility
 		enum
 		{
 			/** DATA PACKETS **/
@@ -29,7 +31,7 @@ namespace nexusminer
 			GOOD_BLOCK = 6,
 			ORPHAN_BLOCK = 7,
 
-			//POOL RELATED
+			//POOL RELATED (NexusMiner extensions for pool mining)
 			LOGIN = 8,
 			HASHRATE = 9,
 			WORK = 10,
@@ -37,27 +39,51 @@ namespace nexusminer
 			LOGIN_V2_FAIL = 12,
 			POOL_NOTIFICATION = 13,
 
-			//MINER AUTH (Falcon-based stateless authentication)
-			MINER_AUTH_INIT = 14,
-			MINER_AUTH_CHALLENGE = 15,
-			MINER_AUTH_RESPONSE = 16,
-			MINER_AUTH_RESULT = 17,
+			/** DATA REQUESTS (from LLL-TAO) **/
+			CHECK_BLOCK = 64,
+			SUBSCRIBE = 65,
 
 			/** REQUEST PACKETS **/
 			GET_BLOCK = 129,
 			GET_HEIGHT = 130,
 			GET_REWARD = 131,
-			GET_PAYOUT = 132,
-			GET_HASHRATE = 133,
 
-			// LEGACY POOL
+			/** SERVER COMMANDS (from LLL-TAO) **/
+			CLEAR_MAP = 132,
+			GET_ROUND = 133,
+
+			// LEGACY POOL (NexusMiner extensions - kept for pool compatibility)
+			GET_PAYOUT = 132,  // Overlap with CLEAR_MAP - pool only
+			GET_HASHRATE = 133,  // Overlap with GET_ROUND - pool only
 			LOGIN_SUCCESS = 134,
 			LOGIN_FAIL = 135,
 
-
 			/** RESPONSE PACKETS **/
+			// NOTE: LLL-TAO uses BLOCK_ACCEPTED (200) and BLOCK_REJECTED (201)
+			// We keep ACCEPT/REJECT as aliases for backward compatibility
 			ACCEPT = 200,
+			BLOCK_ACCEPTED = 200,
 			REJECT = 201,
+			BLOCK_REJECTED = 201,
+			COINBASE_SET = 202,
+			COINBASE_FAIL = 203,
+
+			/** ROUND VALIDATIONS (from LLL-TAO) **/
+			NEW_ROUND = 204,
+			OLD_ROUND = 205,
+			CHANNEL_ACK = 206,
+
+			/** AUTHENTICATION PACKETS (synchronized with LLL-TAO Phase 2) **/
+			MINER_AUTH_INIT = 207,
+			MINER_AUTH_CHALLENGE = 208,
+			MINER_AUTH_RESPONSE = 209,
+			MINER_AUTH_RESULT = 210,
+
+			/** SESSION MANAGEMENT PACKETS (Phase 2) **/
+			SESSION_START = 211,
+			SESSION_KEEPALIVE = 212,
+
+			// LEGACY - kept for pool compatibility
 			BLOCK = 202,
 			STALE = 203,
 
