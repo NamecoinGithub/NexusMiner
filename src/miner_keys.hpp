@@ -63,6 +63,21 @@ std::string to_hex(const std::vector<uint8_t>& data);
  */
 bool from_hex(const std::string& hex, std::vector<uint8_t>& data);
 
+/**
+ * @brief Generate a Falcon miner configuration file
+ * 
+ * Creates a complete falconminer.conf file with all mandatory fields populated
+ * for SOLO PRIME mining with Falcon authentication.
+ * 
+ * @param config_filename The filename to write the config to (default: "falconminer.conf")
+ * @param include_privkey Whether to include the private key in the config file (default: false)
+ * @param miner_id The miner ID to use in the Falcon config (default: "default")
+ * @return true if config generation succeeded, false otherwise
+ */
+bool create_falcon_config(const std::string& config_filename = "falconminer.conf",
+                         bool include_privkey = false,
+                         const std::string& miner_id = "default");
+
 } // namespace keys
 } // namespace nexusminer
 

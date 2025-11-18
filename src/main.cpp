@@ -8,10 +8,12 @@ void show_usage(std::string const& name)
 {
     std::cerr << "Usage: " << name << " <option(s)> CONFIG_FILE"
               << "Options:\n"
-              << "\t-h,--help\t\tShow this help message\n"
-              << "\t-c,--check\t\tCheck for valid miner config file\n"
-              << "\t-v,--version\t\tVersion of NexusMiner\n"
-              << "\t--create-keys\t\tGenerate Falcon miner keypair for authentication"
+              << "\t-h,--help\t\t\t\tShow this help message\n"
+              << "\t-c,--check\t\t\t\tCheck for valid miner config file\n"
+              << "\t-v,--version\t\t\t\tVersion of NexusMiner\n"
+              << "\t--create-keys\t\t\t\tGenerate Falcon miner keypair for authentication\n"
+              << "\t--create-falcon-config\t\t\tGenerate complete Falcon SOLO config file (falconminer.conf)\n"
+              << "\t--create-falcon-config-with-privkey\tGenerate Falcon config with private key embedded (less secure)"
               << std::endl;
 }
 
@@ -22,6 +24,8 @@ int main(int argc, char **argv)
     std::string miner_config_file{"miner.conf"};
     bool run_check = false;
     bool create_keys = false;
+    bool create_falcon_config = false;
+    bool include_privkey = false;
     
     for (int i = 1; i < argc; ++i) 
     {
@@ -44,6 +48,15 @@ int main(int argc, char **argv)
         else if (arg == "--create-keys")
         {
             create_keys = true;
+        }
+        else if (arg == "--create-falcon-config-with-privkey")
+        {
+            create_falcon_config = true;
+            include_privkey = true;
+        }
+        else if (arg == "--create-falcon-config")
+        {
+            create_falcon_config = true;
         }
         else 
         {
@@ -99,6 +112,18 @@ int main(int argc, char **argv)
         std::cout << "=================================================================\n";
         std::cout << "Key generation complete!\n";
         std::cout << "=================================================================\n\n";
+        
+        return 0;
+    }
+
+    // Handle Falcon config generation mode
+    if (create_falcon_config)
+    {
+        if (!nexusminer::keys::create_falcon_config("falconminer.conf", include_privkey))
+        {
+            std::cerr << "ERROR: Failed to create Falcon config file!\n";
+            return -1;
+        }
         
         return 0;
     }
