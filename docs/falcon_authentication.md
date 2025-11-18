@@ -99,6 +99,28 @@ When Falcon keys are configured, NexusMiner performs the following handshake:
 
 If authentication fails, mining will not proceed.
 
+## Block Signing for Reward Attribution
+
+When Falcon keys are configured, NexusMiner automatically signs each mined block before submission. This eliminates ambiguity about where mining rewards should be sent.
+
+**How it works:**
+- When a valid block is found, NexusMiner signs the block data (header + nonce) with the miner's Falcon private key
+- The signature (~690 bytes) is appended to the SUBMIT_BLOCK packet
+- The node can verify the signature against the whitelisted public key
+- This cryptographically proves which miner found the block, ensuring rewards go to the correct address
+
+**Log messages:**
+```
+[Solo] Submitting Block...
+[Solo] Block signed with Falcon key (signature: 690 bytes)
+```
+
+**Benefits:**
+- Eliminates confusion about reward destination in multi-miner setups
+- Provides cryptographic proof of block authorship
+- Works seamlessly with Falcon authentication
+- Backward compatible: unsigned blocks are still accepted from legacy miners
+
 ## Logs
 
 When Falcon authentication is enabled, you'll see logs like:

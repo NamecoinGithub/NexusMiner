@@ -54,6 +54,11 @@ To use the prime pool, set the following address and port in miner.conf:
 ## Falcon Miner Authentication (SOLO Mode)
 NexusMiner supports quantum-resistant Falcon-based authentication for SOLO mining. This provides session-independent, stateless authentication with enhanced security.
 
+**Features:**
+- Quantum-resistant authentication using Falcon-512 signatures
+- Automatic block signing to prove miner identity and ensure correct reward attribution
+- Eliminates ambiguity about where mining rewards should be sent
+
 **Quick Start - Generate complete config for SOLO PRIME mining:**
 ```bash
 ./NexusMiner --create-falcon-config
