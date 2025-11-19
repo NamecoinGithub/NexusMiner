@@ -15,7 +15,7 @@ namespace config
 		: m_logger{std::move(logger)}
 		, m_version{1}
 		, m_wallet_ip{ "127.0.0.1" }
-		, m_port{ 9323 }
+		, m_port{ 8323 }  // Phase 2: Default to miningport (stateless miner LLP port)
 		, m_local_ip{"127.0.0.1"}
 		, m_mining_mode{ Mining_mode::HASH}
 		, m_pool_config{}

@@ -214,8 +214,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->info("Solo::process_messages: Received block - nVersion={}, nChannel={}, nHeight={}, nBits={}, nNonce={}", 
                 block.nVersion, block.nChannel, block.nHeight, block.nBits, block.nNonce);
             
-            if (block.nHeight == m_current_height)
+            // Phase 2: In stateless mining, we always accept the block from GET_BLOCK response
+            // Update our height tracking to match
+            if (block.nHeight > m_current_height || m_authenticated)
             {
+                if (m_authenticated && block.nHeight != m_current_height) {
+                    m_logger->debug("[Solo Phase 2] Stateless mining - accepting block at height {}", block.nHeight);
+                }
+                m_current_height = block.nHeight;
+                
                 if(m_set_block_handler)
                 {
                     m_set_block_handler(block, 0);

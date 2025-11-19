@@ -4,6 +4,19 @@
 
 This document describes the Phase 2 integration between NexusMiner and LLL-TAO's stateless Falcon-driven mining protocol.
 
+### Key Changes in This Update
+
+**Port Configuration:**
+- Default `port` changed from 9323 to **8323** (matching LLL-TAO's `miningport`)
+- The `port` field in miner.conf now connects to the **stateless miner LLP server** on `miningport`
+- Old nodes/pools using different ports: specify the correct port in your config
+
+**Mining Flow:**
+- **With Falcon keys**: Stateless mining protocol (no GET_HEIGHT polling)
+  - Falcon auth → SET_CHANNEL → GET_BLOCK → BLOCK_DATA → mine → SUBMIT_BLOCK
+- **Without Falcon keys**: Legacy mining protocol (GET_HEIGHT polling)
+  - SET_CHANNEL → GET_HEIGHT (periodic) → BLOCK_DATA → mine → SUBMIT_BLOCK
+
 ## Protocol Changes
 
 ### 1. LLP Packet Header Synchronization
@@ -85,6 +98,22 @@ Legacy mode (no Falcon keys):
 
 ## Configuration
 
+### Connection Settings
+
+Add to `miner.conf`:
+
+```json
+{
+  "wallet_ip": "127.0.0.1",
+  "port": 8323,              // Phase 2: miningport (stateless miner LLP server)
+  "local_ip": "127.0.0.1",
+  "mining_mode": "PRIME",
+  ...
+}
+```
+
+**Important:** The `port` field connects to LLL-TAO's `miningport` (default 8323), which runs the Phase 2 stateless miner LLP server. This is **not** the RPC port or GUI port.
+
 ### Falcon Keys
 
 Add to `miner.conf`:
@@ -146,9 +175,11 @@ This creates a `falconminer.conf` with:
 ### Prerequisites
 
 1. LLL-TAO node running with Phase 2 stateless miner support
-2. NexusMiner configured with Falcon keys
+2. Node's `nexus.conf` has `miningport=8323` (or custom port)
+3. NexusMiner configured with matching `port` in `miner.conf`
+4. (Optional) Falcon keys generated for authenticated mining
 
-### Test Flow
+### Test Flow - Stateless Mining (with Falcon keys)
 
 1. **Start LLL-TAO node**:
    ```bash
@@ -156,27 +187,54 @@ This creates a `falconminer.conf` with:
    ```
 
 2. **Configure NexusMiner**:
-   - Generate Falcon keys or use existing config
-   - Ensure `local_ip` matches miner's address
+   ```json
+   {
+     "port": 8323,
+     "miner_falcon_pubkey": "...",
+     "miner_falcon_privkey": "...",
+     ...
+   }
+   ```
 
 3. **Start NexusMiner**:
    ```bash
    ./NexusMiner -c miner.conf
    ```
 
-4. **Verify Authentication**:
-   - Check for "Authentication SUCCEEDED" log
-   - Verify session ID is logged
-   - Confirm CHANNEL_ACK received
+4. **Verify Stateless Mining**:
+   - Check for "Stateless mining mode - GET_HEIGHT timer disabled"
+   - Verify "Authentication SUCCEEDED" log
+   - Confirm "Received CHANNEL_ACK from node"
+   - See "Get new block" (GET_BLOCK requests)
+   - Monitor block submissions
 
-5. **Verify Mining**:
-   - Check work is requested
-   - Verify block submissions
-   - Monitor node logs for authenticated miner
+### Test Flow - Legacy Mining (no Falcon keys)
 
-### Expected Log Output
+1. **Configure NexusMiner without Falcon keys**:
+   ```json
+   {
+     "port": 8323,
+     // No miner_falcon_pubkey or miner_falcon_privkey
+     ...
+   }
+   ```
+
+2. **Start NexusMiner**:
+   ```bash
+   ./NexusMiner -c miner.conf
+   ```
+
+3. **Verify Legacy Mining**:
+   - Check for "No Falcon keys configured - using legacy authentication"
+   - See "Using GET_HEIGHT polling for legacy mining"
+   - Verify periodic GET_HEIGHT requests every 2 seconds (default)
+
+### Expected Log Output - Stateless Mining
 
 ```
+[Worker_manager] Configuring Falcon miner authentication
+[Worker_manager] Falcon keys loaded from config
+[Worker_manager] Auth address: 127.0.0.1
 [Solo Phase 2] Starting Falcon authentication handshake
 [Solo] Public key size: 897 bytes
 [Solo] Signed auth message (signature: ~690 bytes)
@@ -186,7 +244,40 @@ This creates a `falconminer.conf` with:
 [Solo Phase 2] Received CHANNEL_ACK from node
 [Solo] Channel acknowledged: 1 (prime)
 [Solo] Channel set successfully, requesting initial work
+[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled
+[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth
+Get new block
+[Solo] Received block - nVersion=9, nChannel=1, nHeight=12345, ...
+Block Accepted By Nexus Network.
+Get new block
+...
 ```
+
+### Expected Log Output - Legacy Mining
+
+```
+[Worker_manager] No Falcon keys configured - using legacy authentication
+[Solo Legacy] No Falcon keys configured, using legacy authentication
+[Solo] Sending SET_CHANNEL channel=2 (hash)
+[Solo Legacy] Using GET_HEIGHT polling for legacy mining
+[LLP SEND] header=130 (0x82) GET_HEIGHT Length=0
+[Solo] Received block - nVersion=9, nChannel=2, nHeight=12345, ...
+...
+```
+
+## Key Protocol Differences
+
+### Stateless Mining (Phase 2 with Falcon Auth)
+- **No GET_HEIGHT polling**: Work requested only via GET_BLOCK
+- **Session-based**: Authenticated once, all subsequent requests use session
+- **Push-based work**: Node sends BLOCK_DATA in response to GET_BLOCK
+- **Efficient**: Reduced network overhead, no periodic polling
+
+### Legacy Mining (No Falcon Auth)  
+- **GET_HEIGHT polling**: Periodic requests every 2 seconds (default)
+- **Stateless**: Each request independent, no session tracking
+- **Pull-based work**: Miner polls for height changes, requests work when height increases
+- **Compatible**: Works with older nodes without Phase 2 support
 
 ## Security Considerations
 
@@ -210,12 +301,28 @@ This creates a `falconminer.conf` with:
 
 ## Troubleshooting
 
+### Wrong Port Configuration
+
+**Symptom**: Connection refused or timeout
+**Solution**: 
+- Ensure NexusMiner's `port` matches LLL-TAO's `miningport` in nexus.conf
+- Default is 8323 (not 9323, 9325, or 7080)
+- Check node is running: `ps aux | grep nexus`
+
 ### Authentication Fails
 
 1. Check Falcon keys are valid hex
 2. Verify `local_ip` matches expected address
 3. Check LLL-TAO logs for signature verification errors
 4. Ensure node has Phase 2 stateless miner support
+
+### GET_HEIGHT Still Running (Unwanted)
+
+**Symptom**: Seeing "header=130 (0x82) GET_HEIGHT" logs with Falcon keys configured
+**Solution**:
+- Verify Falcon keys are properly loaded (check for "Falcon keys loaded from config" log)
+- Check keys are in correct format (hex strings)
+- Ensure `has_miner_falcon_keys()` returns true
 
 ### No CHANNEL_ACK
 
@@ -228,6 +335,15 @@ This creates a `falconminer.conf` with:
 1. Verify session is authenticated
 2. Check block format (72 bytes: 64 merkle + 8 nonce)
 3. Review node logs for rejection reason
+
+### Stateless Mining Not Working
+
+**Symptom**: No work received after authentication
+**Solution**:
+- Check "Channel set successfully, requesting initial work" log appears
+- Verify node responds with BLOCK_DATA packets
+- Check node's miningport is bound correctly
+- Review node logs for stateless miner errors
 
 ---
 

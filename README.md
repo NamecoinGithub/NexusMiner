@@ -32,12 +32,17 @@ To use the prime pool, set the following address and port in miner.conf:
 
   ```
     "wallet_ip"             // the ip the NXS wallet (solo mining) or ip address/dns name of Pool  
-    "wallet_port"           // port of the NXS wallet (solo mining) or port of the Pool  
+    "port"                  // port of the NXS wallet/node (default 8323 for solo Phase 2, 50000 for pools)
     "mining_mode"           // mine the HASH or PRIME channel  
     "pool"                  // Pool option group, if present then pool mining is active  
         "username"          // NXS address  
         "display_name"      // display_name for the pool website  
 ```
+
+**Port Configuration:**
+- **Solo Mining (Phase 2)**: Default port is `8323` (connects to LLL-TAO's `miningport`)
+- **Pool Mining**: Use pool's port (typically `50000`)
+- **Legacy Solo Mining**: May use different ports depending on node configuration
 
 ## Command line option arguments
 ```
@@ -52,12 +57,13 @@ To use the prime pool, set the following address and port in miner.conf:
   `./NexusMiner ../../myownminer.conf -c`
 
 ## Falcon Miner Authentication (SOLO Mode)
-NexusMiner supports quantum-resistant Falcon-based authentication for SOLO mining. This provides session-independent, stateless authentication with enhanced security.
+NexusMiner supports quantum-resistant Falcon-based authentication for SOLO mining. This provides stateless, session-based authentication with enhanced security.
 
-**Features:**
+**Phase 2 Stateless Mining Features:**
 - Quantum-resistant authentication using Falcon-512 signatures
-- Automatic block signing to prove miner identity and ensure correct reward attribution
-- Eliminates ambiguity about where mining rewards should be sent
+- Stateless mining protocol (no GET_HEIGHT polling)
+- Session-based authentication for efficient communication
+- Connects to LLL-TAO's `miningport` (default 8323)
 
 **Quick Start - Generate complete config for SOLO PRIME mining:**
 ```bash
@@ -66,12 +72,16 @@ NexusMiner supports quantum-resistant Falcon-based authentication for SOLO minin
 
 This creates `falconminer.conf` ready for SOLO PRIME mining against a local LLL-TAO node on `127.0.0.1:8323`. The private key is printed to stdout (keep it safe!). Start mining with `./NexusMiner -c falconminer.conf`.
 
+**Mining Protocol:**
+- **With Falcon keys**: Stateless protocol - Falcon auth → GET_BLOCK → mine → SUBMIT_BLOCK (no GET_HEIGHT)
+- **Without Falcon keys**: Legacy protocol - GET_HEIGHT polling every 2 seconds
+
 **Alternative - Generate keys only:**
 ```bash
 ./NexusMiner --create-keys
 ```
 
-Add the generated keys to your `miner.conf` and have the node operator whitelist your public key. See [docs/falcon_authentication.md](docs/falcon_authentication.md) for detailed instructions.
+Add the generated keys to your `miner.conf`. See [docs/falcon_authentication.md](docs/falcon_authentication.md) and [PHASE2_INTEGRATION.md](PHASE2_INTEGRATION.md) for detailed instructions.
 
 **Note:** Falcon authentication is optional and backward compatible. If not configured, legacy authentication is used.
   
