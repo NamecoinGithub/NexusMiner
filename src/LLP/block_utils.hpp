@@ -13,22 +13,22 @@ namespace llp_utils {
 /**
  * Deserialize a BLOCK_DATA payload from LLL-TAO into an LLP::CBlock structure.
  * 
- * This function implements the canonical LLL-TAO block header serialization format
- * as used in the current NexusMiner/LLL-TAO protocol.
+ * This function implements the Phase-2 stateless mining protocol's compact block header
+ * serialization format as used by LLL-TAO.
  * 
  * Fields are serialized in network byte order (big-endian) in the following sequence:
  * 
- * Layout (matching current TAO::Ledger::Block serialization):
+ * Compact Block header layout (matching LLL-TAO BLOCK_DATA for stateless miner):
  *   - nVersion      : 4 bytes   (big-endian uint32)
- *   - hashPrevBlock : 128 bytes (uint1024_t)
- *   - hashMerkleRoot: variable  (uint512_t, calculated as data.size() - 216 bytes)
+ *   - hashPrevBlock : 32 bytes  (uint256_t)
+ *   - hashMerkleRoot: 32 bytes  (uint256_t)
  *   - nChannel      : 4 bytes   (big-endian uint32)
  *   - nHeight       : 4 bytes   (big-endian uint32)
  *   - nBits         : 4 bytes   (big-endian uint32)
  *   - nNonce        : 8 bytes   (big-endian uint64)
+ *   - nTime         : 4 bytes   (big-endian uint32)
  * 
- * Total minimum size: 4 + 128 + 64 + 20 = 216 bytes
- * (The last 20 bytes are: nChannel(4) + nHeight(4) + nBits(4) + nNonce(8))
+ * Total size: 4 + 32 + 32 + 4 + 4 + 4 + 8 + 4 = 92 bytes
  * 
  * @param data The network payload containing the serialized block header
  * @return Deserialized LLP::CBlock instance
@@ -36,8 +36,9 @@ namespace llp_utils {
  */
 inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
 {
-    // Minimum block header size: nVersion (4) + hashPrevBlock (128) + hashMerkleRoot (64) + trailing (20)
-    constexpr std::size_t MIN_SIZE = 216;
+    // Compact block header size: nVersion (4) + hashPrevBlock (32) + hashMerkleRoot (32) + 
+    // nChannel (4) + nHeight (4) + nBits (4) + nNonce (8) + nTime (4)
+    constexpr std::size_t MIN_SIZE = 92;
     
     if (data.size() < MIN_SIZE) {
         throw std::runtime_error(
@@ -86,7 +87,7 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         return value;
     };
     
-    // Helper to read fixed-size byte array (for uint1024_t and uint512_t)
+    // Helper to read fixed-size byte array (for hash fields)
     auto read_bytes = [&](std::size_t n) -> std::vector<std::uint8_t> {
         require(n);
         std::vector<std::uint8_t> bytes(data.begin() + offset, data.begin() + offset + n);
@@ -96,29 +97,16 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     
     ::LLP::CBlock block;
     
-    // Deserialize fields in exact LLL-TAO order:
+    // Deserialize fields in Phase-2 compact layout order:
     // 1. nVersion (4 bytes, big-endian)
     block.nVersion = read_u32();
     
-    // 2. hashPrevBlock (128 bytes for uint1024_t)
-    block.hashPrevBlock.SetBytes(read_bytes(128));
+    // 2. hashPrevBlock (32 bytes for uint256_t)
+    block.hashPrevBlock.SetBytes(read_bytes(32));
     
-    // 3. hashMerkleRoot (variable size for uint512_t - from current position to last 20 bytes)
-    //    The last 20 bytes are reserved for nChannel, nHeight, nBits, nNonce
-    //    Ensure we don't underflow when calculating merkle_root_size
-    if (data.size() < offset + 20) {
-        throw std::runtime_error(
-            "Block deserialization failed: insufficient bytes for merkle root and trailing fields");
-    }
-    std::size_t merkle_root_size = data.size() - offset - 20;
-    if (merkle_root_size < 64) {
-        throw std::runtime_error(
-            "Block deserialization failed: merkle root size " + 
-            std::to_string(merkle_root_size) + " is less than minimum 64 bytes");
-    }
-    block.hashMerkleRoot.SetBytes(read_bytes(merkle_root_size));
+    // 3. hashMerkleRoot (32 bytes for uint256_t)
+    block.hashMerkleRoot.SetBytes(read_bytes(32));
     
-    // Now read the last 20 bytes (trailing fields)
     // 4. nChannel (4 bytes, big-endian)
     block.nChannel = read_u32();
     
@@ -130,6 +118,9 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     
     // 7. nNonce (8 bytes, big-endian)
     block.nNonce = read_u64();
+    
+    // 8. nTime (4 bytes, big-endian)
+    block.nTime = read_u32();
     
     return block;
 }

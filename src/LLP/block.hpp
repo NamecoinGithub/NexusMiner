@@ -18,13 +18,14 @@ public:
 
 	/** Begin of Header.   BEGIN(nVersion) **/
 	unsigned int  nVersion;
-	uint1024_t hashPrevBlock;
-	uint512_t hashMerkleRoot;
+	uint256_t hashPrevBlock;    // 32 bytes (compact format)
+	uint256_t hashMerkleRoot;   // 32 bytes (compact format)
 	unsigned int  nChannel;
 	unsigned int   nHeight;
 	unsigned int     nBits;
 	std::uint64_t      nNonce;
-	/** End of Header.     END(nNonce).
+	unsigned int  nTime;        // Added for Phase-2 stateless mining protocol
+	/** End of Header.     END(nTime).
 		All the components to build an SK1024 Block Hash. **/
 
 
@@ -37,10 +38,13 @@ public:
 		nHeight = 0;
 		nBits = 0;
 		nNonce = 0;
+		nTime = 0;
 	}
 
 	//inline uint1024 GetHash() const { return SK1024(BEGIN(nVersion), END(nBits)); }
 	//inline uint1024 GetPrime() const { return GetHash() + nNonce; }
+	// Note: In Phase-2 compact format, hash computation may need to be updated
+	// to account for the smaller header size (92 bytes vs 216 bytes)
 };
 }
 
