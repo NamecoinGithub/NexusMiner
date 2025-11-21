@@ -105,6 +105,11 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     
     // 3. hashMerkleRoot (variable size for uint512_t - from current position to last 20 bytes)
     //    The last 20 bytes are reserved for nChannel, nHeight, nBits, nNonce
+    //    Ensure we don't underflow when calculating merkle_root_size
+    if (data.size() < offset + 20) {
+        throw std::runtime_error(
+            "Block deserialization failed: insufficient bytes for merkle root and trailing fields");
+    }
     std::size_t merkle_root_size = data.size() - offset - 20;
     if (merkle_root_size < 64) {
         throw std::runtime_error(

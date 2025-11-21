@@ -417,7 +417,7 @@ void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
                 {
                     std::size_t data_start = 5;
                     std::size_t data_end = std::min(data_start + length, payload->size());
-                    if (data_end > data_start && data_end <= payload->size())
+                    if (data_end > data_start)
                     {
                         data_payload = std::make_shared<network::Payload>(
                             payload->begin() + data_start, 
