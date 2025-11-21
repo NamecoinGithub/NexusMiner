@@ -3,6 +3,7 @@
 #include "packet.hpp"
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
+#include "LLP/block_utils.hpp"
 #include "../miner_keys.hpp"
 #include <chrono>
 
@@ -172,18 +173,25 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     // Block from wallet received
     else if(packet.m_header == Packet::BLOCK_DATA)
     {
-        // Validate packet data and length
-        if (!packet.m_data || packet.m_length < MIN_BLOCK_HEADER_SIZE) {
-            m_logger->warn("Solo::process_messages: BLOCK_DATA packet has invalid data (null={}) or length {} < minimum {}", 
-                !packet.m_data, packet.m_length, MIN_BLOCK_HEADER_SIZE);
+        // Check payload is non-null
+        if (!packet.m_data) {
+            m_logger->error("[Solo] BLOCK_DATA received with null payload");
+            return;
+        }
+        
+        // Validate packet has minimum required data
+        if (packet.m_length < MIN_BLOCK_HEADER_SIZE) {
+            m_logger->warn("[Solo] BLOCK_DATA packet has invalid length {} < minimum {}", 
+                packet.m_length, MIN_BLOCK_HEADER_SIZE);
             return;
         }
         
         try {
-            auto block = deserialize_block(std::move(packet.m_data));
+            // Use centralized deserializer
+            auto block = nexusminer::llp_utils::deserialize_block_header(*packet.m_data);
             
             // Log parsed header fields
-            m_logger->info("Solo::process_messages: Received block - nVersion={}, nChannel={}, nHeight={}, nBits={}, nNonce={}", 
+            m_logger->info("[Solo] Received block - nVersion={}, nChannel={}, nHeight={}, nBits=0x{:08x}, nNonce={}", 
                 block.nVersion, block.nChannel, block.nHeight, block.nBits, block.nNonce);
             
             // Phase 2: In stateless mining, we always accept the block from GET_BLOCK response
@@ -195,24 +203,25 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 }
                 m_current_height = block.nHeight;
                 
-                if(m_set_block_handler)
+                // Verify block handler is set
+                if (!m_set_block_handler)
                 {
-                    m_set_block_handler(block, 0);
+                    m_logger->error("[Solo] No block handler set - cannot process BLOCK_DATA");
+                    return;
                 }
-                else
-                {
-                    m_logger->error("No Block handler set");
-                }
+                
+                // Invoke block handler with nBits from the block
+                m_set_block_handler(block, block.nBits);
             }
             else
             {
-                m_logger->warn("Block height mismatch: received height={}, current_height={}. Requesting new work.", 
+                m_logger->warn("[Solo] Block height mismatch: received height={}, current_height={}. Requesting new work.", 
                     block.nHeight, m_current_height);
                 connection->transmit(get_work());
             }
         }
         catch (const std::exception& e) {
-            m_logger->warn("Solo::process_messages: Failed to deserialize block: {}", e.what());
+            m_logger->error("[Solo] Failed to deserialize BLOCK_DATA: {}", e.what());
             return;
         }
     }

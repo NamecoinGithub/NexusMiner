@@ -2,6 +2,7 @@
 #include "packet.hpp"
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
+#include "LLP/block_utils.hpp"
 #include "spdlog/spdlog.h"
 
 namespace nexusminer
@@ -60,7 +61,9 @@ void Pool_legacy::process_messages(Packet packet, std::shared_ptr<network::Conne
     {
         std::uint32_t nbits{ 0U };
         auto original_block = extract_nbits_from_block(std::move(packet.m_data), nbits);
-        auto block = deserialize_block(std::move(original_block));
+        
+        // Use centralized deserializer for BLOCK_DATA parsing
+        auto block = nexusminer::llp_utils::deserialize_block_header(*original_block);
         if (block.nHeight > m_current_height)
         {
             m_logger->info("Nexus Network: New height {}", block.nHeight);
