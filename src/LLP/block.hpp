@@ -43,6 +43,8 @@ public:
 
 	//inline uint1024 GetHash() const { return SK1024(BEGIN(nVersion), END(nBits)); }
 	//inline uint1024 GetPrime() const { return GetHash() + nNonce; }
+	// Note: In Phase-2 compact format, hash computation may need to be updated
+	// to account for the smaller header size (92 bytes vs 216 bytes)
 };
 }
 
