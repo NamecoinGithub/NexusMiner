@@ -4,6 +4,7 @@
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
 #include "stats/types.hpp"
+#include "LLP/block_utils.hpp"
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
 
@@ -87,7 +88,9 @@ void Pool::process_messages(Packet packet, std::shared_ptr<network::Connection> 
 
             std::uint32_t nbits{ 0U };
             auto original_block = extract_nbits_from_block(block_data, nbits);
-            auto block = deserialize_block(std::move(original_block));
+            
+            // Use centralized deserializer for BLOCK_DATA parsing
+            auto block = nexusminer::llp_utils::deserialize_block_header(*original_block);
             m_logger->info("New work, height: {}", block.nHeight);
 
             if (m_set_block_handler)
