@@ -118,8 +118,7 @@ network::Shared_payload Solo::get_work()
     Packet packet{ Packet::GET_BLOCK };
     
     // Debug logging to diagnose packet encoding
-    m_logger->debug("[Solo Phase 2] GET_BLOCK packet: header={} (0x{:02x}) length={} is_valid={}", 
-                   static_cast<int>(packet.m_header), 
+    m_logger->debug("[Solo Phase 2] GET_BLOCK packet: header=0x{:02x} length={} is_valid={}", 
                    static_cast<int>(packet.m_header),
                    packet.m_length, 
                    packet.is_valid());

@@ -1,2 +1,0 @@
-/usr/bin/ar qc libfpga.a CMakeFiles/fpga.dir/src/fpga/worker_hash.cpp.o
-/usr/bin/ranlib libfpga.a
