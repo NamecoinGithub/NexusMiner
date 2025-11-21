@@ -15,7 +15,7 @@ class Block_data
 {
 public:
 
-	Block_data(const LLP::CBlock& block)
+	Block_data(const ::LLP::CBlock& block)
 		:merkle_root{block.hashMerkleRoot}
 		, previous_hash{block.hashPrevBlock}
 		, nHeight {block.nHeight}
@@ -77,7 +77,7 @@ public:
 
     // Sets a new block (nexus data type) for the miner worker. The miner worker must reset the current work.
     // When  the worker finds a new block, the BlockFoundHandler has to be called with the found BlockData
-    virtual void set_block(LLP::CBlock block, std::uint32_t nbits, Block_found_handler result) = 0;
+    virtual void set_block(::LLP::CBlock block, std::uint32_t nbits, Block_found_handler result) = 0;
 
     virtual void update_statistics(stats::Collector& stats_collector) = 0;
 };

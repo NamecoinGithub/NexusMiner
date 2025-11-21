@@ -21,7 +21,7 @@ class Protocol {
 public:
 
     using Login_handler = std::function<void(bool login_result)>;
-    using Set_block_handler = std::function<void(LLP::CBlock block, std::uint32_t nBits)>;
+    using Set_block_handler = std::function<void(::LLP::CBlock block, std::uint32_t nBits)>;
 
     virtual ~Protocol() = default;
 
@@ -42,7 +42,7 @@ protected:
      * - 132..(end-21): hashMerkleRoot (uint512_t)
      * - last 20 bytes: nChannel (4), nHeight (4), nBits (4), nNonce (8)
      **/
-    LLP::CBlock deserialize_block(network::Shared_payload data)
+    ::LLP::CBlock deserialize_block(network::Shared_payload data)
     {
         try {
             // Validate data is not null
@@ -57,7 +57,7 @@ protected:
                     std::to_string(MIN_BLOCK_HEADER_SIZE));
             }
             
-            LLP::CBlock block;
+            ::LLP::CBlock block;
             block.nVersion = bytes2uint(std::vector<uint8_t>(data->begin(), data->begin() + 4));
 
             block.hashPrevBlock.SetBytes(std::vector<uint8_t>(data->begin() + 4, data->begin() + 132));

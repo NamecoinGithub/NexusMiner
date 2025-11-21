@@ -8,6 +8,7 @@
 #include "network/types.hpp"
 #include "block.hpp"
 #include "utils.hpp"
+#include "miner_opcodes.hpp"
 #include "llp_logging.hpp"
 
 namespace nexusminer
@@ -17,79 +18,79 @@ namespace nexusminer
 	{
 	public:
 
-		// Packet headers synchronized with LLL-TAO Phase 2 (src/LLP/types/miner.h)
+		// Packet headers - use centralized definitions from miner_opcodes.hpp
 		// These values MUST match the node implementation exactly for protocol compatibility
 		enum
 		{
 			/** DATA PACKETS **/
-			BLOCK_DATA = 0,
-			SUBMIT_BLOCK = 1,
-			BLOCK_HEIGHT = 2,
-			SET_CHANNEL = 3,
-			BLOCK_REWARD = 4,
-			SET_COINBASE = 5,
-			GOOD_BLOCK = 6,
-			ORPHAN_BLOCK = 7,
+			BLOCK_DATA = LLP::BLOCK_DATA,
+			SUBMIT_BLOCK = LLP::SUBMIT_BLOCK,
+			BLOCK_HEIGHT = LLP::BLOCK_HEIGHT,
+			SET_CHANNEL = LLP::SET_CHANNEL,
+			BLOCK_REWARD = LLP::BLOCK_REWARD,
+			SET_COINBASE = LLP::SET_COINBASE,
+			GOOD_BLOCK = LLP::GOOD_BLOCK,
+			ORPHAN_BLOCK = LLP::ORPHAN_BLOCK,
 
 			//POOL RELATED (NexusMiner extensions for pool mining)
-			LOGIN = 8,
-			HASHRATE = 9,
-			WORK = 10,
-			LOGIN_V2_SUCCESS = 11,
-			LOGIN_V2_FAIL = 12,
-			POOL_NOTIFICATION = 13,
+			LOGIN = LLP::LOGIN,
+			HASHRATE = LLP::HASHRATE,
+			WORK = LLP::WORK,
+			LOGIN_V2_SUCCESS = LLP::LOGIN_V2_SUCCESS,
+			LOGIN_V2_FAIL = LLP::LOGIN_V2_FAIL,
+			POOL_NOTIFICATION = LLP::POOL_NOTIFICATION,
 
 			/** DATA REQUESTS (from LLL-TAO) **/
-			CHECK_BLOCK = 64,
-			SUBSCRIBE = 65,
+			CHECK_BLOCK = LLP::CHECK_BLOCK,
+			SUBSCRIBE = LLP::SUBSCRIBE,
 
 			/** REQUEST PACKETS **/
-			GET_BLOCK = 129,
-			GET_HEIGHT = 130,
-			GET_REWARD = 131,
+			GET_BLOCK = LLP::GET_BLOCK,
+			GET_HEIGHT = LLP::GET_HEIGHT,
+			GET_REWARD = LLP::GET_REWARD,
 
 			/** SERVER COMMANDS (from LLL-TAO) **/
-			CLEAR_MAP = 132,
-			GET_ROUND = 133,
+			CLEAR_MAP = LLP::CLEAR_MAP,
+			GET_ROUND = LLP::GET_ROUND,
 
 			// LEGACY POOL (NexusMiner extensions - kept for pool compatibility)
-			GET_PAYOUT = 132,  // Overlap with CLEAR_MAP - pool only
-			GET_HASHRATE = 133,  // Overlap with GET_ROUND - pool only
-			LOGIN_SUCCESS = 134,
-			LOGIN_FAIL = 135,
+			GET_PAYOUT = LLP::GET_PAYOUT,
+			GET_HASHRATE = LLP::GET_HASHRATE,
+			LOGIN_SUCCESS = LLP::LOGIN_SUCCESS,
+			LOGIN_FAIL = LLP::LOGIN_FAIL,
 
 			/** RESPONSE PACKETS **/
 			// NOTE: LLL-TAO uses BLOCK_ACCEPTED (200) and BLOCK_REJECTED (201)
 			// We keep ACCEPT/REJECT as aliases for backward compatibility
-			ACCEPT = 200,
-			BLOCK_ACCEPTED = 200,
-			REJECT = 201,
-			BLOCK_REJECTED = 201,
-			COINBASE_SET = 202,
-			COINBASE_FAIL = 203,
+			ACCEPT = LLP::ACCEPT,
+			BLOCK_ACCEPTED = LLP::BLOCK_ACCEPTED,
+			REJECT = LLP::REJECT,
+			BLOCK_REJECTED = LLP::BLOCK_REJECTED,
+			COINBASE_SET = LLP::COINBASE_SET,
+			COINBASE_FAIL = LLP::COINBASE_FAIL,
 
 			/** ROUND VALIDATIONS (from LLL-TAO) **/
-			NEW_ROUND = 204,
-			OLD_ROUND = 205,
-			CHANNEL_ACK = 206,
+			NEW_ROUND = LLP::NEW_ROUND,
+			OLD_ROUND = LLP::OLD_ROUND,
+			CHANNEL_ACK = LLP::CHANNEL_ACK,
 
 			/** AUTHENTICATION PACKETS (synchronized with LLL-TAO Phase 2) **/
-			MINER_AUTH_INIT = 207,
-			MINER_AUTH_CHALLENGE = 208,
-			MINER_AUTH_RESPONSE = 209,
-			MINER_AUTH_RESULT = 210,
+			MINER_AUTH_INIT = LLP::MINER_AUTH_INIT,
+			MINER_AUTH_CHALLENGE = LLP::MINER_AUTH_CHALLENGE,
+			MINER_AUTH_RESPONSE = LLP::MINER_AUTH_RESPONSE,
+			MINER_AUTH_RESULT = LLP::MINER_AUTH_RESULT,
 
 			/** SESSION MANAGEMENT PACKETS (Phase 2) **/
-			SESSION_START = 211,
-			SESSION_KEEPALIVE = 212,
+			SESSION_START = LLP::SESSION_START,
+			SESSION_KEEPALIVE = LLP::SESSION_KEEPALIVE,
 
 			// LEGACY - kept for pool compatibility
-			BLOCK = 202,
-			STALE = 203,
+			BLOCK = LLP::BLOCK,
+			STALE = LLP::STALE,
 
 			/** GENERIC **/
-			PING = 253,
-			CLOSE = 254
+			PING = LLP::PING,
+			CLOSE = LLP::CLOSE
 		};
 
 		Packet()
