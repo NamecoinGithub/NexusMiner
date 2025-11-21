@@ -116,7 +116,21 @@ network::Shared_payload Solo::get_work()
 
     // get new block from wallet
     Packet packet{ Packet::GET_BLOCK };
-    return packet.get_bytes();     
+    
+    // Debug logging to diagnose packet encoding
+    m_logger->debug("[Solo Phase 2] GET_BLOCK packet: header=0x{:02x} length={} is_valid={}", 
+                   static_cast<int>(packet.m_header),
+                   packet.m_length, 
+                   packet.is_valid());
+    
+    auto payload = packet.get_bytes();
+    if (payload && !payload->empty()) {
+        m_logger->debug("[Solo Phase 2] GET_BLOCK encoded payload size: {} bytes", payload->size());
+    } else {
+        m_logger->error("[Solo Phase 2] GET_BLOCK get_bytes() returned null or empty payload!");
+    }
+    
+    return payload;     
 }
 
 network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce)
