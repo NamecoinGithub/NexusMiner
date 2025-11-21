@@ -408,8 +408,10 @@ void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
             else if (payload->size() >= 5)
             {
                 // Header + length field + data
-                length = ((*payload)[1] << 24) + ((*payload)[2] << 16) + 
-                         ((*payload)[3] << 8) + (*payload)[4];
+                length = (static_cast<std::uint32_t>((*payload)[1]) << 24) |
+                         (static_cast<std::uint32_t>((*payload)[2]) << 16) |
+                         (static_cast<std::uint32_t>((*payload)[3]) << 8) |
+                         static_cast<std::uint32_t>((*payload)[4]);
                 
                 // Create a shared pointer to the data portion for hex formatting
                 network::Shared_payload data_payload;
