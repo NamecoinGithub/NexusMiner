@@ -305,53 +305,144 @@ inline void Connection_impl<ProtocolDescriptionType>::handle_accept(Connection::
 template<typename ProtocolDescriptionType>
 void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer)
 {
-    // only for non closed connection
-    if (m_connection_handler) 
+    // Early-return if connection handler is null (connection already closed/uninitialised)
+    if (!m_connection_handler) 
     {
-        m_tx_queue.emplace(tx_buffer);
-        if (m_tx_queue.size() == 1) 
+        if (m_logger)
         {
-            transmit_trigger();
+            m_logger->warn("[LLP SEND] Cannot transmit - connection handler is null (connection closed/uninitialised)");
         }
+        return;
+    }
+    
+    // Early-return if socket is null
+    if (!m_asio_socket)
+    {
+        if (m_logger)
+        {
+            m_logger->error("[LLP SEND] Cannot transmit - socket is null");
+        }
+        return;
+    }
+    
+    // Early-return if buffer is null or empty (no header/payload to send)
+    if (!tx_buffer || tx_buffer->empty())
+    {
+        if (m_logger)
+        {
+            m_logger->error("[LLP SEND] Cannot transmit - payload is null or empty");
+        }
+        return;
+    }
+    
+    // Enqueue the payload and trigger transmission if queue was previously empty
+    m_tx_queue.emplace(tx_buffer);
+    if (m_tx_queue.size() == 1) 
+    {
+        transmit_trigger();
     }
 }
 
 template<typename ProtocolDescriptionType>
 void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
 {
+    // Check socket is non-null
+    if (!m_asio_socket)
+    {
+        if (m_logger)
+        {
+            m_logger->error("[LLP SEND] transmit_trigger: socket is null");
+        }
+        // Drop the front of queue if any and return
+        if (!m_tx_queue.empty())
+        {
+            m_tx_queue.pop();
+        }
+        return;
+    }
+    
+    // Check queue is non-empty
+    if (m_tx_queue.empty())
+    {
+        if (m_logger)
+        {
+            m_logger->warn("[LLP SEND] transmit_trigger: queue is empty");
+        }
+        return;
+    }
+    
     auto const payload = m_tx_queue.front();
     
-    // Log LLP packet send
-    if (m_logger && payload && !payload->empty())
+    // Check payload is non-null and non-empty
+    if (!payload || payload->empty())
     {
-        // Parse LLP packet header
-        std::uint8_t header = (*payload)[0];
-        std::uint32_t length = 0;
-        
-        // If payload has length field (data packets), extract it
-        if (payload->size() >= 5)
+        if (m_logger)
         {
-            length = ((*payload)[1] << 24) + ((*payload)[2] << 16) + 
-                     ((*payload)[3] << 8) + (*payload)[4];
+            m_logger->error("[LLP SEND] transmit_trigger: payload is null or empty, dropping from queue");
         }
-        
-        // Create a shared pointer to the data portion for hex formatting
-        network::Shared_payload data_payload;
-        if (payload->size() > 5)
+        m_tx_queue.pop();
+        // Recursively call if more queued payloads
+        if (!m_tx_queue.empty())
         {
-            data_payload = std::make_shared<network::Payload>(payload->begin() + 5, payload->end());
+            transmit_trigger();
         }
-        
-        std::string hex_preview = format_llp_payload_hex(data_payload, 16);
-        if (!hex_preview.empty())
+        return;
+    }
+    
+    // Log LLP packet send with robust size checking
+    if (m_logger)
+    {
+        // Ensure we can safely read the header
+        if (payload->size() >= 1)
         {
-            m_logger->info("[LLP SEND] header={} (0x{:02x}) {} length={} payload=[{}]", 
-                static_cast<int>(header), header, get_llp_header_name(header), length, hex_preview);
-        }
-        else
-        {
-            m_logger->info("[LLP SEND] header={} (0x{:02x}) {} length={}", 
-                static_cast<int>(header), header, get_llp_header_name(header), length);
+            std::uint8_t header = (*payload)[0];
+            std::uint32_t length = 0;
+            
+            // Distinguish header-only (size == 1) vs header+payload packets
+            if (payload->size() == 1)
+            {
+                // Header-only request packet (GET_BLOCK, GET_HEIGHT, PING, etc.)
+                m_logger->info("[LLP SEND] header={} (0x{:02x}) {} length=0 (header-only)", 
+                    static_cast<int>(header), header, get_llp_header_name(header));
+            }
+            else if (payload->size() >= 5)
+            {
+                // Header + length field + data
+                length = ((*payload)[1] << 24) + ((*payload)[2] << 16) + 
+                         ((*payload)[3] << 8) + (*payload)[4];
+                
+                // Create a shared pointer to the data portion for hex formatting
+                network::Shared_payload data_payload;
+                if (payload->size() > 5)
+                {
+                    std::size_t data_start = 5;
+                    std::size_t data_end = std::min(data_start + length, payload->size());
+                    if (data_end > data_start && data_end <= payload->size())
+                    {
+                        data_payload = std::make_shared<network::Payload>(
+                            payload->begin() + data_start, 
+                            payload->begin() + data_end);
+                    }
+                }
+                
+                std::string hex_preview = format_llp_payload_hex(data_payload, 16);
+                if (!hex_preview.empty())
+                {
+                    m_logger->info("[LLP SEND] header={} (0x{:02x}) {} length={} payload=[{}]", 
+                        static_cast<int>(header), header, get_llp_header_name(header), length, hex_preview);
+                }
+                else
+                {
+                    m_logger->info("[LLP SEND] header={} (0x{:02x}) {} length={}", 
+                        static_cast<int>(header), header, get_llp_header_name(header), length);
+                }
+            }
+            else
+            {
+                // Malformed packet: size is between 2 and 4
+                m_logger->error("[LLP SEND] Malformed LLP payload: size={} (expected 1 for header-only or >=5 for data packet)", 
+                    payload->size());
+            }
         }
     }
     
@@ -362,7 +453,13 @@ void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
             auto self = weak_self.lock();
             if ((self != nullptr) && self->m_connection_handler) 
             {
-                self->m_tx_queue.pop();
+                // Safely pop from queue
+                if (!self->m_tx_queue.empty())
+                {
+                    self->m_tx_queue.pop();
+                }
+                
+                // Tail-recurse if more queued payloads
                 if (!self->m_tx_queue.empty()) 
                 {
                     self->transmit_trigger();
