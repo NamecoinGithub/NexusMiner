@@ -118,8 +118,13 @@ enum MinerOpcodes : std::uint8_t
     /** Get current mining round info (from LLL-TAO) */
     GET_ROUND = 133,
     
-    // Note: GET_PAYOUT and GET_HASHRATE overlap with CLEAR_MAP/GET_ROUND
-    // These are pool-only legacy opcodes that reuse the same values
+    // ============================================================================
+    // POOL-ONLY LEGACY OPCODES (overlapping values - use with caution!)
+    // These legacy pool opcodes reuse the same numeric values as CLEAR_MAP/GET_ROUND
+    // They are only valid when communicating with pool servers, NOT LLL-TAO nodes.
+    // The numeric overlap is intentional for backward compatibility with pools.
+    // ============================================================================
+    
     /** Get payout info (pool-only, overlaps CLEAR_MAP) */
     GET_PAYOUT = 132,
     

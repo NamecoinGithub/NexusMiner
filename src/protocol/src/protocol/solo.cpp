@@ -78,8 +78,8 @@ network::Shared_payload Solo::login(Login_handler handler)
         // Miner ID string bytes
         payload.insert(payload.end(), miner_id.begin(), miner_id.end());
         
-        m_logger->debug("[Solo] MINER_AUTH_INIT payload: pubkey_len={}, miner_id='{}' (len={}), total={} bytes", 
-            pubkey_len, miner_id, miner_id_len, payload.size());
+        m_logger->debug("[Solo] MINER_AUTH_INIT payload: pubkey_len={}, miner_id_len={}, total={} bytes", 
+            pubkey_len, miner_id_len, payload.size());
         
         // Create and send MINER_AUTH_INIT packet
         Packet packet{ Packet::MINER_AUTH_INIT, std::make_shared<network::Payload>(payload) };
@@ -310,6 +310,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             
             // Extract session ID if present (4 bytes, little-endian)
             if (packet.m_length >= 5) {
+                // Read little-endian uint32
                 m_session_id = static_cast<uint32_t>((*packet.m_data)[1]) | 
                                (static_cast<uint32_t>((*packet.m_data)[2]) << 8) | 
                                (static_cast<uint32_t>((*packet.m_data)[3]) << 16) | 
@@ -331,8 +332,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         else {
             m_authenticated = false;
             m_logger->error("[Solo Phase 2] ✗ Authentication FAILED");
-            m_logger->error("[Solo] Check your Falcon keys in miner config");
-            m_logger->error("[Solo] Ensure node has Phase 2 stateless miner support");
+            m_logger->error("[Solo] Possible causes:");
+            m_logger->error("[Solo]   - Public key not whitelisted on node (check nexus.conf -minerallowkey)");
+            m_logger->error("[Solo]   - Invalid key format in miner.conf (must be valid hex strings)");
+            m_logger->error("[Solo]   - Falcon signature verification failed (key mismatch or corruption)");
+            m_logger->error("[Solo]   - Node missing Phase 2 stateless miner support");
         }
     }
     else if (packet.m_header == Packet::CHANNEL_ACK)
