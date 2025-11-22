@@ -16,6 +16,8 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 : m_channel{channel}
 , m_logger{spdlog::get("logger")}
 , m_current_height{0}
+, m_current_difficulty{0}
+, m_current_reward{0}
 , m_set_block_handler{}
 , m_stats_collector{std::move(stats_collector)}
 , m_authenticated{false}
@@ -37,6 +39,8 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 void Solo::reset()
 {
     m_current_height = 0;
+    m_current_difficulty = 0;
+    m_current_reward = 0;
     m_authenticated = false;
     m_session_id = 0;
     m_auth_timestamp = 0;
@@ -133,6 +137,29 @@ network::Shared_payload Solo::get_work()
     return payload;     
 }
 
+network::Shared_payload Solo::get_height()
+{
+    m_logger->info("[Solo] Requesting blockchain height via GET_HEIGHT");
+    
+    // GET_HEIGHT is a header-only request packet (opcode 130, >= 128)
+    Packet packet{ Packet::GET_HEIGHT };
+    
+    // Debug logging to verify packet encoding
+    m_logger->debug("[Solo] GET_HEIGHT packet: header=0x{:02x} length={} is_valid={}", 
+                   static_cast<int>(packet.m_header),
+                   packet.m_length, 
+                   packet.is_valid());
+    
+    auto payload = packet.get_bytes();
+    if (payload && !payload->empty()) {
+        m_logger->debug("[Solo] GET_HEIGHT encoded payload size: {} bytes (header-only)", payload->size());
+    } else {
+        m_logger->error("[Solo] GET_HEIGHT get_bytes() returned null or empty payload!");
+    }
+    
+    return payload;
+}
+
 network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce)
 {
     m_logger->info("Submitting Block...");
@@ -177,12 +204,44 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         
         auto const height = bytes2uint(*packet.m_data);
+        
+        // Log the received height information
+        m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
+        
         if (height > m_current_height)
         {
             m_logger->info("Nexus Network: New height {} (old height: {})", height, m_current_height);
             m_current_height = height;
+            
+            // After receiving height, request actual work via GET_BLOCK
+            m_logger->info("[Solo] Height updated, requesting work via GET_BLOCK");
             connection->transmit(get_work());          
-        }			
+        }
+        else if (height == m_current_height)
+        {
+            m_logger->debug("[Solo] Height unchanged ({}), no action needed", height);
+        }
+        else
+        {
+            m_logger->warn("[Solo] Received older height {} (current: {})", height, m_current_height);
+        }
+    }
+    // Handle BLOCK_REWARD response
+    else if (packet.m_header == Packet::BLOCK_REWARD)
+    {
+        // Validate packet data before processing
+        if (!packet.m_data || packet.m_length < 8) {
+            m_logger->warn("Solo::process_messages: BLOCK_REWARD packet has invalid data or length < 8");
+            return;
+        }
+        
+        // Parse reward (typically 8 bytes for uint64)
+        m_current_reward = 0;
+        for (size_t i = 0; i < std::min(size_t(8), packet.m_data->size()); ++i) {
+            m_current_reward |= (static_cast<uint64_t>((*packet.m_data)[i]) << (i * 8));
+        }
+        
+        m_logger->info("[Solo] Received BLOCK_REWARD: reward={}", m_current_reward);
     }
     // Block from wallet received
     else if(packet.m_header == Packet::BLOCK_DATA)
@@ -374,9 +433,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 (acked_channel == 1) ? "prime" : "hash");
         }
         
-        // Channel is set, now we can request work
-        m_logger->info("[Solo] Channel set successfully, requesting initial work");
-        connection->transmit(get_work());
+        // Channel is set, now request height/difficulty before requesting work
+        m_logger->info("[Solo Phase 2] Channel set successfully, requesting blockchain height");
+        connection->transmit(get_height());
     }
     else
     {
