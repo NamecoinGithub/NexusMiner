@@ -217,13 +217,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->info("[Solo] Height updated, requesting work via GET_BLOCK");
             connection->transmit(get_work());          
         }
-        else if (height == m_current_height)
-        {
-            m_logger->debug("[Solo] Height unchanged ({}), no action needed", height);
-        }
         else
         {
-            m_logger->warn("[Solo] Received older height {} (current: {})", height, m_current_height);
+            // Height is unchanged or older than current
+            if (height == m_current_height) {
+                m_logger->debug("[Solo] Height unchanged ({}), no action needed", height);
+            } else {
+                m_logger->warn("[Solo] Received older height {} (current: {})", height, m_current_height);
+            }
         }
     }
     // Handle BLOCK_REWARD response
@@ -235,7 +236,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
         
-        // Parse reward using existing utility function (big-endian)
+        // Parse reward using bytes2uint64 (consistent with bytes2uint - big-endian byte order)
         m_current_reward = bytes2uint64(*packet.m_data);
         
         m_logger->info("[Solo] Received BLOCK_REWARD: reward={}", m_current_reward);
