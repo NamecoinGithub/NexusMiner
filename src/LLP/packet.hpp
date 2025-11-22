@@ -168,8 +168,30 @@ namespace nexusminer
 				return false;
 			}
 
-			// m_header == 0 because of LOGIN message
-			return ((m_header == 0 && m_length == 0) || (m_header < 128 && m_length > 0) || (m_header >= 128 && m_header < 255 && m_length == 0));
+			// Special case: LOGIN message (legacy compatibility)
+			if (m_header == 0 && m_length == 0)
+				return true;
+
+			// Known header-only request packets (even if opcode < 128 for legacy compatibility)
+			// Current opcodes: GET_HEIGHT=130, GET_BLOCK=129, PING=253 (all >= 128)
+			// This check provides defensive compatibility if legacy implementations used < 128 values
+			bool is_header_only_request = (m_header == GET_HEIGHT || 
+			                                 m_header == GET_BLOCK || 
+			                                 m_header == PING);
+
+			// Header-only requests: no payload allowed
+			if (is_header_only_request && m_length == 0)
+				return true;
+
+			// Data packets (< 128): must have payload
+			if (m_header < 128 && m_length > 0)
+				return true;
+
+			// Generic request packets (>= 128, < 255): no payload
+			if (m_header >= 128 && m_header < 255 && m_length == 0)
+				return true;
+
+			return false;
 		}
 
 		network::Shared_payload get_bytes()
