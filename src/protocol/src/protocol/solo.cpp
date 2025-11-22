@@ -235,11 +235,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
         
-        // Parse reward (typically 8 bytes for uint64)
-        m_current_reward = 0;
-        for (size_t i = 0; i < std::min(size_t(8), packet.m_data->size()); ++i) {
-            m_current_reward |= (static_cast<uint64_t>((*packet.m_data)[i]) << (i * 8));
-        }
+        // Parse reward using existing utility function (big-endian)
+        m_current_reward = bytes2uint64(*packet.m_data);
         
         m_logger->info("[Solo] Received BLOCK_REWARD: reward={}", m_current_reward);
     }
