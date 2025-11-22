@@ -173,11 +173,10 @@ namespace nexusminer
 				return true;
 
 			// Known header-only request packets (even if opcode < 128 for legacy compatibility)
-			// Current opcodes: GET_HEIGHT=130, GET_BLOCK=129, GET_REWARD=131, PING=253 (all >= 128)
+			// Current opcodes: GET_HEIGHT=130, GET_BLOCK=129, PING=253 (all >= 128)
 			// This check provides defensive compatibility if legacy implementations used < 128 values
 			bool is_header_only_request = (m_header == GET_HEIGHT || 
 			                                 m_header == GET_BLOCK || 
-			                                 m_header == GET_REWARD ||
 			                                 m_header == PING);
 
 			// Header-only requests: no payload allowed
