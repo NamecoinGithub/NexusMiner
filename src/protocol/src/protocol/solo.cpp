@@ -99,9 +99,6 @@ network::Shared_payload Solo::login(Login_handler handler)
         // No Falcon keys configured - use legacy path (direct SET_CHANNEL)
         m_logger->info("[Solo Legacy] No Falcon keys configured, using legacy authentication");
         
-        // call the login handler here because for solo mining this is always a "success"
-        handler(true);
-        
         // Note: login() must return packet bytes (not transmit) because it's called
         // before the connection is fully established. send_set_channel() is for use
         // within process_messages() where connection is available.
@@ -112,6 +109,9 @@ network::Shared_payload Solo::login(Login_handler handler)
         Packet packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(channel_data) };
         
         m_logger->info("[Solo] Waiting for server response after SET_CHANNEL");
+        
+        // call the login handler here because for solo mining this is always a "success"
+        handler(true);
         return packet.get_bytes();
     }
 }
@@ -431,15 +431,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 (acked_channel == 1) ? "prime" : "hash");
         }
         
-        // Stateless mining: Request work directly (get_work() sends GET_BLOCK packet)
-        // Legacy mining: Uses GET_HEIGHT polling triggered by timer in worker_manager, but needs initial height sync
+        // Stateless mining: Request work directly (no GET_HEIGHT polling)
+        // Legacy mining: Uses GET_HEIGHT polling triggered by timer, but needs initial height sync
         if (m_authenticated) {
             m_logger->info("[Solo Phase 2] Channel set successfully, requesting initial work via GET_BLOCK");
-            connection->transmit(get_work());  // get_work() sends GET_BLOCK packet
+            connection->transmit(get_work());
         } else {
             // Legacy mode: Get initial height to synchronize before timer-based polling starts
             m_logger->info("[Solo Legacy] Channel set successfully, requesting initial blockchain height");
-            connection->transmit(get_height());  // get_height() sends GET_HEIGHT packet
+            connection->transmit(get_height());
         }
     }
     else
