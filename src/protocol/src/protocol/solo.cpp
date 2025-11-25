@@ -169,14 +169,39 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     auto const nonce_data = uint2bytes64(nonce);
     packet.m_data->insert(packet.m_data->end(), nonce_data.begin(), nonce_data.end());
     
-    // Phase 2: Block submission doesn't need signing - the session is already authenticated
-    // Expected format: merkle_root (64 bytes) + nonce (8 bytes) = 72 bytes total
-    packet.m_length = 72;
-    
-    if (m_authenticated) {
-        m_logger->info("[Solo Phase 2] Submitting authenticated block (session: 0x{:08x})", m_session_id);
+    // Phase 2: For authenticated sessions with Falcon keys, sign the nonce to prove 
+    // this specific miner found this specific solution
+    if (m_authenticated && !m_miner_privkey.empty()) {
+        m_logger->info("[Solo Phase 2] Signing nonce with Falcon private key for block submission");
+        
+        // Sign the nonce data with the miner's Falcon private key
+        std::vector<uint8_t> signature;
+        if (!keys::falcon_sign(m_miner_privkey, nonce_data, signature)) {
+            m_logger->error("[Solo] Failed to sign nonce with Falcon private key");
+            m_logger->warn("[Solo] Submitting block without signature (may be rejected by node)");
+        } else {
+            // Add signature to packet: [signature_length(2, BE)][signature bytes]
+            uint16_t sig_len = static_cast<uint16_t>(signature.size());
+            packet.m_data->push_back((sig_len >> 8) & 0xFF);  // High byte
+            packet.m_data->push_back(sig_len & 0xFF);         // Low byte
+            packet.m_data->insert(packet.m_data->end(), signature.begin(), signature.end());
+            
+            m_logger->info("[Solo Phase 2] Nonce signature added ({} bytes), total payload: {} bytes", 
+                          sig_len, packet.m_data->size());
+        }
+        
+        // Update packet length to actual payload size
+        packet.m_length = packet.m_data->size();
+        m_logger->info("[Solo Phase 2] Submitting authenticated block with signed nonce (session: 0x{:08x})", m_session_id);
     } else {
-        m_logger->info("[Solo] Submitting block (legacy mode - no authentication)");
+        // Legacy mode or no Falcon keys: merkle_root (64 bytes) + nonce (8 bytes) = 72 bytes total
+        packet.m_length = 72;
+        
+        if (m_authenticated) {
+            m_logger->info("[Solo Phase 2] Submitting authenticated block without nonce signature (session: 0x{:08x})", m_session_id);
+        } else {
+            m_logger->info("[Solo] Submitting block (legacy mode - no authentication)");
+        }
     }
 
     return packet.get_bytes();  

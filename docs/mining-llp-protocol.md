@@ -275,7 +275,18 @@ Payload: 0x00
 #### SUBMIT_BLOCK (1)
 **Direction**: Miner → Node  
 **Purpose**: Submit solved block  
-**Payload** (Phase 2 stateless):
+
+**Payload** (Phase 2 with Falcon authentication):
+```
+[merkle_root (64 bytes)]       // Block's merkle root
+[nonce (8 bytes)]              // Solution nonce
+[sig_len (2 bytes, BE)]        // Signature length (big-endian uint16)
+[signature (~690 bytes)]       // Falcon signature of the nonce
+```
+
+**Total size**: ~764 bytes (64 + 8 + 2 + 690)
+
+**Payload** (Legacy mode or no Falcon keys):
 ```
 [merkle_root (64 bytes)]  // Block's merkle root
 [nonce (8 bytes)]         // Solution nonce
@@ -283,7 +294,7 @@ Payload: 0x00
 
 **Total size**: 72 bytes
 
-**Note**: In Phase 2 authenticated sessions, the block is NOT signed separately. The session authentication already proves miner identity.
+**Note**: In Phase 2 authenticated sessions with Falcon keys, the miner signs the nonce with its private key. This proves that this specific authenticated miner found this specific solution, ensuring proper reward attribution and preventing solution theft.
 
 #### BLOCK_ACCEPTED (200)
 **Direction**: Node → Miner  

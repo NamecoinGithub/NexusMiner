@@ -84,10 +84,12 @@ Phase 2 authentication uses a direct signature-based approach:
 
 ### 3. Block Submission
 
-Phase 2 simplifies block submission:
-- **Format**: `merkle_root(64 bytes) + nonce(8 bytes) = 72 bytes total`
-- **No signing needed**: Session is already authenticated via Falcon handshake
-- **Node validation**: Requires `fMinerAuthenticated` flag before accepting blocks
+Phase 2 block submission with nonce signing:
+- **Format (with Falcon auth)**: `merkle_root(64 bytes) + nonce(8 bytes) + sig_len(2 bytes, BE) + signature(~690 bytes)`
+- **Format (legacy)**: `merkle_root(64 bytes) + nonce(8 bytes) = 72 bytes total`
+- **Signing nonces**: For authenticated sessions, the miner signs the nonce with its Falcon private key
+- **Purpose**: Proves that this specific authenticated miner found this specific solution
+- **Node validation**: Verifies nonce signature before accepting the block
 
 ### 4. Legacy Compatibility
 
