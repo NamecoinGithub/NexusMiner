@@ -302,8 +302,22 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                             worker->set_block(block, nBits, [self, wallet_endpoint](auto id, auto block_data)
                             {
                                 if (self->m_connection)
-                                    self->m_connection->transmit(self->m_miner_protocol->submit_block(
-                                        block_data->merkle_root.GetBytes(), block_data->nNonce));
+                                {
+                                    // Check if we're using solo protocol with Falcon keys (for Data Packet)
+                                    auto solo_protocol = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol);
+                                    if (solo_protocol && self->m_config.has_miner_falcon_keys())
+                                    {
+                                        // Use Data Packet with signature
+                                        self->m_connection->transmit(solo_protocol->submit_data_packet(
+                                            block_data->merkle_root.GetBytes(), block_data->nNonce));
+                                    }
+                                    else
+                                    {
+                                        // Use legacy submit_block (no signature)
+                                        self->m_connection->transmit(self->m_miner_protocol->submit_block(
+                                            block_data->merkle_root.GetBytes(), block_data->nNonce));
+                                    }
+                                }
                                 else
                                 {
                                     self->m_logger->error("No connection. Can't submit block.");

@@ -32,6 +32,9 @@ namespace nexusminer
 			GOOD_BLOCK = LLP::GOOD_BLOCK,
 			ORPHAN_BLOCK = LLP::ORPHAN_BLOCK,
 
+			/** DATA PACKET WITH SIGNATURE **/
+			SUBMIT_DATA_PACKET = LLP::SUBMIT_DATA_PACKET,
+
 			//POOL RELATED (NexusMiner extensions for pool mining)
 			LOGIN = LLP::LOGIN,
 			HASHRATE = LLP::HASHRATE,
