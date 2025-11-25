@@ -216,14 +216,7 @@ network::Shared_payload Solo::submit_data_packet(std::vector<std::uint8_t> const
     data_to_sign.insert(data_to_sign.end(), merkle_root.begin(), merkle_root.end());
     
     // Append nonce in big-endian format
-    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 56));
-    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 48));
-    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 40));
-    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 32));
-    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 24));
-    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 16));
-    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 8));
-    data_to_sign.push_back(static_cast<uint8_t>(nonce));
+    llp::serialize_nonce_be(nonce, data_to_sign);
     
     // Sign the data with Falcon private key
     std::vector<uint8_t> signature;

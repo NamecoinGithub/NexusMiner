@@ -26,6 +26,23 @@ static constexpr std::size_t FALCON_PUBKEY_SIZE = 897;   // Falcon-512 public ke
 static constexpr std::size_t FALCON_PRIVKEY_SIZE = 1281; // Falcon-512 private key size
 
 /**
+ * @brief Serialize a uint64_t nonce to big-endian byte array
+ * @param nonce The nonce value to serialize
+ * @param output Vector to append nonce bytes to
+ */
+inline void serialize_nonce_be(std::uint64_t nonce, std::vector<uint8_t>& output)
+{
+    output.push_back(static_cast<uint8_t>(nonce >> 56));
+    output.push_back(static_cast<uint8_t>(nonce >> 48));
+    output.push_back(static_cast<uint8_t>(nonce >> 40));
+    output.push_back(static_cast<uint8_t>(nonce >> 32));
+    output.push_back(static_cast<uint8_t>(nonce >> 24));
+    output.push_back(static_cast<uint8_t>(nonce >> 16));
+    output.push_back(static_cast<uint8_t>(nonce >> 8));
+    output.push_back(static_cast<uint8_t>(nonce));
+}
+
+/**
  * @brief External Data Packet wrapper for block submission with Falcon signature
  * 
  * This structure provides a temporary wrapper for block submissions that includes
@@ -113,14 +130,7 @@ struct DataPacket
         data.insert(data.end(), merkle_root.begin(), merkle_root.end());
         
         // 2. Nonce (8 bytes, big-endian)
-        data.push_back(static_cast<uint8_t>(nonce >> 56));
-        data.push_back(static_cast<uint8_t>(nonce >> 48));
-        data.push_back(static_cast<uint8_t>(nonce >> 40));
-        data.push_back(static_cast<uint8_t>(nonce >> 32));
-        data.push_back(static_cast<uint8_t>(nonce >> 24));
-        data.push_back(static_cast<uint8_t>(nonce >> 16));
-        data.push_back(static_cast<uint8_t>(nonce >> 8));
-        data.push_back(static_cast<uint8_t>(nonce));
+        serialize_nonce_be(nonce, data);
         
         // 3. Signature length (2 bytes, big-endian)
         uint16_t sig_len = static_cast<uint16_t>(signature.size());
@@ -178,9 +188,9 @@ struct DataPacket
             static_cast<uint16_t>(data[offset + 1]);
         offset += SIG_LEN_SIZE;
         
-        // 5. Validate sufficient data for signature (prevent underflow and overflow)
+        // 5. Validate sufficient data for signature
         // Check that remaining bytes (data.size() - offset) >= sig_len
-        if (offset > data.size() || sig_len > data.size() - offset) {
+        if (sig_len > data.size() - offset) {
             throw std::runtime_error("Data Packet: insufficient data for signature (need " +
                 std::to_string(sig_len) + " bytes, have " + std::to_string(data.size() - offset) + ")");
         }
@@ -217,14 +227,7 @@ struct DataPacket
         block_data.insert(block_data.end(), merkle_root.begin(), merkle_root.end());
         
         // Nonce (8 bytes, big-endian)
-        block_data.push_back(static_cast<uint8_t>(nonce >> 56));
-        block_data.push_back(static_cast<uint8_t>(nonce >> 48));
-        block_data.push_back(static_cast<uint8_t>(nonce >> 40));
-        block_data.push_back(static_cast<uint8_t>(nonce >> 32));
-        block_data.push_back(static_cast<uint8_t>(nonce >> 24));
-        block_data.push_back(static_cast<uint8_t>(nonce >> 16));
-        block_data.push_back(static_cast<uint8_t>(nonce >> 8));
-        block_data.push_back(static_cast<uint8_t>(nonce));
+        serialize_nonce_be(nonce, block_data);
         
         return block_data;
     }
