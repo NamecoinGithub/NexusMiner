@@ -417,6 +417,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->error("[Solo]   - Invalid key format in miner.conf (must be valid hex strings)");
             m_logger->error("[Solo]   - Falcon signature verification failed (key mismatch or corruption)");
             m_logger->error("[Solo]   - Node missing Phase 2 stateless miner support");
+            m_logger->info("[Solo] Falling back to legacy mode (no authentication)");
+            
+            // Fall back to legacy mode: send SET_CHANNEL without authentication
+            std::string channel_name = (m_channel == 1) ? "prime" : "hash";
+            m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
+            
+            std::vector<uint8_t> channel_data(1, m_channel);
+            Packet set_channel_packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(channel_data) };
+            connection->transmit(set_channel_packet.get_bytes());
         }
     }
     else if (packet.m_header == Packet::CHANNEL_ACK)
