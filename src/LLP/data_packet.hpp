@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include "network/types.hpp"
 
 namespace nexusminer
