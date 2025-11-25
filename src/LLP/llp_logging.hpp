@@ -32,6 +32,7 @@ namespace nexusminer
 			LOGIN_V2_SUCCESS = LLP::LOGIN_V2_SUCCESS,
 			LOGIN_V2_FAIL = LLP::LOGIN_V2_FAIL,
 			POOL_NOTIFICATION = LLP::POOL_NOTIFICATION,
+			SUBMIT_DATA_PACKET = LLP::SUBMIT_DATA_PACKET,
 
 			/** DATA REQUESTS **/
 			CHECK_BLOCK = LLP::CHECK_BLOCK,
@@ -104,6 +105,7 @@ namespace nexusminer
 			case LLP_Headers::LOGIN_V2_SUCCESS: return "LOGIN_V2_SUCCESS";
 			case LLP_Headers::LOGIN_V2_FAIL: return "LOGIN_V2_FAIL";
 			case LLP_Headers::POOL_NOTIFICATION: return "POOL_NOTIFICATION";
+			case LLP_Headers::SUBMIT_DATA_PACKET: return "SUBMIT_DATA_PACKET";
 			case LLP_Headers::CHECK_BLOCK: return "CHECK_BLOCK";
 			case LLP_Headers::SUBSCRIBE: return "SUBSCRIBE";
 			case LLP_Headers::GET_BLOCK: return "GET_BLOCK";

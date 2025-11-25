@@ -82,6 +82,19 @@ enum MinerOpcodes : std::uint8_t
     /** Pool notification message (pool-only) */
     POOL_NOTIFICATION = 13,
     
+    /**
+     * SUBMIT_DATA_PACKET: Submit block with external Falcon signature wrapper
+     * Direction: Miner -> Node
+     * Payload (big-endian):
+     *   [merkle_root(64)] [nonce(8)] [sig_len(2)] [signature bytes]
+     * 
+     * This packet wraps the block solution (merkle_root + nonce) with a Falcon
+     * signature in an external data packet. The signature is verified by the node
+     * but NOT stored on-chain, reducing blockchain size. After verification, the
+     * node extracts only the 72-byte block data (merkle_root + nonce) for storage.
+     */
+    SUBMIT_DATA_PACKET = 14,
+    
     // ============================================================================
     // DATA REQUESTS (64-127)
     // Request packets with data payload

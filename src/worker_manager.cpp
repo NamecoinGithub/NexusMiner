@@ -77,6 +77,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         }
         
         m_miner_protocol = solo_protocol;
+        m_solo_protocol = solo_protocol;  // Cache for submit_data_packet access
     } 
   
     create_stats_printers();
@@ -302,8 +303,22 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                             worker->set_block(block, nBits, [self, wallet_endpoint](auto id, auto block_data)
                             {
                                 if (self->m_connection)
-                                    self->m_connection->transmit(self->m_miner_protocol->submit_block(
-                                        block_data->merkle_root.GetBytes(), block_data->nNonce));
+                                {
+                                    // Use Data Packet wrapper with signature if Solo protocol and Falcon keys available
+                                    // This allows nodes to verify the signature and discard it (not store on-chain)
+                                    if (self->m_solo_protocol && self->m_config.has_miner_falcon_keys())
+                                    {
+                                        // Submit with external signature wrapper
+                                        self->m_connection->transmit(self->m_solo_protocol->submit_data_packet(
+                                            block_data->merkle_root.GetBytes(), block_data->nNonce));
+                                    }
+                                    else
+                                    {
+                                        // Use legacy submit_block (no signature wrapper)
+                                        self->m_connection->transmit(self->m_miner_protocol->submit_block(
+                                            block_data->merkle_root.GetBytes(), block_data->nNonce));
+                                    }
+                                }
                                 else
                                 {
                                     self->m_logger->error("No connection. Can't submit block.");

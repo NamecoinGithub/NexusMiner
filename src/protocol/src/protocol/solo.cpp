@@ -4,6 +4,7 @@
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
 #include "LLP/block_utils.hpp"
+#include "LLP/data_packet.hpp"
 #include "../miner_keys.hpp"
 #include <chrono>
 
@@ -182,6 +183,87 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     }
 
     return packet.get_bytes();  
+}
+
+network::Shared_payload Solo::submit_data_packet(std::vector<std::uint8_t> const& merkle_root, std::uint64_t nonce)
+{
+    m_logger->info("[Solo Data Packet] Submitting block with external Falcon signature wrapper...");
+    
+    // Validate merkle root size
+    if (merkle_root.size() != llp::MERKLE_ROOT_SIZE) {
+        m_logger->error("[Solo Data Packet] Invalid merkle root size: {} (expected {} bytes)", 
+            merkle_root.size(), llp::MERKLE_ROOT_SIZE);
+        // Fall back to legacy submit_block
+        return submit_block(merkle_root, nonce);
+    }
+    
+    // Validate Falcon private key is available and properly formatted
+    if (m_miner_privkey.empty()) {
+        m_logger->warn("[Solo Data Packet] No Falcon private key available - falling back to legacy SUBMIT_BLOCK");
+        return submit_block(merkle_root, nonce);
+    }
+    
+    // Validate private key size (Falcon-512 private key should be 1281 bytes)
+    if (m_miner_privkey.size() != llp::FALCON_PRIVKEY_SIZE) {
+        m_logger->warn("[Solo Data Packet] Falcon private key has unexpected size: {} bytes (expected {}) - falling back to legacy SUBMIT_BLOCK", 
+            m_miner_privkey.size(), llp::FALCON_PRIVKEY_SIZE);
+        return submit_block(merkle_root, nonce);
+    }
+    
+    // Build the data to sign: merkle_root (64 bytes) + nonce (8 bytes)
+    std::vector<uint8_t> data_to_sign;
+    data_to_sign.reserve(llp::DATA_TO_SIGN_SIZE);
+    data_to_sign.insert(data_to_sign.end(), merkle_root.begin(), merkle_root.end());
+    
+    // Append nonce in big-endian format
+    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 56));
+    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 48));
+    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 40));
+    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 32));
+    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 24));
+    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 16));
+    data_to_sign.push_back(static_cast<uint8_t>(nonce >> 8));
+    data_to_sign.push_back(static_cast<uint8_t>(nonce));
+    
+    // Sign the data with Falcon private key
+    std::vector<uint8_t> signature;
+    if (!keys::falcon_sign(m_miner_privkey, data_to_sign, signature)) {
+        m_logger->error("[Solo Data Packet] Failed to sign block data with Falcon key");
+        // Fall back to legacy submit_block
+        return submit_block(merkle_root, nonce);
+    }
+    
+    m_logger->info("[Solo Data Packet] Signed block data (signature: {} bytes)", signature.size());
+    
+    // Create Data Packet - external wrapper containing block data + signature
+    llp::DataPacket data_packet(merkle_root, nonce, signature);
+    
+    // Serialize the Data Packet
+    std::vector<uint8_t> packet_bytes;
+    try {
+        packet_bytes = data_packet.serialize();
+    }
+    catch (const std::exception& e) {
+        m_logger->error("[Solo Data Packet] Failed to serialize Data Packet: {}", e.what());
+        // Fall back to legacy submit_block
+        return submit_block(merkle_root, nonce);
+    }
+    
+    m_logger->info("[Solo Data Packet] External wrapper size: {} bytes (block data: 72, signature: {})", 
+        packet_bytes.size(), signature.size());
+    m_logger->info("[Solo Data Packet] Note: Signature is temporary and will be discarded by node after verification");
+    
+    // Create SUBMIT_DATA_PACKET LLP packet with serialized wrapper
+    Packet llp_packet{ Packet::SUBMIT_DATA_PACKET, std::make_shared<network::Payload>(packet_bytes) };
+    llp_packet.m_length = packet_bytes.size();
+    
+    if (m_authenticated) {
+        m_logger->info("[Solo Data Packet] Submitting authenticated Data Packet (session: 0x{:08x})", m_session_id);
+    } else {
+        m_logger->info("[Solo Data Packet] Submitting Data Packet with signature wrapper");
+    }
+    
+    return llp_packet.get_bytes();
 }
 
 void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> connection)  
