@@ -102,9 +102,9 @@ network::Shared_payload Solo::login(Login_handler handler)
         // call the login handler here because for solo mining this is always a "success"
         handler(true);
         
-        // Send SET_CHANNEL using helper method
-        // Note: We need to return the packet bytes from login(), but send_set_channel() transmits directly
-        // So we'll keep the inline code here for consistency with the login() return signature
+        // Note: login() must return packet bytes (not transmit) because it's called
+        // before the connection is fully established. send_set_channel() is for use
+        // within process_messages() where connection is available.
         std::string channel_name = (m_channel == 1) ? "prime" : "hash";
         m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
         
@@ -431,15 +431,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 (acked_channel == 1) ? "prime" : "hash");
         }
         
-        // Stateless mining: Request work directly via GET_BLOCK (no GET_HEIGHT polling)
+        // Stateless mining: Request work directly (get_work() sends GET_BLOCK packet)
         // Legacy mining: Uses GET_HEIGHT polling triggered by timer in worker_manager, but needs initial height sync
         if (m_authenticated) {
             m_logger->info("[Solo Phase 2] Channel set successfully, requesting initial work via GET_BLOCK");
-            connection->transmit(get_work());
+            connection->transmit(get_work());  // get_work() sends GET_BLOCK packet
         } else {
             // Legacy mode: Get initial height to synchronize before timer-based polling starts
             m_logger->info("[Solo Legacy] Channel set successfully, requesting initial blockchain height");
-            connection->transmit(get_height());
+            connection->transmit(get_height());  // get_height() sends GET_HEIGHT packet
         }
     }
     else
