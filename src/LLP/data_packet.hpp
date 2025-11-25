@@ -158,19 +158,25 @@ struct DataPacket
             static_cast<uint64_t>(data[offset + 7]);
         offset += NONCE_SIZE;
         
-        // 3. Signature length (2 bytes, big-endian)
+        // 3. Ensure we have at least 2 bytes for signature length field
+        if (offset + SIG_LEN_SIZE > data.size()) {
+            throw std::runtime_error("Data Packet: insufficient data for signature length field");
+        }
+        
+        // 4. Signature length (2 bytes, big-endian)
         uint16_t sig_len = 
             (static_cast<uint16_t>(data[offset]) << 8) |
             static_cast<uint16_t>(data[offset + 1]);
         offset += SIG_LEN_SIZE;
         
-        // 4. Validate sufficient data for signature (prevent integer overflow)
-        if (sig_len > data.size() - offset) {
+        // 5. Validate sufficient data for signature (prevent underflow and overflow)
+        // Check that remaining bytes (data.size() - offset) >= sig_len
+        if (offset > data.size() || sig_len > data.size() - offset) {
             throw std::runtime_error("Data Packet: insufficient data for signature (need " +
                 std::to_string(sig_len) + " bytes, have " + std::to_string(data.size() - offset) + ")");
         }
         
-        // 5. Extract signature bytes
+        // 6. Extract signature bytes
         packet.signature.assign(data.begin() + offset, data.begin() + offset + sig_len);
         
         return packet;

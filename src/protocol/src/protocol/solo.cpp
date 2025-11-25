@@ -252,9 +252,9 @@ network::Shared_payload Solo::submit_data_packet(std::vector<std::uint8_t> const
     m_logger->info("[Solo Data Packet] Data Packet size: {} bytes (merkle: 64, nonce: 8, sig: {})", 
         packet_bytes.size(), signature.size());
     
-    // Create SUBMIT_DATA_PACKET with serialized data
-    Packet packet{ Packet::SUBMIT_DATA_PACKET, std::make_shared<network::Payload>(packet_bytes) };
-    packet.m_length = packet_bytes.size();
+    // Create SUBMIT_DATA_PACKET LLP packet with serialized data
+    Packet llp_packet{ Packet::SUBMIT_DATA_PACKET, std::make_shared<network::Payload>(packet_bytes) };
+    llp_packet.m_length = packet_bytes.size();
     
     if (m_authenticated) {
         m_logger->info("[Solo Data Packet] Submitting authenticated Data Packet (session: 0x{:08x})", m_session_id);
@@ -262,7 +262,7 @@ network::Shared_payload Solo::submit_data_packet(std::vector<std::uint8_t> const
         m_logger->info("[Solo Data Packet] Submitting Data Packet (with signature)");
     }
     
-    return packet.get_bytes();
+    return llp_packet.get_bytes();
 }
 
 void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> connection)  
