@@ -6,6 +6,7 @@
 #include <asio.hpp>
 #include <sstream>
 #include <iomanip>
+#include <algorithm>
 
 namespace nexusminer
 {
@@ -337,12 +338,18 @@ bool Worker_hash::validate_skein_output(const NexusSkein::stateType& skeinHash) 
 {
 	// Validate that Skein output is not all zeros (invalid state)
 	bool all_zeros = true;
+	bool all_same = true;
+	uint64_t first_val = skeinHash[0];
+	
 	for (size_t i = 0; i < skeinHash.size(); ++i)
 	{
 		if (skeinHash[i] != 0)
 		{
 			all_zeros = false;
-			break;
+		}
+		if (i > 0 && skeinHash[i] != first_val)
+		{
+			all_same = false;
 		}
 	}
 	
@@ -354,17 +361,6 @@ bool Worker_hash::validate_skein_output(const NexusSkein::stateType& skeinHash) 
 	
 	// Additional validation: check for obviously invalid patterns
 	// (all same value, which would indicate a calculation error)
-	bool all_same = true;
-	uint64_t first_val = skeinHash[0];
-	for (size_t i = 1; i < skeinHash.size(); ++i)
-	{
-		if (skeinHash[i] != first_val)
-		{
-			all_same = false;
-			break;
-		}
-	}
-	
 	if (all_same && first_val != 0)
 	{
 		m_logger->warn(m_log_leader + "Skein output has suspicious pattern (all values = 0x{:016x})", first_val);
@@ -409,28 +405,32 @@ bool Worker_hash::cross_validate_hashes(const NexusSkein::stateType& skeinHash, 
 
 void Worker_hash::log_skein_state(const NexusSkein::stateType& skeinHash, uint64_t nonce) const
 {
+	static constexpr size_t SKEIN_LOG_WORDS = 4;  // Number of words to log from Skein output
+	
 	m_logger->debug(m_log_leader + "Skein output for nonce 0x{:016x}:", nonce);
 	std::stringstream ss;
 	ss << std::hex << std::setfill('0');
-	for (size_t i = 0; i < std::min(size_t(4), skeinHash.size()); ++i)
+	for (size_t i = 0; i < std::min(SKEIN_LOG_WORDS, skeinHash.size()); ++i)
 	{
 		ss << "0x" << std::setw(16) << skeinHash[i] << " ";
 	}
-	m_logger->debug(m_log_leader + "  First 4 words: {}", ss.str());
+	m_logger->debug(m_log_leader + "  First {} words: {}", SKEIN_LOG_WORDS, ss.str());
 }
 
 void Worker_hash::log_hash_mismatch(const NexusSkein::stateType& skeinHash, uint64_t keccakHash, uint64_t nonce) const
 {
+	static constexpr size_t SKEIN_LOG_WORDS = 4;  // Number of words to log from Skein output
+	
 	m_logger->error(m_log_leader + "Hash mismatch detected for nonce 0x{:016x}", nonce);
 	
 	// Log Skein output
 	std::stringstream ss_skein;
 	ss_skein << std::hex << std::setfill('0');
-	for (size_t i = 0; i < std::min(size_t(4), skeinHash.size()); ++i)
+	for (size_t i = 0; i < std::min(SKEIN_LOG_WORDS, skeinHash.size()); ++i)
 	{
 		ss_skein << "0x" << std::setw(16) << skeinHash[i] << " ";
 	}
-	m_logger->error(m_log_leader + "  Skein output (first 4 words): {}", ss_skein.str());
+	m_logger->error(m_log_leader + "  Skein output (first {} words): {}", SKEIN_LOG_WORDS, ss_skein.str());
 	
 	// Log Keccak result
 	m_logger->error(m_log_leader + "  Keccak result: 0x{:016x}", keccakHash);
@@ -441,6 +441,8 @@ void Worker_hash::log_hash_mismatch(const NexusSkein::stateType& skeinHash, uint
 
 void Worker_hash::log_midstate_calculation()
 {
+	static constexpr size_t SKEIN_LOG_WORDS = 4;  // Number of words to log from midstate
+	
 	// Log midstate information for debugging
 	auto key2 = m_skein.getKey2();
 	auto msg2 = m_skein.getMessage2();
@@ -450,20 +452,20 @@ void Worker_hash::log_midstate_calculation()
 	// Log first few words of key2
 	std::stringstream ss_key;
 	ss_key << std::hex << std::setfill('0');
-	for (size_t i = 0; i < std::min(size_t(4), key2.size()); ++i)
+	for (size_t i = 0; i < std::min(SKEIN_LOG_WORDS, key2.size()); ++i)
 	{
 		ss_key << "0x" << std::setw(16) << key2[i] << " ";
 	}
-	m_logger->debug(m_log_leader + "  Key2 (first 4 words): {}", ss_key.str());
+	m_logger->debug(m_log_leader + "  Key2 (first {} words): {}", SKEIN_LOG_WORDS, ss_key.str());
 	
 	// Log first few words of message2
 	std::stringstream ss_msg;
 	ss_msg << std::hex << std::setfill('0');
-	for (size_t i = 0; i < std::min(size_t(4), msg2.size()); ++i)
+	for (size_t i = 0; i < std::min(SKEIN_LOG_WORDS, msg2.size()); ++i)
 	{
 		ss_msg << "0x" << std::setw(16) << msg2[i] << " ";
 	}
-	m_logger->debug(m_log_leader + "  Message2 (first 4 words): {}", ss_msg.str());
+	m_logger->debug(m_log_leader + "  Message2 (first {} words): {}", SKEIN_LOG_WORDS, ss_msg.str());
 }
 
 }
