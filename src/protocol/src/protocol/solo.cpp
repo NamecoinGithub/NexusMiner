@@ -204,9 +204,9 @@ network::Shared_payload Solo::submit_data_packet(std::vector<std::uint8_t> const
     }
     
     // Validate private key size (Falcon-512 private key should be 1281 bytes)
-    if (m_miner_privkey.size() != 1281) {
-        m_logger->warn("[Solo Data Packet] Falcon private key has unexpected size: {} bytes (expected 1281) - falling back to legacy SUBMIT_BLOCK", 
-            m_miner_privkey.size());
+    if (m_miner_privkey.size() != llp::FALCON_PRIVKEY_SIZE) {
+        m_logger->warn("[Solo Data Packet] Falcon private key has unexpected size: {} bytes (expected {}) - falling back to legacy SUBMIT_BLOCK", 
+            m_miner_privkey.size(), llp::FALCON_PRIVKEY_SIZE);
         return submit_block(merkle_root, nonce);
     }
     

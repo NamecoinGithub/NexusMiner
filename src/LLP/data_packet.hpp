@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
+#include <limits>
 #include "network/types.hpp"
 
 namespace nexusminer
@@ -18,7 +19,11 @@ static constexpr std::size_t NONCE_SIZE = 8;         // uint64_t = 8 bytes
 static constexpr std::size_t SIG_LEN_SIZE = 2;       // uint16_t = 2 bytes
 static constexpr std::size_t MIN_PACKET_SIZE = MERKLE_ROOT_SIZE + NONCE_SIZE + SIG_LEN_SIZE;  // 74 bytes
 static constexpr std::size_t DATA_TO_SIGN_SIZE = MERKLE_ROOT_SIZE + NONCE_SIZE;  // 72 bytes
-static constexpr std::size_t MAX_SIGNATURE_SIZE = 65535;  // Max size for uint16_t length field
+static constexpr std::size_t MAX_SIGNATURE_SIZE = std::numeric_limits<uint16_t>::max();  // 65535 bytes
+
+// Falcon-512 key size constants
+static constexpr std::size_t FALCON_PUBKEY_SIZE = 897;   // Falcon-512 public key size
+static constexpr std::size_t FALCON_PRIVKEY_SIZE = 1281; // Falcon-512 private key size
 
 /**
  * @brief Data Packet structure for block submission
