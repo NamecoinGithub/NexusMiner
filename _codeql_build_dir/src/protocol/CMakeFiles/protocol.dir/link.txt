@@ -1,0 +1,2 @@
+/usr/bin/ar qc libprotocol.a CMakeFiles/protocol.dir/src/protocol/solo.cpp.o CMakeFiles/protocol.dir/src/protocol/pool_base.cpp.o CMakeFiles/protocol.dir/src/protocol/pool.cpp.o CMakeFiles/protocol.dir/src/protocol/pool_legacy.cpp.o
+/usr/bin/ranlib libprotocol.a
