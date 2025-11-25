@@ -152,13 +152,19 @@ void Worker_hash::run()
 					throw std::runtime_error("Invalid Keccak output payload");
 				}
 				
-				// Cross-validate: verify hash consistency
-				if (!cross_validate_hashes(skeinHash, keccakHash))
+				// Cross-validate periodically (every 100000 hashes) to minimize performance impact
+				// Also validate when we find a candidate nonce
+				bool should_cross_validate = (m_hash_count % 100000 == 0) || ((keccakHash & leading_zero_mask()) == 0);
+				
+				if (should_cross_validate && !cross_validate_hashes(skeinHash, keccakHash))
 				{
 					++hash_mismatches;
-					m_logger->warn(m_log_leader + "Hash cross-validation failed for nonce 0x{:016x}", m_skein.getNonce());
+					m_logger->error(m_log_leader + "Hash cross-validation failed for nonce 0x{:016x} - skipping nonce", m_skein.getNonce());
 					// Log detailed mismatch info for debugging
 					log_hash_mismatch(skeinHash, keccakHash, m_skein.getNonce());
+					
+					// Skip this nonce due to validation failure and move to next
+					throw std::runtime_error("Hash cross-validation failed");
 				}
 				
 				nonce = m_skein.getNonce();
@@ -371,18 +377,20 @@ bool Worker_hash::validate_skein_output(const NexusSkein::stateType& skeinHash) 
 bool Worker_hash::validate_keccak_output(uint64_t keccakHash) const
 {
 	// Keccak output validation
-	// Since we only get the top 64 bits, we can't do extensive validation,
-	// but we can check for obviously wrong values
-	
-	// No specific invalid values for Keccak hash, all 64-bit values are theoretically valid
-	// Just return true, but log for debugging if needed
+	// All 64-bit values are theoretically valid for Keccak hash results
+	// We primarily rely on cross-validation for comprehensive checking
 	return true;
 }
 
 bool Worker_hash::cross_validate_hashes(const NexusSkein::stateType& skeinHash, uint64_t keccakHash) const
 {
 	// Cross-validation: Verify that the Keccak hash was derived from the Skein hash
-	// We can't fully verify this without recalculating, but we can check for consistency
+	// Note: This performs an additional Keccak calculation which has a performance cost
+	// This is only done periodically based on hash_count to minimize overhead
+	
+	// Skip cross-validation for most hashes to maintain performance
+	// Only validate every 100000th hash or when we find a candidate
+	// The caller should control when to invoke this expensive check
 	
 	// Recalculate Keccak to verify
 	NexusKeccak keccak_verify(skeinHash);
