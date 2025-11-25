@@ -57,7 +57,7 @@ Miner                                    Node
   |                                       |
 ```
 
-#### Mining Loop
+#### Mining Loop (with Data Packet)
 
 ```
 Miner                                    Node
@@ -69,8 +69,15 @@ Miner                                    Node
   |                                       |
   | (mining happens)                     |
   |                                       |
-  |--- SUBMIT_BLOCK (1) ----------------->|
-  |    [merkle_root(64)][nonce(8)]       |
+  |--- SUBMIT_DATA_PACKET (14) --------->|
+  |    [merkle_root(64)]                 |
+  |    [nonce(8,BE)]                     |
+  |    [sig_len(2,BE)]                   |
+  |    [signature(~690)]                 |
+  |                                       |
+  | Node: Verify Falcon signature        |
+  | Node: Accept block, discard sig      |
+  | (signature NOT stored on-chain)      |
   |                                       |
   |<-- BLOCK_ACCEPTED (200) -------------|
   | or BLOCK_REJECTED (201)              |
@@ -78,6 +85,8 @@ Miner                                    Node
   |--- GET_BLOCK (129) ------------------>|
   | (repeat)                              |
 ```
+
+**Note**: If Falcon keys are not configured or signing fails, miner automatically falls back to SUBMIT_BLOCK (1) with 72-byte payload (no signature).
 
 ### 2. Legacy Mining (No Falcon Authentication)
 
@@ -272,9 +281,38 @@ Payload: 0x00
 
 ### Block Submission Packets
 
-#### SUBMIT_BLOCK (1)
+#### SUBMIT_DATA_PACKET (14) - NEW Phase 2
 **Direction**: Miner → Node  
-**Purpose**: Submit solved block  
+**Purpose**: Submit solved block with Falcon signature wrapper (keeps signature OFF-CHAIN)  
+**Payload**:
+```
+[merkle_root (64 bytes)]     // Block's merkle root (uint512_t)
+[nonce (8 bytes, BE)]        // Solution nonce (big-endian uint64)
+[sig_len (2 bytes, BE)]      // Signature length (big-endian uint16)
+[signature (sig_len bytes)]  // Falcon signature over (merkle_root + nonce)
+```
+
+**Total size**: ~764 bytes (64 + 8 + 2 + ~690 for Falcon-512 signature)
+
+**Key Features**:
+- **Signature NOT stored on-chain**: Node verifies and discards signature
+- **Reduces blockchain size**: Only merkle_root + nonce are stored in block
+- **Miner attribution**: Cryptographically proves which miner found the block
+- **Quantum-resistant**: Uses Falcon-512 post-quantum signature scheme
+- **Automatic**: Used when Falcon keys are configured in miner.conf
+
+**When to use**:
+- Solo mining with Falcon authentication enabled
+- Node supports Data Packet validation
+- Miner has valid Falcon keypair configured
+
+**Fallback**: If signing fails or keys unavailable, automatically falls back to SUBMIT_BLOCK (1)
+
+See [docs/data_packet.md](data_packet.md) for detailed specification.
+
+#### SUBMIT_BLOCK (1) - Legacy/Pool
+**Direction**: Miner → Node  
+**Purpose**: Submit solved block (legacy method)  
 **Payload** (Phase 2 stateless):
 ```
 [merkle_root (64 bytes)]  // Block's merkle root
@@ -282,6 +320,12 @@ Payload: 0x00
 ```
 
 **Total size**: 72 bytes
+
+**When to use**:
+- Pool mining (always)
+- Solo mining without Falcon keys
+- Fallback when Data Packet signing fails
+- Nodes that don't support SUBMIT_DATA_PACKET
 
 **Note**: In Phase 2 authenticated sessions, the block is NOT signed separately. The session authentication already proves miner identity.
 

@@ -84,10 +84,30 @@ Phase 2 authentication uses a direct signature-based approach:
 
 ### 3. Block Submission
 
-Phase 2 simplifies block submission:
+Phase 2 supports two submission methods:
+
+#### Data Packet (NEW - Recommended)
+- **Opcode**: `SUBMIT_DATA_PACKET (14)`
+- **Format**: `merkle_root(64 bytes) + nonce(8 bytes) + sig_len(2 bytes) + signature(~690 bytes)`
+- **Total size**: ~764 bytes
+- **Signature**: Falcon-512 signature over (merkle_root + nonce)
+- **Purpose**: Allows node to verify miner identity while keeping signature OFF-CHAIN
+- **Blockchain impact**: Signature is verified and discarded, NOT stored on blockchain
+- **When used**: Automatically when Falcon keys are configured
+- **Benefits**: 
+  - Reduces blockchain size (signature not stored)
+  - Provides cryptographic proof of miner identity
+  - Enables miner attribution and analytics
+  - Quantum-resistant authentication
+
+#### Legacy Block Submit
+- **Opcode**: `SUBMIT_BLOCK (1)`
 - **Format**: `merkle_root(64 bytes) + nonce(8 bytes) = 72 bytes total`
-- **No signing needed**: Session is already authenticated via Falcon handshake
-- **Node validation**: Requires `fMinerAuthenticated` flag before accepting blocks
+- **No signing**: Session is already authenticated via Falcon handshake (if authenticated)
+- **When used**: Pool mining, or solo without Falcon keys
+- **Node validation**: May require `fMinerAuthenticated` flag (depends on node policy)
+
+**Implementation**: NexusMiner automatically selects the appropriate submission method based on configuration.
 
 ### 4. Legacy Compatibility
 

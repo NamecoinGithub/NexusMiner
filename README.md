@@ -63,6 +63,7 @@ NexusMiner supports quantum-resistant Falcon-based authentication for SOLO minin
 - Quantum-resistant authentication using Falcon-512 signatures
 - Stateless mining protocol (no GET_HEIGHT polling)
 - Session-based authentication for efficient communication
+- **Data Packet structure**: Block submissions include Falcon signature (kept OFF-CHAIN to reduce blockchain size)
 - Connects to LLL-TAO's `miningport` (default 8323)
 
 **Quick Start - Generate complete config for SOLO PRIME mining:**
@@ -73,8 +74,8 @@ NexusMiner supports quantum-resistant Falcon-based authentication for SOLO minin
 This creates `falconminer.conf` ready for SOLO PRIME mining against a local LLL-TAO node on `127.0.0.1:8323`. The private key is printed to stdout (keep it safe!). Start mining with `./NexusMiner -c falconminer.conf`.
 
 **Mining Protocol:**
-- **With Falcon keys**: Stateless protocol - Falcon auth → GET_BLOCK → mine → SUBMIT_BLOCK (no GET_HEIGHT)
-- **Without Falcon keys**: Legacy protocol - GET_HEIGHT polling every 2 seconds
+- **With Falcon keys**: Stateless protocol - Falcon auth → GET_BLOCK → mine → SUBMIT_DATA_PACKET (includes signature, NOT stored on blockchain)
+- **Without Falcon keys**: Legacy protocol - GET_HEIGHT polling every 2 seconds → SUBMIT_BLOCK
 
 **Alternative - Generate keys only:**
 ```bash
