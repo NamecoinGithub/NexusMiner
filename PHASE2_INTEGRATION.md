@@ -84,12 +84,43 @@ Phase 2 authentication uses a direct signature-based approach:
 
 ### 3. Block Submission
 
-Phase 2 block submission with nonce signing:
-- **Format (with Falcon auth)**: `merkle_root(64 bytes) + nonce(8 bytes) + sig_len(2 bytes, BE) + signature(~690 bytes)`
-- **Format (legacy)**: `merkle_root(64 bytes) + nonce(8 bytes) = 72 bytes total`
-- **Signing nonces**: For authenticated sessions, the miner signs the nonce with its Falcon private key
-- **Purpose**: Proves that this specific authenticated miner found this specific solution
-- **Node validation**: Verifies nonce signature before accepting the block
+Phase 2 block submission with packet wrapper architecture:
+
+**Design Goal**: Keep blockchain size minimal by NOT including miner signatures in blocks
+
+**Architecture**: 
+- Block data remains at 72 bytes (merkle_root + nonce) - stored in blockchain
+- Falcon signature sent in separate "proof-of-work wrapper" packet - NOT stored in blockchain
+- Signature proves miner ownership during transmission only
+- Node verifies signature, then signs block with producer credentials for blockchain storage
+
+**Formats**:
+
+*With Falcon authentication (packet wrapper approach):*
+```
+PACKET 1 (Proof-of-Work Wrapper):
+  Opcode: MINER_AUTH_RESPONSE (209)
+  Payload: [sig_len(2 bytes, BE)][signature(~690 bytes)]
+
+PACKET 2 (Block Submission):  
+  Opcode: SUBMIT_BLOCK (1)
+  Payload: [merkle_root(64 bytes)][nonce(8 bytes)] = 72 bytes
+
+Both packets sent together in single transmission
+```
+
+*Legacy mode (no Falcon keys):*
+```
+PACKET (Block Submission only):
+  Opcode: SUBMIT_BLOCK (1) 
+  Payload: [merkle_root(64 bytes)][nonce(8 bytes)] = 72 bytes
+```
+
+**Benefits**:
+- ✅ No blockchain bloat (blocks stay 72 bytes)
+- ✅ Cryptographic proof of solution ownership
+- ✅ Signature verified during transmission, not stored
+- ✅ Backward compatible with legacy nodes
 
 ### 4. Legacy Compatibility
 

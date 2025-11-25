@@ -276,25 +276,39 @@ Payload: 0x00
 **Direction**: Miner → Node  
 **Purpose**: Submit solved block  
 
-**Payload** (Phase 2 with Falcon authentication):
+**Phase 2 Packet Wrapper Architecture**:
+
+To avoid blockchain bloat, the Falcon signature is sent in a separate "proof-of-work wrapper" packet BEFORE the block submission. The signature is verified during transmission but NOT stored in the blockchain.
+
+**Transmission Sequence (with Falcon authentication)**:
 ```
-[merkle_root (64 bytes)]       // Block's merkle root
-[nonce (8 bytes)]              // Solution nonce
-[sig_len (2 bytes, BE)]        // Signature length (big-endian uint16)
-[signature (~690 bytes)]       // Falcon signature of the nonce
+1. Proof-of-Work Wrapper Packet:
+   Opcode: MINER_AUTH_RESPONSE (209)
+   Payload: [sig_len(2 bytes, BE)][signature(~690 bytes)]
+   Purpose: Prove miner ownership of solution
+
+2. Block Submission Packet:
+   Opcode: SUBMIT_BLOCK (1)
+   Payload: [merkle_root(64 bytes)][nonce(8 bytes)]
+   Purpose: Submit the actual block data (72 bytes total)
+
+Both packets are sent together in a single transmission.
 ```
 
-**Total size**: ~764 bytes (64 + 8 + 2 + 690)
-
-**Payload** (Legacy mode or no Falcon keys):
+**Payload (Legacy mode or no Falcon keys)**:
 ```
 [merkle_root (64 bytes)]  // Block's merkle root
 [nonce (8 bytes)]         // Solution nonce
 ```
 
-**Total size**: 72 bytes
+**Total size**: 72 bytes (stored in blockchain)
 
-**Note**: In Phase 2 authenticated sessions with Falcon keys, the miner signs the nonce with its private key. This proves that this specific authenticated miner found this specific solution, ensuring proper reward attribution and preventing solution theft.
+**Architecture Benefits**:
+- ✅ Blockchain stays lean - blocks are always 72 bytes
+- ✅ Cryptographic proof of solution ownership via separate proof packet
+- ✅ Signature verified during transmission, not stored permanently
+- ✅ Backward compatible with nodes that don't verify signatures
+- ✅ Node signs final block with producer credentials after verification
 
 #### BLOCK_ACCEPTED (200)
 **Direction**: Node → Miner  

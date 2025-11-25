@@ -167,67 +167,85 @@ make -j$(nproc)
    - Verify no impact on mining performance
    - Test reconnection scenarios
 
-## Update: Nonce Signing for Block Submissions
+## Update: Packet Wrapper Architecture for Block Submissions
 
 ### Problem
-Previous implementation removed block nonce signing under the assumption that session authentication alone was sufficient for miner identification. However, this created issues with proper reward attribution and security - there was no cryptographic proof that a specific authenticated miner found a specific solution.
+Initial implementation included Falcon signatures directly in SUBMIT_BLOCK payload, bloating it to ~764 bytes. This would permanently store ~690 bytes of miner signature data in every block on the blockchain, causing unnecessary bloat.
 
-### Solution Implemented
-Reintegrated Falcon signing of nonces on submitted mined blocks:
+### Architectural Improvement (Based on User Feedback)
+Redesigned to use **packet wrapper architecture** - signature sent separately from block data:
 
 1. **Modified `Solo::submit_block()` in `src/protocol/src/protocol/solo.cpp`**:
-   - For authenticated sessions with Falcon keys, the miner now signs the nonce with its Falcon private key
-   - The signature is appended to the SUBMIT_BLOCK packet: `merkle_root (64) + nonce (8) + sig_len (2, BE) + signature (~690)`
-   - Legacy mode (no Falcon keys) still uses the simple format: `merkle_root (64) + nonce (8) = 72 bytes`
-   - Graceful fallback if signing fails (logs warning and submits without signature)
+   - SUBMIT_BLOCK payload kept at 72 bytes (merkle_root + nonce) - what gets stored in blockchain
+   - Falcon signature sent in separate "proof-of-work wrapper" packet BEFORE block submission
+   - Wrapper packet uses MINER_AUTH_RESPONSE opcode (209) with signature payload
+   - Both packets combined into single transmission for atomicity
+   - Graceful fallback to standard 72-byte submission if signing fails
 
 2. **Updated Documentation**:
-   - `PHASE2_INTEGRATION.md`: Updated block submission section to reflect nonce signing
-   - `docs/mining-llp-protocol.md`: Updated SUBMIT_BLOCK packet specification with both formats
+   - `PHASE2_INTEGRATION.md`: Updated to reflect packet wrapper architecture
+   - `docs/mining-llp-protocol.md`: Updated SUBMIT_BLOCK specification with wrapper approach
 
 ### Benefits
-- **Reward Attribution**: Cryptographic proof that this specific miner found this specific solution
-- **Security**: Prevents solution theft - even if someone intercepts the merkle root and nonce, they can't submit it without the miner's private key signature
-- **Non-repudiation**: Provides an audit trail of which miner solved which block
-- **Compatibility**: Maintains backward compatibility with legacy nodes through format detection
+- **No Blockchain Bloat**: Blocks remain 72 bytes - signature not stored permanently
+- **Cryptographic Proof**: Signature verifies miner ownership during transmission
+- **Efficient**: Node validates signature and signs block with producer credentials
+- **Backward Compatible**: Legacy nodes receive standard 72-byte packets
 
 ### Technical Details
-**New SUBMIT_BLOCK Format (with Falcon auth)**:
-```
-[merkle_root (64 bytes)]       // Block's merkle root (identifies the block template)
-[nonce (8 bytes)]              // Solution nonce found by miner
-[sig_len (2 bytes, BE)]        // Signature length (big-endian uint16, typically 690)
-[signature (~690 bytes)]       // Falcon-512 signature of the nonce bytes
-```
 
-**Total packet size**: ~764 bytes (64 + 8 + 2 + 690)
+**Packet Wrapper Architecture (with Falcon auth)**:
+```
+PACKET 1 (Proof-of-Work Wrapper):
+  Opcode: MINER_AUTH_RESPONSE (209)
+  Payload: [sig_len(2, BE)][signature(~690 bytes)]
+  Purpose: Prove miner ownership (NOT stored in blockchain)
+
+PACKET 2 (Block Submission):
+  Opcode: SUBMIT_BLOCK (1)
+  Payload: [merkle_root(64)][nonce(8)] = 72 bytes
+  Purpose: Submit block data (stored in blockchain)
+
+Both sent together in single transmission
+```
 
 **Legacy Format (no Falcon keys)**:
 ```
-[merkle_root (64 bytes)]
-[nonce (8 bytes)]
+PACKET (Block Submission only):
+  Opcode: SUBMIT_BLOCK (1)
+  Payload: [merkle_root(64)][nonce(8)] = 72 bytes
 ```
 
-**Total packet size**: 72 bytes
+### Workflow
+1. Miner finds valid nonce
+2. Miner signs nonce with Falcon private key
+3. Miner sends proof wrapper packet with signature
+4. Miner immediately sends SUBMIT_BLOCK packet (72 bytes)
+5. Node receives both packets together
+6. Node verifies signature from wrapper packet
+7. Node signs block with producer credentials
+8. Node stores 72-byte block in blockchain (signature NOT included)
 
 ### Code Changes
-- **Modified**: `src/protocol/src/protocol/solo.cpp` - Added nonce signing logic in `submit_block()`
+- **Modified**: `src/protocol/src/protocol/solo.cpp` - Implemented packet wrapper architecture
 - **Updated**: `PHASE2_INTEGRATION.md` - Block submission section
 - **Updated**: `docs/mining-llp-protocol.md` - SUBMIT_BLOCK packet specification
 
 ### Testing
 - ✅ Build verification: Code compiles successfully with no errors
-- ✅ Backward compatibility: Legacy mode path preserved for nodes without Falcon support
-- ⏳ Runtime testing: Requires LLL-TAO node with updated SUBMIT_BLOCK handler
+- ✅ Architecture: Signature sent separately, not embedded in block
+- ✅ Backward compatibility: Legacy mode path preserved
+- ⏳ Runtime testing: Requires LLL-TAO node with wrapper packet handler
 
 ## Conclusion
 
-This implementation successfully delivers the client-side Falcon authentication infrastructure for NexusMiner. The protocol flow is complete, configuration is flexible, logging is comprehensive, and the code is well-structured for easy integration of the real Falcon library. The stub crypto allows immediate protocol testing while the production crypto library is being integrated.
+This implementation successfully delivers the client-side Falcon authentication infrastructure for NexusMiner with an efficient packet wrapper architecture. The protocol flow is complete, configuration is flexible, logging is comprehensive, and the code is well-structured for easy integration of the real Falcon library.
 
-With the addition of nonce signing on block submissions, NexusMiner now provides end-to-end cryptographic security:
-1. Session authentication proves miner identity
-2. Nonce signatures prove solution ownership
-3. Together, these ensure proper reward attribution and prevent solution theft
+With the packet wrapper architecture:
+1. **Session authentication** proves miner identity
+2. **Proof-of-work wrapper** proves solution ownership (without blockchain bloat)
+3. **Efficient verification** - signature validated during transmission only
+4. **Lean blockchain** - blocks remain 72 bytes
 
 The implementation follows best practices:
 - Minimal changes (surgical approach)
@@ -235,3 +253,4 @@ The implementation follows best practices:
 - Well documented
 - Testable
 - Secure by design (once real Falcon integrated)
+- **Blockchain-friendly architecture** (no unnecessary bloat)

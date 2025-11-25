@@ -164,51 +164,73 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
 {
     m_logger->info("Submitting Block...");
 
-    Packet packet{ Packet::SUBMIT_BLOCK };
-    packet.m_data = std::make_shared<network::Payload>(block_data);
-    auto const nonce_data = uint2bytes64(nonce);
-    packet.m_data->insert(packet.m_data->end(), nonce_data.begin(), nonce_data.end());
+    // Phase 2: Implement packet wrapper architecture - keep block data at 72 bytes
+    // Send Falcon signature in a separate proof-of-work wrapper packet to avoid blockchain bloat
     
-    // Phase 2: For authenticated sessions with Falcon keys, sign the nonce to prove 
-    // this specific miner found this specific solution
+    auto const nonce_data = uint2bytes64(nonce);
+    
+    // For authenticated sessions with Falcon keys, create a proof-of-work signature packet first
     if (m_authenticated && !m_miner_privkey.empty()) {
-        m_logger->info("[Solo Phase 2] Signing nonce with Falcon private key for block submission");
+        m_logger->info("[Solo Phase 2] Creating proof-of-work signature wrapper for nonce");
         
         // Sign the nonce data with the miner's Falcon private key
         std::vector<uint8_t> signature;
-        if (!keys::falcon_sign(m_miner_privkey, nonce_data, signature)) {
-            m_logger->error("[Solo] Failed to sign nonce with Falcon private key");
-            m_logger->warn("[Solo] Submitting block without signature (may be rejected by node)");
-            // Continue to submit without signature - node will decide whether to accept
-        } else {
-            // Validate signature size before adding to packet
-            if (signature.size() > 65535) {
-                m_logger->error("[Solo] Signature size {} exceeds maximum uint16_t value (65535)", signature.size());
-                m_logger->warn("[Solo] Submitting block without signature (signature too large)");
-            } else {
-                // Add signature to packet: [signature_length(2, BE)][signature bytes]
+        if (keys::falcon_sign(m_miner_privkey, nonce_data, signature)) {
+            // Validate signature size
+            if (signature.size() <= 65535) {
+                // Create proof-of-work wrapper packet
+                // Using MINER_AUTH_RESPONSE format as a reusable signature packet
+                // Format: [sig_len(2, BE)][signature bytes]
+                std::vector<uint8_t> proof_payload;
                 uint16_t sig_len = static_cast<uint16_t>(signature.size());
-                packet.m_data->push_back((sig_len >> 8) & 0xFF);  // High byte
-                packet.m_data->push_back(sig_len & 0xFF);         // Low byte
-                packet.m_data->insert(packet.m_data->end(), signature.begin(), signature.end());
+                proof_payload.push_back((sig_len >> 8) & 0xFF);  // High byte
+                proof_payload.push_back(sig_len & 0xFF);         // Low byte
+                proof_payload.insert(proof_payload.end(), signature.begin(), signature.end());
                 
-                m_logger->info("[Solo Phase 2] Nonce signature added ({} bytes), total payload: {} bytes", 
-                              sig_len, packet.m_data->size());
+                // Create the proof packet (using MINER_AUTH_RESPONSE as wrapper)
+                Packet proof_packet{ Packet::MINER_AUTH_RESPONSE, std::make_shared<network::Payload>(proof_payload) };
+                
+                // Create the actual SUBMIT_BLOCK packet (72 bytes: merkle_root + nonce)
+                Packet submit_packet{ Packet::SUBMIT_BLOCK };
+                submit_packet.m_data = std::make_shared<network::Payload>(block_data);
+                submit_packet.m_data->insert(submit_packet.m_data->end(), nonce_data.begin(), nonce_data.end());
+                submit_packet.m_length = 72;
+                
+                // Combine both packets into a single transmission
+                // The node will receive proof packet first, then the block submission
+                auto proof_bytes = proof_packet.get_bytes();
+                auto submit_bytes = submit_packet.get_bytes();
+                
+                network::Payload combined;
+                combined.insert(combined.end(), proof_bytes->begin(), proof_bytes->end());
+                combined.insert(combined.end(), submit_bytes->begin(), submit_bytes->end());
+                
+                m_logger->info("[Solo Phase 2] Submitting block with proof-of-work wrapper (proof: {} bytes, block: 72 bytes, session: 0x{:08x})", 
+                              proof_payload.size(), m_session_id);
+                
+                return std::make_shared<network::Payload>(combined);
+            } else {
+                m_logger->error("[Solo] Signature size {} exceeds maximum uint16_t value (65535)", signature.size());
             }
-        }
-        
-        // Update packet length to actual payload size
-        packet.m_length = packet.m_data->size();
-        m_logger->info("[Solo Phase 2] Submitting authenticated block (session: 0x{:08x})", m_session_id);
-    } else {
-        // Legacy mode or no Falcon keys: merkle_root (64 bytes) + nonce (8 bytes) = 72 bytes total
-        packet.m_length = 72;
-        
-        if (m_authenticated) {
-            m_logger->info("[Solo Phase 2] Submitting authenticated block without nonce signature (session: 0x{:08x})", m_session_id);
         } else {
-            m_logger->info("[Solo] Submitting block (legacy mode - no authentication)");
+            m_logger->error("[Solo] Failed to sign nonce with Falcon private key");
         }
+        
+        // If signing failed, fall through to standard submission
+        m_logger->warn("[Solo] Submitting block without proof-of-work signature (may be rejected by node)");
+    }
+    
+    // Standard SUBMIT_BLOCK packet (72 bytes: merkle_root + nonce)
+    // Used for legacy mode or if signing failed
+    Packet packet{ Packet::SUBMIT_BLOCK };
+    packet.m_data = std::make_shared<network::Payload>(block_data);
+    packet.m_data->insert(packet.m_data->end(), nonce_data.begin(), nonce_data.end());
+    packet.m_length = 72;
+    
+    if (m_authenticated) {
+        m_logger->info("[Solo Phase 2] Submitting standard block (session: 0x{:08x})", m_session_id);
+    } else {
+        m_logger->info("[Solo] Submitting block (legacy mode - no authentication)");
     }
 
     return packet.get_bytes();  
