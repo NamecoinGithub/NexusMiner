@@ -30,6 +30,9 @@ public:
     void set_address(std::string const& address) { m_address = address; }
 
 private:
+    
+    // Helper method to send SET_CHANNEL packet
+    void send_set_channel(std::shared_ptr<network::Connection> connection);
 
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;
