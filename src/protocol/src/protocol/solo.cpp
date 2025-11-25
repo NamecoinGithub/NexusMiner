@@ -179,20 +179,27 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         if (!keys::falcon_sign(m_miner_privkey, nonce_data, signature)) {
             m_logger->error("[Solo] Failed to sign nonce with Falcon private key");
             m_logger->warn("[Solo] Submitting block without signature (may be rejected by node)");
+            // Continue to submit without signature - node will decide whether to accept
         } else {
-            // Add signature to packet: [signature_length(2, BE)][signature bytes]
-            uint16_t sig_len = static_cast<uint16_t>(signature.size());
-            packet.m_data->push_back((sig_len >> 8) & 0xFF);  // High byte
-            packet.m_data->push_back(sig_len & 0xFF);         // Low byte
-            packet.m_data->insert(packet.m_data->end(), signature.begin(), signature.end());
-            
-            m_logger->info("[Solo Phase 2] Nonce signature added ({} bytes), total payload: {} bytes", 
-                          sig_len, packet.m_data->size());
+            // Validate signature size before adding to packet
+            if (signature.size() > 65535) {
+                m_logger->error("[Solo] Signature size {} exceeds maximum uint16_t value (65535)", signature.size());
+                m_logger->warn("[Solo] Submitting block without signature (signature too large)");
+            } else {
+                // Add signature to packet: [signature_length(2, BE)][signature bytes]
+                uint16_t sig_len = static_cast<uint16_t>(signature.size());
+                packet.m_data->push_back((sig_len >> 8) & 0xFF);  // High byte
+                packet.m_data->push_back(sig_len & 0xFF);         // Low byte
+                packet.m_data->insert(packet.m_data->end(), signature.begin(), signature.end());
+                
+                m_logger->info("[Solo Phase 2] Nonce signature added ({} bytes), total payload: {} bytes", 
+                              sig_len, packet.m_data->size());
+            }
         }
         
         // Update packet length to actual payload size
         packet.m_length = packet.m_data->size();
-        m_logger->info("[Solo Phase 2] Submitting authenticated block with signed nonce (session: 0x{:08x})", m_session_id);
+        m_logger->info("[Solo Phase 2] Submitting authenticated block (session: 0x{:08x})", m_session_id);
     } else {
         // Legacy mode or no Falcon keys: merkle_root (64 bytes) + nonce (8 bytes) = 72 bytes total
         packet.m_length = 72;
