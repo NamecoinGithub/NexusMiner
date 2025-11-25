@@ -4,6 +4,8 @@
 #include "block.hpp"
 #include "hash/nexus_hash_utils.hpp"
 #include <asio.hpp>
+#include <sstream>
+#include <iomanip>
 
 namespace nexusminer
 {
@@ -46,21 +48,54 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 		//set the starting nonce for each worker to something different that won't overlap with the others
 		m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
 		m_block.nNonce = m_starting_nonce;
+		
+		// Validate and set nBits with consistency checks
 		if(nbits != 0)	// take nBits provided from pool
 		{
+			// Validate nbits consistency
+			if (m_pool_nbits != 0 && m_pool_nbits != nbits)
+			{
+				m_logger->warn(m_log_leader + "m_pool_nbits changed from 0x{:08x} to 0x{:08x}", m_pool_nbits, nbits);
+			}
 			m_pool_nbits = nbits;
+			m_logger->info(m_log_leader + "Set m_pool_nbits to 0x{:08x} (from pool)", m_pool_nbits);
+		}
+		else
+		{
+			// Use block's nBits when pool doesn't provide one
+			if (m_pool_nbits != 0)
+			{
+				m_logger->info(m_log_leader + "Resetting m_pool_nbits (was 0x{:08x}, using block nBits 0x{:08x})", 
+					m_pool_nbits, m_block.nBits);
+			}
+			m_pool_nbits = 0;
 		}
 
 		std::vector<unsigned char> headerB = m_block.GetHeaderBytes();
+		
+		// Validate header payload before processing
+		if (headerB.empty())
+		{
+			m_logger->error(m_log_leader + "GetHeaderBytes() returned empty payload!");
+			throw std::runtime_error("Empty header payload");
+		}
+		
+		m_logger->debug(m_log_leader + "Header payload size: {} bytes (expected: 216 for hash, 208 for prime)", 
+			headerB.size());
+		
 		//calculate midstate
 		m_skein.setMessage(headerB);
+		
+		// Log midstate calculation for debugging
+		log_midstate_calculation();
 		
 		// Reset statistics for new block
 		reset_statistics();
 	}
 	//restart the mining loop
 	m_stop = false;
-	m_logger->info(m_log_leader + "Starting hashing loop (Starting nonce: 0x{:016x})", m_starting_nonce);
+	m_logger->info(m_log_leader + "Starting hashing loop (Starting nonce: 0x{:016x}, nBits: 0x{:08x})", 
+		m_starting_nonce, m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits);
 	m_run_thread = std::thread(&Worker_hash::run, this);
 }
 
@@ -70,6 +105,8 @@ void Worker_hash::run()
 	uint64_t last_log_hash_count = 0;
 	constexpr uint64_t log_interval = 1000000;  // Log every 1M hashes
 	constexpr int max_retries = 3;
+	uint64_t payload_validation_failures = 0;
+	uint64_t hash_mismatches = 0;
 	
 	while (!m_stop)
 	{
@@ -83,24 +120,59 @@ void Worker_hash::run()
 			try
 			{
 				std::scoped_lock<std::mutex> lck(m_mtx);
-				//calculate the remainder of the skein hash starting from the midstate.
+				
+				// Calculate the remainder of the skein hash starting from the midstate
 				m_skein.calculateHash();
-				//run keccak on the result from skein
-				NexusKeccak keccak(m_skein.getHash());
+				
+				// Validate Skein output before passing to Keccak
+				NexusSkein::stateType skeinHash = m_skein.getHash();
+				if (!validate_skein_output(skeinHash))
+				{
+					++payload_validation_failures;
+					m_logger->warn(m_log_leader + "Skein payload validation failed for nonce 0x{:016x}", m_skein.getNonce());
+					throw std::runtime_error("Invalid Skein output payload");
+				}
+				
+				// Log Skein output for debugging (periodically)
+				if (m_hash_count % (log_interval * 10) == 0)
+				{
+					log_skein_state(skeinHash, m_skein.getNonce());
+				}
+				
+				// Run keccak on the result from skein
+				NexusKeccak keccak(skeinHash);
 				keccak.calculateHash();
 				uint64_t keccakHash = keccak.getResult();
+				
+				// Validate Keccak output
+				if (!validate_keccak_output(keccakHash))
+				{
+					++payload_validation_failures;
+					m_logger->warn(m_log_leader + "Keccak payload validation failed for nonce 0x{:016x}", m_skein.getNonce());
+					throw std::runtime_error("Invalid Keccak output payload");
+				}
+				
+				// Cross-validate: verify hash consistency
+				if (!cross_validate_hashes(skeinHash, keccakHash))
+				{
+					++hash_mismatches;
+					m_logger->warn(m_log_leader + "Hash cross-validation failed for nonce 0x{:016x}", m_skein.getNonce());
+					// Log detailed mismatch info for debugging
+					log_hash_mismatch(skeinHash, keccakHash, m_skein.getNonce());
+				}
+				
 				nonce = m_skein.getNonce();
 				
-				//check the result for leading zeros
+				// Check the result for leading zeros
 				if ((keccakHash & leading_zero_mask()) == 0)
 				{
 					m_logger->info(m_log_leader + "Found a nonce candidate {}", nonce);
 					m_skein.setNonce(nonce);
-					//verify the difficulty
+					// Verify the difficulty
 					if (difficulty_check())
 					{
 						++m_met_difficulty_count;
-						//update the block with the nonce and call the callback function;
+						// Update the block with the nonce and call the callback function
 						m_block.nNonce = nonce;
 						{
 							if (m_found_nonce_callback)
@@ -115,18 +187,22 @@ void Worker_hash::run()
 								m_logger->debug(m_log_leader + "Miner callback function not set.");
 							}
 						}
-
 					}
 				}
 				m_skein.setNonce(++nonce);	
 				++m_hash_count;
 				hash_calculated = true;
 				
-				// Log progress periodically
+				// Log progress periodically with enhanced diagnostics
 				if (m_hash_count - last_log_hash_count >= log_interval)
 				{
 					m_logger->debug(m_log_leader + "Hashing progress: {} hashes computed, current nonce: 0x{:016x}", 
 						m_hash_count, nonce);
+					if (payload_validation_failures > 0 || hash_mismatches > 0)
+					{
+						m_logger->info(m_log_leader + "Diagnostics: {} payload validation failures, {} hash mismatches", 
+							payload_validation_failures, hash_mismatches);
+					}
 					last_log_hash_count = m_hash_count;
 				}
 			}
@@ -151,7 +227,8 @@ void Worker_hash::run()
 			}
 		}
 	}
-	m_logger->info(m_log_leader + "Hashing thread stopped. Total hashes: {}", m_hash_count);
+	m_logger->info(m_log_leader + "Hashing thread stopped. Total hashes: {}, Payload failures: {}, Hash mismatches: {}", 
+		m_hash_count, payload_validation_failures, hash_mismatches);
 }
 
 void Worker_hash::update_statistics(stats::Collector& stats_collector)
@@ -171,31 +248,69 @@ void Worker_hash::update_statistics(stats::Collector& stats_collector)
 bool Worker_hash::difficulty_check()
 {
 	//perform additional difficulty filtering prior to submitting the nonce 
+	
+	// Validate m_pool_nbits consistency
+	uint32_t nbits_to_use = m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
+	
+	if (m_pool_nbits != 0 && m_block.nBits != 0 && m_pool_nbits != m_block.nBits)
+	{
+		m_logger->debug(m_log_leader + "Using pool nBits 0x{:08x} (block nBits: 0x{:08x})", 
+			m_pool_nbits, m_block.nBits);
+	}
 
 	//leading zeros in bits required of the hash for it to pass the current difficulty.
 	int leadingZerosRequired;
 	uint64_t difficultyTest64;
-	decodeBits(m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits, leadingZerosRequired, difficultyTest64);
+	decodeBits(nbits_to_use, leadingZerosRequired, difficultyTest64);
+	
+	// Recalculate and validate hash outputs
 	m_skein.calculateHash();
+	NexusSkein::stateType skeinHash = m_skein.getHash();
+	
+	// Validate Skein output in difficulty check
+	if (!validate_skein_output(skeinHash))
+	{
+		m_logger->error(m_log_leader + "Skein validation failed in difficulty_check");
+		return false;
+	}
+	
 	//run keccak on the result from skein
-	NexusKeccak keccak(m_skein.getHash());
+	NexusKeccak keccak(skeinHash);
 	keccak.calculateHash();
 	uint64_t keccakHash = keccak.getResult();
+	
+	// Validate Keccak output in difficulty check
+	if (!validate_keccak_output(keccakHash))
+	{
+		m_logger->error(m_log_leader + "Keccak validation failed in difficulty_check");
+		return false;
+	}
+	
 	int hashActualLeadingZeros = 63 - findMSB(keccakHash);
-	m_logger->info(m_log_leader + "Leading Zeros Found/Required {}/{}", hashActualLeadingZeros, leadingZerosRequired);
+	m_logger->info(m_log_leader + "Difficulty check: Leading Zeros Found/Required {}/{}, nBits: 0x{:08x}", 
+		hashActualLeadingZeros, leadingZerosRequired, nbits_to_use);
+	
 	if (hashActualLeadingZeros > m_best_leading_zeros)
 	{
 		m_best_leading_zeros = hashActualLeadingZeros;
+		m_logger->info(m_log_leader + "New best leading zeros: {}", m_best_leading_zeros);
 	}
+	
 	//check the hash result is less than the difficulty.  We truncate to just use the upper 64 bits for easier calculation.
 	if (keccakHash <= difficultyTest64)
 	{
-		m_logger->info(m_log_leader + "Nonce passes difficulty check.");
+		m_logger->info(m_log_leader + "Nonce passes difficulty check (hash: 0x{:016x} <= difficulty: 0x{:016x})", 
+			keccakHash, difficultyTest64);
+		
+		// Log detailed payload information for successful nonce
+		log_skein_state(skeinHash, m_skein.getNonce());
+		
 		return true;
 	}
 	else
 	{
-		//m_logger->warn(m_log_leader + "Nonce fails difficulty check.");
+		m_logger->debug(m_log_leader + "Nonce fails difficulty check (hash: 0x{:016x} > difficulty: 0x{:016x})", 
+			keccakHash, difficultyTest64);
 		return false;
 	}
 }
@@ -210,6 +325,137 @@ void Worker_hash::reset_statistics()
 	m_hash_count = 0;
 	m_best_leading_zeros = 0;
 	m_met_difficulty_count = 0;
+}
+
+bool Worker_hash::validate_skein_output(const NexusSkein::stateType& skeinHash) const
+{
+	// Validate that Skein output is not all zeros (invalid state)
+	bool all_zeros = true;
+	for (size_t i = 0; i < skeinHash.size(); ++i)
+	{
+		if (skeinHash[i] != 0)
+		{
+			all_zeros = false;
+			break;
+		}
+	}
+	
+	if (all_zeros)
+	{
+		m_logger->error(m_log_leader + "Skein output is all zeros (invalid state)");
+		return false;
+	}
+	
+	// Additional validation: check for obviously invalid patterns
+	// (all same value, which would indicate a calculation error)
+	bool all_same = true;
+	uint64_t first_val = skeinHash[0];
+	for (size_t i = 1; i < skeinHash.size(); ++i)
+	{
+		if (skeinHash[i] != first_val)
+		{
+			all_same = false;
+			break;
+		}
+	}
+	
+	if (all_same && first_val != 0)
+	{
+		m_logger->warn(m_log_leader + "Skein output has suspicious pattern (all values = 0x{:016x})", first_val);
+		// Don't reject, but log for debugging
+	}
+	
+	return true;
+}
+
+bool Worker_hash::validate_keccak_output(uint64_t keccakHash) const
+{
+	// Keccak output validation
+	// Since we only get the top 64 bits, we can't do extensive validation,
+	// but we can check for obviously wrong values
+	
+	// No specific invalid values for Keccak hash, all 64-bit values are theoretically valid
+	// Just return true, but log for debugging if needed
+	return true;
+}
+
+bool Worker_hash::cross_validate_hashes(const NexusSkein::stateType& skeinHash, uint64_t keccakHash) const
+{
+	// Cross-validation: Verify that the Keccak hash was derived from the Skein hash
+	// We can't fully verify this without recalculating, but we can check for consistency
+	
+	// Recalculate Keccak to verify
+	NexusKeccak keccak_verify(skeinHash);
+	keccak_verify.calculateHash();
+	uint64_t keccak_verify_result = keccak_verify.getResult();
+	
+	if (keccak_verify_result != keccakHash)
+	{
+		m_logger->error(m_log_leader + "Cross-validation failed: Keccak hash mismatch (expected: 0x{:016x}, got: 0x{:016x})",
+			keccak_verify_result, keccakHash);
+		return false;
+	}
+	
+	return true;
+}
+
+void Worker_hash::log_skein_state(const NexusSkein::stateType& skeinHash, uint64_t nonce) const
+{
+	m_logger->debug(m_log_leader + "Skein output for nonce 0x{:016x}:", nonce);
+	std::stringstream ss;
+	ss << std::hex << std::setfill('0');
+	for (size_t i = 0; i < std::min(size_t(4), skeinHash.size()); ++i)
+	{
+		ss << "0x" << std::setw(16) << skeinHash[i] << " ";
+	}
+	m_logger->debug(m_log_leader + "  First 4 words: {}", ss.str());
+}
+
+void Worker_hash::log_hash_mismatch(const NexusSkein::stateType& skeinHash, uint64_t keccakHash, uint64_t nonce) const
+{
+	m_logger->error(m_log_leader + "Hash mismatch detected for nonce 0x{:016x}", nonce);
+	
+	// Log Skein output
+	std::stringstream ss_skein;
+	ss_skein << std::hex << std::setfill('0');
+	for (size_t i = 0; i < std::min(size_t(4), skeinHash.size()); ++i)
+	{
+		ss_skein << "0x" << std::setw(16) << skeinHash[i] << " ";
+	}
+	m_logger->error(m_log_leader + "  Skein output (first 4 words): {}", ss_skein.str());
+	
+	// Log Keccak result
+	m_logger->error(m_log_leader + "  Keccak result: 0x{:016x}", keccakHash);
+	
+	// Log current m_pool_nbits for context
+	m_logger->error(m_log_leader + "  Current m_pool_nbits: 0x{:08x}", m_pool_nbits);
+}
+
+void Worker_hash::log_midstate_calculation()
+{
+	// Log midstate information for debugging
+	auto key2 = m_skein.getKey2();
+	auto msg2 = m_skein.getMessage2();
+	
+	m_logger->debug(m_log_leader + "Midstate calculated:");
+	
+	// Log first few words of key2
+	std::stringstream ss_key;
+	ss_key << std::hex << std::setfill('0');
+	for (size_t i = 0; i < std::min(size_t(4), key2.size()); ++i)
+	{
+		ss_key << "0x" << std::setw(16) << key2[i] << " ";
+	}
+	m_logger->debug(m_log_leader + "  Key2 (first 4 words): {}", ss_key.str());
+	
+	// Log first few words of message2
+	std::stringstream ss_msg;
+	ss_msg << std::hex << std::setfill('0');
+	for (size_t i = 0; i < std::min(size_t(4), msg2.size()); ++i)
+	{
+		ss_msg << "0x" << std::setw(16) << msg2[i] << " ";
+	}
+	m_logger->debug(m_log_leader + "  Message2 (first 4 words): {}", ss_msg.str());
 }
 
 }

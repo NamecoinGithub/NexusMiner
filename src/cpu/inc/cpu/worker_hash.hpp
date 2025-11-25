@@ -38,6 +38,14 @@ private:
     void run();
     bool difficulty_check();
     std::uint64_t leading_zero_mask();  
+    
+    // Validation and debugging methods
+    bool validate_skein_output(const NexusSkein::stateType& skeinHash) const;
+    bool validate_keccak_output(uint64_t keccakHash) const;
+    bool cross_validate_hashes(const NexusSkein::stateType& skeinHash, uint64_t keccakHash) const;
+    void log_skein_state(const NexusSkein::stateType& skeinHash, uint64_t nonce) const;
+    void log_hash_mismatch(const NexusSkein::stateType& skeinHash, uint64_t keccakHash, uint64_t nonce) const;
+    void log_midstate_calculation();
  
 
     //Poor man's difficulty.  Report any nonces with at least this many leading zeros. Let the software perform additional filtering. 
