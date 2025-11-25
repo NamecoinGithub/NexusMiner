@@ -431,9 +431,16 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 (acked_channel == 1) ? "prime" : "hash");
         }
         
-        // Channel is set, now request height/difficulty before requesting work
-        m_logger->info("[Solo Phase 2] Channel set successfully, requesting blockchain height");
-        connection->transmit(get_height());
+        // Stateless mining: Request work directly via GET_BLOCK (no GET_HEIGHT polling)
+        // Legacy mining: Still uses GET_HEIGHT polling triggered by timer in worker_manager
+        if (m_authenticated) {
+            m_logger->info("[Solo Phase 2] Channel set successfully, requesting initial work via GET_BLOCK");
+            connection->transmit(get_work());
+        } else {
+            // Legacy mode may still need height for initial sync
+            m_logger->info("[Solo Legacy] Channel set successfully, requesting blockchain height");
+            connection->transmit(get_height());
+        }
     }
     else
     {
