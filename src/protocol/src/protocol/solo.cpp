@@ -190,21 +190,29 @@ network::Shared_payload Solo::submit_data_packet(std::vector<std::uint8_t> const
     m_logger->info("[Solo Data Packet] Submitting block with Data Packet wrapper...");
     
     // Validate merkle root size
-    if (merkle_root.size() != 64) {
-        m_logger->error("[Solo Data Packet] Invalid merkle root size: {} (expected 64 bytes)", merkle_root.size());
+    if (merkle_root.size() != llp::MERKLE_ROOT_SIZE) {
+        m_logger->error("[Solo Data Packet] Invalid merkle root size: {} (expected {} bytes)", 
+            merkle_root.size(), llp::MERKLE_ROOT_SIZE);
         // Fall back to legacy submit_block
         return submit_block(merkle_root, nonce);
     }
     
-    // Check if we have Falcon keys for signing
+    // Validate Falcon private key is available and properly formatted
     if (m_miner_privkey.empty()) {
         m_logger->warn("[Solo Data Packet] No Falcon private key available - falling back to legacy SUBMIT_BLOCK");
         return submit_block(merkle_root, nonce);
     }
     
+    // Validate private key size (Falcon-512 private key should be 1281 bytes)
+    if (m_miner_privkey.size() != 1281) {
+        m_logger->warn("[Solo Data Packet] Falcon private key has unexpected size: {} bytes (expected 1281) - falling back to legacy SUBMIT_BLOCK", 
+            m_miner_privkey.size());
+        return submit_block(merkle_root, nonce);
+    }
+    
     // Build the data to sign: merkle_root (64 bytes) + nonce (8 bytes)
     std::vector<uint8_t> data_to_sign;
-    data_to_sign.reserve(72);
+    data_to_sign.reserve(llp::DATA_TO_SIGN_SIZE);
     data_to_sign.insert(data_to_sign.end(), merkle_root.begin(), merkle_root.end());
     
     // Append nonce in big-endian format

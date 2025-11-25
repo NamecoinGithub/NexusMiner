@@ -11,6 +11,14 @@ namespace nexusminer
 namespace llp
 {
 
+// Data Packet size constants
+static constexpr std::size_t MERKLE_ROOT_SIZE = 64;  // uint512_t = 64 bytes
+static constexpr std::size_t NONCE_SIZE = 8;         // uint64_t = 8 bytes
+static constexpr std::size_t SIG_LEN_SIZE = 2;       // uint16_t = 2 bytes
+static constexpr std::size_t MIN_PACKET_SIZE = MERKLE_ROOT_SIZE + NONCE_SIZE + SIG_LEN_SIZE;  // 74 bytes
+static constexpr std::size_t DATA_TO_SIGN_SIZE = MERKLE_ROOT_SIZE + NONCE_SIZE;  // 72 bytes
+static constexpr std::size_t MAX_SIGNATURE_SIZE = 65535;  // Max size for uint16_t length field
+
 /**
  * @brief Data Packet structure for block submission
  * 
@@ -70,13 +78,23 @@ struct DataPacket
      */
     std::vector<uint8_t> serialize() const
     {
+        // Validate merkle root size
+        if (merkle_root.size() != MERKLE_ROOT_SIZE) {
+            throw std::runtime_error("Data Packet: merkle_root must be exactly " + 
+                std::to_string(MERKLE_ROOT_SIZE) + " bytes");
+        }
+        
+        // Validate signature size fits in uint16_t
+        if (signature.size() > MAX_SIGNATURE_SIZE) {
+            throw std::runtime_error("Data Packet: signature size " + 
+                std::to_string(signature.size()) + " exceeds maximum " + 
+                std::to_string(MAX_SIGNATURE_SIZE) + " bytes");
+        }
+        
         std::vector<uint8_t> data;
-        data.reserve(64 + 8 + 2 + signature.size());
+        data.reserve(MERKLE_ROOT_SIZE + NONCE_SIZE + SIG_LEN_SIZE + signature.size());
         
         // 1. Merkle root (64 bytes)
-        if (merkle_root.size() != 64) {
-            throw std::runtime_error("Data Packet: merkle_root must be exactly 64 bytes");
-        }
         data.insert(data.end(), merkle_root.begin(), merkle_root.end());
         
         // 2. Nonce (8 bytes, big-endian)
@@ -109,17 +127,18 @@ struct DataPacket
      */
     static DataPacket deserialize(std::vector<uint8_t> const& data)
     {
-        // Minimum size: 64 (merkle) + 8 (nonce) + 2 (sig_len) + 0 (sig) = 74 bytes
-        if (data.size() < 74) {
-            throw std::runtime_error("Data Packet: insufficient data for deserialization");
+        // Validate minimum size
+        if (data.size() < MIN_PACKET_SIZE) {
+            throw std::runtime_error("Data Packet: insufficient data for deserialization (need at least " +
+                std::to_string(MIN_PACKET_SIZE) + " bytes, got " + std::to_string(data.size()) + ")");
         }
         
         std::size_t offset = 0;
         DataPacket packet;
         
         // 1. Merkle root (64 bytes)
-        packet.merkle_root.assign(data.begin(), data.begin() + 64);
-        offset += 64;
+        packet.merkle_root.assign(data.begin(), data.begin() + MERKLE_ROOT_SIZE);
+        offset += MERKLE_ROOT_SIZE;
         
         // 2. Nonce (8 bytes, big-endian)
         packet.nonce = 
@@ -131,18 +150,21 @@ struct DataPacket
             (static_cast<uint64_t>(data[offset + 5]) << 16) |
             (static_cast<uint64_t>(data[offset + 6]) << 8) |
             static_cast<uint64_t>(data[offset + 7]);
-        offset += 8;
+        offset += NONCE_SIZE;
         
         // 3. Signature length (2 bytes, big-endian)
         uint16_t sig_len = 
             (static_cast<uint16_t>(data[offset]) << 8) |
             static_cast<uint16_t>(data[offset + 1]);
-        offset += 2;
+        offset += SIG_LEN_SIZE;
         
-        // 4. Signature bytes
-        if (data.size() < offset + sig_len) {
-            throw std::runtime_error("Data Packet: insufficient data for signature");
+        // 4. Validate sufficient data for signature (prevent integer overflow)
+        if (sig_len > data.size() - offset) {
+            throw std::runtime_error("Data Packet: insufficient data for signature (need " +
+                std::to_string(sig_len) + " bytes, have " + std::to_string(data.size() - offset) + ")");
         }
+        
+        // 5. Extract signature bytes
         packet.signature.assign(data.begin() + offset, data.begin() + offset + sig_len);
         
         return packet;
@@ -154,7 +176,7 @@ struct DataPacket
      */
     std::size_t size() const
     {
-        return 64 + 8 + 2 + signature.size();
+        return MERKLE_ROOT_SIZE + NONCE_SIZE + SIG_LEN_SIZE + signature.size();
     }
 };
 

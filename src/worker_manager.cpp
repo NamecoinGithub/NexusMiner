@@ -77,6 +77,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         }
         
         m_miner_protocol = solo_protocol;
+        m_solo_protocol = solo_protocol;  // Cache for performance (avoid dynamic_cast)
     } 
   
     create_stats_printers();
@@ -304,11 +305,11 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                                 if (self->m_connection)
                                 {
                                     // Check if we're using solo protocol with Falcon keys (for Data Packet)
-                                    auto solo_protocol = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol);
-                                    if (solo_protocol && self->m_config.has_miner_falcon_keys())
+                                    // Use cached pointer to avoid dynamic_cast overhead
+                                    if (self->m_solo_protocol && self->m_config.has_miner_falcon_keys())
                                     {
                                         // Use Data Packet with signature
-                                        self->m_connection->transmit(solo_protocol->submit_data_packet(
+                                        self->m_connection->transmit(self->m_solo_protocol->submit_data_packet(
                                             block_data->merkle_root.GetBytes(), block_data->nNonce));
                                     }
                                     else
