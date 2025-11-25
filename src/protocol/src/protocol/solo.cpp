@@ -99,10 +99,12 @@ network::Shared_payload Solo::login(Login_handler handler)
         // No Falcon keys configured - use legacy path (direct SET_CHANNEL)
         m_logger->info("[Solo Legacy] No Falcon keys configured, using legacy authentication");
         
+        // Note: login() must return packet bytes (not transmit) because it's called
+        // before the connection is fully established. send_set_channel() is for use
+        // within process_messages() where connection is available.
         std::string channel_name = (m_channel == 1) ? "prime" : "hash";
         m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
         
-        // LLL-TAO expects 1-byte payload for SET_CHANNEL (Phase 2 update)
         std::vector<uint8_t> channel_data(1, m_channel);
         Packet packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(channel_data) };
         
@@ -401,13 +403,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
             
             // Now send SET_CHANNEL since we're authenticated
-            std::string channel_name = (m_channel == 1) ? "prime" : "hash";
-            m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
-            
-            // Phase 2: Send 1-byte payload for SET_CHANNEL
-            std::vector<uint8_t> channel_data(1, m_channel);
-            Packet set_channel_packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(channel_data) };
-            connection->transmit(set_channel_packet.get_bytes());
+            send_set_channel(connection);
         }
         else {
             m_authenticated = false;
@@ -417,6 +413,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->error("[Solo]   - Invalid key format in miner.conf (must be valid hex strings)");
             m_logger->error("[Solo]   - Falcon signature verification failed (key mismatch or corruption)");
             m_logger->error("[Solo]   - Node missing Phase 2 stateless miner support");
+            m_logger->info("[Solo] Falling back to legacy mode (no authentication)");
+            
+            // Fall back to legacy mode: send SET_CHANNEL without authentication
+            send_set_channel(connection);
         }
     }
     else if (packet.m_header == Packet::CHANNEL_ACK)
@@ -431,9 +431,16 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 (acked_channel == 1) ? "prime" : "hash");
         }
         
-        // Channel is set, now request height/difficulty before requesting work
-        m_logger->info("[Solo Phase 2] Channel set successfully, requesting blockchain height");
-        connection->transmit(get_height());
+        // Stateless mining: Request work directly (no GET_HEIGHT polling)
+        // Legacy mining: Uses GET_HEIGHT polling triggered by timer, but needs initial height sync
+        if (m_authenticated) {
+            m_logger->info("[Solo Phase 2] Channel set successfully, requesting initial work via GET_BLOCK");
+            connection->transmit(get_work());
+        } else {
+            // Legacy mode: Get initial height to synchronize before timer-based polling starts
+            m_logger->info("[Solo Legacy] Channel set successfully, requesting initial blockchain height");
+            connection->transmit(get_height());
+        }
     }
     else
     {
@@ -447,6 +454,16 @@ void Solo::set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_
     m_miner_privkey = privkey;
     m_logger->info("[Solo] Miner Falcon keys configured (pubkey: {} bytes, privkey: {} bytes)", 
         pubkey.size(), privkey.size());
+}
+
+void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
+{
+    std::string channel_name = (m_channel == 1) ? "prime" : "hash";
+    m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
+    
+    std::vector<uint8_t> channel_data(1, m_channel);
+    Packet set_channel_packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(channel_data) };
+    connection->transmit(set_channel_packet.get_bytes());
 }
 
 }
