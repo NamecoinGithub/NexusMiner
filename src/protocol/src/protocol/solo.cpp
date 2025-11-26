@@ -109,7 +109,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     // Validate payload is properly constructed
     if (payload.empty()) {
         m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_INIT payload is empty! Cannot proceed with authentication.");
-        m_logger->error("[Solo Auth] This may indicate an issue with key configuration or internal error.");
+        m_logger->error("[Solo Auth] This may indicate an issue with key configuration or an internal error.");
         m_logger->error("[Solo Auth] Please verify:");
         m_logger->error("[Solo Auth]   1. Keys are properly formatted hex strings in miner.conf");
         m_logger->error("[Solo Auth]   2. Keys were generated with ./NexusMiner --create-keys");
@@ -125,7 +125,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     auto packet_bytes = packet.get_bytes();
     if (!packet_bytes || packet_bytes->empty()) {
         m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_INIT packet encoding failed! get_bytes() returned empty.");
-        m_logger->error("[Solo Auth] This indicates a packet serialization error");
+        m_logger->error("[Solo Auth] This indicates a packet serialization error - please check system resources and try again");
         handler(false);
         return network::Shared_payload{};
     }

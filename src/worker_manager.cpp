@@ -301,8 +301,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     }
                     else
                     {
-                        // Solo mining with Falcon auth uses stateless protocol (no GET_HEIGHT)
-                        // All solo mining now requires Falcon authentication
+                        // Solo mining uses stateless protocol with mandatory Falcon authentication (no GET_HEIGHT)
                         self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
                         self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
                     }
