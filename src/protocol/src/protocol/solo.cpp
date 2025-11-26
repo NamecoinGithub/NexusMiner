@@ -25,6 +25,8 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_session_id{0}
 , m_address{"127.0.0.1"}  // Default address, can be overridden
 , m_auth_timestamp{0}
+, m_falcon_wrapper{nullptr}
+, m_block_signing_enabled{false}  // Disabled by default for performance
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -80,32 +82,58 @@ network::Shared_payload Solo::login(Login_handler handler)
     // Get current timestamp (8-byte little-endian Unix timestamp)
     m_auth_timestamp = static_cast<uint64_t>(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
     
-    // Build auth message: address + timestamp
-    std::vector<uint8_t> auth_message;
-    auth_message.insert(auth_message.end(), m_address.begin(), m_address.end());
-    
-    // Append timestamp (8 bytes, little-endian)
-    for (int i = 0; i < 8; ++i) {
-        auth_message.push_back((m_auth_timestamp >> (i * 8)) & 0xFF);
-    }
-    
-    m_logger->info("[Solo Auth] Auth message structure:");
+    m_logger->info("[Solo Auth] Auth message parameters:");
     m_logger->info("[Solo Auth]   - Address: '{}' ({} bytes)", m_address, m_address.size());
-    m_logger->info("[Solo Auth]   - Timestamp: {} (0x{:016x}, {} bytes LE)", 
-        m_auth_timestamp, m_auth_timestamp, 8);
-    m_logger->info("[Solo Auth]   - Total auth message size: {} bytes", auth_message.size());
+    m_logger->info("[Solo Auth]   - Timestamp: {} (0x{:016x})", m_auth_timestamp, m_auth_timestamp);
     
-    // Sign the auth message with Falcon private key
+    // Use Falcon Signature Wrapper for authentication signature
     std::vector<uint8_t> signature;
-    if (!keys::falcon_sign(m_miner_privkey, auth_message, signature)) {
-        m_logger->error("[Solo Auth] CRITICAL: Failed to sign auth message with Falcon private key");
-        m_logger->error("[Solo Auth]   - Private key size: {} bytes", m_miner_privkey.size());
-        m_logger->error("[Solo Auth]   - Auth message size: {} bytes", auth_message.size());
-        m_logger->error("[Solo Auth] Possible causes:");
-        m_logger->error("[Solo Auth]   - Invalid or corrupted private key");
-        m_logger->error("[Solo Auth]   - Falcon signature library error");
-        handler(false);
-        return network::Shared_payload{};
+    if (m_falcon_wrapper && m_falcon_wrapper->is_valid()) {
+        m_logger->info("[Solo Auth] Using Falcon Signature Wrapper for authentication");
+        auto sig_result = m_falcon_wrapper->sign_authentication(m_address, m_auth_timestamp);
+        
+        if (!sig_result.success) {
+            m_logger->error("[Solo Auth] CRITICAL: Falcon Wrapper signature failed: {}", sig_result.error_message);
+            m_logger->error("[Solo Auth] Falling back to direct signature method");
+            
+            // Fallback to direct signing if wrapper fails
+            std::vector<uint8_t> auth_message;
+            auth_message.insert(auth_message.end(), m_address.begin(), m_address.end());
+            for (int i = 0; i < 8; ++i) {
+                auth_message.push_back((m_auth_timestamp >> (i * 8)) & 0xFF);
+            }
+            
+            if (!keys::falcon_sign(m_miner_privkey, auth_message, signature)) {
+                m_logger->error("[Solo Auth] CRITICAL: Fallback signature also failed");
+                handler(false);
+                return network::Shared_payload{};
+            }
+        } else {
+            signature = std::move(sig_result.signature);
+            m_logger->info("[Solo Auth] Wrapper signature generated in {} μs", sig_result.generation_time.count());
+        }
+    } else {
+        m_logger->warn("[Solo Auth] Falcon Wrapper not available, using direct signature method");
+        
+        // Build auth message: address + timestamp
+        std::vector<uint8_t> auth_message;
+        auth_message.insert(auth_message.end(), m_address.begin(), m_address.end());
+        
+        // Append timestamp (8 bytes, little-endian)
+        for (int i = 0; i < 8; ++i) {
+            auth_message.push_back((m_auth_timestamp >> (i * 8)) & 0xFF);
+        }
+        
+        // Sign the auth message with Falcon private key
+        if (!keys::falcon_sign(m_miner_privkey, auth_message, signature)) {
+            m_logger->error("[Solo Auth] CRITICAL: Failed to sign auth message with Falcon private key");
+            m_logger->error("[Solo Auth]   - Private key size: {} bytes", m_miner_privkey.size());
+            m_logger->error("[Solo Auth] Possible causes:");
+            m_logger->error("[Solo Auth]   - Invalid or corrupted private key");
+            m_logger->error("[Solo Auth]   - Falcon signature library error");
+            handler(false);
+            return network::Shared_payload{};
+        }
     }
     
     m_logger->info("[Solo Auth] Successfully signed auth message");
@@ -240,12 +268,38 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     auto const nonce_data = uint2bytes64(nonce);
     packet.m_data->insert(packet.m_data->end(), nonce_data.begin(), nonce_data.end());
     
-    // Phase 2: Block submission doesn't need signing - the session is already authenticated
-    // Expected format: merkle_root (64 bytes) + nonce (8 bytes) = 72 bytes total
-    packet.m_length = 72;
+    // Phase 2: Block submission format
+    // Default: merkle_root (64 bytes) + nonce (8 bytes) = 72 bytes total
+    // Optional: Add signature if block signing is enabled
+    std::size_t expected_size = 72;
+    
+    // Optional block signing for enhanced validation (if enabled)
+    if (m_block_signing_enabled && m_falcon_wrapper && m_falcon_wrapper->is_valid()) {
+        m_logger->info("[Solo Submit] Block signing enabled - generating signature");
+        auto sig_result = m_falcon_wrapper->sign_block(block_data, nonce);
+        
+        if (sig_result.success) {
+            // Append signature to packet (signature length varies ~690 bytes)
+            packet.m_data->insert(packet.m_data->end(), 
+                                 sig_result.signature.begin(), 
+                                 sig_result.signature.end());
+            expected_size = 72 + sig_result.signature.size();
+            
+            m_logger->info("[Solo Submit] Block signature appended");
+            m_logger->info("[Solo Submit]   - Signature size: {} bytes", sig_result.signature.size());
+            m_logger->info("[Solo Submit]   - Generation time: {} μs", sig_result.generation_time.count());
+            m_logger->info("[Solo Submit]   - Total payload: {} bytes (merkle+nonce+sig)", expected_size);
+        } else {
+            m_logger->warn("[Solo Submit] Block signature failed: {}", sig_result.error_message);
+            m_logger->warn("[Solo Submit] Proceeding with unsigned block submission");
+        }
+    } else if (m_block_signing_enabled) {
+        m_logger->debug("[Solo Submit] Block signing enabled but wrapper unavailable");
+    }
+    
+    packet.m_length = packet.m_data->size();
     
     // Validate final payload size
-    std::size_t expected_size = 72;
     std::size_t actual_size = packet.m_data ? packet.m_data->size() : 0;
     
     if (actual_size != expected_size) {
@@ -254,7 +308,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     }
     
     m_logger->info("[Solo Phase 2] Submitting authenticated block (session: 0x{:08x})", m_session_id);
-    m_logger->info("[Solo Submit]   - Total submission payload: {} bytes (merkle_root + nonce)", actual_size);
+    m_logger->info("[Solo Submit]   - Total submission payload: {} bytes", actual_size);
     
     auto result = packet.get_bytes();
     
@@ -710,6 +764,20 @@ void Solo::set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_
     m_miner_privkey = privkey;
     m_logger->info("[Solo] Miner Falcon keys configured (pubkey: {} bytes, privkey: {} bytes)", 
         pubkey.size(), privkey.size());
+    
+    // Initialize the Unified Falcon Signature Wrapper
+    try {
+        m_falcon_wrapper = std::make_unique<FalconSignatureWrapper>(pubkey, privkey);
+        if (m_falcon_wrapper->is_valid()) {
+            m_logger->info("[Solo] Falcon Signature Wrapper initialized successfully");
+        } else {
+            m_logger->error("[Solo] Falcon Signature Wrapper initialization failed - invalid keys");
+            m_falcon_wrapper.reset();
+        }
+    } catch (const std::exception& e) {
+        m_logger->error("[Solo] Failed to initialize Falcon Signature Wrapper: {}", e.what());
+        m_falcon_wrapper.reset();
+    }
 }
 
 void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)

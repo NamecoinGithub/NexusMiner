@@ -43,6 +43,7 @@ public:
 	std::string const& get_miner_falcon_pubkey() const { return m_miner_falcon_pubkey; }
 	std::string const& get_miner_falcon_privkey() const { return m_miner_falcon_privkey; }
 	bool has_miner_falcon_keys() const { return !m_miner_falcon_pubkey.empty() && !m_miner_falcon_privkey.empty(); }
+	bool get_enable_block_signing() const { return m_enable_block_signing; }
 
 private:
 
@@ -76,6 +77,9 @@ private:
 	// Falcon miner authentication keys (optional)
 	std::string m_miner_falcon_pubkey;
 	std::string m_miner_falcon_privkey;
+	
+	// Unified Falcon Signature Protocol options
+	bool m_enable_block_signing;  // Optional block signing for enhanced validation (default: false)
 
 };
 }

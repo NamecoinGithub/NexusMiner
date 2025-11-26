@@ -2,7 +2,9 @@
 #define NEXUSMINER_PROTOCOL_SOLO_HPP
 
 #include "protocol/protocol.hpp"
+#include "protocol/falcon_wrapper.hpp"
 #include "spdlog/spdlog.h"
+#include <memory>
 
 namespace nexusminer {
 namespace network { class Connection; }
@@ -28,6 +30,10 @@ public:
     void set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_t> const& privkey);
     bool is_authenticated() const { return m_authenticated; }
     void set_address(std::string const& address) { m_address = address; }
+    
+    // Enable/disable optional block signing (default: disabled for performance)
+    void enable_block_signing(bool enable) { m_block_signing_enabled = enable; }
+    bool is_block_signing_enabled() const { return m_block_signing_enabled; }
 
 private:
     
@@ -49,6 +55,10 @@ private:
     std::uint32_t m_session_id;
     std::string m_address;  // Miner's network address for auth message
     std::uint64_t m_auth_timestamp;  // Timestamp for auth message
+    
+    // Unified Falcon Signature Wrapper (Phase 2 enhancement)
+    std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
+    bool m_block_signing_enabled;  // Optional block signing feature
 };
 
 }

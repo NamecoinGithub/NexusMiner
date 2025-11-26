@@ -128,6 +128,13 @@ namespace config
 			{
 				j.at("miner_falcon_privkey").get_to(m_miner_falcon_privkey);
 			}
+			
+			// Unified Falcon Signature Protocol options (optional)
+			m_enable_block_signing = false;  // Default: disabled for performance
+			if (j.count("enable_block_signing") != 0)
+			{
+				j.at("enable_block_signing").get_to(m_enable_block_signing);
+			}
 
 			print_global_config();
 			print_worker_config();
