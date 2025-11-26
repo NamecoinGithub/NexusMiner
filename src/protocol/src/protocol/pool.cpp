@@ -39,14 +39,37 @@ network::Shared_payload Pool::submit_block(std::vector<std::uint8_t> const& bloc
 {
     m_logger->info("Submitting Block...");
 
+    // Enhanced diagnostics: Validate block_data before submission
+    if (block_data.empty()) {
+        m_logger->error("[Pool Submit] CRITICAL: block_data is empty! Cannot submit block.");
+        return network::Shared_payload{};
+    }
+    
     nlohmann::json j;
     j["work_id"] = 0;       // TODO
     j["nonce"] = nonce;
     auto j_string = j.dump();
 
+    // Enhanced diagnostics: Log submission payload structure
+    m_logger->info("[Pool Submit] Submission payload structure:");
+    m_logger->info("[Pool Submit]   - Block data size: {} bytes", block_data.size());
+    m_logger->info("[Pool Submit]   - Nonce: 0x{:016x}", nonce);
+    m_logger->info("[Pool Submit]   - JSON metadata: {} bytes", j_string.size());
+    
     network::Payload submit_data{ j_string.begin(), j_string.end() };
     Packet packet{ Packet::SUBMIT_BLOCK, std::make_shared<network::Payload>(submit_data) };
-    return packet.get_bytes();
+    
+    auto result = packet.get_bytes();
+    
+    // Enhanced diagnostics: Validate packet encoding
+    if (!result || result->empty()) {
+        m_logger->error("[Pool Submit] CRITICAL: SUBMIT_BLOCK packet encoding failed!");
+        return network::Shared_payload{};
+    }
+    
+    m_logger->debug("[Pool Submit] SUBMIT_BLOCK packet successfully encoded: {} bytes wire format", result->size());
+    
+    return result;
 }
 
 void Pool::process_messages(Packet packet, std::shared_ptr<network::Connection> connection)
@@ -81,17 +104,37 @@ void Pool::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     {
         try
         {
+            // Enhanced diagnostics: Validate packet data
+            if (!packet.m_data || packet.m_data->empty()) {
+                m_logger->error("[Pool Work] CRITICAL: WORK packet has null or empty data");
+                return;
+            }
+            
+            m_logger->debug("[Pool Work] Received WORK packet: {} bytes", packet.m_data->size());
+            
             nlohmann::json j = nlohmann::json::parse(packet.m_data->begin(), packet.m_data->end());
             std::uint32_t const work_id = j.at("work_id");
             auto const json_block = j.at("block");
             network::Shared_payload block_data = std::make_shared<network::Payload>(json_block["bytes"].get<network::Payload>());
 
+            // Validate block data
+            if (!block_data || block_data->empty()) {
+                m_logger->error("[Pool Work] CRITICAL: Block data from WORK packet is empty");
+                return;
+            }
+            
             std::uint32_t nbits{ 0U };
             auto original_block = extract_nbits_from_block(block_data, nbits);
             
             // Use centralized deserializer for BLOCK_DATA parsing
             auto block = nexusminer::llp_utils::deserialize_block_header(*original_block);
-            m_logger->info("New work, height: {}", block.nHeight);
+            
+            // Enhanced diagnostics: Log work details
+            m_logger->info("[Pool Work] New work received:");
+            m_logger->info("[Pool Work]   - Work ID: {}", work_id);
+            m_logger->info("[Pool Work]   - Height: {}", block.nHeight);
+            m_logger->info("[Pool Work]   - nBits: 0x{:08x}", nbits);
+            m_logger->info("[Pool Work]   - Block data size: {} bytes", block_data->size());
 
             if (m_set_block_handler)
             {
@@ -99,12 +142,15 @@ void Pool::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
             else
             {
-                m_logger->error("No Block handler set");
+                m_logger->error("[Pool Work] CRITICAL: No Block handler set - cannot process work");
             }
         }
         catch (std::exception& e)
         {
-            m_logger->error("Invalid WORK json received. Exception: {}", e.what());
+            m_logger->error("[Pool Work] CRITICAL: Invalid WORK json received. Exception: {}", e.what());
+            if (packet.m_data) {
+                m_logger->error("[Pool Work]   - Packet data size: {} bytes", packet.m_data->size());
+            }
         }
     }
     else if (packet.m_header == Packet::GET_HASHRATE)
