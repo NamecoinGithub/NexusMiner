@@ -44,35 +44,42 @@ All packet headers have been synchronized with LLL-TAO Phase 2 (`src/LLP/types/m
 
 ### 2. Falcon Authentication Flow
 
-Phase 2 authentication uses a direct signature-based approach:
+**IMPORTANT**: Phase 2 authentication uses a **direct signature-based approach** (no challenge-response).
+The miner builds and signs an auth message locally, then sends it directly to the node.
+
+**Note**: The old MINER_AUTH_INIT/MINER_AUTH_CHALLENGE packets (207, 208) are **no longer used** in Phase 2.
 
 #### Client (NexusMiner) Flow:
 1. **Build Auth Message**: `address + timestamp`
-   - Address: miner's local IP (from `local_ip` config)
-   - Timestamp: 8-byte little-endian Unix timestamp
+   - Address: miner's local IP string from `local_ip` config (e.g., "127.0.0.1")
+   - Timestamp: 8-byte little-endian Unix timestamp (seconds since epoch)
+   - Auth message format: `<address_bytes><8_byte_timestamp_LE>`
 
-2. **Sign Message**: Sign auth message (not nonce) with Falcon private key
+2. **Sign Message**: Sign the complete auth message using Falcon-512 private key
+   - Input: auth_message (address + timestamp)
+   - Output: Falcon signature (~690 bytes)
 
-3. **Send MINER_AUTH_RESPONSE**:
+3. **Send MINER_AUTH_RESPONSE** (opcode 209) **directly** (this is the first packet sent):
    ```
    [pubkey_len(2 bytes LE)]
-   [pubkey bytes]
+   [pubkey bytes (897 bytes for Falcon-512)]
    [sig_len(2 bytes LE)]
-   [signature bytes]
+   [signature bytes (~690 bytes)]
    [optional: genesis_hash(32 bytes)]
    ```
+   Total payload: ~1600 bytes without genesis_hash
 
-4. **Receive Response**: Node sends back:
+4. **Receive MINER_AUTH_RESULT** (opcode 210): Node sends back:
    ```
-   [status(1 byte)]
-   [session_id(4 bytes LE)]
+   [status(1 byte)]             // 0 = failure, non-zero = success
+   [session_id(4 bytes LE)]     // Only present if status indicates success
    ```
 
-5. **Set Channel**: After successful auth, send SET_CHANNEL with 1-byte payload
+5. **Set Channel**: After successful auth, send SET_CHANNEL with 1-byte payload (1=prime, 2=hash)
 
-6. **Receive CHANNEL_ACK**: Node acknowledges channel selection
+6. **Receive CHANNEL_ACK** (opcode 206): Node acknowledges channel selection
 
-7. **Mining**: Request work and submit blocks (session already authenticated)
+7. **Mining**: Request work via GET_BLOCK and submit via SUBMIT_BLOCK (session already authenticated)
 
 #### Node (LLL-TAO) Flow:
 - Receives MINER_AUTH_RESPONSE
@@ -134,21 +141,49 @@ Add to `miner.conf`:
 
 Use the built-in key generator:
 ```bash
-./NexusMiner --generate-falcon-keys
+./NexusMiner --create-keys
+```
+
+Or generate a complete Falcon SOLO config file:
+```bash
+./NexusMiner --create-falcon-config
 ```
 
 This creates a `falconminer.conf` with:
-- Falcon-512 keypair
-- Pre-configured SOLO mining settings
+- Falcon-512 keypair (public key included, private key printed to stdout for security)
+- Pre-configured SOLO mining settings  
+- Ready to use against localhost:8323
 - Security instructions
+
+## Protocol Migration Notes
+
+**Breaking Change**: The Phase 2 Falcon authentication protocol has been updated to use direct authentication instead of challenge-response.
+
+### Old Protocol (Pre-Phase 2, no longer supported):
+1. Client sends MINER_AUTH_INIT with [pubkey_len][pubkey][miner_id_len][miner_id]
+2. Node responds with MINER_AUTH_CHALLENGE containing [nonce_len][nonce]
+3. Client signs the nonce and sends MINER_AUTH_RESPONSE with [sig_len][signature]
+4. Node responds with MINER_AUTH_RESULT
+
+### New Protocol (Phase 2 Current):
+1. Client builds auth_message = address + timestamp
+2. Client signs auth_message with Falcon private key
+3. Client sends MINER_AUTH_RESPONSE directly with [pubkey_len][pubkey][sig_len][signature]
+4. Node verifies signature and responds with MINER_AUTH_RESULT
+
+**Migration Impact**:
+- NexusMiner now implements the new direct authentication protocol
+- LLL-TAO nodes must support Phase 2 stateless miner authentication
+- Older nodes without Phase 2 support will not work with Falcon authentication
+- Legacy mode (no Falcon keys) continues to work with all node versions
 
 ## Code Changes Summary
 
 ### Modified Files
 
 1. **src/LLP/packet.hpp**
-   - Updated enum values to match LLL-TAO
-   - Added new Phase 2 packet types
+   - Updated enum values to match LLL-TAO Phase 2
+   - Added new Phase 2 packet types (CHANNEL_ACK, SESSION_START, etc.)
    - Added synchronization comments
 
 2. **src/LLP/llp_logging.hpp**
@@ -156,19 +191,29 @@ This creates a `falconminer.conf` with:
    - Added logging for new packet types
 
 3. **src/protocol/inc/protocol/solo.hpp**
-   - Added session ID tracking
-   - Added address and timestamp fields
-   - Added `set_address()` method
+   - Added session ID tracking (`m_session_id`)
+   - Added address and timestamp fields (`m_address`, `m_auth_timestamp`)
+   - Added `set_address()` method for auth message construction
 
 4. **src/protocol/src/protocol/solo.cpp**
-   - Implemented Phase 2 auth message construction
-   - Implemented MINER_AUTH_RESPONSE packet building
+   - **BREAKING CHANGE**: Implemented direct MINER_AUTH_RESPONSE protocol (no INIT/CHALLENGE)
+   - Build auth message from address + timestamp (8 bytes LE)
+   - Sign auth_message (not nonce) with Falcon private key
+   - Send MINER_AUTH_RESPONSE directly with [pubkey_len(LE)][pubkey][sig_len(LE)][signature]
+   - Handle MINER_AUTH_RESULT with status byte and session_id
    - Added CHANNEL_ACK handling
-   - Simplified block submission (removed signing)
-   - Enhanced logging throughout
+   - Simplified block submission (no signing, session already authenticated)
+   - Enhanced logging throughout for diagnostics
 
 5. **src/worker_manager.cpp**
    - Set local_ip as auth address when loading Falcon keys
+
+6. **src/miner_keys.cpp**
+   - Falcon key generation functions
+   - Config file generation functions
+
+7. **src/main.cpp**
+   - Command-line argument handling for --create-keys and --create-falcon-config
 
 ## Testing
 
