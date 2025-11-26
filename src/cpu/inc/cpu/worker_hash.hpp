@@ -46,6 +46,10 @@ private:
     void log_skein_state(const NexusSkein::stateType& skeinHash, uint64_t nonce) const;
     void log_hash_mismatch(const NexusSkein::stateType& skeinHash, uint64_t keccakHash, uint64_t nonce) const;
     void log_midstate_calculation();
+    
+    // Thread diagnostics
+    void log_thread_initialization();
+    void log_thread_diagnostics();
  
 
     //Poor man's difficulty.  Report any nonces with at least this many leading zeros. Let the software perform additional filtering. 
@@ -69,6 +73,12 @@ private:
     int m_met_difficulty_count;
 
     std::uint32_t m_pool_nbits;
+    
+    // Thread diagnostics
+    std::thread::id m_thread_id;
+    std::chrono::steady_clock::time_point m_thread_start_time;
+    std::uint64_t m_last_hash_count_snapshot;
+    std::chrono::steady_clock::time_point m_last_stats_time;
 
 };
 }

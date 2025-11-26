@@ -49,6 +49,16 @@ private:
     std::uint32_t m_session_id;
     std::string m_address;  // Miner's network address for auth message
     std::uint64_t m_auth_timestamp;  // Timestamp for auth message
+    
+    // Authentication robustness - retry and recovery state
+    int m_auth_retry_count;
+    std::uint64_t m_last_auth_attempt_time;
+    static constexpr int MAX_AUTH_RETRIES = 3;
+    static constexpr std::uint64_t AUTH_RETRY_DELAY_MS = 5000;  // 5 seconds
+    
+    // Payload validation statistics
+    std::uint64_t m_payload_validation_failures;
+    std::uint64_t m_empty_payload_recoveries;
 };
 
 }

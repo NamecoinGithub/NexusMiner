@@ -25,6 +25,10 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_session_id{0}
 , m_address{"127.0.0.1"}  // Default address, can be overridden
 , m_auth_timestamp{0}
+, m_auth_retry_count{0}
+, m_last_auth_attempt_time{0}
+, m_payload_validation_failures{0}
+, m_empty_payload_recoveries{0}
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -45,6 +49,10 @@ void Solo::reset()
     m_authenticated = false;
     m_session_id = 0;
     m_auth_timestamp = 0;
+    m_auth_retry_count = 0;
+    m_last_auth_attempt_time = 0;
+    m_payload_validation_failures = 0;
+    m_empty_payload_recoveries = 0;
 }
 
 network::Shared_payload Solo::login(Login_handler handler)
@@ -193,6 +201,10 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     if (block_data.empty()) {
         m_logger->error("[Solo Submit] CRITICAL: block_data is empty! Cannot submit block.");
         m_logger->error("[Solo Submit] Recovery: Requesting new work to recover from empty payload scenario");
+        ++m_payload_validation_failures;
+        ++m_empty_payload_recoveries;
+        m_logger->debug("[Solo Stats] Payload validation failures: {}, Empty payload recoveries: {}", 
+            m_payload_validation_failures, m_empty_payload_recoveries);
         return network::Shared_payload{};
     }
     
@@ -217,6 +229,8 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     if (actual_size != expected_size) {
         m_logger->warn("[Solo Submit] Payload size mismatch: expected {} bytes, got {} bytes", 
             expected_size, actual_size);
+        ++m_payload_validation_failures;
+        m_logger->debug("[Solo Stats] Payload validation failures: {}", m_payload_validation_failures);
     }
     
     m_logger->info("[Solo Phase 2] Submitting authenticated block (session: 0x{:08x})", m_session_id);
@@ -228,6 +242,10 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     if (!result || result->empty()) {
         m_logger->error("[Solo Submit] CRITICAL: SUBMIT_BLOCK packet encoding failed! get_bytes() returned empty.");
         m_logger->error("[Solo Submit] Recovery: Will retry work request after failed submission");
+        ++m_payload_validation_failures;
+        ++m_empty_payload_recoveries;
+        m_logger->debug("[Solo Stats] Payload validation failures: {}, Empty payload recoveries: {}", 
+            m_payload_validation_failures, m_empty_payload_recoveries);
         return network::Shared_payload{};
     }
     

@@ -7,6 +7,12 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <chrono>
+
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 namespace nexusminer
 {
@@ -23,6 +29,10 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
 , m_best_leading_zeros{0}
 , m_met_difficulty_count {0}
 , m_pool_nbits{0}
+, m_thread_id{}
+, m_thread_start_time{}
+, m_last_hash_count_snapshot{0}
+, m_last_stats_time{}
 {
 	m_logger->info(m_log_leader + "Initialized (Internal ID: {})", m_config.m_internal_id);
 }
@@ -102,6 +112,9 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 
 void Worker_hash::run()
 {
+	// Log thread initialization diagnostics
+	log_thread_initialization();
+	
 	m_logger->info(m_log_leader + "Hashing thread started");
 	uint64_t last_log_hash_count = 0;
 	constexpr uint64_t log_interval = 1000000;  // Log every 1M hashes
@@ -109,8 +122,19 @@ void Worker_hash::run()
 	uint64_t payload_validation_failures = 0;
 	uint64_t hash_mismatches = 0;
 	
+	// Periodic thread diagnostics interval (every 60 seconds)
+	auto last_diagnostics_time = std::chrono::steady_clock::now();
+	constexpr auto diagnostics_interval = std::chrono::seconds(60);
+	
 	while (!m_stop)
 	{
+		// Periodically log thread diagnostics
+		auto current_time = std::chrono::steady_clock::now();
+		if (current_time - last_diagnostics_time >= diagnostics_interval) {
+			log_thread_diagnostics();
+			last_diagnostics_time = current_time;
+		}
+		
 		uint64_t nonce;
 		bool hash_calculated = false;
 		int retry_count = 0;
@@ -466,6 +490,81 @@ void Worker_hash::log_midstate_calculation()
 		ss_msg << "0x" << std::setw(16) << msg2[i] << " ";
 	}
 	m_logger->debug(m_log_leader + "  Message2 (first {} words): {}", SKEIN_LOG_WORDS, ss_msg.str());
+}
+
+void Worker_hash::log_thread_initialization()
+{
+	m_thread_id = std::this_thread::get_id();
+	m_thread_start_time = std::chrono::steady_clock::now();
+	m_last_stats_time = m_thread_start_time;
+	m_last_hash_count_snapshot = 0;
+	
+	// Convert thread ID to string for logging
+	std::ostringstream ss;
+	ss << m_thread_id;
+	
+	m_logger->info(m_log_leader + "Thread initialization diagnostics:");
+	m_logger->info(m_log_leader + "  Thread ID: {}", ss.str());
+	m_logger->info(m_log_leader + "  Worker Internal ID: {}", m_config.m_internal_id);
+	m_logger->info(m_log_leader + "  Starting nonce: 0x{:016x}", m_starting_nonce);
+	
+#ifdef __linux__
+	// Log CPU affinity on Linux
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	int result = pthread_getaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+	if (result == 0) {
+		std::vector<int> cpu_cores;
+		for (int j = 0; j < CPU_SETSIZE; j++) {
+			if (CPU_ISSET(j, &cpuset)) {
+				cpu_cores.push_back(j);
+			}
+		}
+		if (!cpu_cores.empty()) {
+			std::stringstream ss;
+			for (size_t i = 0; i < cpu_cores.size(); ++i) {
+				if (i > 0) ss << ", ";
+				ss << cpu_cores[i];
+			}
+			m_logger->info(m_log_leader + "  CPU affinity: cores [{}]", ss.str());
+		} else {
+			m_logger->info(m_log_leader + "  CPU affinity: unrestricted (can run on any core)");
+		}
+	} else {
+		m_logger->warn(m_log_leader + "  CPU affinity: unable to query (error {})", result);
+	}
+#else
+	m_logger->info(m_log_leader + "  CPU affinity: not available on this platform");
+#endif
+}
+
+void Worker_hash::log_thread_diagnostics()
+{
+	auto current_time = std::chrono::steady_clock::now();
+	auto elapsed_time = std::chrono::duration_cast<std::chrono::seconds>(current_time - m_thread_start_time).count();
+	auto interval_time = std::chrono::duration_cast<std::chrono::seconds>(current_time - m_last_stats_time).count();
+	
+	if (interval_time > 0) {
+		uint64_t interval_hashes = m_hash_count - m_last_hash_count_snapshot;
+		double interval_hashrate = static_cast<double>(interval_hashes) / interval_time;
+		double average_hashrate = elapsed_time > 0 ? static_cast<double>(m_hash_count) / elapsed_time : 0.0;
+		
+		// Convert thread ID to string for logging
+		std::ostringstream ss;
+		ss << m_thread_id;
+		
+		m_logger->info(m_log_leader + "Thread diagnostics:");
+		m_logger->info(m_log_leader + "  Thread ID: {}", ss.str());
+		m_logger->info(m_log_leader + "  Running time: {} seconds", elapsed_time);
+		m_logger->info(m_log_leader + "  Total hashes: {}", m_hash_count);
+		m_logger->info(m_log_leader + "  Interval hashrate: {:.2f} H/s", interval_hashrate);
+		m_logger->info(m_log_leader + "  Average hashrate: {:.2f} H/s", average_hashrate);
+		m_logger->info(m_log_leader + "  Current nonce: 0x{:016x}", m_skein.getNonce());
+		
+		// Update snapshots for next interval
+		m_last_stats_time = current_time;
+		m_last_hash_count_snapshot = m_hash_count;
+	}
 }
 
 }
