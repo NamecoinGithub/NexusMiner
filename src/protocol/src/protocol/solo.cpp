@@ -85,8 +85,6 @@ network::Shared_payload Solo::login(Login_handler handler)
         std::vector<uint8_t> signature;
         if (!keys::falcon_sign(m_miner_privkey, auth_message, signature)) {
             m_logger->error("[Solo Auth] CRITICAL: Failed to sign auth message with Falcon private key");
-            m_logger->error("[Solo Auth]   - Private key size: {} bytes", m_miner_privkey.size());
-            m_logger->error("[Solo Auth]   - Auth message size: {} bytes", auth_message.size());
             m_logger->error("[Solo Auth] Falling back to legacy authentication mode");
             handler(false);
             return network::Shared_payload{};
