@@ -5,6 +5,7 @@
 #include "prime/chain_sieve.hpp"
 #include "block.hpp"
 #include "worker/prime_worker_utils.hpp"
+#include "worker/cpu_worker_utils.hpp"
 #include <asio.hpp>
 #include <primesieve.hpp>
 #include <sstream> 
@@ -31,20 +32,8 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 	try {
 		m_logger->debug("Worker_prime constructor: Initializing worker {}", m_config.m_id);
 		
-		// Log CPU-specific configuration for multi-core support
-		if (std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
-			auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
-			if (cpu_cfg.m_threads > 1) {
-				m_logger->info(m_log_leader + "Multi-core configuration: {} thread(s)", cpu_cfg.m_threads);
-				m_logger->warn(m_log_leader + "Note: Multi-threading within a worker is planned for future implementation");
-				m_logger->info(m_log_leader + "Current implementation: Single thread per worker instance");
-				m_logger->info(m_log_leader + "For multi-core mining: Configure multiple CPU workers in miner.conf");
-			}
-			if (cpu_cfg.m_affinity_mask > 0) {
-				m_logger->info(m_log_leader + "CPU affinity mask: 0x{:016x}", cpu_cfg.m_affinity_mask);
-				m_logger->warn(m_log_leader + "Note: CPU affinity is planned for future implementation");
-			}
-		}
+		// Log CPU-specific configuration warnings using shared utility
+		cpu_worker_utils::log_cpu_config_warnings(m_logger, m_log_leader, m_config);
 		
 		// Initialize segmented sieve with error handling
 		m_segmented_sieve->generate_sieving_primes();
