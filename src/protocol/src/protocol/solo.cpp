@@ -112,7 +112,8 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Auth]   - Signature size: {} bytes", signature.size());
     
     // Build MINER_AUTH_RESPONSE packet payload (little-endian per Phase 2 spec)
-    // Format: [pubkey_len(2, LE)][pubkey][sig_len(2, LE)][signature][optional: genesis_hash(32)]
+    // Format: [pubkey_len(2, LE)][pubkey][sig_len(2, LE)][signature]
+    // Note: Genesis hash binding (32 bytes) is optional and not yet implemented
     std::vector<uint8_t> payload;
     
     // Public key length (2 bytes, little-endian)

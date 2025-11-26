@@ -236,10 +236,10 @@ namespace config
 				if (std::holds_alternative<Worker_config_cpu>(worker.m_worker_mode)) {
 					auto const& cpu_cfg = std::get<Worker_config_cpu>(worker.m_worker_mode);
 					ss << worker.m_id << " mode: " << mode;
-					if (cpu_cfg.m_threads > 0) {
+					if (cpu_cfg.m_threads != 1) {  // Only show if non-default
 						ss << ", threads: " << cpu_cfg.m_threads;
 					}
-					if (cpu_cfg.m_affinity_mask > 0) {
+					if (cpu_cfg.m_affinity_mask != 0) {  // Only show if non-default
 						ss << ", affinity: 0x" << std::hex << cpu_cfg.m_affinity_mask << std::dec;
 					}
 					ss << std::endl;
