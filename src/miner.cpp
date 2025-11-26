@@ -121,16 +121,24 @@ namespace nexusminer
 		auto const ip_address = m_config.get_wallet_ip();
 		auto const port = m_config.get_port();
 		
+		m_logger->info("=== NexusMiner Port Configuration ===");
+		m_logger->info("Configured wallet IP: {}", ip_address);
+		m_logger->info("Configured LLP port: {} (from miner.conf)", port);
+		m_logger->info("Note: This is the miningport in LLL-TAO's nexus.conf");
+		m_logger->info("=====================================");
+		
 		network::Endpoint wallet_endpoint{network::Transport_protocol::tcp, ip_address, port};
 		if(wallet_endpoint.transport_protocol() == network::Transport_protocol::none)
 		{
 			// resolve dns name
+			m_logger->info("Resolving DNS name: {}", ip_address);
 			wallet_endpoint = resolve_dns(ip_address, port);
 			if(wallet_endpoint.transport_protocol() == network::Transport_protocol::none)
 			{
 				m_logger->error("Failed to resolve DNS name: {}", ip_address);
 				return;
 			}
+			m_logger->info("DNS resolved to: {}", wallet_endpoint.to_string());
 		}
 
 		if (!m_worker_manager)
