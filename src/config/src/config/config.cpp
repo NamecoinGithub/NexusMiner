@@ -185,7 +185,19 @@ namespace config
 				if(worker_mode_json["hardware"] == "cpu")
 				{
 					worker_config.m_mode = Worker_mode::CPU;
-					worker_config.m_worker_mode = Worker_config_cpu{};
+					Worker_config_cpu cpu_config{};
+					
+					// Read optional thread count (default: 1)
+					if (worker_mode_json.count("threads") != 0) {
+						cpu_config.m_threads = worker_mode_json["threads"];
+					}
+					
+					// Read optional affinity mask (default: 0, no affinity)
+					if (worker_mode_json.count("affinity_mask") != 0) {
+						cpu_config.m_affinity_mask = worker_mode_json["affinity_mask"];
+					}
+					
+					worker_config.m_worker_mode = cpu_config;
 				}
 				else if(worker_mode_json["hardware"] == "gpu")
 				{
@@ -218,7 +230,23 @@ namespace config
 			std::string mode{};
 			switch (worker.m_mode)
 			{
-			case Worker_mode::CPU: mode = "CPU"; break;
+			case Worker_mode::CPU: 
+				mode = "CPU"; 
+				// Display CPU-specific config
+				if (std::holds_alternative<Worker_config_cpu>(worker.m_worker_mode)) {
+					auto const& cpu_cfg = std::get<Worker_config_cpu>(worker.m_worker_mode);
+					ss << worker.m_id << " mode: " << mode;
+					if (cpu_cfg.m_threads != 1) {  // Only show if non-default
+						ss << ", threads: " << cpu_cfg.m_threads;
+					}
+					if (cpu_cfg.m_affinity_mask != 0) {  // Only show if non-default
+						ss << ", affinity: 0x" << std::hex << cpu_cfg.m_affinity_mask << std::dec;
+					}
+					ss << std::endl;
+				} else {
+					ss << worker.m_id << " mode: " << mode << std::endl;
+				}
+				continue;  // Skip the generic line below
 			case Worker_mode::GPU: mode = "GPU"; break;
 			case Worker_mode::FPGA: mode = "FPGA"; break;
 			}

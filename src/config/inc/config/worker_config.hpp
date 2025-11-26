@@ -11,7 +11,13 @@ namespace config
 {
 struct Worker_config_cpu
 {
-
+	// Number of CPU threads to use for mining (default: 1)
+	// Note: Multi-threading within a worker is planned for future implementation
+	std::uint16_t m_threads{1};
+	
+	// CPU affinity mask for thread pinning (default: 0, no affinity)
+	// Note: CPU affinity is planned for future implementation
+	std::uint64_t m_affinity_mask{0};
 };
 
 struct Worker_config_fpga
