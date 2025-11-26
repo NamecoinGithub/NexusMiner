@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <chrono>
+#include <atomic>
 #include "spdlog/spdlog.h"
 
 namespace nexusminer {
@@ -161,12 +162,12 @@ private:
     // Logger
     std::shared_ptr<spdlog::logger> m_logger;
     
-    // Performance tracking
-    mutable uint64_t m_total_signatures;
-    mutable uint64_t m_auth_signatures;
-    mutable uint64_t m_block_signatures;
-    mutable uint64_t m_payload_signatures;
-    mutable uint64_t m_total_time_us;
+    // Thread-safe performance tracking (atomic for multi-worker safety)
+    std::atomic<uint64_t> m_total_signatures;
+    std::atomic<uint64_t> m_auth_signatures;
+    std::atomic<uint64_t> m_block_signatures;
+    std::atomic<uint64_t> m_payload_signatures;
+    std::atomic<uint64_t> m_total_time_us;
 };
 
 } // namespace protocol

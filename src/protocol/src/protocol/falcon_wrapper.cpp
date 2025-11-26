@@ -38,8 +38,12 @@ FalconSignatureWrapper::FalconSignatureWrapper(const std::vector<uint8_t>& pubke
 FalconSignatureWrapper::~FalconSignatureWrapper()
 {
     // Securely clear private key from memory
+    // Use volatile pointer to prevent compiler optimization
     if (!m_privkey.empty()) {
-        std::memset(m_privkey.data(), 0, m_privkey.size());
+        volatile uint8_t* vptr = m_privkey.data();
+        for (size_t i = 0; i < m_privkey.size(); ++i) {
+            vptr[i] = 0;
+        }
         m_logger->debug("[FalconWrapper] Private key securely cleared from memory");
     }
 }
@@ -82,7 +86,7 @@ FalconSignatureWrapper::sign_authentication(const std::string& address,
     auto result = sign_internal(auth_message, SignatureType::AUTHENTICATION);
     
     if (result.success) {
-        m_auth_signatures++;
+        m_auth_signatures.fetch_add(1, std::memory_order_relaxed);
         m_logger->info("[FalconWrapper] Authentication signature generated successfully");
         m_logger->debug("[FalconWrapper]   - Signature size: {} bytes", result.signature.size());
         m_logger->debug("[FalconWrapper]   - Generation time: {} μs", result.generation_time.count());
@@ -122,7 +126,7 @@ FalconSignatureWrapper::sign_block(const std::vector<uint8_t>& block_data,
     auto result = sign_internal(block_payload, SignatureType::BLOCK);
     
     if (result.success) {
-        m_block_signatures++;
+        m_block_signatures.fetch_add(1, std::memory_order_relaxed);
         m_logger->info("[FalconWrapper] Block signature generated successfully");
         m_logger->debug("[FalconWrapper]   - Signature size: {} bytes", result.signature.size());
         m_logger->debug("[FalconWrapper]   - Generation time: {} μs", result.generation_time.count());
@@ -148,7 +152,7 @@ FalconSignatureWrapper::sign_payload(const std::vector<uint8_t>& payload,
     auto result = sign_internal(payload, type);
     
     if (result.success) {
-        m_payload_signatures++;
+        m_payload_signatures.fetch_add(1, std::memory_order_relaxed);
         m_logger->info("[FalconWrapper] Payload signature generated successfully");
         m_logger->debug("[FalconWrapper]   - Signature size: {} bytes", result.signature.size());
         m_logger->debug("[FalconWrapper]   - Generation time: {} μs", result.generation_time.count());
@@ -180,14 +184,14 @@ FalconSignatureWrapper::sign_internal(const std::vector<uint8_t>& data,
         result.success = false;
     } else {
         result.success = true;
-        m_total_signatures++;
+        m_total_signatures.fetch_add(1, std::memory_order_relaxed);
     }
     
     auto end_time = std::chrono::high_resolution_clock::now();
     result.generation_time = std::chrono::duration_cast<std::chrono::microseconds>(
         end_time - start_time);
     
-    m_total_time_us += result.generation_time.count();
+    m_total_time_us.fetch_add(result.generation_time.count(), std::memory_order_relaxed);
     
     return result;
 }
@@ -195,13 +199,13 @@ FalconSignatureWrapper::sign_internal(const std::vector<uint8_t>& data,
 FalconSignatureWrapper::PerformanceStats FalconSignatureWrapper::get_stats() const
 {
     PerformanceStats stats;
-    stats.total_signatures = m_total_signatures;
-    stats.auth_signatures = m_auth_signatures;
-    stats.block_signatures = m_block_signatures;
-    stats.payload_signatures = m_payload_signatures;
-    stats.total_time_microseconds = m_total_time_us;
-    stats.average_time_microseconds = m_total_signatures > 0 
-        ? m_total_time_us / m_total_signatures 
+    stats.total_signatures = m_total_signatures.load(std::memory_order_relaxed);
+    stats.auth_signatures = m_auth_signatures.load(std::memory_order_relaxed);
+    stats.block_signatures = m_block_signatures.load(std::memory_order_relaxed);
+    stats.payload_signatures = m_payload_signatures.load(std::memory_order_relaxed);
+    stats.total_time_microseconds = m_total_time_us.load(std::memory_order_relaxed);
+    stats.average_time_microseconds = stats.total_signatures > 0 
+        ? stats.total_time_microseconds / stats.total_signatures 
         : 0;
     
     return stats;
@@ -210,11 +214,11 @@ FalconSignatureWrapper::PerformanceStats FalconSignatureWrapper::get_stats() con
 void FalconSignatureWrapper::reset_stats()
 {
     m_logger->debug("[FalconWrapper] Resetting performance statistics");
-    m_total_signatures = 0;
-    m_auth_signatures = 0;
-    m_block_signatures = 0;
-    m_payload_signatures = 0;
-    m_total_time_us = 0;
+    m_total_signatures.store(0, std::memory_order_relaxed);
+    m_auth_signatures.store(0, std::memory_order_relaxed);
+    m_block_signatures.store(0, std::memory_order_relaxed);
+    m_payload_signatures.store(0, std::memory_order_relaxed);
+    m_total_time_us.store(0, std::memory_order_relaxed);
 }
 
 } // namespace protocol

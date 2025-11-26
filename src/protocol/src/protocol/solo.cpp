@@ -271,7 +271,6 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // Phase 2: Block submission format
     // Default: merkle_root (64 bytes) + nonce (8 bytes) = 72 bytes total
     // Optional: Add signature if block signing is enabled
-    std::size_t expected_size = 72;
     
     // Optional block signing for enhanced validation (if enabled)
     if (m_block_signing_enabled && m_falcon_wrapper && m_falcon_wrapper->is_valid()) {
@@ -283,12 +282,10 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
             packet.m_data->insert(packet.m_data->end(), 
                                  sig_result.signature.begin(), 
                                  sig_result.signature.end());
-            expected_size = 72 + sig_result.signature.size();
             
             m_logger->info("[Solo Submit] Block signature appended");
             m_logger->info("[Solo Submit]   - Signature size: {} bytes", sig_result.signature.size());
             m_logger->info("[Solo Submit]   - Generation time: {} μs", sig_result.generation_time.count());
-            m_logger->info("[Solo Submit]   - Total payload: {} bytes (merkle+nonce+sig)", expected_size);
         } else {
             m_logger->warn("[Solo Submit] Block signature failed: {}", sig_result.error_message);
             m_logger->warn("[Solo Submit] Proceeding with unsigned block submission");
@@ -297,14 +294,16 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         m_logger->debug("[Solo Submit] Block signing enabled but wrapper unavailable");
     }
     
+    // Set packet length to actual data size (after optional signature append)
     packet.m_length = packet.m_data->size();
     
     // Validate final payload size
     std::size_t actual_size = packet.m_data ? packet.m_data->size() : 0;
+    std::size_t expected_base_size = 72;  // merkle_root (64) + nonce (8)
     
-    if (actual_size != expected_size) {
-        m_logger->warn("[Solo Submit] Payload size mismatch: expected {} bytes, got {} bytes", 
-            expected_size, actual_size);
+    if (actual_size < expected_base_size) {
+        m_logger->error("[Solo Submit] Payload size too small: expected at least {} bytes, got {} bytes", 
+            expected_base_size, actual_size);
     }
     
     m_logger->info("[Solo Phase 2] Submitting authenticated block (session: 0x{:08x})", m_session_id);
