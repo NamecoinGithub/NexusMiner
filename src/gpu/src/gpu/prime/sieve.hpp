@@ -6,7 +6,7 @@
 #include <spdlog/spdlog.h>
 #include <boost/multiprecision/cpp_int.hpp>
 #include <boost/multiprecision/gmp.hpp>
-#include "sieve_utils.hpp"
+#include "worker/prime_sieve_utils.hpp"
 #include "chain.hpp"
 //#include "../cuda_prime/fermat_test.hpp"
 #include "../cuda_prime/fermat_prime/fermat_prime.hpp"
