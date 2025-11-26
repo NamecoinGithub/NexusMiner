@@ -62,7 +62,9 @@ network::Shared_payload Solo::login(Login_handler handler)
         m_logger->error("[Solo Auth] Please configure Falcon keys in miner.conf:");
         m_logger->error("[Solo Auth]   1. Generate keys: ./NexusMiner --create-keys");
         m_logger->error("[Solo Auth]   2. Add falcon_miner_pubkey and falcon_miner_privkey to miner.conf");
-        m_logger->error("[Solo Auth]   3. Whitelist your public key on the node: -minerallowkey=<pubkey>");
+        m_logger->error("[Solo Auth]   3. Whitelist your public key on the node:");
+        m_logger->error("[Solo Auth]      - Config file: Add 'minerallowkey=<pubkey>' to nexus.conf");
+        m_logger->error("[Solo Auth]      - Command line: Start nexus with -minerallowkey=<pubkey>");
         handler(false);
         return network::Shared_payload{};
     }
@@ -107,7 +109,11 @@ network::Shared_payload Solo::login(Login_handler handler)
     // Validate payload is properly constructed
     if (payload.empty()) {
         m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_INIT payload is empty! Cannot proceed with authentication.");
-        m_logger->error("[Solo Auth] This indicates a payload construction error");
+        m_logger->error("[Solo Auth] This may indicate an issue with key configuration or internal error.");
+        m_logger->error("[Solo Auth] Please verify:");
+        m_logger->error("[Solo Auth]   1. Keys are properly formatted hex strings in miner.conf");
+        m_logger->error("[Solo Auth]   2. Keys were generated with ./NexusMiner --create-keys");
+        m_logger->error("[Solo Auth] If problem persists, regenerate keys and update configuration");
         handler(false);
         return network::Shared_payload{};
     }

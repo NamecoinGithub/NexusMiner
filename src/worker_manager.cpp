@@ -52,7 +52,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             m_logger->error("[Worker_manager] Legacy authentication has been removed. Please configure Falcon keys:");
             m_logger->error("[Worker_manager]   1. Generate keys: ./NexusMiner --create-keys");
             m_logger->error("[Worker_manager]   2. Add keys to miner.conf (falcon_miner_pubkey and falcon_miner_privkey)");
-            m_logger->error("[Worker_manager]   3. Configure node to whitelist your key: nexus.conf -minerallowkey=<pubkey>");
+            m_logger->error("[Worker_manager]   3. Whitelist your public key on the node:");
+            m_logger->error("[Worker_manager]      - Config file: Add 'minerallowkey=<pubkey>' to nexus.conf");
+            m_logger->error("[Worker_manager]      - Command line: Start nexus with -minerallowkey=<pubkey>");
             m_logger->error("[Worker_manager] See docs/falcon_authentication.md for detailed instructions");
             throw std::runtime_error("Falcon authentication keys are required for solo mining");
         }
