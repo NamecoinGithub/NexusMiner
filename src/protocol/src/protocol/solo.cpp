@@ -458,31 +458,30 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         
         // Parse channel acknowledgment
-        uint8_t acked_channel = 0;
         if (packet.m_data && packet.m_length >= 1) {
-            acked_channel = (*packet.m_data)[0];
+            uint8_t acked_channel = (*packet.m_data)[0];
             m_logger->info("[Solo] Channel acknowledged: {} ({})", 
                 static_cast<int>(acked_channel), 
                 (acked_channel == 1) ? "prime" : "hash");
-        }
-        
-        // Extended CHANNEL_ACK: Check for optional port information (future protocol enhancement)
-        // Format (if extended): [channel(1)][port(2, big-endian, optional)]
-        if (packet.m_data && packet.m_length >= 3) {
-            // Node is sending back port information (future enhancement)
-            uint16_t node_port = (static_cast<uint16_t>((*packet.m_data)[1]) << 8) | 
-                                 static_cast<uint16_t>((*packet.m_data)[2]);
             
-            m_logger->info("[Solo] Node communicated LLP port: {}", node_port);
-            
-            // Validate against actual connected port
-            if (connection) {
-                uint16_t actual_port = connection->remote_endpoint().port();
-                if (node_port != actual_port) {
-                    m_logger->warn("[Solo] Port mismatch: Node advertised port {} but connected to port {}", 
-                        node_port, actual_port);
-                } else {
-                    m_logger->info("[Solo] Port validation successful: Both using port {}", actual_port);
+            // Extended CHANNEL_ACK: Check for optional port information (future protocol enhancement)
+            // Format (if extended): [channel(1)][port(2, big-endian, optional)]
+            if (packet.m_length >= 3) {
+                // Node is sending back port information (future enhancement)
+                uint16_t node_port = (static_cast<uint16_t>((*packet.m_data)[1]) << 8) | 
+                                     static_cast<uint16_t>((*packet.m_data)[2]);
+                
+                m_logger->info("[Solo] Node communicated LLP port: {}", node_port);
+                
+                // Validate against actual connected port
+                if (connection) {
+                    uint16_t actual_port = connection->remote_endpoint().port();
+                    if (node_port != actual_port) {
+                        m_logger->warn("[Solo] Port mismatch: Node advertised port {} but connected to port {}", 
+                            node_port, actual_port);
+                    } else {
+                        m_logger->info("[Solo] Port validation successful: Both using port {}", actual_port);
+                    }
                 }
             }
         }
