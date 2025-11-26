@@ -73,6 +73,16 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         
         solo_protocol->set_miner_keys(pubkey, privkey);
         solo_protocol->set_address(m_config.get_local_ip());
+        
+        // Configure optional block signing
+        if (m_config.get_enable_block_signing()) {
+            solo_protocol->enable_block_signing(true);
+            m_logger->info("[Worker_manager] Block signing ENABLED for enhanced validation");
+            m_logger->warn("[Worker_manager] Note: Block signing adds ~690 bytes to each submission");
+        } else {
+            m_logger->info("[Worker_manager] Block signing DISABLED (default for performance)");
+        }
+        
         m_logger->info("[Worker_manager] Falcon keys loaded from config");
         m_logger->info("[Worker_manager] Auth address: {}", m_config.get_local_ip());
         
