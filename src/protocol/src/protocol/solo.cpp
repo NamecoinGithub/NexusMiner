@@ -193,9 +193,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         return;
     }
     
-    // Log received packet for diagnostics
-    m_logger->debug("[Solo] Processing packet: header={} ({}), length={}", 
-        static_cast<int>(packet.m_header), get_packet_header_name(packet.m_header), packet.m_length);
+    // Log received packet for diagnostics with port information
+    if (connection) {
+        auto const& remote_ep = connection->remote_endpoint();
+        auto const& local_ep = connection->local_endpoint();
+        m_logger->debug("[Solo] Processing packet: header={} ({}) length={} | Remote: {} | Local: {}", 
+            static_cast<int>(packet.m_header), get_packet_header_name(packet.m_header), 
+            packet.m_length, remote_ep.to_string(), local_ep.to_string());
+    } else {
+        m_logger->debug("[Solo] Processing packet: header={} ({}), length={}", 
+            static_cast<int>(packet.m_header), get_packet_header_name(packet.m_header), packet.m_length);
+    }
     
     if (packet.m_header == Packet::BLOCK_HEIGHT)
     {
@@ -402,6 +410,19 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->info("[Solo Phase 2] ✓ Authentication SUCCEEDED");
             }
             
+            // Log port information for authenticated session
+            if (connection) {
+                auto const& remote_ep = connection->remote_endpoint();
+                std::string remote_addr;
+                remote_ep.address(remote_addr);
+                uint16_t actual_port = remote_ep.port();
+                
+                m_logger->info("[Solo Phase 2] Authenticated session established on {}:{}", 
+                    remote_addr, actual_port);
+                m_logger->debug("[Solo] Port Validation: Authenticated mining session using LLP port {}", 
+                    actual_port);
+            }
+            
             // Now send SET_CHANNEL since we're authenticated
             send_set_channel(connection);
         }
@@ -421,14 +442,49 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     }
     else if (packet.m_header == Packet::CHANNEL_ACK)
     {
-        // Phase 2: Handle CHANNEL_ACK response
+        // Phase 2: Handle CHANNEL_ACK response with dynamic port detection
         m_logger->info("[Solo Phase 2] Received CHANNEL_ACK from node");
         
+        // Log actual connected port information for debugging and validation
+        if (connection) {
+            auto const& remote_ep = connection->remote_endpoint();
+            std::string remote_addr;
+            remote_ep.address(remote_addr);
+            uint16_t actual_port = remote_ep.port();
+            
+            m_logger->info("[Solo] Dynamic Port Detection: Connected to {}:{}", 
+                remote_addr, actual_port);
+            m_logger->debug("[Solo] Port Validation: Using dynamically detected LLP port {}", actual_port);
+        }
+        
+        // Parse channel acknowledgment
+        uint8_t acked_channel = 0;
         if (packet.m_data && packet.m_length >= 1) {
-            uint8_t acked_channel = (*packet.m_data)[0];
+            acked_channel = (*packet.m_data)[0];
             m_logger->info("[Solo] Channel acknowledged: {} ({})", 
                 static_cast<int>(acked_channel), 
                 (acked_channel == 1) ? "prime" : "hash");
+        }
+        
+        // Extended CHANNEL_ACK: Check for optional port information (future protocol enhancement)
+        // Format (if extended): [channel(1)][port(2, big-endian, optional)]
+        if (packet.m_data && packet.m_length >= 3) {
+            // Node is sending back port information (future enhancement)
+            uint16_t node_port = (static_cast<uint16_t>((*packet.m_data)[1]) << 8) | 
+                                 static_cast<uint16_t>((*packet.m_data)[2]);
+            
+            m_logger->info("[Solo] Node communicated LLP port: {}", node_port);
+            
+            // Validate against actual connected port
+            if (connection) {
+                uint16_t actual_port = connection->remote_endpoint().port();
+                if (node_port != actual_port) {
+                    m_logger->warn("[Solo] Port mismatch: Node advertised port {} but connected to port {}", 
+                        node_port, actual_port);
+                } else {
+                    m_logger->info("[Solo] Port validation successful: Both using port {}", actual_port);
+                }
+            }
         }
         
         // Stateless mining: Request work directly (no GET_HEIGHT polling)

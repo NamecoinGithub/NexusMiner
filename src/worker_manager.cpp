@@ -236,7 +236,13 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
 
 bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 {
-    m_logger->info("[Solo] Connecting to wallet {}", wallet_endpoint.to_string());
+    std::string wallet_addr;
+    wallet_endpoint.address(wallet_addr);
+    uint16_t configured_port = wallet_endpoint.port();
+    
+    m_logger->info("[Solo] Connecting to wallet {}:{}", wallet_addr, configured_port);
+    m_logger->info("[Solo] Port Configuration: Using port {} from miner.conf", configured_port);
+    m_logger->debug("[Solo] Connection initiated to endpoint: {}", wallet_endpoint.to_string());
     
     std::weak_ptr<Worker_manager> weak_self = shared_from_this();
     auto connection = m_socket->connect(wallet_endpoint, [weak_self, wallet_endpoint](auto result, auto receive_buffer)
@@ -255,7 +261,23 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
             }
             else if (result == network::Result::connection_ok)
             {
+                // Log successful connection with actual port information
+                auto const& remote_ep = self->m_connection->remote_endpoint();
+                auto const& local_ep = self->m_connection->local_endpoint();
+                
+                std::string remote_addr, local_addr;
+                remote_ep.address(remote_addr);
+                local_ep.address(local_addr);
+                
+                uint16_t actual_remote_port = remote_ep.port();
+                uint16_t actual_local_port = local_ep.port();
+                
                 self->m_logger->info("[Solo] Connected to wallet {}", wallet_endpoint.to_string());
+                self->m_logger->info("[Solo] Dynamic Port Detection: Successfully connected to {}:{}", 
+                    remote_addr, actual_remote_port);
+                self->m_logger->info("[Solo] Local endpoint: {}:{}", local_addr, actual_local_port);
+                self->m_logger->debug("[Solo] Port Validation: Connection established on LLP port {}", 
+                    actual_remote_port);
 
                 // login
                 self->m_connection->transmit(self->m_miner_protocol->login([self, wallet_endpoint](bool login_result)
