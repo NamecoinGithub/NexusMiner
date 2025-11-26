@@ -5,6 +5,7 @@
 #include "prime/sieve.hpp"
 #include "prime/prime_tests.hpp"
 #include "block.hpp"
+#include "worker/prime_worker_utils.hpp"
 #include <asio.hpp>
 #include <primesieve.hpp>
 #include <sstream> 
@@ -73,21 +74,9 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 		}
 
 		m_difficulty = m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
-		bool excludeNonce = true;  //prime block hash excludes the nonce
-		std::vector<unsigned char> headerB = m_block.GetHeaderBytes(excludeNonce);
-		//calculate the block hash
-		NexusSkein skein;
-		skein.setMessage(headerB);
-		skein.calculateHash();
-		NexusSkein::stateType hash = skein.getHash();
-
-		//keccak
-		NexusKeccak keccak(hash);
-		keccak.calculateHash();
-		NexusKeccak::k_1024 keccakFullHash_i = keccak.getHashResult();
-		keccakFullHash_i.isBigInt = true;
-		uint1k keccakFullHash("0x" + keccakFullHash_i.toHexString(true));
-		m_base_hash = keccakFullHash;
+		
+		// Calculate the block hash using shared utility function
+		m_base_hash = prime_worker_utils::calculate_prime_base_hash(m_block);
 		//Now we have the hash of the block header.  We use this to feed the miner. 
 
 		//set the starting nonce for each worker to something different that won't overlap with the others
@@ -249,7 +238,7 @@ void Worker_prime::run()
 double Worker_prime::getDifficulty(uint1k p)
 {
 	std::vector<unsigned int> offsets_to_test;
-	LLC::CBigNum prime_to_test = boost_uint1024_t_to_CBignum(p);
+	LLC::CBigNum prime_to_test = prime_worker_utils::boost_uint1024_t_to_CBignum(p);
 	double difficulty = m_prime_helper->GetPrimeDifficulty(prime_to_test, 1, offsets_to_test);
 	return difficulty;
 }
@@ -262,17 +251,6 @@ double Worker_prime::getNetworkDifficulty()
 bool Worker_prime::difficulty_check(uint1k p)
 {
 	return getDifficulty(p) >= getNetworkDifficulty();
-}
-
-
-LLC::CBigNum Worker_prime::boost_uint1024_t_to_CBignum(uint1k p)
-{
-	std::stringstream ss;
-	ss << std::hex << p;
-	std::string p_hex_str = ss.str();
-	LLC::CBigNum p_CBignum;
-	p_CBignum.SetHex(p_hex_str);
-	return p_CBignum;
 }
 
 void Worker_prime::update_statistics(stats::Collector& stats_collector)

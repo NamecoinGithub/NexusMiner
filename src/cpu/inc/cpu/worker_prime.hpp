@@ -76,7 +76,6 @@ private:
     void generate_seive(uint1k);
     void analyze_chains();
     void mine_region(uint1k);
-    static LLC::CBigNum boost_uint1024_t_to_CBignum(uint1k);
 
 
     std::vector<bool>m_sieve;
