@@ -55,7 +55,7 @@ private:
     std::shared_ptr<spdlog::logger> m_logger;
     Worker_config& m_config;
     std::atomic<bool> m_stop;
-    std::thread m_run_thread;
+    std::vector<std::thread> m_run_threads;  // Changed to vector to support multiple threads
     Worker::Block_found_handler m_found_nonce_callback;
     NexusSkein m_skein;
     Block_data m_block;

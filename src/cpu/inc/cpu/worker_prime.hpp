@@ -53,7 +53,7 @@ private:
     std::unique_ptr<Prime> m_prime_helper;
     std::atomic<bool> m_stop;
     std::atomic<bool> m_initialized;
-    std::thread m_run_thread;
+    std::vector<std::thread> m_run_threads;  // Changed to vector to support multiple threads
     Worker::Block_found_handler m_found_nonce_callback;
     std::unique_ptr<Sieve> m_segmented_sieve;
 

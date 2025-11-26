@@ -207,6 +207,13 @@ src/protocol/CMakeFiles/protocol.dir/src/protocol/pool_legacy.cpp.o: \
  /usr/include/c++/13/tr1/poly_laguerre.tcc \
  /usr/include/c++/13/tr1/riemann_zeta.tcc \
  /home/runner/work/NexusMiner/NexusMiner/src/LLP/./utils.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/LLP/./miner_opcodes.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/LLP/./llp_logging.hpp \
+ /usr/include/c++/13/algorithm /usr/include/c++/13/bits/stl_algo.h \
+ /usr/include/c++/13/bits/algorithmfwd.h \
+ /usr/include/c++/13/bits/stl_heap.h \
+ /usr/include/c++/13/bits/uniform_int_dist.h \
+ /usr/include/c++/13/pstl/glue_algorithm_defs.h \
  /home/runner/work/NexusMiner/NexusMiner/src/LLP/./block.hpp \
  /usr/include/c++/13/functional /usr/include/c++/13/bits/std_function.h \
  /usr/include/c++/13/unordered_map \
@@ -215,16 +222,11 @@ src/protocol/CMakeFiles/protocol.dir/src/protocol/pool_legacy.cpp.o: \
  /usr/include/c++/13/bits/hashtable_policy.h \
  /usr/include/c++/13/bits/node_handle.h \
  /usr/include/c++/13/bits/erase_if.h /usr/include/c++/13/array \
- /usr/include/c++/13/compare /usr/include/c++/13/bits/stl_algo.h \
- /usr/include/c++/13/bits/algorithmfwd.h \
- /usr/include/c++/13/bits/stl_heap.h \
- /usr/include/c++/13/bits/uniform_int_dist.h \
+ /usr/include/c++/13/compare \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/pool.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/connection.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/endpoint.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/utility.hpp \
- /usr/include/c++/13/algorithm \
- /usr/include/c++/13/pstl/glue_algorithm_defs.h \
  /usr/include/c++/13/utility /usr/include/c++/13/bits/stl_relops.h \
  /usr/include/c++/13/cassert /usr/include/assert.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/asio-src/asio/include/asio/ip/address.hpp \
@@ -572,6 +574,8 @@ src/protocol/CMakeFiles/protocol.dir/src/protocol/pool_legacy.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/src/stats/inc/stats/types.hpp \
  /usr/include/c++/13/mutex /usr/include/c++/13/bits/std_mutex.h \
  /usr/include/c++/13/bits/unique_lock.h \
+ /home/runner/work/NexusMiner/NexusMiner/src/LLC/../LLP/block_utils.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/LLC/../LLP/block.hpp \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/spdlog.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/common.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/null_mutex.h \

@@ -62,14 +62,17 @@ Worker_prime::~Worker_prime() noexcept
 	try {
 		m_logger->debug("Worker_prime destructor: Cleaning up worker {}", m_config.m_id);
 		
-		// Stop the mining thread
+		// Stop the mining threads
 		m_stop = true;
 		
-		// Wait for thread to complete with timeout protection
-		if (m_run_thread.joinable())
+		// Wait for all threads to complete with timeout protection
+		for (auto& thread : m_run_threads)
 		{
-			m_logger->debug("Worker_prime destructor: Waiting for worker {} thread to finish", m_config.m_id);
-			m_run_thread.join();
+			if (thread.joinable())
+			{
+				m_logger->debug("Worker_prime destructor: Waiting for worker {} thread to finish", m_config.m_id);
+				thread.join();
+			}
 		}
 		
 		m_logger->debug("Worker_prime destructor: Worker {} cleanup complete", m_config.m_id);
@@ -100,14 +103,18 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 	try {
 		m_logger->debug("Worker_prime::set_block: Setting new block for worker {}", m_config.m_id);
 		
-		//stop the existing mining loop if it is running
+		//stop the existing mining loops if they are running
 		m_stop = true;
-		if (m_run_thread.joinable())
+		for (auto& thread : m_run_threads)
 		{
-			m_logger->debug("Worker_prime::set_block: Waiting for previous thread to finish for worker {}", 
-			                m_config.m_id);
-			m_run_thread.join();
+			if (thread.joinable())
+			{
+				m_logger->debug("Worker_prime::set_block: Waiting for previous thread to finish for worker {}", 
+				                m_config.m_id);
+				thread.join();
+			}
 		}
+		m_run_threads.clear();
 
 		{
 			std::scoped_lock<std::mutex> lck(m_mtx);
@@ -149,10 +156,22 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 			//clear out any old chains from the last block
 			m_segmented_sieve->clear_chains();
 		}
-		//restart the mining loop
+		//restart the mining loops
 		m_stop = false;
-		m_logger->debug("Worker_prime::set_block: Starting mining thread for worker {}", m_config.m_id);
-		m_run_thread = std::thread(&Worker_prime::run, this);
+		
+		// Get number of threads from CPU config (default: 1)
+		std::uint16_t num_threads = 1;
+		if (std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
+			num_threads = std::get<config::Worker_config_cpu>(m_config.m_worker_mode).threads;
+		}
+		
+		m_logger->info("Worker_prime::set_block: Starting {} mining thread{} for worker {}", 
+		               num_threads, (num_threads > 1 ? "s" : ""), m_config.m_id);
+		
+		// Spawn multiple threads for parallel mining
+		for (std::uint16_t i = 0; i < num_threads; ++i) {
+			m_run_threads.emplace_back(&Worker_prime::run, this);
+		}
 		
 	} catch (const std::exception& e) {
 		m_logger->error("Worker_prime::set_block: Exception for worker {}: {}", m_config.m_id, e.what());

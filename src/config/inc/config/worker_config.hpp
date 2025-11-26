@@ -11,7 +11,7 @@ namespace config
 {
 struct Worker_config_cpu
 {
-
+	std::uint16_t threads{1};  // Number of CPU threads to use (default: 1)
 };
 
 struct Worker_config_fpga

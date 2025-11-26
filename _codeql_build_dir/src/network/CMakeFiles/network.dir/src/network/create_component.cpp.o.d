@@ -552,6 +552,52 @@ src/network/CMakeFiles/network.dir/src/network/create_component.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/asio-src/asio/include/asio/detail/consuming_buffers.hpp \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/asio-src/asio/include/asio/detail/dependent_type.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/src/network/tcp/protocol_description.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/LLP/llp_logging.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/LLP/miner_opcodes.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/spdlog.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/common.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/null_mutex.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/tweakme.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/fmt/fmt.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/fmt/bundled/core.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/fmt/bundled/format.h \
+ /usr/include/c++/13/cmath /usr/include/math.h \
+ /usr/include/x86_64-linux-gnu/bits/math-vector.h \
+ /usr/include/x86_64-linux-gnu/bits/libm-simd-decl-stubs.h \
+ /usr/include/x86_64-linux-gnu/bits/flt-eval-method.h \
+ /usr/include/x86_64-linux-gnu/bits/fp-logb.h \
+ /usr/include/x86_64-linux-gnu/bits/fp-fast.h \
+ /usr/include/x86_64-linux-gnu/bits/mathcalls-helper-functions.h \
+ /usr/include/x86_64-linux-gnu/bits/mathcalls.h \
+ /usr/include/x86_64-linux-gnu/bits/mathcalls-narrow.h \
+ /usr/include/x86_64-linux-gnu/bits/iscanonical.h \
+ /usr/include/c++/13/bits/specfun.h /usr/include/c++/13/tr1/gamma.tcc \
+ /usr/include/c++/13/tr1/special_function_util.h \
+ /usr/include/c++/13/tr1/bessel_function.tcc \
+ /usr/include/c++/13/tr1/beta_function.tcc \
+ /usr/include/c++/13/tr1/ell_integral.tcc \
+ /usr/include/c++/13/tr1/exp_integral.tcc \
+ /usr/include/c++/13/tr1/hypergeometric.tcc \
+ /usr/include/c++/13/tr1/legendre_function.tcc \
+ /usr/include/c++/13/tr1/modified_bessel_func.tcc \
+ /usr/include/c++/13/tr1/poly_hermite.tcc \
+ /usr/include/c++/13/tr1/poly_laguerre.tcc \
+ /usr/include/c++/13/tr1/riemann_zeta.tcc \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/fmt/bundled/core.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/registry.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/periodic_worker.h \
+ /usr/include/c++/13/condition_variable \
+ /usr/include/c++/13/bits/std_mutex.h \
+ /usr/include/c++/13/bits/unique_lock.h /usr/include/c++/13/mutex \
+ /usr/include/c++/13/thread /usr/include/c++/13/bits/std_thread.h \
+ /usr/include/c++/13/bits/this_thread_sleep.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/synchronous_factory.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/logger.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/backtracer.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/circular_q.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/log_msg_buffer.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/log_msg.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/version.h \
  /usr/include/c++/13/queue /usr/include/c++/13/deque \
  /usr/include/c++/13/bits/stl_deque.h /usr/include/c++/13/bits/deque.tcc \
  /usr/include/c++/13/bits/stl_queue.h

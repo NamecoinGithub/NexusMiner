@@ -29,18 +29,25 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
 
 Worker_hash::~Worker_hash() 
 { 
-	//make sure the run thread exits the loop
+	//make sure the run threads exit the loop
 	m_stop = true;  
-	if (m_run_thread.joinable())
-		m_run_thread.join(); 
+	for (auto& thread : m_run_threads)
+	{
+		if (thread.joinable())
+			thread.join();
+	}
 }
 
 void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result)
 {
-	//stop the existing mining loop if it is running
+	//stop the existing mining loops if they are running
 	m_stop = true;
-	if (m_run_thread.joinable())
-		m_run_thread.join();
+	for (auto& thread : m_run_threads)
+	{
+		if (thread.joinable())
+			thread.join();
+	}
+	m_run_threads.clear();
 	{
 		std::scoped_lock<std::mutex> lck(m_mtx);
 		m_found_nonce_callback = result;
@@ -93,11 +100,22 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 		// Reset statistics for new block
 		reset_statistics();
 	}
-	//restart the mining loop
+	//restart the mining loops
 	m_stop = false;
-	m_logger->info(m_log_leader + "Starting hashing loop (Starting nonce: 0x{:016x}, nBits: 0x{:08x})", 
-		m_starting_nonce, m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits);
-	m_run_thread = std::thread(&Worker_hash::run, this);
+	
+	// Get number of threads from CPU config (default: 1)
+	std::uint16_t num_threads = 1;
+	if (std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
+		num_threads = std::get<config::Worker_config_cpu>(m_config.m_worker_mode).threads;
+	}
+	
+	m_logger->info(m_log_leader + "Starting {} hashing thread{} (Starting nonce: 0x{:016x}, nBits: 0x{:08x})", 
+		num_threads, (num_threads > 1 ? "s" : ""), m_starting_nonce, m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits);
+	
+	// Spawn multiple threads for parallel mining
+	for (std::uint16_t i = 0; i < num_threads; ++i) {
+		m_run_threads.emplace_back(&Worker_hash::run, this);
+	}
 }
 
 void Worker_hash::run()

@@ -570,6 +570,8 @@ CMakeFiles/NexusMiner.dir/src/timer_manager.cpp.o: \
  /usr/include/c++/13/tr1/poly_laguerre.tcc \
  /usr/include/c++/13/tr1/riemann_zeta.tcc \
  /home/runner/work/NexusMiner/NexusMiner/src/LLP/./utils.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/LLP/./miner_opcodes.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/LLP/./llp_logging.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/worker_manager.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/socket.hpp \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/spdlog.h \

@@ -10,6 +10,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/runner/work/NexusMiner/NexusMiner/src/main.cpp" "CMakeFiles/NexusMiner.dir/src/main.cpp.o" "gcc" "CMakeFiles/NexusMiner.dir/src/main.cpp.o.d"
   "/home/runner/work/NexusMiner/NexusMiner/src/miner.cpp" "CMakeFiles/NexusMiner.dir/src/miner.cpp.o" "gcc" "CMakeFiles/NexusMiner.dir/src/miner.cpp.o.d"
+  "/home/runner/work/NexusMiner/NexusMiner/src/miner_keys.cpp" "CMakeFiles/NexusMiner.dir/src/miner_keys.cpp.o" "gcc" "CMakeFiles/NexusMiner.dir/src/miner_keys.cpp.o.d"
   "/home/runner/work/NexusMiner/NexusMiner/src/timer_manager.cpp" "CMakeFiles/NexusMiner.dir/src/timer_manager.cpp.o" "gcc" "CMakeFiles/NexusMiner.dir/src/timer_manager.cpp.o.d"
   "/home/runner/work/NexusMiner/NexusMiner/src/worker_manager.cpp" "CMakeFiles/NexusMiner.dir/src/worker_manager.cpp.o" "gcc" "CMakeFiles/NexusMiner.dir/src/worker_manager.cpp.o.d"
   "" "NexusMiner" "gcc" "CMakeFiles/NexusMiner.dir/link.d"

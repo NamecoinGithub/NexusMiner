@@ -1,2 +1,2 @@
-/usr/bin/ar qc libcpu.a CMakeFiles/cpu.dir/src/cpu/worker_hash.cpp.o
+/usr/bin/ar qc libcpu.a CMakeFiles/cpu.dir/src/cpu/worker_hash.cpp.o CMakeFiles/cpu.dir/src/cpu/worker_prime.cpp.o CMakeFiles/cpu.dir/src/cpu/prime/prime.cpp.o CMakeFiles/cpu.dir/src/cpu/prime/chain_sieve.cpp.o
 /usr/bin/ranlib libcpu.a

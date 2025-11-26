@@ -54,6 +54,11 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
+  include("/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/primesieve-build/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
   include("/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/src/chrono/cmake_install.cmake")
 endif()
 

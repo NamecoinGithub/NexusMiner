@@ -194,7 +194,8 @@ bool create_falcon_config(const std::string& config_filename,
         config_json << "            \"worker\": {\n";
         config_json << "                \"id\": \"worker0\",\n";
         config_json << "                \"mode\": {\n";
-        config_json << "                    \"hardware\": \"cpu\"\n";
+        config_json << "                    \"hardware\": \"cpu\",\n";
+        config_json << "                    \"threads\": 4\n";
         config_json << "                }\n";
         config_json << "            }\n";
         config_json << "        }\n";

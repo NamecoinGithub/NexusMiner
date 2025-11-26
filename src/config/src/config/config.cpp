@@ -189,7 +189,14 @@ namespace config
 				if(worker_mode_json["hardware"] == "cpu")
 				{
 					worker_config.m_mode = Worker_mode::CPU;
-					worker_config.m_worker_mode = Worker_config_cpu{};
+					Worker_config_cpu cpu_config{};
+					
+					// Read optional threads field (default: 1)
+					if (worker_mode_json.contains("threads")) {
+						cpu_config.threads = worker_mode_json["threads"];
+					}
+					
+					worker_config.m_worker_mode = cpu_config;
 				}
 				else if(worker_mode_json["hardware"] == "gpu")
 				{
