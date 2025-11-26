@@ -33,6 +33,12 @@ private:
     
     // Helper method to send SET_CHANNEL packet
     void send_set_channel(std::shared_ptr<network::Connection> connection);
+    
+    // Helper methods for authentication robustness
+    bool should_retry_authentication();
+    std::uint64_t get_retry_delay_ms() const;
+    void record_auth_attempt();
+    void reset_auth_retry_state();
 
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;
@@ -54,7 +60,7 @@ private:
     int m_auth_retry_count;
     std::uint64_t m_last_auth_attempt_time;
     static constexpr int MAX_AUTH_RETRIES = 3;
-    static constexpr std::uint64_t AUTH_RETRY_DELAY_MS = 5000;  // 5 seconds
+    static constexpr std::uint64_t AUTH_RETRY_DELAY_MS = 5000;  // 5 seconds base delay
     
     // Payload validation statistics
     std::uint64_t m_payload_validation_failures;

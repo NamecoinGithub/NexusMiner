@@ -77,6 +77,9 @@ network::Shared_payload Solo::login(Login_handler handler)
         return network::Shared_payload{};
     }
     
+    // Record this authentication attempt for retry tracking
+    record_auth_attempt();
+    
     m_logger->info("[Solo Phase 2] Starting Falcon authentication handshake");
     m_logger->info("[Solo] Initiating MINER_AUTH_INIT with public key ({} bytes)", m_miner_pubkey.size());
     
@@ -629,6 +632,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         if (auth_success) {
             m_authenticated = true;
             
+            // Reset authentication retry state on success
+            reset_auth_retry_state();
+            
             // Extract session ID if present (4 bytes, little-endian)
             if (packet.m_length >= 5) {
                 // Read little-endian uint32
@@ -684,6 +690,16 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->error("[Solo Auth]   1. Your public key is whitelisted: nexus.conf -minerallowkey=<pubkey>");
             m_logger->error("[Solo Auth]   2. Keys in miner.conf match the whitelisted key");
             m_logger->error("[Solo Auth]   3. Node is running LLL-TAO with Phase 2 miner support");
+            
+            // Check if we should retry
+            if (should_retry_authentication()) {
+                auto retry_delay = get_retry_delay_ms();
+                m_logger->warn("[Solo Auth] Will retry authentication in {} seconds (attempt {} of {})", 
+                    retry_delay / 1000.0, m_auth_retry_count + 1, MAX_AUTH_RETRIES);
+            } else {
+                m_logger->error("[Solo Auth] Maximum retry attempts reached - authentication permanently failed");
+                m_logger->error("[Solo Auth] Please fix the authentication issue and restart NexusMiner");
+            }
             
             // Connection will fail - no fallback available
         }
@@ -790,6 +806,71 @@ void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
     std::vector<uint8_t> channel_data(1, m_channel);
     Packet set_channel_packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(channel_data) };
     connection->transmit(set_channel_packet.get_bytes());
+}
+
+// Authentication robustness helper methods
+bool Solo::should_retry_authentication()
+{
+    if (m_auth_retry_count >= MAX_AUTH_RETRIES) {
+        m_logger->error("[Solo Auth] Maximum authentication retries ({}) exceeded", MAX_AUTH_RETRIES);
+        m_logger->error("[Solo Auth] Please verify:");
+        m_logger->error("[Solo Auth]   1. Node is running and accessible");
+        m_logger->error("[Solo Auth]   2. Public key is whitelisted on the node");
+        m_logger->error("[Solo Auth]   3. Network connectivity is stable");
+        return false;
+    }
+    
+    // Check if enough time has passed since last attempt (with exponential backoff)
+    auto current_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    auto time_since_last = current_time - m_last_auth_attempt_time;
+    auto required_delay = get_retry_delay_ms();
+    
+    if (time_since_last < required_delay) {
+        m_logger->debug("[Solo Auth] Retry delay not yet elapsed: {}ms < {}ms", 
+            time_since_last, required_delay);
+        return false;
+    }
+    
+    return true;
+}
+
+std::uint64_t Solo::get_retry_delay_ms() const
+{
+    // Exponential backoff: base_delay * 2^(retry_count)
+    // For retry_count 0,1,2: delays are 5s, 10s, 20s
+    if (m_auth_retry_count == 0) {
+        return AUTH_RETRY_DELAY_MS;  // 5 seconds
+    }
+    
+    std::uint64_t delay = AUTH_RETRY_DELAY_MS * (1ULL << m_auth_retry_count);
+    
+    // Cap at 60 seconds to avoid excessive delays
+    constexpr std::uint64_t MAX_DELAY_MS = 60000;
+    return std::min(delay, MAX_DELAY_MS);
+}
+
+void Solo::record_auth_attempt()
+{
+    auto current_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    m_last_auth_attempt_time = current_time;
+    m_auth_retry_count++;
+    
+    m_logger->info("[Solo Auth] Authentication attempt {} of {}", 
+        m_auth_retry_count, MAX_AUTH_RETRIES);
+    
+    if (m_auth_retry_count > 1) {
+        auto next_delay = get_retry_delay_ms();
+        m_logger->info("[Solo Auth] Next retry delay: {} seconds", next_delay / 1000.0);
+    }
+}
+
+void Solo::reset_auth_retry_state()
+{
+    m_auth_retry_count = 0;
+    m_last_auth_attempt_time = 0;
+    m_logger->debug("[Solo Auth] Authentication retry state reset");
 }
 
 }
