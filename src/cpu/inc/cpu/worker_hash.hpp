@@ -76,6 +76,7 @@ private:
     
     // Thread diagnostics
     std::thread::id m_thread_id;
+    std::string m_thread_id_str;  // Cached string representation of thread ID
     std::chrono::steady_clock::time_point m_thread_start_time;
     std::uint64_t m_last_hash_count_snapshot;
     std::chrono::steady_clock::time_point m_last_stats_time;

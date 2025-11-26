@@ -30,6 +30,7 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
 , m_met_difficulty_count {0}
 , m_pool_nbits{0}
 , m_thread_id{}
+, m_thread_id_str{}
 , m_thread_start_time{}
 , m_last_hash_count_snapshot{0}
 , m_last_stats_time{}
@@ -499,12 +500,13 @@ void Worker_hash::log_thread_initialization()
 	m_last_stats_time = m_thread_start_time;
 	m_last_hash_count_snapshot = 0;
 	
-	// Convert thread ID to string for logging
+	// Convert thread ID to string once and cache it
 	std::ostringstream ss;
 	ss << m_thread_id;
+	m_thread_id_str = ss.str();
 	
 	m_logger->info(m_log_leader + "Thread initialization diagnostics:");
-	m_logger->info(m_log_leader + "  Thread ID: {}", ss.str());
+	m_logger->info(m_log_leader + "  Thread ID: {}", m_thread_id_str);
 	m_logger->info(m_log_leader + "  Worker Internal ID: {}", m_config.m_internal_id);
 	m_logger->info(m_log_leader + "  Starting nonce: 0x{:016x}", m_starting_nonce);
 	
@@ -549,12 +551,9 @@ void Worker_hash::log_thread_diagnostics()
 		double interval_hashrate = static_cast<double>(interval_hashes) / interval_time;
 		double average_hashrate = elapsed_time > 0 ? static_cast<double>(m_hash_count) / elapsed_time : 0.0;
 		
-		// Convert thread ID to string for logging
-		std::ostringstream ss;
-		ss << m_thread_id;
-		
+		// Use cached thread ID string instead of converting each time
 		m_logger->info(m_log_leader + "Thread diagnostics:");
-		m_logger->info(m_log_leader + "  Thread ID: {}", ss.str());
+		m_logger->info(m_log_leader + "  Thread ID: {}", m_thread_id_str);
 		m_logger->info(m_log_leader + "  Running time: {} seconds", elapsed_time);
 		m_logger->info(m_log_leader + "  Total hashes: {}", m_hash_count);
 		m_logger->info(m_log_leader + "  Interval hashrate: {:.2f} H/s", interval_hashrate);
