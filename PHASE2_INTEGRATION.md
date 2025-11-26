@@ -44,16 +44,16 @@ All packet headers have been synchronized with LLL-TAO Phase 2 (`src/LLP/types/m
 
 ### 2. Falcon Authentication Flow
 
-Phase 2 authentication uses a direct signature-based approach:
+Phase 2 authentication uses a **direct signature-based approach** (no challenge-response):
 
 #### Client (NexusMiner) Flow:
 1. **Build Auth Message**: `address + timestamp`
    - Address: miner's local IP (from `local_ip` config)
    - Timestamp: 8-byte little-endian Unix timestamp
 
-2. **Sign Message**: Sign auth message (not nonce) with Falcon private key
+2. **Sign Message**: Sign auth message (address + timestamp) with Falcon private key
 
-3. **Send MINER_AUTH_RESPONSE**:
+3. **Send MINER_AUTH_RESPONSE directly**:
    ```
    [pubkey_len(2 bytes LE)]
    [pubkey bytes]
@@ -62,7 +62,7 @@ Phase 2 authentication uses a direct signature-based approach:
    [optional: genesis_hash(32 bytes)]
    ```
 
-4. **Receive Response**: Node sends back:
+4. **Receive MINER_AUTH_RESULT**: Node sends back:
    ```
    [status(1 byte)]
    [session_id(4 bytes LE)]
@@ -74,12 +74,18 @@ Phase 2 authentication uses a direct signature-based approach:
 
 7. **Mining**: Request work and submit blocks (session already authenticated)
 
+**Note**: The direct MINER_AUTH_RESPONSE protocol eliminates the challenge-response handshake 
+(MINER_AUTH_INIT → MINER_AUTH_CHALLENGE → MINER_AUTH_RESPONSE). Instead, the miner builds 
+and signs the authentication message upfront during login, reducing latency and simplifying 
+the protocol.
+
 #### Node (LLL-TAO) Flow:
-- Receives MINER_AUTH_RESPONSE
+- Receives MINER_AUTH_RESPONSE directly
+- Reconstructs auth message from miner's address + timestamp
 - Verifies Falcon signature using `FalconAuth::Verify()`
 - Derives `keyId` from public key
 - Checks for bound Tritium genesis (optional)
-- Returns session ID (derived from keyId)
+- Returns session ID (derived from keyId) in MINER_AUTH_RESULT
 - Tracks authenticated session for future requests
 
 ### 3. Block Submission
@@ -130,6 +136,72 @@ Add to `miner.conf`:
 }
 ```
 
+**Note:** Falcon keys are **mandatory** for solo mining. Legacy authentication without keys has been removed.
+
+### Multi-Core CPU Mining Configuration
+
+For optimal multi-core CPU mining performance, configure multiple CPU worker instances rather than 
+using threading within a single worker. Each worker instance runs independently on a separate thread.
+
+Example configuration for quad-core mining:
+
+```json
+{
+  "workers": [
+    {
+      "worker": {
+        "id": "cpu0",
+        "mode": {
+          "hardware": "cpu",
+          "threads": 1,
+          "affinity_mask": 0
+        }
+      }
+    },
+    {
+      "worker": {
+        "id": "cpu1",
+        "mode": {
+          "hardware": "cpu",
+          "threads": 1,
+          "affinity_mask": 0
+        }
+      }
+    },
+    {
+      "worker": {
+        "id": "cpu2",
+        "mode": {
+          "hardware": "cpu",
+          "threads": 1,
+          "affinity_mask": 0
+        }
+      }
+    },
+    {
+      "worker": {
+        "id": "cpu3",
+        "mode": {
+          "hardware": "cpu",
+          "threads": 1,
+          "affinity_mask": 0
+        }
+      }
+    }
+  ]
+}
+```
+
+**CPU Worker Configuration Options:**
+- `threads`: Number of threads per worker (default: 1). Multi-threading within workers is planned for future implementation.
+- `affinity_mask`: CPU affinity bitmask for thread pinning (default: 0, no affinity). Planned for future implementation.
+
+**Current Implementation:**
+- Each CPU worker runs on a single thread
+- Multiple workers can be configured for multi-core mining
+- Each worker processes different nonce ranges to avoid overlap
+- Workers are assigned incrementing internal IDs that determine nonce space partitioning
+
 ### Generating Keys
 
 Use the built-in key generator:
@@ -143,6 +215,31 @@ This creates a `falconminer.conf` with:
 - Security instructions
 
 ## Code Changes Summary
+
+### Phase 2 Direct MINER_AUTH_RESPONSE Protocol
+
+The latest update implements the **direct MINER_AUTH_RESPONSE protocol**, eliminating the 
+challenge-response handshake for improved efficiency and reduced latency.
+
+**Key Changes:**
+- Authentication message (address + timestamp) is built and signed upfront during login
+- Miner sends MINER_AUTH_RESPONSE directly (no MINER_AUTH_INIT or MINER_AUTH_CHALLENGE)
+- Node receives MINER_AUTH_RESPONSE, verifies signature, and responds with MINER_AUTH_RESULT
+- Eliminates one round-trip in the authentication flow
+
+### Multi-Core CPU Mining Support
+
+**Enhanced CPU worker configuration:**
+- Added `threads` parameter to Worker_config_cpu (default: 1)
+- Added `affinity_mask` parameter for CPU affinity control (default: 0)
+- Enhanced logging for CPU worker initialization showing thread configuration
+- Documentation and examples for multi-core mining setup
+
+**Current multi-core approach:**
+- Configure multiple independent CPU worker instances
+- Each worker runs on its own thread
+- Workers process different nonce ranges based on internal ID
+- Future: In-worker multi-threading and CPU affinity pinning
 
 ### Modified Files
 
@@ -161,14 +258,44 @@ This creates a `falconminer.conf` with:
    - Added `set_address()` method
 
 4. **src/protocol/src/protocol/solo.cpp**
-   - Implemented Phase 2 auth message construction
-   - Implemented MINER_AUTH_RESPONSE packet building
+   - **Direct MINER_AUTH_RESPONSE protocol**: Build auth message (address + timestamp) and sign upfront
+   - Send MINER_AUTH_RESPONSE directly without challenge-response handshake
+   - Deprecated MINER_AUTH_CHALLENGE handling (protocol mismatch warning)
+   - Enhanced authentication logging with detailed payload structure
    - Added CHANNEL_ACK handling
    - Simplified block submission (removed signing)
    - Enhanced logging throughout
 
-5. **src/worker_manager.cpp**
+5. **src/config/inc/config/worker_config.hpp**
+   - Added `m_threads` field to Worker_config_cpu (default: 1)
+   - Added `m_affinity_mask` field to Worker_config_cpu (default: 0)
+
+6. **src/config/src/config/config.cpp**
+   - Parse `threads` and `affinity_mask` from CPU worker config
+   - Enhanced print_worker_config to display CPU-specific settings
+
+7. **src/cpu/src/cpu/worker_hash.cpp**
+   - Log CPU multi-core configuration on initialization
+   - Display thread count and affinity mask settings
+   - Inform users about current single-thread implementation and future plans
+
+8. **src/cpu/src/cpu/worker_prime.cpp**
+   - Log CPU multi-core configuration on initialization
+   - Display thread count and affinity mask settings
+   - Inform users about current single-thread implementation and future plans
+
+9. **src/worker_manager.cpp**
    - Set local_ip as auth address when loading Falcon keys
+
+10. **README.md**
+    - Document direct MINER_AUTH_RESPONSE protocol
+    - Add multi-core CPU mining configuration section
+    - Update authentication flow description
+
+11. **PHASE2_INTEGRATION.md**
+    - Update authentication flow to reflect direct protocol
+    - Add multi-core CPU mining configuration documentation
+    - Update code changes summary
 
 ## Testing
 

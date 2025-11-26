@@ -60,6 +60,7 @@ NexusMiner requires quantum-resistant Falcon-based authentication for SOLO minin
 
 **Stateless Mining Features:**
 - Quantum-resistant authentication using Falcon-512 signatures (mandatory)
+- Direct MINER_AUTH_RESPONSE protocol (no challenge-response handshake)
 - Stateless mining protocol (no GET_HEIGHT polling)
 - Session-based authentication for efficient communication
 - Connects to LLL-TAO's `miningport` (default 8323)
@@ -72,7 +73,7 @@ NexusMiner requires quantum-resistant Falcon-based authentication for SOLO minin
 This creates `falconminer.conf` ready for SOLO PRIME mining against a local LLL-TAO node on `127.0.0.1:8323`. The private key is printed to stdout (keep it safe!). Start mining with `./NexusMiner -c falconminer.conf`.
 
 **Mining Protocol:**
-SOLO mining uses stateless protocol: Falcon auth → GET_BLOCK → mine → SUBMIT_BLOCK (no GET_HEIGHT polling)
+SOLO mining uses stateless protocol: Direct Falcon auth (MINER_AUTH_RESPONSE) → GET_BLOCK → mine → SUBMIT_BLOCK (no GET_HEIGHT polling)
 
 **Alternative - Generate keys only:**
 ```bash
@@ -82,6 +83,22 @@ SOLO mining uses stateless protocol: Falcon auth → GET_BLOCK → mine → SUBM
 Add the generated keys to your `miner.conf`. See [docs/falcon_authentication.md](docs/falcon_authentication.md) and [PHASE2_INTEGRATION.md](PHASE2_INTEGRATION.md) for detailed instructions.
 
 **Important:** Falcon authentication is **required** for solo mining. Legacy authentication has been removed for security reasons.
+
+## Multi-Core CPU Mining
+For optimal multi-core mining performance, configure multiple CPU worker instances in `miner.conf`:
+
+```json
+{
+  "workers": [
+    {"worker": {"id": "cpu0", "mode": {"hardware": "cpu"}}},
+    {"worker": {"id": "cpu1", "mode": {"hardware": "cpu"}}},
+    {"worker": {"id": "cpu2", "mode": {"hardware": "cpu"}}},
+    {"worker": {"id": "cpu3", "mode": {"hardware": "cpu"}}}
+  ]
+}
+```
+
+Each worker runs independently on a separate thread and processes different nonce ranges. CPU thread control options (threads per worker, affinity masking) are available in the configuration but planned for future implementation.
   
 ## Solo Mining Wallet Setup
 For solo mining use the latest wallet daemon release 5.0.5 or greater and ensure the wallet has been unlocked for mining.
