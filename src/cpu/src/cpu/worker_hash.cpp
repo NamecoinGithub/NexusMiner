@@ -521,12 +521,12 @@ void Worker_hash::log_thread_initialization()
 			}
 		}
 		if (!cpu_cores.empty()) {
-			std::stringstream ss;
+			std::stringstream affinity_ss;
 			for (size_t i = 0; i < cpu_cores.size(); ++i) {
-				if (i > 0) ss << ", ";
-				ss << cpu_cores[i];
+				if (i > 0) affinity_ss << ", ";
+				affinity_ss << cpu_cores[i];
 			}
-			m_logger->info(m_log_leader + "  CPU affinity: cores [{}]", ss.str());
+			m_logger->info(m_log_leader + "  CPU affinity: cores [{}]", affinity_ss.str());
 		} else {
 			m_logger->info(m_log_leader + "  CPU affinity: unrestricted (can run on any core)");
 		}

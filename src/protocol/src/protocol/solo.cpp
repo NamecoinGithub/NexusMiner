@@ -837,13 +837,16 @@ bool Solo::should_retry_authentication()
 
 std::uint64_t Solo::get_retry_delay_ms() const
 {
-    // Exponential backoff: base_delay * 2^(retry_count)
-    // For retry_count 0,1,2: delays are 5s, 10s, 20s
-    if (m_auth_retry_count == 0) {
-        return AUTH_RETRY_DELAY_MS;  // 5 seconds
-    }
+    // Exponential backoff with pre-incremented retry count:
+    // record_auth_attempt() increments m_auth_retry_count before this is called
+    // Formula: AUTH_RETRY_DELAY_MS * 2^(m_auth_retry_count - 1)
+    // For m_auth_retry_count=1 (1st retry): 5000ms * 2^0 = 5000ms (5s)
+    // For m_auth_retry_count=2 (2nd retry): 5000ms * 2^1 = 10000ms (10s)
+    // For m_auth_retry_count=3 (3rd retry): 5000ms * 2^2 = 20000ms (20s)
     
-    std::uint64_t delay = AUTH_RETRY_DELAY_MS * (1ULL << m_auth_retry_count);
+    // Calculate delay with exponential backoff
+    std::uint64_t exponent = (m_auth_retry_count > 0) ? (m_auth_retry_count - 1) : 0;
+    std::uint64_t delay = AUTH_RETRY_DELAY_MS * (1ULL << exponent);
     
     // Cap at 60 seconds to avoid excessive delays
     constexpr std::uint64_t MAX_DELAY_MS = 60000;
