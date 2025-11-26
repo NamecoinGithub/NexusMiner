@@ -75,6 +75,21 @@ This creates `falconminer.conf` ready for SOLO PRIME mining against a local LLL-
 **Mining Protocol:**
 SOLO mining uses stateless protocol: Direct Falcon auth (MINER_AUTH_RESPONSE) → GET_BLOCK → mine → SUBMIT_BLOCK (no GET_HEIGHT polling)
 
+**Unified Hybrid Falcon Signature Protocol:**
+NexusMiner includes an optimized signature wrapper for all Falcon-512 operations:
+- **Authentication signatures**: Required for MINER_AUTH_RESPONSE (always enabled)
+- **Optional block signatures**: Enhanced validation for block submissions (disabled by default)
+- **Performance optimized**: Thread-safe with minimal overhead (~100-500 μs per signature)
+
+To enable optional block signing, add to your config:
+```json
+{
+    "enable_block_signing": true
+}
+```
+
+See [docs/unified_falcon_signature_protocol.md](docs/unified_falcon_signature_protocol.md) for details.
+
 **Alternative - Generate keys only:**
 ```bash
 ./NexusMiner --create-keys
