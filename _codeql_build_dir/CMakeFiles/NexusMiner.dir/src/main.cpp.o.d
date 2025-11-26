@@ -666,4 +666,5 @@ CMakeFiles/NexusMiner.dir/src/main.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/asio-src/asio/include/asio/detail/signal_op.hpp \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/asio-src/asio/include/asio/detail/impl/signal_set_service.ipp \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/asio-src/asio/include/asio/detail/static_mutex.hpp \
- /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/asio-src/asio/include/asio/detail/posix_static_mutex.hpp
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/asio-src/asio/include/asio/detail/posix_static_mutex.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/miner_keys.hpp

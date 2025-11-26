@@ -1,4 +1,26 @@
 file(REMOVE_RECURSE
+  "CMakeFiles/LLC.dir/falcon/codec.c.o"
+  "CMakeFiles/LLC.dir/falcon/codec.c.o.d"
+  "CMakeFiles/LLC.dir/falcon/common.c.o"
+  "CMakeFiles/LLC.dir/falcon/common.c.o.d"
+  "CMakeFiles/LLC.dir/falcon/falcon.c.o"
+  "CMakeFiles/LLC.dir/falcon/falcon.c.o.d"
+  "CMakeFiles/LLC.dir/falcon/fft.c.o"
+  "CMakeFiles/LLC.dir/falcon/fft.c.o.d"
+  "CMakeFiles/LLC.dir/falcon/fpr.c.o"
+  "CMakeFiles/LLC.dir/falcon/fpr.c.o.d"
+  "CMakeFiles/LLC.dir/falcon/keygen.c.o"
+  "CMakeFiles/LLC.dir/falcon/keygen.c.o.d"
+  "CMakeFiles/LLC.dir/falcon/rng.c.o"
+  "CMakeFiles/LLC.dir/falcon/rng.c.o.d"
+  "CMakeFiles/LLC.dir/falcon/shake.c.o"
+  "CMakeFiles/LLC.dir/falcon/shake.c.o.d"
+  "CMakeFiles/LLC.dir/falcon/sign.c.o"
+  "CMakeFiles/LLC.dir/falcon/sign.c.o.d"
+  "CMakeFiles/LLC.dir/falcon/vrfy.c.o"
+  "CMakeFiles/LLC.dir/falcon/vrfy.c.o.d"
+  "CMakeFiles/LLC.dir/src/LLC/flkey.cpp.o"
+  "CMakeFiles/LLC.dir/src/LLC/flkey.cpp.o.d"
   "CMakeFiles/LLC.dir/src/LLC/hash/SK/Keccak-compact64.cpp.o"
   "CMakeFiles/LLC.dir/src/LLC/hash/SK/Keccak-compact64.cpp.o.d"
   "CMakeFiles/LLC.dir/src/LLC/hash/SK/KeccakHash.cpp.o"
@@ -18,6 +40,6 @@ file(REMOVE_RECURSE
 )
 
 # Per-language clean rules from dependency scanning.
-foreach(lang CXX)
+foreach(lang C CXX)
   include(CMakeFiles/LLC.dir/cmake_clean_${lang}.cmake OPTIONAL)
 endforeach()

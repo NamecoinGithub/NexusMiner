@@ -4,6 +4,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/NexusMiner.dir/src/main.cpp.o.d"
   "CMakeFiles/NexusMiner.dir/src/miner.cpp.o"
   "CMakeFiles/NexusMiner.dir/src/miner.cpp.o.d"
+  "CMakeFiles/NexusMiner.dir/src/miner_keys.cpp.o"
+  "CMakeFiles/NexusMiner.dir/src/miner_keys.cpp.o.d"
   "CMakeFiles/NexusMiner.dir/src/timer_manager.cpp.o"
   "CMakeFiles/NexusMiner.dir/src/timer_manager.cpp.o.d"
   "CMakeFiles/NexusMiner.dir/src/worker_manager.cpp.o"

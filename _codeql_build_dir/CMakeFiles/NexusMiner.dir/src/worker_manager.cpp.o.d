@@ -912,6 +912,8 @@ CMakeFiles/NexusMiner.dir/src/worker_manager.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/src/LLP/./packet.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/LLP/./block.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/LLP/./utils.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/LLP/./miner_opcodes.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/LLP/./llp_logging.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/config.hpp \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/nlohmann_json-src/include/nlohmann/json.hpp \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/nlohmann_json-src/include/nlohmann/adl_serializer.hpp \
@@ -992,8 +994,8 @@ CMakeFiles/NexusMiner.dir/src/worker_manager.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/sinks/basic_file_sink.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/file_helper.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/sinks/base_sink.h \
+ /home/runner/work/NexusMiner/NexusMiner/src/miner_keys.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/solo.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/protocol.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/pool.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/pool_base.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/pool_legacy.hpp
+ /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/pool_base.hpp

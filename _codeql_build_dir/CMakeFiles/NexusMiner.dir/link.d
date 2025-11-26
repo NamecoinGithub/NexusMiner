@@ -4,6 +4,7 @@ NexusMiner: \
   /usr/lib/gcc/x86_64-linux-gnu/13/crtbeginS.o \
   CMakeFiles/NexusMiner.dir/src/main.cpp.o \
   CMakeFiles/NexusMiner.dir/src/miner.cpp.o \
+  CMakeFiles/NexusMiner.dir/src/miner_keys.cpp.o \
   CMakeFiles/NexusMiner.dir/src/worker_manager.cpp.o \
   CMakeFiles/NexusMiner.dir/src/timer_manager.cpp.o \
   src/network/libnetwork.a \
@@ -63,6 +64,8 @@ NexusMiner: \
 CMakeFiles/NexusMiner.dir/src/main.cpp.o:
 
 CMakeFiles/NexusMiner.dir/src/miner.cpp.o:
+
+CMakeFiles/NexusMiner.dir/src/miner_keys.cpp.o:
 
 CMakeFiles/NexusMiner.dir/src/worker_manager.cpp.o:
 
