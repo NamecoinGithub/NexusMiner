@@ -21,7 +21,6 @@
 #include "miner_keys.hpp"
 #include "protocol/solo.hpp"
 #include "protocol/pool.hpp"
-#include "protocol/pool_legacy.hpp"
 #include <variant>
 
 namespace nexusminer
@@ -38,43 +37,44 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
     auto const& pool_config = m_config.get_pool_config();
     if(pool_config.m_use_pool)
     {
-        if (pool_config.m_use_deprecated)
-        {
-            m_miner_protocol = std::make_shared<protocol::Pool_legacy>(m_logger, m_config.get_pool_config(), m_stats_collector);
-        }
-        else
-        {
-            m_miner_protocol = std::make_shared<protocol::Pool>(m_logger, m_config.get_mining_mode(), m_config.get_pool_config(), m_stats_collector);
-        }
+        // Pool mining always uses the standard Pool protocol
+        m_miner_protocol = std::make_shared<protocol::Pool>(m_logger, m_config.get_mining_mode(), m_config.get_pool_config(), m_stats_collector);
     }
     else
     {
+        // Solo mining requires Falcon authentication - no legacy fallback
         auto solo_protocol = std::make_shared<protocol::Solo>(m_config.get_mining_mode() == config::Mining_mode::PRIME ? 1U : 2U, m_stats_collector);
         
-        // Configure Falcon miner authentication if keys are available
-        if (m_config.has_miner_falcon_keys())
+        // Falcon miner authentication is mandatory for solo mining
+        if (!m_config.has_miner_falcon_keys())
         {
-            m_logger->info("[Worker_manager] Configuring Falcon miner authentication");
-            
-            std::vector<uint8_t> pubkey, privkey;
-            if (keys::from_hex(m_config.get_miner_falcon_pubkey(), pubkey) &&
-                keys::from_hex(m_config.get_miner_falcon_privkey(), privkey))
-            {
-                solo_protocol->set_miner_keys(pubkey, privkey);
-                // Set the local IP address for the auth message
-                solo_protocol->set_address(m_config.get_local_ip());
-                m_logger->info("[Worker_manager] Falcon keys loaded from config");
-                m_logger->info("[Worker_manager] Auth address: {}", m_config.get_local_ip());
-            }
-            else
-            {
-                m_logger->error("[Worker_manager] Failed to parse Falcon keys from config - invalid hex format");
-            }
+            m_logger->error("[Worker_manager] CRITICAL: Falcon authentication keys are required for solo mining");
+            m_logger->error("[Worker_manager] Legacy authentication has been removed. Please configure Falcon keys:");
+            m_logger->error("[Worker_manager]   1. Generate keys: ./NexusMiner --create-keys");
+            m_logger->error("[Worker_manager]   2. Add keys to miner.conf (falcon_miner_pubkey and falcon_miner_privkey)");
+            m_logger->error("[Worker_manager]   3. Whitelist your public key on the node:");
+            m_logger->error("[Worker_manager]      - Config file: Add 'minerallowkey=<pubkey>' to nexus.conf");
+            m_logger->error("[Worker_manager]      - Command line: Start nexus with -minerallowkey=<pubkey>");
+            m_logger->error("[Worker_manager] See docs/falcon_authentication.md for detailed instructions");
+            throw std::runtime_error("Falcon authentication keys are required for solo mining");
         }
-        else
+        
+        m_logger->info("[Worker_manager] Configuring Falcon miner authentication");
+        
+        std::vector<uint8_t> pubkey, privkey;
+        if (!keys::from_hex(m_config.get_miner_falcon_pubkey(), pubkey) ||
+            !keys::from_hex(m_config.get_miner_falcon_privkey(), privkey))
         {
-            m_logger->info("[Worker_manager] No Falcon keys configured - using legacy authentication");
+            m_logger->error("[Worker_manager] CRITICAL: Failed to parse Falcon keys from config - invalid hex format");
+            m_logger->error("[Worker_manager] Keys must be valid hexadecimal strings");
+            m_logger->error("[Worker_manager] Use ./NexusMiner --create-keys to generate valid keys");
+            throw std::runtime_error("Invalid Falcon key format in configuration");
         }
+        
+        solo_protocol->set_miner_keys(pubkey, privkey);
+        solo_protocol->set_address(m_config.get_local_ip());
+        m_logger->info("[Worker_manager] Falcon keys loaded from config");
+        m_logger->info("[Worker_manager] Auth address: {}", m_config.get_local_ip());
         
         m_miner_protocol = solo_protocol;
     } 
@@ -301,20 +301,9 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     }
                     else
                     {
-                        // Phase 2: Solo mining with Falcon auth uses stateless protocol (no GET_HEIGHT)
-                        // Legacy solo mining (no Falcon keys) still uses GET_HEIGHT
-                        if (self->m_config.has_miner_falcon_keys())
-                        {
-                            self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
-                            self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
-                        }
-                        else
-                        {
-                            // Legacy solo mining uses GET_HEIGHT to poll for new blocks
-                            self->m_logger->info("[Solo Legacy] Using GET_HEIGHT polling for legacy mining");
-                            auto const get_height_interval = self->m_config.get_height_interval();
-                            self->m_timer_manager.start_get_height_timer(get_height_interval, self->m_connection);
-                        }
+                        // Solo mining uses stateless protocol with mandatory Falcon authentication (no GET_HEIGHT)
+                        self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
+                        self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
                     }
 
                     self->m_miner_protocol->set_block_handler([self, wallet_endpoint](auto block, auto nBits)

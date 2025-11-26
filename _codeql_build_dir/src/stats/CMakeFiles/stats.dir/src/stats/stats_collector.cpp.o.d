@@ -307,4 +307,25 @@ src/stats/CMakeFiles/stats.dir/src/stats/stats_collector.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/worker_config.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/types.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/stats_printer_config.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/pool.hpp
+ /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/pool.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/spdlog.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/common.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/null_mutex.h \
+ /usr/include/c++/13/atomic \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/tweakme.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/fmt/fmt.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/fmt/bundled/core.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/fmt/bundled/format.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/fmt/bundled/core.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/registry.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/periodic_worker.h \
+ /usr/include/c++/13/condition_variable /usr/include/c++/13/thread \
+ /usr/include/c++/13/bits/std_thread.h \
+ /usr/include/c++/13/bits/this_thread_sleep.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/synchronous_factory.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/logger.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/backtracer.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/circular_q.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/log_msg_buffer.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/log_msg.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/version.h

@@ -10,7 +10,6 @@ set(CMAKE_DEPENDS_LANGUAGES
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/runner/work/NexusMiner/NexusMiner/src/protocol/src/protocol/pool.cpp" "src/protocol/CMakeFiles/protocol.dir/src/protocol/pool.cpp.o" "gcc" "src/protocol/CMakeFiles/protocol.dir/src/protocol/pool.cpp.o.d"
   "/home/runner/work/NexusMiner/NexusMiner/src/protocol/src/protocol/pool_base.cpp" "src/protocol/CMakeFiles/protocol.dir/src/protocol/pool_base.cpp.o" "gcc" "src/protocol/CMakeFiles/protocol.dir/src/protocol/pool_base.cpp.o.d"
-  "/home/runner/work/NexusMiner/NexusMiner/src/protocol/src/protocol/pool_legacy.cpp" "src/protocol/CMakeFiles/protocol.dir/src/protocol/pool_legacy.cpp.o" "gcc" "src/protocol/CMakeFiles/protocol.dir/src/protocol/pool_legacy.cpp.o.d"
   "/home/runner/work/NexusMiner/NexusMiner/src/protocol/src/protocol/solo.cpp" "src/protocol/CMakeFiles/protocol.dir/src/protocol/solo.cpp.o" "gcc" "src/protocol/CMakeFiles/protocol.dir/src/protocol/solo.cpp.o.d"
   )
 
