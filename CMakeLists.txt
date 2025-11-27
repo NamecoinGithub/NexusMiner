@@ -10,12 +10,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 configure_file(src/version.h.in version.h)
 
-set(CPM_DOWNLOAD_VERSION 0.35.0) 
+# CPM.cmake - Package Manager
+# Updated to 0.40.2 for better CMake 3.21+ compatibility
+set(CPM_DOWNLOAD_VERSION 0.40.2) 
 set(CPM_DOWNLOAD_LOCATION "${CMAKE_BINARY_DIR}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
 
 if(NOT (EXISTS ${CPM_DOWNLOAD_LOCATION}))
-    message(STATUS "Downloading CPM.cmake")
-    file(DOWNLOAD https://github.com/TheLartians/CPM.cmake/releases/download/v${CPM_DOWNLOAD_VERSION}/CPM.cmake ${CPM_DOWNLOAD_LOCATION})
+    message(STATUS "Downloading CPM.cmake v${CPM_DOWNLOAD_VERSION}")
+    file(DOWNLOAD https://github.com/cpm-cmake/CPM.cmake/releases/download/v${CPM_DOWNLOAD_VERSION}/CPM.cmake ${CPM_DOWNLOAD_LOCATION})
 endif()
 
 include(${CPM_DOWNLOAD_LOCATION})
@@ -44,11 +46,12 @@ if(WIN32)
     add_definitions(-D_WIN32_WINT=0x0601 -DNOMINMAX -D_CRT_SECURE_NO_WARNINGS)
 endif()
 
-# OpenSSL
+# OpenSSL - Requires OpenSSL 1.1.1 or later (including OpenSSL 3.0+)
 if(STATIC_OPENSSL)
     set(OPENSSL_USE_STATIC_LIBS TRUE)
 endif()
-find_package(OpenSSL REQUIRED)
+find_package(OpenSSL 1.1.1 REQUIRED)
+message(STATUS "Found OpenSSL ${OPENSSL_VERSION}")
 include_directories(${OPENSSL_INCLUDE_DIR})
 
 #ASIO
@@ -100,13 +103,22 @@ if(asio_ADDED)
   endif()
 endif()
 
-#GPU
+#GPU - CUDA support
 if(WITH_GPU_CUDA)
     include(CheckLanguage)
     check_language(CUDA)
     if(CMAKE_CUDA_COMPILER)
         enable_language(CUDA)
         find_package(CUDAToolkit)
+        if(CUDAToolkit_FOUND)
+            message(STATUS "Found CUDA Toolkit ${CUDAToolkit_VERSION}")
+            # CUDA 11.0+ is required for compute capability 86 (Ampere)
+            # CUDA 11.8+ is required for compute capability 89 (Ada Lovelace)
+            # CUDA 12.0+ is required for compute capability 90 (Hopper)
+            if(CUDAToolkit_VERSION VERSION_LESS "11.0")
+                message(WARNING "CUDA ${CUDAToolkit_VERSION} detected. CUDA 11.0+ recommended for newer GPU architectures.")
+            endif()
+        endif()
         include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}) 
         add_definitions(-DGPU_CUDA_ENABLED)
         add_definitions(-DGPU_ENABLED)
