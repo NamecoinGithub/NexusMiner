@@ -34,20 +34,20 @@ The `BN_mpi2bn()` and `BN_bn2mpi()` functions remain part of the stable OpenSSL 
 ### New CUDA Architectures
 Updated CUDA_ARCHITECTURES in `src/gpu/CMakeLists.txt` to support the newest Nvidia GPU architectures:
 
-| Architecture | Compute Capability | GPU Series |
-|-------------|-------------------|------------|
-| 61 | Pascal | GTX 10 series |
-| 75 | Turing | RTX 20 series |
-| 86 | Ampere | RTX 30 series |
-| 89 | Ada Lovelace | RTX 40 series (NEW) |
-| 90 | Hopper | H100 data center (NEW) |
+| Compute Capability | Architecture   | GPU Series                 |
+|--------------------|----------------|----------------------------|
+| 61                 | Pascal         | GTX 10 series              |
+| 75                 | Turing         | RTX 20 series              |
+| 86                 | Ampere         | RTX 30 series              |
+| 89                 | Ada Lovelace   | RTX 40 series (NEW)        |
+| 90                 | Hopper         | H100 data center (NEW)     |
 
 ### CUDA Version Requirements
-- CUDA 11.0+ recommended for Ampere (86) support
-- CUDA 11.8+ required for Ada Lovelace (89) support
-- CUDA 12.0+ required for Hopper (90) support
+- CUDA 11.0+ required for Ampere (compute capability 86) support
+- CUDA 11.8+ required for Ada Lovelace (compute capability 89) support
+- CUDA 12.0+ required for Hopper (compute capability 90) support
 
-The CMake configuration now displays a warning if CUDA version is below 11.0.
+The CMake configuration now displays architecture-specific warnings based on the detected CUDA version.
 
 ## CMake Modernization
 
