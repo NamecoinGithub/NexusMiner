@@ -26,7 +26,7 @@ The deprecated functions in OpenSSL 3.0 (such as `BN_pseudo_rand`, `BN_is_prime_
 The `BN_mpi2bn()` and `BN_bn2mpi()` functions remain part of the stable OpenSSL 3.0 API.
 
 ### CMake Changes
-- Added OpenSSL version requirement: minimum version 1.1.1 (which includes OpenSSL 3.0+)
+- Added OpenSSL version requirement: minimum version 1.1.1, with full support for OpenSSL 3.0+
 - Added status message to display the found OpenSSL version during configuration
 
 ## Nvidia GPU Architecture Updates
