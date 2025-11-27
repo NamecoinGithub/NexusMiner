@@ -13,6 +13,26 @@ namespace nexusminer
 namespace protocol
 {
 
+// Helper function to serialize uint64 to little-endian bytes
+static void append_uint64_le(std::vector<uint8_t>& dest, uint64_t value) {
+    for (int i = 0; i < 8; ++i) {
+        dest.push_back((value >> (i * 8)) & 0xFF);
+    }
+}
+
+// Helper function to serialize uint32 to little-endian bytes
+static void append_uint32_le(std::vector<uint8_t>& dest, uint32_t value) {
+    for (int i = 0; i < 4; ++i) {
+        dest.push_back((value >> (i * 8)) & 0xFF);
+    }
+}
+
+// Helper function to serialize uint16 to little-endian bytes  
+static void append_uint16_le(std::vector<uint8_t>& dest, uint16_t value) {
+    dest.push_back(value & 0xFF);
+    dest.push_back((value >> 8) & 0xFF);
+}
+
 Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector)
 : m_channel{channel}
 , m_logger{spdlog::get("logger")}
@@ -258,56 +278,92 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         return network::Shared_payload{};
     }
     
+    // LLL-TAO SignedWorkSubmission format (from Disposable Falcon Wrapper - PR #20):
+    // [merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][signature]
+    // 
+    // CRITICAL: Signature is REQUIRED for authenticated session block submissions
+    // Blocks without valid signatures will be rejected by the node
+    
+    // Verify Falcon wrapper is available (required for stateless sessions)
+    if (!m_falcon_wrapper || !m_falcon_wrapper->is_valid()) {
+        m_logger->error("[Solo Submit] CRITICAL: Falcon wrapper not available for block signing");
+        m_logger->error("[Solo Submit] Stateless sessions REQUIRE signed block submissions per LLL-TAO protocol");
+        m_logger->error("[Solo Submit] Block submission cannot proceed without valid Falcon keys");
+        return network::Shared_payload{};
+    }
+    
     // Enhanced diagnostics: Log block submission structure
     m_logger->info("[Solo Submit] Block submission payload structure:");
     m_logger->info("[Solo Submit]   - Block data size: {} bytes", block_data.size());
     m_logger->info("[Solo Submit]   - Nonce: 0x{:016x}", nonce);
     
-    Packet packet{ Packet::SUBMIT_BLOCK };
-    packet.m_data = std::make_shared<network::Payload>(block_data);
-    auto const nonce_data = uint2bytes64(nonce);
-    packet.m_data->insert(packet.m_data->end(), nonce_data.begin(), nonce_data.end());
+    // Get current timestamp for block submission (8 bytes, little-endian)
+    uint64_t submission_timestamp = static_cast<uint64_t>(
+        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
     
-    // Phase 2: Block submission format
-    // Default: merkle_root (64 bytes) + nonce (8 bytes) = 72 bytes total
-    // Optional: Add signature if block signing is enabled
+    m_logger->info("[Solo Submit]   - Timestamp: {} (0x{:016x})", submission_timestamp, submission_timestamp);
     
-    // Optional block signing for enhanced validation (if enabled)
-    if (m_block_signing_enabled && m_falcon_wrapper && m_falcon_wrapper->is_valid()) {
-        m_logger->info("[Solo Submit] Block signing enabled - generating signature");
-        auto sig_result = m_falcon_wrapper->sign_block(block_data, nonce);
-        
-        if (sig_result.success) {
-            // Append signature to packet (signature length varies ~690 bytes)
-            packet.m_data->insert(packet.m_data->end(), 
-                                 sig_result.signature.begin(), 
-                                 sig_result.signature.end());
-            
-            m_logger->info("[Solo Submit] Block signature appended");
-            m_logger->info("[Solo Submit]   - Signature size: {} bytes", sig_result.signature.size());
-            m_logger->info("[Solo Submit]   - Generation time: {} μs", sig_result.generation_time.count());
-        } else {
-            m_logger->warn("[Solo Submit] Block signature failed: {}", sig_result.error_message);
-            m_logger->warn("[Solo Submit] Proceeding with unsigned block submission");
-        }
-    } else if (m_block_signing_enabled) {
-        m_logger->debug("[Solo Submit] Block signing enabled but wrapper unavailable");
+    // Build the complete submission payload: merkle_root + nonce + timestamp
+    std::vector<uint8_t> message_to_sign;
+    message_to_sign.reserve(block_data.size() + 16);  // block_data + nonce(8) + timestamp(8)
+    message_to_sign.insert(message_to_sign.end(), block_data.begin(), block_data.end());
+    append_uint64_le(message_to_sign, nonce);
+    append_uint64_le(message_to_sign, submission_timestamp);
+    
+    // Generate Falcon signature for block submission
+    m_logger->info("[Solo Submit] Generating required Falcon signature for SignedWorkSubmission");
+    auto sig_result = m_falcon_wrapper->sign_payload(message_to_sign, 
+        FalconSignatureWrapper::SignatureType::BLOCK);
+    
+    if (!sig_result.success) {
+        m_logger->error("[Solo Submit] CRITICAL: Falcon signature generation failed: {}", sig_result.error_message);
+        m_logger->error("[Solo Submit] Block submission cannot proceed without valid signature");
+        return network::Shared_payload{};
     }
     
-    // Set packet length to actual data size (after optional signature append)
+    // Build the packet payload
+    Packet packet{ Packet::SUBMIT_BLOCK };
+    packet.m_data = std::make_shared<network::Payload>();
+    packet.m_data->reserve(block_data.size() + 16 + 2 + sig_result.signature.size());
+    
+    // Append merkle_root (64 bytes)
+    packet.m_data->insert(packet.m_data->end(), block_data.begin(), block_data.end());
+    
+    // Append nonce (8 bytes LE)
+    append_uint64_le(*packet.m_data, nonce);
+    
+    // Append timestamp (8 bytes LE)
+    append_uint64_le(*packet.m_data, submission_timestamp);
+    
+    // Append signature length (2 bytes LE)
+    uint16_t sig_len = static_cast<uint16_t>(sig_result.signature.size());
+    append_uint16_le(*packet.m_data, sig_len);
+    
+    // Append signature bytes
+    packet.m_data->insert(packet.m_data->end(), 
+                         sig_result.signature.begin(), 
+                         sig_result.signature.end());
+    
+    m_logger->info("[Solo Submit] SignedWorkSubmission signature appended");
+    m_logger->info("[Solo Submit]   - Signature length: {} bytes", sig_len);
+    m_logger->info("[Solo Submit]   - Generation time: {} μs", sig_result.generation_time.count());
+    
+    // Set packet length to actual data size
     packet.m_length = packet.m_data->size();
     
     // Validate final payload size
-    std::size_t actual_size = packet.m_data ? packet.m_data->size() : 0;
-    std::size_t expected_base_size = 72;  // merkle_root (64) + nonce (8)
+    // Format: merkle_root(64) + nonce(8) + timestamp(8) + sig_len(2) + signature(~690) = ~772 bytes
+    std::size_t actual_size = packet.m_data->size();
+    std::size_t expected_min_size = 82;  // merkle_root(64) + nonce(8) + timestamp(8) + sig_len(2)
     
-    if (actual_size < expected_base_size) {
+    if (actual_size < expected_min_size) {
         m_logger->error("[Solo Submit] Payload size too small: expected at least {} bytes, got {} bytes", 
-            expected_base_size, actual_size);
+            expected_min_size, actual_size);
     }
     
-    m_logger->info("[Solo Phase 2] Submitting authenticated block (session: 0x{:08x})", m_session_id);
+    m_logger->info("[Solo Phase 2] Submitting SignedWorkSubmission (session: 0x{:08x})", m_session_id);
     m_logger->info("[Solo Submit]   - Total submission payload: {} bytes", actual_size);
+    m_logger->info("[Solo Submit]   - Format: [merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][signature]");
     
     auto result = packet.get_bytes();
     
@@ -751,9 +807,46 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             connection->transmit(work_payload);
         }
     }
+    else if (packet.m_header == Packet::SESSION_START)
+    {
+        // LLL-TAO PR #22: Handle SESSION_START for session management
+        m_logger->info("[Solo Session] Received SESSION_START from node");
+        
+        if (packet.m_data && packet.m_length >= 4) {
+            // Parse session timeout (4 bytes, little-endian)
+            uint32_t session_timeout = (*packet.m_data)[0] |
+                                       ((*packet.m_data)[1] << 8) |
+                                       ((*packet.m_data)[2] << 16) |
+                                       ((*packet.m_data)[3] << 24);
+            
+            m_logger->info("[Solo Session] Session parameters:");
+            m_logger->info("[Solo Session]   - Timeout: {} seconds", session_timeout);
+            m_logger->info("[Solo Session]   - Session ID: 0x{:08x}", m_session_id);
+            
+            // Parse optional genesis hash if present (32 bytes)
+            if (packet.m_length >= 36) {
+                m_logger->info("[Solo Session] GenesisHash reward mapping received");
+            }
+        }
+    }
+    else if (packet.m_header == Packet::SESSION_KEEPALIVE)
+    {
+        // LLL-TAO PR #22: Handle SESSION_KEEPALIVE response
+        m_logger->debug("[Solo Session] Received SESSION_KEEPALIVE response");
+        
+        if (packet.m_data && packet.m_length >= 4) {
+            // Parse remaining timeout (4 bytes, little-endian)
+            uint32_t remaining_timeout = (*packet.m_data)[0] |
+                                         ((*packet.m_data)[1] << 8) |
+                                         ((*packet.m_data)[2] << 16) |
+                                         ((*packet.m_data)[3] << 24);
+            
+            m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
+        }
+    }
     else
     {
-        m_logger->debug("Invalid header received.");
+        m_logger->debug("Invalid header received: 0x{:02x}", packet.m_header);
     } 
 }
 
@@ -777,6 +870,19 @@ void Solo::set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_
         m_logger->error("[Solo] Failed to initialize Falcon Signature Wrapper: {}", e.what());
         m_falcon_wrapper.reset();
     }
+}
+
+network::Shared_payload Solo::send_session_keepalive()
+{
+    // LLL-TAO PR #22: Send SESSION_KEEPALIVE to maintain session
+    m_logger->debug("[Solo Session] Sending SESSION_KEEPALIVE for session 0x{:08x}", m_session_id);
+    
+    // Build keepalive packet with session ID (4 bytes, little-endian)
+    std::vector<uint8_t> keepalive_data;
+    append_uint32_le(keepalive_data, m_session_id);
+    
+    Packet packet{ Packet::SESSION_KEEPALIVE, std::make_shared<network::Payload>(keepalive_data) };
+    return packet.get_bytes();
 }
 
 void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)

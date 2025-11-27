@@ -34,6 +34,10 @@ public:
     // Enable/disable optional block signing (default: disabled for performance)
     void enable_block_signing(bool enable) { m_block_signing_enabled = enable; }
     bool is_block_signing_enabled() const { return m_block_signing_enabled; }
+    
+    // Session management (LLL-TAO PR #22)
+    network::Shared_payload send_session_keepalive();
+    std::uint32_t get_session_id() const { return m_session_id; }
 
 private:
     
