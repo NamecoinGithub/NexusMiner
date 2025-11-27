@@ -209,9 +209,11 @@ bool MiningTemplateInterface::verify_block_creation(const std::vector<uint8_t>& 
         return false;
     }
     
-    // Verify nonce is non-zero (basic sanity check)
+    // Note: Zero nonce is technically valid in cryptographic mining - the mining process
+    // may legitimately produce a zero nonce as a solution. We log at debug level for
+    // diagnostics but do not reject the block.
     if (nonce == 0) {
-        m_logger->warn("[TemplateInterface] VERIFY: Zero nonce - unusual but allowed");
+        m_logger->debug("[TemplateInterface] VERIFY: Zero nonce found - valid mining result");
     }
     
     m_logger->debug("[TemplateInterface] VERIFY: Block creation verified (merkle: {} bytes, nonce: 0x{:016x})",
@@ -336,11 +338,14 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     }
     
     // Validate height is reasonable (not stale)
+    // Stale templates are marked as invalid since we don't want to mine on old blocks
     if (m_current_height > 0 && tmpl.block.nHeight < m_current_height) {
         result.is_stale = true;
-        // Don't mark as invalid - stale templates can still be informational
-        m_logger->warn("[TemplateInterface] VALIDATE: Template height {} is stale (current: {})",
-            tmpl.block.nHeight, m_current_height);
+        result.height_valid = false;
+        result.is_valid = false;
+        result.error_message = "Template height " + std::to_string(tmpl.block.nHeight) + 
+            " is stale (current: " + std::to_string(m_current_height) + ")";
+        m_logger->warn("[TemplateInterface] VALIDATE: {}", result.error_message);
     }
     
     // Validate nBits (difficulty) is non-zero

@@ -223,7 +223,7 @@ The interface provides detailed logging at multiple levels:
 ### Template Rejection Scenarios
 
 1. **Invalid channel**: Template's nChannel doesn't match expected mining mode
-2. **Stale height**: Template height is less than current tracked height
+2. **Stale height**: Template height is less than current tracked height (marked invalid)
 3. **Invalid nBits**: Difficulty bits are zero
 4. **Invalid merkle root**: Merkle root is all zeros
 5. **Parse failure**: Block header deserialization failed
@@ -231,7 +231,7 @@ The interface provides detailed logging at multiple levels:
 ### Recovery Actions
 
 - All rejections trigger a new work request (GET_BLOCK)
-- Stale templates are logged but don't stop mining
+- Stale templates are rejected and trigger new work request
 - Parse failures indicate protocol mismatch - check node version
 
 ## Files

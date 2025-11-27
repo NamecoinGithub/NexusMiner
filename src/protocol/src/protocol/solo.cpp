@@ -47,7 +47,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_auth_timestamp{0}
 , m_falcon_wrapper{nullptr}
 , m_block_signing_enabled{false}  // Disabled by default for performance
-, m_template_interface{nullptr}   // Initialize to nullptr, created after session ID is known
+, m_template_interface{nullptr}
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -60,6 +60,8 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     }
     
     // Initialize the Mining Template Interface for unified READ/FEED operations
+    // Session ID starts at 0 (unauthenticated) and will be updated after MINER_AUTH_RESULT
+    // The session ID binds the template interface to the FALCON authenticated tunnel
     m_template_interface = std::make_unique<MiningTemplateInterface>(m_channel, 0);
     m_logger->info("[Solo] Mining Template Interface initialized for unified READ/FEED system");
 }
