@@ -88,14 +88,46 @@ the protocol.
 - Returns session ID (derived from keyId) in MINER_AUTH_RESULT
 - Tracks authenticated session for future requests
 
-### 3. Block Submission
+### 3. Block Submission (SignedWorkSubmission)
 
-Phase 2 simplifies block submission:
-- **Format**: `merkle_root(64 bytes) + nonce(8 bytes) = 72 bytes total`
-- **No signing needed**: Session is already authenticated via Falcon handshake
-- **Node validation**: Requires `fMinerAuthenticated` flag before accepting blocks
+Phase 2 uses the **Disposable Falcon Wrapper** (LLL-TAO PR #20) for block submissions:
 
-### 4. Legacy Compatibility
+- **Format**: `[merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][signature]`
+  - merkle_root: 64-byte block merkle root
+  - nonce: 8-byte little-endian nonce value
+  - timestamp: 8-byte little-endian Unix timestamp (submission time)
+  - sig_len: 2-byte little-endian signature length
+  - signature: ~690-byte Falcon signature
+
+- **Signature covers**: `merkle_root + nonce + timestamp` (complete submission payload)
+- **Session binding**: Signature ties block submission to authenticated miner session
+- **Node unwraps**: Node verifies signature, discards it, processes block without blockchain overhead
+
+**Example packet structure** (~772 bytes total):
+```
+SUBMIT_BLOCK header (1 byte)
+Length field (4 bytes)
+Payload:
+  [merkle_root(64 bytes)]
+  [nonce(8 bytes LE)]
+  [timestamp(8 bytes LE)]
+  [sig_len(2 bytes LE)]
+  [signature(~690 bytes)]
+```
+
+### 4. Session Management (LLL-TAO PR #22)
+
+New session management packets for session stability:
+
+- **SESSION_START (211)**: Node sends session parameters to miner
+  - Payload: `[timeout(4 bytes LE)][optional: genesis_hash(32 bytes)]`
+  - Timeout clamped to 60-3600 seconds
+
+- **SESSION_KEEPALIVE (212)**: Miner sends heartbeat to maintain session
+  - Request: `[session_id(4 bytes LE)]`
+  - Response: `[remaining_timeout(4 bytes LE)]`
+
+### 5. Legacy Compatibility
 
 Legacy mode (no Falcon keys):
 - Sends SET_CHANNEL directly (1-byte payload)
