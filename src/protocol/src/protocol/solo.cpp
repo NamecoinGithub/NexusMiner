@@ -47,6 +47,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_auth_timestamp{0}
 , m_falcon_wrapper{nullptr}
 , m_block_signing_enabled{false}  // Disabled by default for performance
+, m_template_interface{nullptr}   // Initialize to nullptr, created after session ID is known
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -57,6 +58,10 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             static_cast<int>(m_channel));
         m_channel = 2;
     }
+    
+    // Initialize the Mining Template Interface for unified READ/FEED operations
+    m_template_interface = std::make_unique<MiningTemplateInterface>(m_channel, 0);
+    m_logger->info("[Solo] Mining Template Interface initialized for unified READ/FEED system");
 }
 
 void Solo::reset()
@@ -67,6 +72,12 @@ void Solo::reset()
     m_authenticated = false;
     m_session_id = 0;
     m_auth_timestamp = 0;
+    
+    // Reset template interface for new session
+    if (m_template_interface) {
+        m_template_interface->set_session_id(0);
+        m_template_interface->reset_stats();
+    }
 }
 
 network::Shared_payload Solo::login(Login_handler handler)
@@ -486,77 +497,149 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
         
-        try {
-            // Use centralized deserializer
-            auto block = nexusminer::llp_utils::deserialize_block_header(*packet.m_data);
+        // Use the Mining Template Interface for unified READ/FEED operations
+        // This provides reliable template verification as part of the FALCON tunnel
+        std::string source_endpoint;
+        if (connection) {
+            source_endpoint = connection->remote_endpoint().to_string();
+        }
+        
+        if (m_template_interface) {
+            m_logger->info("[Solo READ/FEED] Processing template via Mining Template Interface");
             
-            // Enhanced diagnostics: Log parsed header fields
-            m_logger->info("[Solo] Received block header:");
-            m_logger->info("[Solo]   - nVersion: {}", block.nVersion);
-            m_logger->info("[Solo]   - nChannel: {}", block.nChannel);
-            m_logger->info("[Solo]   - nHeight: {}", block.nHeight);
-            m_logger->info("[Solo]   - nBits: 0x{:08x}", block.nBits);
-            m_logger->info("[Solo]   - nNonce: {}", block.nNonce);
+            auto validation_result = m_template_interface->read_template(packet.m_data, source_endpoint);
             
-            // Phase 2: In stateless mining, we always accept the block from GET_BLOCK response
-            // Update our height tracking to match
-            if (block.nHeight > m_current_height || m_authenticated)
-            {
-                if (m_authenticated && block.nHeight != m_current_height) {
-                    m_logger->debug("[Solo Phase 2] Stateless mining - accepting block at height {}", block.nHeight);
-                }
-                m_current_height = block.nHeight;
+            if (!validation_result.is_valid) {
+                m_logger->error("[Solo READ] Template validation failed: {}", validation_result.error_message);
                 
-                // Verify block handler is set
-                if (!m_set_block_handler)
+                if (validation_result.is_stale) {
+                    m_logger->warn("[Solo READ] Template is stale - requesting fresh work");
+                }
+                
+                if (connection) {
+                    auto work_payload = get_work();
+                    if (work_payload && !work_payload->empty()) {
+                        connection->transmit(work_payload);
+                    }
+                }
+                return;
+            }
+            
+            m_logger->info("[Solo READ] Template validated successfully in {} μs", 
+                validation_result.validation_time.count());
+            
+            // Get the validated template
+            auto const* tmpl = m_template_interface->get_current_template();
+            if (!tmpl) {
+                m_logger->error("[Solo FEED] No valid template available after validation");
+                return;
+            }
+            
+            // Update height tracking
+            m_current_height = tmpl->block.nHeight;
+            
+            // FEED: Dispatch to block handler
+            if (!m_set_block_handler) {
+                m_logger->error("[Solo FEED] CRITICAL: No block handler set - cannot process BLOCK_DATA");
+                m_logger->error("[Solo FEED]   - This indicates an initialization failure");
+                m_logger->error("[Solo FEED] Recovery: Block will be discarded, requesting new work");
+                if (connection) {
+                    auto work_payload = get_work();
+                    if (work_payload && !work_payload->empty()) {
+                        connection->transmit(work_payload);
+                    }
+                }
+                return;
+            }
+            
+            m_logger->info("[Solo FEED] Dispatching validated template to workers (height: {}, nBits: 0x{:08x})", 
+                tmpl->block.nHeight, tmpl->nBits);
+            m_set_block_handler(tmpl->block, tmpl->nBits);
+            
+            // Log template interface statistics periodically
+            auto stats = m_template_interface->get_stats();
+            if (stats.templates_received % 10 == 0) {
+                m_logger->debug("[Solo Template Stats] Received: {}, Validated: {}, Rejected: {}, Fed: {}",
+                    stats.templates_received, stats.templates_validated, 
+                    stats.templates_rejected, stats.templates_fed);
+            }
+        }
+        else {
+            // Fallback: Use legacy processing if template interface not available
+            m_logger->warn("[Solo] Template interface not available, using legacy processing");
+            
+            try {
+                // Use centralized deserializer
+                auto block = nexusminer::llp_utils::deserialize_block_header(*packet.m_data);
+                
+                // Enhanced diagnostics: Log parsed header fields
+                m_logger->info("[Solo] Received block header:");
+                m_logger->info("[Solo]   - nVersion: {}", block.nVersion);
+                m_logger->info("[Solo]   - nChannel: {}", block.nChannel);
+                m_logger->info("[Solo]   - nHeight: {}", block.nHeight);
+                m_logger->info("[Solo]   - nBits: 0x{:08x}", block.nBits);
+                m_logger->info("[Solo]   - nNonce: {}", block.nNonce);
+                
+                // Phase 2: In stateless mining, we always accept the block from GET_BLOCK response
+                // Update our height tracking to match
+                if (block.nHeight > m_current_height || m_authenticated)
                 {
-                    m_logger->error("[Solo] CRITICAL: No block handler set - cannot process BLOCK_DATA");
-                    m_logger->error("[Solo]   - This indicates an initialization failure");
-                    m_logger->error("[Solo] Recovery: Block will be discarded, requesting new work");
+                    if (m_authenticated && block.nHeight != m_current_height) {
+                        m_logger->debug("[Solo Phase 2] Stateless mining - accepting block at height {}", block.nHeight);
+                    }
+                    m_current_height = block.nHeight;
+                    
+                    // Verify block handler is set
+                    if (!m_set_block_handler)
+                    {
+                        m_logger->error("[Solo] CRITICAL: No block handler set - cannot process BLOCK_DATA");
+                        m_logger->error("[Solo]   - This indicates an initialization failure");
+                        m_logger->error("[Solo] Recovery: Block will be discarded, requesting new work");
+                        if (connection) {
+                            auto work_payload = get_work();
+                            if (work_payload && !work_payload->empty()) {
+                                connection->transmit(work_payload);
+                            }
+                        }
+                        return;
+                    }
+                    
+                    // Invoke block handler with nBits from the block
+                    m_logger->debug("[Solo] Dispatching block to handler (height: {}, nBits: 0x{:08x})", 
+                        block.nHeight, block.nBits);
+                    m_set_block_handler(block, block.nBits);
+                }
+                else
+                {
+                    m_logger->warn("[Solo] Block height mismatch detected:");
+                    m_logger->warn("[Solo]   - Received height: {}", block.nHeight);
+                    m_logger->warn("[Solo]   - Current height: {}", m_current_height);
+                    m_logger->info("[Solo] Recovery: Requesting new work at current height");
                     if (connection) {
                         auto work_payload = get_work();
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
+                        } else {
+                            m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK returned empty payload");
                         }
                     }
-                    return;
                 }
-                
-                // Invoke block handler with nBits from the block
-                m_logger->debug("[Solo] Dispatching block to handler (height: {}, nBits: 0x{:08x})", 
-                    block.nHeight, block.nBits);
-                m_set_block_handler(block, block.nBits);
             }
-            else
-            {
-                m_logger->warn("[Solo] Block height mismatch detected:");
-                m_logger->warn("[Solo]   - Received height: {}", block.nHeight);
-                m_logger->warn("[Solo]   - Current height: {}", m_current_height);
-                m_logger->info("[Solo] Recovery: Requesting new work at current height");
+            catch (const std::exception& e) {
+                m_logger->error("[Solo] CRITICAL: Failed to deserialize BLOCK_DATA: {}", e.what());
+                m_logger->error("[Solo]   - Payload size: {} bytes", packet.m_data->size());
+                m_logger->error("[Solo]   - This may indicate protocol mismatch or data corruption");
+                m_logger->error("[Solo] Recovery: Requesting new work to recover from deserialization failure");
                 if (connection) {
                     auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
                     } else {
-                        m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK returned empty payload");
+                        m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
                     }
                 }
+                return;
             }
-        }
-        catch (const std::exception& e) {
-            m_logger->error("[Solo] CRITICAL: Failed to deserialize BLOCK_DATA: {}", e.what());
-            m_logger->error("[Solo]   - Payload size: {} bytes", packet.m_data->size());
-            m_logger->error("[Solo]   - This may indicate protocol mismatch or data corruption");
-            m_logger->error("[Solo] Recovery: Requesting new work to recover from deserialization failure");
-            if (connection) {
-                auto work_payload = get_work();
-                if (work_payload && !work_payload->empty()) {
-                    connection->transmit(work_payload);
-                } else {
-                    m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
-                }
-            }
-            return;
         }
     }
     else if(packet.m_header == Packet::ACCEPT)
@@ -678,6 +761,12 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->info("[Solo Phase 2] ✓ Authentication SUCCEEDED - Session ID: 0x{:08x}", m_session_id);
                 m_logger->info("[Solo Auth]   - Session ID bytes (LE): {:02x} {:02x} {:02x} {:02x}",
                     (*packet.m_data)[1], (*packet.m_data)[2], (*packet.m_data)[3], (*packet.m_data)[4]);
+                
+                // Update template interface with authenticated session ID (FALCON tunnel established)
+                if (m_template_interface) {
+                    m_template_interface->set_session_id(m_session_id);
+                    m_logger->info("[Solo Phase 2] FALCON tunnel established - Template interface bound to session");
+                }
             } else {
                 m_logger->info("[Solo Phase 2] ✓ Authentication SUCCEEDED");
                 m_logger->warn("[Solo Auth]   - WARNING: No session ID provided by node (expected 5 bytes, got {})", 

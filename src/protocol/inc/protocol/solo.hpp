@@ -3,6 +3,7 @@
 
 #include "protocol/protocol.hpp"
 #include "protocol/falcon_wrapper.hpp"
+#include "protocol/mining_template_interface.hpp"
 #include "spdlog/spdlog.h"
 #include <memory>
 
@@ -38,6 +39,10 @@ public:
     // Session management (LLL-TAO PR #22)
     network::Shared_payload send_session_keepalive();
     std::uint32_t get_session_id() const { return m_session_id; }
+    
+    // Mining Template Interface access (unified READ/FEED system)
+    MiningTemplateInterface* get_template_interface() { return m_template_interface.get(); }
+    const MiningTemplateInterface* get_template_interface() const { return m_template_interface.get(); }
 
 private:
     
@@ -63,6 +68,9 @@ private:
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
     bool m_block_signing_enabled;  // Optional block signing feature
+    
+    // Mining Template Interface for unified READ/FEED operations
+    std::unique_ptr<MiningTemplateInterface> m_template_interface;
 };
 
 }
