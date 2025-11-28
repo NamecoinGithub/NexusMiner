@@ -19,3 +19,4 @@ include/gmpxx.h
 *.exe
 *.log
 _codeql_detected_source_root
+_codeql_build_dir/
