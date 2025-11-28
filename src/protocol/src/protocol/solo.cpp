@@ -205,11 +205,11 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Auth]   - Public key length: {} bytes (offset: 0-1, LE)", pubkey_len);
     m_logger->info("[Solo Auth]   - Public key data: {} bytes (offset: 2-{})", pubkey_len, 1 + pubkey_len);
     m_logger->info("[Solo Auth]   - Timestamp: {} (0x{:016x}) at offset {}-{}", 
-        m_auth_timestamp, m_auth_timestamp, 2 + pubkey_len, 9 + pubkey_len);
+        m_auth_timestamp, m_auth_timestamp, 2 + pubkey_len, 2 + pubkey_len + 7);
     m_logger->info("[Solo Auth]   - Signature length: {} bytes (offset: {}-{}, LE)", 
-        sig_len, 10 + pubkey_len, 11 + pubkey_len);
+        sig_len, 2 + pubkey_len + 8, 2 + pubkey_len + 9);
     m_logger->info("[Solo Auth]   - Signature data: {} bytes (offset: {}-{})", 
-        sig_len, 12 + pubkey_len, 11 + pubkey_len + sig_len);
+        sig_len, 2 + pubkey_len + 10, 2 + pubkey_len + 9 + sig_len);
     m_logger->info("[Solo Auth]   - Total payload size: {} bytes", payload.size());
     
     // Validate payload is properly constructed

@@ -2,7 +2,8 @@
 #include "LLP/block_utils.hpp"
 #include <chrono>
 #include <cstring>
-#include <cstdio>
+#include <sstream>
+#include <iomanip>
 
 namespace nexusminer {
 namespace protocol {
@@ -409,16 +410,15 @@ bool MiningTemplateInterface::parse_block_header(const network::Payload& data,
         m_logger->error("[TemplateInterface] Failed to parse block header: {}", e.what());
         m_logger->error("[TemplateInterface]   - Payload size: {} bytes", data.size());
         
-        // Log first few bytes for debugging
+        // Log first few bytes for debugging using C++ stringstream
         if (data.size() > 0) {
-            std::string hex_preview;
+            std::ostringstream hex_preview;
+            hex_preview << std::hex << std::setfill('0');
             size_t preview_len = std::min(data.size(), static_cast<size_t>(32));
             for (size_t i = 0; i < preview_len; ++i) {
-                char buf[4];
-                snprintf(buf, sizeof(buf), "%02x ", data[i]);
-                hex_preview += buf;
+                hex_preview << std::setw(2) << static_cast<unsigned int>(data[i]) << " ";
             }
-            m_logger->error("[TemplateInterface]   - First {} bytes: {}", preview_len, hex_preview);
+            m_logger->error("[TemplateInterface]   - First {} bytes: {}", preview_len, hex_preview.str());
         }
         
         return false;
