@@ -207,7 +207,11 @@ network::Shared_payload Solo::login(Login_handler handler)
     // Validate payload is properly constructed
     if (payload.empty()) {
         m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_RESPONSE payload is empty!");
-        m_logger->error("[Solo Auth] Cannot proceed with authentication - payload construction failed");
+        m_logger->error("[Solo Auth] Error type: PAYLOAD_CONSTRUCTION_FAILURE");
+        m_logger->error("[Solo Auth] Possible causes:");
+        m_logger->error("[Solo Auth]   - Empty public key (size: {} bytes)", m_miner_pubkey.size());
+        m_logger->error("[Solo Auth]   - Empty signature (size: {} bytes)", signature.size());
+        m_logger->error("[Solo Auth]   - Memory allocation failure during payload construction");
         handler(false);
         return network::Shared_payload{};
     }
@@ -215,11 +219,31 @@ network::Shared_payload Solo::login(Login_handler handler)
     // Create and send MINER_AUTH_RESPONSE packet directly
     Packet packet{ Packet::MINER_AUTH_RESPONSE, std::make_shared<network::Payload>(payload) };
     
+    // Log packet details for debugging
+    m_logger->debug("[Solo Auth] Packet created: header=0x{:02x} ({}) length={} is_valid={}", 
+                   static_cast<int>(packet.m_header),
+                   packet.m_header >= 207 && packet.m_header <= 212 ? "AUTH_PACKET" : "UNKNOWN",
+                   packet.m_length, 
+                   packet.is_valid());
+    
     // Validate packet encoding
     auto packet_bytes = packet.get_bytes();
     if (!packet_bytes || packet_bytes->empty()) {
         m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_RESPONSE packet encoding failed! get_bytes() returned empty.");
-        m_logger->error("[Solo Auth] This indicates a packet serialization error - please check system resources and try again");
+        m_logger->error("[Solo Auth] Error type: {}", 
+                       !packet.is_valid() ? "PACKET_VALIDATION_FAILURE" : "SERIALIZATION_FAILURE");
+        m_logger->error("[Solo Auth] Diagnostic details:");
+        m_logger->error("[Solo Auth]   - Packet header: 0x{:02x} ({})", 
+                       static_cast<int>(packet.m_header), 
+                       packet.m_header);
+        m_logger->error("[Solo Auth]   - Packet length: {} bytes", packet.m_length);
+        m_logger->error("[Solo Auth]   - Packet is_valid: {}", packet.is_valid());
+        m_logger->error("[Solo Auth]   - Data pointer valid: {}", packet.m_data != nullptr);
+        if (!packet.is_valid()) {
+            m_logger->error("[Solo Auth] Possible causes:");
+            m_logger->error("[Solo Auth]   - Packet header not in valid range for payload packets");
+            m_logger->error("[Solo Auth]   - Authentication packet not properly recognized (expected 207-212)");
+        }
         handler(false);
         return network::Shared_payload{};
     }
