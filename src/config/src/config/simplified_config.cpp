@@ -6,6 +6,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>  // for getenv
 
 using json = nlohmann::json;
 
@@ -267,7 +268,13 @@ bool Simplified_config::to_full_config(Config& config) const
     
     // For this implementation, we export to a temp JSON file and have
     // Config read it. This ensures compatibility with the existing system.
+    // Use platform-appropriate temp directory
+#ifdef _WIN32
+    std::string temp_dir = std::getenv("TEMP") ? std::getenv("TEMP") : "C:\\Windows\\Temp";
+    std::string temp_file = temp_dir + "\\nexusminer_temp_config.conf";
+#else
     std::string temp_file = "/tmp/nexusminer_temp_config.conf";
+#endif
     
     if (!export_to_json(temp_file))
     {
@@ -517,8 +524,11 @@ void Simplified_config::apply_beginner_preset(std::string const& mining_mode,
                                               std::string const& hardware_type)
 {
     // Beginner preset: Safe defaults, minimal configuration
+    // Note: Port 8323 is used for solo mining (connects to local wallet)
+    // Port 50000 is typically used for pool mining
+    // For beginners, we default to solo mining port. Users can change for pool mining.
     m_data.wallet_ip = "127.0.0.1";
-    m_data.port = (mining_mode == "PRIME") ? 50000 : 8323;  // Pool port for prime, solo for hash
+    m_data.port = 8323;  // Solo mining port (default for beginners with local wallet)
     m_data.global_power_profile = Power_profile::EFFICIENCY;
     m_data.global_power_limit_percent = 80;  // Safe power limit
     m_data.enable_console_logging = true;
@@ -783,8 +793,12 @@ std::pair<std::uint8_t, std::uint32_t> Simplified_config::calculate_golden_ratio
     double efficiency = static_cast<double>(current_hashrate) / static_cast<double>(current_power);
     
     // Calculate optimal power based on Golden Ratio principle
-    // We aim for approximately 80% of max power for optimal efficiency
-    std::uint8_t optimal_power_percent = static_cast<std::uint8_t>(100.0 / golden_ratio + 18);
+    // The Golden Ratio (φ ≈ 1.618) is used to find the optimal balance point
+    // Formula: 100/φ ≈ 61.8%, plus a base adjustment of 18% to reach ~80% power
+    // This 80% target is empirically optimal for most GPU/CPU hardware where
+    // diminishing returns on power consumption begin around 80-85% power limit
+    constexpr int kBaseAdjustment = 18;  // Adjustment to reach 80% optimal target
+    std::uint8_t optimal_power_percent = static_cast<std::uint8_t>(100.0 / golden_ratio + kBaseAdjustment);
     
     // Estimate target hashrate based on typical scaling
     // Most hardware shows ~90% hash rate at 80% power
