@@ -161,6 +161,21 @@ namespace nexusminer
 		network::Shared_payload m_data;
 		bool m_is_valid;
 
+		/**
+		 * @brief Check if packet header is a Falcon Authentication packet (207-212)
+		 * 
+		 * Authentication packets carry payloads despite having headers >= 128:
+		 * - MINER_AUTH_INIT (207): pubkey data
+		 * - MINER_AUTH_CHALLENGE (208): nonce data
+		 * - MINER_AUTH_RESPONSE (209): signature data
+		 * - MINER_AUTH_RESULT (210): status + optional session_id
+		 * - SESSION_START (211), SESSION_KEEPALIVE (212): session data
+		 */
+		inline bool is_auth_packet() const
+		{
+			return (m_header >= MINER_AUTH_INIT && m_header <= SESSION_KEEPALIVE);
+		}
+
 		inline bool is_valid() const
 		{
 			if (!m_is_valid)
@@ -187,6 +202,10 @@ namespace nexusminer
 			if (m_header < 128 && m_length > 0)
 				return true;
 
+			// Falcon Authentication packets (207-212): carry payloads with length field
+			if (is_auth_packet() && m_length > 0)
+				return true;
+
 			// Generic request packets (>= 128, < 255): no payload
 			if (m_header >= 128 && m_header < 255 && m_length == 0)
 				return true;
@@ -203,8 +222,10 @@ namespace nexusminer
 
 			network::Payload BYTES(1, m_header);
 
-			/** Handle for Data Packets. **/
-			if (m_header < 128 && m_length > 0)
+			/** Handle for Data Packets (header < 128) or Authentication Packets (207-212) **/
+			// Both standard data packets and Falcon auth packets use the same wire format:
+			// [header (1 byte)] [length (4 bytes, big-endian)] [payload data]
+			if ((m_header < 128 || is_auth_packet()) && m_length > 0)
 			{
 				BYTES.push_back((m_length >> 24));
 				BYTES.push_back((m_length >> 16));
