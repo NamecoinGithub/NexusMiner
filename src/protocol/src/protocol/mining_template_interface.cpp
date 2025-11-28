@@ -2,6 +2,7 @@
 #include "LLP/block_utils.hpp"
 #include <chrono>
 #include <cstring>
+#include <cstdio>
 
 namespace nexusminer {
 namespace protocol {
@@ -388,11 +389,38 @@ bool MiningTemplateInterface::parse_block_header(const network::Payload& data,
                                                   ::LLP::CBlock& block)
 {
     try {
+        // Log payload details for debugging
+        m_logger->debug("[TemplateInterface] Parsing block header from {} bytes", data.size());
+        
         block = llp_utils::deserialize_block_header(data);
+        
+        // Log parsed block details
+        m_logger->debug("[TemplateInterface] Parsed block header successfully:");
+        m_logger->debug("[TemplateInterface]   - nVersion: {}", block.nVersion);
+        m_logger->debug("[TemplateInterface]   - nChannel: {}", block.nChannel);
+        m_logger->debug("[TemplateInterface]   - nHeight: {}", block.nHeight);
+        m_logger->debug("[TemplateInterface]   - nBits: 0x{:08x}", block.nBits);
+        m_logger->debug("[TemplateInterface]   - nNonce: 0x{:016x}", block.nNonce);
+        m_logger->debug("[TemplateInterface]   - nTime: {}", block.nTime);
+        
         return true;
     }
     catch (const std::exception& e) {
         m_logger->error("[TemplateInterface] Failed to parse block header: {}", e.what());
+        m_logger->error("[TemplateInterface]   - Payload size: {} bytes", data.size());
+        
+        // Log first few bytes for debugging
+        if (data.size() > 0) {
+            std::string hex_preview;
+            size_t preview_len = std::min(data.size(), static_cast<size_t>(32));
+            for (size_t i = 0; i < preview_len; ++i) {
+                char buf[4];
+                snprintf(buf, sizeof(buf), "%02x ", data[i]);
+                hex_preview += buf;
+            }
+            m_logger->error("[TemplateInterface]   - First {} bytes: {}", preview_len, hex_preview);
+        }
+        
         return false;
     }
 }

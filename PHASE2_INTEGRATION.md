@@ -57,6 +57,7 @@ Phase 2 authentication uses a **direct signature-based approach** (no challenge-
    ```
    [pubkey_len(2 bytes LE)]
    [pubkey bytes]
+   [timestamp(8 bytes LE)]       <-- CRITICAL: Required for signature verification
    [sig_len(2 bytes LE)]
    [signature bytes]
    [optional: genesis_hash(32 bytes)]
@@ -66,6 +67,7 @@ Phase 2 authentication uses a **direct signature-based approach** (no challenge-
    ```
    [status(1 byte)]
    [session_id(4 bytes LE)]
+   [optional: error_code(1 byte) if status=0]
    ```
 
 5. **Set Channel**: After successful auth, send SET_CHANNEL with 1-byte payload
@@ -79,9 +81,15 @@ Phase 2 authentication uses a **direct signature-based approach** (no challenge-
 and signs the authentication message upfront during login, reducing latency and simplifying 
 the protocol.
 
+**CRITICAL**: The timestamp must be included in the MINER_AUTH_RESPONSE payload so that the
+node can reconstruct the signed message (address + timestamp) for signature verification.
+The node obtains the miner's address from the TCP connection source IP, but needs the 
+timestamp from the payload to complete the verification.
+
 #### Node (LLL-TAO) Flow:
 - Receives MINER_AUTH_RESPONSE directly
-- Reconstructs auth message from miner's address + timestamp
+- Extracts timestamp from payload
+- Reconstructs auth message from miner's address (from connection) + timestamp (from payload)
 - Verifies Falcon signature using `FalconAuth::Verify()`
 - Derives `keyId` from public key
 - Checks for bound Tritium genesis (optional)

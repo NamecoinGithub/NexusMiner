@@ -173,7 +173,9 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Auth]   - Signature size: {} bytes", signature.size());
     
     // Build MINER_AUTH_RESPONSE packet payload (little-endian per Phase 2 spec)
-    // Format: [pubkey_len(2, LE)][pubkey][sig_len(2, LE)][signature]
+    // Format: [pubkey_len(2, LE)][pubkey][timestamp(8, LE)][sig_len(2, LE)][signature]
+    // CRITICAL: Timestamp MUST be included so node can reconstruct signed message for verification
+    // The signed message is: address + timestamp (both known to miner, timestamp sent in payload)
     // Note: Genesis hash binding (32 bytes) is optional and not yet implemented
     std::vector<uint8_t> payload;
     
@@ -184,6 +186,10 @@ network::Shared_payload Solo::login(Login_handler handler)
     
     // Public key bytes
     payload.insert(payload.end(), m_miner_pubkey.begin(), m_miner_pubkey.end());
+    
+    // Timestamp (8 bytes, little-endian) - CRITICAL for node to verify signature
+    // The node reconstructs the signed message as: address (from connection) + timestamp (from payload)
+    append_uint64_le(payload, m_auth_timestamp);
     
     // Signature length (2 bytes, little-endian)
     uint16_t sig_len = static_cast<uint16_t>(signature.size());
@@ -198,10 +204,12 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Auth] MINER_AUTH_RESPONSE payload structure:");
     m_logger->info("[Solo Auth]   - Public key length: {} bytes (offset: 0-1, LE)", pubkey_len);
     m_logger->info("[Solo Auth]   - Public key data: {} bytes (offset: 2-{})", pubkey_len, 1 + pubkey_len);
+    m_logger->info("[Solo Auth]   - Timestamp: {} (0x{:016x}) at offset {}-{}", 
+        m_auth_timestamp, m_auth_timestamp, 2 + pubkey_len, 9 + pubkey_len);
     m_logger->info("[Solo Auth]   - Signature length: {} bytes (offset: {}-{}, LE)", 
-        sig_len, 2 + pubkey_len, 3 + pubkey_len);
+        sig_len, 10 + pubkey_len, 11 + pubkey_len);
     m_logger->info("[Solo Auth]   - Signature data: {} bytes (offset: {}-{})", 
-        sig_len, 4 + pubkey_len, 3 + pubkey_len + sig_len);
+        sig_len, 12 + pubkey_len, 11 + pubkey_len + sig_len);
     m_logger->info("[Solo Auth]   - Total payload size: {} bytes", payload.size());
     
     // Validate payload is properly constructed
@@ -830,16 +838,50 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         else {
             m_authenticated = false;
             m_logger->error("[Solo Phase 2] ✗ Authentication FAILED");
+            
+            // Enhanced diagnostics: Parse extended error info if available
+            if (packet.m_length >= 2) {
+                uint8_t error_code = (*packet.m_data)[1];
+                m_logger->error("[Solo Auth] Error code from node: 0x{:02x}", error_code);
+                
+                // Interpret error codes based on LLL-TAO implementation
+                switch (error_code) {
+                    case 0x01:
+                        m_logger->error("[Solo Auth] Error: Public key not whitelisted on node");
+                        break;
+                    case 0x02:
+                        m_logger->error("[Solo Auth] Error: Signature verification failed");
+                        break;
+                    case 0x03:
+                        m_logger->error("[Solo Auth] Error: Invalid message format");
+                        break;
+                    case 0x04:
+                        m_logger->error("[Solo Auth] Error: Timestamp out of acceptable range");
+                        break;
+                    default:
+                        m_logger->error("[Solo Auth] Error: Unknown error code");
+                        break;
+                }
+            }
+            
+            // Log authentication attempt details for debugging
+            m_logger->error("[Solo Auth] Authentication attempt details:");
+            m_logger->error("[Solo Auth]   - Address used: '{}'", m_address);
+            m_logger->error("[Solo Auth]   - Timestamp used: {} (0x{:016x})", m_auth_timestamp, m_auth_timestamp);
+            m_logger->error("[Solo Auth]   - Public key size: {} bytes", m_miner_pubkey.size());
+            
             m_logger->error("[Solo Auth] Possible causes:");
             m_logger->error("[Solo Auth]   - Public key not whitelisted on node (check nexus.conf -minerallowkey)");
             m_logger->error("[Solo Auth]   - Invalid key format in miner.conf (must be valid hex strings)");
             m_logger->error("[Solo Auth]   - Falcon signature verification failed (key mismatch or corruption)");
             m_logger->error("[Solo Auth]   - Node missing Phase 2 stateless miner support");
+            m_logger->error("[Solo Auth]   - Timestamp drift between miner and node (check system clocks)");
             m_logger->error("[Solo Auth] Mining cannot proceed without valid authentication");
             m_logger->error("[Solo Auth] Please verify:");
             m_logger->error("[Solo Auth]   1. Your public key is whitelisted: nexus.conf -minerallowkey=<pubkey>");
             m_logger->error("[Solo Auth]   2. Keys in miner.conf match the whitelisted key");
             m_logger->error("[Solo Auth]   3. Node is running LLL-TAO with Phase 2 miner support");
+            m_logger->error("[Solo Auth]   4. System clocks are synchronized between miner and node");
             
             // Connection will fail - no fallback available
         }
