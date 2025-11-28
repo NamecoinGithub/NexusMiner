@@ -2,6 +2,8 @@
 #include "LLP/block_utils.hpp"
 #include <chrono>
 #include <cstring>
+#include <sstream>
+#include <iomanip>
 
 namespace nexusminer {
 namespace protocol {
@@ -388,11 +390,37 @@ bool MiningTemplateInterface::parse_block_header(const network::Payload& data,
                                                   ::LLP::CBlock& block)
 {
     try {
+        // Log payload details for debugging
+        m_logger->debug("[TemplateInterface] Parsing block header from {} bytes", data.size());
+        
         block = llp_utils::deserialize_block_header(data);
+        
+        // Log parsed block details
+        m_logger->debug("[TemplateInterface] Parsed block header successfully:");
+        m_logger->debug("[TemplateInterface]   - nVersion: {}", block.nVersion);
+        m_logger->debug("[TemplateInterface]   - nChannel: {}", block.nChannel);
+        m_logger->debug("[TemplateInterface]   - nHeight: {}", block.nHeight);
+        m_logger->debug("[TemplateInterface]   - nBits: 0x{:08x}", block.nBits);
+        m_logger->debug("[TemplateInterface]   - nNonce: 0x{:016x}", block.nNonce);
+        m_logger->debug("[TemplateInterface]   - nTime: {}", block.nTime);
+        
         return true;
     }
     catch (const std::exception& e) {
         m_logger->error("[TemplateInterface] Failed to parse block header: {}", e.what());
+        m_logger->error("[TemplateInterface]   - Payload size: {} bytes", data.size());
+        
+        // Log first few bytes for debugging using C++ stringstream
+        if (data.size() > 0) {
+            std::ostringstream hex_preview;
+            hex_preview << std::hex << std::setfill('0');
+            size_t preview_len = std::min(data.size(), static_cast<size_t>(32));
+            for (size_t i = 0; i < preview_len; ++i) {
+                hex_preview << std::setw(2) << static_cast<unsigned int>(data[i]) << " ";
+            }
+            m_logger->error("[TemplateInterface]   - First {} bytes: {}", preview_len, hex_preview.str());
+        }
+        
         return false;
     }
 }
