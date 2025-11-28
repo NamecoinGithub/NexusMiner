@@ -160,6 +160,10 @@ bool create_falcon_config(const std::string& config_filename,
         
         // Detect available CPU threads for default allocation
         unsigned int detected_threads = std::thread::hardware_concurrency();
+        // Handle case where hardware_concurrency() returns 0 (unable to detect)
+        if (detected_threads == 0) {
+            detected_threads = 4;  // Default fallback to 4 cores if detection fails
+        }
         // Use 75% of available threads by default (leave room for system tasks)
         unsigned int default_threads = (detected_threads > 1) ? (detected_threads * 3 / 4) : 1;
         if (default_threads < 1) default_threads = 1;
