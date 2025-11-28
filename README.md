@@ -43,6 +43,39 @@ To use the prime pool, set the following address and port in miner.conf:
 - **Solo Mining**: Default port is `8323` (connects to LLL-TAO's `miningport`)
 - **Pool Mining**: Use pool's port (typically `50000`)
 
+## Simplified .config Files (NEW)
+
+NexusMiner now supports a streamlined `.config` file format with preset templates for different user skill levels. See [docs/simplified_config_files.md](docs/simplified_config_files.md) for full documentation.
+
+**Quick Start with Presets:**
+```bash
+# Create a beginner-friendly GPU config for HASH mining
+./NexusMiner --create-config beginner hash gpu
+
+# Create an advanced CPU config for PRIME mining  
+./NexusMiner --create-config advanced prime cpu
+```
+
+**Key Features:**
+- **Preset Templates**: beginner, intermediate, advanced configurations
+- **GPU Power Controls**: Power limits, clock offsets, fan speeds
+- **CPU Thread Management**: Thread count, priority, core affinity
+- **Golden Ratio Optimization**: Automatic efficiency calculations
+- **Import/Export**: Convert between `.config` and legacy `.conf` formats
+
+**Example simplified config:**
+```json
+{
+    "config_version": "2.0",
+    "preset": "beginner",
+    "wallet_ip": "127.0.0.1",
+    "port": 8323,
+    "mining_mode": "HASH",
+    "power_profile": "efficiency",
+    "workers": [{"id": "gpu0", "hardware": "gpu", "gpu": {"device": 0}}]
+}
+```
+
 ## Command line option arguments
 ```
     <miner_config_file>  Default=miner.conf
@@ -51,6 +84,14 @@ To use the prime pool, set the following address and port in miner.conf:
     --create-keys        Generate Falcon miner keypair for authentication
     --create-falcon-config                Generate complete Falcon SOLO config file
     --create-falcon-config-with-privkey   Generate Falcon config with private key embedded (less secure)
+    
+    Simplified Config Options:
+    --create-config <preset> <mode> <hw>  Create simplified .config file
+                                          <preset>: beginner, intermediate, advanced
+                                          <mode>: hash, prime
+                                          <hw>: cpu, gpu
+    --import-config <json_file>           Import legacy .conf to simplified .config
+    --export-config <config_file>         Export simplified .config to legacy .conf
 ```
 
   `./NexusMiner ../../myownminer.conf -c`
