@@ -176,6 +176,60 @@ namespace nexusminer
 			return (m_header >= MINER_AUTH_INIT && m_header <= SESSION_KEEPALIVE);
 		}
 
+		/**
+		 * @brief Get detailed validation failure reason for diagnostics
+		 * 
+		 * This method provides visibility into why a packet failed validation,
+		 * which is critical for debugging Falcon AUTH INT response failures.
+		 * 
+		 * @return Human-readable string describing the validation state
+		 */
+		inline std::string get_validation_state() const
+		{
+			if (!m_is_valid)
+			{
+				return "INVALID: m_is_valid flag is false (construction or parsing failure)";
+			}
+			
+			// Special case: LOGIN message (legacy compatibility)
+			if (m_header == 0 && m_length == 0)
+				return "VALID: LOGIN message (legacy compatibility)";
+			
+			// Known header-only request packets
+			bool is_header_only_request = (m_header == GET_HEIGHT || 
+			                               m_header == GET_BLOCK || 
+			                               m_header == PING);
+			
+			if (is_header_only_request && m_length == 0)
+				return "VALID: Header-only request packet (GET_HEIGHT/GET_BLOCK/PING)";
+			
+			if (is_header_only_request && m_length > 0)
+				return "INVALID: Header-only request packet has unexpected payload";
+			
+			// Data packets (< 128): must have payload
+			if (m_header < 128 && m_length > 0)
+				return "VALID: Data packet with payload";
+			
+			if (m_header < 128 && m_length == 0)
+				return "INVALID: Data packet (header < 128) requires payload but length is 0";
+			
+			// Falcon Authentication packets (207-212): carry payloads with length field
+			if (is_auth_packet() && m_length > 0)
+				return "VALID: Falcon authentication packet with payload";
+			
+			if (is_auth_packet() && m_length == 0)
+				return "INVALID: Falcon auth packet (207-212) requires payload but length is 0";
+			
+			// Generic request packets (>= 128, < 255): no payload
+			if (m_header >= 128 && m_header < 255 && m_length == 0)
+				return "VALID: Generic request packet (no payload)";
+			
+			if (m_header >= 128 && m_header < 255 && m_length > 0 && !is_auth_packet())
+				return "INVALID: Generic request packet (>=128, not auth) should not have payload";
+			
+			return "INVALID: Unknown packet structure";
+		}
+
 		inline bool is_valid() const
 		{
 			if (!m_is_valid)
