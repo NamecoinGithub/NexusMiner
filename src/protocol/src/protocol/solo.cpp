@@ -1,5 +1,6 @@
 #include "protocol/solo.hpp"
 #include "protocol/protocol.hpp"
+#include "protocol/falcon_constants.hpp"
 #include "packet.hpp"
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
@@ -173,12 +174,11 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Auth]   - Signature size: {} bytes", signature.size());
     
     // Enhanced diagnostics: Verify signature is within expected Falcon-512 size range
-    // Falcon-512 signature size is typically 617-690 bytes (variable length)
-    constexpr size_t FALCON512_SIG_MIN = 600;
-    constexpr size_t FALCON512_SIG_MAX = 700;
-    if (signature.size() < FALCON512_SIG_MIN || signature.size() > FALCON512_SIG_MAX) {
+    // Using shared constants from falcon_constants.hpp for consistency
+    if (signature.size() < FalconConstants::FALCON512_SIG_MIN || 
+        signature.size() > FalconConstants::FALCON512_SIG_MAX) {
         m_logger->warn("[Solo Auth] WARNING: Signature size {} outside expected Falcon-512 range ({}-{} bytes)",
-            signature.size(), FALCON512_SIG_MIN, FALCON512_SIG_MAX);
+            signature.size(), FalconConstants::FALCON512_SIG_MIN, FalconConstants::FALCON512_SIG_MAX);
         m_logger->warn("[Solo Auth] This may indicate signature corruption or incorrect key type");
     }
     

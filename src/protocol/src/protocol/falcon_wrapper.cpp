@@ -1,4 +1,5 @@
 #include "protocol/falcon_wrapper.hpp"
+#include "protocol/falcon_constants.hpp"
 #include "../miner_keys.hpp"
 #include <chrono>
 #include <cstring>
@@ -30,8 +31,10 @@ FalconSignatureWrapper::FalconSignatureWrapper(const std::vector<uint8_t>& pubke
         m_logger->debug("[FalconWrapper]   - Private key: {} bytes", m_privkey.size());
     } else {
         m_logger->error("[FalconWrapper] Initialization failed - invalid key sizes");
-        m_logger->error("[FalconWrapper]   - Expected pubkey: 897 bytes, got: {}", m_pubkey.size());
-        m_logger->error("[FalconWrapper]   - Expected privkey: 1281 bytes, got: {}", m_privkey.size());
+        m_logger->error("[FalconWrapper]   - Expected pubkey: {} bytes, got: {}", 
+                       FalconConstants::FALCON512_PUBKEY_SIZE, m_pubkey.size());
+        m_logger->error("[FalconWrapper]   - Expected privkey: {} bytes, got: {}", 
+                       FalconConstants::FALCON512_PRIVKEY_SIZE, m_privkey.size());
     }
 }
 
@@ -50,12 +53,9 @@ FalconSignatureWrapper::~FalconSignatureWrapper()
 
 bool FalconSignatureWrapper::validate_keys() const
 {
-    // Falcon-512 key sizes
-    constexpr size_t FALCON512_PUBKEY_SIZE = 897;
-    constexpr size_t FALCON512_PRIVKEY_SIZE = 1281;
-    
-    return (m_pubkey.size() == FALCON512_PUBKEY_SIZE) && 
-           (m_privkey.size() == FALCON512_PRIVKEY_SIZE);
+    // Use shared constants from falcon_constants.hpp
+    return (m_pubkey.size() == FalconConstants::FALCON512_PUBKEY_SIZE) && 
+           (m_privkey.size() == FalconConstants::FALCON512_PRIVKEY_SIZE);
 }
 
 FalconSignatureWrapper::SignatureResult 
@@ -114,11 +114,11 @@ FalconSignatureWrapper::sign_authentication(const std::string& address,
         m_logger->debug("[FalconWrapper]   - Generation time: {} μs", result.generation_time.count());
         
         // Enhanced diagnostics: Verify signature is within Falcon-512 expected range
-        constexpr size_t FALCON512_SIG_MIN = 600;
-        constexpr size_t FALCON512_SIG_MAX = 700;
-        if (result.signature.size() < FALCON512_SIG_MIN || result.signature.size() > FALCON512_SIG_MAX) {
+        // Using shared constants from falcon_constants.hpp for consistency
+        if (result.signature.size() < FalconConstants::FALCON512_SIG_MIN || 
+            result.signature.size() > FalconConstants::FALCON512_SIG_MAX) {
             m_logger->warn("[FalconWrapper] SYNC_WARNING: Signature size {} outside expected Falcon-512 range ({}-{})",
-                result.signature.size(), FALCON512_SIG_MIN, FALCON512_SIG_MAX);
+                result.signature.size(), FalconConstants::FALCON512_SIG_MIN, FalconConstants::FALCON512_SIG_MAX);
         } else {
             m_logger->debug("[FalconWrapper] SYNC_OK: Signature size within expected Falcon-512 range");
         }
