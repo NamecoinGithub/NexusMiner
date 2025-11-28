@@ -1,5 +1,6 @@
 #include "protocol/solo.hpp"
 #include "protocol/protocol.hpp"
+#include "protocol/falcon_constants.hpp"
 #include "packet.hpp"
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
@@ -172,6 +173,15 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Auth] Successfully signed auth message");
     m_logger->info("[Solo Auth]   - Signature size: {} bytes", signature.size());
     
+    // Enhanced diagnostics: Verify signature is within expected Falcon-512 size range
+    // Using shared constants from falcon_constants.hpp for consistency
+    if (signature.size() < FalconConstants::FALCON512_SIG_MIN || 
+        signature.size() > FalconConstants::FALCON512_SIG_MAX) {
+        m_logger->warn("[Solo Auth] WARNING: Signature size {} outside expected Falcon-512 range ({}-{} bytes)",
+            signature.size(), FalconConstants::FALCON512_SIG_MIN, FalconConstants::FALCON512_SIG_MAX);
+        m_logger->warn("[Solo Auth] This may indicate signature corruption or incorrect key type");
+    }
+    
     // Build MINER_AUTH_RESPONSE packet payload (little-endian per Phase 2 spec)
     // Format: [pubkey_len(2, LE)][pubkey][timestamp(8, LE)][sig_len(2, LE)][signature]
     // CRITICAL: Timestamp MUST be included so node can reconstruct signed message for verification
@@ -212,6 +222,16 @@ network::Shared_payload Solo::login(Login_handler handler)
         sig_len, 2 + pubkey_len + 10, 2 + pubkey_len + 9 + sig_len);
     m_logger->info("[Solo Auth]   - Total payload size: {} bytes", payload.size());
     
+    // Enhanced diagnostics: Validate expected payload size for proper serialization
+    size_t expected_payload_size = 2 + m_miner_pubkey.size() + 8 + 2 + signature.size();
+    if (payload.size() != expected_payload_size) {
+        m_logger->error("[Solo Auth] SERIALIZATION ERROR: Payload size mismatch!");
+        m_logger->error("[Solo Auth]   - Expected size: {} bytes", expected_payload_size);
+        m_logger->error("[Solo Auth]   - Actual size: {} bytes", payload.size());
+        m_logger->error("[Solo Auth]   - Missing bytes: {}", 
+            static_cast<int64_t>(expected_payload_size) - static_cast<int64_t>(payload.size()));
+    }
+    
     // Validate payload is properly constructed
     if (payload.empty()) {
         m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_RESPONSE payload is empty!");
@@ -234,12 +254,25 @@ network::Shared_payload Solo::login(Login_handler handler)
                    packet.m_length, 
                    packet.is_valid());
     
+    // Enhanced diagnostics: Log serialization state details
+    m_logger->debug("[Solo Auth] Serialization state check:");
+    m_logger->debug("[Solo Auth]   - Header value: {} (MINER_AUTH_RESPONSE={})", 
+                   static_cast<int>(packet.m_header), static_cast<int>(Packet::MINER_AUTH_RESPONSE));
+    m_logger->debug("[Solo Auth]   - is_auth_packet(): {} (header range {}-{})", 
+                   packet.is_auth_packet(), 
+                   static_cast<int>(Packet::MINER_AUTH_INIT), 
+                   static_cast<int>(Packet::SESSION_KEEPALIVE));
+    m_logger->debug("[Solo Auth]   - Data pointer: {}", packet.m_data ? "valid" : "null");
+    m_logger->debug("[Solo Auth]   - Data size via m_data: {}", packet.m_data ? packet.m_data->size() : 0);
+    m_logger->debug("[Solo Auth]   - m_length field: {}", packet.m_length);
+    
     // Validate packet encoding
     auto packet_bytes = packet.get_bytes();
     if (!packet_bytes || packet_bytes->empty()) {
         m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_RESPONSE packet encoding failed! get_bytes() returned empty.");
         m_logger->error("[Solo Auth] Error type: {}", 
                        !packet.is_valid() ? "PACKET_VALIDATION_FAILURE" : "SERIALIZATION_FAILURE");
+        m_logger->error("[Solo Auth] Validation state: {}", packet.get_validation_state());
         m_logger->error("[Solo Auth] Diagnostic details:");
         m_logger->error("[Solo Auth]   - Packet header: 0x{:02x} ({})", 
                        static_cast<int>(packet.m_header), 
@@ -256,6 +289,29 @@ network::Shared_payload Solo::login(Login_handler handler)
         }
         handler(false);
         return network::Shared_payload{};
+    }
+    
+    // Enhanced diagnostics: Log validation state for successful packets
+    m_logger->debug("[Solo Auth] Packet validation state: {}", packet.get_validation_state());
+    
+    // Enhanced diagnostics: Validate wire format structure
+    m_logger->debug("[Solo Auth] Wire format validation:");
+    m_logger->debug("[Solo Auth]   - Wire format size: {} bytes", packet_bytes->size());
+    m_logger->debug("[Solo Auth]   - Expected wire format: 1 (header) + 4 (length) + {} (payload) = {} bytes",
+                   payload.size(), 1 + 4 + payload.size());
+    
+    // Log first few bytes of wire format for debugging
+    if (packet_bytes->size() >= 5) {
+        m_logger->debug("[Solo Auth]   - Wire format header: 0x{:02x}", (*packet_bytes)[0]);
+        uint32_t wire_length = (static_cast<uint32_t>((*packet_bytes)[1]) << 24) |
+                               (static_cast<uint32_t>((*packet_bytes)[2]) << 16) |
+                               (static_cast<uint32_t>((*packet_bytes)[3]) << 8) |
+                               static_cast<uint32_t>((*packet_bytes)[4]);
+        m_logger->debug("[Solo Auth]   - Wire format length field: {} bytes", wire_length);
+        if (wire_length != payload.size()) {
+            m_logger->warn("[Solo Auth] WARNING: Wire length field ({}) doesn't match payload size ({})", 
+                          wire_length, payload.size());
+        }
     }
     
     m_logger->debug("[Solo Auth] MINER_AUTH_RESPONSE packet successfully encoded: {} bytes wire format", packet_bytes->size());
@@ -869,6 +925,27 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->error("[Solo Auth]   - Address used: '{}'", m_address);
             m_logger->error("[Solo Auth]   - Timestamp used: {} (0x{:016x})", m_auth_timestamp, m_auth_timestamp);
             m_logger->error("[Solo Auth]   - Public key size: {} bytes", m_miner_pubkey.size());
+            
+            // Enhanced diagnostics: Log timestamp synchronization info
+            uint64_t current_time = static_cast<uint64_t>(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
+            int64_t time_delta = static_cast<int64_t>(current_time) - static_cast<int64_t>(m_auth_timestamp);
+            m_logger->error("[Solo Auth] Timestamp synchronization check:");
+            m_logger->error("[Solo Auth]   - Current time: {} (0x{:016x})", current_time, current_time);
+            m_logger->error("[Solo Auth]   - Auth timestamp: {} (0x{:016x})", m_auth_timestamp, m_auth_timestamp);
+            m_logger->error("[Solo Auth]   - Time delta: {} seconds", time_delta);
+            if (std::abs(time_delta) > 60) {
+                m_logger->error("[Solo Auth] WARNING: Large time delta detected! This may indicate clock drift or replay attack protection.");
+            }
+            
+            // Enhanced diagnostics: Log public key fingerprint for troubleshooting
+            if (m_miner_pubkey.size() >= 16) {
+                m_logger->error("[Solo Auth] Public key fingerprint (first 16 bytes):");
+                m_logger->error("[Solo Auth]   {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                    m_miner_pubkey[0], m_miner_pubkey[1], m_miner_pubkey[2], m_miner_pubkey[3],
+                    m_miner_pubkey[4], m_miner_pubkey[5], m_miner_pubkey[6], m_miner_pubkey[7],
+                    m_miner_pubkey[8], m_miner_pubkey[9], m_miner_pubkey[10], m_miner_pubkey[11],
+                    m_miner_pubkey[12], m_miner_pubkey[13], m_miner_pubkey[14], m_miner_pubkey[15]);
+            }
             
             m_logger->error("[Solo Auth] Possible causes:");
             m_logger->error("[Solo Auth]   - Public key not whitelisted on node (check nexus.conf -minerallowkey)");
