@@ -219,10 +219,10 @@ network::Shared_payload Solo::login(Login_handler handler)
     // Create and send MINER_AUTH_RESPONSE packet directly
     Packet packet{ Packet::MINER_AUTH_RESPONSE, std::make_shared<network::Payload>(payload) };
     
-    // Log packet details for debugging
+    // Log packet details for debugging - use is_auth_packet() helper for consistency
     m_logger->debug("[Solo Auth] Packet created: header=0x{:02x} ({}) length={} is_valid={}", 
                    static_cast<int>(packet.m_header),
-                   packet.m_header >= 207 && packet.m_header <= 212 ? "AUTH_PACKET" : "UNKNOWN",
+                   packet.is_auth_packet() ? "AUTH_PACKET" : "UNKNOWN",
                    packet.m_length, 
                    packet.is_valid());
     
@@ -238,11 +238,13 @@ network::Shared_payload Solo::login(Login_handler handler)
                        packet.m_header);
         m_logger->error("[Solo Auth]   - Packet length: {} bytes", packet.m_length);
         m_logger->error("[Solo Auth]   - Packet is_valid: {}", packet.is_valid());
+        m_logger->error("[Solo Auth]   - Packet is_auth_packet: {}", packet.is_auth_packet());
         m_logger->error("[Solo Auth]   - Data pointer valid: {}", packet.m_data != nullptr);
         if (!packet.is_valid()) {
             m_logger->error("[Solo Auth] Possible causes:");
             m_logger->error("[Solo Auth]   - Packet header not in valid range for payload packets");
-            m_logger->error("[Solo Auth]   - Authentication packet not properly recognized (expected 207-212)");
+            m_logger->error("[Solo Auth]   - Authentication packet not properly recognized (expected {}-{})", 
+                           Packet::MINER_AUTH_INIT, Packet::SESSION_KEEPALIVE);
         }
         handler(false);
         return network::Shared_payload{};
