@@ -48,7 +48,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_auth_timestamp{0}
 , m_falcon_wrapper{nullptr}
 , m_block_signing_enabled{false}  // Disabled by default for performance
-, m_chacha20_wrapper{nullptr}
+, m_chacha20_wrapper{nullptr}  // Lazy initialization when needed
 , m_enable_chacha20{false}  // Auto-detect based on connection type
 , m_session_manager{nullptr}
 , m_template_interface{nullptr}
@@ -63,9 +63,8 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
         m_channel = 2;
     }
     
-    // Initialize ChaCha20 wrapper for Falcon pubkey encryption
-    m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
-    m_logger->info("[Solo] ChaCha20 wrapper initialized for Falcon handshake encryption");
+    // Note: ChaCha20 wrapper is lazily initialized when enable_chacha20_wrapping() is called
+    // This avoids unnecessary resource allocation when ChaCha20 is not needed
     
     // Initialize session manager with default keepalive interval (24 hours)
     m_session_manager = std::make_unique<SessionManager>(24);
@@ -209,7 +208,13 @@ network::Shared_payload Solo::login(Login_handler handler)
     std::vector<uint8_t> pubkey_to_send = m_miner_pubkey;
     bool wrapped = false;
     
-    if (m_enable_chacha20 && m_chacha20_wrapper) {
+    if (m_enable_chacha20) {
+        // Lazy initialization of ChaCha20 wrapper when needed
+        if (!m_chacha20_wrapper) {
+            m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
+            m_logger->info("[Solo Auth] ChaCha20 wrapper initialized for Falcon handshake encryption");
+        }
+        
         m_logger->info("[Solo Auth] ChaCha20 wrapping enabled for Falcon public key");
         
         // Generate session key and nonce for this handshake

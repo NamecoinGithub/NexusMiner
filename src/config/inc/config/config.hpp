@@ -16,6 +16,9 @@ namespace config
 {
 #define CONFIG_VERSION 1
 
+// Tritium GenesisHash validation constant
+constexpr size_t TRITIUM_GENESIS_HEX_LENGTH = 64;  // 32 bytes as hex = 64 chars
+
 class Config
 {
 public:

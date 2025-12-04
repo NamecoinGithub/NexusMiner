@@ -146,10 +146,11 @@ namespace config
 			if (j.count("tritium_genesis") != 0)
 			{
 				j.at("tritium_genesis").get_to(m_tritium_genesis);
-				// Validate hex format (64 hex chars = 32 bytes)
-				if (!m_tritium_genesis.empty() && m_tritium_genesis.length() != 64)
+				// Validate hex format
+				if (!m_tritium_genesis.empty() && m_tritium_genesis.length() != TRITIUM_GENESIS_HEX_LENGTH)
 				{
-					m_logger->warn("tritium_genesis must be 64 hex characters (32 bytes). Ignoring invalid value.");
+					m_logger->warn("tritium_genesis must be {} hex characters (32 bytes). Ignoring invalid value.", 
+					              TRITIUM_GENESIS_HEX_LENGTH);
 					m_tritium_genesis.clear();
 				}
 			}

@@ -4,6 +4,10 @@
 namespace nexusminer {
 namespace protocol {
 
+// Session management constants
+constexpr uint16_t MIN_KEEPALIVE_HOURS = 1;
+constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
+
 SessionManager::SessionManager(uint16_t keepalive_interval_hours)
     : m_session{}
     , m_keepalive_interval_hours(keepalive_interval_hours)
@@ -13,9 +17,9 @@ SessionManager::SessionManager(uint16_t keepalive_interval_hours)
         m_logger = spdlog::default_logger();
     }
     
-    // Clamp keepalive interval to reasonable range (1-168 hours)
-    if (m_keepalive_interval_hours < 1) m_keepalive_interval_hours = 1;
-    if (m_keepalive_interval_hours > 168) m_keepalive_interval_hours = 168;
+    // Clamp keepalive interval to reasonable range
+    if (m_keepalive_interval_hours < MIN_KEEPALIVE_HOURS) m_keepalive_interval_hours = MIN_KEEPALIVE_HOURS;
+    if (m_keepalive_interval_hours > MAX_KEEPALIVE_HOURS) m_keepalive_interval_hours = MAX_KEEPALIVE_HOURS;
     
     // Initialize session to disconnected state
     m_session.session_id = 0;
@@ -160,9 +164,9 @@ std::chrono::seconds SessionManager::get_time_until_keepalive() const
 
 void SessionManager::set_keepalive_interval(uint16_t hours)
 {
-    // Clamp to reasonable range (1-168 hours)
-    if (hours < 1) hours = 1;
-    if (hours > 168) hours = 168;
+    // Clamp to reasonable range
+    if (hours < MIN_KEEPALIVE_HOURS) hours = MIN_KEEPALIVE_HOURS;
+    if (hours > MAX_KEEPALIVE_HOURS) hours = MAX_KEEPALIVE_HOURS;
     
     if (m_keepalive_interval_hours != hours) {
         m_logger->info("[SessionManager] Keepalive interval changed: {} -> {} hours",

@@ -13,6 +13,9 @@ constexpr size_t CHACHA20_KEY_SIZE = 32;    // 256 bits
 constexpr size_t CHACHA20_NONCE_SIZE = 12;  // 96 bits
 constexpr size_t CHACHA20_TAG_SIZE = 16;    // 128 bits
 
+// Falcon-512 public key size
+constexpr size_t FALCON512_PUBKEY_SIZE = 897;
+
 ChaCha20Wrapper::ChaCha20Wrapper()
     : m_logger(spdlog::get("logger"))
 {
@@ -47,7 +50,7 @@ std::vector<uint8_t> ChaCha20Wrapper::generate_nonce()
 {
     std::vector<uint8_t> nonce(CHACHA20_NONCE_SIZE);
     if (RAND_bytes(nonce.data(), CHACHA20_NONCE_SIZE) != 1) {
-        throw std::runtime_error("Failed to generate random nonce");
+        throw std::runtime_error("Failed to generate random nonce: OpenSSL RAND_bytes() failed");
     }
     return nonce;
 }
@@ -56,7 +59,7 @@ std::vector<uint8_t> ChaCha20Wrapper::generate_key()
 {
     std::vector<uint8_t> key(CHACHA20_KEY_SIZE);
     if (RAND_bytes(key.data(), CHACHA20_KEY_SIZE) != 1) {
-        throw std::runtime_error("Failed to generate random key");
+        throw std::runtime_error("Failed to generate random key: OpenSSL RAND_bytes() failed");
     }
     return key;
 }
@@ -282,9 +285,6 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::wrap_falcon_pubkey(
     const std::vector<uint8_t>& session_key,
     const std::vector<uint8_t>& nonce)
 {
-    // Falcon-512 public key is 897 bytes
-    constexpr size_t FALCON512_PUBKEY_SIZE = 897;
-    
     if (falcon_pubkey.size() != FALCON512_PUBKEY_SIZE) {
         CryptoResult result;
         result.success = false;
@@ -322,7 +322,6 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::unwrap_falcon_pubkey(
     
     if (result.success) {
         // Validate unwrapped key size
-        constexpr size_t FALCON512_PUBKEY_SIZE = 897;
         if (result.data.size() != FALCON512_PUBKEY_SIZE) {
             result.success = false;
             result.error_message = "Unwrapped key has invalid size (expected 897 bytes)";
