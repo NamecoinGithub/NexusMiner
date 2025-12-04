@@ -131,6 +131,24 @@ To enable optional block signing, add to your config:
 
 See [docs/unified_falcon_signature_protocol.md](docs/unified_falcon_signature_protocol.md) for details.
 
+**Enhanced Falcon Handshake and Cache Management:**
+NexusMiner now supports enhanced handshake with adaptive cache management:
+- **ChaCha20 Encryption**: Optional wrapping of Falcon Public Keys (auto-enabled for remote mining)
+- **Tritium GenesisHash Binding**: Links mining rewards to specific Tritium accounts
+- **Session Key Exchange**: Secure session establishment with LLL-TAO Node
+- **Adaptive Keep-Alive**: Configurable ping frequency to maintain cache presence (default: 24 hours)
+
+Configuration example:
+```json
+{
+    "tritium_genesis": "<your_32_byte_genesis_hash_hex>",
+    "keepalive_interval": 24,
+    "enable_chacha20_wrapping": false
+}
+```
+
+See [docs/falcon_handshake_cache_management.md](docs/falcon_handshake_cache_management.md) for complete documentation.
+
 **Alternative - Generate keys only:**
 ```bash
 ./NexusMiner --create-keys
