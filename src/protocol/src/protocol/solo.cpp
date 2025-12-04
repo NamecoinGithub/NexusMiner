@@ -48,6 +48,9 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_auth_timestamp{0}
 , m_falcon_wrapper{nullptr}
 , m_block_signing_enabled{false}  // Disabled by default for performance
+, m_chacha20_wrapper{nullptr}
+, m_enable_chacha20{false}  // Auto-detect based on connection type
+, m_session_manager{nullptr}
 , m_template_interface{nullptr}
 {
    // Log constructor call with requested channel value
@@ -59,6 +62,14 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             static_cast<int>(m_channel));
         m_channel = 2;
     }
+    
+    // Initialize ChaCha20 wrapper for Falcon pubkey encryption
+    m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
+    m_logger->info("[Solo] ChaCha20 wrapper initialized for Falcon handshake encryption");
+    
+    // Initialize session manager with default keepalive interval (24 hours)
+    m_session_manager = std::make_unique<SessionManager>(24);
+    m_logger->info("[Solo] Session manager initialized for adaptive cache management");
     
     // Initialize the Mining Template Interface for unified READ/FEED operations
     // Session ID starts at 0 (unauthenticated) and will be updated after MINER_AUTH_RESULT
@@ -75,6 +86,11 @@ void Solo::reset()
     m_authenticated = false;
     m_session_id = 0;
     m_auth_timestamp = 0;
+    
+    // Reset session manager
+    if (m_session_manager) {
+        m_session_manager->end_session();
+    }
     
     // Reset template interface for new session
     if (m_template_interface) {
@@ -1129,6 +1145,59 @@ void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
     std::vector<uint8_t> channel_data(1, m_channel);
     Packet set_channel_packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(channel_data) };
     connection->transmit(set_channel_packet.get_bytes());
+}
+
+void Solo::set_tritium_genesis(std::vector<uint8_t> const& genesis)
+{
+    if (genesis.size() != 32) {
+        m_logger->warn("[Solo] Invalid Tritium genesis size: {} (expected 32 bytes)", genesis.size());
+        return;
+    }
+    
+    if (m_session_manager) {
+        m_session_manager->set_tritium_genesis(genesis);
+        m_logger->info("[Solo] Tritium genesis hash configured for reward binding");
+    }
+}
+
+bool Solo::has_tritium_genesis() const
+{
+    if (m_session_manager) {
+        return !m_session_manager->get_tritium_genesis().empty();
+    }
+    return false;
+}
+
+void Solo::set_keepalive_interval(std::uint16_t hours)
+{
+    if (m_session_manager) {
+        m_session_manager->set_keepalive_interval(hours);
+        m_logger->info("[Solo] Keepalive interval set to {} hours", hours);
+    }
+}
+
+std::uint32_t Solo::get_session_id() const
+{
+    if (m_session_manager) {
+        return m_session_manager->get_session_id();
+    }
+    return m_session_id;  // Fallback to legacy session ID
+}
+
+bool Solo::is_session_active() const
+{
+    if (m_session_manager) {
+        return m_session_manager->is_active();
+    }
+    return m_authenticated;  // Fallback to legacy auth status
+}
+
+bool Solo::is_keepalive_due() const
+{
+    if (m_session_manager) {
+        return m_session_manager->is_keepalive_due();
+    }
+    return false;
 }
 
 }

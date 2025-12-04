@@ -25,6 +25,12 @@ namespace config
 		, m_print_statistics_interval{5}
 		, m_get_height_interval{2}
 		, m_ping_interval{10}
+		, m_miner_falcon_pubkey{""}
+		, m_miner_falcon_privkey{""}
+		, m_enable_block_signing{false}
+		, m_tritium_genesis{""}
+		, m_keepalive_interval{24}  // Default: 1 ping per day
+		, m_enable_chacha20_wrapping{false}  // Default: auto-detect based on connection
 	{
 	}
 
@@ -134,6 +140,35 @@ namespace config
 			if (j.count("enable_block_signing") != 0)
 			{
 				j.at("enable_block_signing").get_to(m_enable_block_signing);
+			}
+			
+			// Tritium GenesisHash and adaptive cache management (Phase 2 enhancement)
+			if (j.count("tritium_genesis") != 0)
+			{
+				j.at("tritium_genesis").get_to(m_tritium_genesis);
+				// Validate hex format (64 hex chars = 32 bytes)
+				if (!m_tritium_genesis.empty() && m_tritium_genesis.length() != 64)
+				{
+					m_logger->warn("tritium_genesis must be 64 hex characters (32 bytes). Ignoring invalid value.");
+					m_tritium_genesis.clear();
+				}
+			}
+			
+			// Keep-alive interval in hours (default: 24 hours = 1 ping/day)
+			m_keepalive_interval = 24;  // Default
+			if (j.count("keepalive_interval") != 0)
+			{
+				j.at("keepalive_interval").get_to(m_keepalive_interval);
+				// Clamp to reasonable range: 1-168 hours (1 hour - 1 week)
+				if (m_keepalive_interval < 1) m_keepalive_interval = 1;
+				if (m_keepalive_interval > 168) m_keepalive_interval = 168;
+			}
+			
+			// ChaCha20 wrapping (default: false, auto-enabled for remote connections)
+			m_enable_chacha20_wrapping = false;  // Default
+			if (j.count("enable_chacha20_wrapping") != 0)
+			{
+				j.at("enable_chacha20_wrapping").get_to(m_enable_chacha20_wrapping);
 			}
 
 			print_global_config();
@@ -270,6 +305,15 @@ namespace config
 			<< (m_pool_config.m_use_pool ? "POOL" : "SOLO") << " mode";
 
 		m_logger->info(ss.str());
+	}
+	
+	bool Config::is_localhost_mining() const
+	{
+		// Check if wallet_ip is localhost
+		return (m_wallet_ip == "127.0.0.1" || 
+		        m_wallet_ip == "localhost" || 
+		        m_wallet_ip == "::1" ||
+		        m_wallet_ip == "0.0.0.0");
 	}
 }
 }

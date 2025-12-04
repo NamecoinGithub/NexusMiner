@@ -44,6 +44,13 @@ public:
 	std::string const& get_miner_falcon_privkey() const { return m_miner_falcon_privkey; }
 	bool has_miner_falcon_keys() const { return !m_miner_falcon_pubkey.empty() && !m_miner_falcon_privkey.empty(); }
 	bool get_enable_block_signing() const { return m_enable_block_signing; }
+	
+	// Tritium GenesisHash and session management
+	std::string const& get_tritium_genesis() const { return m_tritium_genesis; }
+	bool has_tritium_genesis() const { return !m_tritium_genesis.empty(); }
+	std::uint16_t get_keepalive_interval() const { return m_keepalive_interval; }
+	bool get_enable_chacha20_wrapping() const { return m_enable_chacha20_wrapping; }
+	bool is_localhost_mining() const;
 
 private:
 
@@ -80,6 +87,11 @@ private:
 	
 	// Unified Falcon Signature Protocol options
 	bool m_enable_block_signing;  // Optional block signing for enhanced validation (default: false)
+	
+	// Tritium GenesisHash and adaptive cache management (Phase 2 enhancement)
+	std::string m_tritium_genesis;  // Tritium account genesis hash (32 bytes hex) for reward binding
+	std::uint16_t m_keepalive_interval;  // Keep-alive ping interval in hours (default: 24)
+	bool m_enable_chacha20_wrapping;  // Enable ChaCha20 wrapping of Falcon pubkey (auto for remote, optional for localhost)
 
 };
 }

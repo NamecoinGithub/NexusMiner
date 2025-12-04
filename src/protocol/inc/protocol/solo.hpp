@@ -3,6 +3,8 @@
 
 #include "protocol/protocol.hpp"
 #include "protocol/falcon_wrapper.hpp"
+#include "protocol/chacha20_wrapper.hpp"
+#include "protocol/session_manager.hpp"
 #include "protocol/mining_template_interface.hpp"
 #include "spdlog/spdlog.h"
 #include <memory>
@@ -32,13 +34,26 @@ public:
     bool is_authenticated() const { return m_authenticated; }
     void set_address(std::string const& address) { m_address = address; }
     
+    // Tritium GenesisHash for reward binding
+    void set_tritium_genesis(std::vector<uint8_t> const& genesis);
+    bool has_tritium_genesis() const;
+    
+    // Session management configuration
+    void set_keepalive_interval(std::uint16_t hours);
+    void enable_chacha20_wrapping(bool enable) { m_enable_chacha20 = enable; }
+    bool is_chacha20_enabled() const { return m_enable_chacha20; }
+    
     // Enable/disable optional block signing (default: disabled for performance)
     void enable_block_signing(bool enable) { m_block_signing_enabled = enable; }
     bool is_block_signing_enabled() const { return m_block_signing_enabled; }
     
     // Session management (LLL-TAO PR #22)
     network::Shared_payload send_session_keepalive();
-    std::uint32_t get_session_id() const { return m_session_id; }
+    std::uint32_t get_session_id() const;
+    bool is_session_active() const;
+    
+    // Check if keep-alive ping is due
+    bool is_keepalive_due() const;
     
     // Mining Template Interface access (unified READ/FEED system)
     MiningTemplateInterface* get_template_interface() { return m_template_interface.get(); }
@@ -68,6 +83,13 @@ private:
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
     bool m_block_signing_enabled;  // Optional block signing feature
+    
+    // ChaCha20 encryption wrapper for Falcon pubkey protection
+    std::unique_ptr<ChaCha20Wrapper> m_chacha20_wrapper;
+    bool m_enable_chacha20;  // Enable ChaCha20 wrapping (auto for remote, optional for localhost)
+    
+    // Session manager for adaptive cache management
+    std::unique_ptr<SessionManager> m_session_manager;
     
     // Mining Template Interface for unified READ/FEED operations
     std::unique_ptr<MiningTemplateInterface> m_template_interface;
