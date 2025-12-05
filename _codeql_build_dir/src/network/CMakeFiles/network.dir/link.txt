@@ -1,0 +1,2 @@
+/usr/bin/ar qc libnetwork.a CMakeFiles/network.dir/src/network/create_component.cpp.o CMakeFiles/network.dir/src/network/endpoint.cpp.o
+/usr/bin/ranlib libnetwork.a
