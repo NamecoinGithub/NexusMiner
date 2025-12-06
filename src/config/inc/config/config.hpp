@@ -16,6 +16,9 @@ namespace config
 {
 #define CONFIG_VERSION 1
 
+// Tritium GenesisHash validation constant
+constexpr size_t TRITIUM_GENESIS_HEX_LENGTH = 64;  // 32 bytes as hex = 64 chars
+
 class Config
 {
 public:
@@ -44,6 +47,25 @@ public:
 	std::string const& get_miner_falcon_privkey() const { return m_miner_falcon_privkey; }
 	bool has_miner_falcon_keys() const { return !m_miner_falcon_pubkey.empty() && !m_miner_falcon_privkey.empty(); }
 	bool get_enable_block_signing() const { return m_enable_block_signing; }
+	
+	// Tritium GenesisHash and session management
+	std::string const& get_tritium_genesis() const { return m_tritium_genesis; }
+	bool has_tritium_genesis() const { return !m_tritium_genesis.empty(); }
+	std::uint16_t get_keepalive_interval() const { return m_keepalive_interval; }
+	bool get_enable_chacha20_wrapping() const { return m_enable_chacha20_wrapping; }
+	bool is_localhost_mining() const;
+	
+	// TLS/HTTPS configuration
+	bool get_enable_tls() const { return m_enable_tls; }
+	std::string const& get_tls_ca_cert_path() const { return m_tls_ca_cert_path; }
+	bool get_tls_verify_peer() const { return m_tls_verify_peer; }
+	std::string const& get_tls_server_name() const { return m_tls_server_name; }
+	
+	// Mutual TLS (client certificate) configuration
+	bool has_tls_client_certificate() const { return !m_tls_client_cert_path.empty() && !m_tls_client_key_path.empty(); }
+	std::string const& get_tls_client_cert_path() const { return m_tls_client_cert_path; }
+	std::string const& get_tls_client_key_path() const { return m_tls_client_key_path; }
+	std::string const& get_tls_client_key_password() const { return m_tls_client_key_password; }
 
 private:
 
@@ -80,6 +102,22 @@ private:
 	
 	// Unified Falcon Signature Protocol options
 	bool m_enable_block_signing;  // Optional block signing for enhanced validation (default: false)
+	
+	// Tritium GenesisHash and adaptive cache management (Phase 2 enhancement)
+	std::string m_tritium_genesis;  // Tritium account genesis hash (32 bytes hex) for reward binding
+	std::uint16_t m_keepalive_interval;  // Keep-alive ping interval in hours (default: 24)
+	bool m_enable_chacha20_wrapping;  // Enable ChaCha20 wrapping of Falcon pubkey (auto for remote, optional for localhost)
+	
+	// TLS/HTTPS configuration (auto-enabled for remote connections)
+	bool m_enable_tls;  // Enable TLS/SSL for remote connections (default: auto-detect)
+	std::string m_tls_ca_cert_path;  // Path to CA certificate bundle (empty = system default)
+	bool m_tls_verify_peer;  // Verify peer certificate (default: true)
+	std::string m_tls_server_name;  // Server name for SNI and verification (default: wallet_ip)
+	
+	// Mutual TLS (client certificate) configuration
+	std::string m_tls_client_cert_path;  // Path to client certificate (PEM format)
+	std::string m_tls_client_key_path;  // Path to client private key (PEM format)
+	std::string m_tls_client_key_password;  // Password for client private key (optional)
 
 };
 }

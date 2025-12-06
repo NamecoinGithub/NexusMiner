@@ -131,6 +131,55 @@ To enable optional block signing, add to your config:
 
 See [docs/unified_falcon_signature_protocol.md](docs/unified_falcon_signature_protocol.md) for details.
 
+**Enhanced Falcon Handshake and Cache Management:**
+NexusMiner now supports enhanced handshake with adaptive cache management:
+- **ChaCha20 Encryption**: Optional wrapping of Falcon Public Keys (auto-enabled for remote mining)
+- **Tritium GenesisHash Binding**: Links mining rewards to specific Tritium accounts
+- **Session Key Exchange**: Secure session establishment with LLL-TAO Node
+- **Adaptive Keep-Alive**: Configurable ping frequency to maintain cache presence (default: 24 hours)
+
+Configuration example:
+```json
+{
+    "tritium_genesis": "<your_32_byte_genesis_hash_hex>",
+    "keepalive_interval": 24,
+    "enable_chacha20_wrapping": false
+}
+```
+
+See [docs/falcon_handshake_cache_management.md](docs/falcon_handshake_cache_management.md) for complete documentation.
+
+**TLS/HTTPS Integration for Secure Remote Mining:**
+NexusMiner supports TLS/HTTPS encrypted connections for secure remote mining:
+- **TLS 1.2/1.3**: Modern protocol versions only (no SSL v2/v3)
+- **Strong Cipher Suites**: ChaCha20-Poly1305, AES-GCM with forward secrecy
+- **Certificate Validation**: Full peer certificate verification
+- **Auto-Detection**: Automatically enables for remote connections
+- **Mutual TLS (mTLS)**: Client certificate authentication for maximum security
+
+Configuration example:
+```json
+{
+    "wallet_ip": "mining.pool.com",
+    "enable_tls": true,
+    "tls_verify_peer": true,
+    "tls_ca_cert_path": "",
+    "tls_server_name": ""
+}
+```
+
+**Mutual TLS (Client Certificates):**
+```json
+{
+    "enable_tls": true,
+    "tls_client_cert_path": "/path/to/client-cert.pem",
+    "tls_client_key_path": "/path/to/client-key.pem",
+    "tls_client_key_password": "optional"
+}
+```
+
+See [docs/tls_https_integration.md](docs/tls_https_integration.md) for TLS documentation and [docs/mutual_tls_authentication.md](docs/mutual_tls_authentication.md) for mTLS setup.
+
 **Alternative - Generate keys only:**
 ```bash
 ./NexusMiner --create-keys

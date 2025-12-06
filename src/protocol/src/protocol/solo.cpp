@@ -48,6 +48,9 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_auth_timestamp{0}
 , m_falcon_wrapper{nullptr}
 , m_block_signing_enabled{false}  // Disabled by default for performance
+, m_chacha20_wrapper{nullptr}  // Lazy initialization when needed
+, m_enable_chacha20{false}  // Auto-detect based on connection type
+, m_session_manager{nullptr}
 , m_template_interface{nullptr}
 {
    // Log constructor call with requested channel value
@@ -59,6 +62,13 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             static_cast<int>(m_channel));
         m_channel = 2;
     }
+    
+    // Note: ChaCha20 wrapper is lazily initialized when enable_chacha20_wrapping() is called
+    // This avoids unnecessary resource allocation when ChaCha20 is not needed
+    
+    // Initialize session manager with default keepalive interval (24 hours)
+    m_session_manager = std::make_unique<SessionManager>(24);
+    m_logger->info("[Solo] Session manager initialized for adaptive cache management");
     
     // Initialize the Mining Template Interface for unified READ/FEED operations
     // Session ID starts at 0 (unauthenticated) and will be updated after MINER_AUTH_RESULT
@@ -75,6 +85,11 @@ void Solo::reset()
     m_authenticated = false;
     m_session_id = 0;
     m_auth_timestamp = 0;
+    
+    // Reset session manager
+    if (m_session_manager) {
+        m_session_manager->end_session();
+    }
     
     // Reset template interface for new session
     if (m_template_interface) {
@@ -183,19 +198,54 @@ network::Shared_payload Solo::login(Login_handler handler)
     }
     
     // Build MINER_AUTH_RESPONSE packet payload (little-endian per Phase 2 spec)
-    // Format: [pubkey_len(2, LE)][pubkey][timestamp(8, LE)][sig_len(2, LE)][signature]
+    // Enhanced format with optional ChaCha20 wrapping and Tritium GenesisHash:
+    // [pubkey_len(2, LE)][pubkey/wrapped_pubkey][timestamp(8, LE)][sig_len(2, LE)][signature][optional: genesis(32)]
     // CRITICAL: Timestamp MUST be included so node can reconstruct signed message for verification
     // The signed message is: address + timestamp (both known to miner, timestamp sent in payload)
-    // Note: Genesis hash binding (32 bytes) is optional and not yet implemented
     std::vector<uint8_t> payload;
     
+    // Prepare public key (with optional ChaCha20 wrapping)
+    std::vector<uint8_t> pubkey_to_send = m_miner_pubkey;
+    bool wrapped = false;
+    
+    if (m_enable_chacha20) {
+        // Lazy initialization of ChaCha20 wrapper when needed
+        if (!m_chacha20_wrapper) {
+            m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
+            m_logger->info("[Solo Auth] ChaCha20 wrapper initialized for Falcon handshake encryption");
+        }
+        
+        m_logger->info("[Solo Auth] ChaCha20 wrapping enabled for Falcon public key");
+        
+        // Generate session key and nonce for this handshake
+        auto session_key = ChaCha20Wrapper::generate_key();
+        auto nonce = ChaCha20Wrapper::generate_nonce();
+        
+        auto wrap_result = m_chacha20_wrapper->wrap_falcon_pubkey(
+            m_miner_pubkey, session_key, nonce);
+        
+        if (wrap_result.success) {
+            pubkey_to_send = wrap_result.data;
+            wrapped = true;
+            m_logger->info("[Solo Auth] Falcon public key wrapped: {} -> {} bytes (includes tag)",
+                          m_miner_pubkey.size(), pubkey_to_send.size());
+            
+            // Store session key and nonce for potential unwrapping
+            // In production, these would be exchanged through a secure channel
+            m_logger->debug("[Solo Auth] Session key and nonce generated for this handshake");
+        } else {
+            m_logger->warn("[Solo Auth] ChaCha20 wrapping failed: {}", wrap_result.error_message);
+            m_logger->warn("[Solo Auth] Falling back to unwrapped public key");
+        }
+    }
+    
     // Public key length (2 bytes, little-endian)
-    uint16_t pubkey_len = static_cast<uint16_t>(m_miner_pubkey.size());
+    uint16_t pubkey_len = static_cast<uint16_t>(pubkey_to_send.size());
     payload.push_back(pubkey_len & 0xFF);         // Low byte
     payload.push_back((pubkey_len >> 8) & 0xFF);  // High byte
     
-    // Public key bytes
-    payload.insert(payload.end(), m_miner_pubkey.begin(), m_miner_pubkey.end());
+    // Public key bytes (raw or wrapped)
+    payload.insert(payload.end(), pubkey_to_send.begin(), pubkey_to_send.end());
     
     // Timestamp (8 bytes, little-endian) - CRITICAL for node to verify signature
     // The node reconstructs the signed message as: address (from connection) + timestamp (from payload)
@@ -209,21 +259,34 @@ network::Shared_payload Solo::login(Login_handler handler)
     // Signature bytes
     payload.insert(payload.end(), signature.begin(), signature.end());
     
-    // Note: Genesis hash binding is optional and not implemented yet
+    // Optional: Tritium GenesisHash binding (32 bytes)
+    std::vector<uint8_t> genesis_hash;
+    if (m_session_manager && !m_session_manager->get_tritium_genesis().empty()) {
+        genesis_hash = m_session_manager->get_tritium_genesis();
+        payload.insert(payload.end(), genesis_hash.begin(), genesis_hash.end());
+        m_logger->info("[Solo Auth] Tritium GenesisHash included for reward binding: {} bytes", 
+                      genesis_hash.size());
+    }
     
     m_logger->info("[Solo Auth] MINER_AUTH_RESPONSE payload structure:");
     m_logger->info("[Solo Auth]   - Public key length: {} bytes (offset: 0-1, LE)", pubkey_len);
-    m_logger->info("[Solo Auth]   - Public key data: {} bytes (offset: 2-{})", pubkey_len, 1 + pubkey_len);
+    m_logger->info("[Solo Auth]   - Public key data: {} bytes (offset: 2-{}) [{}]", 
+                  pubkey_len, 1 + pubkey_len, wrapped ? "ChaCha20 wrapped" : "raw");
     m_logger->info("[Solo Auth]   - Timestamp: {} (0x{:016x}) at offset {}-{}", 
         m_auth_timestamp, m_auth_timestamp, 2 + pubkey_len, 2 + pubkey_len + 7);
     m_logger->info("[Solo Auth]   - Signature length: {} bytes (offset: {}-{}, LE)", 
         sig_len, 2 + pubkey_len + 8, 2 + pubkey_len + 9);
     m_logger->info("[Solo Auth]   - Signature data: {} bytes (offset: {}-{})", 
         sig_len, 2 + pubkey_len + 10, 2 + pubkey_len + 9 + sig_len);
+    if (!genesis_hash.empty()) {
+        size_t genesis_offset = 2 + pubkey_len + 10 + sig_len;
+        m_logger->info("[Solo Auth]   - Tritium Genesis: 32 bytes (offset: {}-{})",
+                      genesis_offset, genesis_offset + 31);
+    }
     m_logger->info("[Solo Auth]   - Total payload size: {} bytes", payload.size());
     
     // Enhanced diagnostics: Validate expected payload size for proper serialization
-    size_t expected_payload_size = 2 + m_miner_pubkey.size() + 8 + 2 + signature.size();
+    size_t expected_payload_size = 2 + pubkey_to_send.size() + 8 + 2 + signature.size() + genesis_hash.size();
     if (payload.size() != expected_payload_size) {
         m_logger->error("[Solo Auth] SERIALIZATION ERROR: Payload size mismatch!");
         m_logger->error("[Solo Auth]   - Expected size: {} bytes", expected_payload_size);
@@ -854,6 +917,13 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->info("[Solo Auth]   - Session ID bytes (LE): {:02x} {:02x} {:02x} {:02x}",
                     (*packet.m_data)[1], (*packet.m_data)[2], (*packet.m_data)[3], (*packet.m_data)[4]);
                 
+                // Start session in session manager
+                if (m_session_manager) {
+                    m_session_manager->set_state(SessionManager::SessionState::AUTHENTICATED);
+                    m_session_manager->start_session(m_session_id);
+                    m_logger->info("[Solo Session] Session started in session manager");
+                }
+                
                 // Update template interface with authenticated session ID (FALCON tunnel established)
                 if (m_template_interface) {
                     m_template_interface->set_session_id(m_session_id);
@@ -1065,6 +1135,59 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
     }
+    else if (packet.m_header == Packet::SESSION_START)
+    {
+        // LLL-TAO PR #22: Handle SESSION_START (session parameters from node)
+        // Format: [timeout(4, LE)][optional: session_key][optional: genesis_hash(32)]
+        m_logger->info("[Solo Session] Received SESSION_START from node");
+        
+        if (packet.m_data && packet.m_length >= 4) {
+            // Parse session timeout (4 bytes, little-endian)
+            uint32_t session_timeout = (*packet.m_data)[0] |
+                                      ((*packet.m_data)[1] << 8) |
+                                      ((*packet.m_data)[2] << 16) |
+                                      ((*packet.m_data)[3] << 24);
+            
+            m_logger->info("[Solo Session] Session parameters:");
+            m_logger->info("[Solo Session]   - Timeout: {} seconds ({} hours)", 
+                          session_timeout, session_timeout / 3600);
+            
+            // Extract optional session key (if present)
+            std::vector<uint8_t> session_key;
+            if (packet.m_length > 36) {  // timeout(4) + key(32) + genesis(32) minimum
+                // Session key is 32 bytes after timeout
+                session_key.assign(packet.m_data->begin() + 4, 
+                                 packet.m_data->begin() + 36);
+                m_logger->info("[Solo Session]   - Falcon Session Key received: {} bytes", 
+                              session_key.size());
+                
+                // Extract optional genesis hash
+                if (packet.m_length >= 68) {  // timeout(4) + key(32) + genesis(32)
+                    std::vector<uint8_t> node_genesis(packet.m_data->begin() + 36,
+                                                      packet.m_data->begin() + 68);
+                    m_logger->info("[Solo Session]   - Tritium Genesis from node: {} bytes",
+                                  node_genesis.size());
+                }
+            }
+            
+            // Update session manager with session key
+            if (m_session_manager && !session_key.empty()) {
+                m_session_manager->start_session(m_session_id, session_key, 
+                                               m_session_manager->get_tritium_genesis());
+                m_logger->info("[Solo Session] Session updated with Falcon Session Key");
+            }
+            
+            // Adjust keepalive interval based on timeout (conservative: ping at 1/3 of timeout)
+            if (session_timeout > 0 && m_session_manager) {
+                uint16_t keepalive_hours = std::max(1u, session_timeout / (3 * 3600));
+                m_session_manager->set_keepalive_interval(keepalive_hours);
+                m_logger->info("[Solo Session] Keepalive interval adjusted to {} hours based on timeout",
+                              keepalive_hours);
+            }
+        } else {
+            m_logger->warn("[Solo Session] SESSION_START packet has invalid or insufficient data");
+        }
+    }
     else if (packet.m_header == Packet::SESSION_KEEPALIVE)
     {
         // LLL-TAO PR #22: Handle SESSION_KEEPALIVE response
@@ -1078,6 +1201,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                                          ((*packet.m_data)[3] << 24);
             
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
+            
+            // Record keepalive in session manager
+            if (m_session_manager) {
+                m_session_manager->record_keepalive();
+            }
         }
     }
     else
@@ -1129,6 +1257,59 @@ void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
     std::vector<uint8_t> channel_data(1, m_channel);
     Packet set_channel_packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(channel_data) };
     connection->transmit(set_channel_packet.get_bytes());
+}
+
+void Solo::set_tritium_genesis(std::vector<uint8_t> const& genesis)
+{
+    if (genesis.size() != 32) {
+        m_logger->warn("[Solo] Invalid Tritium genesis size: {} (expected 32 bytes)", genesis.size());
+        return;
+    }
+    
+    if (m_session_manager) {
+        m_session_manager->set_tritium_genesis(genesis);
+        m_logger->info("[Solo] Tritium genesis hash configured for reward binding");
+    }
+}
+
+bool Solo::has_tritium_genesis() const
+{
+    if (m_session_manager) {
+        return !m_session_manager->get_tritium_genesis().empty();
+    }
+    return false;
+}
+
+void Solo::set_keepalive_interval(std::uint16_t hours)
+{
+    if (m_session_manager) {
+        m_session_manager->set_keepalive_interval(hours);
+        m_logger->info("[Solo] Keepalive interval set to {} hours", hours);
+    }
+}
+
+std::uint32_t Solo::get_session_id() const
+{
+    if (m_session_manager) {
+        return m_session_manager->get_session_id();
+    }
+    return m_session_id;  // Fallback to legacy session ID
+}
+
+bool Solo::is_session_active() const
+{
+    if (m_session_manager) {
+        return m_session_manager->is_active();
+    }
+    return m_authenticated;  // Fallback to legacy auth status
+}
+
+bool Solo::is_keepalive_due() const
+{
+    if (m_session_manager) {
+        return m_session_manager->is_keepalive_due();
+    }
+    return false;
 }
 
 }

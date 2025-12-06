@@ -74,6 +74,31 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         solo_protocol->set_miner_keys(pubkey, privkey);
         solo_protocol->set_address(m_config.get_local_ip());
         
+        // Configure Tritium GenesisHash if provided
+        if (m_config.has_tritium_genesis()) {
+            std::vector<uint8_t> genesis;
+            if (keys::from_hex(m_config.get_tritium_genesis(), genesis)) {
+                solo_protocol->set_tritium_genesis(genesis);
+                m_logger->info("[Worker_manager] Tritium GenesisHash configured for reward binding");
+            } else {
+                m_logger->warn("[Worker_manager] Failed to parse Tritium GenesisHash - invalid hex format");
+            }
+        }
+        
+        // Configure keepalive interval
+        solo_protocol->set_keepalive_interval(m_config.get_keepalive_interval());
+        m_logger->info("[Worker_manager] Keepalive interval: {} hours", m_config.get_keepalive_interval());
+        
+        // Configure ChaCha20 wrapping (auto-enable for remote, optional for localhost)
+        bool enable_chacha20 = m_config.get_enable_chacha20_wrapping();
+        if (!enable_chacha20 && !m_config.is_localhost_mining()) {
+            // Auto-enable for remote mining
+            enable_chacha20 = true;
+            m_logger->info("[Worker_manager] ChaCha20 wrapping AUTO-ENABLED for remote mining");
+        }
+        solo_protocol->enable_chacha20_wrapping(enable_chacha20);
+        m_logger->info("[Worker_manager] ChaCha20 wrapping: {}", enable_chacha20 ? "ENABLED" : "DISABLED");
+        
         // Configure optional block signing
         if (m_config.get_enable_block_signing()) {
             solo_protocol->enable_block_signing(true);

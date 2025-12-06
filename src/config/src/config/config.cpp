@@ -25,6 +25,19 @@ namespace config
 		, m_print_statistics_interval{5}
 		, m_get_height_interval{2}
 		, m_ping_interval{10}
+		, m_miner_falcon_pubkey{""}
+		, m_miner_falcon_privkey{""}
+		, m_enable_block_signing{false}
+		, m_tritium_genesis{""}
+		, m_keepalive_interval{24}  // Default: 1 ping per day
+		, m_enable_chacha20_wrapping{false}  // Default: auto-detect based on connection
+		, m_enable_tls{false}  // Default: auto-detect based on connection
+		, m_tls_ca_cert_path{""}  // Default: use system CA bundle
+		, m_tls_verify_peer{true}  // Default: always verify peer
+		, m_tls_server_name{""}  // Default: use wallet_ip
+		, m_tls_client_cert_path{""}  // Default: no client certificate
+		, m_tls_client_key_path{""}  // Default: no client key
+		, m_tls_client_key_password{""}  // Default: no password
 	{
 	}
 
@@ -134,6 +147,83 @@ namespace config
 			if (j.count("enable_block_signing") != 0)
 			{
 				j.at("enable_block_signing").get_to(m_enable_block_signing);
+			}
+			
+			// Tritium GenesisHash and adaptive cache management (Phase 2 enhancement)
+			if (j.count("tritium_genesis") != 0)
+			{
+				j.at("tritium_genesis").get_to(m_tritium_genesis);
+				// Validate hex format
+				if (!m_tritium_genesis.empty() && m_tritium_genesis.length() != TRITIUM_GENESIS_HEX_LENGTH)
+				{
+					m_logger->warn("tritium_genesis must be {} hex characters (32 bytes). Ignoring invalid value.", 
+					              TRITIUM_GENESIS_HEX_LENGTH);
+					m_tritium_genesis.clear();
+				}
+			}
+			
+			// Keep-alive interval in hours (default: 24 hours = 1 ping/day)
+			m_keepalive_interval = 24;  // Default
+			if (j.count("keepalive_interval") != 0)
+			{
+				j.at("keepalive_interval").get_to(m_keepalive_interval);
+				// Clamp to reasonable range: 1-168 hours (1 hour - 1 week)
+				if (m_keepalive_interval < 1) m_keepalive_interval = 1;
+				if (m_keepalive_interval > 168) m_keepalive_interval = 168;
+			}
+			
+			// ChaCha20 wrapping (default: false, auto-enabled for remote connections)
+			m_enable_chacha20_wrapping = false;  // Default
+			if (j.count("enable_chacha20_wrapping") != 0)
+			{
+				j.at("enable_chacha20_wrapping").get_to(m_enable_chacha20_wrapping);
+			}
+			
+			// TLS/HTTPS configuration (default: false, auto-enabled for remote connections)
+			m_enable_tls = false;  // Default
+			if (j.count("enable_tls") != 0)
+			{
+				j.at("enable_tls").get_to(m_enable_tls);
+			}
+			
+			// TLS CA certificate path (empty = use system default)
+			if (j.count("tls_ca_cert_path") != 0)
+			{
+				j.at("tls_ca_cert_path").get_to(m_tls_ca_cert_path);
+			}
+			
+			// TLS peer verification (default: true)
+			m_tls_verify_peer = true;  // Default: always verify
+			if (j.count("tls_verify_peer") != 0)
+			{
+				j.at("tls_verify_peer").get_to(m_tls_verify_peer);
+			}
+			
+			// TLS server name for SNI (default: use wallet_ip)
+			if (j.count("tls_server_name") != 0)
+			{
+				j.at("tls_server_name").get_to(m_tls_server_name);
+			}
+			else
+			{
+				// Default: use wallet_ip as server name
+				m_tls_server_name = m_wallet_ip;
+			}
+			
+			// Mutual TLS (client certificate) configuration
+			if (j.count("tls_client_cert_path") != 0)
+			{
+				j.at("tls_client_cert_path").get_to(m_tls_client_cert_path);
+			}
+			
+			if (j.count("tls_client_key_path") != 0)
+			{
+				j.at("tls_client_key_path").get_to(m_tls_client_key_path);
+			}
+			
+			if (j.count("tls_client_key_password") != 0)
+			{
+				j.at("tls_client_key_password").get_to(m_tls_client_key_password);
 			}
 
 			print_global_config();
@@ -270,6 +360,15 @@ namespace config
 			<< (m_pool_config.m_use_pool ? "POOL" : "SOLO") << " mode";
 
 		m_logger->info(ss.str());
+	}
+	
+	bool Config::is_localhost_mining() const
+	{
+		// Check if wallet_ip is localhost
+		return (m_wallet_ip == "127.0.0.1" || 
+		        m_wallet_ip == "localhost" || 
+		        m_wallet_ip == "::1" ||
+		        m_wallet_ip == "0.0.0.0");
 	}
 }
 }
