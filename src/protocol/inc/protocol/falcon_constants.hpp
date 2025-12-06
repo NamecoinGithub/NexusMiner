@@ -182,7 +182,7 @@ namespace FalconConstants {
     constexpr size_t PHYSICAL_BLOCK_SIG_MAX = FALCON512_SIG_ABSOLUTE_MAX;  // 752 bytes
     
     /** Maximum message size for physical block signature
-     *  block_data (up to 2MB) + nonce (8 bytes) */
+     *  block_data (up to 2,097,152 bytes) + nonce (8 bytes) = 2,097,160 bytes total */
     constexpr size_t PHYSICAL_BLOCK_SIG_MESSAGE_MAX = MAX_BLOCK_SIZE + NONCE_SIZE;
     
     /** Physical block signature overhead added to block transmission
