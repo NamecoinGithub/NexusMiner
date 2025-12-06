@@ -199,6 +199,25 @@ namespace FalconConstants {
     }
 
     //==========================================================================
+    // Dual-Signature Submit Block (Disposable + Physical Combined)
+    //==========================================================================
+    
+    /** Submit Block with BOTH signatures - LOCALHOST (no encryption)
+     *  Combines disposable wrapper (834) + physical signature overhead (754)
+     *  Used when both session authentication AND permanent proof are required.
+     *  wrapper(834) + physical_sig_overhead(754) = 1,588 bytes */
+    constexpr size_t SUBMIT_BLOCK_DUAL_SIG_MAX = 
+        SUBMIT_BLOCK_WRAPPER_MAX + PHYSICAL_BLOCK_SIG_OVERHEAD;  // 1,588 bytes
+    static_assert(SUBMIT_BLOCK_DUAL_SIG_MAX == 1588, "SUBMIT_BLOCK_DUAL_SIG_MAX size calculation mismatch");
+    
+    /** Submit Block with BOTH signatures - PUBLIC MINER (with ChaCha20 encryption)
+     *  Dual-signature submission with encryption overhead
+     *  dual_sig(1588) + chacha20_overhead(28) = 1,616 bytes */
+    constexpr size_t SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX = 
+        SUBMIT_BLOCK_DUAL_SIG_MAX + CHACHA20_OVERHEAD;  // 1,616 bytes
+    static_assert(SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX == 1616, "SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX size calculation mismatch");
+
+    //==========================================================================
     // Validation Helpers
     //==========================================================================
     
