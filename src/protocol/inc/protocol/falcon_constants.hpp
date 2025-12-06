@@ -40,7 +40,9 @@ namespace FalconConstants {
     /** Minimum Falcon-512 signature size (typical lower bound) */
     constexpr size_t FALCON512_SIG_MIN = 600;
     
-    /** Typical maximum for authentication signatures (address + timestamp) */
+    /** Typical maximum for authentication signatures (address + timestamp)
+     *  Most authentication signatures fall within 617-690 bytes.
+     *  This constant represents a conservative upper bound for auth use cases. */
     constexpr size_t FALCON512_SIG_AUTH_MAX = 700;
     
     /** Absolute maximum Falcon-512 signature size
@@ -102,11 +104,13 @@ namespace FalconConstants {
     constexpr size_t SUBMIT_BLOCK_WRAPPER_MAX = 
         MERKLE_ROOT_SIZE + NONCE_SIZE + TIMESTAMP_SIZE + 
         LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 834 bytes
+    static_assert(SUBMIT_BLOCK_WRAPPER_MAX == 834, "SUBMIT_BLOCK_WRAPPER_MAX size calculation mismatch");
     
     /** Submit Block wrapper - PUBLIC MINER (with ChaCha20 encryption)
      *  nonce(12) + encrypted_payload(834) + auth_tag(16) = 862 bytes */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_ENCRYPTED_MAX = 
         SUBMIT_BLOCK_WRAPPER_MAX + CHACHA20_OVERHEAD;  // 862 bytes
+    static_assert(SUBMIT_BLOCK_WRAPPER_ENCRYPTED_MAX == 862, "SUBMIT_BLOCK_WRAPPER_ENCRYPTED_MAX size calculation mismatch");
 
     //==========================================================================
     // Authentication Response Sizes
@@ -117,17 +121,20 @@ namespace FalconConstants {
     constexpr size_t AUTH_RESPONSE_MAX = 
         LENGTH_FIELD_SIZE + FALCON512_PUBKEY_SIZE + TIMESTAMP_SIZE + 
         LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 1661 bytes
+    static_assert(AUTH_RESPONSE_MAX == 1661, "AUTH_RESPONSE_MAX size calculation mismatch");
     
     /** Auth response - PUBLIC MINER (ChaCha20 wrapped pubkey)
      *  pubkey_len(2) + wrapped_pubkey(897+28) + timestamp(8) + sig_len(2) + sig(752) = 1689 bytes */
     constexpr size_t AUTH_RESPONSE_ENCRYPTED_MAX = 
         LENGTH_FIELD_SIZE + FALCON512_PUBKEY_SIZE + CHACHA20_OVERHEAD + 
         TIMESTAMP_SIZE + LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 1689 bytes
+    static_assert(AUTH_RESPONSE_ENCRYPTED_MAX == 1689, "AUTH_RESPONSE_ENCRYPTED_MAX size calculation mismatch");
     
     /** Auth response with optional GenesisHash binding
      *  Add 32 bytes for Tritium genesis hash */
     constexpr size_t AUTH_RESPONSE_WITH_GENESIS_MAX = 
         AUTH_RESPONSE_ENCRYPTED_MAX + GENESIS_HASH_SIZE;  // 1721 bytes
+    static_assert(AUTH_RESPONSE_WITH_GENESIS_MAX == 1721, "AUTH_RESPONSE_WITH_GENESIS_MAX size calculation mismatch");
 
     //==========================================================================
     // Block Size Limits (Mirrored from LLL-TAO TAO::Ledger::constants.h)
