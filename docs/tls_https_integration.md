@@ -4,6 +4,8 @@
 
 NexusMiner now supports TLS/HTTPS encrypted connections for secure remote mining. This feature ensures that all communication with the LLL-TAO Node is encrypted and authenticated when mining over untrusted networks (e.g., the Internet).
 
+**NEW:** Mutual TLS (mTLS) authentication is now supported! See [mutual_tls_authentication.md](mutual_tls_authentication.md) for client certificate configuration.
+
 ## Features
 
 ### 1. Automatic TLS Enablement
@@ -375,11 +377,31 @@ The cipher suite list is optimized for:
 
 Planned improvements:
 
-1. **Certificate Pinning**: Pin specific certificates for enhanced security
-2. **OCSP Stapling**: Real-time certificate revocation checking
-3. **Client Certificates**: Mutual TLS authentication
+1. ~~**Client Certificates**: Mutual TLS authentication~~ ✅ **IMPLEMENTED** - See [mutual_tls_authentication.md](mutual_tls_authentication.md)
+2. **Certificate Pinning**: Pin specific certificates for enhanced security
+3. **OCSP Stapling**: Real-time certificate revocation checking
 4. **Session Resumption**: Faster reconnections with session tickets
 5. **Performance Monitoring**: TLS handshake and throughput metrics
+
+## Mutual TLS Authentication
+
+For the highest level of security, NexusMiner now supports mutual TLS (mTLS) where both client and server authenticate each other using certificates.
+
+**Quick Configuration:**
+```json
+{
+    "enable_tls": true,
+    "tls_client_cert_path": "/path/to/client-cert.pem",
+    "tls_client_key_path": "/path/to/client-key.pem",
+    "tls_client_key_password": "optional_password"
+}
+```
+
+**See [mutual_tls_authentication.md](mutual_tls_authentication.md) for:**
+- Certificate generation and installation
+- Server-side configuration
+- Security best practices
+- Troubleshooting guide
 
 ## References
 

@@ -59,6 +59,21 @@ public:
     bool configure_client(const std::string& ca_cert_path = "", bool verify_peer = true);
     
     /**
+     * @brief Configure client certificate for mutual TLS authentication
+     * 
+     * Enables the client to authenticate itself to the server using a certificate.
+     * This is used for mutual TLS (mTLS) where both client and server verify each other.
+     * 
+     * @param cert_path Path to client certificate (PEM format)
+     * @param key_path Path to client private key (PEM format)
+     * @param password Password for private key (optional)
+     * @return true on success, false on failure
+     */
+    bool configure_client_certificate(const std::string& cert_path,
+                                      const std::string& key_path,
+                                      const std::string& password = "");
+    
+    /**
      * @brief Configure server mode with certificates
      * 
      * @param cert_path Path to server certificate

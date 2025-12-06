@@ -155,6 +155,7 @@ NexusMiner supports TLS/HTTPS encrypted connections for secure remote mining:
 - **Strong Cipher Suites**: ChaCha20-Poly1305, AES-GCM with forward secrecy
 - **Certificate Validation**: Full peer certificate verification
 - **Auto-Detection**: Automatically enables for remote connections
+- **Mutual TLS (mTLS)**: Client certificate authentication for maximum security
 
 Configuration example:
 ```json
@@ -167,7 +168,17 @@ Configuration example:
 }
 ```
 
-See [docs/tls_https_integration.md](docs/tls_https_integration.md) for complete TLS documentation.
+**Mutual TLS (Client Certificates):**
+```json
+{
+    "enable_tls": true,
+    "tls_client_cert_path": "/path/to/client-cert.pem",
+    "tls_client_key_path": "/path/to/client-key.pem",
+    "tls_client_key_password": "optional"
+}
+```
+
+See [docs/tls_https_integration.md](docs/tls_https_integration.md) for TLS documentation and [docs/mutual_tls_authentication.md](docs/mutual_tls_authentication.md) for mTLS setup.
 
 **Alternative - Generate keys only:**
 ```bash

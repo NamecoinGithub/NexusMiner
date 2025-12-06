@@ -60,6 +60,12 @@ public:
 	std::string const& get_tls_ca_cert_path() const { return m_tls_ca_cert_path; }
 	bool get_tls_verify_peer() const { return m_tls_verify_peer; }
 	std::string const& get_tls_server_name() const { return m_tls_server_name; }
+	
+	// Mutual TLS (client certificate) configuration
+	bool has_tls_client_certificate() const { return !m_tls_client_cert_path.empty() && !m_tls_client_key_path.empty(); }
+	std::string const& get_tls_client_cert_path() const { return m_tls_client_cert_path; }
+	std::string const& get_tls_client_key_path() const { return m_tls_client_key_path; }
+	std::string const& get_tls_client_key_password() const { return m_tls_client_key_password; }
 
 private:
 
@@ -107,6 +113,11 @@ private:
 	std::string m_tls_ca_cert_path;  // Path to CA certificate bundle (empty = system default)
 	bool m_tls_verify_peer;  // Verify peer certificate (default: true)
 	std::string m_tls_server_name;  // Server name for SNI and verification (default: wallet_ip)
+	
+	// Mutual TLS (client certificate) configuration
+	std::string m_tls_client_cert_path;  // Path to client certificate (PEM format)
+	std::string m_tls_client_key_path;  // Path to client private key (PEM format)
+	std::string m_tls_client_key_password;  // Password for client private key (optional)
 
 };
 }

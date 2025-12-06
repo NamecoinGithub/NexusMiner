@@ -130,6 +130,42 @@ bool TlsContext::configure_client(const std::string& ca_cert_path, bool verify_p
     }
 }
 
+bool TlsContext::configure_client_certificate(const std::string& cert_path,
+                                              const std::string& key_path,
+                                              const std::string& password)
+{
+    try {
+        if (m_mode != Mode::CLIENT) {
+            m_logger->error("[TLS] configure_client_certificate() only available in CLIENT mode");
+            return false;
+        }
+        
+        // Set password callback if provided
+        if (!password.empty()) {
+            m_context.set_password_callback(
+                [password](std::size_t, asio::ssl::context::password_purpose) {
+                    return password;
+                }
+            );
+        }
+        
+        // Load client certificate
+        m_context.use_certificate_chain_file(cert_path);
+        m_logger->info("[TLS] Loaded client certificate: {}", cert_path);
+        
+        // Load client private key
+        m_context.use_private_key_file(key_path, asio::ssl::context::pem);
+        m_logger->info("[TLS] Loaded client private key: {}", key_path);
+        
+        m_logger->info("[TLS] Client certificate configured for mutual TLS authentication");
+        return true;
+    }
+    catch (const std::exception& e) {
+        m_logger->error("[TLS] Exception configuring client certificate: {}", e.what());
+        return false;
+    }
+}
+
 bool TlsContext::configure_server(const std::string& cert_path,
                                   const std::string& key_path,
                                   const std::string& password)

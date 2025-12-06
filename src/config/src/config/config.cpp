@@ -35,6 +35,9 @@ namespace config
 		, m_tls_ca_cert_path{""}  // Default: use system CA bundle
 		, m_tls_verify_peer{true}  // Default: always verify peer
 		, m_tls_server_name{""}  // Default: use wallet_ip
+		, m_tls_client_cert_path{""}  // Default: no client certificate
+		, m_tls_client_key_path{""}  // Default: no client key
+		, m_tls_client_key_password{""}  // Default: no password
 	{
 	}
 
@@ -205,6 +208,22 @@ namespace config
 			{
 				// Default: use wallet_ip as server name
 				m_tls_server_name = m_wallet_ip;
+			}
+			
+			// Mutual TLS (client certificate) configuration
+			if (j.count("tls_client_cert_path") != 0)
+			{
+				j.at("tls_client_cert_path").get_to(m_tls_client_cert_path);
+			}
+			
+			if (j.count("tls_client_key_path") != 0)
+			{
+				j.at("tls_client_key_path").get_to(m_tls_client_key_path);
+			}
+			
+			if (j.count("tls_client_key_password") != 0)
+			{
+				j.at("tls_client_key_password").get_to(m_tls_client_key_password);
 			}
 
 			print_global_config();
