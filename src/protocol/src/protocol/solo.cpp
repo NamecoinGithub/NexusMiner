@@ -516,19 +516,80 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // Set packet length to actual data size
     packet.m_length = packet.m_data->size();
     
-    // Validate final payload size
-    // Format: merkle_root(64) + nonce(8) + timestamp(8) + sig_len(2) + signature(~690) = ~772 bytes
+    // Validate final payload size using FalconConstants
+    // Determine expected sizes based on configuration
+    std::size_t expected_min_size;
+    std::size_t expected_max_size;
+
+    if (m_block_signing_enabled) {
+        // Dual signature mode (Disposable + Physical Block Signature)
+        // Format: [merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][disposable_sig][physical_sig_len(2)][physical_sig]
+        expected_min_size = FalconConstants::MERKLE_ROOT_SIZE + 
+                            FalconConstants::NONCE_SIZE + 
+                            FalconConstants::TIMESTAMP_SIZE + 
+                            FalconConstants::LENGTH_FIELD_SIZE +
+                            FalconConstants::FALCON512_SIG_MIN +
+                            FalconConstants::LENGTH_FIELD_SIZE +
+                            FalconConstants::FALCON512_SIG_MIN;
+        
+        if (m_enable_chacha20) {
+            expected_max_size = FalconConstants::SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX;  // 1,616 bytes
+            m_logger->debug("[Solo Submit] Using DUAL_SIG_ENCRYPTED mode (max {} bytes)", expected_max_size);
+        } else {
+            expected_max_size = FalconConstants::SUBMIT_BLOCK_DUAL_SIG_MAX;  // 1,588 bytes
+            m_logger->debug("[Solo Submit] Using DUAL_SIG mode (max {} bytes)", expected_max_size);
+        }
+    } else {
+        // Single signature mode (Disposable Falcon only)
+        // Format: [merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][signature]
+        expected_min_size = FalconConstants::MERKLE_ROOT_SIZE + 
+                            FalconConstants::NONCE_SIZE + 
+                            FalconConstants::TIMESTAMP_SIZE + 
+                            FalconConstants::LENGTH_FIELD_SIZE +
+                            FalconConstants::FALCON512_SIG_MIN;
+        
+        if (m_enable_chacha20) {
+            expected_max_size = FalconConstants::SUBMIT_BLOCK_WRAPPER_ENCRYPTED_MAX;  // 862 bytes
+            m_logger->debug("[Solo Submit] Using WRAPPER_ENCRYPTED mode (max {} bytes)", expected_max_size);
+        } else {
+            expected_max_size = FalconConstants::SUBMIT_BLOCK_WRAPPER_MAX;  // 834 bytes
+            m_logger->debug("[Solo Submit] Using WRAPPER mode (max {} bytes)", expected_max_size);
+        }
+    }
+
+    // Validate payload size
     std::size_t actual_size = packet.m_data->size();
-    std::size_t expected_min_size = 82;  // merkle_root(64) + nonce(8) + timestamp(8) + sig_len(2)
-    
+
     if (actual_size < expected_min_size) {
-        m_logger->error("[Solo Submit] Payload size too small: expected at least {} bytes, got {} bytes", 
-            expected_min_size, actual_size);
+        m_logger->error("[Solo Submit] Payload too small: {} bytes < minimum {} bytes", 
+            actual_size, expected_min_size);
+        m_logger->error("[Solo Submit]   - Mode: {}", 
+            m_block_signing_enabled ? "DUAL_SIG" : "SINGLE_SIG");
+        m_logger->error("[Solo Submit]   - ChaCha20: {}", 
+            m_enable_chacha20 ? "ENABLED" : "DISABLED");
+    }
+
+    if (actual_size > expected_max_size) {
+        m_logger->warn("[Solo Submit] Payload larger than expected: {} bytes > max {} bytes",
+            actual_size, expected_max_size);
+        m_logger->warn("[Solo Submit]   - This may indicate serialization issues");
+        m_logger->warn("[Solo Submit]   - Mode: {}", 
+            m_block_signing_enabled ? "DUAL_SIG" : "SINGLE_SIG");
     }
     
     m_logger->info("[Solo Phase 2] Submitting SignedWorkSubmission (session: 0x{:08x})", m_session_id);
+    m_logger->info("[Solo Submit]   - Signature mode: {}", 
+        m_block_signing_enabled ? "DUAL (Disposable + Physical)" : "SINGLE (Disposable only)");
+    m_logger->info("[Solo Submit]   - ChaCha20 encryption: {}", 
+        m_enable_chacha20 ? "ENABLED" : "DISABLED");
     m_logger->info("[Solo Submit]   - Total submission payload: {} bytes", actual_size);
-    m_logger->info("[Solo Submit]   - Format: [merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][signature]");
+    m_logger->info("[Solo Submit]   - Expected max: {} bytes", expected_max_size);
+    
+    if (m_block_signing_enabled) {
+        m_logger->info("[Solo Submit]   - Format: [merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][signature][phys_sig_len(2)][phys_signature]");
+    } else {
+        m_logger->info("[Solo Submit]   - Format: [merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][signature]");
+    }
     
     auto result = packet.get_bytes();
     
