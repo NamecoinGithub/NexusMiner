@@ -114,13 +114,12 @@ FalconSignatureWrapper::sign_authentication(const std::string& address,
         m_logger->debug("[FalconWrapper]   - Generation time: {} μs", result.generation_time.count());
         
         // Enhanced diagnostics: Verify signature is within Falcon-512 expected range
-        // Using shared constants from falcon_constants.hpp for consistency
-        if (result.signature.size() < FalconConstants::FALCON512_SIG_MIN || 
-            result.signature.size() > FalconConstants::FALCON512_SIG_MAX) {
-            m_logger->warn("[FalconWrapper] SYNC_WARNING: Signature size {} outside expected Falcon-512 range ({}-{})",
-                result.signature.size(), FalconConstants::FALCON512_SIG_MIN, FalconConstants::FALCON512_SIG_MAX);
+        // Using shared validation helper from falcon_constants.hpp for consistency
+        if (!FalconConstants::is_valid_signature_size(result.signature.size())) {
+            m_logger->warn("[FalconWrapper] SYNC_WARNING: Signature size {} outside valid Falcon-512 range ({}-{})",
+                result.signature.size(), FalconConstants::FALCON512_SIG_MIN, FalconConstants::FALCON512_SIG_ABSOLUTE_MAX);
         } else {
-            m_logger->debug("[FalconWrapper] SYNC_OK: Signature size within expected Falcon-512 range");
+            m_logger->debug("[FalconWrapper] SYNC_OK: Signature size within valid Falcon-512 range");
         }
     } else {
         m_logger->error("[FalconWrapper] Authentication signature failed: {}", result.error_message);

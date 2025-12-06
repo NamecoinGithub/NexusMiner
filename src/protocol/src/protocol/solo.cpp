@@ -189,11 +189,10 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Auth]   - Signature size: {} bytes", signature.size());
     
     // Enhanced diagnostics: Verify signature is within expected Falcon-512 size range
-    // Using shared constants from falcon_constants.hpp for consistency
-    if (signature.size() < FalconConstants::FALCON512_SIG_MIN || 
-        signature.size() > FalconConstants::FALCON512_SIG_MAX) {
-        m_logger->warn("[Solo Auth] WARNING: Signature size {} outside expected Falcon-512 range ({}-{} bytes)",
-            signature.size(), FalconConstants::FALCON512_SIG_MIN, FalconConstants::FALCON512_SIG_MAX);
+    // Using shared validation helper from falcon_constants.hpp for consistency
+    if (!FalconConstants::is_valid_signature_size(signature.size())) {
+        m_logger->warn("[Solo Auth] WARNING: Signature size {} outside valid Falcon-512 range ({}-{} bytes)",
+            signature.size(), FalconConstants::FALCON512_SIG_MIN, FalconConstants::FALCON512_SIG_ABSOLUTE_MAX);
         m_logger->warn("[Solo Auth] This may indicate signature corruption or incorrect key type");
     }
     
