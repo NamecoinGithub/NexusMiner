@@ -54,6 +54,12 @@ public:
 	std::uint16_t get_keepalive_interval() const { return m_keepalive_interval; }
 	bool get_enable_chacha20_wrapping() const { return m_enable_chacha20_wrapping; }
 	bool is_localhost_mining() const;
+	
+	// TLS/HTTPS configuration
+	bool get_enable_tls() const { return m_enable_tls; }
+	std::string const& get_tls_ca_cert_path() const { return m_tls_ca_cert_path; }
+	bool get_tls_verify_peer() const { return m_tls_verify_peer; }
+	std::string const& get_tls_server_name() const { return m_tls_server_name; }
 
 private:
 
@@ -95,6 +101,12 @@ private:
 	std::string m_tritium_genesis;  // Tritium account genesis hash (32 bytes hex) for reward binding
 	std::uint16_t m_keepalive_interval;  // Keep-alive ping interval in hours (default: 24)
 	bool m_enable_chacha20_wrapping;  // Enable ChaCha20 wrapping of Falcon pubkey (auto for remote, optional for localhost)
+	
+	// TLS/HTTPS configuration (auto-enabled for remote connections)
+	bool m_enable_tls;  // Enable TLS/SSL for remote connections (default: auto-detect)
+	std::string m_tls_ca_cert_path;  // Path to CA certificate bundle (empty = system default)
+	bool m_tls_verify_peer;  // Verify peer certificate (default: true)
+	std::string m_tls_server_name;  // Server name for SNI and verification (default: wallet_ip)
 
 };
 }

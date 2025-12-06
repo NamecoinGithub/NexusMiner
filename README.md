@@ -149,6 +149,26 @@ Configuration example:
 
 See [docs/falcon_handshake_cache_management.md](docs/falcon_handshake_cache_management.md) for complete documentation.
 
+**TLS/HTTPS Integration for Secure Remote Mining:**
+NexusMiner supports TLS/HTTPS encrypted connections for secure remote mining:
+- **TLS 1.2/1.3**: Modern protocol versions only (no SSL v2/v3)
+- **Strong Cipher Suites**: ChaCha20-Poly1305, AES-GCM with forward secrecy
+- **Certificate Validation**: Full peer certificate verification
+- **Auto-Detection**: Automatically enables for remote connections
+
+Configuration example:
+```json
+{
+    "wallet_ip": "mining.pool.com",
+    "enable_tls": true,
+    "tls_verify_peer": true,
+    "tls_ca_cert_path": "",
+    "tls_server_name": ""
+}
+```
+
+See [docs/tls_https_integration.md](docs/tls_https_integration.md) for complete TLS documentation.
+
 **Alternative - Generate keys only:**
 ```bash
 ./NexusMiner --create-keys

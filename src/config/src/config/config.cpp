@@ -31,6 +31,10 @@ namespace config
 		, m_tritium_genesis{""}
 		, m_keepalive_interval{24}  // Default: 1 ping per day
 		, m_enable_chacha20_wrapping{false}  // Default: auto-detect based on connection
+		, m_enable_tls{false}  // Default: auto-detect based on connection
+		, m_tls_ca_cert_path{""}  // Default: use system CA bundle
+		, m_tls_verify_peer{true}  // Default: always verify peer
+		, m_tls_server_name{""}  // Default: use wallet_ip
 	{
 	}
 
@@ -170,6 +174,37 @@ namespace config
 			if (j.count("enable_chacha20_wrapping") != 0)
 			{
 				j.at("enable_chacha20_wrapping").get_to(m_enable_chacha20_wrapping);
+			}
+			
+			// TLS/HTTPS configuration (default: false, auto-enabled for remote connections)
+			m_enable_tls = false;  // Default
+			if (j.count("enable_tls") != 0)
+			{
+				j.at("enable_tls").get_to(m_enable_tls);
+			}
+			
+			// TLS CA certificate path (empty = use system default)
+			if (j.count("tls_ca_cert_path") != 0)
+			{
+				j.at("tls_ca_cert_path").get_to(m_tls_ca_cert_path);
+			}
+			
+			// TLS peer verification (default: true)
+			m_tls_verify_peer = true;  // Default: always verify
+			if (j.count("tls_verify_peer") != 0)
+			{
+				j.at("tls_verify_peer").get_to(m_tls_verify_peer);
+			}
+			
+			// TLS server name for SNI (default: use wallet_ip)
+			if (j.count("tls_server_name") != 0)
+			{
+				j.at("tls_server_name").get_to(m_tls_server_name);
+			}
+			else
+			{
+				// Default: use wallet_ip as server name
+				m_tls_server_name = m_wallet_ip;
 			}
 
 			print_global_config();
