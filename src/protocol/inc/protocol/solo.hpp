@@ -85,7 +85,6 @@ private:
     // Falcon miner authentication state (Phase 2)
     std::vector<uint8_t> m_miner_pubkey;
     std::vector<uint8_t> m_miner_privkey;
-    std::vector<uint8_t> m_falcon_pubkey;  // Public key for Falcon authentication
     bool m_authenticated;
     std::uint32_t m_session_id;
     std::string m_address;  // Miner's network address for auth message

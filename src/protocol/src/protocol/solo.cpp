@@ -133,21 +133,18 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Phase 2] Starting Falcon authentication (challenge-response)");
     m_logger->info("[Solo Auth] Using public key ({} bytes)", m_miner_pubkey.size());
     
-    // Store pubkey for later use
-    m_falcon_pubkey = m_miner_pubkey;
-    
     // Build MINER_AUTH_INIT packet
     Packet packet;
     packet.m_header = Packet::MINER_AUTH_INIT;  // 207
     packet.m_data = std::make_shared<network::Payload>();
     
     // pubkey_len (2 bytes, big-endian)
-    uint16_t pubkey_len = static_cast<uint16_t>(m_falcon_pubkey.size());
+    uint16_t pubkey_len = static_cast<uint16_t>(m_miner_pubkey.size());
     packet.m_data->push_back(static_cast<uint8_t>((pubkey_len >> 8) & 0xFF));
     packet.m_data->push_back(static_cast<uint8_t>(pubkey_len & 0xFF));
     
     // pubkey (897 bytes)
-    packet.m_data->insert(packet.m_data->end(), m_falcon_pubkey.begin(), m_falcon_pubkey.end());
+    packet.m_data->insert(packet.m_data->end(), m_miner_pubkey.begin(), m_miner_pubkey.end());
     
     // miner_id_len (2 bytes, big-endian)
     std::string miner_id = m_miner_id.empty() ? "NexusMiner" : m_miner_id;
@@ -1173,8 +1170,11 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
 {
     m_logger->info("[Solo Phase 2] Received MINER_AUTH_CHALLENGE");
     
+    // Defensive bounds check
     if (!packet.m_data || packet.m_data->size() < 2) {
-        m_logger->error("[Solo Phase 2] MINER_AUTH_CHALLENGE too small");
+        m_logger->error("[Solo Phase 2] MINER_AUTH_CHALLENGE too small: {} bytes", 
+                       packet.m_data ? packet.m_data->size() : 0);
+        m_auth_state = AuthState::NOT_AUTHENTICATED;
         return;
     }
     
@@ -1182,8 +1182,10 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     uint16_t nonce_len = (static_cast<uint16_t>((*packet.m_data)[0]) << 8) |
                           static_cast<uint16_t>((*packet.m_data)[1]);
     
-    if (packet.m_data->size() < 2 + nonce_len) {
-        m_logger->error("[Solo Phase 2] MINER_AUTH_CHALLENGE: incomplete nonce");
+    if (packet.m_data->size() < static_cast<size_t>(2 + nonce_len)) {
+        m_logger->error("[Solo Phase 2] MINER_AUTH_CHALLENGE: incomplete nonce (expected {} bytes, got {})", 
+                       2 + nonce_len, packet.m_data->size());
+        m_auth_state = AuthState::NOT_AUTHENTICATED;
         return;
     }
     
@@ -1195,12 +1197,14 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     // Sign the NONCE (not address+timestamp!)
     if (!m_falcon_wrapper || !m_falcon_wrapper->is_valid()) {
         m_logger->error("[Solo Phase 2] Falcon wrapper not initialized");
+        m_auth_state = AuthState::NOT_AUTHENTICATED;
         return;
     }
     
     auto sign_result = m_falcon_wrapper->sign_payload(nonce, FalconSignatureWrapper::SignatureType::AUTHENTICATION);
     if (!sign_result.success) {
         m_logger->error("[Solo Phase 2] Failed to sign nonce: {}", sign_result.error_message);
+        m_auth_state = AuthState::NOT_AUTHENTICATED;
         return;
     }
     
@@ -1226,15 +1230,23 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     m_logger->info("[Solo Phase 2] Sending MINER_AUTH_RESPONSE: sig_len={}, total_size={}", 
                    sig_len, response_packet.m_length);
     
+    // Validate packet serialization
+    auto bytes = response_packet.get_bytes();
+    if (!bytes || bytes->empty()) {
+        m_logger->error("[Solo Phase 2] Failed to serialize MINER_AUTH_RESPONSE packet");
+        m_auth_state = AuthState::NOT_AUTHENTICATED;
+        return;
+    }
+    
     // Set state to waiting for result
     m_auth_state = AuthState::WAITING_FOR_RESULT;
     
     // Transmit the response using stored connection
     if (m_connection) {
-        auto bytes = response_packet.get_bytes();
         m_connection->transmit(bytes);
     } else {
         m_logger->error("[Solo Phase 2] Cannot send MINER_AUTH_RESPONSE - no connection stored");
+        m_auth_state = AuthState::NOT_AUTHENTICATED;
     }
 }
 
