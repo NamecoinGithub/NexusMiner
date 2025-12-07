@@ -46,12 +46,15 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_session_id{0}
 , m_address{"127.0.0.1"}  // Default address, can be overridden
 , m_auth_timestamp{0}
+, m_auth_state{AuthState::NOT_AUTHENTICATED}
+, m_miner_id{"NexusMiner"}  // Default miner ID
 , m_falcon_wrapper{nullptr}
 , m_block_signing_enabled{false}  // Disabled by default for performance
 , m_chacha20_wrapper{nullptr}  // Lazy initialization when needed
 , m_enable_chacha20{false}  // Auto-detect based on connection type
 , m_session_manager{nullptr}
 , m_template_interface{nullptr}
+, m_connection{nullptr}
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -85,6 +88,7 @@ void Solo::reset()
     m_authenticated = false;
     m_session_id = 0;
     m_auth_timestamp = 0;
+    m_auth_state = AuthState::NOT_AUTHENTICATED;
     
     // Reset session manager
     if (m_session_manager) {
@@ -120,270 +124,64 @@ network::Shared_payload Solo::login(Login_handler handler)
         return network::Shared_payload{};
     }
     
-    m_logger->info("[Solo Phase 2] Starting Direct Falcon authentication (MINER_AUTH_RESPONSE protocol)");
+    if (!m_falcon_wrapper || !m_falcon_wrapper->is_valid()) {
+        m_logger->error("[Solo Phase 2] Cannot authenticate - Falcon keys not loaded");
+        handler(false);
+        return network::Shared_payload{};
+    }
+    
+    m_logger->info("[Solo Phase 2] Starting Falcon authentication (challenge-response)");
     m_logger->info("[Solo Auth] Using public key ({} bytes)", m_miner_pubkey.size());
     
-    // Phase 2 Direct MINER_AUTH_RESPONSE protocol:
-    // 1. Build auth message: address + timestamp
-    // 2. Sign with Falcon private key  
-    // 3. Send MINER_AUTH_RESPONSE directly with pubkey + signature
+    // Build MINER_AUTH_INIT packet
+    Packet packet;
+    packet.m_header = Packet::MINER_AUTH_INIT;  // 207
+    packet.m_data = std::make_shared<network::Payload>();
     
-    // Get current timestamp (8-byte little-endian Unix timestamp)
-    m_auth_timestamp = static_cast<uint64_t>(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
+    // NOTE: MINER_AUTH_INIT uses big-endian encoding per protocol specification
+    // pubkey_len (2 bytes, big-endian)
+    uint16_t pubkey_len = static_cast<uint16_t>(m_miner_pubkey.size());
+    packet.m_data->push_back(static_cast<uint8_t>((pubkey_len >> 8) & 0xFF));
+    packet.m_data->push_back(static_cast<uint8_t>(pubkey_len & 0xFF));
     
-    m_logger->info("[Solo Auth] Auth message parameters:");
-    m_logger->info("[Solo Auth]   - Address: '{}' ({} bytes)", m_address, m_address.size());
-    m_logger->info("[Solo Auth]   - Timestamp: {} (0x{:016x})", m_auth_timestamp, m_auth_timestamp);
+    // pubkey (897 bytes)
+    packet.m_data->insert(packet.m_data->end(), m_miner_pubkey.begin(), m_miner_pubkey.end());
     
-    // Use Falcon Signature Wrapper for authentication signature
-    std::vector<uint8_t> signature;
-    if (m_falcon_wrapper && m_falcon_wrapper->is_valid()) {
-        m_logger->info("[Solo Auth] Using Falcon Signature Wrapper for authentication");
-        auto sig_result = m_falcon_wrapper->sign_authentication(m_address, m_auth_timestamp);
-        
-        if (!sig_result.success) {
-            m_logger->error("[Solo Auth] CRITICAL: Falcon Wrapper signature failed: {}", sig_result.error_message);
-            m_logger->error("[Solo Auth] Falling back to direct signature method");
-            
-            // Fallback to direct signing if wrapper fails
-            std::vector<uint8_t> auth_message;
-            auth_message.insert(auth_message.end(), m_address.begin(), m_address.end());
-            for (int i = 0; i < 8; ++i) {
-                auth_message.push_back((m_auth_timestamp >> (i * 8)) & 0xFF);
-            }
-            
-            if (!keys::falcon_sign(m_miner_privkey, auth_message, signature)) {
-                m_logger->error("[Solo Auth] CRITICAL: Fallback signature also failed");
-                handler(false);
-                return network::Shared_payload{};
-            }
-        } else {
-            signature = std::move(sig_result.signature);
-            m_logger->info("[Solo Auth] Wrapper signature generated in {} μs", sig_result.generation_time.count());
-        }
-    } else {
-        m_logger->warn("[Solo Auth] Falcon Wrapper not available, using direct signature method");
-        
-        // Build auth message: address + timestamp
-        std::vector<uint8_t> auth_message;
-        auth_message.insert(auth_message.end(), m_address.begin(), m_address.end());
-        
-        // Append timestamp (8 bytes, little-endian)
-        for (int i = 0; i < 8; ++i) {
-            auth_message.push_back((m_auth_timestamp >> (i * 8)) & 0xFF);
-        }
-        
-        // Sign the auth message with Falcon private key
-        if (!keys::falcon_sign(m_miner_privkey, auth_message, signature)) {
-            m_logger->error("[Solo Auth] CRITICAL: Failed to sign auth message with Falcon private key");
-            m_logger->error("[Solo Auth]   - Private key size: {} bytes", m_miner_privkey.size());
-            m_logger->error("[Solo Auth] Possible causes:");
-            m_logger->error("[Solo Auth]   - Invalid or corrupted private key");
-            m_logger->error("[Solo Auth]   - Falcon signature library error");
-            handler(false);
-            return network::Shared_payload{};
-        }
-    }
+    // miner_id_len (2 bytes, big-endian)
+    std::string miner_id = m_miner_id.empty() ? "NexusMiner" : m_miner_id;
+    uint16_t miner_id_len = static_cast<uint16_t>(miner_id.size());
+    packet.m_data->push_back(static_cast<uint8_t>((miner_id_len >> 8) & 0xFF));
+    packet.m_data->push_back(static_cast<uint8_t>(miner_id_len & 0xFF));
     
-    m_logger->info("[Solo Auth] Successfully signed auth message");
-    m_logger->info("[Solo Auth]   - Signature size: {} bytes", signature.size());
+    // miner_id (variable)
+    packet.m_data->insert(packet.m_data->end(), miner_id.begin(), miner_id.end());
     
-    // Enhanced diagnostics: Verify signature is within expected Falcon-512 size range
-    // Using shared validation helper from falcon_constants.hpp for consistency
-    if (!FalconConstants::is_valid_signature_size(signature.size())) {
-        m_logger->warn("[Solo Auth] WARNING: Signature size {} outside valid Falcon-512 range ({}-{} bytes)",
-            signature.size(), FalconConstants::FALCON512_SIG_MIN, FalconConstants::FALCON512_SIG_ABSOLUTE_MAX);
-        m_logger->warn("[Solo Auth] This may indicate signature corruption or incorrect key type");
-    }
-    
-    // Build MINER_AUTH_RESPONSE packet payload (little-endian per Phase 2 spec)
-    // Enhanced format with optional ChaCha20 wrapping and Tritium GenesisHash:
-    // [pubkey_len(2, LE)][pubkey/wrapped_pubkey][timestamp(8, LE)][sig_len(2, LE)][signature][optional: genesis(32)]
-    // CRITICAL: Timestamp MUST be included so node can reconstruct signed message for verification
-    // The signed message is: address + timestamp (both known to miner, timestamp sent in payload)
-    std::vector<uint8_t> payload;
-    
-    // Prepare public key (with optional ChaCha20 wrapping)
-    std::vector<uint8_t> pubkey_to_send = m_miner_pubkey;
-    bool wrapped = false;
-    
-    if (m_enable_chacha20) {
-        // Lazy initialization of ChaCha20 wrapper when needed
-        if (!m_chacha20_wrapper) {
-            m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
-            m_logger->info("[Solo Auth] ChaCha20 wrapper initialized for Falcon handshake encryption");
-        }
-        
-        m_logger->info("[Solo Auth] ChaCha20 wrapping enabled for Falcon public key");
-        
-        // Generate session key and nonce for this handshake
-        auto session_key = ChaCha20Wrapper::generate_key();
-        auto nonce = ChaCha20Wrapper::generate_nonce();
-        
-        auto wrap_result = m_chacha20_wrapper->wrap_falcon_pubkey(
-            m_miner_pubkey, session_key, nonce);
-        
-        if (wrap_result.success) {
-            pubkey_to_send = wrap_result.data;
-            wrapped = true;
-            m_logger->info("[Solo Auth] Falcon public key wrapped: {} -> {} bytes (includes tag)",
-                          m_miner_pubkey.size(), pubkey_to_send.size());
-            
-            // Store session key and nonce for potential unwrapping
-            // In production, these would be exchanged through a secure channel
-            m_logger->debug("[Solo Auth] Session key and nonce generated for this handshake");
-        } else {
-            m_logger->warn("[Solo Auth] ChaCha20 wrapping failed: {}", wrap_result.error_message);
-            m_logger->warn("[Solo Auth] Falling back to unwrapped public key");
-        }
-    }
-    
-    // Public key length (2 bytes, little-endian)
-    uint16_t pubkey_len = static_cast<uint16_t>(pubkey_to_send.size());
-    payload.push_back(pubkey_len & 0xFF);         // Low byte
-    payload.push_back((pubkey_len >> 8) & 0xFF);  // High byte
-    
-    // Public key bytes (raw or wrapped)
-    payload.insert(payload.end(), pubkey_to_send.begin(), pubkey_to_send.end());
-    
-    // Timestamp (8 bytes, little-endian) - CRITICAL for node to verify signature
-    // The node reconstructs the signed message as: address (from connection) + timestamp (from payload)
-    append_uint64_le(payload, m_auth_timestamp);
-    
-    // Signature length (2 bytes, little-endian)
-    uint16_t sig_len = static_cast<uint16_t>(signature.size());
-    payload.push_back(sig_len & 0xFF);         // Low byte
-    payload.push_back((sig_len >> 8) & 0xFF);  // High byte
-    
-    // Signature bytes
-    payload.insert(payload.end(), signature.begin(), signature.end());
-    
-    // Optional: Tritium GenesisHash binding (32 bytes)
-    std::vector<uint8_t> genesis_hash;
+    // hashGenesis (32 bytes) - Tritium genesis for reward routing
+    std::vector<uint8_t> tritium_genesis;
     if (m_session_manager && !m_session_manager->get_tritium_genesis().empty()) {
-        genesis_hash = m_session_manager->get_tritium_genesis();
-        payload.insert(payload.end(), genesis_hash.begin(), genesis_hash.end());
-        m_logger->info("[Solo Auth] Tritium GenesisHash included for reward binding: {} bytes", 
-                      genesis_hash.size());
+        tritium_genesis = m_session_manager->get_tritium_genesis();
+        packet.m_data->insert(packet.m_data->end(), tritium_genesis.begin(), tritium_genesis.end());
+        m_logger->info("[Solo Phase 2] Including hashGenesis in MINER_AUTH_INIT");
+    } else {
+        // Send 32 zero bytes if no genesis configured
+        std::vector<uint8_t> zero_genesis(32, 0);
+        packet.m_data->insert(packet.m_data->end(), zero_genesis.begin(), zero_genesis.end());
+        m_logger->warn("[Solo Phase 2] No tritium_genesis configured - sending zeros");
     }
     
-    m_logger->info("[Solo Auth] MINER_AUTH_RESPONSE payload structure:");
-    m_logger->info("[Solo Auth]   - Public key length: {} bytes (offset: 0-1, LE)", pubkey_len);
-    m_logger->info("[Solo Auth]   - Public key data: {} bytes (offset: 2-{}) [{}]", 
-                  pubkey_len, 1 + pubkey_len, wrapped ? "ChaCha20 wrapped" : "raw");
-    m_logger->info("[Solo Auth]   - Timestamp: {} (0x{:016x}) at offset {}-{}", 
-        m_auth_timestamp, m_auth_timestamp, 2 + pubkey_len, 2 + pubkey_len + 7);
-    m_logger->info("[Solo Auth]   - Signature length: {} bytes (offset: {}-{}, LE)", 
-        sig_len, 2 + pubkey_len + 8, 2 + pubkey_len + 9);
-    m_logger->info("[Solo Auth]   - Signature data: {} bytes (offset: {}-{})", 
-        sig_len, 2 + pubkey_len + 10, 2 + pubkey_len + 9 + sig_len);
-    if (!genesis_hash.empty()) {
-        size_t genesis_offset = 2 + pubkey_len + 10 + sig_len;
-        m_logger->info("[Solo Auth]   - Tritium Genesis: 32 bytes (offset: {}-{})",
-                      genesis_offset, genesis_offset + 31);
-    }
-    m_logger->info("[Solo Auth]   - Total payload size: {} bytes", payload.size());
+    packet.m_length = static_cast<uint32_t>(packet.m_data->size());
     
-    // Enhanced diagnostics: Validate expected payload size for proper serialization
-    size_t expected_payload_size = 2 + pubkey_to_send.size() + 8 + 2 + signature.size() + genesis_hash.size();
-    if (payload.size() != expected_payload_size) {
-        m_logger->error("[Solo Auth] SERIALIZATION ERROR: Payload size mismatch!");
-        m_logger->error("[Solo Auth]   - Expected size: {} bytes", expected_payload_size);
-        m_logger->error("[Solo Auth]   - Actual size: {} bytes", payload.size());
-        m_logger->error("[Solo Auth]   - Missing bytes: {}", 
-            static_cast<int64_t>(expected_payload_size) - static_cast<int64_t>(payload.size()));
-    }
+    m_logger->info("[Solo Phase 2] MINER_AUTH_INIT: pubkey_len={}, miner_id='{}', total_size={}", 
+                   pubkey_len, miner_id, packet.m_length);
     
-    // Validate payload is properly constructed
-    if (payload.empty()) {
-        m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_RESPONSE payload is empty!");
-        m_logger->error("[Solo Auth] Error type: PAYLOAD_CONSTRUCTION_FAILURE");
-        m_logger->error("[Solo Auth] Possible causes:");
-        m_logger->error("[Solo Auth]   - Empty public key (size: {} bytes)", m_miner_pubkey.size());
-        m_logger->error("[Solo Auth]   - Empty signature (size: {} bytes)", signature.size());
-        m_logger->error("[Solo Auth]   - Memory allocation failure during payload construction");
-        handler(false);
-        return network::Shared_payload{};
-    }
-    
-    // Create and send MINER_AUTH_RESPONSE packet directly
-    Packet packet{ Packet::MINER_AUTH_RESPONSE, std::make_shared<network::Payload>(payload) };
-    
-    // Log packet details for debugging - use is_auth_packet() helper for consistency
-    m_logger->debug("[Solo Auth] Packet created: header=0x{:02x} ({}) length={} is_valid={}", 
-                   static_cast<int>(packet.m_header),
-                   packet.is_auth_packet() ? "AUTH_PACKET" : "UNKNOWN",
-                   packet.m_length, 
-                   packet.is_valid());
-    
-    // Enhanced diagnostics: Log serialization state details
-    m_logger->debug("[Solo Auth] Serialization state check:");
-    m_logger->debug("[Solo Auth]   - Header value: {} (MINER_AUTH_RESPONSE={})", 
-                   static_cast<int>(packet.m_header), static_cast<int>(Packet::MINER_AUTH_RESPONSE));
-    m_logger->debug("[Solo Auth]   - is_auth_packet(): {} (header range {}-{})", 
-                   packet.is_auth_packet(), 
-                   static_cast<int>(Packet::MINER_AUTH_INIT), 
-                   static_cast<int>(Packet::SESSION_KEEPALIVE));
-    m_logger->debug("[Solo Auth]   - Data pointer: {}", packet.m_data ? "valid" : "null");
-    m_logger->debug("[Solo Auth]   - Data size via m_data: {}", packet.m_data ? packet.m_data->size() : 0);
-    m_logger->debug("[Solo Auth]   - m_length field: {}", packet.m_length);
-    
-    // Validate packet encoding
-    auto packet_bytes = packet.get_bytes();
-    if (!packet_bytes || packet_bytes->empty()) {
-        m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_RESPONSE packet encoding failed! get_bytes() returned empty.");
-        m_logger->error("[Solo Auth] Error type: {}", 
-                       !packet.is_valid() ? "PACKET_VALIDATION_FAILURE" : "SERIALIZATION_FAILURE");
-        m_logger->error("[Solo Auth] Validation state: {}", packet.get_validation_state());
-        m_logger->error("[Solo Auth] Diagnostic details:");
-        m_logger->error("[Solo Auth]   - Packet header: 0x{:02x} ({})", 
-                       static_cast<int>(packet.m_header), 
-                       packet.m_header);
-        m_logger->error("[Solo Auth]   - Packet length: {} bytes", packet.m_length);
-        m_logger->error("[Solo Auth]   - Packet is_valid: {}", packet.is_valid());
-        m_logger->error("[Solo Auth]   - Packet is_auth_packet: {}", packet.is_auth_packet());
-        m_logger->error("[Solo Auth]   - Data pointer valid: {}", packet.m_data != nullptr);
-        if (!packet.is_valid()) {
-            m_logger->error("[Solo Auth] Possible causes:");
-            m_logger->error("[Solo Auth]   - Packet header not in valid range for payload packets");
-            m_logger->error("[Solo Auth]   - Authentication packet not properly recognized (expected {}-{})", 
-                           Packet::MINER_AUTH_INIT, Packet::SESSION_KEEPALIVE);
-        }
-        handler(false);
-        return network::Shared_payload{};
-    }
-    
-    // Enhanced diagnostics: Log validation state for successful packets
-    m_logger->debug("[Solo Auth] Packet validation state: {}", packet.get_validation_state());
-    
-    // Enhanced diagnostics: Validate wire format structure
-    m_logger->debug("[Solo Auth] Wire format validation:");
-    m_logger->debug("[Solo Auth]   - Wire format size: {} bytes", packet_bytes->size());
-    m_logger->debug("[Solo Auth]   - Expected wire format: 1 (header) + 4 (length) + {} (payload) = {} bytes",
-                   payload.size(), 1 + 4 + payload.size());
-    
-    // Log first few bytes of wire format for debugging
-    if (packet_bytes->size() >= 5) {
-        m_logger->debug("[Solo Auth]   - Wire format header: 0x{:02x}", (*packet_bytes)[0]);
-        uint32_t wire_length = (static_cast<uint32_t>((*packet_bytes)[1]) << 24) |
-                               (static_cast<uint32_t>((*packet_bytes)[2]) << 16) |
-                               (static_cast<uint32_t>((*packet_bytes)[3]) << 8) |
-                               static_cast<uint32_t>((*packet_bytes)[4]);
-        m_logger->debug("[Solo Auth]   - Wire format length field: {} bytes", wire_length);
-        if (wire_length != payload.size()) {
-            m_logger->warn("[Solo Auth] WARNING: Wire length field ({}) doesn't match payload size ({})", 
-                          wire_length, payload.size());
-        }
-    }
-    
-    m_logger->debug("[Solo Auth] MINER_AUTH_RESPONSE packet successfully encoded: {} bytes wire format", packet_bytes->size());
-    m_logger->info("[Solo Auth] Sending direct MINER_AUTH_RESPONSE (no challenge-response needed)");
+    // Set state to waiting for challenge
+    m_auth_state = AuthState::WAITING_FOR_CHALLENGE;
     
     // Login handler will be called after successful authentication in MINER_AUTH_RESULT
     // For now, mark as "in progress"
     handler(true);
     
-    return packet_bytes;
+    return packet.get_bytes();
 }
 
 network::Shared_payload Solo::get_work()
@@ -607,6 +405,11 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
 
 void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> connection)  
 {
+    // Store connection for multi-packet authentication flow
+    if (connection) {
+        m_connection = connection;
+    }
+    
     // Reject invalid packets at the start
     if (!packet.m_is_valid) {
         m_logger->warn("Solo::process_messages: Received invalid packet - header={}, length={}", 
@@ -928,18 +731,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     }
     else if (packet.m_header == Packet::MINER_AUTH_CHALLENGE)
     {
-        // Phase 2 Direct MINER_AUTH_RESPONSE Protocol:
-        // MINER_AUTH_CHALLENGE is NOT used in the direct protocol.
-        // Authentication message (address + timestamp) is signed upfront during login.
-        // If the node is sending a challenge, it's using the old challenge-response flow.
-        
-        m_logger->warn("[Solo Auth] WARNING: Received MINER_AUTH_CHALLENGE from node");
-        m_logger->warn("[Solo Auth] This miner uses DIRECT MINER_AUTH_RESPONSE protocol (no challenge-response)");
-        m_logger->warn("[Solo Auth] The node may be using an incompatible authentication flow");
-        m_logger->warn("[Solo Auth] Expected flow: MINER_AUTH_RESPONSE -> MINER_AUTH_RESULT");
-        m_logger->warn("[Solo Auth] Node is using: MINER_AUTH_INIT -> MINER_AUTH_CHALLENGE -> MINER_AUTH_RESPONSE");
-        m_logger->error("[Solo Auth] Authentication protocol mismatch - cannot proceed");
-        m_logger->error("[Solo Auth] Please ensure node supports Phase 2 Direct MINER_AUTH_RESPONSE protocol");
+        // Phase 2 Challenge-Response Protocol:
+        // Handle MINER_AUTH_CHALLENGE from node and respond with signed nonce
+        m_logger->info("[Solo Auth] Received MINER_AUTH_CHALLENGE from node");
+        handle_miner_auth_challenge(packet);
     }
     else if (packet.m_header == Packet::MINER_AUTH_RESULT)
     {
@@ -1370,6 +1165,98 @@ bool Solo::is_keepalive_due() const
         return m_session_manager->is_keepalive_due();
     }
     return false;
+}
+
+void Solo::reset_auth_state()
+{
+    m_auth_state = AuthState::NOT_AUTHENTICATED;
+    m_connection = nullptr;
+    m_logger->debug("[Solo Auth] Authentication state reset");
+}
+
+void Solo::handle_miner_auth_challenge(const Packet& packet)
+{
+    m_logger->info("[Solo Phase 2] Received MINER_AUTH_CHALLENGE");
+    
+    // Defensive bounds check
+    if (!packet.m_data || packet.m_data->size() < 2) {
+        m_logger->error("[Solo Phase 2] MINER_AUTH_CHALLENGE too small: {} bytes", 
+                       packet.m_data ? packet.m_data->size() : 0);
+        reset_auth_state();
+        return;
+    }
+    
+    // Parse nonce_len (2 bytes, big-endian)
+    uint16_t nonce_len = (static_cast<uint16_t>((*packet.m_data)[0]) << 8) |
+                          static_cast<uint16_t>((*packet.m_data)[1]);
+    
+    if (packet.m_data->size() < static_cast<size_t>(2 + nonce_len)) {
+        m_logger->error("[Solo Phase 2] MINER_AUTH_CHALLENGE: incomplete nonce (expected {} bytes, got {})", 
+                       2 + nonce_len, packet.m_data->size());
+        reset_auth_state();
+        return;
+    }
+    
+    // Extract nonce
+    std::vector<uint8_t> nonce(packet.m_data->begin() + 2, packet.m_data->begin() + 2 + nonce_len);
+    
+    m_logger->info("[Solo Phase 2] Received nonce, {} bytes", nonce.size());
+    
+    // Sign the NONCE (not address+timestamp!)
+    if (!m_falcon_wrapper || !m_falcon_wrapper->is_valid()) {
+        m_logger->error("[Solo Phase 2] Falcon wrapper not initialized");
+        reset_auth_state();
+        return;
+    }
+    
+    auto sign_result = m_falcon_wrapper->sign_payload(nonce, FalconSignatureWrapper::SignatureType::AUTHENTICATION);
+    if (!sign_result.success) {
+        m_logger->error("[Solo Phase 2] Failed to sign nonce: {}", sign_result.error_message);
+        reset_auth_state();
+        return;
+    }
+    
+    m_logger->info("[Solo Phase 2] Signed nonce, signature {} bytes", sign_result.signature.size());
+    
+    // Build MINER_AUTH_RESPONSE packet
+    Packet response_packet;
+    response_packet.m_header = Packet::MINER_AUTH_RESPONSE;  // 209
+    response_packet.m_data = std::make_shared<network::Payload>();
+    
+    // NOTE: MINER_AUTH_RESPONSE uses little-endian encoding per protocol specification
+    // sig_len (2 bytes, little-endian)
+    uint16_t sig_len = static_cast<uint16_t>(sign_result.signature.size());
+    response_packet.m_data->push_back(static_cast<uint8_t>(sig_len & 0xFF));
+    response_packet.m_data->push_back(static_cast<uint8_t>((sig_len >> 8) & 0xFF));
+    
+    // signature
+    response_packet.m_data->insert(response_packet.m_data->end(), 
+                                   sign_result.signature.begin(), 
+                                   sign_result.signature.end());
+    
+    response_packet.m_length = static_cast<uint32_t>(response_packet.m_data->size());
+    
+    m_logger->info("[Solo Phase 2] Sending MINER_AUTH_RESPONSE: sig_len={}, total_size={}", 
+                   sig_len, response_packet.m_length);
+    
+    // Validate packet serialization
+    auto bytes = response_packet.get_bytes();
+    if (!bytes || bytes->empty()) {
+        m_logger->error("[Solo Phase 2] Failed to serialize MINER_AUTH_RESPONSE packet");
+        reset_auth_state();
+        return;
+    }
+    
+    // Set state to waiting for result
+    m_auth_state = AuthState::WAITING_FOR_RESULT;
+    
+    // Transmit the response using stored connection
+    if (m_connection) {
+        m_connection->transmit(bytes);
+    } else {
+        m_logger->error("[Solo Phase 2] Cannot send MINER_AUTH_RESPONSE - no connection stored");
+        reset_auth_state();
+    }
 }
 
 }

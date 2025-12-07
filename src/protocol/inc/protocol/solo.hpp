@@ -15,6 +15,13 @@ namespace stats { class Collector; }
 namespace protocol
 {
 
+enum class AuthState {
+    NOT_AUTHENTICATED,
+    WAITING_FOR_CHALLENGE,
+    WAITING_FOR_RESULT,
+    AUTHENTICATED
+};
+
 class Solo : public Protocol {
 public:
 
@@ -63,6 +70,12 @@ private:
     
     // Helper method to send SET_CHANNEL packet
     void send_set_channel(std::shared_ptr<network::Connection> connection);
+    
+    // Challenge-response authentication methods
+    void handle_miner_auth_challenge(const Packet& packet);
+    
+    // Helper to reset authentication state on errors
+    void reset_auth_state();
 
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;
@@ -79,6 +92,8 @@ private:
     std::uint32_t m_session_id;
     std::string m_address;  // Miner's network address for auth message
     std::uint64_t m_auth_timestamp;  // Timestamp for auth message
+    AuthState m_auth_state;  // Authentication state machine
+    std::string m_miner_id;  // Miner identifier (optional)
     
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
@@ -93,6 +108,9 @@ private:
     
     // Mining Template Interface for unified READ/FEED operations
     std::unique_ptr<MiningTemplateInterface> m_template_interface;
+    
+    // Connection for multi-packet authentication flow
+    std::shared_ptr<network::Connection> m_connection;
 };
 
 }
