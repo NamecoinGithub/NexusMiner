@@ -125,12 +125,16 @@ void Worker_hash::run()
 		// Apply thread priority
 		if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
 			m_logger->info(m_log_leader + "Thread priority set to level {}", cpu_cfg.m_priority_level);
+		} else {
+			m_logger->warn(m_log_leader + "Failed to set thread priority to level {}", cpu_cfg.m_priority_level);
 		}
 		
 		// Apply CPU affinity
 		if (cpu_cfg.m_affinity_mask != 0) {
 			if (cpu::set_thread_affinity(cpu_cfg.m_affinity_mask)) {
 				m_logger->info(m_log_leader + "Thread affinity set to 0x{:016x}", cpu_cfg.m_affinity_mask);
+			} else {
+				m_logger->warn(m_log_leader + "Failed to set thread affinity to 0x{:016x}", cpu_cfg.m_affinity_mask);
 			}
 		}
 	}

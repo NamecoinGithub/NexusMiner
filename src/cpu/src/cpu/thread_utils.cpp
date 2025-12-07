@@ -94,7 +94,8 @@ bool set_thread_affinity(std::uint64_t mask)
 {
     if (mask == 0)
     {
-        // No affinity specified, allow all cores
+        // No affinity specified (0 = allow all cores), this is not an error
+        if (s_logger) s_logger->debug("No CPU affinity constraint specified (mask=0), thread can run on any core");
         return true;
     }
 
@@ -219,6 +220,10 @@ bool is_efficiency_core()
 {
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     // Check for Intel hybrid architecture using CPUID
+    // NOTE: This function checks the core type of the calling thread at the moment
+    // it executes. Due to thread migration in multithreaded environments, the thread
+    // may move to a different core between calls. This function provides a snapshot
+    // of the current core type but does not guarantee thread stays on that core.
     std::uint32_t eax, ebx, ecx, edx;
     
     // Check if CPUID leaf 0x1A is supported (hybrid information)
@@ -227,7 +232,7 @@ bool is_efficiency_core()
     __cpuid(cpuid_info, 0);
     if (cpuid_info[0] < 0x1A)
     {
-        return false;  // Leaf 0x1A not supported
+        return false;  // Leaf 0x1A not supported, not a hybrid CPU
     }
     
     __cpuid(cpuid_info, 0x1A);
@@ -236,7 +241,7 @@ bool is_efficiency_core()
     __get_cpuid(0, &eax, &ebx, &ecx, &edx);
     if (eax < 0x1A)
     {
-        return false;  // Leaf 0x1A not supported
+        return false;  // Leaf 0x1A not supported, not a hybrid CPU
     }
     
     __get_cpuid(0x1A, &eax, &ebx, &ecx, &edx);
@@ -254,15 +259,22 @@ std::vector<std::uint32_t> get_performance_cores()
 {
     std::vector<std::uint32_t> p_cores;
     
-    // This is a simplified implementation
-    // In a real implementation, you would need to query each core's type
-    // For now, we assume first half are P-cores in hybrid systems
+    // This is a simplified implementation that makes assumptions about core ordering
+    // NOTE: Proper hybrid CPU detection requires platform-specific APIs:
+    // - Windows: GetLogicalProcessorInformationEx with RelationProcessorCore
+    // - Linux: Reading /sys/devices/system/cpu/cpu*/topology/core_cpus_list
+    // For now, we use a heuristic that may not be accurate on all systems.
+    // TODO: Implement proper hybrid CPU core enumeration using platform APIs
+    
+    // Simple heuristic: Check if this appears to be a hybrid system
+    // and assume P-cores come first (common on Intel 12th+ gen)
     if (is_smt_enabled())
     {
         std::uint32_t total_cores = std::thread::hardware_concurrency();
         std::uint32_t physical_cores = get_physical_core_count();
         
-        // Simple heuristic: P-cores typically come first
+        // Simplified heuristic: assume first half are P-cores
+        // This is NOT reliable and should be replaced with proper detection
         for (std::uint32_t i = 0; i < physical_cores / 2; i++)
         {
             p_cores.push_back(i);
@@ -276,15 +288,22 @@ std::vector<std::uint32_t> get_efficiency_cores()
 {
     std::vector<std::uint32_t> e_cores;
     
-    // This is a simplified implementation
-    // In a real implementation, you would need to query each core's type
-    // For now, we assume second half are E-cores in hybrid systems
+    // This is a simplified implementation that makes assumptions about core ordering
+    // NOTE: Proper hybrid CPU detection requires platform-specific APIs:
+    // - Windows: GetLogicalProcessorInformationEx with RelationProcessorCore
+    // - Linux: Reading /sys/devices/system/cpu/cpu*/topology/core_cpus_list
+    // For now, we use a heuristic that may not be accurate on all systems.
+    // TODO: Implement proper hybrid CPU core enumeration using platform APIs
+    
+    // Simple heuristic: Check if this appears to be a hybrid system
+    // and assume E-cores come after P-cores (common on Intel 12th+ gen)
     if (is_smt_enabled())
     {
         std::uint32_t total_cores = std::thread::hardware_concurrency();
         std::uint32_t physical_cores = get_physical_core_count();
         
-        // Simple heuristic: E-cores typically come after P-cores
+        // Simplified heuristic: assume second half are E-cores
+        // This is NOT reliable and should be replaced with proper detection
         for (std::uint32_t i = physical_cores / 2; i < physical_cores; i++)
         {
             e_cores.push_back(i);
