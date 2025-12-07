@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.19)
 
-add_library(cpu STATIC src/cpu/worker_hash.cpp)
+add_library(cpu STATIC src/cpu/worker_hash.cpp src/cpu/thread_utils.cpp)
 
 if(WITH_PRIME)
     target_sources(cpu PRIVATE src/cpu/worker_prime.cpp src/cpu/prime/prime.cpp src/cpu/prime/chain_sieve.cpp)

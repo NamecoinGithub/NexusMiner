@@ -36,6 +36,7 @@ public:
 private:
 
     void run();
+    void mine_loop(uint32_t thread_id, uint32_t total_threads);
     bool difficulty_check();
     std::uint64_t leading_zero_mask();  
     
@@ -56,6 +57,7 @@ private:
     Worker_config& m_config;
     std::atomic<bool> m_stop;
     std::thread m_run_thread;
+    std::vector<std::thread> m_worker_threads;  // For multi-threading support
     Worker::Block_found_handler m_found_nonce_callback;
     NexusSkein m_skein;
     Block_data m_block;

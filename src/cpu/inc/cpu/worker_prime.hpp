@@ -54,6 +54,7 @@ private:
     std::atomic<bool> m_stop;
     std::atomic<bool> m_initialized;
     std::thread m_run_thread;
+    std::vector<std::thread> m_worker_threads;  // For multi-threading support
     Worker::Block_found_handler m_found_nonce_callback;
     std::unique_ptr<Sieve> m_segmented_sieve;
 

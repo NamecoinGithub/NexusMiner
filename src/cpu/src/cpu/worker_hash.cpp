@@ -1,4 +1,5 @@
 #include "cpu/worker_hash.hpp"
+#include "cpu/thread_utils.hpp"
 #include "config/config.hpp"
 #include "stats/stats_collector.hpp"
 #include "block.hpp"
@@ -31,13 +32,13 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
 		auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
 		if (cpu_cfg.m_threads > 1) {
 			m_logger->info(m_log_leader + "Multi-core configuration: {} thread(s)", cpu_cfg.m_threads);
-			m_logger->warn(m_log_leader + "Note: Multi-threading within a worker is planned for future implementation");
-			m_logger->info(m_log_leader + "Current implementation: Single thread per worker instance");
-			m_logger->info(m_log_leader + "For multi-core mining: Configure multiple CPU workers in miner.conf");
+			m_logger->info(m_log_leader + "Note: Multi-threading support is available");
 		}
 		if (cpu_cfg.m_affinity_mask > 0) {
 			m_logger->info(m_log_leader + "CPU affinity mask: 0x{:016x}", cpu_cfg.m_affinity_mask);
-			m_logger->warn(m_log_leader + "Note: CPU affinity is planned for future implementation");
+		}
+		if (cpu_cfg.m_priority_level != 2) {
+			m_logger->info(m_log_leader + "Thread priority: {}", cpu_cfg.m_priority_level);
 		}
 	}
 }
@@ -48,6 +49,12 @@ Worker_hash::~Worker_hash()
 	m_stop = true;  
 	if (m_run_thread.joinable())
 		m_run_thread.join(); 
+	
+	// Join all worker threads
+	for (auto& thread : m_worker_threads) {
+		if (thread.joinable())
+			thread.join();
+	}
 }
 
 void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result)
@@ -117,12 +124,145 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 
 void Worker_hash::run()
 {
-	m_logger->info(m_log_leader + "Hashing thread started");
+	// Get CPU configuration
+	if (!std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
+		m_logger->error(m_log_leader + "Invalid worker mode for CPU worker");
+		return;
+	}
+	
+	auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
+	uint32_t num_threads = (cpu_cfg.m_threads > 0) ? cpu_cfg.m_threads : 1;
+	
+	m_logger->info(m_log_leader + "Starting {} mining thread(s)", num_threads);
+	
+	// Clear any existing worker threads
+	m_worker_threads.clear();
+	
+	// Apply hyperthreading and efficiency cores filtering
+	uint64_t effective_affinity = cpu_cfg.m_affinity_mask;
+	
+	if (effective_affinity == 0) {
+		// No specific affinity set, potentially filter based on HT/E-core settings
+		if (!cpu_cfg.m_enable_hyperthreading || !cpu_cfg.m_enable_efficiency_cores) {
+			// Get total logical processors
+			uint32_t total_cores = std::thread::hardware_concurrency();
+			uint32_t physical_cores = cpu::get_physical_core_count();
+			bool smt_enabled = cpu::is_smt_enabled();
+			
+			m_logger->info(m_log_leader + "Core detection: {} logical cores, {} physical cores, SMT {}",
+			              total_cores, physical_cores, smt_enabled ? "enabled" : "disabled");
+			
+			// Build affinity mask based on settings
+			if (!cpu_cfg.m_enable_hyperthreading && smt_enabled) {
+				// Use only physical cores (first half typically)
+				for (uint32_t i = 0; i < physical_cores; i++) {
+					effective_affinity |= (1ULL << i);
+				}
+				m_logger->info(m_log_leader + "Hyperthreading disabled, using physical cores only: 0x{:016x}", 
+				              effective_affinity);
+			}
+			
+			if (!cpu_cfg.m_enable_efficiency_cores) {
+				// Try to get P-cores only
+				auto p_cores = cpu::get_performance_cores();
+				if (!p_cores.empty()) {
+					effective_affinity = 0;
+					for (auto core : p_cores) {
+						effective_affinity |= (1ULL << core);
+					}
+					m_logger->info(m_log_leader + "E-cores disabled, using P-cores only: 0x{:016x}", 
+					              effective_affinity);
+				} else {
+					m_logger->warn(m_log_leader + "Could not detect P-cores, using all cores");
+				}
+			}
+		}
+	}
+	
+	// Spawn mining threads
+	if (num_threads > 1) {
+		m_logger->info(m_log_leader + "Multi-threading enabled with {} threads", num_threads);
+		m_logger->info(m_log_leader + "Nonce space will be partitioned across threads");
+		
+		for (uint32_t i = 0; i < num_threads; i++) {
+			m_worker_threads.emplace_back([this, i, num_threads, &cpu_cfg, effective_affinity]() {
+				// Set thread-specific affinity if needed
+				uint64_t thread_affinity = 0;
+				
+				if (effective_affinity != 0) {
+					// Distribute threads across available cores
+					std::vector<uint32_t> available_cores;
+					for (uint32_t c = 0; c < 64; c++) {
+						if (effective_affinity & (1ULL << c)) {
+							available_cores.push_back(c);
+						}
+					}
+					
+					if (!available_cores.empty()) {
+						// Assign core to this thread (round-robin)
+						uint32_t core_idx = i % available_cores.size();
+						thread_affinity = 1ULL << available_cores[core_idx];
+						
+						if (cpu::set_thread_affinity(thread_affinity)) {
+							m_logger->info(m_log_leader + "Thread {} pinned to core {}", 
+							              i, available_cores[core_idx]);
+						}
+					}
+				}
+				
+				// Set thread priority
+				if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
+					m_logger->debug(m_log_leader + "Thread {} priority set to level {}", 
+					               i, cpu_cfg.m_priority_level);
+				} else {
+					m_logger->warn(m_log_leader + "Thread {} failed to set priority", i);
+				}
+				
+				// Run mining loop for this thread
+				mine_loop(i, num_threads);
+			});
+		}
+		
+		// Wait for all threads to complete
+		for (auto& thread : m_worker_threads) {
+			if (thread.joinable()) {
+				thread.join();
+			}
+		}
+		
+	} else {
+		// Single thread mode
+		// Apply thread settings
+		if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
+			m_logger->info(m_log_leader + "Thread priority set to level {}", cpu_cfg.m_priority_level);
+		} else {
+			m_logger->warn(m_log_leader + "Failed to set thread priority to level {}", cpu_cfg.m_priority_level);
+		}
+		
+		if (effective_affinity != 0) {
+			if (cpu::set_thread_affinity(effective_affinity)) {
+				m_logger->info(m_log_leader + "Thread affinity set to 0x{:016x}", effective_affinity);
+			} else {
+				m_logger->warn(m_log_leader + "Failed to set thread affinity to 0x{:016x}", effective_affinity);
+			}
+		}
+		
+		// Run single-threaded mining loop
+		mine_loop(0, 1);
+	}
+	
+	m_logger->info(m_log_leader + "All mining threads stopped");
+}
+
+void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
+{
+	m_logger->info(m_log_leader + "Mining thread {} of {} started", thread_id, total_threads);
 	uint64_t last_log_hash_count = 0;
 	constexpr uint64_t log_interval = 1000000;  // Log every 1M hashes
 	constexpr int max_retries = 3;
 	uint64_t payload_validation_failures = 0;
 	uint64_t hash_mismatches = 0;
+	uint64_t thread_hash_count = 0;
 	
 	while (!m_stop)
 	{
@@ -137,6 +277,13 @@ void Worker_hash::run()
 			{
 				std::scoped_lock<std::mutex> lck(m_mtx);
 				
+				// For multi-threading: partition nonce space
+				// Each thread increments by total_threads to avoid overlap
+				// Thread 0: 0, 4, 8, 12, ...
+				// Thread 1: 1, 5, 9, 13, ...
+				// Thread 2: 2, 6, 10, 14, ...
+				// etc.
+				
 				// Calculate the remainder of the skein hash starting from the midstate
 				m_skein.calculateHash();
 				
@@ -145,12 +292,13 @@ void Worker_hash::run()
 				if (!validate_skein_output(skeinHash))
 				{
 					++payload_validation_failures;
-					m_logger->warn(m_log_leader + "Skein payload validation failed for nonce 0x{:016x}", m_skein.getNonce());
+					m_logger->warn(m_log_leader + "Thread {} Skein payload validation failed for nonce 0x{:016x}", 
+					              thread_id, m_skein.getNonce());
 					throw std::runtime_error("Invalid Skein output payload");
 				}
 				
 				// Log Skein output for debugging (periodically)
-				if (m_hash_count % (log_interval * 10) == 0)
+				if (thread_hash_count % (log_interval * 10) == 0)
 				{
 					log_skein_state(skeinHash, m_skein.getNonce());
 				}
@@ -164,18 +312,20 @@ void Worker_hash::run()
 				if (!validate_keccak_output(keccakHash))
 				{
 					++payload_validation_failures;
-					m_logger->warn(m_log_leader + "Keccak payload validation failed for nonce 0x{:016x}", m_skein.getNonce());
+					m_logger->warn(m_log_leader + "Thread {} Keccak payload validation failed for nonce 0x{:016x}", 
+					              thread_id, m_skein.getNonce());
 					throw std::runtime_error("Invalid Keccak output payload");
 				}
 				
 				// Cross-validate periodically (every 100000 hashes) to minimize performance impact
 				// Also validate when we find a candidate nonce
-				bool should_cross_validate = (m_hash_count % 100000 == 0) || ((keccakHash & leading_zero_mask()) == 0);
+				bool should_cross_validate = (thread_hash_count % 100000 == 0) || ((keccakHash & leading_zero_mask()) == 0);
 				
 				if (should_cross_validate && !cross_validate_hashes(skeinHash, keccakHash))
 				{
 					++hash_mismatches;
-					m_logger->error(m_log_leader + "Hash cross-validation failed for nonce 0x{:016x} - skipping nonce", m_skein.getNonce());
+					m_logger->error(m_log_leader + "Thread {} Hash cross-validation failed for nonce 0x{:016x} - skipping nonce", 
+					               thread_id, m_skein.getNonce());
 					// Log detailed mismatch info for debugging
 					log_hash_mismatch(skeinHash, keccakHash, m_skein.getNonce());
 					
@@ -188,7 +338,7 @@ void Worker_hash::run()
 				// Check the result for leading zeros
 				if ((keccakHash & leading_zero_mask()) == 0)
 				{
-					m_logger->info(m_log_leader + "Found a nonce candidate {}", nonce);
+					m_logger->info(m_log_leader + "Thread {} found a nonce candidate {}", thread_id, nonce);
 					m_skein.setNonce(nonce);
 					// Verify the difficulty
 					if (difficulty_check())
@@ -211,21 +361,25 @@ void Worker_hash::run()
 						}
 					}
 				}
-				m_skein.setNonce(++nonce);	
+				
+				// Increment nonce by total_threads for nonce partitioning
+				nonce += total_threads;
+				m_skein.setNonce(nonce);	
+				++thread_hash_count;
 				++m_hash_count;
 				hash_calculated = true;
 				
 				// Log progress periodically with enhanced diagnostics
-				if (m_hash_count - last_log_hash_count >= log_interval)
+				if (thread_hash_count - last_log_hash_count >= log_interval)
 				{
-					m_logger->debug(m_log_leader + "Hashing progress: {} hashes computed, current nonce: 0x{:016x}", 
-						m_hash_count, nonce);
+					m_logger->debug(m_log_leader + "Thread {} hashing progress: {} hashes computed, current nonce: 0x{:016x}", 
+					               thread_id, thread_hash_count, nonce);
 					if (payload_validation_failures > 0 || hash_mismatches > 0)
 					{
-						m_logger->info(m_log_leader + "Diagnostics: {} payload validation failures, {} hash mismatches", 
-							payload_validation_failures, hash_mismatches);
+						m_logger->info(m_log_leader + "Thread {} diagnostics: {} payload validation failures, {} hash mismatches", 
+						              thread_id, payload_validation_failures, hash_mismatches);
 					}
-					last_log_hash_count = m_hash_count;
+					last_log_hash_count = thread_hash_count;
 				}
 			}
 			catch (const std::exception& e)
@@ -233,24 +387,25 @@ void Worker_hash::run()
 				++retry_count;
 				if (retry_count < max_retries)
 				{
-					m_logger->warn(m_log_leader + "Hash calculation failed (attempt {}/{}): {}. Retrying...", 
-						retry_count, max_retries, e.what());
+					m_logger->warn(m_log_leader + "Thread {} hash calculation failed (attempt {}/{}): {}. Retrying...", 
+					              thread_id, retry_count, max_retries, e.what());
 					std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				}
 				else
 				{
-					m_logger->error(m_log_leader + "Hash calculation failed after {} retries: {}. Skipping nonce.", 
-						max_retries, e.what());
+					m_logger->error(m_log_leader + "Thread {} hash calculation failed after {} retries: {}. Skipping nonce.", 
+					               thread_id, max_retries, e.what());
 					// Skip this nonce and continue
 					std::scoped_lock<std::mutex> lck(m_mtx);
 					nonce = m_skein.getNonce();
-					m_skein.setNonce(++nonce);
+					nonce += total_threads;
+					m_skein.setNonce(nonce);
 				}
 			}
 		}
 	}
-	m_logger->info(m_log_leader + "Hashing thread stopped. Total hashes: {}, Payload failures: {}, Hash mismatches: {}", 
-		m_hash_count, payload_validation_failures, hash_mismatches);
+	m_logger->info(m_log_leader + "Thread {} stopped. Hashes: {}, Payload failures: {}, Hash mismatches: {}", 
+	              thread_id, thread_hash_count, payload_validation_failures, hash_mismatches);
 }
 
 void Worker_hash::update_statistics(stats::Collector& stats_collector)

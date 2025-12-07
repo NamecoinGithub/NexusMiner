@@ -1,4 +1,5 @@
 #include "cpu/worker_prime.hpp"
+#include "cpu/thread_utils.hpp"
 #include "config/config.hpp"
 #include "stats/stats_collector.hpp"
 #include "prime/prime.hpp"
@@ -35,13 +36,13 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 			auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
 			if (cpu_cfg.m_threads > 1) {
 				m_logger->info(m_log_leader + "Multi-core configuration: {} thread(s)", cpu_cfg.m_threads);
-				m_logger->warn(m_log_leader + "Note: Multi-threading within a worker is planned for future implementation");
-				m_logger->info(m_log_leader + "Current implementation: Single thread per worker instance");
-				m_logger->info(m_log_leader + "For multi-core mining: Configure multiple CPU workers in miner.conf");
+				m_logger->info(m_log_leader + "Note: Multi-threading support is available");
 			}
 			if (cpu_cfg.m_affinity_mask > 0) {
 				m_logger->info(m_log_leader + "CPU affinity mask: 0x{:016x}", cpu_cfg.m_affinity_mask);
-				m_logger->warn(m_log_leader + "Note: CPU affinity is planned for future implementation");
+			}
+			if (cpu_cfg.m_priority_level != 2) {
+				m_logger->info(m_log_leader + "Thread priority: {}", cpu_cfg.m_priority_level);
 			}
 		}
 		
@@ -85,6 +86,12 @@ Worker_prime::~Worker_prime() noexcept
 		{
 			m_logger->debug("Worker_prime destructor: Waiting for worker {} thread to finish", m_config.m_id);
 			m_run_thread.join();
+		}
+		
+		// Join all worker threads
+		for (auto& thread : m_worker_threads) {
+			if (thread.joinable())
+				thread.join();
 		}
 		
 		m_logger->debug("Worker_prime destructor: Worker {} cleanup complete", m_config.m_id);
@@ -180,6 +187,79 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 
 void Worker_prime::run()
 {
+	// Get CPU configuration
+	if (!std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
+		m_logger->error(m_log_leader + "Invalid worker mode for CPU worker");
+		return;
+	}
+	
+	auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
+	uint32_t num_threads = (cpu_cfg.m_threads > 0) ? cpu_cfg.m_threads : 1;
+	
+	// Prime mining currently supports single-threaded mode only
+	// Multi-threading requires sieve partitioning which is more complex
+	if (num_threads > 1) {
+		m_logger->warn(m_log_leader + "Multi-threading requested ({} threads) but prime mining currently supports only single thread", num_threads);
+		m_logger->warn(m_log_leader + "Falling back to single-threaded mode");
+		num_threads = 1;
+	}
+	
+	// Apply thread settings
+	if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
+		m_logger->info(m_log_leader + "Thread priority set to level {}", cpu_cfg.m_priority_level);
+	} else {
+		m_logger->warn(m_log_leader + "Failed to set thread priority to level {}", cpu_cfg.m_priority_level);
+	}
+	
+	// Apply hyperthreading and efficiency cores filtering
+	uint64_t effective_affinity = cpu_cfg.m_affinity_mask;
+	
+	if (effective_affinity == 0) {
+		// No specific affinity set, potentially filter based on HT/E-core settings
+		if (!cpu_cfg.m_enable_hyperthreading || !cpu_cfg.m_enable_efficiency_cores) {
+			// Get total logical processors
+			uint32_t total_cores = std::thread::hardware_concurrency();
+			uint32_t physical_cores = cpu::get_physical_core_count();
+			bool smt_enabled = cpu::is_smt_enabled();
+			
+			m_logger->info(m_log_leader + "Core detection: {} logical cores, {} physical cores, SMT {}",
+			              total_cores, physical_cores, smt_enabled ? "enabled" : "disabled");
+			
+			// Build affinity mask based on settings
+			if (!cpu_cfg.m_enable_hyperthreading && smt_enabled) {
+				// Use only physical cores (first half typically)
+				for (uint32_t i = 0; i < physical_cores; i++) {
+					effective_affinity |= (1ULL << i);
+				}
+				m_logger->info(m_log_leader + "Hyperthreading disabled, using physical cores only: 0x{:016x}", 
+				              effective_affinity);
+			}
+			
+			if (!cpu_cfg.m_enable_efficiency_cores) {
+				// Try to get P-cores only
+				auto p_cores = cpu::get_performance_cores();
+				if (!p_cores.empty()) {
+					effective_affinity = 0;
+					for (auto core : p_cores) {
+						effective_affinity |= (1ULL << core);
+					}
+					m_logger->info(m_log_leader + "E-cores disabled, using P-cores only: 0x{:016x}", 
+					              effective_affinity);
+				} else {
+					m_logger->warn(m_log_leader + "Could not detect P-cores, using all cores");
+				}
+			}
+		}
+	}
+	
+	if (effective_affinity != 0) {
+		if (cpu::set_thread_affinity(effective_affinity)) {
+			m_logger->info(m_log_leader + "Thread affinity set to 0x{:016x}", effective_affinity);
+		} else {
+			m_logger->warn(m_log_leader + "Failed to set thread affinity to 0x{:016x}", effective_affinity);
+		}
+	}
+	
 	m_segmented_sieve->calculate_starting_multiples();
 	uint32_t segment_size = m_segmented_sieve->get_segment_size();
 	uint64_t find_chains_ms = 0;
