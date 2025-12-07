@@ -1,2 +1,0 @@
-/usr/bin/ar qc libTAO.a CMakeFiles/TAO.dir/src/TAO/Ledger/difficulty.cpp.o
-/usr/bin/ranlib libTAO.a

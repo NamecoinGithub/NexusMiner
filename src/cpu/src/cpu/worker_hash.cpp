@@ -1,4 +1,5 @@
 #include "cpu/worker_hash.hpp"
+#include "cpu/thread_utils.hpp"
 #include "config/config.hpp"
 #include "stats/stats_collector.hpp"
 #include "block.hpp"
@@ -31,13 +32,13 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
 		auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
 		if (cpu_cfg.m_threads > 1) {
 			m_logger->info(m_log_leader + "Multi-core configuration: {} thread(s)", cpu_cfg.m_threads);
-			m_logger->warn(m_log_leader + "Note: Multi-threading within a worker is planned for future implementation");
-			m_logger->info(m_log_leader + "Current implementation: Single thread per worker instance");
-			m_logger->info(m_log_leader + "For multi-core mining: Configure multiple CPU workers in miner.conf");
+			m_logger->info(m_log_leader + "Note: Multi-threading support is available");
 		}
 		if (cpu_cfg.m_affinity_mask > 0) {
 			m_logger->info(m_log_leader + "CPU affinity mask: 0x{:016x}", cpu_cfg.m_affinity_mask);
-			m_logger->warn(m_log_leader + "Note: CPU affinity is planned for future implementation");
+		}
+		if (cpu_cfg.m_priority_level != 2) {
+			m_logger->info(m_log_leader + "Thread priority: {}", cpu_cfg.m_priority_level);
 		}
 	}
 }
@@ -117,6 +118,23 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 
 void Worker_hash::run()
 {
+	// Apply thread settings if CPU worker
+	if (std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
+		auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
+		
+		// Apply thread priority
+		if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
+			m_logger->info(m_log_leader + "Thread priority set to level {}", cpu_cfg.m_priority_level);
+		}
+		
+		// Apply CPU affinity
+		if (cpu_cfg.m_affinity_mask != 0) {
+			if (cpu::set_thread_affinity(cpu_cfg.m_affinity_mask)) {
+				m_logger->info(m_log_leader + "Thread affinity set to 0x{:016x}", cpu_cfg.m_affinity_mask);
+			}
+		}
+	}
+	
 	m_logger->info(m_log_leader + "Hashing thread started");
 	uint64_t last_log_hash_count = 0;
 	constexpr uint64_t log_interval = 1000000;  // Log every 1M hashes
