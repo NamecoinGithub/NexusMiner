@@ -94,7 +94,7 @@ Advanced CPU mining options for optimization and power management:
                 "priority": 3,                   // Thread priority 0-4 (default: 2)
                 "power_limit_percent": 90,       // Power limit: 50-100% (default: 100)
                 "hyperthreading": true,          // Use SMT/HT cores (default: true)
-                "efficiency_cores": false,       // Use E-cores on hybrid CPUs (default: false)
+                "efficiency_cores": true,        // Use E-cores on hybrid CPUs (default: true)
                 "target_hashrate": 0             // Target hashrate limit, 0=max (default: 0)
             }
         }
@@ -111,7 +111,7 @@ Advanced CPU mining options for optimization and power management:
   - 4 = High
 - `power_limit_percent`: CPU power limit (50-100%, default: 100)
 - `hyperthreading`: Enable hyperthreading/SMT cores (default: true)
-- `efficiency_cores`: Use efficiency cores on hybrid CPUs like Intel 12th+ gen (default: false)
+- `efficiency_cores`: Use efficiency cores on hybrid CPUs like Intel 12th+ gen (default: true)
 - `target_hashrate`: Limit hashrate (0=maximum, default: 0)
 
 **High-Core-Count Systems:**
@@ -256,7 +256,7 @@ Each worker runs independently on a separate thread and processes different nonc
 - `priority`: Thread priority 0-4 (0=low, 2=normal, 4=high, default: 2)
 - `power_limit_percent`: CPU power limit 50-100% (default: 100)
 - `hyperthreading`: Enable SMT/hyperthreading (default: true)
-- `efficiency_cores`: Use E-cores on hybrid CPUs (default: false)
+- `efficiency_cores`: Use E-cores on hybrid CPUs (default: true)
 - `target_hashrate`: Limit hashrate, 0=max (default: 0)
   
 ## Solo Mining Wallet Setup

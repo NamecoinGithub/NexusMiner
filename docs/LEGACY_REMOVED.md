@@ -115,7 +115,7 @@ The simplified `.config` format (version 2.0) was a separate system that caused 
                     "priority": 3,                    // NEW!
                     "power_limit_percent": 90,        // NEW!
                     "hyperthreading": true,           // NEW!
-                    "efficiency_cores": false,        // NEW!
+                    "efficiency_cores": true,         // NEW!
                     "target_hashrate": 0              // NEW!
                 }
             }
