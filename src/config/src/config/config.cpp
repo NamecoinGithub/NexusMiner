@@ -16,7 +16,7 @@ namespace config
 		, m_version{1}
 		, m_wallet_ip{ "127.0.0.1" }
 		, m_port{ 8323 }  // Phase 2: Default to miningport (stateless miner LLP port)
-		, m_local_ip{"127.0.0.1"}
+		, m_local_ip{"0.0.0.0"}  // Changed: Works for all scenarios (localhost, VPN, remote)
 		, m_mining_mode{ Mining_mode::HASH}
 		, m_pool_config{}
 		, m_log_level{2}	// info level
@@ -294,12 +294,39 @@ namespace config
 						cpu_config.m_affinity_mask = worker_mode_json["affinity_mask"];
 					}
 					
+					// NEW: Parse power controls
+					if (worker_mode_json.count("priority") != 0)
+						cpu_config.m_priority_level = worker_mode_json["priority"];
+					if (worker_mode_json.count("power_limit_percent") != 0)
+						cpu_config.m_power_limit_percent = worker_mode_json["power_limit_percent"];
+					if (worker_mode_json.count("hyperthreading") != 0)
+						cpu_config.m_enable_hyperthreading = worker_mode_json["hyperthreading"];
+					if (worker_mode_json.count("efficiency_cores") != 0)
+						cpu_config.m_enable_efficiency_cores = worker_mode_json["efficiency_cores"];
+					if (worker_mode_json.count("target_hashrate") != 0)
+						cpu_config.m_target_hashrate = worker_mode_json["target_hashrate"];
+					
 					worker_config.m_worker_mode = cpu_config;
 				}
 				else if(worker_mode_json["hardware"] == "gpu")
 				{
 					worker_config.m_mode = Worker_mode::GPU;
-					worker_config.m_worker_mode = Worker_config_gpu{ worker_mode_json["device"] };
+					Worker_config_gpu gpu_config;
+					gpu_config.m_device = worker_mode_json["device"];
+					
+					// NEW: Parse power controls
+					if (worker_mode_json.count("power_limit_percent") != 0)
+						gpu_config.m_power_limit_percent = worker_mode_json["power_limit_percent"];
+					if (worker_mode_json.count("core_clock_offset") != 0)
+						gpu_config.m_core_clock_offset = worker_mode_json["core_clock_offset"];
+					if (worker_mode_json.count("memory_clock_offset") != 0)
+						gpu_config.m_memory_clock_offset = worker_mode_json["memory_clock_offset"];
+					if (worker_mode_json.count("fan_speed") != 0)
+						gpu_config.m_fan_speed_percent = worker_mode_json["fan_speed"];
+					if (worker_mode_json.count("target_hashrate") != 0)
+						gpu_config.m_target_hashrate = worker_mode_json["target_hashrate"];
+					
+					worker_config.m_worker_mode = gpu_config;
 				}
 				else if(worker_mode_json["hardware"] == "fpga")
 				{
