@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.19)
 
 add_library(protocol STATIC src/protocol/solo.cpp
                             src/protocol/pool_base.cpp
-                            src/protocol/pool.cpp
                             src/protocol/falcon_wrapper.cpp
                             src/protocol/chacha20_wrapper.cpp
                             src/protocol/session_manager.cpp

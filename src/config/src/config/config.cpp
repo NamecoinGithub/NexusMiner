@@ -18,7 +18,6 @@ namespace config
 		, m_port{ 8323 }  // Phase 2: Default to miningport (stateless miner LLP port)
 		, m_local_ip{"0.0.0.0"}  // Changed: Works for all scenarios (localhost, VPN, remote)
 		, m_mining_mode{ Mining_mode::HASH}
-		, m_pool_config{}
 		, m_log_level{2}	// info level
 		, m_logfile{""}		// no logfile usage, default
 		, m_connection_retry_interval{5}
@@ -82,14 +81,6 @@ namespace config
 			else
 			{
 				m_mining_mode = Mining_mode::HASH;
-			}
-
-			if (j.count("pool") != 0)
-			{
-				m_pool_config.m_use_pool = true;
-				json pool_json = j.at("pool");
-				m_pool_config.m_username = pool_json["username"];
-				m_pool_config.m_display_name = pool_json["display_name"];
 			}
 
 			// read stats printer config
@@ -383,8 +374,7 @@ namespace config
 	void Config::print_global_config() const
 	{
 		std::stringstream ss;
-		ss << "Mining " << (m_mining_mode == config::Mining_mode::HASH ? "HASH" : "PRIME") << " Channel in "
-			<< (m_pool_config.m_use_pool ? "POOL" : "SOLO") << " mode";
+		ss << "Mining " << (m_mining_mode == config::Mining_mode::HASH ? "HASH" : "PRIME") << " Channel in SOLO mode";
 
 		m_logger->info(ss.str());
 	}

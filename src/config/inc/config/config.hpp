@@ -6,7 +6,6 @@
 #include <nlohmann/json.hpp>
 #include "config/worker_config.hpp"
 #include "config/stats_printer_config.hpp"
-#include "config/pool.hpp"
 #include "config/types.hpp"
 
 namespace spdlog { class logger; }
@@ -42,7 +41,6 @@ public:
 	std::uint16_t get_ping_interval() const { return m_ping_interval; }
 	std::vector<Worker_config>& get_worker_config() { return m_worker_config; }
 	std::vector<Stats_printer_config>& get_stats_printer_config() { return m_stats_printer_config; }
-	Pool const& get_pool_config() const { return m_pool_config; }
 	std::string const& get_miner_falcon_pubkey() const { return m_miner_falcon_pubkey; }
 	std::string const& get_miner_falcon_privkey() const { return m_miner_falcon_privkey; }
 	bool has_miner_falcon_keys() const { return !m_miner_falcon_pubkey.empty() && !m_miner_falcon_privkey.empty(); }
@@ -80,7 +78,6 @@ private:
 	std::uint16_t m_port;
 	std::string m_local_ip;
 	Mining_mode	 m_mining_mode;
-	Pool 		 m_pool_config; 
 	std::uint8_t m_log_level;
 	std::string  m_logfile;
 

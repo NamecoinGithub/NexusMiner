@@ -66,18 +66,6 @@ bool Validator::check(std::string const& config_file)
             }
         }
 
-        if(j.count("pool") != 0)
-        {
-            if(j.count("pool")["username"] == 0)
-            {
-                m_mandatory_fields.push_back(Validator_error{"pool/username", ""});
-            }
-            if (j.count("pool")["display_name"] == 0)
-            {
-                m_mandatory_fields.push_back(Validator_error{ "pool/display_name", "" });
-            }
-        }
-
         if (j.count("log_level") != 0)
         {
             if (!j.at("log_level").is_number())
