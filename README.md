@@ -1,11 +1,11 @@
 # NexusMiner
 
-Mining software for Nexus supporting GPU, FPGA, prime, hash, pool and solo mining. 
+Mining software for Nexus supporting GPU, FPGA, prime, hash, and solo mining with advanced power controls.
 
 ## Windows Quickstart
 Have an Nvidia GPU and a windows machine?  Start mining in 3 steps. 
 1. Download NexusMiner.exe and miner.conf from the [latest release](https://github.com/Nexusoft/NexusMiner/releases). 
-2. Edit miner.conf and add your Nexus wallet address
+2. Edit miner.conf and add your Falcon authentication keys
 3. Run NexusMiner.exe
 
 ## FPGA Mining
@@ -14,67 +14,119 @@ FPGAs are the most efficient hardware for mining the Nexus Hash channel.  Blackm
 ## GPU Mining
 GPUs are the most efficient hardware for mining the Nexus Prime channel.  Supported GPUs are Nvidia GTX/RTX 10x0, 20x0, and 30x0 series, and Radeon RX6000 series.  Nvidia RTX 20x0 and 30x0 GPUs have the best performance.  Hash channel mining with Nvidia GPUs is also supported. 
 
-## Pools
-* [primepool.nexus.io](https://primepool.nexus.io)
-* [hashpool.nexus.io](http://hashpool.nexus.io)  
-Connect to either pool on port 50000
-
-## Prime Pool
-To use the prime pool, set the following address and port in miner.conf:
-```
-    "wallet_ip" : "primepool.nexus.io",
-    "port" : 50000,
-```
 
  ## miner.conf Configuration File
 
-  Some important config options in miner.conf
+  NexusMiner uses a unified `.conf` configuration format with ALL features including power controls.
 
-  ```
-    "wallet_ip"             // the ip the NXS wallet (solo mining) or ip address/dns name of Pool  
-    "port"                  // port of the NXS wallet/node (default 8323 for solo Phase 2, 50000 for pools)
-    "mining_mode"           // mine the HASH or PRIME channel  
-    "pool"                  // Pool option group, if present then pool mining is active  
-        "username"          // NXS address  
-        "display_name"      // display_name for the pool website  
+  **Essential Configuration Options:**
+  ```json
+    "version": 1,                           // Config version (required)
+    "wallet_ip": "127.0.0.1",              // Nexus node IP address
+    "port": 8323,                          // Node miningport (default: 8323)
+    "local_ip": "0.0.0.0",                 // Local bind IP (0.0.0.0 = all interfaces)
+    "mining_mode": "PRIME",                // PRIME or HASH channel
+    
+    "miner_falcon_pubkey": "<YOUR_KEY>",   // Falcon public key (required)
+    "miner_falcon_privkey": "<YOUR_KEY>",  // Falcon private key (required)
+    "tritium_genesis": "<YOUR_GENESIS>",   // Tritium account genesis (optional)
 ```
 
-**Port Configuration:**
-- **Solo Mining**: Default port is `8323` (connects to LLL-TAO's `miningport`)
-- **Pool Mining**: Use pool's port (typically `50000`)
+**See Example Configs:**
+- `example_configs/MASTER_simple.conf` - Quick start template
+- `example_configs/MASTER_reference.conf` - Complete documentation of ALL options
+- `example_configs/multi_gpu_hash.conf` - Multi-GPU with power controls
+- `example_configs/threadripper_128core_prime.conf` - High-core-count CPU mining
+- `example_configs/hybrid_cpu_gpu.conf` - Combined CPU+GPU mining
+- `example_configs/remote_tls_mining.conf` - Secure remote mining
 
-## Simplified .config Files (NEW)
+## GPU Power Controls
 
-NexusMiner now supports a streamlined `.config` file format with preset templates for different user skill levels. See [docs/simplified_config_files.md](docs/simplified_config_files.md) for full documentation.
+NexusMiner now supports comprehensive GPU power management in the unified config format:
 
-**Quick Start with Presets:**
-```bash
-# Create a beginner-friendly GPU config for HASH mining
-./NexusMiner --create-config beginner hash gpu
-
-# Create an advanced CPU config for PRIME mining  
-./NexusMiner --create-config advanced prime cpu
-```
-
-**Key Features:**
-- **Preset Templates**: beginner, intermediate, advanced configurations
-- **GPU Power Controls**: Power limits, clock offsets, fan speeds
-- **CPU Thread Management**: Thread count, priority, core affinity
-- **Golden Ratio Optimization**: Automatic efficiency calculations
-- **Import/Export**: Convert between `.config` and legacy `.conf` formats
-
-**Example simplified config:**
 ```json
 {
-    "config_version": "2.0",
-    "preset": "beginner",
-    "wallet_ip": "127.0.0.1",
-    "port": 8323,
-    "mining_mode": "HASH",
-    "power_profile": "efficiency",
-    "workers": [{"id": "gpu0", "hardware": "gpu", "gpu": {"device": 0}}]
+    "workers": [{
+        "worker": {
+            "id": "gpu0",
+            "mode": {
+                "hardware": "gpu",
+                "device": 0,
+                "power_limit_percent": 85,      // Power limit: 50-100% (default: 100)
+                "core_clock_offset": 100,        // Core clock offset in MHz (default: 0)
+                "memory_clock_offset": 200,      // Memory clock offset in MHz (default: 0)
+                "fan_speed": 70,                 // Fan speed: 0=auto, 1-100 (default: 0)
+                "target_hashrate": 0             // Target hashrate limit, 0=max (default: 0)
+            }
+        }
+    }]
 }
 ```
+
+**GPU Power Control Options:**
+- `power_limit_percent`: Reduce GPU power consumption (50-100%, default: 100)
+- `core_clock_offset`: Adjust core clock in MHz (-500 to +500, default: 0)
+- `memory_clock_offset`: Adjust memory clock in MHz (-1000 to +1000, default: 0)
+- `fan_speed`: Set fan speed (0=auto, 1-100=%, default: 0 for auto)
+- `target_hashrate`: Limit hashrate (0=maximum, default: 0)
+
+**Example - Efficiency Mode (80% power, balanced clocks):**
+```json
+"power_limit_percent": 80,
+"core_clock_offset": 0,
+"memory_clock_offset": 0,
+"fan_speed": 0
+```
+
+## CPU Power Controls
+
+Advanced CPU mining options for optimization and power management:
+
+```json
+{
+    "workers": [{
+        "worker": {
+            "id": "cpu0",
+            "mode": {
+                "hardware": "cpu",
+                "threads": 1,                    // Threads per worker (default: 1)
+                "affinity_mask": 0,              // CPU core affinity (default: 0)
+                "priority": 3,                   // Thread priority 0-4 (default: 2)
+                "power_limit_percent": 90,       // Power limit: 50-100% (default: 100)
+                "hyperthreading": true,          // Use SMT/HT cores (default: true)
+                "efficiency_cores": false,       // Use E-cores on hybrid CPUs (default: false)
+                "target_hashrate": 0             // Target hashrate limit, 0=max (default: 0)
+            }
+        }
+    }]
+}
+```
+
+**CPU Power Control Options:**
+- `priority`: Thread priority level
+  - 0 = Low
+  - 1 = Below normal
+  - 2 = Normal (default)
+  - 3 = Above normal
+  - 4 = High
+- `power_limit_percent`: CPU power limit (50-100%, default: 100)
+- `hyperthreading`: Enable hyperthreading/SMT cores (default: true)
+- `efficiency_cores`: Use efficiency cores on hybrid CPUs like Intel 12th+ gen (default: false)
+- `target_hashrate`: Limit hashrate (0=maximum, default: 0)
+
+**High-Core-Count Systems:**
+
+For CPUs with many cores (Threadripper, EPYC), create multiple workers:
+```json
+"workers": [
+    {"worker": {"id": "cpu0", "mode": {"hardware": "cpu", "priority": 3, "power_limit_percent": 90}}},
+    {"worker": {"id": "cpu1", "mode": {"hardware": "cpu", "priority": 3, "power_limit_percent": 90}}},
+    {"worker": {"id": "cpu2", "mode": {"hardware": "cpu", "priority": 3, "power_limit_percent": 90}}}
+    // ... up to 96+ workers
+]
+```
+
+See `example_configs/threadripper_128core_prime.conf` for a complete 96-worker configuration.
 
 ## Command line option arguments
 ```
@@ -84,14 +136,6 @@ NexusMiner now supports a streamlined `.config` file format with preset template
     --create-keys        Generate Falcon miner keypair for authentication
     --create-falcon-config                Generate complete Falcon SOLO config file
     --create-falcon-config-with-privkey   Generate Falcon config with private key embedded (less secure)
-    
-    Simplified Config Options:
-    --create-config <preset> <mode> <hw>  Create simplified .config file
-                                          <preset>: beginner, intermediate, advanced
-                                          <mode>: hash, prime
-                                          <hw>: cpu, gpu
-    --import-config <json_file>           Import legacy .conf to simplified .config
-    --export-config <config_file>         Export simplified .config to legacy .conf
 ```
 
   `./NexusMiner ../../myownminer.conf -c`
@@ -190,20 +234,30 @@ Add the generated keys to your `miner.conf`. See [docs/falcon_authentication.md]
 **Important:** Falcon authentication is **required** for solo mining. Legacy authentication has been removed for security reasons.
 
 ## Multi-Core CPU Mining
-For optimal multi-core mining performance, configure multiple CPU worker instances in `miner.conf`:
+
+For optimal multi-core mining performance, configure multiple CPU worker instances with power controls:
 
 ```json
 {
   "workers": [
-    {"worker": {"id": "cpu0", "mode": {"hardware": "cpu"}}},
-    {"worker": {"id": "cpu1", "mode": {"hardware": "cpu"}}},
-    {"worker": {"id": "cpu2", "mode": {"hardware": "cpu"}}},
-    {"worker": {"id": "cpu3", "mode": {"hardware": "cpu"}}}
+    {"worker": {"id": "cpu0", "mode": {"hardware": "cpu", "priority": 3, "power_limit_percent": 90}}},
+    {"worker": {"id": "cpu1", "mode": {"hardware": "cpu", "priority": 3, "power_limit_percent": 90}}},
+    {"worker": {"id": "cpu2", "mode": {"hardware": "cpu", "priority": 3, "power_limit_percent": 90}}},
+    {"worker": {"id": "cpu3", "mode": {"hardware": "cpu", "priority": 3, "power_limit_percent": 90}}}
   ]
 }
 ```
 
-Each worker runs independently on a separate thread and processes different nonce ranges. CPU thread control options (threads per worker, affinity masking) are available in the configuration but planned for future implementation.
+Each worker runs independently on a separate thread and processes different nonce ranges. See `example_configs/threadripper_128core_prime.conf` for high-core-count systems (96+ workers).
+
+**Available CPU options:**
+- `threads`: Threads per worker (default: 1, multi-threading planned for future)
+- `affinity_mask`: CPU core affinity bitmask (default: 0, planned for future)
+- `priority`: Thread priority 0-4 (0=low, 2=normal, 4=high, default: 2)
+- `power_limit_percent`: CPU power limit 50-100% (default: 100)
+- `hyperthreading`: Enable SMT/hyperthreading (default: true)
+- `efficiency_cores`: Use E-cores on hybrid CPUs (default: false)
+- `target_hashrate`: Limit hashrate, 0=max (default: 0)
   
 ## Solo Mining Wallet Setup
 For solo mining use the latest wallet daemon release 5.0.5 or greater and ensure the wallet has been unlocked for mining.
@@ -259,6 +313,15 @@ cmake -DOPENSSL_ROOT_DIR=/usr \
     * `sudo apt-get install libgmp-dev`
 * boost (required for WITH_PRIME):
     * `sudo apt-get install libboost-all-dev`
+
+## Legacy Features Removed
+
+**Pool Mining Removed** - The Nexus Node IS the pool. Pool-specific code has been removed. Use solo mining mode to connect to nodes.
+
+**Simplified Config System Removed** - The dual config system (`.conf` vs `.config`) caused confusion. All power controls are now unified in the `.conf` format.
+
+See [docs/LEGACY_REMOVED.md](docs/LEGACY_REMOVED.md) for migration guide and details.
+
 ## Support
 * [Nexus Miners](https://t.me/NexusMiners) on telegram.
 
