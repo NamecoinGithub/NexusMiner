@@ -47,15 +47,19 @@ namespace FalconConstants {
     /** Minimum Falcon-512 signature size (typical lower bound) */
     constexpr size_t FALCON512_SIG_MIN = 600;
     
-    /** Typical maximum for authentication signatures (address + timestamp)
-     *  Most authentication signatures fall within 617-690 bytes.
-     *  This constant represents a conservative upper bound for auth use cases. */
-    constexpr size_t FALCON512_SIG_AUTH_MAX = 700;
+    /** Typical maximum for VARIABLE-TIME signatures (reference only)
+     *  Per Falcon spec: FALCON_SIG_VARTIME_MAXSIZE(logn=9) = 752 bytes
+     *  This is the maximum for variable-time signatures, but LLL-TAO uses constant-time mode. */
+    constexpr size_t FALCON512_SIG_VARTIME_MAX = 752;
+    
+    /** Constant-Time Falcon-512 signature size (exact)
+     *  Per Falcon spec: FALCON_SIG_CT_SIZE(logn=9) = 809 bytes
+     *  LLL-TAO's FLKey::Sign() uses ct=1, producing exactly 809 bytes */
+    constexpr size_t FALCON512_SIG_CT_SIZE = 809;
     
     /** Absolute maximum Falcon-512 signature size
-     *  Per Falcon spec: FALCON_SIG_VARTIME_MAXSIZE(logn=9) = 752 bytes
-     *  This covers ALL possible Falcon-512 signatures regardless of message */
-    constexpr size_t FALCON512_SIG_ABSOLUTE_MAX = 752;
+     *  This is the CT size since LLL-TAO uses constant-time signing */
+    constexpr size_t FALCON512_SIG_ABSOLUTE_MAX = 809;
     
     /** Legacy alias for backward compatibility */
     constexpr size_t FALCON512_SIG_MAX = FALCON512_SIG_ABSOLUTE_MAX;
@@ -107,41 +111,41 @@ namespace FalconConstants {
     //==========================================================================
     
     /** Submit Block wrapper - LOCALHOST (no encryption)
-     *  merkle(64) + nonce(8) + timestamp(8) + sig_len(2) + sig(752) = 834 bytes */
+     *  merkle(64) + nonce(8) + timestamp(8) + sig_len(2) + sig(809) = 891 bytes */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_MAX = 
         MERKLE_ROOT_SIZE + NONCE_SIZE + TIMESTAMP_SIZE + 
-        LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 834 bytes
-    static_assert(SUBMIT_BLOCK_WRAPPER_MAX == 834, "SUBMIT_BLOCK_WRAPPER_MAX size calculation mismatch");
+        LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 891 bytes
+    static_assert(SUBMIT_BLOCK_WRAPPER_MAX == 891, "SUBMIT_BLOCK_WRAPPER_MAX size calculation mismatch");
     
     /** Submit Block wrapper - PUBLIC MINER (with ChaCha20 encryption)
-     *  nonce(12) + encrypted_payload(834) + auth_tag(16) = 862 bytes */
+     *  nonce(12) + encrypted_payload(891) + auth_tag(16) = 919 bytes */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_ENCRYPTED_MAX = 
-        SUBMIT_BLOCK_WRAPPER_MAX + CHACHA20_OVERHEAD;  // 862 bytes
-    static_assert(SUBMIT_BLOCK_WRAPPER_ENCRYPTED_MAX == 862, "SUBMIT_BLOCK_WRAPPER_ENCRYPTED_MAX size calculation mismatch");
+        SUBMIT_BLOCK_WRAPPER_MAX + CHACHA20_OVERHEAD;  // 919 bytes
+    static_assert(SUBMIT_BLOCK_WRAPPER_ENCRYPTED_MAX == 919, "SUBMIT_BLOCK_WRAPPER_ENCRYPTED_MAX size calculation mismatch");
 
     //==========================================================================
     // Authentication Response Sizes
     //==========================================================================
     
     /** Auth response - LOCALHOST (no encryption on pubkey)
-     *  pubkey_len(2) + pubkey(897) + timestamp(8) + sig_len(2) + sig(752) = 1661 bytes */
+     *  pubkey_len(2) + pubkey(897) + timestamp(8) + sig_len(2) + sig(809) = 1718 bytes */
     constexpr size_t AUTH_RESPONSE_MAX = 
         LENGTH_FIELD_SIZE + FALCON512_PUBKEY_SIZE + TIMESTAMP_SIZE + 
-        LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 1661 bytes
-    static_assert(AUTH_RESPONSE_MAX == 1661, "AUTH_RESPONSE_MAX size calculation mismatch");
+        LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 1718 bytes
+    static_assert(AUTH_RESPONSE_MAX == 1718, "AUTH_RESPONSE_MAX size calculation mismatch");
     
     /** Auth response - PUBLIC MINER (ChaCha20 wrapped pubkey)
-     *  pubkey_len(2) + wrapped_pubkey(897+28) + timestamp(8) + sig_len(2) + sig(752) = 1689 bytes */
+     *  pubkey_len(2) + wrapped_pubkey(897+28) + timestamp(8) + sig_len(2) + sig(809) = 1746 bytes */
     constexpr size_t AUTH_RESPONSE_ENCRYPTED_MAX = 
         LENGTH_FIELD_SIZE + FALCON512_PUBKEY_SIZE + CHACHA20_OVERHEAD + 
-        TIMESTAMP_SIZE + LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 1689 bytes
-    static_assert(AUTH_RESPONSE_ENCRYPTED_MAX == 1689, "AUTH_RESPONSE_ENCRYPTED_MAX size calculation mismatch");
+        TIMESTAMP_SIZE + LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 1746 bytes
+    static_assert(AUTH_RESPONSE_ENCRYPTED_MAX == 1746, "AUTH_RESPONSE_ENCRYPTED_MAX size calculation mismatch");
     
     /** Auth response with optional GenesisHash binding
      *  Add 32 bytes for Tritium genesis hash */
     constexpr size_t AUTH_RESPONSE_WITH_GENESIS_MAX = 
-        AUTH_RESPONSE_ENCRYPTED_MAX + GENESIS_HASH_SIZE;  // 1721 bytes
-    static_assert(AUTH_RESPONSE_WITH_GENESIS_MAX == 1721, "AUTH_RESPONSE_WITH_GENESIS_MAX size calculation mismatch");
+        AUTH_RESPONSE_ENCRYPTED_MAX + GENESIS_HASH_SIZE;  // 1778 bytes
+    static_assert(AUTH_RESPONSE_WITH_GENESIS_MAX == 1778, "AUTH_RESPONSE_WITH_GENESIS_MAX size calculation mismatch");
 
     //==========================================================================
     // Block Size Limits (Mirrored from LLL-TAO TAO::Ledger::constants.h)
@@ -169,7 +173,7 @@ namespace FalconConstants {
      *  MAX_BLOCK_SIZE (2MB).
      *  
      *  Message format: [block_data (variable, up to MAX_BLOCK_SIZE)] + [nonce (8 bytes LE)]
-     *  Signature: Falcon-512 (~600-752 bytes)
+     *  Signature: Falcon-512 (~600-809 bytes)
      *  
      *  This is the emergency backup system for proving block authorship when
      *  the Disposable Falcon session authentication is insufficient.
@@ -179,19 +183,19 @@ namespace FalconConstants {
     constexpr size_t PHYSICAL_BLOCK_SIG_MIN = FALCON512_SIG_MIN;  // 600 bytes
     
     /** Maximum physical block signature size */
-    constexpr size_t PHYSICAL_BLOCK_SIG_MAX = FALCON512_SIG_ABSOLUTE_MAX;  // 752 bytes
+    constexpr size_t PHYSICAL_BLOCK_SIG_MAX = FALCON512_SIG_ABSOLUTE_MAX;  // 809 bytes
     
     /** Maximum message size for physical block signature
      *  block_data (up to 2,097,152 bytes) + nonce (8 bytes) = 2,097,160 bytes total */
     constexpr size_t PHYSICAL_BLOCK_SIG_MESSAGE_MAX = MAX_BLOCK_SIZE + NONCE_SIZE;
     
     /** Physical block signature overhead added to block transmission
-     *  sig_len(2) + signature(752) = 754 bytes max */
-    constexpr size_t PHYSICAL_BLOCK_SIG_OVERHEAD = LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 754 bytes
+     *  sig_len(2) + signature(809) = 811 bytes max */
+    constexpr size_t PHYSICAL_BLOCK_SIG_OVERHEAD = LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 811 bytes
     
     /** Minimum block submission size with physical signature
      *  Smallest valid block header + sig overhead */
-    constexpr size_t BLOCK_WITH_PHYSICAL_SIG_MIN_OVERHEAD = PHYSICAL_BLOCK_SIG_OVERHEAD;  // 754 bytes
+    constexpr size_t BLOCK_WITH_PHYSICAL_SIG_MIN_OVERHEAD = PHYSICAL_BLOCK_SIG_OVERHEAD;  // 811 bytes
     
     /** Check if physical block signature size is valid */
     constexpr bool is_valid_physical_block_sig_size(size_t size) {
@@ -203,19 +207,19 @@ namespace FalconConstants {
     //==========================================================================
     
     /** Submit Block with BOTH signatures - LOCALHOST (no encryption)
-     *  Combines disposable wrapper (834) + physical signature overhead (754)
+     *  Combines disposable wrapper (891) + physical signature overhead (811)
      *  Used when both session authentication AND permanent proof are required.
-     *  wrapper(834) + physical_sig_overhead(754) = 1,588 bytes */
+     *  wrapper(891) + physical_sig_overhead(811) = 1,702 bytes */
     constexpr size_t SUBMIT_BLOCK_DUAL_SIG_MAX = 
-        SUBMIT_BLOCK_WRAPPER_MAX + PHYSICAL_BLOCK_SIG_OVERHEAD;  // 1,588 bytes
-    static_assert(SUBMIT_BLOCK_DUAL_SIG_MAX == 1588, "SUBMIT_BLOCK_DUAL_SIG_MAX size calculation mismatch");
+        SUBMIT_BLOCK_WRAPPER_MAX + PHYSICAL_BLOCK_SIG_OVERHEAD;  // 1,702 bytes
+    static_assert(SUBMIT_BLOCK_DUAL_SIG_MAX == 1702, "SUBMIT_BLOCK_DUAL_SIG_MAX size calculation mismatch");
     
     /** Submit Block with BOTH signatures - PUBLIC MINER (with ChaCha20 encryption)
      *  Dual-signature submission with encryption overhead
-     *  dual_sig(1588) + chacha20_overhead(28) = 1,616 bytes */
+     *  dual_sig(1702) + chacha20_overhead(28) = 1,730 bytes */
     constexpr size_t SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX = 
-        SUBMIT_BLOCK_DUAL_SIG_MAX + CHACHA20_OVERHEAD;  // 1,616 bytes
-    static_assert(SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX == 1616, "SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX size calculation mismatch");
+        SUBMIT_BLOCK_DUAL_SIG_MAX + CHACHA20_OVERHEAD;  // 1,730 bytes
+    static_assert(SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX == 1730, "SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX size calculation mismatch");
 
     //==========================================================================
     // Validation Helpers
