@@ -73,6 +73,9 @@ private:
     
     // Challenge-response authentication methods
     void handle_miner_auth_challenge(const Packet& packet);
+    
+    // Helper to reset authentication state on errors
+    void reset_auth_state();
 
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;
