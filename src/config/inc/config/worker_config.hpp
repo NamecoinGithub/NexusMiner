@@ -18,6 +18,13 @@ struct Worker_config_cpu
 	// CPU affinity mask for thread pinning (default: 0, no affinity)
 	// Note: CPU affinity is planned for future implementation
 	std::uint64_t m_affinity_mask{0};
+	
+	// NEW: CPU power controls
+	std::uint8_t m_priority_level{2};             // 0=low, 1=below_normal, 2=normal, 3=above_normal, 4=high
+	std::uint8_t m_power_limit_percent{100};      // 50-100%
+	bool m_enable_hyperthreading{true};
+	bool m_enable_efficiency_cores{true};         // For hybrid CPUs (P-cores/E-cores)
+	std::uint32_t m_target_hashrate{0};           // 0=max
 };
 
 struct Worker_config_fpga
@@ -28,7 +35,14 @@ struct Worker_config_fpga
 
 struct Worker_config_gpu
 {
-	std::uint16_t m_device;
+	std::uint8_t m_device{0};
+	
+	// NEW: GPU power controls
+	std::uint8_t m_power_limit_percent{100};      // 50-100%
+	std::int16_t m_core_clock_offset{0};          // MHz offset
+	std::int16_t m_memory_clock_offset{0};        // MHz offset
+	std::uint8_t m_fan_speed_percent{0};          // 0=auto, 1-100%
+	std::uint32_t m_target_hashrate{0};           // 0=max
 };
 
 class Worker_config

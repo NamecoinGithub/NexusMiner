@@ -16,9 +16,8 @@ namespace config
 		, m_version{1}
 		, m_wallet_ip{ "127.0.0.1" }
 		, m_port{ 8323 }  // Phase 2: Default to miningport (stateless miner LLP port)
-		, m_local_ip{"127.0.0.1"}
+		, m_local_ip{"0.0.0.0"}  // Changed: Works for all scenarios (localhost, VPN, remote)
 		, m_mining_mode{ Mining_mode::HASH}
-		, m_pool_config{}
 		, m_log_level{2}	// info level
 		, m_logfile{""}		// no logfile usage, default
 		, m_connection_retry_interval{5}
@@ -82,14 +81,6 @@ namespace config
 			else
 			{
 				m_mining_mode = Mining_mode::HASH;
-			}
-
-			if (j.count("pool") != 0)
-			{
-				m_pool_config.m_use_pool = true;
-				json pool_json = j.at("pool");
-				m_pool_config.m_username = pool_json["username"];
-				m_pool_config.m_display_name = pool_json["display_name"];
 			}
 
 			// read stats printer config
@@ -294,12 +285,75 @@ namespace config
 						cpu_config.m_affinity_mask = worker_mode_json["affinity_mask"];
 					}
 					
+					// NEW: Parse power controls with validation
+					if (worker_mode_json.count("priority") != 0) {
+						auto priority = worker_mode_json["priority"].get<std::uint8_t>();
+						if (priority <= 4) {
+							cpu_config.m_priority_level = priority;
+						} else {
+							m_logger->warn("CPU priority must be 0-4, got {}. Using default (2).", priority);
+						}
+					}
+					if (worker_mode_json.count("power_limit_percent") != 0) {
+						auto power_limit = worker_mode_json["power_limit_percent"].get<std::uint8_t>();
+						if (power_limit >= 50 && power_limit <= 100) {
+							cpu_config.m_power_limit_percent = power_limit;
+						} else {
+							m_logger->warn("CPU power_limit_percent must be 50-100, got {}. Using default (100).", power_limit);
+						}
+					}
+					if (worker_mode_json.count("hyperthreading") != 0)
+						cpu_config.m_enable_hyperthreading = worker_mode_json["hyperthreading"];
+					if (worker_mode_json.count("efficiency_cores") != 0)
+						cpu_config.m_enable_efficiency_cores = worker_mode_json["efficiency_cores"];
+					if (worker_mode_json.count("target_hashrate") != 0)
+						cpu_config.m_target_hashrate = worker_mode_json["target_hashrate"];
+					
 					worker_config.m_worker_mode = cpu_config;
 				}
 				else if(worker_mode_json["hardware"] == "gpu")
 				{
 					worker_config.m_mode = Worker_mode::GPU;
-					worker_config.m_worker_mode = Worker_config_gpu{ worker_mode_json["device"] };
+					Worker_config_gpu gpu_config;
+					gpu_config.m_device = worker_mode_json["device"];
+					
+					// NEW: Parse power controls with validation
+					if (worker_mode_json.count("power_limit_percent") != 0) {
+						auto power_limit = worker_mode_json["power_limit_percent"].get<std::uint8_t>();
+						if (power_limit >= 50 && power_limit <= 100) {
+							gpu_config.m_power_limit_percent = power_limit;
+						} else {
+							m_logger->warn("GPU power_limit_percent must be 50-100, got {}. Using default (100).", power_limit);
+						}
+					}
+					if (worker_mode_json.count("core_clock_offset") != 0) {
+						auto offset = worker_mode_json["core_clock_offset"].get<std::int16_t>();
+						if (offset >= -500 && offset <= 500) {
+							gpu_config.m_core_clock_offset = offset;
+						} else {
+							m_logger->warn("GPU core_clock_offset must be -500 to +500 MHz, got {}. Using default (0).", offset);
+						}
+					}
+					if (worker_mode_json.count("memory_clock_offset") != 0) {
+						auto offset = worker_mode_json["memory_clock_offset"].get<std::int16_t>();
+						if (offset >= -1000 && offset <= 1000) {
+							gpu_config.m_memory_clock_offset = offset;
+						} else {
+							m_logger->warn("GPU memory_clock_offset must be -1000 to +1000 MHz, got {}. Using default (0).", offset);
+						}
+					}
+					if (worker_mode_json.count("fan_speed") != 0) {
+						auto fan_speed = worker_mode_json["fan_speed"].get<std::uint8_t>();
+						if (fan_speed <= 100) {
+							gpu_config.m_fan_speed_percent = fan_speed;
+						} else {
+							m_logger->warn("GPU fan_speed must be 0-100, got {}. Using default (0=auto).", fan_speed);
+						}
+					}
+					if (worker_mode_json.count("target_hashrate") != 0)
+						gpu_config.m_target_hashrate = worker_mode_json["target_hashrate"];
+					
+					worker_config.m_worker_mode = gpu_config;
 				}
 				else if(worker_mode_json["hardware"] == "fpga")
 				{
@@ -356,8 +410,7 @@ namespace config
 	void Config::print_global_config() const
 	{
 		std::stringstream ss;
-		ss << "Mining " << (m_mining_mode == config::Mining_mode::HASH ? "HASH" : "PRIME") << " Channel in "
-			<< (m_pool_config.m_use_pool ? "POOL" : "SOLO") << " mode";
+		ss << "Mining " << (m_mining_mode == config::Mining_mode::HASH ? "HASH" : "PRIME") << " Channel in SOLO mode";
 
 		m_logger->info(ss.str());
 	}

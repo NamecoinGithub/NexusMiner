@@ -20,7 +20,6 @@
 #include "stats/stats_collector.hpp"
 #include "miner_keys.hpp"
 #include "protocol/solo.hpp"
-#include "protocol/pool.hpp"
 #include <variant>
 
 namespace nexusminer
@@ -34,30 +33,22 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 , m_stats_collector{std::make_shared<stats::Collector>(m_config)}
 , m_timer_manager{std::move(timer_factory)}
 {
-    auto const& pool_config = m_config.get_pool_config();
-    if(pool_config.m_use_pool)
+    // Solo mining requires Falcon authentication - no legacy fallback
+    auto solo_protocol = std::make_shared<protocol::Solo>(m_config.get_mining_mode() == config::Mining_mode::PRIME ? 1U : 2U, m_stats_collector);
+    
+    // Falcon miner authentication is mandatory for solo mining
+    if (!m_config.has_miner_falcon_keys())
     {
-        // Pool mining always uses the standard Pool protocol
-        m_miner_protocol = std::make_shared<protocol::Pool>(m_logger, m_config.get_mining_mode(), m_config.get_pool_config(), m_stats_collector);
+        m_logger->error("[Worker_manager] CRITICAL: Falcon authentication keys are required for solo mining");
+        m_logger->error("[Worker_manager] Legacy authentication has been removed. Please configure Falcon keys:");
+        m_logger->error("[Worker_manager]   1. Generate keys: ./NexusMiner --create-keys");
+        m_logger->error("[Worker_manager]   2. Add keys to miner.conf (falcon_miner_pubkey and falcon_miner_privkey)");
+        m_logger->error("[Worker_manager]   3. Whitelist your public key on the node:");
+        m_logger->error("[Worker_manager]      - Config file: Add 'minerallowkey=<pubkey>' to nexus.conf");
+        m_logger->error("[Worker_manager]      - Command line: Start nexus with -minerallowkey=<pubkey>");
+        m_logger->error("[Worker_manager] See docs/falcon_authentication.md for detailed instructions");
+        throw std::runtime_error("Falcon authentication keys are required for solo mining");
     }
-    else
-    {
-        // Solo mining requires Falcon authentication - no legacy fallback
-        auto solo_protocol = std::make_shared<protocol::Solo>(m_config.get_mining_mode() == config::Mining_mode::PRIME ? 1U : 2U, m_stats_collector);
-        
-        // Falcon miner authentication is mandatory for solo mining
-        if (!m_config.has_miner_falcon_keys())
-        {
-            m_logger->error("[Worker_manager] CRITICAL: Falcon authentication keys are required for solo mining");
-            m_logger->error("[Worker_manager] Legacy authentication has been removed. Please configure Falcon keys:");
-            m_logger->error("[Worker_manager]   1. Generate keys: ./NexusMiner --create-keys");
-            m_logger->error("[Worker_manager]   2. Add keys to miner.conf (falcon_miner_pubkey and falcon_miner_privkey)");
-            m_logger->error("[Worker_manager]   3. Whitelist your public key on the node:");
-            m_logger->error("[Worker_manager]      - Config file: Add 'minerallowkey=<pubkey>' to nexus.conf");
-            m_logger->error("[Worker_manager]      - Command line: Start nexus with -minerallowkey=<pubkey>");
-            m_logger->error("[Worker_manager] See docs/falcon_authentication.md for detailed instructions");
-            throw std::runtime_error("Falcon authentication keys are required for solo mining");
-        }
         
         m_logger->info("[Worker_manager] Configuring Falcon miner authentication");
         
@@ -112,7 +103,6 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         m_logger->info("[Worker_manager] Auth address: {}", m_config.get_local_ip());
         
         m_miner_protocol = solo_protocol;
-    } 
   
     create_stats_printers();
     create_workers();
@@ -130,19 +120,10 @@ void Worker_manager::create_stats_printers()
             {
                 if(!printer_file_created)
                 {
-                    auto const& pool_config = m_config.get_pool_config();
                     printer_file_created = true;
                     auto& stats_printer_config_file = std::get<config::Stats_printer_config_file>(stats_printer_config.m_printer_mode);
-                    if (pool_config.m_use_pool)
-                    {
-                        m_stats_printers.push_back(std::make_shared<stats::Printer_file<stats::Printer_pool>>(stats_printer_config_file.file_name,
-                            m_config.get_mining_mode(), m_config.get_worker_config(), *m_stats_collector));
-                    }
-                    else
-                    {
-                        m_stats_printers.push_back(std::make_shared<stats::Printer_file<stats::Printer_solo>>(stats_printer_config_file.file_name,
-                            m_config.get_mining_mode(), m_config.get_worker_config(), *m_stats_collector));
-                    }
+                    m_stats_printers.push_back(std::make_shared<stats::Printer_file<stats::Printer_solo>>(stats_printer_config_file.file_name,
+                        m_config.get_mining_mode(), m_config.get_worker_config(), *m_stats_collector));
                 }
                 break;
             }
@@ -151,18 +132,9 @@ void Worker_manager::create_stats_printers()
             {
                 if(!printer_console_created)
                 {
-                    auto const& pool_config = m_config.get_pool_config();
                     printer_console_created = true;
-                    if (pool_config.m_use_pool)
-                    {
-                        m_stats_printers.push_back(std::make_shared<stats::Printer_console<stats::Printer_pool>>(m_config.get_mining_mode(),
-                            m_config.get_worker_config(), *m_stats_collector));
-                    }
-                    else
-                    {
-                        m_stats_printers.push_back(std::make_shared<stats::Printer_console<stats::Printer_solo>>(m_config.get_mining_mode(),
-                            m_config.get_worker_config(), *m_stats_collector));
-                    }
+                    m_stats_printers.push_back(std::make_shared<stats::Printer_console<stats::Printer_solo>>(m_config.get_mining_mode(),
+                        m_config.get_worker_config(), *m_stats_collector));
                 }
                 break;
             }
@@ -327,19 +299,9 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
                     self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
 
-                    auto const& pool_config = self->m_config.get_pool_config();
-                    if (pool_config.m_use_pool)
-                    {
-                        // pool miner sends PING to keep connection alive
-                        auto const ping_interval = self->m_config.get_ping_interval();
-                        self->m_timer_manager.start_ping_timer(ping_interval, self->m_connection);
-                    }
-                    else
-                    {
-                        // Solo mining uses stateless protocol with mandatory Falcon authentication (no GET_HEIGHT)
-                        self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
-                        self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
-                    }
+                    // Solo mining uses stateless protocol with mandatory Falcon authentication (no GET_HEIGHT)
+                    self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
+                    self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
 
                     self->m_miner_protocol->set_block_handler([self, wallet_endpoint](auto block, auto nBits)
                     {
