@@ -12,17 +12,17 @@ namespace config
 struct Worker_config_cpu
 {
 	// Number of CPU threads to use for mining (default: 1)
-	// Note: Multi-threading within a worker is planned for future implementation
+	// Multi-threading is supported for hash mining with nonce partitioning
 	std::uint16_t m_threads{1};
 	
 	// CPU affinity mask for thread pinning (default: 0, no affinity)
-	// Note: CPU affinity is planned for future implementation
+	// When 0, affinity may be automatically set based on hyperthreading/efficiency_cores settings
 	std::uint64_t m_affinity_mask{0};
 	
-	// NEW: CPU power controls
+	// CPU power controls
 	std::uint8_t m_priority_level{2};             // 0=low, 1=below_normal, 2=normal, 3=above_normal, 4=high
 	std::uint8_t m_power_limit_percent{100};      // 50-100%
-	bool m_enable_hyperthreading{true};
+	bool m_enable_hyperthreading{true};           // Use SMT/HT threads (auto-disables if false)
 	bool m_enable_efficiency_cores{true};         // For hybrid CPUs (P-cores/E-cores)
 	std::uint32_t m_target_hashrate{0};           // 0=max
 };
