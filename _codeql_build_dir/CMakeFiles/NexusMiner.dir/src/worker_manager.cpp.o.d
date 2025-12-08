@@ -981,7 +981,6 @@ CMakeFiles/NexusMiner.dir/src/worker_manager.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/worker_config.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/types.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/stats_printer_config.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/pool.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/LLP/block.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/stats/inc/stats/stats_printer_console.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/stats/inc/stats/stats_collector.hpp \
@@ -997,5 +996,8 @@ CMakeFiles/NexusMiner.dir/src/worker_manager.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/src/miner_keys.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/solo.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/protocol.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/pool.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/pool_base.hpp
+ /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/falcon_wrapper.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/chacha20_wrapper.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/session_manager.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/mining_template_interface.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/LLC/../LLP/block.hpp

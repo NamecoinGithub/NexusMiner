@@ -958,5 +958,4 @@ src/fpga/CMakeFiles/fpga.dir/src/fpga/worker_hash.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/nlohmann_json-src/include/nlohmann/thirdparty/hedley/hedley_undef.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/worker_config.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/types.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/stats_printer_config.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/pool.hpp
+ /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/stats_printer_config.hpp

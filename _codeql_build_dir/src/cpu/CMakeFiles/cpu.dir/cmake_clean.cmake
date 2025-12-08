@@ -1,4 +1,6 @@
 file(REMOVE_RECURSE
+  "CMakeFiles/cpu.dir/src/cpu/thread_utils.cpp.o"
+  "CMakeFiles/cpu.dir/src/cpu/thread_utils.cpp.o.d"
   "CMakeFiles/cpu.dir/src/cpu/worker_hash.cpp.o"
   "CMakeFiles/cpu.dir/src/cpu/worker_hash.cpp.o.d"
   "libcpu.a"

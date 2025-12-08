@@ -10,6 +10,8 @@ set(CMAKE_DEPENDS_LANGUAGES
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/runner/work/NexusMiner/NexusMiner/src/network/src/network/create_component.cpp" "src/network/CMakeFiles/network.dir/src/network/create_component.cpp.o" "gcc" "src/network/CMakeFiles/network.dir/src/network/create_component.cpp.o.d"
   "/home/runner/work/NexusMiner/NexusMiner/src/network/src/network/endpoint.cpp" "src/network/CMakeFiles/network.dir/src/network/endpoint.cpp.o" "gcc" "src/network/CMakeFiles/network.dir/src/network/endpoint.cpp.o.d"
+  "/home/runner/work/NexusMiner/NexusMiner/src/network/src/network/tls/tls_context.cpp" "src/network/CMakeFiles/network.dir/src/network/tls/tls_context.cpp.o" "gcc" "src/network/CMakeFiles/network.dir/src/network/tls/tls_context.cpp.o.d"
+  "/home/runner/work/NexusMiner/NexusMiner/src/network/src/network/tls/tls_socket_wrapper.cpp" "src/network/CMakeFiles/network.dir/src/network/tls/tls_socket_wrapper.cpp.o" "gcc" "src/network/CMakeFiles/network.dir/src/network/tls/tls_socket_wrapper.cpp.o.d"
   )
 
 # Targets to which this target links which contain Fortran sources.

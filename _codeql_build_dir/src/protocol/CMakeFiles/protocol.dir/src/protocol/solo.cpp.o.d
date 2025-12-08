@@ -219,15 +219,15 @@ src/protocol/CMakeFiles/protocol.dir/src/protocol/solo.cpp.o: \
  /usr/include/c++/13/bits/node_handle.h \
  /usr/include/c++/13/bits/erase_if.h /usr/include/c++/13/array \
  /usr/include/c++/13/compare \
+ /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/falcon_wrapper.hpp \
+ /usr/include/c++/13/chrono /usr/include/c++/13/bits/chrono.h \
+ /usr/include/c++/13/ratio /usr/include/c++/13/ctime \
+ /usr/include/c++/13/bits/parse_numbers.h /usr/include/c++/13/atomic \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/spdlog.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/common.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/null_mutex.h \
- /usr/include/c++/13/atomic /usr/include/c++/13/utility \
- /usr/include/c++/13/bits/stl_relops.h \
+ /usr/include/c++/13/utility /usr/include/c++/13/bits/stl_relops.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/tweakme.h \
- /usr/include/c++/13/chrono /usr/include/c++/13/bits/chrono.h \
- /usr/include/c++/13/ratio /usr/include/c++/13/ctime \
- /usr/include/c++/13/bits/parse_numbers.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/fmt/fmt.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/fmt/bundled/core.h \
  /usr/include/c++/13/cstring /usr/include/string.h /usr/include/strings.h \
@@ -250,6 +250,11 @@ src/protocol/CMakeFiles/protocol.dir/src/protocol/solo.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/log_msg_buffer.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/log_msg.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/version.h \
+ /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/chacha20_wrapper.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/session_manager.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/mining_template_interface.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/LLC/../LLP/block.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/src/protocol/inc/protocol/falcon_constants.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/connection.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/endpoint.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/utility.hpp \
@@ -594,4 +599,16 @@ src/protocol/CMakeFiles/protocol.dir/src/protocol/solo.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/src/LLC/../LLP/block_utils.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/LLC/../LLP/block.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/LLC/../LLP/llp_logging.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/LLP/./../miner_keys.hpp
+ /home/runner/work/NexusMiner/NexusMiner/src/LLP/./../miner_keys.hpp \
+ /usr/include/openssl/sha.h /usr/include/openssl/macros.h \
+ /usr/include/x86_64-linux-gnu/openssl/opensslconf.h \
+ /usr/include/x86_64-linux-gnu/openssl/configuration.h \
+ /usr/include/openssl/opensslv.h /usr/include/openssl/e_os2.h \
+ /usr/include/c++/13/iomanip /usr/include/c++/13/locale \
+ /usr/include/c++/13/bits/locale_facets_nonio.h \
+ /usr/include/x86_64-linux-gnu/c++/13/bits/time_members.h \
+ /usr/include/x86_64-linux-gnu/c++/13/bits/messages_members.h \
+ /usr/include/libintl.h /usr/include/c++/13/bits/codecvt.h \
+ /usr/include/c++/13/bits/locale_facets_nonio.tcc \
+ /usr/include/c++/13/bits/locale_conv.h \
+ /usr/include/c++/13/bits/quoted_string.h
