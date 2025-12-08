@@ -1,0 +1,2 @@
+/usr/bin/ar qc libprotocol.a CMakeFiles/protocol.dir/src/protocol/solo.cpp.o CMakeFiles/protocol.dir/src/protocol/pool_base.cpp.o CMakeFiles/protocol.dir/src/protocol/falcon_wrapper.cpp.o CMakeFiles/protocol.dir/src/protocol/chacha20_wrapper.cpp.o CMakeFiles/protocol.dir/src/protocol/session_manager.cpp.o CMakeFiles/protocol.dir/src/protocol/mining_template_interface.cpp.o
+/usr/bin/ranlib libprotocol.a

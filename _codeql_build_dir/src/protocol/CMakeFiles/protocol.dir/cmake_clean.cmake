@@ -1,0 +1,21 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/protocol.dir/src/protocol/chacha20_wrapper.cpp.o"
+  "CMakeFiles/protocol.dir/src/protocol/chacha20_wrapper.cpp.o.d"
+  "CMakeFiles/protocol.dir/src/protocol/falcon_wrapper.cpp.o"
+  "CMakeFiles/protocol.dir/src/protocol/falcon_wrapper.cpp.o.d"
+  "CMakeFiles/protocol.dir/src/protocol/mining_template_interface.cpp.o"
+  "CMakeFiles/protocol.dir/src/protocol/mining_template_interface.cpp.o.d"
+  "CMakeFiles/protocol.dir/src/protocol/pool_base.cpp.o"
+  "CMakeFiles/protocol.dir/src/protocol/pool_base.cpp.o.d"
+  "CMakeFiles/protocol.dir/src/protocol/session_manager.cpp.o"
+  "CMakeFiles/protocol.dir/src/protocol/session_manager.cpp.o.d"
+  "CMakeFiles/protocol.dir/src/protocol/solo.cpp.o"
+  "CMakeFiles/protocol.dir/src/protocol/solo.cpp.o.d"
+  "libprotocol.a"
+  "libprotocol.pdb"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/protocol.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()
