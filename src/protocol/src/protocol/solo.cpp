@@ -11,6 +11,7 @@
 #include <chrono>
 #include <sstream>
 #include <iomanip>
+#include <stdexcept>
 
 namespace nexusminer
 {
@@ -19,6 +20,12 @@ namespace protocol
 
 // Protocol constants
 constexpr size_t GENESIS_HASH_SIZE = 32;  // Tritium genesis hash size
+
+// ChaCha20 key derivation domain separator
+static const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
+
+// ChaCha20 AAD for Falcon public key encryption
+static const std::string AAD_DOMAIN = "FALCON_PUBKEY";
 
 // Helper function to serialize uint64 to little-endian bytes
 static void append_uint64_le(std::vector<uint8_t>& dest, uint64_t value) {
@@ -88,19 +95,16 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 
 std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t>& genesis)
 {
-    static const std::string DOMAIN = "nexus-mining-chacha20-v1";
-    
     std::vector<uint8_t> preimage;
-    preimage.insert(preimage.end(), DOMAIN.begin(), DOMAIN.end());
+    preimage.insert(preimage.end(), KDF_DOMAIN.begin(), KDF_DOMAIN.end());
     preimage.insert(preimage.end(), genesis.begin(), genesis.end());
     
     // Use OpenSSL SHA256
     std::vector<uint8_t> key(32);
     unsigned char* result = SHA256(preimage.data(), preimage.size(), key.data());
     if (!result) {
-        m_logger->error("[Solo] SHA256 key derivation failed");
-        // Return zeros on error (fallback behavior)
-        return std::vector<uint8_t>(32, 0);
+        m_logger->error("[Solo] SHA256 key derivation failed - this should never happen");
+        throw std::runtime_error("SHA256 key derivation failed");
     }
     return key;
 }
@@ -194,33 +198,38 @@ network::Shared_payload Solo::login(Login_handler handler)
     {
         m_logger->info("[Solo Auth] ChaCha20 wrapping ENABLED (genesis-derived key)");
         
-        // Derive session key from genesis
-        auto session_key = derive_chacha20_session_key(tritium_genesis);
-        auto nonce = ChaCha20Wrapper::generate_nonce();  // Random 12 bytes
-        
-        if (!m_chacha20_wrapper)
-            m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
-        
-        // Use "FALCON_PUBKEY" as AAD for domain separation
-        static const std::string AAD_DOMAIN = "FALCON_PUBKEY";
-        std::vector<uint8_t> aad(AAD_DOMAIN.begin(), AAD_DOMAIN.end());
-        
-        auto wrap_result = m_chacha20_wrapper->encrypt(m_miner_pubkey, session_key, nonce, aad);
-        
-        if (wrap_result.success)
-        {
-            // Build wrapped format: nonce(12) + ciphertext+tag(897+16)
-            pubkey_to_send.clear();
-            pubkey_to_send.insert(pubkey_to_send.end(), nonce.begin(), nonce.end());
-            pubkey_to_send.insert(pubkey_to_send.end(), wrap_result.data.begin(), wrap_result.data.end());
+        try {
+            // Derive session key from genesis
+            auto session_key = derive_chacha20_session_key(tritium_genesis);
+            auto nonce = ChaCha20Wrapper::generate_nonce();  // Random 12 bytes
             
-            wrapped = true;
-            m_logger->info("[Solo Auth] ✓ Pubkey wrapped: {} → {} bytes (genesis-derived key)",
-                           m_miner_pubkey.size(), pubkey_to_send.size());
+            if (!m_chacha20_wrapper)
+                m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
+            
+            // Use AAD for domain separation
+            std::vector<uint8_t> aad(AAD_DOMAIN.begin(), AAD_DOMAIN.end());
+            
+            auto wrap_result = m_chacha20_wrapper->encrypt(m_miner_pubkey, session_key, nonce, aad);
+            
+            if (wrap_result.success)
+            {
+                // Build wrapped format: nonce(12) + ciphertext+tag(897+16)
+                pubkey_to_send.clear();
+                pubkey_to_send.insert(pubkey_to_send.end(), nonce.begin(), nonce.end());
+                pubkey_to_send.insert(pubkey_to_send.end(), wrap_result.data.begin(), wrap_result.data.end());
+                
+                wrapped = true;
+                m_logger->info("[Solo Auth] ✓ Pubkey wrapped: {} → {} bytes (genesis-derived key)",
+                               m_miner_pubkey.size(), pubkey_to_send.size());
+            }
+            else
+            {
+                m_logger->warn("[Solo Auth] ChaCha20 wrap failed: {}", wrap_result.error_message);
+                m_logger->warn("[Solo Auth] Falling back to unwrapped pubkey");
+            }
         }
-        else
-        {
-            m_logger->warn("[Solo Auth] ChaCha20 wrap failed: {}", wrap_result.error_message);
+        catch (const std::exception& e) {
+            m_logger->error("[Solo Auth] Key derivation failed: {}", e.what());
             m_logger->warn("[Solo Auth] Falling back to unwrapped pubkey");
         }
     }
