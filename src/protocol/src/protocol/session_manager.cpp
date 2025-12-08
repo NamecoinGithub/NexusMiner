@@ -11,6 +11,7 @@ constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
 SessionManager::SessionManager(uint16_t keepalive_interval_hours)
     : m_session{}
     , m_keepalive_interval_hours(keepalive_interval_hours)
+    , m_preserve_genesis_on_disconnect(true)  // Enable genesis preservation for reconnection support
     , m_logger(spdlog::get("logger"))
 {
     if (!m_logger) {
@@ -69,9 +70,15 @@ void SessionManager::end_session()
     
     m_session.session_id = 0;
     m_session.session_key.clear();
-    // NOTE: Preserve tritium_genesis across session resets to support reconnection
-    // The genesis is configuration data that should persist
-    // m_session.tritium_genesis.clear();  // DO NOT CLEAR - needed for reconnection
+    
+    // Preserve tritium_genesis if configured (enables reconnection without reconfiguration)
+    if (!m_preserve_genesis_on_disconnect) {
+        m_session.tritium_genesis.clear();
+    } else {
+        m_logger->debug("[SessionManager] Preserving tritium_genesis for reconnection ({} bytes)", 
+                       m_session.tritium_genesis.size());
+    }
+    
     m_session.state = SessionState::DISCONNECTED;
     m_session.keepalive_count = 0;
 }

@@ -180,6 +180,7 @@ private:
     
     // Configuration
     uint16_t m_keepalive_interval_hours;
+    bool m_preserve_genesis_on_disconnect;  // Preserve genesis across sessions for reconnection
     
     // Logger
     std::shared_ptr<spdlog::logger> m_logger;
