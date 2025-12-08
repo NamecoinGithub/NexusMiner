@@ -8,6 +8,8 @@
 #include "LLP/llp_logging.hpp"
 #include "../miner_keys.hpp"
 #include <chrono>
+#include <sstream>
+#include <iomanip>
 
 namespace nexusminer
 {
@@ -133,6 +135,52 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Phase 2] Starting Falcon authentication (challenge-response)");
     m_logger->info("[Solo Auth] Using public key ({} bytes)", m_miner_pubkey.size());
     
+    // Check if tritium_genesis needs to be configured
+    if (m_session_manager && m_session_manager->get_tritium_genesis().empty()) {
+        m_logger->info("[Solo Auth] Tritium genesis not set in session manager");
+        m_logger->debug("[Solo Auth] Note: Genesis can be configured via set_tritium_genesis() if needed");
+    }
+    
+    // Prepare pubkey data (with optional ChaCha20 wrapping)
+    std::vector<uint8_t> pubkey_data;
+    bool chacha20_wrapped = false;
+    
+    if (m_enable_chacha20) {
+        m_logger->info("[Solo Auth] ChaCha20 wrapping enabled - wrapping public key for secure transmission");
+        
+        // Initialize ChaCha20 wrapper if not already done
+        if (!m_chacha20_wrapper) {
+            m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
+            m_logger->debug("[Solo Auth] ChaCha20Wrapper initialized");
+        }
+        
+        // Generate random key and nonce for this wrapping operation
+        auto session_key = ChaCha20Wrapper::generate_key();  // 32 bytes
+        auto nonce = ChaCha20Wrapper::generate_nonce();      // 12 bytes
+        
+        // Wrap the Falcon public key (897 bytes -> 897 + 16 tag = 913 bytes ciphertext)
+        auto wrap_result = m_chacha20_wrapper->wrap_falcon_pubkey(m_miner_pubkey, session_key, nonce);
+        
+        if (wrap_result.success) {
+            // Build wrapped format: nonce(12) + ciphertext+tag(913) = 925 bytes
+            pubkey_data.reserve(12 + wrap_result.data.size());
+            pubkey_data.insert(pubkey_data.end(), nonce.begin(), nonce.end());
+            pubkey_data.insert(pubkey_data.end(), wrap_result.data.begin(), wrap_result.data.end());
+            
+            chacha20_wrapped = true;
+            m_logger->info("[Solo Auth] ✓ ChaCha20 wrapping successful: {} bytes -> {} bytes", 
+                          m_miner_pubkey.size(), pubkey_data.size());
+            m_logger->debug("[Solo Auth]   - Nonce: 12 bytes, Ciphertext+Tag: {} bytes", wrap_result.data.size());
+        } else {
+            m_logger->warn("[Solo Auth] ✗ ChaCha20 wrapping failed: {}", wrap_result.error_message);
+            m_logger->warn("[Solo Auth] Falling back to unwrapped public key transmission");
+            pubkey_data = m_miner_pubkey;  // Fallback to unwrapped
+        }
+    } else {
+        m_logger->debug("[Solo Auth] ChaCha20 wrapping disabled - sending unwrapped public key");
+        pubkey_data = m_miner_pubkey;
+    }
+    
     // Build MINER_AUTH_INIT packet
     Packet packet;
     packet.m_header = Packet::MINER_AUTH_INIT;  // 207
@@ -140,12 +188,12 @@ network::Shared_payload Solo::login(Login_handler handler)
     
     // NOTE: MINER_AUTH_INIT uses big-endian encoding per protocol specification
     // pubkey_len (2 bytes, big-endian)
-    uint16_t pubkey_len = static_cast<uint16_t>(m_miner_pubkey.size());
+    uint16_t pubkey_len = static_cast<uint16_t>(pubkey_data.size());
     packet.m_data->push_back(static_cast<uint8_t>((pubkey_len >> 8) & 0xFF));
     packet.m_data->push_back(static_cast<uint8_t>(pubkey_len & 0xFF));
     
-    // pubkey (897 bytes)
-    packet.m_data->insert(packet.m_data->end(), m_miner_pubkey.begin(), m_miner_pubkey.end());
+    // pubkey (897 bytes unwrapped, or 925 bytes wrapped)
+    packet.m_data->insert(packet.m_data->end(), pubkey_data.begin(), pubkey_data.end());
     
     // miner_id_len (2 bytes, big-endian)
     std::string miner_id = m_miner_id.empty() ? "NexusMiner" : m_miner_id;
@@ -171,8 +219,8 @@ network::Shared_payload Solo::login(Login_handler handler)
     
     packet.m_length = static_cast<uint32_t>(packet.m_data->size());
     
-    m_logger->info("[Solo Phase 2] MINER_AUTH_INIT: pubkey_len={}, miner_id='{}', total_size={}", 
-                   pubkey_len, miner_id, packet.m_length);
+    m_logger->info("[Solo Phase 2] MINER_AUTH_INIT: pubkey_len={} ({}), miner_id='{}', total_size={}", 
+                   pubkey_len, chacha20_wrapped ? "wrapped" : "unwrapped", miner_id, packet.m_length);
     
     // Set state to waiting for challenge
     m_auth_state = AuthState::WAITING_FOR_CHALLENGE;
@@ -768,8 +816,37 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                                (static_cast<uint32_t>((*packet.m_data)[2]) << 8) | 
                                (static_cast<uint32_t>((*packet.m_data)[3]) << 16) | 
                                (static_cast<uint32_t>((*packet.m_data)[4]) << 24);
-                m_logger->info("[Solo Phase 2] ✓ Authentication SUCCEEDED - Session ID: 0x{:08x}", m_session_id);
-                m_logger->info("[Solo Auth]   - Session ID bytes (LE): {:02x} {:02x} {:02x} {:02x}",
+                
+                // Visual box logging for success
+                std::string genesis_status = (m_session_manager && !m_session_manager->get_tritium_genesis().empty()) 
+                                             ? "CONFIGURED" : "NOT CONFIGURED";
+                std::string chacha20_status = m_enable_chacha20 ? "ENABLED" : "DISABLED";
+                
+                // Prepare formatted strings with safe alignment
+                std::stringstream pubkey_line, genesis_line, chacha20_line, session_line;
+                pubkey_line << "║ Public Key:  " << m_miner_pubkey.size() << " bytes";
+                genesis_line << "║ Genesis:     " << genesis_status;
+                chacha20_line << "║ ChaCha20:    " << chacha20_status;
+                session_line << "║ Session ID:  0x" << std::hex << std::setw(8) << std::setfill('0') << m_session_id;
+                
+                // Calculate padding (box width = 59 chars, '║' takes 1 char at end)
+                auto pad_line = [](std::stringstream& ss) -> std::string {
+                    std::string line = ss.str();
+                    int padding = 58 - static_cast<int>(line.length());
+                    if (padding < 0) padding = 0;  // Safety: never negative
+                    return line + std::string(padding, ' ') + "║";
+                };
+                
+                m_logger->info("╔═════════════════════════════════════════════════════════╗");
+                m_logger->info("║       FALCON AUTHENTICATION SUCCESSFUL                  ║");
+                m_logger->info("╠═════════════════════════════════════════════════════════╣");
+                m_logger->info(pad_line(pubkey_line));
+                m_logger->info(pad_line(genesis_line));
+                m_logger->info(pad_line(chacha20_line));
+                m_logger->info(pad_line(session_line));
+                m_logger->info("╚═════════════════════════════════════════════════════════╝");
+                
+                m_logger->debug("[Solo Auth]   - Session ID bytes (LE): {:02x} {:02x} {:02x} {:02x}",
                     (*packet.m_data)[1], (*packet.m_data)[2], (*packet.m_data)[3], (*packet.m_data)[4]);
                 
                 // Start session in session manager
@@ -818,32 +895,60 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         else {
             m_authenticated = false;
-            m_logger->error("[Solo Phase 2] ✗ Authentication FAILED");
             
-            // Enhanced diagnostics: Parse extended error info if available
-            if (packet.m_length >= 2) {
-                uint8_t error_code = (*packet.m_data)[1];
-                m_logger->error("[Solo Auth] Error code from node: 0x{:02x}", error_code);
-                
-                // Interpret error codes based on LLL-TAO implementation
-                switch (error_code) {
-                    case 0x01:
-                        m_logger->error("[Solo Auth] Error: Public key not whitelisted on node");
-                        break;
-                    case 0x02:
-                        m_logger->error("[Solo Auth] Error: Signature verification failed");
-                        break;
-                    case 0x03:
-                        m_logger->error("[Solo Auth] Error: Invalid message format");
-                        break;
-                    case 0x04:
-                        m_logger->error("[Solo Auth] Error: Timestamp out of acceptable range");
-                        break;
-                    default:
-                        m_logger->error("[Solo Auth] Error: Unknown error code");
-                        break;
+            // Visual box logging for failure
+            uint8_t error_code = (packet.m_length >= 2) ? (*packet.m_data)[1] : 0x00;
+            std::string error_message;
+            std::string troubleshooting;
+            
+            // Interpret error codes based on LLL-TAO implementation
+            switch (error_code) {
+                case 0x01:
+                    error_message = "Public key not whitelisted";
+                    troubleshooting = "Add to nexus.conf minerallowkey";
+                    break;
+                case 0x02:
+                    error_message = "Signature verification failed";
+                    troubleshooting = "Check key pair in miner.conf";
+                    break;
+                case 0x03:
+                    error_message = "Invalid message format";
+                    troubleshooting = "Check protocol version";
+                    break;
+                case 0x04:
+                    error_message = "Timestamp out of range";
+                    troubleshooting = "Synchronize system clocks";
+                    break;
+                default: {
+                    std::stringstream ss;
+                    ss << "Unknown error 0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(error_code);
+                    error_message = ss.str();
+                    troubleshooting = "Check node logs";
+                    break;
                 }
             }
+            
+            // Prepare formatted strings with safe alignment
+            std::stringstream status_line, error_line, action_line;
+            status_line << "║ Status:  0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>((*packet.m_data)[0]);
+            error_line << "║ Error:   " << error_message;
+            action_line << "║ Action:  " << troubleshooting;
+            
+            // Calculate padding (box width = 59 chars)
+            auto pad_line = [](std::stringstream& ss) -> std::string {
+                std::string line = ss.str();
+                int padding = 58 - static_cast<int>(line.length());
+                if (padding < 0) padding = 0;  // Safety: never negative
+                return line + std::string(padding, ' ') + "║";
+            };
+            
+            m_logger->error("╔═════════════════════════════════════════════════════════╗");
+            m_logger->error("║       FALCON AUTHENTICATION FAILED                      ║");
+            m_logger->error("╠═════════════════════════════════════════════════════════╣");
+            m_logger->error(pad_line(status_line));
+            m_logger->error(pad_line(error_line));
+            m_logger->error(pad_line(action_line));
+            m_logger->error("╚═════════════════════════════════════════════════════════╝");
             
             // Log authentication attempt details for debugging
             m_logger->error("[Solo Auth] Authentication attempt details:");
