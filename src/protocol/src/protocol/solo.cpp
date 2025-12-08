@@ -24,8 +24,8 @@ constexpr size_t GENESIS_HASH_SIZE = 32;  // Tritium genesis hash size
 // ChaCha20 key derivation domain separator
 static const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
 
-// ChaCha20 AAD for Falcon public key encryption
-static const std::string AAD_DOMAIN = "FALCON_PUBKEY";
+// ChaCha20 AAD for Falcon public key encryption (as vector for efficiency)
+static const std::vector<uint8_t> AAD_DOMAIN_VEC{'F','A','L','C','O','N','_','P','U','B','K','E','Y'};
 
 // Helper function to serialize uint64 to little-endian bytes
 static void append_uint64_le(std::vector<uint8_t>& dest, uint64_t value) {
@@ -99,14 +99,20 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
     preimage.insert(preimage.end(), KDF_DOMAIN.begin(), KDF_DOMAIN.end());
     preimage.insert(preimage.end(), genesis.begin(), genesis.end());
     
-    // Use OpenSSL SHA256
-    std::vector<uint8_t> key(32);
+    // Use OpenSSL SHA256 - output is always SHA256_DIGEST_LENGTH (32) bytes
+    std::vector<uint8_t> key(SHA256_DIGEST_LENGTH);
     unsigned char* result = SHA256(preimage.data(), preimage.size(), key.data());
     if (!result) {
         m_logger->error("[Solo] SHA256 key derivation failed - this should never happen");
         throw std::runtime_error("SHA256 key derivation failed");
     }
     return key;
+}
+
+// Helper function to check if genesis hash is valid (non-zero)
+static bool is_valid_genesis(const std::vector<uint8_t>& genesis) {
+    return !genesis.empty() && 
+           std::any_of(genesis.begin(), genesis.end(), [](uint8_t b){ return b != 0; });
 }
 
 void Solo::reset()
@@ -191,8 +197,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     bool wrapped = false;
     
     // Only wrap if we have a valid genesis (non-zero)
-    bool has_valid_genesis = !tritium_genesis.empty() && 
-        std::any_of(tritium_genesis.begin(), tritium_genesis.end(), [](uint8_t b){ return b != 0; });
+    bool has_valid_genesis = is_valid_genesis(tritium_genesis);
     
     if (m_enable_chacha20 && has_valid_genesis)
     {
@@ -207,9 +212,7 @@ network::Shared_payload Solo::login(Login_handler handler)
                 m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
             
             // Use AAD for domain separation
-            std::vector<uint8_t> aad(AAD_DOMAIN.begin(), AAD_DOMAIN.end());
-            
-            auto wrap_result = m_chacha20_wrapper->encrypt(m_miner_pubkey, session_key, nonce, aad);
+            auto wrap_result = m_chacha20_wrapper->encrypt(m_miner_pubkey, session_key, nonce, AAD_DOMAIN_VEC);
             
             if (wrap_result.success)
             {
