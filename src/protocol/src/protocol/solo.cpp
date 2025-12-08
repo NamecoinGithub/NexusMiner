@@ -103,16 +103,26 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
     std::vector<uint8_t> key(SHA256_DIGEST_LENGTH);
     unsigned char* result = SHA256(preimage.data(), preimage.size(), key.data());
     if (!result) {
-        m_logger->error("[Solo] SHA256 key derivation failed - this should never happen");
-        throw std::runtime_error("SHA256 key derivation failed");
+        // This should never happen - SHA256 only fails on internal OpenSSL errors
+        m_logger->error("[Solo] CRITICAL: OpenSSL SHA256 internal error during key derivation");
+        throw std::runtime_error("OpenSSL SHA256 internal error");
     }
     return key;
 }
 
 // Helper function to check if genesis hash is valid (non-zero)
+// Optimized to return early on first non-zero byte
 static bool is_valid_genesis(const std::vector<uint8_t>& genesis) {
-    return !genesis.empty() && 
-           std::any_of(genesis.begin(), genesis.end(), [](uint8_t b){ return b != 0; });
+    if (genesis.empty()) {
+        return false;
+    }
+    // Early return optimization - stop at first non-zero byte
+    for (uint8_t byte : genesis) {
+        if (byte != 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void Solo::reset()
@@ -183,7 +193,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     }
     else
     {
-        tritium_genesis.resize(GENESIS_HASH_SIZE, 0);  // 32 zero bytes
+        tritium_genesis = std::vector<uint8_t>(GENESIS_HASH_SIZE, 0);  // 32 zero bytes
         m_logger->warn("[Solo Phase 2] No genesis - ChaCha20 encryption unavailable");
     }
     
