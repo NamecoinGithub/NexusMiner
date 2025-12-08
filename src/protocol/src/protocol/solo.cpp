@@ -17,6 +17,9 @@ namespace nexusminer
 namespace protocol
 {
 
+// Protocol constants
+constexpr size_t GENESIS_HASH_SIZE = 32;  // Tritium genesis hash size
+
 // Helper function to serialize uint64 to little-endian bytes
 static void append_uint64_le(std::vector<uint8_t>& dest, uint64_t value) {
     for (int i = 0; i < 8; ++i) {
@@ -93,7 +96,12 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
     
     // Use OpenSSL SHA256
     std::vector<uint8_t> key(32);
-    SHA256(preimage.data(), preimage.size(), key.data());
+    unsigned char* result = SHA256(preimage.data(), preimage.size(), key.data());
+    if (!result) {
+        m_logger->error("[Solo] SHA256 key derivation failed");
+        // Return zeros on error (fallback behavior)
+        return std::vector<uint8_t>(32, 0);
+    }
     return key;
 }
 
@@ -165,7 +173,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     }
     else
     {
-        tritium_genesis.resize(32, 0);  // 32 zero bytes
+        tritium_genesis.resize(GENESIS_HASH_SIZE, 0);  // 32 zero bytes
         m_logger->warn("[Solo Phase 2] No genesis - ChaCha20 encryption unavailable");
     }
     
@@ -194,7 +202,8 @@ network::Shared_payload Solo::login(Login_handler handler)
             m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
         
         // Use "FALCON_PUBKEY" as AAD for domain separation
-        std::vector<uint8_t> aad{'F','A','L','C','O','N','_','P','U','B','K','E','Y'};
+        static const std::string AAD_DOMAIN = "FALCON_PUBKEY";
+        std::vector<uint8_t> aad(AAD_DOMAIN.begin(), AAD_DOMAIN.end());
         
         auto wrap_result = m_chacha20_wrapper->encrypt(m_miner_pubkey, session_key, nonce, aad);
         
