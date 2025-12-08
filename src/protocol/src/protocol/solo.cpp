@@ -208,8 +208,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Phase 2] Starting Falcon authentication (challenge-response)");
     m_logger->info("[Solo Auth] Using public key ({} bytes)", m_miner_pubkey.size());
     
-    Packet packet;
-    packet.m_header = Packet::MINER_AUTH_INIT;  // 207
+    Packet packet(Packet::MINER_AUTH_INIT);  // 207 - m_is_valid = true automatically
     packet.m_data = std::make_shared<network::Payload>();
     
     // ═══════════════════════════════════════════════════════════
@@ -1442,8 +1441,7 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     m_logger->info("[Solo Phase 2] Signed nonce, signature {} bytes", sign_result.signature.size());
     
     // Build MINER_AUTH_RESPONSE packet
-    Packet response_packet;
-    response_packet.m_header = Packet::MINER_AUTH_RESPONSE;  // 209
+    Packet response_packet(Packet::MINER_AUTH_RESPONSE);  // 209 - m_is_valid = true automatically
     response_packet.m_data = std::make_shared<network::Payload>();
     
     // NOTE: MINER_AUTH_RESPONSE uses little-endian encoding per protocol specification
