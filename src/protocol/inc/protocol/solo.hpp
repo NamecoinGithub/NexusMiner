@@ -68,6 +68,9 @@ public:
 
 private:
     
+    // Derive ChaCha20 session key from genesis hash
+    std::vector<uint8_t> derive_chacha20_session_key(const std::vector<uint8_t>& genesis);
+    
     // Helper method to send SET_CHANNEL packet
     void send_set_channel(std::shared_ptr<network::Connection> connection);
     

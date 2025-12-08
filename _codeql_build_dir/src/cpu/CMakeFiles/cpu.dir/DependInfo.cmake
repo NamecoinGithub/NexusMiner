@@ -8,6 +8,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
+  "/home/runner/work/NexusMiner/NexusMiner/src/cpu/src/cpu/thread_utils.cpp" "src/cpu/CMakeFiles/cpu.dir/src/cpu/thread_utils.cpp.o" "gcc" "src/cpu/CMakeFiles/cpu.dir/src/cpu/thread_utils.cpp.o.d"
   "/home/runner/work/NexusMiner/NexusMiner/src/cpu/src/cpu/worker_hash.cpp" "src/cpu/CMakeFiles/cpu.dir/src/cpu/worker_hash.cpp.o" "gcc" "src/cpu/CMakeFiles/cpu.dir/src/cpu/worker_hash.cpp.o.d"
   )
 

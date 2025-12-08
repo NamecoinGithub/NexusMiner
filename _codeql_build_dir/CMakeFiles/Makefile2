@@ -420,7 +420,7 @@ CMakeFiles/NexusMiner.dir/all: src/TAO/CMakeFiles/TAO.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/NexusMiner.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 54
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 60
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/NexusMiner.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 0
 .PHONY : CMakeFiles/NexusMiner.dir/rule
@@ -447,7 +447,7 @@ CMakeFiles/NexusMiner.dir/clean:
 _deps/spdlog-build/CMakeFiles/spdlog.dir/all:
 	$(MAKE) $(MAKESILENT) -f _deps/spdlog-build/CMakeFiles/spdlog.dir/build.make _deps/spdlog-build/CMakeFiles/spdlog.dir/depend
 	$(MAKE) $(MAKESILENT) -f _deps/spdlog-build/CMakeFiles/spdlog.dir/build.make _deps/spdlog-build/CMakeFiles/spdlog.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=45,46,47,48,49,50,51,52 "Built target spdlog"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=51,52,53,54,55,56,57,58 "Built target spdlog"
 .PHONY : _deps/spdlog-build/CMakeFiles/spdlog.dir/all
 
 # Build rule for subdir invocation for target.
@@ -464,7 +464,7 @@ spdlog: _deps/spdlog-build/CMakeFiles/spdlog.dir/rule
 # codegen rule for target.
 _deps/spdlog-build/CMakeFiles/spdlog.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f _deps/spdlog-build/CMakeFiles/spdlog.dir/build.make _deps/spdlog-build/CMakeFiles/spdlog.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=45,46,47,48,49,50,51,52 "Finished codegen for target spdlog"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=51,52,53,54,55,56,57,58 "Finished codegen for target spdlog"
 .PHONY : _deps/spdlog-build/CMakeFiles/spdlog.dir/codegen
 
 # clean rule for target.
@@ -479,12 +479,12 @@ _deps/spdlog-build/CMakeFiles/spdlog.dir/clean:
 src/network/CMakeFiles/network.dir/all: _deps/spdlog-build/CMakeFiles/spdlog.dir/all
 	$(MAKE) $(MAKESILENT) -f src/network/CMakeFiles/network.dir/build.make src/network/CMakeFiles/network.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/network/CMakeFiles/network.dir/build.make src/network/CMakeFiles/network.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=38,39,40 "Built target network"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=39,40,41,42,43 "Built target network"
 .PHONY : src/network/CMakeFiles/network.dir/all
 
 # Build rule for subdir invocation for target.
 src/network/CMakeFiles/network.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 11
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 13
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/network/CMakeFiles/network.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 0
 .PHONY : src/network/CMakeFiles/network.dir/rule
@@ -496,7 +496,7 @@ network: src/network/CMakeFiles/network.dir/rule
 # codegen rule for target.
 src/network/CMakeFiles/network.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f src/network/CMakeFiles/network.dir/build.make src/network/CMakeFiles/network.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=38,39,40 "Finished codegen for target network"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=39,40,41,42,43 "Finished codegen for target network"
 .PHONY : src/network/CMakeFiles/network.dir/codegen
 
 # clean rule for target.
@@ -543,7 +543,7 @@ src/LLC/CMakeFiles/LLC.dir/clean:
 src/hash/CMakeFiles/hash.dir/all:
 	$(MAKE) $(MAKESILENT) -f src/hash/CMakeFiles/hash.dir/build.make src/hash/CMakeFiles/hash.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/hash/CMakeFiles/hash.dir/build.make src/hash/CMakeFiles/hash.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=35,36,37 "Built target hash"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=36,37,38 "Built target hash"
 .PHONY : src/hash/CMakeFiles/hash.dir/all
 
 # Build rule for subdir invocation for target.
@@ -560,7 +560,7 @@ hash: src/hash/CMakeFiles/hash.dir/rule
 # codegen rule for target.
 src/hash/CMakeFiles/hash.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f src/hash/CMakeFiles/hash.dir/build.make src/hash/CMakeFiles/hash.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=35,36,37 "Finished codegen for target hash"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=36,37,38 "Finished codegen for target hash"
 .PHONY : src/hash/CMakeFiles/hash.dir/codegen
 
 # clean rule for target.
@@ -608,7 +608,7 @@ src/stats/CMakeFiles/stats.dir/all: _deps/spdlog-build/CMakeFiles/spdlog.dir/all
 src/stats/CMakeFiles/stats.dir/all: src/config/CMakeFiles/config.dir/all
 	$(MAKE) $(MAKESILENT) -f src/stats/CMakeFiles/stats.dir/build.make src/stats/CMakeFiles/stats.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/stats/CMakeFiles/stats.dir/build.make src/stats/CMakeFiles/stats.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=53,54 "Built target stats"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=59,60 "Built target stats"
 .PHONY : src/stats/CMakeFiles/stats.dir/all
 
 # Build rule for subdir invocation for target.
@@ -625,7 +625,7 @@ stats: src/stats/CMakeFiles/stats.dir/rule
 # codegen rule for target.
 src/stats/CMakeFiles/stats.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f src/stats/CMakeFiles/stats.dir/build.make src/stats/CMakeFiles/stats.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=53,54 "Finished codegen for target stats"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=59,60 "Finished codegen for target stats"
 .PHONY : src/stats/CMakeFiles/stats.dir/codegen
 
 # clean rule for target.
@@ -644,12 +644,12 @@ src/protocol/CMakeFiles/protocol.dir/all: src/config/CMakeFiles/config.dir/all
 src/protocol/CMakeFiles/protocol.dir/all: src/stats/CMakeFiles/stats.dir/all
 	$(MAKE) $(MAKESILENT) -f src/protocol/CMakeFiles/protocol.dir/build.make src/protocol/CMakeFiles/protocol.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/protocol/CMakeFiles/protocol.dir/build.make src/protocol/CMakeFiles/protocol.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=41,42,43,44 "Built target protocol"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=44,45,46,47,48,49,50 "Built target protocol"
 .PHONY : src/protocol/CMakeFiles/protocol.dir/all
 
 # Build rule for subdir invocation for target.
 src/protocol/CMakeFiles/protocol.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 39
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 44
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/protocol/CMakeFiles/protocol.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 0
 .PHONY : src/protocol/CMakeFiles/protocol.dir/rule
@@ -661,7 +661,7 @@ protocol: src/protocol/CMakeFiles/protocol.dir/rule
 # codegen rule for target.
 src/protocol/CMakeFiles/protocol.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f src/protocol/CMakeFiles/protocol.dir/build.make src/protocol/CMakeFiles/protocol.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=41,42,43,44 "Finished codegen for target protocol"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=44,45,46,47,48,49,50 "Finished codegen for target protocol"
 .PHONY : src/protocol/CMakeFiles/protocol.dir/codegen
 
 # clean rule for target.
@@ -681,12 +681,12 @@ src/cpu/CMakeFiles/cpu.dir/all: src/config/CMakeFiles/config.dir/all
 src/cpu/CMakeFiles/cpu.dir/all: src/stats/CMakeFiles/stats.dir/all
 	$(MAKE) $(MAKESILENT) -f src/cpu/CMakeFiles/cpu.dir/build.make src/cpu/CMakeFiles/cpu.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/cpu/CMakeFiles/cpu.dir/build.make src/cpu/CMakeFiles/cpu.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=31,32 "Built target cpu"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=31,32,33 "Built target cpu"
 .PHONY : src/cpu/CMakeFiles/cpu.dir/all
 
 # Build rule for subdir invocation for target.
 src/cpu/CMakeFiles/cpu.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 40
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 43
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/cpu/CMakeFiles/cpu.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 0
 .PHONY : src/cpu/CMakeFiles/cpu.dir/rule
@@ -698,7 +698,7 @@ cpu: src/cpu/CMakeFiles/cpu.dir/rule
 # codegen rule for target.
 src/cpu/CMakeFiles/cpu.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f src/cpu/CMakeFiles/cpu.dir/build.make src/cpu/CMakeFiles/cpu.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=31,32 "Finished codegen for target cpu"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=31,32,33 "Finished codegen for target cpu"
 .PHONY : src/cpu/CMakeFiles/cpu.dir/codegen
 
 # clean rule for target.
@@ -718,12 +718,12 @@ src/fpga/CMakeFiles/fpga.dir/all: src/config/CMakeFiles/config.dir/all
 src/fpga/CMakeFiles/fpga.dir/all: src/stats/CMakeFiles/stats.dir/all
 	$(MAKE) $(MAKESILENT) -f src/fpga/CMakeFiles/fpga.dir/build.make src/fpga/CMakeFiles/fpga.dir/depend
 	$(MAKE) $(MAKESILENT) -f src/fpga/CMakeFiles/fpga.dir/build.make src/fpga/CMakeFiles/fpga.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=33,34 "Built target fpga"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=34,35 "Built target fpga"
 .PHONY : src/fpga/CMakeFiles/fpga.dir/all
 
 # Build rule for subdir invocation for target.
 src/fpga/CMakeFiles/fpga.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 40
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 42
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 src/fpga/CMakeFiles/fpga.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles 0
 .PHONY : src/fpga/CMakeFiles/fpga.dir/rule
@@ -735,7 +735,7 @@ fpga: src/fpga/CMakeFiles/fpga.dir/rule
 # codegen rule for target.
 src/fpga/CMakeFiles/fpga.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f src/fpga/CMakeFiles/fpga.dir/build.make src/fpga/CMakeFiles/fpga.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=33,34 "Finished codegen for target fpga"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/CMakeFiles --progress-num=34,35 "Finished codegen for target fpga"
 .PHONY : src/fpga/CMakeFiles/fpga.dir/codegen
 
 # clean rule for target.

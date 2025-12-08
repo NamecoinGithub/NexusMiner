@@ -304,7 +304,6 @@ CMakeFiles/NexusMiner.dir/src/miner.cpp.o: \
  /usr/include/c++/13/variant \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/types.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/stats_printer_config.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/pool.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/endpoint.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/types.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/utility.hpp \

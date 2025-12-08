@@ -265,6 +265,7 @@ src/cpu/CMakeFiles/cpu.dir/src/cpu/worker_hash.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/log_msg_buffer.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/log_msg.h \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/version.h \
+ /home/runner/work/NexusMiner/NexusMiner/src/cpu/inc/cpu/thread_utils.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/config.hpp \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/nlohmann_json-src/include/nlohmann/json.hpp \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/nlohmann_json-src/include/nlohmann/adl_serializer.hpp \
@@ -335,7 +336,6 @@ src/cpu/CMakeFiles/cpu.dir/src/cpu/worker_hash.cpp.o: \
  /usr/include/c++/13/variant \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/types.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/stats_printer_config.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/pool.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/stats/inc/stats/stats_collector.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/stats/inc/stats/types.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/hash/inc/hash/nexus_hash_utils.hpp \

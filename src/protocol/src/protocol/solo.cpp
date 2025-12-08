@@ -7,6 +7,7 @@
 #include "LLP/block_utils.hpp"
 #include "LLP/llp_logging.hpp"
 #include "../miner_keys.hpp"
+#include <openssl/sha.h>
 #include <chrono>
 #include <sstream>
 #include <iomanip>
@@ -82,6 +83,20 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     m_logger->info("[Solo] Mining Template Interface initialized for unified READ/FEED system");
 }
 
+std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t>& genesis)
+{
+    static const std::string DOMAIN = "nexus-mining-chacha20-v1";
+    
+    std::vector<uint8_t> preimage;
+    preimage.insert(preimage.end(), DOMAIN.begin(), DOMAIN.end());
+    preimage.insert(preimage.end(), genesis.begin(), genesis.end());
+    
+    // Use OpenSSL SHA256
+    std::vector<uint8_t> key(32);
+    SHA256(preimage.data(), preimage.size(), key.data());
+    return key;
+}
+
 void Solo::reset()
 {
     m_current_height = 0;
@@ -135,92 +150,111 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Phase 2] Starting Falcon authentication (challenge-response)");
     m_logger->info("[Solo Auth] Using public key ({} bytes)", m_miner_pubkey.size());
     
-    // Check if tritium_genesis needs to be configured
-    if (m_session_manager && m_session_manager->get_tritium_genesis().empty()) {
-        m_logger->info("[Solo Auth] Tritium genesis not set in session manager");
-        m_logger->debug("[Solo Auth] Note: Genesis can be configured via set_tritium_genesis() if needed");
-    }
-    
-    // Prepare pubkey data (with optional ChaCha20 wrapping)
-    std::vector<uint8_t> pubkey_data;
-    bool chacha20_wrapped = false;
-    
-    if (m_enable_chacha20) {
-        m_logger->info("[Solo Auth] ChaCha20 wrapping enabled - wrapping public key for secure transmission");
-        
-        // Initialize ChaCha20 wrapper if not already done
-        if (!m_chacha20_wrapper) {
-            m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
-            m_logger->debug("[Solo Auth] ChaCha20Wrapper initialized");
-        }
-        
-        // Generate random key and nonce for this wrapping operation
-        auto session_key = ChaCha20Wrapper::generate_key();  // 32 bytes
-        auto nonce = ChaCha20Wrapper::generate_nonce();      // 12 bytes
-        
-        // Wrap the Falcon public key (897 bytes -> 897 + 16 tag = 913 bytes ciphertext)
-        auto wrap_result = m_chacha20_wrapper->wrap_falcon_pubkey(m_miner_pubkey, session_key, nonce);
-        
-        if (wrap_result.success) {
-            // Build wrapped format: nonce(12) + ciphertext+tag(913) = 925 bytes
-            pubkey_data.reserve(12 + wrap_result.data.size());
-            pubkey_data.insert(pubkey_data.end(), nonce.begin(), nonce.end());
-            pubkey_data.insert(pubkey_data.end(), wrap_result.data.begin(), wrap_result.data.end());
-            
-            chacha20_wrapped = true;
-            m_logger->info("[Solo Auth] ✓ ChaCha20 wrapping successful: {} bytes -> {} bytes", 
-                          m_miner_pubkey.size(), pubkey_data.size());
-            m_logger->debug("[Solo Auth]   - Nonce: 12 bytes, Ciphertext+Tag: {} bytes", wrap_result.data.size());
-        } else {
-            m_logger->warn("[Solo Auth] ✗ ChaCha20 wrapping failed: {}", wrap_result.error_message);
-            m_logger->warn("[Solo Auth] Falling back to unwrapped public key transmission");
-            pubkey_data = m_miner_pubkey;  // Fallback to unwrapped
-        }
-    } else {
-        m_logger->debug("[Solo Auth] ChaCha20 wrapping disabled - sending unwrapped public key");
-        pubkey_data = m_miner_pubkey;
-    }
-    
-    // Build MINER_AUTH_INIT packet
     Packet packet;
     packet.m_header = Packet::MINER_AUTH_INIT;  // 207
     packet.m_data = std::make_shared<network::Payload>();
     
-    // NOTE: MINER_AUTH_INIT uses big-endian encoding per protocol specification
-    // pubkey_len (2 bytes, big-endian)
-    uint16_t pubkey_len = static_cast<uint16_t>(pubkey_data.size());
+    // ═══════════════════════════════════════════════════════════
+    // STEP 1: hashGenesis FIRST (32 bytes) - enables key derivation
+    // ═══════════════════════════════════════════════════════════
+    std::vector<uint8_t> tritium_genesis;
+    if (m_session_manager && !m_session_manager->get_tritium_genesis().empty()) 
+    {
+        tritium_genesis = m_session_manager->get_tritium_genesis();
+        m_logger->info("[Solo Phase 2] Using hashGenesis for ChaCha20 key derivation");
+    }
+    else
+    {
+        tritium_genesis.resize(32, 0);  // 32 zero bytes
+        m_logger->warn("[Solo Phase 2] No genesis - ChaCha20 encryption unavailable");
+    }
+    
+    // Genesis goes FIRST in the packet
+    packet.m_data->insert(packet.m_data->end(), tritium_genesis.begin(), tritium_genesis.end());
+    
+    // ═══════════════════════════════════════════════════════════
+    // STEP 2: Prepare pubkey (optionally ChaCha20 wrapped)
+    // ═══════════════════════════════════════════════════════════
+    std::vector<uint8_t> pubkey_to_send = m_miner_pubkey;
+    bool wrapped = false;
+    
+    // Only wrap if we have a valid genesis (non-zero)
+    bool has_valid_genesis = !tritium_genesis.empty() && 
+        std::any_of(tritium_genesis.begin(), tritium_genesis.end(), [](uint8_t b){ return b != 0; });
+    
+    if (m_enable_chacha20 && has_valid_genesis)
+    {
+        m_logger->info("[Solo Auth] ChaCha20 wrapping ENABLED (genesis-derived key)");
+        
+        // Derive session key from genesis
+        auto session_key = derive_chacha20_session_key(tritium_genesis);
+        auto nonce = ChaCha20Wrapper::generate_nonce();  // Random 12 bytes
+        
+        if (!m_chacha20_wrapper)
+            m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
+        
+        // Use "FALCON_PUBKEY" as AAD for domain separation
+        std::vector<uint8_t> aad{'F','A','L','C','O','N','_','P','U','B','K','E','Y'};
+        
+        auto wrap_result = m_chacha20_wrapper->encrypt(m_miner_pubkey, session_key, nonce, aad);
+        
+        if (wrap_result.success)
+        {
+            // Build wrapped format: nonce(12) + ciphertext+tag(897+16)
+            pubkey_to_send.clear();
+            pubkey_to_send.insert(pubkey_to_send.end(), nonce.begin(), nonce.end());
+            pubkey_to_send.insert(pubkey_to_send.end(), wrap_result.data.begin(), wrap_result.data.end());
+            
+            wrapped = true;
+            m_logger->info("[Solo Auth] ✓ Pubkey wrapped: {} → {} bytes (genesis-derived key)",
+                           m_miner_pubkey.size(), pubkey_to_send.size());
+        }
+        else
+        {
+            m_logger->warn("[Solo Auth] ChaCha20 wrap failed: {}", wrap_result.error_message);
+            m_logger->warn("[Solo Auth] Falling back to unwrapped pubkey");
+        }
+    }
+    else if (m_enable_chacha20 && !has_valid_genesis)
+    {
+        m_logger->warn("[Solo Auth] ChaCha20 requested but no genesis for key derivation");
+        m_logger->warn("[Solo Auth] Sending unwrapped pubkey");
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // STEP 3: pubkey_len + pubkey
+    // ═══════════════════════════════════════════════════════════
+    uint16_t pubkey_len = static_cast<uint16_t>(pubkey_to_send.size());
     packet.m_data->push_back(static_cast<uint8_t>((pubkey_len >> 8) & 0xFF));
     packet.m_data->push_back(static_cast<uint8_t>(pubkey_len & 0xFF));
+    packet.m_data->insert(packet.m_data->end(), pubkey_to_send.begin(), pubkey_to_send.end());
     
-    // pubkey (897 bytes unwrapped, or 925 bytes wrapped)
-    packet.m_data->insert(packet.m_data->end(), pubkey_data.begin(), pubkey_data.end());
-    
-    // miner_id_len (2 bytes, big-endian)
+    // ═══════════════════════════════════════════════════════════
+    // STEP 4: miner_id_len + miner_id
+    // ═══════════════════════════════════════════════════════════
     std::string miner_id = m_miner_id.empty() ? "NexusMiner" : m_miner_id;
     uint16_t miner_id_len = static_cast<uint16_t>(miner_id.size());
     packet.m_data->push_back(static_cast<uint8_t>((miner_id_len >> 8) & 0xFF));
     packet.m_data->push_back(static_cast<uint8_t>(miner_id_len & 0xFF));
-    
-    // miner_id (variable)
     packet.m_data->insert(packet.m_data->end(), miner_id.begin(), miner_id.end());
-    
-    // hashGenesis (32 bytes) - Tritium genesis for reward routing
-    std::vector<uint8_t> tritium_genesis;
-    if (m_session_manager && !m_session_manager->get_tritium_genesis().empty()) {
-        tritium_genesis = m_session_manager->get_tritium_genesis();
-        packet.m_data->insert(packet.m_data->end(), tritium_genesis.begin(), tritium_genesis.end());
-        m_logger->info("[Solo Phase 2] Including hashGenesis in MINER_AUTH_INIT");
-    } else {
-        // Send 32 zero bytes if no genesis configured
-        std::vector<uint8_t> zero_genesis(32, 0);
-        packet.m_data->insert(packet.m_data->end(), zero_genesis.begin(), zero_genesis.end());
-        m_logger->warn("[Solo Phase 2] No tritium_genesis configured - sending zeros");
-    }
     
     packet.m_length = static_cast<uint32_t>(packet.m_data->size());
     
-    m_logger->info("[Solo Phase 2] MINER_AUTH_INIT: pubkey_len={} ({}), miner_id='{}', total_size={}", 
-                   pubkey_len, chacha20_wrapped ? "wrapped" : "unwrapped", miner_id, packet.m_length);
+    // ═══════════════════════════════════════════════════════════
+    // Log summary
+    // ═══════════════════════════════════════════════════════════
+    m_logger->info("");
+    m_logger->info("═══════════════════════════════════════════════════════════");
+    m_logger->info("    MINER_AUTH_INIT (Genesis-First Protocol)");
+    m_logger->info("═══════════════════════════════════════════════════════════");
+    m_logger->info("  Genesis:     {} bytes ({})", tritium_genesis.size(),
+                   has_valid_genesis ? "VALID - key derivation enabled" : "ZERO");
+    m_logger->info("  Public Key:  {} bytes {}", pubkey_len,
+                   wrapped ? "(ChaCha20 wrapped)" : "(unwrapped)");
+    m_logger->info("  Miner ID:    '{}'", miner_id);
+    m_logger->info("  Total Size:  {} bytes", packet.m_length);
+    m_logger->info("═══════════════════════════════════════════════════════════");
+    m_logger->info("");
     
     // Set state to waiting for challenge
     m_auth_state = AuthState::WAITING_FOR_CHALLENGE;

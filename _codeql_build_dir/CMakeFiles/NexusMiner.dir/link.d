@@ -21,11 +21,13 @@ NexusMiner: \
   src/stats/libstats.a \
   src/config/libconfig.a \
   src/network/libnetwork.a \
+  /usr/lib/x86_64-linux-gnu/libssl.a \
+  /usr/lib/x86_64-linux-gnu/libcrypto.a \
   src/LLC/libLLC.a \
   /usr/lib/x86_64-linux-gnu/libcrypto.a \
+  /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libdl.a \
   _deps/spdlog-build/libspdlog.a \
   src/hash/libhash.a \
-  /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libdl.a \
   /usr/lib/gcc/x86_64-linux-gnu/13/libstdc++.so \
   /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libm.so \
   /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libm.so \
@@ -99,15 +101,19 @@ src/config/libconfig.a:
 
 src/network/libnetwork.a:
 
+/usr/lib/x86_64-linux-gnu/libssl.a:
+
+/usr/lib/x86_64-linux-gnu/libcrypto.a:
+
 src/LLC/libLLC.a:
 
 /usr/lib/x86_64-linux-gnu/libcrypto.a:
 
+/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libdl.a:
+
 _deps/spdlog-build/libspdlog.a:
 
 src/hash/libhash.a:
-
-/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libdl.a:
 
 /usr/lib/gcc/x86_64-linux-gnu/13/libstdc++.so:
 

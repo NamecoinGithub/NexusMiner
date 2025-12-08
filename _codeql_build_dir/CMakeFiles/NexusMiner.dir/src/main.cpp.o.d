@@ -308,7 +308,6 @@ CMakeFiles/NexusMiner.dir/src/main.cpp.o: \
  /usr/include/c++/13/variant \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/types.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/stats_printer_config.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/config/inc/config/pool.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/endpoint.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/types.hpp \
  /home/runner/work/NexusMiner/NexusMiner/src/network/inc/network/utility.hpp \
@@ -667,4 +666,9 @@ CMakeFiles/NexusMiner.dir/src/main.cpp.o: \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/asio-src/asio/include/asio/detail/impl/signal_set_service.ipp \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/asio-src/asio/include/asio/detail/static_mutex.hpp \
  /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/asio-src/asio/include/asio/detail/posix_static_mutex.hpp \
- /home/runner/work/NexusMiner/NexusMiner/src/miner_keys.hpp
+ /home/runner/work/NexusMiner/NexusMiner/src/miner_keys.hpp \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/sinks/stdout_color_sinks.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/sinks/ansicolor_sink.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/details/console_globals.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/sinks/sink.h \
+ /home/runner/work/NexusMiner/NexusMiner/_codeql_build_dir/_deps/spdlog-src/include/spdlog/formatter.h
