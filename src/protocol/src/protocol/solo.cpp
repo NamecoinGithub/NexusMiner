@@ -135,7 +135,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Phase 2] Starting Falcon authentication (challenge-response)");
     m_logger->info("[Solo Auth] Using public key ({} bytes)", m_miner_pubkey.size());
     
-    // Genesis reload on reconnect: Check if tritium_genesis is empty and needs reloading
+    // Check if tritium_genesis needs to be configured
     if (m_session_manager && m_session_manager->get_tritium_genesis().empty()) {
         m_logger->info("[Solo Auth] Tritium genesis not set in session manager");
         m_logger->debug("[Solo Auth] Note: Genesis can be configured via set_tritium_genesis() if needed");
@@ -822,17 +822,28 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                                              ? "CONFIGURED" : "NOT CONFIGURED";
                 std::string chacha20_status = m_enable_chacha20 ? "ENABLED" : "DISABLED";
                 
+                // Prepare formatted strings with safe alignment
+                std::stringstream pubkey_line, genesis_line, chacha20_line, session_line;
+                pubkey_line << "║ Public Key:  " << m_miner_pubkey.size() << " bytes";
+                genesis_line << "║ Genesis:     " << genesis_status;
+                chacha20_line << "║ ChaCha20:    " << chacha20_status;
+                session_line << "║ Session ID:  0x" << std::hex << std::setw(8) << std::setfill('0') << m_session_id;
+                
+                // Calculate padding (box width = 59 chars, '║' takes 1 char at end)
+                auto pad_line = [](std::stringstream& ss) -> std::string {
+                    std::string line = ss.str();
+                    int padding = 58 - static_cast<int>(line.length());
+                    if (padding < 0) padding = 0;  // Safety: never negative
+                    return line + std::string(padding, ' ') + "║";
+                };
+                
                 m_logger->info("╔═════════════════════════════════════════════════════════╗");
                 m_logger->info("║       FALCON AUTHENTICATION SUCCESSFUL                  ║");
                 m_logger->info("╠═════════════════════════════════════════════════════════╣");
-                m_logger->info("║ Public Key:  {} bytes{}", m_miner_pubkey.size(), 
-                              std::string(35 - std::to_string(m_miner_pubkey.size()).length(), ' ') + "║");
-                m_logger->info("║ Genesis:     {}{}", genesis_status,
-                              std::string(44 - genesis_status.length(), ' ') + "║");
-                m_logger->info("║ ChaCha20:    {}{}", chacha20_status,
-                              std::string(44 - chacha20_status.length(), ' ') + "║");
-                m_logger->info("║ Session ID:  0x{:08x}{}", m_session_id,
-                              std::string(36, ' ') + "║");
+                m_logger->info(pad_line(pubkey_line));
+                m_logger->info(pad_line(genesis_line));
+                m_logger->info(pad_line(chacha20_line));
+                m_logger->info(pad_line(session_line));
                 m_logger->info("╚═════════════════════════════════════════════════════════╝");
                 
                 m_logger->debug("[Solo Auth]   - Session ID bytes (LE): {:02x} {:02x} {:02x} {:02x}",
@@ -893,39 +904,50 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Interpret error codes based on LLL-TAO implementation
             switch (error_code) {
                 case 0x01:
-                    error_message = "Public key not whitelisted on node";
-                    troubleshooting = "Add -minerallowkey=<pubkey> to nexus.conf";
+                    error_message = "Public key not whitelisted";
+                    troubleshooting = "Add to nexus.conf minerallowkey";
                     break;
                 case 0x02:
                     error_message = "Signature verification failed";
-                    troubleshooting = "Check key pair matches in miner.conf";
+                    troubleshooting = "Check key pair in miner.conf";
                     break;
                 case 0x03:
                     error_message = "Invalid message format";
-                    troubleshooting = "Ensure protocol version matches node";
+                    troubleshooting = "Check protocol version";
                     break;
                 case 0x04:
-                    error_message = "Timestamp out of acceptable range";
+                    error_message = "Timestamp out of range";
                     troubleshooting = "Synchronize system clocks";
                     break;
                 default: {
                     std::stringstream ss;
-                    ss << "Unknown error (code: 0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(error_code) << ")";
+                    ss << "Unknown error 0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(error_code);
                     error_message = ss.str();
-                    troubleshooting = "Check node logs for details";
+                    troubleshooting = "Check node logs";
                     break;
                 }
             }
             
+            // Prepare formatted strings with safe alignment
+            std::stringstream status_line, error_line, action_line;
+            status_line << "║ Status:  0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>((*packet.m_data)[0]);
+            error_line << "║ Error:   " << error_message;
+            action_line << "║ Action:  " << troubleshooting;
+            
+            // Calculate padding (box width = 59 chars)
+            auto pad_line = [](std::stringstream& ss) -> std::string {
+                std::string line = ss.str();
+                int padding = 58 - static_cast<int>(line.length());
+                if (padding < 0) padding = 0;  // Safety: never negative
+                return line + std::string(padding, ' ') + "║";
+            };
+            
             m_logger->error("╔═════════════════════════════════════════════════════════╗");
             m_logger->error("║       FALCON AUTHENTICATION FAILED                      ║");
             m_logger->error("╠═════════════════════════════════════════════════════════╣");
-            m_logger->error("║ Status Code: 0x{:02x}{}", (*packet.m_data)[0],
-                          std::string(42, ' ') + "║");
-            m_logger->error("║ Error:       {}{}", error_message,
-                          std::string(44 - error_message.length(), ' ') + "║");
-            m_logger->error("║ Action:      {}{}", troubleshooting,
-                          std::string(44 - troubleshooting.length(), ' ') + "║");
+            m_logger->error(pad_line(status_line));
+            m_logger->error(pad_line(error_line));
+            m_logger->error(pad_line(action_line));
             m_logger->error("╚═════════════════════════════════════════════════════════╝");
             
             // Log authentication attempt details for debugging
