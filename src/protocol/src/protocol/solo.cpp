@@ -110,6 +110,36 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
     return key;
 }
 
+std::vector<uint8_t> Solo::load_tritium_genesis()
+{
+    // Try to get genesis from session manager first
+    if (m_session_manager && !m_session_manager->get_tritium_genesis().empty()) 
+    {
+        m_logger->info("[Solo Auth] Using genesis from session manager");
+        return m_session_manager->get_tritium_genesis();
+    }
+    
+    // If session manager doesn't have it, reload from persistent storage (handles reconnection)
+    if (!m_persistent_tritium_genesis.empty())
+    {
+        auto genesis = m_persistent_tritium_genesis;
+        
+        // Restore to session manager for future use
+        if (m_session_manager)
+        {
+            m_session_manager->set_tritium_genesis(genesis);
+        }
+        
+        m_logger->info("[Solo Auth] Reloaded tritium_genesis from persistent storage ({} bytes)", genesis.size());
+        return genesis;
+    }
+    
+    // No genesis configured
+    m_logger->warn("[Solo Auth] No tritium_genesis configured - using zero genesis");
+    m_logger->warn("[Solo Auth] ChaCha20 encryption unavailable without valid genesis");
+    return std::vector<uint8_t>(GENESIS_HASH_SIZE, 0);  // 32 zero bytes
+}
+
 // Helper function to check if genesis hash is valid (non-zero)
 // Optimized to return early on first non-zero byte
 static bool is_valid_genesis(const std::vector<uint8_t>& genesis) {
@@ -185,17 +215,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     // ═══════════════════════════════════════════════════════════
     // STEP 1: hashGenesis FIRST (32 bytes) - enables key derivation
     // ═══════════════════════════════════════════════════════════
-    std::vector<uint8_t> tritium_genesis;
-    if (m_session_manager && !m_session_manager->get_tritium_genesis().empty()) 
-    {
-        tritium_genesis = m_session_manager->get_tritium_genesis();
-        m_logger->info("[Solo Phase 2] Using hashGenesis for ChaCha20 key derivation");
-    }
-    else
-    {
-        tritium_genesis = std::vector<uint8_t>(GENESIS_HASH_SIZE, 0);  // 32 zero bytes
-        m_logger->warn("[Solo Phase 2] No genesis - ChaCha20 encryption unavailable");
-    }
+    std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
     
     // Genesis goes FIRST in the packet
     packet.m_data->insert(packet.m_data->end(), tritium_genesis.begin(), tritium_genesis.end());
@@ -272,6 +292,31 @@ network::Shared_payload Solo::login(Login_handler handler)
     packet.m_length = static_cast<uint32_t>(packet.m_data->size());
     
     // ═══════════════════════════════════════════════════════════
+    // Debug: Verify packet is valid before transmission
+    // ═══════════════════════════════════════════════════════════
+    m_logger->debug("[Solo Auth] Packet built: header={}, length={}, data_size={}", 
+                    packet.m_header, packet.m_length, 
+                    packet.m_data ? packet.m_data->size() : 0);
+    
+    if (!packet.is_valid())
+    {
+        m_logger->error("[Solo Auth] CRITICAL: Packet is_valid() returned false!");
+        m_logger->error("[Solo Auth]   header={}, m_length={}, is_auth_packet={}", 
+                        packet.m_header, packet.m_length, packet.is_auth_packet());
+        m_logger->error("[Solo Auth]   Validation state: {}", packet.get_validation_state());
+    }
+    
+    auto bytes = packet.get_bytes();
+    if (!bytes || bytes->empty())
+    {
+        m_logger->error("[Solo Auth] CRITICAL: get_bytes() returned null/empty!");
+        m_logger->error("[Solo Auth] Cannot transmit - payload is null or empty");
+        return network::Shared_payload{};
+    }
+    
+    m_logger->debug("[Solo Auth] Packet validation: SUCCESS - encoded {} bytes", bytes->size());
+    
+    // ═══════════════════════════════════════════════════════════
     // Log summary
     // ═══════════════════════════════════════════════════════════
     m_logger->info("");
@@ -294,7 +339,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     // For now, mark as "in progress"
     handler(true);
     
-    return packet.get_bytes();
+    return bytes;
 }
 
 network::Shared_payload Solo::get_work()
@@ -1291,6 +1336,9 @@ void Solo::set_tritium_genesis(std::vector<uint8_t> const& genesis)
         return;
     }
     
+    // Store persistently to survive reconnections
+    m_persistent_tritium_genesis = genesis;
+    
     if (m_session_manager) {
         m_session_manager->set_tritium_genesis(genesis);
         m_logger->info("[Solo] Tritium genesis hash configured for reward binding");
@@ -1299,6 +1347,11 @@ void Solo::set_tritium_genesis(std::vector<uint8_t> const& genesis)
 
 bool Solo::has_tritium_genesis() const
 {
+    // Check persistent storage first
+    if (!m_persistent_tritium_genesis.empty()) {
+        return true;
+    }
+    
     if (m_session_manager) {
         return !m_session_manager->get_tritium_genesis().empty();
     }
@@ -1406,16 +1459,35 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     
     response_packet.m_length = static_cast<uint32_t>(response_packet.m_data->size());
     
+    // Debug: Verify packet is valid before transmission
+    m_logger->debug("[Solo Auth] MINER_AUTH_RESPONSE packet built: header={}, length={}, data_size={}", 
+                    response_packet.m_header, response_packet.m_length, 
+                    response_packet.m_data ? response_packet.m_data->size() : 0);
+    
+    if (!response_packet.is_valid())
+    {
+        m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_RESPONSE is_valid() returned false!");
+        m_logger->error("[Solo Auth]   header={}, m_length={}, is_auth_packet={}", 
+                        response_packet.m_header, response_packet.m_length, 
+                        response_packet.is_auth_packet());
+        m_logger->error("[Solo Auth]   Validation state: {}", response_packet.get_validation_state());
+        reset_auth_state();
+        return;
+    }
+    
     m_logger->info("[Solo Phase 2] Sending MINER_AUTH_RESPONSE: sig_len={}, total_size={}", 
                    sig_len, response_packet.m_length);
     
     // Validate packet serialization
     auto bytes = response_packet.get_bytes();
     if (!bytes || bytes->empty()) {
+        m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_RESPONSE get_bytes() returned null/empty!");
         m_logger->error("[Solo Phase 2] Failed to serialize MINER_AUTH_RESPONSE packet");
         reset_auth_state();
         return;
     }
+    
+    m_logger->debug("[Solo Auth] MINER_AUTH_RESPONSE validation: SUCCESS - encoded {} bytes", bytes->size());
     
     // Set state to waiting for result
     m_auth_state = AuthState::WAITING_FOR_RESULT;

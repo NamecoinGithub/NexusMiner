@@ -71,6 +71,9 @@ private:
     // Derive ChaCha20 session key from genesis hash
     std::vector<uint8_t> derive_chacha20_session_key(const std::vector<uint8_t>& genesis);
     
+    // Load tritium genesis (session manager or persistent storage)
+    std::vector<uint8_t> load_tritium_genesis();
+    
     // Helper method to send SET_CHANNEL packet
     void send_set_channel(std::shared_ptr<network::Connection> connection);
     
@@ -114,6 +117,9 @@ private:
     
     // Connection for multi-packet authentication flow
     std::shared_ptr<network::Connection> m_connection;
+    
+    // Persistent tritium genesis (preserved across reconnections)
+    std::vector<uint8_t> m_persistent_tritium_genesis;
 };
 
 }
