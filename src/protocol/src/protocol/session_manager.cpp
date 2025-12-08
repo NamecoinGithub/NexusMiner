@@ -69,7 +69,9 @@ void SessionManager::end_session()
     
     m_session.session_id = 0;
     m_session.session_key.clear();
-    m_session.tritium_genesis.clear();
+    // NOTE: Preserve tritium_genesis across session resets to support reconnection
+    // The genesis is configuration data that should persist
+    // m_session.tritium_genesis.clear();  // DO NOT CLEAR - needed for reconnection
     m_session.state = SessionState::DISCONNECTED;
     m_session.keepalive_count = 0;
 }

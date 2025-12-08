@@ -114,6 +114,9 @@ private:
     
     // Connection for multi-packet authentication flow
     std::shared_ptr<network::Connection> m_connection;
+    
+    // Persistent tritium genesis (preserved across reconnections)
+    std::vector<uint8_t> m_persistent_tritium_genesis;
 };
 
 }
