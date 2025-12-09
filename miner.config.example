@@ -1,0 +1,108 @@
+# =============================================================================
+#                    NEXUSMINER CONFIGURATION EXAMPLE
+#              For Stateless Mining with Falcon Authentication
+# =============================================================================
+#
+# TOML Configuration File
+# Comments start with #
+# Strings use quotes: "value"
+# Numbers are unquoted: 8323
+# Booleans are lowercase: true, false
+#
+# =============================================================================
+
+version = 1
+
+# =============================================================================
+#                      NETWORK SETTINGS
+# =============================================================================
+# Connect to your Nexus node
+
+wallet_ip = "127.0.0.1"
+port = 8323
+local_ip = "0.0.0.0"
+
+# =============================================================================
+#                       MINING MODE
+# =============================================================================
+# PRIME - CPU mining (prime number search)
+# HASH  - GPU mining (hash computation)
+
+mining_mode = "PRIME"
+
+# =============================================================================
+#                    TIMING SETTINGS
+# =============================================================================
+# Connection and polling intervals (seconds)
+
+connection_retry_interval = 5
+get_height_interval = 2
+ping_interval = 10
+
+# =============================================================================
+#                        LOGGING
+# =============================================================================
+# log_level: 0=off, 1=error, 2=info, 3=debug
+
+log_level = 2
+logfile = ""
+
+# =============================================================================
+#                  FALCON AUTHENTICATION
+# =============================================================================
+# Generate keys with: ./NexusMiner --create-keys
+
+miner_falcon_pubkey = "<YOUR_897_BYTE_FALCON_PUBLIC_KEY_HEX>"
+miner_falcon_privkey = "<YOUR_1281_BYTE_FALCON_PRIVATE_KEY_HEX>"
+tritium_genesis = "<YOUR_64_CHARACTER_GENESIS_HASH_HEX>"
+
+# =============================================================================
+#                   STATISTICS OUTPUT
+# =============================================================================
+
+[[stats_printers]]
+mode = "console"
+
+# =============================================================================
+#                   MINING REWARDS
+# =============================================================================
+# Get your address via: finance/list/accounts in Nexus wallet
+
+[mining]
+reward_address = "8BMeGoCm4TysEn4MseoEwme9yVwkWRqGPYC4m1iHsFzb16udDRg"
+
+# =============================================================================
+#                     PRIME WORKERS
+# =============================================================================
+# CPU workers for PRIME mining (1 thread per worker)
+
+[[workers]]
+id = "cpu0"
+hardware = "cpu"
+threads = 1
+
+[[workers]]
+id = "cpu1"
+hardware = "cpu"
+threads = 1
+
+[[workers]]
+id = "cpu2"
+hardware = "cpu"
+threads = 1
+
+[[workers]]
+id = "cpu3"
+hardware = "cpu"
+threads = 1
+
+# =============================================================================
+#                      HASH WORKERS
+# =============================================================================
+# GPU workers for HASH mining - uncomment to use
+#
+# [[workers]]
+# id = "gpu0"
+# hardware = "gpu"
+# device = 0
+# =============================================================================
