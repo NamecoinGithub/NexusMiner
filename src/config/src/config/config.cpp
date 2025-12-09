@@ -1,5 +1,6 @@
 
 #include "config/config.hpp"
+#include "config/toml_config.hpp"
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <iostream>
@@ -49,6 +50,43 @@ namespace config
 	{
 	//	m_logger->info("Reading config file {}", miner_config_file);
 
+		// Detect file format based on extension
+		bool is_toml = false;
+		const std::string config_ext = ".config";
+		if (miner_config_file.size() >= config_ext.size())
+		{
+			// Check if filename ends with .config
+			is_toml = (miner_config_file.compare(
+				miner_config_file.size() - config_ext.size(), 
+				config_ext.size(), 
+				config_ext) == 0);
+		}
+
+		// If it's a TOML file, use the TOML parser
+		if (is_toml)
+		{
+			TomlConfig toml_parser(m_logger);
+			if (!toml_parser.parse_file(miner_config_file, *this))
+			{
+				return false;
+			}
+			
+			// TOML parser sets most fields directly, but we still need to:
+			// 1. Set default stats printer (console)
+			if (m_stats_printer_config.empty())
+			{
+				Stats_printer_config stats_printer_config;
+				stats_printer_config.m_mode = Stats_printer_mode::CONSOLE;
+				stats_printer_config.m_printer_mode = Stats_printer_config_console{};
+				m_stats_printer_config.push_back(stats_printer_config);
+			}
+			
+			print_global_config();
+			print_worker_config();
+			return true;
+		}
+
+		// Otherwise, use the JSON parser (existing behavior)
 		std::ifstream config_file(miner_config_file);
 		if (!config_file.is_open())
 		{
@@ -455,6 +493,27 @@ namespace config
 		        m_wallet_ip == "localhost" || 
 		        m_wallet_ip == "::1" ||
 		        m_wallet_ip == "0.0.0.0");
+	}
+	
+	void Config::set_worker_count(std::uint32_t count)
+	{
+		// Clear existing workers
+		m_worker_config.clear();
+		
+		// Create CPU workers
+		for (std::uint32_t i = 0; i < count; ++i)
+		{
+			Worker_config worker_config;
+			worker_config.m_id = "cpu" + std::to_string(i);
+			worker_config.m_mode = Worker_mode::CPU;
+			
+			Worker_config_cpu cpu_config{};
+			cpu_config.m_threads = 1;  // Default to 1 thread per worker
+			cpu_config.m_affinity_mask = 0;  // No affinity by default
+			
+			worker_config.m_worker_mode = cpu_config;
+			m_worker_config.push_back(worker_config);
+		}
 	}
 }
 }
