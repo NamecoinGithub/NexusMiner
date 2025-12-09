@@ -161,6 +161,79 @@ namespace config
                             config.set_log_level(static_cast<std::uint8_t>(level));
                         }
                     }
+                    else if (key == "file")
+                    {
+                        config.set_logfile(parse_string_value(value));
+                    }
+                }
+                else if (current_section == "falcon")
+                {
+                    if (key == "pubkey")
+                    {
+                        config.set_miner_falcon_pubkey(parse_string_value(value));
+                    }
+                    else if (key == "privkey")
+                    {
+                        config.set_miner_falcon_privkey(parse_string_value(value));
+                    }
+                    else if (key == "enable_block_signing")
+                    {
+                        config.set_enable_block_signing(parse_bool_value(value));
+                    }
+                }
+                else if (current_section == "advanced")
+                {
+                    if (key == "connection_retry_interval")
+                    {
+                        config.set_connection_retry_interval(static_cast<std::uint16_t>(parse_int_value(value)));
+                    }
+                    else if (key == "print_statistics_interval")
+                    {
+                        config.set_print_statistics_interval(static_cast<std::uint16_t>(parse_int_value(value)));
+                    }
+                    else if (key == "ping_interval")
+                    {
+                        config.set_ping_interval(static_cast<std::uint16_t>(parse_int_value(value)));
+                    }
+                    else if (key == "get_height_interval")
+                    {
+                        config.set_get_height_interval(static_cast<std::uint16_t>(parse_int_value(value)));
+                    }
+                    else if (key == "enable_chacha20_wrapping")
+                    {
+                        config.set_enable_chacha20_wrapping(parse_bool_value(value));
+                    }
+                }
+                else if (current_section == "tls")
+                {
+                    if (key == "enable")
+                    {
+                        config.set_enable_tls(parse_bool_value(value));
+                    }
+                    else if (key == "ca_cert_path")
+                    {
+                        config.set_tls_ca_cert_path(parse_string_value(value));
+                    }
+                    else if (key == "verify_peer")
+                    {
+                        config.set_tls_verify_peer(parse_bool_value(value));
+                    }
+                    else if (key == "server_name")
+                    {
+                        config.set_tls_server_name(parse_string_value(value));
+                    }
+                    else if (key == "client_cert_path")
+                    {
+                        config.set_tls_client_cert_path(parse_string_value(value));
+                    }
+                    else if (key == "client_key_path")
+                    {
+                        config.set_tls_client_key_path(parse_string_value(value));
+                    }
+                    else if (key == "client_key_password")
+                    {
+                        config.set_tls_client_key_password(parse_string_value(value));
+                    }
                 }
             }
 

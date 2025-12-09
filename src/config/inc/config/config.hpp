@@ -88,6 +88,28 @@ public:
 	void set_worker_count(std::uint32_t count);
 	void set_keepalive_interval(std::uint16_t interval) { m_keepalive_interval = interval; }
 	void set_log_level(std::uint8_t level) { m_log_level = level; }
+	void set_logfile(const std::string& logfile) { m_logfile = logfile; }
+	
+	// Advanced timing setters
+	void set_connection_retry_interval(std::uint16_t interval) { m_connection_retry_interval = interval; }
+	void set_print_statistics_interval(std::uint16_t interval) { m_print_statistics_interval = interval; }
+	void set_ping_interval(std::uint16_t interval) { m_ping_interval = interval; }
+	void set_get_height_interval(std::uint16_t interval) { m_get_height_interval = interval; }
+	
+	// Falcon authentication setters
+	void set_miner_falcon_pubkey(const std::string& pubkey) { m_miner_falcon_pubkey = pubkey; }
+	void set_miner_falcon_privkey(const std::string& privkey) { m_miner_falcon_privkey = privkey; }
+	void set_enable_block_signing(bool enable) { m_enable_block_signing = enable; }
+	
+	// ChaCha20 and TLS setters
+	void set_enable_chacha20_wrapping(bool enable) { m_enable_chacha20_wrapping = enable; }
+	void set_enable_tls(bool enable) { m_enable_tls = enable; }
+	void set_tls_ca_cert_path(const std::string& path) { m_tls_ca_cert_path = path; }
+	void set_tls_verify_peer(bool verify) { m_tls_verify_peer = verify; }
+	void set_tls_server_name(const std::string& name) { m_tls_server_name = name; }
+	void set_tls_client_cert_path(const std::string& path) { m_tls_client_cert_path = path; }
+	void set_tls_client_key_path(const std::string& path) { m_tls_client_key_path = path; }
+	void set_tls_client_key_password(const std::string& password) { m_tls_client_key_password = password; }
 
 private:
 
