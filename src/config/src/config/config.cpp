@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <filesystem>
 
 using json = nlohmann::json;
 
@@ -46,6 +47,40 @@ namespace config
 	}
 
 	bool Config::read_config(std::string const& miner_config_file)
+	{
+		// Determine file format based on extension
+		std::string extension;
+		size_t dot_pos = miner_config_file.rfind('.');
+		if (dot_pos != std::string::npos)
+		{
+			extension = miner_config_file.substr(dot_pos);
+		}
+		
+		// If file has .config extension, use TOML parser
+		if (extension == ".config")
+		{
+			m_logger->info("Detected TOML config format (.config)");
+			bool result = read_toml_config(miner_config_file);
+			if (result)
+			{
+				print_global_config();
+				print_worker_config();
+			}
+			return result;
+		}
+		
+		// For .conf or any other extension, use JSON parser (backward compatibility)
+		m_logger->info("Using JSON config format (.conf)");
+		return read_json_config(miner_config_file);
+	}
+
+	bool Config::read_toml_config(std::string const& miner_config_file)
+	{
+		// Call the external TOML parser
+		return nexusminer::config::read_toml_config(miner_config_file, *this, m_logger);
+	}
+
+	bool Config::read_json_config(std::string const& miner_config_file)
 	{
 	//	m_logger->info("Reading config file {}", miner_config_file);
 
