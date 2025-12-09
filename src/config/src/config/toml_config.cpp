@@ -67,7 +67,8 @@ int64_t TomlParser::parse_int(const std::string& value)
 {
     try {
         return std::stoll(trim(value));
-    } catch (...) {
+    } catch (const std::exception& e) {
+        m_logger->warn("Failed to parse integer value '{}': {}", value, e.what());
         return 0;
     }
 }
@@ -76,7 +77,8 @@ double TomlParser::parse_float(const std::string& value)
 {
     try {
         return std::stod(trim(value));
-    } catch (...) {
+    } catch (const std::exception& e) {
+        m_logger->warn("Failed to parse float value '{}': {}", value, e.what());
         return 0.0;
     }
 }
@@ -286,9 +288,7 @@ bool TomlParser::parse(const std::string& filepath, Config& config)
             {
                 if (key == "reward_address")
                 {
-                    // Use the Config's internal method indirectly
-                    // We need to set this through the config object
-                    // For now, store and let config handle it
+                    // Set the reward address for stateless mining (MINER_SET_REWARD protocol)
                     config.set_reward_address(unquote(value));
                 }
             }
