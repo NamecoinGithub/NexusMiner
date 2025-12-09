@@ -65,6 +65,12 @@ public:
     // Mining Template Interface access (unified READ/FEED system)
     MiningTemplateInterface* get_template_interface() { return m_template_interface.get(); }
     const MiningTemplateInterface* get_template_interface() const { return m_template_interface.get(); }
+    
+    // Stateless mining reward address binding (MINER_SET_REWARD protocol)
+    void set_reward_address(std::string const& address) { m_reward_address = address; }
+    bool has_reward_address() const { return !m_reward_address.empty(); }
+    bool is_reward_bound() const { return m_reward_bound; }
+    network::Shared_payload send_set_reward();
 
 private:
     
@@ -82,6 +88,9 @@ private:
     
     // Helper to reset authentication state on errors
     void reset_auth_state();
+    
+    // Handle reward result response from node (MINER_REWARD_RESULT)
+    void handle_reward_result(const Packet& packet);
 
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;
@@ -120,6 +129,10 @@ private:
     
     // Persistent tritium genesis (preserved across reconnections)
     std::vector<uint8_t> m_persistent_tritium_genesis;
+    
+    // Stateless mining reward address binding (MINER_SET_REWARD protocol)
+    std::string m_reward_address;  // NXS account address for mining rewards
+    bool m_reward_bound;  // True after successful MINER_REWARD_RESULT
 };
 
 }

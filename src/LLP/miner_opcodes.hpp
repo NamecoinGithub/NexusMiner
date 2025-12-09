@@ -227,6 +227,29 @@ enum MinerOpcodes : std::uint8_t
     SESSION_KEEPALIVE = 212,
     
     // ============================================================================
+    // STATELESS MINING REWARD BINDING (213-214)
+    // Phase 2 encrypted reward address binding after Falcon auth
+    // ============================================================================
+    
+    /**
+     * MINER_SET_REWARD: Miner sends encrypted reward address
+     * Direction: Miner -> Node
+     * Payload (ChaCha20 encrypted):
+     *   [encrypted_address(32)] - Decrypted to 32-byte register address
+     * NOTE: Must be sent AFTER successful MINER_AUTH_RESULT establishes ChaCha20
+     */
+    MINER_SET_REWARD = 213,
+    
+    /**
+     * MINER_REWARD_RESULT: Node sends reward binding result
+     * Direction: Node -> Miner
+     * Payload (ChaCha20 encrypted):
+     *   [status(1)] [msg_len(1, optional)] [message(variable, optional)]
+     *   status: 0x01 = success, 0x00 = failure
+     */
+    MINER_REWARD_RESULT = 214,
+    
+    // ============================================================================
     // GENERIC PACKETS (253-254)
     // Protocol-level control messages
     // ============================================================================

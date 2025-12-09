@@ -6,6 +6,7 @@
 #include "stats/stats_collector.hpp"
 #include "LLP/block_utils.hpp"
 #include "LLP/llp_logging.hpp"
+#include "LLP/utils.hpp"
 #include "../miner_keys.hpp"
 #include <openssl/sha.h>
 #include <chrono>
@@ -68,6 +69,8 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_session_manager{nullptr}
 , m_template_interface{nullptr}
 , m_connection{nullptr}
+, m_reward_address{""}  // Empty until configured
+, m_reward_bound{false}  // Not bound until successful MINER_REWARD_RESULT
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -164,6 +167,7 @@ void Solo::reset()
     m_session_id = 0;
     m_auth_timestamp = 0;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
+    m_reward_bound = false;  // Reset reward binding for new session
     
     // Reset session manager
     if (m_session_manager) {
@@ -999,7 +1003,24 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->info("[Solo Connection]   - Session ID: 0x{:08x}", m_session_id);
             }
             
-            // Now send SET_CHANNEL since we're authenticated
+            // Check if we have a reward address to bind
+            if (!m_reward_address.empty())
+            {
+                m_logger->info("[Solo Phase 2] Reward address configured, sending MINER_SET_REWARD");
+                auto reward_payload = send_set_reward();
+                if (reward_payload && !reward_payload->empty() && connection)
+                {
+                    connection->transmit(reward_payload);
+                    // SET_CHANNEL will be sent after receiving MINER_REWARD_RESULT
+                    return;
+                }
+                else
+                {
+                    m_logger->warn("[Solo Reward] Failed to send reward address, continuing without binding");
+                }
+            }
+            
+            // Now send SET_CHANNEL since we're authenticated (no reward binding)
             send_set_channel(connection);
         }
         else {
@@ -1277,6 +1298,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
     }
+    else if (packet.m_header == Packet::MINER_REWARD_RESULT)
+    {
+        // Phase 2: Handle MINER_REWARD_RESULT (reward binding result from node)
+        handle_reward_result(packet);
+    }
     else
     {
         m_logger->debug("Invalid header received: 0x{:02x}", packet.m_header);
@@ -1496,6 +1522,207 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     } else {
         m_logger->error("[Solo Phase 2] Cannot send MINER_AUTH_RESPONSE - no connection stored");
         reset_auth_state();
+    }
+}
+
+network::Shared_payload Solo::send_set_reward()
+{
+    // Verify we have a reward address configured
+    if (m_reward_address.empty()) {
+        m_logger->warn("[Solo Reward] No reward address configured - skipping MINER_SET_REWARD");
+        return nullptr;
+    }
+    
+    // Verify we are authenticated (ChaCha20 encryption requires established session)
+    if (!m_authenticated) {
+        m_logger->error("[Solo Reward] Cannot send reward address - not authenticated");
+        return nullptr;
+    }
+    
+    m_logger->info("[Solo Reward] Sending MINER_SET_REWARD (encrypted)");
+    m_logger->info("[Solo Reward]   Address: {}", m_reward_address);
+    
+    // Decode the base58 address to bytes
+    std::vector<uint8_t> vAddress = decode_base58(m_reward_address);
+    
+    if (vAddress.empty()) {
+        m_logger->error("[Solo Reward] Invalid reward address - base58 decode failed");
+        return nullptr;
+    }
+    
+    // NXS register addresses are typically 32 bytes when decoded
+    // But the raw decoded length may vary; the node will validate
+    m_logger->debug("[Solo Reward] Decoded address: {} bytes", vAddress.size());
+    
+    // Build the payload - the address bytes (will be encrypted by ChaCha20)
+    std::vector<uint8_t> payload_data;
+    
+    // If ChaCha20 encryption is enabled, encrypt the address
+    if (m_enable_chacha20 && m_chacha20_wrapper)
+    {
+        // Load tritium genesis for key derivation
+        std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
+        bool has_valid_genesis = is_valid_genesis(tritium_genesis);
+        
+        if (has_valid_genesis)
+        {
+            try {
+                auto session_key = derive_chacha20_session_key(tritium_genesis);
+                auto nonce = ChaCha20Wrapper::generate_nonce();
+                
+                // Use AAD for domain separation
+                static const std::vector<uint8_t> AAD_REWARD{'R','E','W','A','R','D','_','A','D','D','R'};
+                
+                auto encrypt_result = m_chacha20_wrapper->encrypt(vAddress, session_key, nonce, AAD_REWARD);
+                
+                if (encrypt_result.success)
+                {
+                    // Build encrypted format: nonce(12) + ciphertext+tag
+                    payload_data.insert(payload_data.end(), nonce.begin(), nonce.end());
+                    payload_data.insert(payload_data.end(), encrypt_result.data.begin(), encrypt_result.data.end());
+                    
+                    m_logger->info("[Solo Reward] Address encrypted: {} → {} bytes",
+                                   vAddress.size(), payload_data.size());
+                }
+                else
+                {
+                    m_logger->error("[Solo Reward] ChaCha20 encryption failed: {}", encrypt_result.error_message);
+                    return nullptr;
+                }
+            }
+            catch (const std::exception& e) {
+                m_logger->error("[Solo Reward] Encryption failed: {}", e.what());
+                return nullptr;
+            }
+        }
+        else
+        {
+            m_logger->error("[Solo Reward] ChaCha20 enabled but no valid genesis for key derivation");
+            return nullptr;
+        }
+    }
+    else
+    {
+        // Send unencrypted (only valid for localhost connections)
+        m_logger->warn("[Solo Reward] ChaCha20 not enabled - sending reward address unencrypted");
+        payload_data = vAddress;
+    }
+    
+    // Build the MINER_SET_REWARD packet
+    Packet packet(Packet::MINER_SET_REWARD);
+    packet.m_data = std::make_shared<network::Payload>(payload_data);
+    packet.m_length = static_cast<uint32_t>(payload_data.size());
+    
+    m_logger->info("[Solo Reward] MINER_SET_REWARD packet built: {} bytes", packet.m_length);
+    
+    return packet.get_bytes();
+}
+
+void Solo::handle_reward_result(const Packet& packet)
+{
+    m_logger->info("[Solo Reward] Received MINER_REWARD_RESULT");
+    
+    // Validate packet data
+    if (!packet.m_data || packet.m_length < 1) {
+        m_logger->error("[Solo Reward] Invalid MINER_REWARD_RESULT packet - no data");
+        m_reward_bound = false;
+        return;
+    }
+    
+    std::vector<uint8_t> result_data;
+    
+    // Decrypt if ChaCha20 is enabled
+    if (m_enable_chacha20 && m_chacha20_wrapper && packet.m_length > 13)
+    {
+        // Load genesis for decryption
+        std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
+        if (is_valid_genesis(tritium_genesis))
+        {
+            try {
+                auto session_key = derive_chacha20_session_key(tritium_genesis);
+                
+                // Extract nonce (first 12 bytes)
+                std::vector<uint8_t> nonce(packet.m_data->begin(), packet.m_data->begin() + 12);
+                std::vector<uint8_t> ciphertext(packet.m_data->begin() + 12, packet.m_data->end());
+                
+                // Use AAD for domain separation
+                static const std::vector<uint8_t> AAD_REWARD{'R','E','W','A','R','D','_','A','D','D','R'};
+                
+                auto decrypt_result = m_chacha20_wrapper->decrypt(ciphertext, session_key, nonce, AAD_REWARD);
+                
+                if (decrypt_result.success) {
+                    result_data = decrypt_result.data;
+                } else {
+                    m_logger->error("[Solo Reward] Failed to decrypt result: {}", decrypt_result.error_message);
+                    m_reward_bound = false;
+                    return;
+                }
+            }
+            catch (const std::exception& e) {
+                m_logger->error("[Solo Reward] Decryption failed: {}", e.what());
+                m_reward_bound = false;
+                return;
+            }
+        }
+        else
+        {
+            // No genesis, try unencrypted
+            result_data.assign(packet.m_data->begin(), packet.m_data->end());
+        }
+    }
+    else
+    {
+        // Unencrypted result
+        result_data.assign(packet.m_data->begin(), packet.m_data->end());
+    }
+    
+    if (result_data.empty()) {
+        m_logger->error("[Solo Reward] Empty result data after processing");
+        m_reward_bound = false;
+        return;
+    }
+    
+    // Parse status byte
+    uint8_t status = result_data[0];
+    
+    if (status == 0x01)
+    {
+        m_logger->info("╔═════════════════════════════════════════════════════════╗");
+        m_logger->info("║       REWARD ADDRESS BINDING SUCCESSFUL                 ║");
+        m_logger->info("╠═════════════════════════════════════════════════════════╣");
+        m_logger->info("║ Address: {}                                              ║", 
+            m_reward_address.substr(0, std::min(m_reward_address.length(), size_t(40))));
+        m_logger->info("╚═════════════════════════════════════════════════════════╝");
+        
+        m_reward_bound = true;
+    }
+    else
+    {
+        // Parse optional error message
+        std::string error_message = "Unknown error";
+        if (result_data.size() >= 2)
+        {
+            uint8_t msg_len = result_data[1];
+            if (result_data.size() >= 2 + msg_len)
+            {
+                error_message = std::string(result_data.begin() + 2, result_data.begin() + 2 + msg_len);
+            }
+        }
+        
+        m_logger->error("╔═════════════════════════════════════════════════════════╗");
+        m_logger->error("║       REWARD ADDRESS BINDING FAILED                     ║");
+        m_logger->error("╠═════════════════════════════════════════════════════════╣");
+        m_logger->error("║ Error: {}                                                ║", error_message);
+        m_logger->error("╚═════════════════════════════════════════════════════════╝");
+        
+        m_reward_bound = false;
+    }
+    
+    // Continue with mining flow - send SET_CHANNEL to proceed
+    if (m_connection)
+    {
+        m_logger->info("[Solo Reward] Continuing with mining flow, sending SET_CHANNEL");
+        send_set_channel(m_connection);
     }
 }
 

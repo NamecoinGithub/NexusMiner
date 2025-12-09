@@ -216,6 +216,33 @@ namespace config
 			{
 				j.at("tls_client_key_password").get_to(m_tls_client_key_password);
 			}
+			
+			// Parse mining configuration for stateless mining (MINER_SET_REWARD protocol)
+			if (j.contains("mining"))
+			{
+				auto& mining = j["mining"];
+				
+				if (mining.contains("reward_address"))
+				{
+					m_mining.m_reward_address = mining["reward_address"].get<std::string>();
+					m_logger->info("Mining reward address configured: {}", m_mining.m_reward_address);
+					
+					// Validate address format (should be base58 encoded, ~50 chars for NXS addresses)
+					if (m_mining.m_reward_address.length() < 40 || m_mining.m_reward_address.length() > 60)
+					{
+						m_logger->warn("mining.reward_address appears unusual length ({}) - verify address format", 
+						              m_mining.m_reward_address.length());
+					}
+				}
+				else
+				{
+					m_logger->debug("mining.reward_address not specified - stateless reward binding disabled");
+				}
+			}
+			else
+			{
+				m_logger->debug("No mining configuration block - stateless reward binding disabled");
+			}
 
 			print_global_config();
 			print_worker_config();

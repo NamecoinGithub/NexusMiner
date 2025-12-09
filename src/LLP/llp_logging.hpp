@@ -75,6 +75,10 @@ namespace nexusminer
 			SESSION_START = LLP::SESSION_START,
 			SESSION_KEEPALIVE = LLP::SESSION_KEEPALIVE,
 
+			/** STATELESS MINING REWARD BINDING (Phase 2 - Encrypted) **/
+			MINER_SET_REWARD = LLP::MINER_SET_REWARD,
+			MINER_REWARD_RESULT = LLP::MINER_REWARD_RESULT,
+
 			// LEGACY
 			BLOCK = LLP::BLOCK,
 			STALE = LLP::STALE,
@@ -126,6 +130,8 @@ namespace nexusminer
 			case LLP_Headers::MINER_AUTH_RESULT: return "MINER_AUTH_RESULT";
 			case LLP_Headers::SESSION_START: return "SESSION_START";
 			case LLP_Headers::SESSION_KEEPALIVE: return "SESSION_KEEPALIVE";
+			case LLP_Headers::MINER_SET_REWARD: return "MINER_SET_REWARD";
+			case LLP_Headers::MINER_REWARD_RESULT: return "MINER_REWARD_RESULT";
 			case LLP_Headers::PING: return "PING";
 			case LLP_Headers::CLOSE: return "CLOSE";
 			default: return "UNKNOWN";

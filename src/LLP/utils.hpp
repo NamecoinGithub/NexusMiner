@@ -139,6 +139,83 @@ inline double bytes2double(std::vector<uint8_t> const& BYTES)
 //	return time2datetimestring(time(0));
 //}
 
+/**
+ * @brief Base58 character alphabet used by NXS addresses
+ * This is the standard Bitcoin Base58 alphabet
+ */
+static const char* const BASE58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+/**
+ * @brief Decode a Base58-encoded string to raw bytes
+ * 
+ * Used for decoding NXS account addresses to their 32-byte register representation.
+ * 
+ * @param str Base58-encoded string
+ * @return Decoded bytes, or empty vector if decoding fails
+ */
+inline std::vector<uint8_t> decode_base58(const std::string& str)
+{
+    // Build reverse lookup table for base58 characters
+    static const int8_t base58_map[256] = {
+        -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
+        -1, 0, 1, 2, 3, 4, 5, 6,  7, 8,-1,-1,-1,-1,-1,-1,  // 0-9
+        -1, 9,10,11,12,13,14,15, 16,-1,17,18,19,20,21,-1,  // A-O
+        22,23,24,25,26,27,28,29, 30,31,32,-1,-1,-1,-1,-1,  // P-Z
+        -1,33,34,35,36,37,38,39, 40,41,42,43,-1,44,45,46,  // a-n
+        47,48,49,50,51,52,53,54, 55,56,57,-1,-1,-1,-1,-1,  // o-z
+        -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
+    };
+    
+    std::vector<uint8_t> result;
+    result.reserve(str.length());
+    
+    // Count leading '1' characters (will become leading 0x00 bytes)
+    size_t leading_zeros = 0;
+    for (size_t i = 0; i < str.length() && str[i] == '1'; ++i) {
+        ++leading_zeros;
+    }
+    
+    // Allocate enough space (base58 encoding increases size by ~37%)
+    std::vector<uint8_t> b256(str.length() * 733 / 1000 + 1, 0);
+    
+    // Process each character
+    for (size_t i = 0; i < str.length(); ++i) {
+        int8_t carry = base58_map[static_cast<uint8_t>(str[i])];
+        if (carry == -1) {
+            // Invalid character
+            return std::vector<uint8_t>();
+        }
+        
+        // Multiply by 58 and add carry
+        for (int j = static_cast<int>(b256.size()) - 1; j >= 0; --j) {
+            int temp = static_cast<int>(b256[j]) * 58 + carry;
+            b256[j] = static_cast<uint8_t>(temp % 256);
+            carry = static_cast<int8_t>(temp / 256);
+        }
+    }
+    
+    // Skip leading zeros in b256
+    auto it = b256.begin();
+    while (it != b256.end() && *it == 0) {
+        ++it;
+    }
+    
+    // Build result with leading zeros + decoded data
+    result.assign(leading_zeros, 0x00);
+    result.insert(result.end(), it, b256.end());
+    
+    return result;
+}
+
 
 }
 
