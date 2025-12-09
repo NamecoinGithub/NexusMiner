@@ -233,7 +233,8 @@ namespace config
         key = trim(line.substr(0, eq_pos));
         value = trim(line.substr(eq_pos + 1));
         
-        return !key.empty() && !value.empty();
+        // Key must not be empty, but value can be empty (for optional settings)
+        return !key.empty();
     }
 
     std::string TomlConfig::parse_string_value(const std::string& value)
@@ -267,8 +268,14 @@ namespace config
         {
             return std::stoi(cleaned);
         }
-        catch (...)
+        catch (const std::invalid_argument& e)
         {
+            // Invalid integer format - return default
+            return 0;
+        }
+        catch (const std::out_of_range& e)
+        {
+            // Integer out of range - return default
             return 0;
         }
     }
