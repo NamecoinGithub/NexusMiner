@@ -14,10 +14,36 @@ FPGAs are the most efficient hardware for mining the Nexus Hash channel.  Blackm
 ## GPU Mining
 GPUs are the most efficient hardware for mining the Nexus Prime channel.  Supported GPUs are Nvidia GTX/RTX 10x0, 20x0, and 30x0 series, and Radeon RX6000 series.  Nvidia RTX 20x0 and 30x0 GPUs have the best performance.  Hash channel mining with Nvidia GPUs is also supported. 
 
+ ## Configuration Formats
 
- ## miner.conf Configuration File
-
-  NexusMiner uses a unified `.conf` configuration format with ALL features including power controls.
+  NexusMiner supports two configuration formats:
+  
+  ### TOML Format (.config) - **NEW!** Easier and More Readable
+  
+  Simple, clean syntax perfect for most users:
+  ```toml
+  [wallet]
+  ip = "127.0.0.1"
+  port = 8323
+  
+  [mining]
+  channel = 1                    # 1=Prime, 2=Hash
+  genesis = "YOUR_GENESIS_HASH"
+  reward_address = "YOUR_NXS_ADDRESS"
+  
+  [workers]
+  count = 8
+  ```
+  
+  **TOML Example Files:**
+  - `miner-solo-prime.config` - Prime mining template
+  - `miner-solo-hash.config` - Hash mining template
+  - `MASTER-REFERENCE.config` - Complete TOML documentation
+  - See [docs/toml_configuration.md](docs/toml_configuration.md) for full guide
+  
+  ### JSON Format (.conf) - Traditional Format
+  
+  Full-featured format with advanced options:
 
   **Essential Configuration Options:**
   ```json
