@@ -26,6 +26,8 @@ struct MiningConfig
 
 class Config
 {
+	friend class TomlConfig;  // Allow TOML parser to use setters
+	
 public:
 
 	explicit Config(std::shared_ptr<spdlog::logger> logger);
@@ -75,6 +77,17 @@ public:
 	MiningConfig const& get_mining() const { return m_mining; }
 	bool has_reward_address() const { return !m_mining.m_reward_address.empty(); }
 	std::string const& get_reward_address() const { return m_mining.m_reward_address; }
+	
+	// Setters for TOML parser
+	void set_wallet_ip(const std::string& ip) { m_wallet_ip = ip; }
+	void set_port(std::uint16_t port) { m_port = port; }
+	void set_local_ip(const std::string& ip) { m_local_ip = ip; }
+	void set_mining_mode(Mining_mode mode) { m_mining_mode = mode; }
+	void set_tritium_genesis(const std::string& genesis) { m_tritium_genesis = genesis; }
+	void set_reward_address(const std::string& address) { m_mining.m_reward_address = address; }
+	void set_worker_count(std::uint32_t count);
+	void set_keepalive_interval(std::uint16_t interval) { m_keepalive_interval = interval; }
+	void set_log_level(std::uint8_t level) { m_log_level = level; }
 
 private:
 
