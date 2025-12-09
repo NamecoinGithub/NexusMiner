@@ -99,6 +99,14 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             m_logger->info("[Worker_manager] Block signing DISABLED (default for performance)");
         }
         
+        // Configure reward address for stateless mining (MINER_SET_REWARD protocol)
+        if (m_config.has_reward_address()) {
+            solo_protocol->set_reward_address(m_config.get_reward_address());
+            m_logger->info("[Worker_manager] Reward address configured: {}", m_config.get_reward_address());
+        } else {
+            m_logger->debug("[Worker_manager] No reward address configured - using node default");
+        }
+        
         m_logger->info("[Worker_manager] Falcon keys loaded from config");
         m_logger->info("[Worker_manager] Auth address: {}", m_config.get_local_ip());
         

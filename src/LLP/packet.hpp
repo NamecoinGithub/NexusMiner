@@ -84,6 +84,10 @@ namespace nexusminer
 			SESSION_START = LLP::SESSION_START,
 			SESSION_KEEPALIVE = LLP::SESSION_KEEPALIVE,
 
+			/** STATELESS MINING REWARD BINDING (Phase 2 - Encrypted) **/
+			MINER_SET_REWARD = LLP::MINER_SET_REWARD,
+			MINER_REWARD_RESULT = LLP::MINER_REWARD_RESULT,
+
 			// LEGACY - kept for pool compatibility
 			BLOCK = LLP::BLOCK,
 			STALE = LLP::STALE,
@@ -170,10 +174,11 @@ namespace nexusminer
 		 * - MINER_AUTH_RESPONSE (209): signature data
 		 * - MINER_AUTH_RESULT (210): status + optional session_id
 		 * - SESSION_START (211), SESSION_KEEPALIVE (212): session data
+		 * - MINER_SET_REWARD (213), MINER_REWARD_RESULT (214): encrypted reward data
 		 */
 		inline bool is_auth_packet() const
 		{
-			return (m_header >= MINER_AUTH_INIT && m_header <= SESSION_KEEPALIVE);
+			return (m_header >= MINER_AUTH_INIT && m_header <= MINER_REWARD_RESULT);
 		}
 
 		/**

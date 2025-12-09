@@ -18,6 +18,12 @@ namespace config
 // Tritium GenesisHash validation constant
 constexpr size_t TRITIUM_GENESIS_HEX_LENGTH = 64;  // 32 bytes as hex = 64 chars
 
+// Mining configuration for stateless mining (MINER_SET_REWARD protocol)
+struct MiningConfig
+{
+    std::string m_reward_address;  // NXS account address for mining rewards
+};
+
 class Config
 {
 public:
@@ -64,6 +70,11 @@ public:
 	std::string const& get_tls_client_cert_path() const { return m_tls_client_cert_path; }
 	std::string const& get_tls_client_key_path() const { return m_tls_client_key_path; }
 	std::string const& get_tls_client_key_password() const { return m_tls_client_key_password; }
+	
+	// Mining configuration for stateless mining (MINER_SET_REWARD protocol)
+	MiningConfig const& get_mining() const { return m_mining; }
+	bool has_reward_address() const { return !m_mining.m_reward_address.empty(); }
+	std::string const& get_reward_address() const { return m_mining.m_reward_address; }
 
 private:
 
@@ -115,6 +126,9 @@ private:
 	std::string m_tls_client_cert_path;  // Path to client certificate (PEM format)
 	std::string m_tls_client_key_path;  // Path to client private key (PEM format)
 	std::string m_tls_client_key_password;  // Password for client private key (optional)
+	
+	// Mining configuration for stateless mining (MINER_SET_REWARD protocol)
+	MiningConfig m_mining;
 
 };
 }
