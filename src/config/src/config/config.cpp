@@ -11,6 +11,11 @@ namespace nexusminer
 {
 namespace config
 {
+	// NXS address validation constants
+	// Base58 encoded NXS addresses are typically 49-52 characters
+	constexpr size_t NXS_ADDRESS_MIN_LENGTH = 40;  // Minimum expected length
+	constexpr size_t NXS_ADDRESS_MAX_LENGTH = 60;  // Maximum expected length
+
 	Config::Config(std::shared_ptr<spdlog::logger> logger)
 		: m_logger{std::move(logger)}
 		, m_version{1}
@@ -228,7 +233,8 @@ namespace config
 					m_logger->info("Mining reward address configured: {}", m_mining.m_reward_address);
 					
 					// Validate address format (should be base58 encoded, ~50 chars for NXS addresses)
-					if (m_mining.m_reward_address.length() < 40 || m_mining.m_reward_address.length() > 60)
+					if (m_mining.m_reward_address.length() < NXS_ADDRESS_MIN_LENGTH || 
+					    m_mining.m_reward_address.length() > NXS_ADDRESS_MAX_LENGTH)
 					{
 						m_logger->warn("mining.reward_address appears unusual length ({}) - verify address format", 
 						              m_mining.m_reward_address.length());

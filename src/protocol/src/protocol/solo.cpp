@@ -21,6 +21,7 @@ namespace protocol
 
 // Protocol constants
 constexpr size_t GENESIS_HASH_SIZE = 32;  // Tritium genesis hash size
+constexpr size_t ADDRESS_DISPLAY_TRUNCATE = 40;  // Max characters to display for addresses in logs
 
 // ChaCha20 key derivation domain separator
 static const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
@@ -1691,7 +1692,7 @@ void Solo::handle_reward_result(const Packet& packet)
         m_logger->info("║       REWARD ADDRESS BINDING SUCCESSFUL                 ║");
         m_logger->info("╠═════════════════════════════════════════════════════════╣");
         m_logger->info("║ Address: {}                                              ║", 
-            m_reward_address.substr(0, std::min(m_reward_address.length(), size_t(40))));
+            m_reward_address.substr(0, std::min(m_reward_address.length(), ADDRESS_DISPLAY_TRUNCATE)));
         m_logger->info("╚═════════════════════════════════════════════════════════╝");
         
         m_reward_bound = true;

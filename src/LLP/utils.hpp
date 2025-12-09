@@ -140,12 +140,6 @@ inline double bytes2double(std::vector<uint8_t> const& BYTES)
 //}
 
 /**
- * @brief Base58 character alphabet used by NXS addresses
- * This is the standard Bitcoin Base58 alphabet
- */
-static const char* const BASE58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-/**
  * @brief Decode a Base58-encoded string to raw bytes
  * 
  * Used for decoding NXS account addresses to their 32-byte register representation.
@@ -155,7 +149,8 @@ static const char* const BASE58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdef
  */
 inline std::vector<uint8_t> decode_base58(const std::string& str)
 {
-    // Build reverse lookup table for base58 characters
+    // Reverse lookup table for base58 characters (Bitcoin/NXS alphabet)
+    // Maps ASCII character to base58 digit value (0-57), -1 for invalid
     static const int8_t base58_map[256] = {
         -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
         -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1,
