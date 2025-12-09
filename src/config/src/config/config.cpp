@@ -52,10 +52,14 @@ namespace config
 
 		// Detect file format based on extension
 		bool is_toml = false;
-		if (miner_config_file.size() >= 7)
+		const std::string config_ext = ".config";
+		if (miner_config_file.size() >= config_ext.size())
 		{
-			std::string ext = miner_config_file.substr(miner_config_file.size() - 7);
-			is_toml = (ext == ".config");
+			// Check if filename ends with .config
+			is_toml = (miner_config_file.compare(
+				miner_config_file.size() - config_ext.size(), 
+				config_ext.size(), 
+				config_ext) == 0);
 		}
 
 		// If it's a TOML file, use the TOML parser

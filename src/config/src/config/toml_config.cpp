@@ -1,6 +1,7 @@
 #include "config/toml_config.hpp"
 #include "config/config.hpp"
 #include "config/types.hpp"
+#include "config/worker_config.hpp"
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <sstream>
@@ -11,6 +12,10 @@ namespace nexusminer
 {
 namespace config
 {
+    // Constants for keepalive interval validation
+    constexpr int MIN_KEEPALIVE_HOURS = 1;
+    constexpr int MAX_KEEPALIVE_HOURS = 168;  // 1 week
+    
     TomlConfig::TomlConfig(std::shared_ptr<spdlog::logger> logger)
         : m_logger(std::move(logger))
     {
@@ -140,9 +145,9 @@ namespace config
                     else if (key == "keepalive_interval")
                     {
                         int interval = parse_int_value(value);
-                        // Clamp to reasonable range: 1-168 hours (1 hour - 1 week)
-                        if (interval < 1) interval = 1;
-                        if (interval > 168) interval = 168;
+                        // Clamp to reasonable range
+                        if (interval < MIN_KEEPALIVE_HOURS) interval = MIN_KEEPALIVE_HOURS;
+                        if (interval > MAX_KEEPALIVE_HOURS) interval = MAX_KEEPALIVE_HOURS;
                         config.set_keepalive_interval(static_cast<std::uint16_t>(interval));
                     }
                 }
@@ -162,7 +167,24 @@ namespace config
             // Create worker configurations after parsing all settings
             if (worker_count > 0)
             {
-                config.set_worker_count(static_cast<std::uint32_t>(worker_count));
+                // Clear existing workers
+                config.m_worker_config.clear();
+                
+                // Create CPU workers with configured settings
+                for (int i = 0; i < worker_count; ++i)
+                {
+                    Worker_config worker_config;
+                    worker_config.m_id = "cpu" + std::to_string(i);
+                    worker_config.m_mode = Worker_mode::CPU;
+                    
+                    Worker_config_cpu cpu_config{};
+                    cpu_config.m_threads = static_cast<std::uint16_t>(cpu_threads);
+                    cpu_config.m_affinity_mask = 0;  // No affinity by default
+                    cpu_config.m_enable_efficiency_cores = efficiency_cores;
+                    
+                    worker_config.m_worker_mode = cpu_config;
+                    config.m_worker_config.push_back(worker_config);
+                }
             }
 
             return true;
