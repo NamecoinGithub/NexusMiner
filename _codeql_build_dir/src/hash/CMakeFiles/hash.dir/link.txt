@@ -1,2 +1,0 @@
-/usr/bin/ar qc libhash.a CMakeFiles/hash.dir/src/hash/nexus_keccak.cpp.o CMakeFiles/hash.dir/src/hash/nexus_skein.cpp.o
-/usr/bin/ranlib libhash.a
