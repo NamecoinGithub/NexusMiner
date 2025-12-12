@@ -213,6 +213,12 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Phase 2] Starting Falcon authentication (challenge-response)");
     m_logger->info("[Solo Auth] Using public key ({} bytes)", m_miner_pubkey.size());
     
+    // Initialize authentication timestamp for this login attempt
+    m_auth_timestamp = static_cast<uint64_t>(
+        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
+    m_logger->info("[Solo Auth] Authentication timestamp set: {} (0x{:016x})", 
+                   m_auth_timestamp, m_auth_timestamp);
+    
     Packet packet(Packet::MINER_AUTH_INIT);  // 207 - m_is_valid = true automatically
     packet.m_data = std::make_shared<network::Payload>();
     
