@@ -214,8 +214,9 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Auth] Using public key ({} bytes)", m_miner_pubkey.size());
     
     // Initialize authentication timestamp for this login attempt
+    auto current_time = std::chrono::system_clock::now();
     m_auth_timestamp = static_cast<uint64_t>(
-        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
+        std::chrono::system_clock::to_time_t(current_time));
     m_logger->info("[Solo Auth] Authentication timestamp set: {} (0x{:016x})", 
                    m_auth_timestamp, m_auth_timestamp);
     
