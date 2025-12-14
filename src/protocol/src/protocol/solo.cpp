@@ -31,6 +31,24 @@ static const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
 // ChaCha20 AAD for Falcon public key encryption (as vector for efficiency)
 static const std::vector<uint8_t> AAD_DOMAIN_VEC{'F','A','L','C','O','N','_','P','U','B','K','E','Y'};
 
+/* AAD (Additional Authenticated Data) constants for ChaCha20-Poly1305 AEAD
+ * These MUST match the node's expectations for domain separation.
+ * See: LLL-TAO/src/LLP/stateless_miner.cpp line 48-50 */
+
+/** AAD for encrypting MINER_SET_REWARD payload (reward address)
+ *  Node expects: "REWARD_ADDRESS" (15 bytes) */
+static const std::vector<uint8_t> AAD_REWARD_ADDRESS{
+    'R','E','W','A','R','D','_',
+    'A','D','D','R','E','S','S'
+};
+
+/** AAD for decrypting MINER_REWARD_RESULT response
+ *  Node uses: "REWARD_RESULT" (13 bytes) */
+static const std::vector<uint8_t> AAD_REWARD_RESULT{
+    'R','E','W','A','R','D','_',
+    'R','E','S','U','L','T'
+};
+
 // Helper function to serialize uint64 to little-endian bytes
 static void append_uint64_le(std::vector<uint8_t>& dest, uint64_t value) {
     for (int i = 0; i < 8; ++i) {
@@ -1603,10 +1621,8 @@ network::Shared_payload Solo::send_set_reward()
                 auto session_key = derive_chacha20_session_key(tritium_genesis);
                 auto nonce = ChaCha20Wrapper::generate_nonce();
                 
-                // Use AAD for domain separation
-                static const std::vector<uint8_t> AAD_REWARD{'R','E','W','A','R','D','_','A','D','D','R'};
-                
-                auto encrypt_result = m_chacha20_wrapper->encrypt(vAddress, session_key, nonce, AAD_REWARD);
+                // Encrypt reward address using matching AAD
+                auto encrypt_result = m_chacha20_wrapper->encrypt(vAddress, session_key, nonce, AAD_REWARD_ADDRESS);
                 
                 if (encrypt_result.success)
                 {
@@ -1616,6 +1632,7 @@ network::Shared_payload Solo::send_set_reward()
                     
                     m_logger->info("[Solo Reward] Address encrypted: {} → {} bytes",
                                    vAddress.size(), payload_data.size());
+                    m_logger->debug("[Solo Reward] Encrypted with AAD: REWARD_ADDRESS ({} bytes)", AAD_REWARD_ADDRESS.size());
                 }
                 else
                 {
@@ -1678,13 +1695,12 @@ void Solo::handle_reward_result(const Packet& packet)
                 std::vector<uint8_t> nonce(packet.m_data->begin(), packet.m_data->begin() + 12);
                 std::vector<uint8_t> ciphertext(packet.m_data->begin() + 12, packet.m_data->end());
                 
-                // Use AAD for domain separation
-                static const std::vector<uint8_t> AAD_REWARD{'R','E','W','A','R','D','_','A','D','D','R'};
-                
-                auto decrypt_result = m_chacha20_wrapper->decrypt(ciphertext, session_key, nonce, AAD_REWARD);
+                // Decrypt response using matching AAD
+                auto decrypt_result = m_chacha20_wrapper->decrypt(ciphertext, session_key, nonce, AAD_REWARD_RESULT);
                 
                 if (decrypt_result.success) {
                     result_data = decrypt_result.data;
+                    m_logger->debug("[Solo Reward] Decrypted with AAD: REWARD_RESULT ({} bytes)", AAD_REWARD_RESULT.size());
                 } else {
                     m_logger->error("[Solo Reward] Failed to decrypt result: {}", decrypt_result.error_message);
                     m_reward_bound = false;
