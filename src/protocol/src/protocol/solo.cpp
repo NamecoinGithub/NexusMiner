@@ -23,6 +23,7 @@ namespace protocol
 constexpr size_t GENESIS_HASH_SIZE = 32;  // Tritium genesis hash size
 constexpr size_t ADDRESS_DISPLAY_TRUNCATE = 40;  // Max characters to display for addresses in logs
 constexpr size_t MIN_GENESIS_LOG_SIZE = 8;  // Minimum genesis bytes to log (for sanity check)
+constexpr size_t MAX_GENESIS_LOG_BYTES = 32;  // Maximum genesis bytes to log (avoid excessive output)
 
 // ChaCha20 key derivation domain separator
 static const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
@@ -108,6 +109,7 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
     std::vector<uint8_t> key(SHA256_DIGEST_LENGTH);
     unsigned char* result = SHA256(preimage.data(), preimage.size(), key.data());
     if (!result) {
+        // This should never happen - SHA256 only fails on internal OpenSSL errors
         m_logger->error("[Solo] CRITICAL: OpenSSL SHA256 internal error during key derivation");
         throw std::runtime_error("OpenSSL SHA256 internal error");
     }
@@ -122,7 +124,7 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
     // Log genesis bytes for comparison (sanity check: only if we have a reasonable amount)
     if (genesis.size() >= MIN_GENESIS_LOG_SIZE) {
         // Use existing keys::to_hex with truncated vector to limit log output
-        size_t log_length = std::min(genesis.size(), size_t(32));
+        size_t log_length = std::min(genesis.size(), MAX_GENESIS_LOG_BYTES);
         std::vector<uint8_t> genesis_truncated(genesis.begin(), genesis.begin() + log_length);
         m_logger->info("║ Genesis (hex): {}", nexusminer::keys::to_hex(genesis_truncated));
     }
