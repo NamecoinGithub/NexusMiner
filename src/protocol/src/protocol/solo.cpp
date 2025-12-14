@@ -20,10 +20,11 @@ namespace protocol
 {
 
 // Helper function to convert bytes to hex string for logging
-static std::string bytes_to_hex(const std::vector<uint8_t>& bytes) {
+static std::string bytes_to_hex(const std::vector<uint8_t>& bytes, size_t max_length = 0) {
     std::stringstream ss;
-    for (auto b : bytes) {
-        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
+    size_t length = (max_length > 0 && max_length < bytes.size()) ? max_length : bytes.size();
+    for (size_t i = 0; i < length; ++i) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(bytes[i]);
     }
     return ss.str();
 }
@@ -31,6 +32,7 @@ static std::string bytes_to_hex(const std::vector<uint8_t>& bytes) {
 // Protocol constants
 constexpr size_t GENESIS_HASH_SIZE = 32;  // Tritium genesis hash size
 constexpr size_t ADDRESS_DISPLAY_TRUNCATE = 40;  // Max characters to display for addresses in logs
+constexpr size_t MIN_GENESIS_LOG_SIZE = 8;  // Minimum genesis bytes to log (for sanity check)
 
 // ChaCha20 key derivation domain separator
 static const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
@@ -127,11 +129,9 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
     m_logger->info("║ Domain: {}", KDF_DOMAIN);
     m_logger->info("║ Genesis size: {} bytes", genesis.size());
     
-    // Log genesis bytes for comparison
-    if (genesis.size() >= 8) {
-        std::string genesis_hex = bytes_to_hex(std::vector<uint8_t>(genesis.begin(), 
-            genesis.begin() + std::min(genesis.size(), size_t(32))));
-        m_logger->info("║ Genesis (hex): {}", genesis_hex);
+    // Log genesis bytes for comparison (sanity check: only if we have a reasonable amount)
+    if (genesis.size() >= MIN_GENESIS_LOG_SIZE) {
+        m_logger->info("║ Genesis (hex): {}", bytes_to_hex(genesis, 32));
     }
     
     // Log derived key for comparison with node's "Derived Key (32 bytes):" log
