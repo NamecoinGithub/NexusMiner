@@ -122,9 +122,33 @@ Created visual test (`/tmp/test_improved_visual_logging.cpp`):
 
 ## Security Considerations
 
+### ChaCha20 Session Key Derivation
+
+The ChaCha20 session key is derived using a deterministic key derivation function (KDF):
+
+**Formula**: `session_key = SHA256(domain || genesis_bytes)`
+
+Where:
+- `domain` = "nexus-mining-chacha20-v1" (domain separator to prevent cross-protocol attacks)
+- `genesis_bytes` = Tritium account genesis hash (32 bytes)
+- `||` = concatenation operator
+- Output: 32-byte session key suitable for ChaCha20
+
+**Critical Requirements**:
+1. **Byte Order Consistency**: The `genesis_bytes` must match LLL-TAO's `hashGenesis.GetBytes()` byte order exactly
+2. **Verification**: Compare the "Derived Key (hex)" log from the miner with the node's "Derived Key (32 bytes):" log
+3. **Genesis Source**: Use the same genesis hash that the node has for your Tritium account
+4. **Diagnostic Logging**: The miner now logs detailed key derivation information for debugging
+
+**Troubleshooting Key Mismatches**:
+- If authentication fails with "ChaCha20-Poly1305 authentication failed - tag mismatch", the derived keys don't match
+- Check that `tritium_genesis` in miner.conf matches the node's `hashGenesis.GetHex()` output
+- Verify byte ordering - genesis should be in the same format as LLL-TAO's GetBytes() returns
+- Compare diagnostic logs between miner and node to identify where they diverge
+
 ### ChaCha20-Poly1305 Encryption
 - **Algorithm**: AEAD (Authenticated Encryption with Associated Data)
-- **Key Size**: 256 bits (32 bytes) - randomly generated per session
+- **Key Size**: 256 bits (32 bytes) - derived from genesis hash (see above)
 - **Nonce Size**: 96 bits (12 bytes) - randomly generated, never reused
 - **Tag Size**: 128 bits (16 bytes) - authentication tag
 - **AAD**: "FALCON_PUBKEY" string binds encryption to specific use case
@@ -188,6 +212,23 @@ Created visual test (`/tmp/test_improved_visual_logging.cpp`):
 5. `[Solo Auth] Falling back to unwrapped public key transmission`
 6. `[Solo Auth] ChaCha20 wrapping disabled - sending unwrapped public key`
 7. Visual success/failure boxes with detailed status information
+8. ChaCha20 key derivation diagnostic box with domain, genesis, and derived key information
+9. `[Solo Auth] ChaCha20 nonce (12 bytes): {hex}` - nonce used for encryption
+
+**Example Diagnostic Output**:
+```
+╔═══════════════════════════════════════════════════════════╗
+║  ChaCha20 KEY DERIVATION DIAGNOSTIC (Miner Side)          ║
+╠═══════════════════════════════════════════════════════════╣
+║ Domain: nexus-mining-chacha20-v1
+║ Genesis size: 32 bytes
+║ Genesis (hex): 0123456789abcdef...
+║ Derived Key (hex): fedcba9876543210...
+╚═══════════════════════════════════════════════════════════╝
+[Solo Auth] ChaCha20 nonce (12 bytes): 0a1b2c3d4e5f...
+```
+
+This diagnostic output allows comparing the miner's key derivation with the node's logs to troubleshoot authentication failures.
 
 ### Configuration
 Users can enable ChaCha20 wrapping via:

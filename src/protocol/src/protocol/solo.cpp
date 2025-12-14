@@ -19,6 +19,15 @@ namespace nexusminer
 namespace protocol
 {
 
+// Helper function to convert bytes to hex string for logging
+static std::string bytes_to_hex(const std::vector<uint8_t>& bytes) {
+    std::stringstream ss;
+    for (auto b : bytes) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
+    }
+    return ss.str();
+}
+
 // Protocol constants
 constexpr size_t GENESIS_HASH_SIZE = 32;  // Tritium genesis hash size
 constexpr size_t ADDRESS_DISPLAY_TRUNCATE = 40;  // Max characters to display for addresses in logs
@@ -107,10 +116,28 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
     std::vector<uint8_t> key(SHA256_DIGEST_LENGTH);
     unsigned char* result = SHA256(preimage.data(), preimage.size(), key.data());
     if (!result) {
-        // This should never happen - SHA256 only fails on internal OpenSSL errors
         m_logger->error("[Solo] CRITICAL: OpenSSL SHA256 internal error during key derivation");
         throw std::runtime_error("OpenSSL SHA256 internal error");
     }
+    
+    // DIAGNOSTIC: Log key derivation details for comparison with node logs
+    m_logger->info("╔═══════════════════════════════════════════════════════════╗");
+    m_logger->info("║  ChaCha20 KEY DERIVATION DIAGNOSTIC (Miner Side)          ║");
+    m_logger->info("╠═══════════════════════════════════════════════════════════╣");
+    m_logger->info("║ Domain: {}", KDF_DOMAIN);
+    m_logger->info("║ Genesis size: {} bytes", genesis.size());
+    
+    // Log genesis bytes for comparison
+    if (genesis.size() >= 8) {
+        std::string genesis_hex = bytes_to_hex(std::vector<uint8_t>(genesis.begin(), 
+            genesis.begin() + std::min(genesis.size(), size_t(32))));
+        m_logger->info("║ Genesis (hex): {}", genesis_hex);
+    }
+    
+    // Log derived key for comparison with node's "Derived Key (32 bytes):" log
+    m_logger->info("║ Derived Key (hex): {}", bytes_to_hex(key));
+    m_logger->info("╚═══════════════════════════════════════════════════════════╝");
+    
     return key;
 }
 
@@ -248,6 +275,9 @@ network::Shared_payload Solo::login(Login_handler handler)
             // Derive session key from genesis
             auto session_key = derive_chacha20_session_key(tritium_genesis);
             auto nonce = ChaCha20Wrapper::generate_nonce();  // Random 12 bytes
+            
+            // Log the nonce being used for encryption
+            m_logger->info("[Solo Auth] ChaCha20 nonce (12 bytes): {}", bytes_to_hex(nonce));
             
             if (!m_chacha20_wrapper)
                 m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
