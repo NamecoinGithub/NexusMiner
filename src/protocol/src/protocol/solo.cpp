@@ -36,7 +36,7 @@ static const std::vector<uint8_t> AAD_DOMAIN_VEC{'F','A','L','C','O','N','_','P'
  * See: LLL-TAO/src/LLP/stateless_miner.cpp line 48-50 */
 
 /** AAD for encrypting MINER_SET_REWARD payload (reward address)
- *  Node expects: "REWARD_ADDRESS" (15 bytes) */
+ *  Node expects: "REWARD_ADDRESS" (14 bytes) */
 static const std::vector<uint8_t> AAD_REWARD_ADDRESS{
     'R','E','W','A','R','D','_',
     'A','D','D','R','E','S','S'
