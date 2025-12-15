@@ -136,7 +136,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 
                 /* Distribute template to all worker threads */
                 size_t workers_fed = 0;
-                for (auto& worker : m_workers) {
+                for (size_t i = 0; i < m_workers.size(); ++i) {
+                    auto& worker = m_workers[i];
                     if (worker) {
                         worker->set_block(block, nBits, [this](auto id, auto block_data)
                         {
@@ -152,7 +153,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         m_logger->debug("[Worker_manager] Template sent to worker {}/{}", 
                                        workers_fed, m_workers.size());
                     } else {
-                        m_logger->warn("[Worker_manager] Skipping null worker at index {}", workers_fed);
+                        m_logger->warn("[Worker_manager] Skipping null worker at index {}", i);
                     }
                 }
                 
