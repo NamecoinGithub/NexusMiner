@@ -1650,8 +1650,9 @@ network::Shared_payload Solo::send_set_reward()
     std::vector<uint8_t> vHash(vAddress.begin() + 1, vAddress.begin() + 33);
     
     // Log the extracted hash for debugging
-    std::string hex_hash = "";
-    for(auto byte : vHash) {
+    std::string hex_hash;
+    hex_hash.reserve(64);  // 32 bytes * 2 hex chars per byte
+    for(const auto& byte : vHash) {
         char buf[3];
         snprintf(buf, sizeof(buf), "%02x", byte);
         hex_hash += buf;
