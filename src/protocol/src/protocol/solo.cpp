@@ -1634,12 +1634,30 @@ network::Shared_payload Solo::send_set_reward()
         return nullptr;
     }
     
-    // NXS register addresses are typically 32 bytes when decoded
-    // But the raw decoded length may vary; the node will validate
-    m_logger->debug("[Solo Reward] Decoded address: {} bytes", vAddress.size());
+    m_logger->info("[Solo Reward] Original address (Base58): {}", m_reward_address);
+    m_logger->info("[Solo Reward] Decoded total bytes: {}", vAddress.size());
     
     // Build the payload - the address bytes (will be encrypted by ChaCha20)
     std::vector<uint8_t> payload_data;
+    
+    // Extract ONLY the 32-byte hash (skip version and checksum)
+    if (vAddress.size() < 37) {
+        m_logger->error("[Solo Reward] Decoded address too short: {} bytes (expected 37)", vAddress.size());
+        return nullptr;
+    }
+    
+    // Extract bytes 1-32 (skip version byte at index 0, skip checksum at end)
+    std::vector<uint8_t> vHash(vAddress.begin() + 1, vAddress.begin() + 33);
+    
+    // Log the extracted hash for debugging
+    std::string hex_hash = "";
+    for(auto byte : vHash) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02x", byte);
+        hex_hash += buf;
+    }
+    m_logger->info("[Solo Reward] Extracted 32-byte hash (hex): {}", hex_hash);
+    m_logger->info("[Solo Reward] Hash size: {} bytes", vHash.size());
     
     // If ChaCha20 encryption is enabled, encrypt the address
     if (m_enable_chacha20 && m_chacha20_wrapper)
@@ -1654,8 +1672,8 @@ network::Shared_payload Solo::send_set_reward()
                 auto session_key = derive_chacha20_session_key(tritium_genesis);
                 auto nonce = ChaCha20Wrapper::generate_nonce();
                 
-                // Encrypt reward address using matching AAD
-                auto encrypt_result = m_chacha20_wrapper->encrypt(vAddress, session_key, nonce, AAD_REWARD_ADDRESS);
+                // Encrypt the 32-byte hash (NOT the 37-byte address!)
+                auto encrypt_result = m_chacha20_wrapper->encrypt(vHash, session_key, nonce, AAD_REWARD_ADDRESS);
                 
                 if (encrypt_result.success)
                 {
@@ -1664,7 +1682,7 @@ network::Shared_payload Solo::send_set_reward()
                     payload_data.insert(payload_data.end(), encrypt_result.data.begin(), encrypt_result.data.end());
                     
                     m_logger->info("[Solo Reward] Address encrypted: {} → {} bytes",
-                                   vAddress.size(), payload_data.size());
+                                   vHash.size(), payload_data.size());
                     m_logger->debug("[Solo Reward] Encrypted with AAD: REWARD_ADDRESS ({} bytes)", AAD_REWARD_ADDRESS.size());
                 }
                 else
@@ -1688,7 +1706,7 @@ network::Shared_payload Solo::send_set_reward()
     {
         // Send unencrypted (only valid for localhost connections)
         m_logger->warn("[Solo Reward] ChaCha20 not enabled - sending reward address unencrypted");
-        payload_data = vAddress;
+        payload_data = vHash;
     }
     
     // Build the MINER_SET_REWARD packet
