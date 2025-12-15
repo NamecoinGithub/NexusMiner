@@ -110,6 +110,63 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         m_logger->info("[Worker_manager] Falcon keys loaded from config");
         m_logger->info("[Worker_manager] Auth address: {}", m_config.get_local_ip());
         
+        /* ========== REGISTER TEMPLATE DISTRIBUTION HANDLER ========== */
+        /* Connects protocol layer (validated templates) to worker layer (mining threads) */
+        /* This lambda is called by the template feed handler (PR #62) when templates arrive */
+        solo_protocol->set_block_handler(
+            [this](const ::LLP::CBlock& block, uint32_t nBits) {
+                m_logger->info("[Worker_manager] ═══════════════════════════════════════");
+                m_logger->info("[Worker_manager] DISTRIBUTING TEMPLATE TO {} WORKERS", m_workers.size());
+                m_logger->info("[Worker_manager]   Height:     {}", block.nHeight);
+                m_logger->info("[Worker_manager]   Channel:    {} ({})", 
+                              block.nChannel,
+                              (block.nChannel == 1) ? "prime" : "hash");
+                m_logger->info("[Worker_manager]   Difficulty: 0x{:08x}", nBits);
+                m_logger->info("[Worker_manager]   Merkle:     {}", 
+                              block.hashMerkleRoot.ToString().substr(0, 16) + "...");
+                m_logger->info("[Worker_manager] ═══════════════════════════════════════");
+                
+                /* Safety check - workers should be created by now */
+                if (m_workers.empty()) {
+                    m_logger->error("[Worker_manager] CRITICAL: No workers available for mining!");
+                    m_logger->error("[Worker_manager]   Workers may not be initialized yet");
+                    m_logger->error("[Worker_manager]   Template will be lost - mining cannot start");
+                    return;
+                }
+                
+                /* Distribute template to all worker threads */
+                size_t workers_fed = 0;
+                for (auto& worker : m_workers) {
+                    if (worker) {
+                        worker->set_block(block, nBits, [this](auto id, auto block_data)
+                        {
+                            if (m_connection)
+                                m_connection->transmit(m_miner_protocol->submit_block(
+                                    block_data->merkle_root.GetBytes(), block_data->nNonce));
+                            else
+                            {
+                                m_logger->error("No connection. Can't submit block.");
+                            }
+                        });
+                        workers_fed++;
+                        m_logger->debug("[Worker_manager] Template sent to worker {}/{}", 
+                                       workers_fed, m_workers.size());
+                    } else {
+                        m_logger->warn("[Worker_manager] Skipping null worker at index {}", workers_fed);
+                    }
+                }
+                
+                if (workers_fed > 0) {
+                    m_logger->info("[Worker_manager] ✓ Template distributed to {} workers - MINING STARTED", 
+                                  workers_fed);
+                } else {
+                    m_logger->error("[Worker_manager] FAILED: No workers received template!");
+                }
+            }
+        );
+        
+        m_logger->info("[Worker_manager] Template distribution handler registered");
+        
         m_miner_protocol = solo_protocol;
   
     create_stats_printers();
@@ -310,24 +367,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     // Solo mining uses stateless protocol with mandatory Falcon authentication (no GET_HEIGHT)
                     self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
                     self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
-
-                    self->m_miner_protocol->set_block_handler([self, wallet_endpoint](auto block, auto nBits)
-                    {
-                        for(auto& worker : self->m_workers)
-                        {
-                            worker->set_block(block, nBits, [self, wallet_endpoint](auto id, auto block_data)
-                            {
-                                if (self->m_connection)
-                                    self->m_connection->transmit(self->m_miner_protocol->submit_block(
-                                        block_data->merkle_root.GetBytes(), block_data->nNonce));
-                                else
-                                {
-                                    self->m_logger->error("No connection. Can't submit block.");
-                                    self->retry_connect(wallet_endpoint);
-                                }
-                            });
-                        }
-                    });
+                    // Note: Block handler already registered in Worker_manager constructor
                 }));
             }
             else
