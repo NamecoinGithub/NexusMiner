@@ -119,13 +119,13 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     // Setup template feed handler - called automatically when templates are validated
     m_template_interface->set_template_feed_handler(
         [this](const MiningTemplateInterface::MiningTemplate& tmpl, uint32_t nBits) {
+            // Log new template (infrequent: once per block, typically every few minutes)
             m_logger->info("[Solo] ═══════════════════════════════════════");
-            m_logger->info("[Solo] NEW MINING TEMPLATE RECEIVED");
-            m_logger->info("[Solo]   Height:     {}", tmpl.block.nHeight);
-            m_logger->info("[Solo]   Channel:    {} ({})", 
+            m_logger->info("[Solo] NEW MINING TEMPLATE | Height: {} | Channel: {} ({}) | Difficulty: 0x{:08x}",
+                          tmpl.block.nHeight,
                           tmpl.block.nChannel,
-                          (tmpl.block.nChannel == 1) ? "prime" : "hash");
-            m_logger->info("[Solo]   Difficulty: 0x{:08x}", nBits);
+                          (tmpl.block.nChannel == 1) ? "prime" : "hash",
+                          nBits);
             m_logger->info("[Solo] ═══════════════════════════════════════");
             
             // Feed to worker threads via set_block_handler
@@ -428,6 +428,8 @@ network::Shared_payload Solo::get_work()
         return nullptr;
     }
     
+    // Only validate reward binding if a reward address was configured
+    // (Reward binding is optional for localhost/testing, but required for production)
     if (!m_reward_address.empty() && !m_reward_bound) {
         m_logger->error("[Solo] Cannot request work - reward address not bound");
         return nullptr;
