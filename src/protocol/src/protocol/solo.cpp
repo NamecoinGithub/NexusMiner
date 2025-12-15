@@ -115,6 +115,30 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     // The session ID binds the template interface to the FALCON authenticated tunnel
     m_template_interface = std::make_unique<MiningTemplateInterface>(m_channel, 0);
     m_logger->info("[Solo] Mining Template Interface initialized for unified READ/FEED system");
+    
+    // Setup template feed handler - called automatically when templates are validated
+    m_template_interface->set_template_feed_handler(
+        [this](const MiningTemplateInterface::MiningTemplate& tmpl, uint32_t nBits) {
+            // Log new template (infrequent: once per block, typically every few minutes)
+            m_logger->info("[Solo] ═══════════════════════════════════════");
+            m_logger->info("[Solo] NEW MINING TEMPLATE | Height: {} | Channel: {} ({}) | Difficulty: 0x{:08x}",
+                          tmpl.block.nHeight,
+                          tmpl.block.nChannel,
+                          (tmpl.block.nChannel == 1) ? "prime" : "hash",
+                          nBits);
+            m_logger->info("[Solo] ═══════════════════════════════════════");
+            
+            // Feed to worker threads via set_block_handler
+            if (m_set_block_handler) {
+                m_logger->info("[Solo] Distributing template to worker threads...");
+                m_set_block_handler(tmpl.block, nBits);
+                m_logger->info("[Solo] ✓ Template distributed - workers should start mining");
+            } else {
+                m_logger->error("[Solo] CRITICAL: No block handler registered!");
+            }
+        }
+    );
+    m_logger->info("[Solo] Template feed handler registered - ready to distribute work to workers");
 }
 
 std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t>& genesis)
@@ -398,22 +422,36 @@ network::Shared_payload Solo::login(Login_handler handler)
 
 network::Shared_payload Solo::get_work()
 {
-    m_logger->info("Get new block");
+    /* Validate prerequisites */
+    if (!m_authenticated) {
+        m_logger->error("[Solo] Cannot request work - not authenticated");
+        return nullptr;
+    }
+    
+    // Only validate reward binding if a reward address was configured
+    // (Reward binding is optional for localhost/testing, but required for production)
+    if (!m_reward_address.empty() && !m_reward_bound) {
+        m_logger->error("[Solo] Cannot request work - reward address not bound");
+        return nullptr;
+    }
+    
+    m_logger->info("[Solo] Requesting mining template via GET_BLOCK");
 
-    // get new block from wallet
-    Packet packet{ Packet::GET_BLOCK };
+    /* Build GET_BLOCK packet (header-only, no payload) */
+    Packet packet{ Packet::GET_BLOCK };  // Header = 129 (0x81)
+    packet.m_length = 0;  // No payload for GET_BLOCK
     
     // Debug logging to diagnose packet encoding
-    m_logger->debug("[Solo Phase 2] GET_BLOCK packet: header=0x{:02x} length={} is_valid={}", 
+    m_logger->debug("[Solo] GET_BLOCK packet: header=0x{:02x} length={} is_valid={}", 
                    static_cast<int>(packet.m_header),
                    packet.m_length, 
                    packet.is_valid());
     
     auto payload = packet.get_bytes();
     if (payload && !payload->empty()) {
-        m_logger->debug("[Solo Phase 2] GET_BLOCK encoded payload size: {} bytes", payload->size());
+        m_logger->debug("[Solo] GET_BLOCK encoded payload size: {} bytes", payload->size());
     } else {
-        m_logger->error("[Solo Phase 2] GET_BLOCK get_bytes() returned null or empty payload!");
+        m_logger->error("[Solo] GET_BLOCK get_bytes() returned null or empty payload!");
     }
     
     return payload;     
@@ -1229,6 +1267,12 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     static_cast<int>(m_channel), (m_channel == 1) ? "prime" : "hash");
                 m_logger->warn("[Solo]   - Acknowledged channel: {} ({})", 
                     static_cast<int>(acked_channel), (acked_channel == 1) ? "prime" : "hash");
+            }
+            
+            // Update template interface with confirmed channel
+            if (m_template_interface) {
+                m_template_interface->set_channel(acked_channel);
+                m_logger->info("[Solo] Template interface updated with confirmed channel");
             }
             
             // Extended CHANNEL_ACK: Check for optional port information (future protocol enhancement)
