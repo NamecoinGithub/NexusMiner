@@ -1057,21 +1057,25 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Check if we have a reward address to bind
             if (!m_reward_address.empty())
             {
-                m_logger->info("[Solo Phase 2] Reward address configured, sending MINER_SET_REWARD");
+                m_logger->info("[Solo Phase 2] Authentication successful - binding reward address");
+                m_logger->info("[Solo Phase 2] Sending MINER_SET_REWARD (required before GET_BLOCK)");
                 auto reward_payload = send_set_reward();
                 if (reward_payload && !reward_payload->empty() && connection)
                 {
                     connection->transmit(reward_payload);
-                    // SET_CHANNEL will be sent after receiving MINER_REWARD_RESULT
+                    // Note: SET_CHANNEL and GET_BLOCK will be sent after receiving MINER_REWARD_RESULT
+                    // This is handled in handle_reward_result()
                     return;
                 }
                 else
                 {
-                    m_logger->warn("[Solo Reward] Failed to send reward address, continuing without binding");
+                    m_logger->error("[Solo Reward] Failed to send reward address");
+                    m_logger->warn("[Solo Reward] Continuing without reward binding (not recommended)");
                 }
             }
             
             // Now send SET_CHANNEL since we're authenticated (no reward binding)
+            m_logger->info("[Solo Phase 2] No reward address configured - proceeding to SET_CHANNEL");
             send_set_channel(connection);
         }
         else {
@@ -1242,6 +1246,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->warn("[Solo] WARNING: CHANNEL_ACK packet has no data or insufficient length");
             m_logger->warn("[Solo]   - Packet data null: {}", packet.m_data == nullptr);
             m_logger->warn("[Solo]   - Packet length: {}", packet.m_length);
+        }
+        
+        // Verify reward address is bound before requesting work (if configured)
+        if (!m_reward_address.empty() && !m_reward_bound)
+        {
+            m_logger->error("[Solo] Cannot GET_BLOCK - reward address not bound yet");
+            m_logger->error("[Solo] This should not happen - check flow logic");
+            m_logger->error("[Solo] Expected flow: Auth → MINER_SET_REWARD → SET_CHANNEL → GET_BLOCK");
+            return;
         }
         
         // Stateless mining with Falcon authentication: Request work directly (no GET_HEIGHT polling)
@@ -1734,7 +1747,7 @@ void Solo::handle_reward_result(const Packet& packet)
     // Parse status byte
     uint8_t status = result_data[0];
     
-    if (status == 0x01)
+    if (status == 0x01)  // Success
     {
         m_logger->info("╔═════════════════════════════════════════════════════════╗");
         m_logger->info("║       REWARD ADDRESS BINDING SUCCESSFUL                 ║");
@@ -1744,6 +1757,21 @@ void Solo::handle_reward_result(const Packet& packet)
         m_logger->info("╚═════════════════════════════════════════════════════════╝");
         
         m_reward_bound = true;
+        
+        // CONTINUE MINING FLOW: Now send SET_CHANNEL and GET_BLOCK
+        if (m_connection)
+        {
+            m_logger->info("[Solo Phase 2] Reward bound - continuing with mining flow");
+            m_logger->info("[Solo Phase 2] Sending SET_CHANNEL");
+            send_set_channel(m_connection);
+            
+            // Note: GET_BLOCK will be sent after receiving CHANNEL_ACK
+            // This is handled in the existing CHANNEL_ACK handler
+        }
+        else
+        {
+            m_logger->error("[Solo Reward] Cannot continue - no connection available");
+        }
     }
     else
     {
@@ -1765,13 +1793,16 @@ void Solo::handle_reward_result(const Packet& packet)
         m_logger->error("╚═════════════════════════════════════════════════════════╝");
         
         m_reward_bound = false;
-    }
-    
-    // Continue with mining flow - send SET_CHANNEL to proceed
-    if (m_connection)
-    {
-        m_logger->info("[Solo Reward] Continuing with mining flow, sending SET_CHANNEL");
-        send_set_channel(m_connection);
+        
+        // Reward binding failed - cannot proceed with mining
+        m_logger->error("[Solo Reward] Cannot mine without reward address bound");
+        
+        // Close connection to prevent further issues
+        if (m_connection)
+        {
+            m_logger->error("[Solo Reward] Closing connection due to reward binding failure");
+            m_connection->close();
+        }
     }
 }
 
