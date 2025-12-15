@@ -1069,8 +1069,19 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 }
                 else
                 {
-                    m_logger->error("[Solo Reward] Failed to send reward address");
-                    m_logger->warn("[Solo Reward] Continuing without reward binding (not recommended)");
+                    // CRITICAL: Failed to send reward address - cannot proceed with mining
+                    m_logger->error("[Solo Reward] CRITICAL: Failed to send reward address");
+                    m_logger->error("[Solo Reward] Mining cannot proceed without reward address binding");
+                    m_logger->error("[Solo Reward] This typically indicates:");
+                    m_logger->error("[Solo Reward]   - Invalid reward address format");
+                    m_logger->error("[Solo Reward]   - ChaCha20 encryption failure");
+                    m_logger->error("[Solo Reward]   - Missing tritium genesis for encryption");
+                    
+                    // Close connection to prevent invalid mining state
+                    if (connection) {
+                        connection->close();
+                    }
+                    return;
                 }
             }
             
@@ -1252,8 +1263,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         if (!m_reward_address.empty() && !m_reward_bound)
         {
             m_logger->error("[Solo] Cannot GET_BLOCK - reward address not bound yet");
-            m_logger->error("[Solo] This should not happen - check flow logic");
-            m_logger->error("[Solo] Expected flow: Auth → MINER_SET_REWARD → SET_CHANNEL → GET_BLOCK");
+            m_logger->error("[Solo] This indicates a protocol flow error:");
+            m_logger->error("[Solo]   - MINER_REWARD_RESULT may have been lost or not received");
+            m_logger->error("[Solo]   - SET_CHANNEL sent before reward binding completed");
+            m_logger->error("[Solo]   - Network issue during reward binding handshake");
+            m_logger->error("[Solo] Expected flow: Auth → MINER_SET_REWARD → MINER_REWARD_RESULT → SET_CHANNEL → CHANNEL_ACK → GET_BLOCK");
+            m_logger->error("[Solo] Recovery: Disconnect and reconnect to retry authentication");
+            
+            // Close connection to force re-authentication
+            if (connection) {
+                connection->close();
+            }
             return;
         }
         
@@ -1802,6 +1822,7 @@ void Solo::handle_reward_result(const Packet& packet)
         {
             m_logger->error("[Solo Reward] Closing connection due to reward binding failure");
             m_connection->close();
+            m_connection = nullptr;  // Reset to prevent use-after-close
         }
     }
 }
