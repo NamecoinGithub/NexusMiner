@@ -436,6 +436,9 @@ network::Shared_payload Solo::get_work()
     }
     
     m_logger->info("[Solo] Requesting mining template via GET_BLOCK");
+    m_logger->info("[Solo]   Session ID: 0x{:08x}", m_session_id);
+    m_logger->info("[Solo]   Authenticated: {}", m_authenticated ? "YES" : "NO");
+    m_logger->info("[Solo]   Reward bound: {}", m_reward_bound ? "YES" : "NO");
 
     /* Build GET_BLOCK packet (header-only, no payload) */
     Packet packet{ Packet::GET_BLOCK };  // Header = 129 (0x81)
@@ -1323,12 +1326,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         
         // Stateless mining with Falcon authentication: Request work directly (no GET_HEIGHT polling)
         m_logger->info("[Solo Phase 2] Channel set successfully, requesting initial work via GET_BLOCK");
+        m_logger->debug("[Solo Phase 2] Pre-GET_BLOCK state:");
+        m_logger->debug("[Solo Phase 2]   - Connection valid: {}", connection ? "YES" : "NO");
+        m_logger->debug("[Solo Phase 2]   - Session ID: 0x{:08x}", m_session_id);
+        m_logger->debug("[Solo Phase 2]   - Authenticated: {}", m_authenticated ? "YES" : "NO");
         auto work_payload = get_work();
         if (!work_payload || work_payload->empty()) {
             m_logger->error("[Solo] CRITICAL: GET_BLOCK request returned empty payload!");
             m_logger->error("[Solo] This may indicate a packet encoding issue");
         } else {
             connection->transmit(work_payload);
+            m_logger->info("[Solo] GET_BLOCK transmitted successfully");
         }
     }
     else if (packet.m_header == Packet::SESSION_START)
