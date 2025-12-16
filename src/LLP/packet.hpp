@@ -176,10 +176,16 @@ namespace nexusminer
 		 * - MINER_AUTH_RESULT (210): status + optional session_id
 		 * - SESSION_START (211), SESSION_KEEPALIVE (212): session data
 		 * - MINER_SET_REWARD (213), MINER_REWARD_RESULT (214): encrypted reward data
+		 * 
+		 * NOTE: This function assumes CHANNEL_ACK (206) through MINER_REWARD_RESULT (214)
+		 * form a contiguous range. If new packet types are added in this range, they must
+		 * also follow the same payload convention. See src/LLP/miner_opcodes.hpp for the
+		 * authoritative packet type definitions.
 		 */
 		inline bool is_auth_packet() const
 		{
 			// Stateless mining protocol packets (206-214) all carry payloads despite header >= 128
+			// IMPORTANT: This range must remain contiguous - see miner_opcodes.hpp
 			return (m_header >= CHANNEL_ACK && m_header <= MINER_REWARD_RESULT);
 		}
 
