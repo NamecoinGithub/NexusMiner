@@ -166,19 +166,27 @@ namespace nexusminer
 		bool m_is_valid;
 
 		/**
-		 * @brief Check if packet header is a Falcon Authentication packet (207-212)
+		 * @brief Check if packet header is part of stateless mining protocol (206-214)
 		 * 
-		 * Authentication packets carry payloads despite having headers >= 128:
+		 * These packets carry payloads despite having headers >= 128:
+		 * - CHANNEL_ACK (206): 1-byte channel confirmation payload
 		 * - MINER_AUTH_INIT (207): pubkey data
 		 * - MINER_AUTH_CHALLENGE (208): nonce data
 		 * - MINER_AUTH_RESPONSE (209): signature data
 		 * - MINER_AUTH_RESULT (210): status + optional session_id
 		 * - SESSION_START (211), SESSION_KEEPALIVE (212): session data
 		 * - MINER_SET_REWARD (213), MINER_REWARD_RESULT (214): encrypted reward data
+		 * 
+		 * NOTE: This function assumes CHANNEL_ACK (206) through MINER_REWARD_RESULT (214)
+		 * form a contiguous range. If new packet types are added in this range, they must
+		 * also follow the same payload convention. See src/LLP/miner_opcodes.hpp for the
+		 * authoritative packet type definitions.
 		 */
 		inline bool is_auth_packet() const
 		{
-			return (m_header >= MINER_AUTH_INIT && m_header <= MINER_REWARD_RESULT);
+			// Stateless mining protocol packets (206-214) all carry payloads despite header >= 128
+			// IMPORTANT: This range must remain contiguous - see miner_opcodes.hpp
+			return (m_header >= CHANNEL_ACK && m_header <= MINER_REWARD_RESULT);
 		}
 
 		/**
@@ -218,12 +226,12 @@ namespace nexusminer
 			if (m_header < 128 && m_length == 0)
 				return "INVALID: Data packet (header < 128) requires payload but length is 0";
 			
-			// Falcon Authentication packets (207-212): carry payloads with length field
+			// Stateless mining protocol packets (206-214): carry payloads with length field
 			if (is_auth_packet() && m_length > 0)
-				return "VALID: Falcon authentication packet with payload";
+				return "VALID: Stateless mining protocol packet with payload";
 			
 			if (is_auth_packet() && m_length == 0)
-				return "INVALID: Falcon auth packet (207-212) requires payload but length is 0";
+				return "INVALID: Stateless mining protocol packet (206-214) requires payload but length is 0";
 			
 			// Generic request packets (>= 128, < 255): no payload
 			if (m_header >= 128 && m_header < 255 && m_length == 0)
@@ -261,7 +269,7 @@ namespace nexusminer
 			if (m_header < 128 && m_length > 0)
 				return true;
 
-			// Falcon Authentication packets (207-212): carry payloads with length field
+			// Stateless mining protocol packets (206-214): carry payloads with length field
 			if (is_auth_packet() && m_length > 0)
 				return true;
 
