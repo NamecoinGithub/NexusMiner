@@ -179,9 +179,8 @@ namespace nexusminer
 		 */
 		inline bool is_auth_packet() const
 		{
-			// Include CHANNEL_ACK (206) which carries a 1-byte payload despite header >= 128
-			return (m_header == CHANNEL_ACK) ||
-			       (m_header >= MINER_AUTH_INIT && m_header <= MINER_REWARD_RESULT);
+			// Stateless mining protocol packets (206-214) all carry payloads despite header >= 128
+			return (m_header >= CHANNEL_ACK && m_header <= MINER_REWARD_RESULT);
 		}
 
 		/**
