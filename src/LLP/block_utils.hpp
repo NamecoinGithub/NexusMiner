@@ -113,14 +113,19 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     
     ::LLP::CBlock block;
     
-    // Detect block type by size
+    // Tritium-specific field sizes
+    constexpr std::size_t TRITIUM_NONCE_SIZE = 7;   // 7 bytes for Tritium nNonce
+    constexpr std::size_t TRITIUM_TIME_SIZE = 1;    // 1 byte for Tritium nTime
+    
+    // Detect block type by size (check Tritium first as it's more specific)
     bool is_tritium = (data.size() == TRITIUM_BLOCK_SIZE);
-    bool is_legacy = (data.size() >= LEGACY_BLOCK_MIN_SIZE);
+    bool is_legacy = (!is_tritium && data.size() >= LEGACY_BLOCK_MIN_SIZE);
     
     if (is_tritium) {
         // Tritium block (216 bytes) with nChannel at offset 211
         // Structure: nVersion(4) + hashPrevBlock(128) + hashMerkleRoot(64) + 
-        //            nHeight(4) + nBits(4) + nNonce(7?) + nChannel(4) + nTime(1?)
+        //            nHeight(4) + nBits(4) + nNonce(7) + nChannel(4) + nTime(1)
+        // Total: 4+128+64+4+4+7+4+1 = 216 bytes
         
         // 1. nVersion (4 bytes at offset 0)
         block.nVersion = read_u32();
@@ -133,16 +138,16 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         block.hashMerkleRoot.SetBytes(read_bytes(32));
         offset += (64 - 32); // Skip remaining 32 bytes of full hash
         
-        // 4. nHeight (4 bytes at offset 196)
+        // 4. nHeight (4 bytes, calculated offset: 4+128+64=196)
         block.nHeight = read_u32();
         
-        // 5. nBits (4 bytes at offset 200)
+        // 5. nBits (4 bytes, calculated offset: 196+4=200)
         block.nBits = read_u32();
         
-        // 6. nNonce (7 bytes at offset 204-210)
-        // Read as 8 bytes but mask off the extra byte
+        // 6. nNonce (7 bytes, calculated offset: 200+4=204)
+        // Tritium uses 7-byte nNonce instead of standard 8 bytes
         std::uint64_t nonce_bytes = 0;
-        for (int i = 0; i < 7; ++i) {
+        for (std::size_t i = 0; i < TRITIUM_NONCE_SIZE; ++i) {
             nonce_bytes = (nonce_bytes << 8) | data[offset++];
         }
         block.nNonce = nonce_bytes;
@@ -152,12 +157,19 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         offset = TRITIUM_CHANNEL_OFFSET + 4; // Move past nChannel
         
         // 8. nTime (1 byte at offset 215)
-        block.nTime = data[offset];
+        // Tritium uses 1-byte nTime instead of standard 4 bytes
+        // Store in uint32 field (will be small value)
+        if (offset < data.size()) {
+            block.nTime = data[offset];
+        } else {
+            block.nTime = 0;
+        }
         
     } else if (is_legacy) {
         // Legacy block (220+ bytes) with nChannel at offset 196
         // Structure: nVersion(4) + hashPrevBlock(128) + hashMerkleRoot(64) + 
         //            nChannel(4) + nHeight(4) + nBits(4) + nNonce(8) + nTime(4)
+        // Total: 4+128+64+4+4+4+8+4 = 220 bytes (minimum)
         
         // 1. nVersion (4 bytes at offset 0)
         block.nVersion = read_u32();
@@ -170,20 +182,20 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         block.hashMerkleRoot.SetBytes(read_bytes(32));
         offset += (64 - 32); // Skip remaining 32 bytes
         
-        // 4. nChannel (4 bytes at offset 196)
+        // 4. nChannel (4 bytes, calculated offset: 4+128+64=196)
         block.nChannel = read_u32_at(LEGACY_CHANNEL_OFFSET);
         offset = LEGACY_CHANNEL_OFFSET + 4;
         
-        // 5. nHeight (4 bytes at offset 200)
+        // 5. nHeight (4 bytes, calculated offset: 196+4=200)
         block.nHeight = read_u32();
         
-        // 6. nBits (4 bytes at offset 204)
+        // 6. nBits (4 bytes, calculated offset: 200+4=204)
         block.nBits = read_u32();
         
-        // 7. nNonce (8 bytes at offset 208)
+        // 7. nNonce (8 bytes, calculated offset: 204+4=208)
         block.nNonce = read_u64();
         
-        // 8. nTime (4 bytes at offset 216)
+        // 8. nTime (4 bytes, calculated offset: 208+8=216)
         block.nTime = read_u32();
         
     } else {
