@@ -113,41 +113,77 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     
     ::LLP::CBlock block;
     
-    // Detect block type by size and read nChannel from correct offset
+    // Detect block type by size
     bool is_tritium = (data.size() == TRITIUM_BLOCK_SIZE);
     bool is_legacy = (data.size() >= LEGACY_BLOCK_MIN_SIZE);
     
-    if (is_tritium || is_legacy) {
-        // Full serialized block - read nChannel from type-specific offset
-        std::size_t channel_offset = is_tritium ? TRITIUM_CHANNEL_OFFSET : LEGACY_CHANNEL_OFFSET;
-        block.nChannel = read_u32_at(channel_offset);
+    if (is_tritium) {
+        // Tritium block (216 bytes) with nChannel at offset 211
+        // Structure: nVersion(4) + hashPrevBlock(128) + hashMerkleRoot(64) + 
+        //            nHeight(4) + nBits(4) + nNonce(7?) + nChannel(4) + nTime(1?)
         
-        // For full blocks, read other fields sequentially from start
-        // 1. nVersion (4 bytes, big-endian)
+        // 1. nVersion (4 bytes at offset 0)
         block.nVersion = read_u32();
         
-        // 2. hashPrevBlock (32 bytes for uint256_t in compact format)
-        // Note: Full blocks may have larger hashes, but we extract first 32 bytes
+        // 2. hashPrevBlock - extract first 32 bytes from 128-byte hash
         block.hashPrevBlock.SetBytes(read_bytes(32));
+        offset += (128 - 32); // Skip remaining 96 bytes of full hash
         
-        // 3. hashMerkleRoot (32 bytes for uint256_t in compact format)
-        // Note: Full blocks may have larger hashes, but we extract first 32 bytes
+        // 3. hashMerkleRoot - extract first 32 bytes from 64-byte hash  
         block.hashMerkleRoot.SetBytes(read_bytes(32));
+        offset += (64 - 32); // Skip remaining 32 bytes of full hash
         
-        // Skip to read remaining fields (nChannel already read from offset)
-        // Read nHeight, nBits, nNonce, nTime based on block type
-        // For now, we'll read them sequentially after the hashes
-        
-        // 4. nHeight (4 bytes, big-endian) - read after hashes
+        // 4. nHeight (4 bytes at offset 196)
         block.nHeight = read_u32();
         
-        // 5. nBits (4 bytes, big-endian)
+        // 5. nBits (4 bytes at offset 200)
         block.nBits = read_u32();
         
-        // 6. nNonce (8 bytes, big-endian)
+        // 6. nNonce (7 bytes at offset 204-210)
+        // Read as 8 bytes but mask off the extra byte
+        std::uint64_t nonce_bytes = 0;
+        for (int i = 0; i < 7; ++i) {
+            nonce_bytes = (nonce_bytes << 8) | data[offset++];
+        }
+        block.nNonce = nonce_bytes;
+        
+        // 7. nChannel (4 bytes at offset 211)
+        block.nChannel = read_u32_at(TRITIUM_CHANNEL_OFFSET);
+        offset = TRITIUM_CHANNEL_OFFSET + 4; // Move past nChannel
+        
+        // 8. nTime (1 byte at offset 215)
+        block.nTime = data[offset];
+        
+    } else if (is_legacy) {
+        // Legacy block (220+ bytes) with nChannel at offset 196
+        // Structure: nVersion(4) + hashPrevBlock(128) + hashMerkleRoot(64) + 
+        //            nChannel(4) + nHeight(4) + nBits(4) + nNonce(8) + nTime(4)
+        
+        // 1. nVersion (4 bytes at offset 0)
+        block.nVersion = read_u32();
+        
+        // 2. hashPrevBlock - extract first 32 bytes from 128-byte hash
+        block.hashPrevBlock.SetBytes(read_bytes(32));
+        offset += (128 - 32); // Skip remaining 96 bytes
+        
+        // 3. hashMerkleRoot - extract first 32 bytes from 64-byte hash
+        block.hashMerkleRoot.SetBytes(read_bytes(32));
+        offset += (64 - 32); // Skip remaining 32 bytes
+        
+        // 4. nChannel (4 bytes at offset 196)
+        block.nChannel = read_u32_at(LEGACY_CHANNEL_OFFSET);
+        offset = LEGACY_CHANNEL_OFFSET + 4;
+        
+        // 5. nHeight (4 bytes at offset 200)
+        block.nHeight = read_u32();
+        
+        // 6. nBits (4 bytes at offset 204)
+        block.nBits = read_u32();
+        
+        // 7. nNonce (8 bytes at offset 208)
         block.nNonce = read_u64();
         
-        // 7. nTime (4 bytes, big-endian)
+        // 8. nTime (4 bytes at offset 216)
         block.nTime = read_u32();
         
     } else {
