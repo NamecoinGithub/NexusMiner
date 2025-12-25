@@ -390,13 +390,25 @@ bool MiningTemplateInterface::parse_block_header(const network::Payload& data,
                                                   ::LLP::CBlock& block)
 {
     try {
-        // Log payload details for debugging
-        m_logger->debug("[TemplateInterface] Parsing block header from {} bytes", data.size());
+        // Detect and log block type based on size
+        std::string block_type;
+        if (data.size() == 216) {
+            block_type = "Tritium (216 bytes, nChannel at offset 211)";
+        } else if (data.size() >= 220) {
+            block_type = "Legacy (220+ bytes, nChannel at offset 196)";
+        } else if (data.size() == 92) {
+            block_type = "Compact (92 bytes, sequential format)";
+        } else {
+            block_type = "Unknown format (" + std::to_string(data.size()) + " bytes)";
+        }
+        
+        m_logger->debug("[TemplateInterface] Parsing {} block header", block_type);
         
         block = llp_utils::deserialize_block_header(data);
         
         // Log parsed block details
         m_logger->debug("[TemplateInterface] Parsed block header successfully:");
+        m_logger->debug("[TemplateInterface]   - Block type: {}", block_type);
         m_logger->debug("[TemplateInterface]   - nVersion: {}", block.nVersion);
         m_logger->debug("[TemplateInterface]   - nChannel: {}", block.nChannel);
         m_logger->debug("[TemplateInterface]   - nHeight: {}", block.nHeight);
