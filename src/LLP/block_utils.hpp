@@ -130,13 +130,11 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         // 1. nVersion (4 bytes at offset 0)
         block.nVersion = read_u32();
         
-        // 2. hashPrevBlock - extract first 32 bytes from 128-byte hash
-        block.hashPrevBlock.SetBytes(read_bytes(32));
-        offset += (128 - 32); // Skip remaining 96 bytes of full hash
+        // 2. hashPrevBlock - read FULL 128-byte hash (uint1024_t)
+        block.hashPrevBlock.SetBytes(read_bytes(128));
         
-        // 3. hashMerkleRoot - extract first 32 bytes from 64-byte hash  
-        block.hashMerkleRoot.SetBytes(read_bytes(32));
-        offset += (64 - 32); // Skip remaining 32 bytes of full hash
+        // 3. hashMerkleRoot - read FULL 64-byte hash (uint512_t)
+        block.hashMerkleRoot.SetBytes(read_bytes(64));
         
         // 4. nHeight (4 bytes, calculated offset: 4+128+64=196)
         block.nHeight = read_u32();
@@ -174,13 +172,11 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         // 1. nVersion (4 bytes at offset 0)
         block.nVersion = read_u32();
         
-        // 2. hashPrevBlock - extract first 32 bytes from 128-byte hash
-        block.hashPrevBlock.SetBytes(read_bytes(32));
-        offset += (128 - 32); // Skip remaining 96 bytes
+        // 2. hashPrevBlock - read FULL 128-byte hash (uint1024_t)
+        block.hashPrevBlock.SetBytes(read_bytes(128));
         
-        // 3. hashMerkleRoot - extract first 32 bytes from 64-byte hash
-        block.hashMerkleRoot.SetBytes(read_bytes(32));
-        offset += (64 - 32); // Skip remaining 32 bytes
+        // 3. hashMerkleRoot - read FULL 64-byte hash (uint512_t)
+        block.hashMerkleRoot.SetBytes(read_bytes(64));
         
         // 4. nChannel (4 bytes, calculated offset: 4+128+64=196)
         block.nChannel = read_u32_at(LEGACY_CHANNEL_OFFSET);
@@ -199,15 +195,23 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         block.nTime = read_u32();
         
     } else {
-        // Compact block header (92 bytes) - sequential format
+        // Compact block header (92 bytes) - sequential format (legacy pool format)
+        // Read 32-byte hashes and expand them to full size by zero-padding
+        
         // 1. nVersion (4 bytes, big-endian)
         block.nVersion = read_u32();
         
-        // 2. hashPrevBlock (32 bytes for uint256_t)
-        block.hashPrevBlock.SetBytes(read_bytes(32));
+        // 2. hashPrevBlock (32 bytes) - expand to uint1024_t (128 bytes)
+        auto prev_bytes = read_bytes(32);
+        // Pad to 128 bytes (zero-fill the rest)
+        prev_bytes.resize(128, 0);
+        block.hashPrevBlock.SetBytes(prev_bytes);
         
-        // 3. hashMerkleRoot (32 bytes for uint256_t)
-        block.hashMerkleRoot.SetBytes(read_bytes(32));
+        // 3. hashMerkleRoot (32 bytes) - expand to uint512_t (64 bytes)
+        auto merkle_bytes = read_bytes(32);
+        // Pad to 64 bytes (zero-fill the rest)
+        merkle_bytes.resize(64, 0);
+        block.hashMerkleRoot.SetBytes(merkle_bytes);
         
         // 4. nChannel (4 bytes, big-endian)
         block.nChannel = read_u32();
@@ -226,6 +230,107 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     }
     
     return block;
+}
+
+/**
+ * Serialize a full block for submission to LLL-TAO node.
+ * 
+ * Serializes the block in the format expected by the node based on block type:
+ * - Tritium: 216 bytes with 7-byte nNonce and 1-byte nTime
+ * - Legacy: 220 bytes with 8-byte nNonce and 4-byte nTime
+ * 
+ * @param block The block to serialize
+ * @param is_tritium True for Tritium format, false for Legacy format
+ * @return Serialized block bytes
+ */
+inline std::vector<std::uint8_t> serialize_full_block(::LLP::CBlock const& block, bool is_tritium)
+{
+    std::vector<std::uint8_t> data;
+    
+    // Helper to write big-endian uint32
+    auto write_u32 = [&](std::uint32_t value) {
+        data.push_back((value >> 24) & 0xFF);
+        data.push_back((value >> 16) & 0xFF);
+        data.push_back((value >> 8) & 0xFF);
+        data.push_back(value & 0xFF);
+    };
+    
+    // Helper to write big-endian uint64
+    auto write_u64 = [&](std::uint64_t value) {
+        data.push_back((value >> 56) & 0xFF);
+        data.push_back((value >> 48) & 0xFF);
+        data.push_back((value >> 40) & 0xFF);
+        data.push_back((value >> 32) & 0xFF);
+        data.push_back((value >> 24) & 0xFF);
+        data.push_back((value >> 16) & 0xFF);
+        data.push_back((value >> 8) & 0xFF);
+        data.push_back(value & 0xFF);
+    };
+    
+    if (is_tritium) {
+        // Tritium block format (216 bytes)
+        data.reserve(216);
+        
+        // 1. nVersion (4 bytes)
+        write_u32(block.nVersion);
+        
+        // 2. hashPrevBlock (128 bytes)
+        auto prev_bytes = block.hashPrevBlock.GetBytes();
+        data.insert(data.end(), prev_bytes.begin(), prev_bytes.end());
+        
+        // 3. hashMerkleRoot (64 bytes)
+        auto merkle_bytes = block.hashMerkleRoot.GetBytes();
+        data.insert(data.end(), merkle_bytes.begin(), merkle_bytes.end());
+        
+        // 4. nHeight (4 bytes)
+        write_u32(block.nHeight);
+        
+        // 5. nBits (4 bytes)
+        write_u32(block.nBits);
+        
+        // 6. nNonce (7 bytes for Tritium)
+        for (int i = 6; i >= 0; --i) {
+            data.push_back((block.nNonce >> (i * 8)) & 0xFF);
+        }
+        
+        // 7. nChannel (4 bytes)
+        write_u32(block.nChannel);
+        
+        // 8. nTime (1 byte for Tritium)
+        data.push_back(block.nTime & 0xFF);
+        
+    } else {
+        // Legacy block format (220 bytes)
+        data.reserve(220);
+        
+        // 1. nVersion (4 bytes)
+        write_u32(block.nVersion);
+        
+        // 2. hashPrevBlock (128 bytes)
+        auto prev_bytes = block.hashPrevBlock.GetBytes();
+        data.insert(data.end(), prev_bytes.begin(), prev_bytes.end());
+        
+        // 3. hashMerkleRoot (64 bytes)
+        auto merkle_bytes = block.hashMerkleRoot.GetBytes();
+        data.insert(data.end(), merkle_bytes.begin(), merkle_bytes.end());
+        
+        // 4. nChannel (4 bytes)
+        write_u32(block.nChannel);
+        
+        // 5. nHeight (4 bytes)
+        write_u32(block.nHeight);
+        
+        // 6. nBits (4 bytes)
+        write_u32(block.nBits);
+        
+        // 7. nNonce (8 bytes)
+        write_u64(block.nNonce);
+        
+        // 8. nTime (4 bytes)
+        write_u32(block.nTime);
+    }
+    
+    return data;
 }
 
 } // namespace llp_utils
