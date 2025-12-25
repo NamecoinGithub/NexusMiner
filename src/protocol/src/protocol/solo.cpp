@@ -569,15 +569,11 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // Determine expected sizes based on configuration
     std::size_t expected_min_size;
     std::size_t expected_max_size;
-    
-    // Full block can be 216 (Tritium) or 220 (Legacy) bytes
-    constexpr std::size_t FULL_BLOCK_MIN_SIZE = 216;
-    constexpr std::size_t FULL_BLOCK_MAX_SIZE = 220;
 
     if (m_block_signing_enabled) {
         // Dual signature mode (Disposable + Physical Block Signature)
         // Format: [full_block(216/220)][timestamp(8)][sig_len(2)][disposable_sig][physical_sig_len(2)][physical_sig]
-        expected_min_size = FULL_BLOCK_MIN_SIZE + 
+        expected_min_size = FalconConstants::FULL_BLOCK_TRITIUM_SIZE + 
                             FalconConstants::TIMESTAMP_SIZE + 
                             FalconConstants::LENGTH_FIELD_SIZE +
                             FalconConstants::FALCON512_SIG_MIN +
@@ -585,27 +581,28 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
                             FalconConstants::FALCON512_SIG_MIN;
         
         if (m_enable_chacha20) {
-            // Adjust for full block size difference: +152 bytes (216-64) or +156 bytes (220-64)
-            expected_max_size = FalconConstants::SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX + (FULL_BLOCK_MAX_SIZE - FalconConstants::MERKLE_ROOT_SIZE);
-            m_logger->debug("[Solo Submit] Using DUAL_SIG_ENCRYPTED mode (max ~{} bytes)", expected_max_size);
+            // Use updated constants that already account for full block sizes (PR #65)
+            expected_max_size = FalconConstants::SUBMIT_BLOCK_DUAL_SIG_LEGACY_ENCRYPTED_MAX;
+            m_logger->debug("[Solo Submit] Using DUAL_SIG_ENCRYPTED mode (max {} bytes)", expected_max_size);
         } else {
-            expected_max_size = FalconConstants::SUBMIT_BLOCK_DUAL_SIG_MAX + (FULL_BLOCK_MAX_SIZE - FalconConstants::MERKLE_ROOT_SIZE);
-            m_logger->debug("[Solo Submit] Using DUAL_SIG mode (max ~{} bytes)", expected_max_size);
+            expected_max_size = FalconConstants::SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX;
+            m_logger->debug("[Solo Submit] Using DUAL_SIG mode (max {} bytes)", expected_max_size);
         }
     } else {
         // Single signature mode (Disposable Falcon only)
         // Format: [full_block(216/220)][timestamp(8)][sig_len(2)][signature]
-        expected_min_size = FULL_BLOCK_MIN_SIZE + 
+        expected_min_size = FalconConstants::FULL_BLOCK_TRITIUM_SIZE + 
                             FalconConstants::TIMESTAMP_SIZE + 
                             FalconConstants::LENGTH_FIELD_SIZE +
                             FalconConstants::FALCON512_SIG_MIN;
         
         if (m_enable_chacha20) {
-            expected_max_size = FalconConstants::SUBMIT_BLOCK_WRAPPER_ENCRYPTED_MAX + (FULL_BLOCK_MAX_SIZE - FalconConstants::MERKLE_ROOT_SIZE);
-            m_logger->debug("[Solo Submit] Using WRAPPER_ENCRYPTED mode (max ~{} bytes)", expected_max_size);
+            // Use updated constants that already account for full block sizes (PR #65)
+            expected_max_size = FalconConstants::SUBMIT_BLOCK_WRAPPER_LEGACY_ENCRYPTED_MAX;
+            m_logger->debug("[Solo Submit] Using WRAPPER_ENCRYPTED mode (max {} bytes)", expected_max_size);
         } else {
-            expected_max_size = FalconConstants::SUBMIT_BLOCK_WRAPPER_MAX + (FULL_BLOCK_MAX_SIZE - FalconConstants::MERKLE_ROOT_SIZE);
-            m_logger->debug("[Solo Submit] Using WRAPPER mode (max ~{} bytes)", expected_max_size);
+            expected_max_size = FalconConstants::SUBMIT_BLOCK_WRAPPER_LEGACY_MAX;
+            m_logger->debug("[Solo Submit] Using WRAPPER mode (max {} bytes)", expected_max_size);
         }
     }
 
