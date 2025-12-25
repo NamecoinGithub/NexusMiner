@@ -573,6 +573,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     if (m_block_signing_enabled) {
         // Dual signature mode (Disposable + Physical Block Signature)
         // Format: [full_block(216/220)][timestamp(8)][sig_len(2)][disposable_sig][physical_sig_len(2)][physical_sig]
+        // Minimum uses Tritium (216), maximum uses Legacy (220) to accept both block types
         expected_min_size = FalconConstants::FULL_BLOCK_TRITIUM_SIZE + 
                             FalconConstants::TIMESTAMP_SIZE + 
                             FalconConstants::LENGTH_FIELD_SIZE +
@@ -591,6 +592,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     } else {
         // Single signature mode (Disposable Falcon only)
         // Format: [full_block(216/220)][timestamp(8)][sig_len(2)][signature]
+        // Minimum uses Tritium (216), maximum uses Legacy (220) to accept both block types
         expected_min_size = FalconConstants::FULL_BLOCK_TRITIUM_SIZE + 
                             FalconConstants::TIMESTAMP_SIZE + 
                             FalconConstants::LENGTH_FIELD_SIZE +
