@@ -60,6 +60,15 @@ public:
     };
     
     /**
+     * @brief Block format type for serialization
+     */
+    enum class BlockFormat {
+        TRITIUM,    // 216 bytes
+        LEGACY,     // 220 bytes
+        COMPACT     // 92 bytes (pool format)
+    };
+    
+    /**
      * @brief Mining template data structure
      */
     struct MiningTemplate {
@@ -69,6 +78,7 @@ public:
         TemplateState state;        // Current state
         uint32_t session_id;        // Falcon session ID
         std::string source_endpoint;// Node endpoint that sent template
+        BlockFormat format;         // Block format (Tritium/Legacy/Compact)
     };
     
     /**

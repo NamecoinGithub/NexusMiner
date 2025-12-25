@@ -77,6 +77,15 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     tmpl.timestamp_received = static_cast<uint64_t>(
         std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
     
+    // Determine block format based on size
+    if (data.size() == 216) {
+        tmpl.format = BlockFormat::TRITIUM;
+    } else if (data.size() >= 220) {
+        tmpl.format = BlockFormat::LEGACY;
+    } else {
+        tmpl.format = BlockFormat::COMPACT;
+    }
+    
     if (!parse_block_header(data, tmpl.block)) {
         result.error_message = "Failed to parse block header from template data";
         m_templates_rejected.fetch_add(1, std::memory_order_relaxed);
@@ -232,22 +241,30 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
         return {};
     }
     
-    // Create submission payload: merkle_root + nonce (8 bytes LE)
-    std::vector<uint8_t> payload;
-    payload.reserve(merkle_root.size() + 8);
-    
-    // Add merkle root
-    payload.insert(payload.end(), merkle_root.begin(), merkle_root.end());
-    
-    // Add nonce (little-endian)
-    for (int i = 0; i < 8; ++i) {
-        payload.push_back((nonce >> (i * 8)) & 0xFF);
+    if (!has_valid_template()) {
+        m_logger->error("[TemplateInterface] Cannot prepare block submission: no valid template");
+        return {};
     }
+    
+    // Create a copy of the current block template with the solved merkle root and nonce
+    ::LLP::CBlock solved_block = m_current_template.block;
+    
+    // Update with the mined merkle root
+    solved_block.hashMerkleRoot.SetBytes(merkle_root);
+    
+    // Update with the found nonce
+    solved_block.nNonce = nonce;
+    
+    // Determine serialization format from template
+    bool is_tritium = (m_current_template.format == BlockFormat::TRITIUM);
+    
+    // Serialize the full block
+    auto payload = llp_utils::serialize_full_block(solved_block, is_tritium);
     
     m_blocks_verified.fetch_add(1, std::memory_order_relaxed);
     
-    m_logger->info("[TemplateInterface] Block submission prepared ({} bytes)",
-        payload.size());
+    m_logger->info("[TemplateInterface] Block submission prepared: {} bytes ({} format)",
+        payload.size(), is_tritium ? "Tritium" : "Legacy");
     
     return payload;
 }
@@ -390,13 +407,25 @@ bool MiningTemplateInterface::parse_block_header(const network::Payload& data,
                                                   ::LLP::CBlock& block)
 {
     try {
-        // Log payload details for debugging
-        m_logger->debug("[TemplateInterface] Parsing block header from {} bytes", data.size());
+        // Detect and log block type based on size
+        std::string block_type;
+        if (data.size() == 216) {
+            block_type = "Tritium (216 bytes, nChannel at offset 211)";
+        } else if (data.size() >= 220) {
+            block_type = "Legacy (220+ bytes, nChannel at offset 196)";
+        } else if (data.size() == 92) {
+            block_type = "Compact (92 bytes, sequential format)";
+        } else {
+            block_type = "Unknown format (" + std::to_string(data.size()) + " bytes)";
+        }
+        
+        m_logger->debug("[TemplateInterface] Parsing {} block header", block_type);
         
         block = llp_utils::deserialize_block_header(data);
         
         // Log parsed block details
         m_logger->debug("[TemplateInterface] Parsed block header successfully:");
+        m_logger->debug("[TemplateInterface]   - Block type: {}", block_type);
         m_logger->debug("[TemplateInterface]   - nVersion: {}", block.nVersion);
         m_logger->debug("[TemplateInterface]   - nChannel: {}", block.nChannel);
         m_logger->debug("[TemplateInterface]   - nHeight: {}", block.nHeight);

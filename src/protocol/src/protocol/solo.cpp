@@ -510,8 +510,8 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     
     // Enhanced diagnostics: Log block submission structure
     m_logger->info("[Solo Submit] Block submission payload structure:");
-    m_logger->info("[Solo Submit]   - Block data size: {} bytes", block_data.size());
-    m_logger->info("[Solo Submit]   - Nonce: 0x{:016x}", nonce);
+    m_logger->info("[Solo Submit]   - Block data size: {} bytes (full block)", block_data.size());
+    m_logger->info("[Solo Submit]   - Nonce (already in block): 0x{:016x}", nonce);
     
     // Get current timestamp for block submission (8 bytes, little-endian)
     uint64_t submission_timestamp = static_cast<uint64_t>(
@@ -519,11 +519,12 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     
     m_logger->info("[Solo Submit]   - Timestamp: {} (0x{:016x})", submission_timestamp, submission_timestamp);
     
-    // Build the complete submission payload: merkle_root + nonce + timestamp
+    // Build the complete submission payload: full_block + timestamp
+    // Note: block_data now contains the full serialized block (216 or 220 bytes)
+    // which already includes the nonce, so we don't append it separately
     std::vector<uint8_t> message_to_sign;
-    message_to_sign.reserve(block_data.size() + 16);  // block_data + nonce(8) + timestamp(8)
+    message_to_sign.reserve(block_data.size() + 8);  // full_block + timestamp(8)
     message_to_sign.insert(message_to_sign.end(), block_data.begin(), block_data.end());
-    append_uint64_le(message_to_sign, nonce);
     append_uint64_le(message_to_sign, submission_timestamp);
     
     // Generate Falcon signature for block submission
@@ -540,13 +541,10 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // Build the packet payload
     Packet packet{ Packet::SUBMIT_BLOCK };
     packet.m_data = std::make_shared<network::Payload>();
-    packet.m_data->reserve(block_data.size() + 16 + 2 + sig_result.signature.size());
+    packet.m_data->reserve(block_data.size() + 8 + 2 + sig_result.signature.size());
     
-    // Append merkle_root (64 bytes)
+    // Append full block (216 or 220 bytes)
     packet.m_data->insert(packet.m_data->end(), block_data.begin(), block_data.end());
-    
-    // Append nonce (8 bytes LE)
-    append_uint64_le(*packet.m_data, nonce);
     
     // Append timestamp (8 bytes LE)
     append_uint64_le(*packet.m_data, submission_timestamp);
@@ -571,12 +569,15 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // Determine expected sizes based on configuration
     std::size_t expected_min_size;
     std::size_t expected_max_size;
+    
+    // Full block can be 216 (Tritium) or 220 (Legacy) bytes
+    constexpr std::size_t FULL_BLOCK_MIN_SIZE = 216;
+    constexpr std::size_t FULL_BLOCK_MAX_SIZE = 220;
 
     if (m_block_signing_enabled) {
         // Dual signature mode (Disposable + Physical Block Signature)
-        // Format: [merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][disposable_sig][physical_sig_len(2)][physical_sig]
-        expected_min_size = FalconConstants::MERKLE_ROOT_SIZE + 
-                            FalconConstants::NONCE_SIZE + 
+        // Format: [full_block(216/220)][timestamp(8)][sig_len(2)][disposable_sig][physical_sig_len(2)][physical_sig]
+        expected_min_size = FULL_BLOCK_MIN_SIZE + 
                             FalconConstants::TIMESTAMP_SIZE + 
                             FalconConstants::LENGTH_FIELD_SIZE +
                             FalconConstants::FALCON512_SIG_MIN +
@@ -584,27 +585,27 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
                             FalconConstants::FALCON512_SIG_MIN;
         
         if (m_enable_chacha20) {
-            expected_max_size = FalconConstants::SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX;  // 1,616 bytes
-            m_logger->debug("[Solo Submit] Using DUAL_SIG_ENCRYPTED mode (max {} bytes)", expected_max_size);
+            // Adjust for full block size difference: +152 bytes (216-64) or +156 bytes (220-64)
+            expected_max_size = FalconConstants::SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX + (FULL_BLOCK_MAX_SIZE - FalconConstants::MERKLE_ROOT_SIZE);
+            m_logger->debug("[Solo Submit] Using DUAL_SIG_ENCRYPTED mode (max ~{} bytes)", expected_max_size);
         } else {
-            expected_max_size = FalconConstants::SUBMIT_BLOCK_DUAL_SIG_MAX;  // 1,588 bytes
-            m_logger->debug("[Solo Submit] Using DUAL_SIG mode (max {} bytes)", expected_max_size);
+            expected_max_size = FalconConstants::SUBMIT_BLOCK_DUAL_SIG_MAX + (FULL_BLOCK_MAX_SIZE - FalconConstants::MERKLE_ROOT_SIZE);
+            m_logger->debug("[Solo Submit] Using DUAL_SIG mode (max ~{} bytes)", expected_max_size);
         }
     } else {
         // Single signature mode (Disposable Falcon only)
-        // Format: [merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][signature]
-        expected_min_size = FalconConstants::MERKLE_ROOT_SIZE + 
-                            FalconConstants::NONCE_SIZE + 
+        // Format: [full_block(216/220)][timestamp(8)][sig_len(2)][signature]
+        expected_min_size = FULL_BLOCK_MIN_SIZE + 
                             FalconConstants::TIMESTAMP_SIZE + 
                             FalconConstants::LENGTH_FIELD_SIZE +
                             FalconConstants::FALCON512_SIG_MIN;
         
         if (m_enable_chacha20) {
-            expected_max_size = FalconConstants::SUBMIT_BLOCK_WRAPPER_ENCRYPTED_MAX;  // 862 bytes
-            m_logger->debug("[Solo Submit] Using WRAPPER_ENCRYPTED mode (max {} bytes)", expected_max_size);
+            expected_max_size = FalconConstants::SUBMIT_BLOCK_WRAPPER_ENCRYPTED_MAX + (FULL_BLOCK_MAX_SIZE - FalconConstants::MERKLE_ROOT_SIZE);
+            m_logger->debug("[Solo Submit] Using WRAPPER_ENCRYPTED mode (max ~{} bytes)", expected_max_size);
         } else {
-            expected_max_size = FalconConstants::SUBMIT_BLOCK_WRAPPER_MAX;  // 834 bytes
-            m_logger->debug("[Solo Submit] Using WRAPPER mode (max {} bytes)", expected_max_size);
+            expected_max_size = FalconConstants::SUBMIT_BLOCK_WRAPPER_MAX + (FULL_BLOCK_MAX_SIZE - FalconConstants::MERKLE_ROOT_SIZE);
+            m_logger->debug("[Solo Submit] Using WRAPPER mode (max ~{} bytes)", expected_max_size);
         }
     }
 
@@ -637,9 +638,9 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     m_logger->info("[Solo Submit]   - Expected max: {} bytes", expected_max_size);
     
     if (m_block_signing_enabled) {
-        m_logger->info("[Solo Submit]   - Format: [merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][signature][phys_sig_len(2)][phys_signature]");
+        m_logger->info("[Solo Submit]   - Format: [full_block(216/220)][timestamp(8)][sig_len(2)][signature][phys_sig_len(2)][phys_signature]");
     } else {
-        m_logger->info("[Solo Submit]   - Format: [merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][signature]");
+        m_logger->info("[Solo Submit]   - Format: [full_block(216/220)][timestamp(8)][sig_len(2)][signature]");
     }
     
     auto result = packet.get_bytes();
