@@ -75,7 +75,7 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     std::string block_type;
     if (data.size() == TRITIUM_BLOCK_SIZE) {
         block_type = "Tritium (216 bytes)";
-        logger->info("║  Block type: {} - nChannel at offset {}", block_type, TRITIUM_CHANNEL_OFFSET);
+        logger->info("║  Block type: {} - nChannel NOT serialized (set by caller)", block_type);
     } else if (data.size() >= LEGACY_BLOCK_MIN_SIZE) {
         block_type = "Legacy (220+ bytes)";
         logger->info("║  Block type: {} - nChannel at offset {}", block_type, LEGACY_CHANNEL_OFFSET);
