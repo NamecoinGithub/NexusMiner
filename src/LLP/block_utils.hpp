@@ -240,62 +240,26 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         logger->info("[Deserialize] Bytes {}-{} (nNonce): {} -> uint64: 0x{:016x}",
             nonce_offset, nonce_offset + 6, nonce_hex.str(), block.nNonce);
         
-        // 7. nChannel (4 bytes at offset 211) - CRITICAL FIELD FOR DEBUGGING
-        logger->info("[Deserialize] ═══ CRITICAL: nChannel Field Analysis ═══");
-        logger->info("[Deserialize] Expected offset for nChannel: {}", TRITIUM_CHANNEL_OFFSET);
-        logger->info("[Deserialize] Current offset after nNonce: {}", offset);
+        // 7. nChannel - NOT INCLUDED in serialized Tritium block template!
+        // The mining template sent by the node does NOT include the channel field.
+        // The miner already knows what channel it's mining (from connection setup).
+        // The caller (MiningTemplateInterface) will set this from m_channel.
+        logger->info("[Deserialize] ═══ nChannel Field (Tritium) ═══");
+        logger->info("[Deserialize] nChannel is NOT included in Tritium block template serialization");
+        logger->info("[Deserialize] Setting nChannel to 0 (placeholder)");
+        logger->info("[Deserialize] Caller MUST set nChannel from connection context");
         
-        // Show the exact bytes at nChannel offset
-        if (TRITIUM_CHANNEL_OFFSET + 4 <= data.size()) {
-            logger->info("[Deserialize] Raw bytes at offset {}-{}: {:02x} {:02x} {:02x} {:02x}",
-                TRITIUM_CHANNEL_OFFSET, TRITIUM_CHANNEL_OFFSET + 3,
-                data[TRITIUM_CHANNEL_OFFSET], data[TRITIUM_CHANNEL_OFFSET + 1],
-                data[TRITIUM_CHANNEL_OFFSET + 2], data[TRITIUM_CHANNEL_OFFSET + 3]);
-        }
+        block.nChannel = 0;  // Placeholder - caller must set from m_channel
         
-        block.nChannel = read_u32_at(TRITIUM_CHANNEL_OFFSET);
-        offset = TRITIUM_CHANNEL_OFFSET + 4; // Move past nChannel
-        
-        // Detailed endianness analysis
-        uint32_t big_endian_value = 
-            (static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET]) << 24) |
-            (static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET + 1]) << 16) |
-            (static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET + 2]) << 8) |
-            static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET + 3]);
-        
-        uint32_t little_endian_value =
-            static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET]) |
-            (static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET + 1]) << 8) |
-            (static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET + 2]) << 16) |
-            (static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET + 3]) << 24);
-        
-        logger->info("[Deserialize] nChannel interpretation:");
-        logger->info("[Deserialize]   - Big-endian (used): {}", big_endian_value);
-        logger->info("[Deserialize]   - Little-endian: {}", little_endian_value);
-        logger->info("[Deserialize]   - Final nChannel value: {}", block.nChannel);
-        
-        // Expected value check (1 = prime, 2 = hash)
-        if (block.nChannel != 1 && block.nChannel != 2) {
-            logger->error("[Deserialize] ❌ CHANNEL MISMATCH DETECTED!");
-            logger->error("[Deserialize]   Expected: 1 (prime) or 2 (hash)");
-            logger->error("[Deserialize]   Got: {}", block.nChannel);
-            logger->error("[Deserialize]   This indicates a deserialization bug!");
-            logger->error("[Deserialize]   Possible causes:");
-            logger->error("[Deserialize]     1. Wrong offset (check if node sent different format)");
-            logger->error("[Deserialize]     2. Endianness mismatch (check raw bytes above)");
-            logger->error("[Deserialize]     3. Data corruption during transmission");
-        } else {
-            logger->info("[Deserialize] ✓ nChannel value valid: {} ({})",
-                block.nChannel, (block.nChannel == 1) ? "prime" : "hash");
-        }
-        
-        // 8. nTime (1 byte at offset 215)
+        // 8. nTime (1 byte at offset 211, after 7-byte nNonce)
         // Tritium uses 1-byte nTime instead of standard 4 bytes
         // Store in uint32 field (will be small value)
+        // Current offset should be 211 after reading 7-byte nNonce
         if (offset < data.size()) {
             block.nTime = data[offset];
             logger->info("[Deserialize] Byte {} (nTime): {:02x} -> uint32: {}",
                 offset, data[offset], block.nTime);
+            offset++; // Move past nTime
         } else {
             block.nTime = 0;
             logger->warn("[Deserialize] nTime not present in payload, defaulting to 0");
@@ -550,6 +514,7 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     logger->info("╠═══════════════════════════════════════════════════════════════════╣");
     logger->info("║  nVersion:  {}", block.nVersion);
     logger->info("║  nChannel:  {} ({})", block.nChannel, 
+        (block.nChannel == 0) ? "NOT SET - caller must set from connection" :
         (block.nChannel == 1) ? "prime" : (block.nChannel == 2) ? "hash" : "INVALID");
     logger->info("║  nHeight:   {}", block.nHeight);
     logger->info("║  nBits:     0x{:08x}", block.nBits);
