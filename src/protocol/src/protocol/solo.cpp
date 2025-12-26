@@ -751,6 +751,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo]   - Payload size: {} bytes", packet.m_data->size());
         m_logger->info("[Solo]   - Packet length field: {} bytes", packet.m_length);
         
+        // TRAINING WHEELS: Full hex dump of BLOCK_DATA payload for debugging
+        m_logger->info("[Solo] BLOCK_DATA hex dump:");
+        m_logger->info("\n{}", format_llp_payload_hexdump(packet.m_data, 256));
+        
         // Validate packet has minimum required data
         if (packet.m_length < MIN_BLOCK_HEADER_SIZE) {
             m_logger->error("[Solo] CRITICAL: BLOCK_DATA packet has invalid length {} < minimum {}", 

@@ -6,6 +6,9 @@
 #include <stdexcept>
 #include <cstdint>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
+#include "spdlog/spdlog.h"
 
 namespace nexusminer {
 namespace llp_utils {
@@ -43,11 +46,50 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     constexpr std::size_t TRITIUM_CHANNEL_OFFSET = 211;
     constexpr std::size_t LEGACY_CHANNEL_OFFSET = 196;
     
+    // Get logger for detailed deserialization logging
+    auto logger = spdlog::get("logger");
+    if (!logger) {
+        logger = spdlog::default_logger();
+    }
+    
     if (data.size() < MIN_SIZE) {
         throw std::runtime_error(
             "Block deserialization failed: payload size " + 
             std::to_string(data.size()) + " is less than minimum required " + 
             std::to_string(MIN_SIZE));
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // TRAINING WHEELS: Detailed Block Deserialization Logging
+    // ═══════════════════════════════════════════════════════════════════════
+    logger->info("╔═══════════════════════════════════════════════════════════════════╗");
+    logger->info("║  BLOCK DESERIALIZATION - Training Wheels Mode                     ║");
+    logger->info("╠═══════════════════════════════════════════════════════════════════╣");
+    logger->info("║  Payload size: {} bytes", data.size());
+    
+    // Determine block type for logging
+    std::string block_type;
+    if (data.size() == TRITIUM_BLOCK_SIZE) {
+        block_type = "Tritium (216 bytes)";
+        logger->info("║  Block type: {} - nChannel at offset {}", block_type, TRITIUM_CHANNEL_OFFSET);
+    } else if (data.size() >= LEGACY_BLOCK_MIN_SIZE) {
+        block_type = "Legacy (220+ bytes)";
+        logger->info("║  Block type: {} - nChannel at offset {}", block_type, LEGACY_CHANNEL_OFFSET);
+    } else {
+        block_type = "Compact (92 bytes)";
+        logger->info("║  Block type: {} - sequential format", block_type);
+    }
+    logger->info("╚═══════════════════════════════════════════════════════════════════╝");
+    
+    // Hex dump of first 32 bytes for debugging
+    if (data.size() > 0) {
+        std::ostringstream hex_preview;
+        hex_preview << std::hex << std::setfill('0');
+        size_t preview_len = std::min(data.size(), static_cast<size_t>(32));
+        for (size_t i = 0; i < preview_len; ++i) {
+            hex_preview << std::setw(2) << static_cast<unsigned int>(data[i]) << " ";
+        }
+        logger->info("[Deserialize] First {} bytes (hex): {}", preview_len, hex_preview.str());
     }
     
     std::size_t offset = 0;
@@ -127,40 +169,132 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         //            nHeight(4) + nBits(4) + nNonce(7) + nChannel(4) + nTime(1)
         // Total: 4+128+64+4+4+7+4+1 = 216 bytes
         
+        logger->info("[Deserialize] ═══ TRITIUM BLOCK FORMAT (216 bytes) ═══");
+        
         // 1. nVersion (4 bytes at offset 0)
+        size_t version_offset = offset;
         block.nVersion = read_u32();
+        logger->info("[Deserialize] Bytes {}-{} (nVersion): {:02x} {:02x} {:02x} {:02x} -> uint32: {}",
+            version_offset, version_offset + 3,
+            data[version_offset], data[version_offset + 1], 
+            data[version_offset + 2], data[version_offset + 3],
+            block.nVersion);
         
         // 2. hashPrevBlock - read FULL 128-byte hash (uint1024_t)
+        size_t prev_offset = offset;
         block.hashPrevBlock.SetBytes(read_bytes(128));
+        // Log first 16 bytes of hashPrevBlock for verification
+        std::ostringstream prev_hex;
+        prev_hex << std::hex << std::setfill('0');
+        for (size_t i = 0; i < 16 && (prev_offset + i) < data.size(); ++i) {
+            prev_hex << std::setw(2) << static_cast<unsigned int>(data[prev_offset + i]) << " ";
+        }
+        logger->info("[Deserialize] Bytes {}-{} (hashPrevBlock): {} ... (128 bytes total)",
+            prev_offset, prev_offset + 127, prev_hex.str());
         
         // 3. hashMerkleRoot - read FULL 64-byte hash (uint512_t)
+        size_t merkle_offset = offset;
         block.hashMerkleRoot.SetBytes(read_bytes(64));
+        // Log first 16 bytes of hashMerkleRoot for verification
+        std::ostringstream merkle_hex;
+        merkle_hex << std::hex << std::setfill('0');
+        for (size_t i = 0; i < 16 && (merkle_offset + i) < data.size(); ++i) {
+            merkle_hex << std::setw(2) << static_cast<unsigned int>(data[merkle_offset + i]) << " ";
+        }
+        logger->info("[Deserialize] Bytes {}-{} (hashMerkleRoot): {} ... (64 bytes total)",
+            merkle_offset, merkle_offset + 63, merkle_hex.str());
         
         // 4. nHeight (4 bytes, calculated offset: 4+128+64=196)
+        size_t height_offset = offset;
         block.nHeight = read_u32();
+        logger->info("[Deserialize] Bytes {}-{} (nHeight): {:02x} {:02x} {:02x} {:02x} -> uint32: {}",
+            height_offset, height_offset + 3,
+            data[height_offset], data[height_offset + 1],
+            data[height_offset + 2], data[height_offset + 3],
+            block.nHeight);
         
         // 5. nBits (4 bytes, calculated offset: 196+4=200)
+        size_t bits_offset = offset;
         block.nBits = read_u32();
+        logger->info("[Deserialize] Bytes {}-{} (nBits): {:02x} {:02x} {:02x} {:02x} -> uint32: 0x{:08x}",
+            bits_offset, bits_offset + 3,
+            data[bits_offset], data[bits_offset + 1],
+            data[bits_offset + 2], data[bits_offset + 3],
+            block.nBits);
         
         // 6. nNonce (7 bytes, calculated offset: 200+4=204)
         // Tritium uses 7-byte nNonce instead of standard 8 bytes
+        size_t nonce_offset = offset;
         std::uint64_t nonce_bytes = 0;
+        std::ostringstream nonce_hex;
+        nonce_hex << std::hex << std::setfill('0');
         for (std::size_t i = 0; i < TRITIUM_NONCE_SIZE; ++i) {
+            nonce_hex << std::setw(2) << static_cast<unsigned int>(data[offset]) << " ";
             nonce_bytes = (nonce_bytes << 8) | data[offset++];
         }
         block.nNonce = nonce_bytes;
+        logger->info("[Deserialize] Bytes {}-{} (nNonce): {} -> uint64: 0x{:016x}",
+            nonce_offset, nonce_offset + 6, nonce_hex.str(), block.nNonce);
         
-        // 7. nChannel (4 bytes at offset 211)
+        // 7. nChannel (4 bytes at offset 211) - CRITICAL FIELD FOR DEBUGGING
+        logger->info("[Deserialize] ═══ CRITICAL: nChannel Field Analysis ═══");
+        logger->info("[Deserialize] Expected offset for nChannel: {}", TRITIUM_CHANNEL_OFFSET);
+        logger->info("[Deserialize] Current offset after nNonce: {}", offset);
+        
+        // Show the exact bytes at nChannel offset
+        if (TRITIUM_CHANNEL_OFFSET + 4 <= data.size()) {
+            logger->info("[Deserialize] Raw bytes at offset {}-{}: {:02x} {:02x} {:02x} {:02x}",
+                TRITIUM_CHANNEL_OFFSET, TRITIUM_CHANNEL_OFFSET + 3,
+                data[TRITIUM_CHANNEL_OFFSET], data[TRITIUM_CHANNEL_OFFSET + 1],
+                data[TRITIUM_CHANNEL_OFFSET + 2], data[TRITIUM_CHANNEL_OFFSET + 3]);
+        }
+        
         block.nChannel = read_u32_at(TRITIUM_CHANNEL_OFFSET);
         offset = TRITIUM_CHANNEL_OFFSET + 4; // Move past nChannel
+        
+        // Detailed endianness analysis
+        uint32_t big_endian_value = 
+            (static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET]) << 24) |
+            (static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET + 1]) << 16) |
+            (static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET + 2]) << 8) |
+            static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET + 3]);
+        
+        uint32_t little_endian_value =
+            static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET]) |
+            (static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET + 1]) << 8) |
+            (static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET + 2]) << 16) |
+            (static_cast<uint32_t>(data[TRITIUM_CHANNEL_OFFSET + 3]) << 24);
+        
+        logger->info("[Deserialize] nChannel interpretation:");
+        logger->info("[Deserialize]   - Big-endian (used): {}", big_endian_value);
+        logger->info("[Deserialize]   - Little-endian: {}", little_endian_value);
+        logger->info("[Deserialize]   - Final nChannel value: {}", block.nChannel);
+        
+        // Expected value check (1 = prime, 2 = hash)
+        if (block.nChannel != 1 && block.nChannel != 2) {
+            logger->error("[Deserialize] ❌ CHANNEL MISMATCH DETECTED!");
+            logger->error("[Deserialize]   Expected: 1 (prime) or 2 (hash)");
+            logger->error("[Deserialize]   Got: {}", block.nChannel);
+            logger->error("[Deserialize]   This indicates a deserialization bug!");
+            logger->error("[Deserialize]   Possible causes:");
+            logger->error("[Deserialize]     1. Wrong offset (check if node sent different format)");
+            logger->error("[Deserialize]     2. Endianness mismatch (check raw bytes above)");
+            logger->error("[Deserialize]     3. Data corruption during transmission");
+        } else {
+            logger->info("[Deserialize] ✓ nChannel value valid: {} ({})",
+                block.nChannel, (block.nChannel == 1) ? "prime" : "hash");
+        }
         
         // 8. nTime (1 byte at offset 215)
         // Tritium uses 1-byte nTime instead of standard 4 bytes
         // Store in uint32 field (will be small value)
         if (offset < data.size()) {
             block.nTime = data[offset];
+            logger->info("[Deserialize] Byte {} (nTime): {:02x} -> uint32: {}",
+                offset, data[offset], block.nTime);
         } else {
             block.nTime = 0;
+            logger->warn("[Deserialize] nTime not present in payload, defaulting to 0");
         }
         
     } else if (is_legacy) {
@@ -169,65 +303,255 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         //            nChannel(4) + nHeight(4) + nBits(4) + nNonce(8) + nTime(4)
         // Total: 4+128+64+4+4+4+8+4 = 220 bytes (minimum)
         
+        logger->info("[Deserialize] ═══ LEGACY BLOCK FORMAT (220+ bytes) ═══");
+        
         // 1. nVersion (4 bytes at offset 0)
+        size_t version_offset = offset;
         block.nVersion = read_u32();
+        logger->info("[Deserialize] Bytes {}-{} (nVersion): {:02x} {:02x} {:02x} {:02x} -> uint32: {}",
+            version_offset, version_offset + 3,
+            data[version_offset], data[version_offset + 1],
+            data[version_offset + 2], data[version_offset + 3],
+            block.nVersion);
         
         // 2. hashPrevBlock - read FULL 128-byte hash (uint1024_t)
+        size_t prev_offset = offset;
         block.hashPrevBlock.SetBytes(read_bytes(128));
+        std::ostringstream prev_hex;
+        prev_hex << std::hex << std::setfill('0');
+        for (size_t i = 0; i < 16 && (prev_offset + i) < data.size(); ++i) {
+            prev_hex << std::setw(2) << static_cast<unsigned int>(data[prev_offset + i]) << " ";
+        }
+        logger->info("[Deserialize] Bytes {}-{} (hashPrevBlock): {} ... (128 bytes total)",
+            prev_offset, prev_offset + 127, prev_hex.str());
         
         // 3. hashMerkleRoot - read FULL 64-byte hash (uint512_t)
+        size_t merkle_offset = offset;
         block.hashMerkleRoot.SetBytes(read_bytes(64));
+        std::ostringstream merkle_hex;
+        merkle_hex << std::hex << std::setfill('0');
+        for (size_t i = 0; i < 16 && (merkle_offset + i) < data.size(); ++i) {
+            merkle_hex << std::setw(2) << static_cast<unsigned int>(data[merkle_offset + i]) << " ";
+        }
+        logger->info("[Deserialize] Bytes {}-{} (hashMerkleRoot): {} ... (64 bytes total)",
+            merkle_offset, merkle_offset + 63, merkle_hex.str());
         
-        // 4. nChannel (4 bytes, calculated offset: 4+128+64=196)
+        // 4. nChannel (4 bytes, calculated offset: 4+128+64=196) - CRITICAL FIELD
+        logger->info("[Deserialize] ═══ CRITICAL: nChannel Field Analysis ═══");
+        logger->info("[Deserialize] Expected offset for nChannel: {}", LEGACY_CHANNEL_OFFSET);
+        logger->info("[Deserialize] Current offset: {}", offset);
+        
+        // Show the exact bytes at nChannel offset
+        if (LEGACY_CHANNEL_OFFSET + 4 <= data.size()) {
+            logger->info("[Deserialize] Raw bytes at offset {}-{}: {:02x} {:02x} {:02x} {:02x}",
+                LEGACY_CHANNEL_OFFSET, LEGACY_CHANNEL_OFFSET + 3,
+                data[LEGACY_CHANNEL_OFFSET], data[LEGACY_CHANNEL_OFFSET + 1],
+                data[LEGACY_CHANNEL_OFFSET + 2], data[LEGACY_CHANNEL_OFFSET + 3]);
+        }
+        
         block.nChannel = read_u32_at(LEGACY_CHANNEL_OFFSET);
         offset = LEGACY_CHANNEL_OFFSET + 4;
         
+        // Detailed endianness analysis
+        uint32_t big_endian_value = 
+            (static_cast<uint32_t>(data[LEGACY_CHANNEL_OFFSET]) << 24) |
+            (static_cast<uint32_t>(data[LEGACY_CHANNEL_OFFSET + 1]) << 16) |
+            (static_cast<uint32_t>(data[LEGACY_CHANNEL_OFFSET + 2]) << 8) |
+            static_cast<uint32_t>(data[LEGACY_CHANNEL_OFFSET + 3]);
+        
+        uint32_t little_endian_value =
+            static_cast<uint32_t>(data[LEGACY_CHANNEL_OFFSET]) |
+            (static_cast<uint32_t>(data[LEGACY_CHANNEL_OFFSET + 1]) << 8) |
+            (static_cast<uint32_t>(data[LEGACY_CHANNEL_OFFSET + 2]) << 16) |
+            (static_cast<uint32_t>(data[LEGACY_CHANNEL_OFFSET + 3]) << 24);
+        
+        logger->info("[Deserialize] nChannel interpretation:");
+        logger->info("[Deserialize]   - Big-endian (used): {}", big_endian_value);
+        logger->info("[Deserialize]   - Little-endian: {}", little_endian_value);
+        logger->info("[Deserialize]   - Final nChannel value: {}", block.nChannel);
+        
+        if (block.nChannel != 1 && block.nChannel != 2) {
+            logger->error("[Deserialize] ❌ CHANNEL MISMATCH DETECTED!");
+            logger->error("[Deserialize]   Expected: 1 (prime) or 2 (hash)");
+            logger->error("[Deserialize]   Got: {}", block.nChannel);
+            logger->error("[Deserialize]   This indicates a deserialization bug!");
+        } else {
+            logger->info("[Deserialize] ✓ nChannel value valid: {} ({})",
+                block.nChannel, (block.nChannel == 1) ? "prime" : "hash");
+        }
+        
         // 5. nHeight (4 bytes, calculated offset: 196+4=200)
+        size_t height_offset = offset;
         block.nHeight = read_u32();
+        logger->info("[Deserialize] Bytes {}-{} (nHeight): {:02x} {:02x} {:02x} {:02x} -> uint32: {}",
+            height_offset, height_offset + 3,
+            data[height_offset], data[height_offset + 1],
+            data[height_offset + 2], data[height_offset + 3],
+            block.nHeight);
         
         // 6. nBits (4 bytes, calculated offset: 200+4=204)
+        size_t bits_offset = offset;
         block.nBits = read_u32();
+        logger->info("[Deserialize] Bytes {}-{} (nBits): {:02x} {:02x} {:02x} {:02x} -> uint32: 0x{:08x}",
+            bits_offset, bits_offset + 3,
+            data[bits_offset], data[bits_offset + 1],
+            data[bits_offset + 2], data[bits_offset + 3],
+            block.nBits);
         
         // 7. nNonce (8 bytes, calculated offset: 204+4=208)
+        size_t nonce_offset = offset;
         block.nNonce = read_u64();
+        logger->info("[Deserialize] Bytes {}-{} (nNonce): ", nonce_offset, nonce_offset + 7);
+        std::ostringstream nonce_hex;
+        nonce_hex << std::hex << std::setfill('0');
+        for (size_t i = 0; i < 8 && (nonce_offset + i) < data.size(); ++i) {
+            nonce_hex << std::setw(2) << static_cast<unsigned int>(data[nonce_offset + i]) << " ";
+        }
+        logger->info("[Deserialize]   Raw bytes: {} -> uint64: 0x{:016x}", nonce_hex.str(), block.nNonce);
         
         // 8. nTime (4 bytes, calculated offset: 208+8=216)
+        size_t time_offset = offset;
         block.nTime = read_u32();
+        logger->info("[Deserialize] Bytes {}-{} (nTime): {:02x} {:02x} {:02x} {:02x} -> uint32: {}",
+            time_offset, time_offset + 3,
+            data[time_offset], data[time_offset + 1],
+            data[time_offset + 2], data[time_offset + 3],
+            block.nTime);
         
     } else {
         // Compact block header (92 bytes) - sequential format (legacy pool format)
         // Read 32-byte hashes and expand them to full size by zero-padding
         
+        logger->info("[Deserialize] ═══ COMPACT BLOCK FORMAT (92 bytes) ═══");
+        
         // 1. nVersion (4 bytes, big-endian)
+        size_t version_offset = offset;
         block.nVersion = read_u32();
+        logger->info("[Deserialize] Bytes {}-{} (nVersion): {:02x} {:02x} {:02x} {:02x} -> uint32: {}",
+            version_offset, version_offset + 3,
+            data[version_offset], data[version_offset + 1],
+            data[version_offset + 2], data[version_offset + 3],
+            block.nVersion);
         
         // 2. hashPrevBlock (32 bytes) - expand to uint1024_t (128 bytes)
+        size_t prev_offset = offset;
         auto prev_bytes = read_bytes(32);
+        std::ostringstream prev_hex;
+        prev_hex << std::hex << std::setfill('0');
+        for (size_t i = 0; i < 16; ++i) {
+            prev_hex << std::setw(2) << static_cast<unsigned int>(prev_bytes[i]) << " ";
+        }
+        logger->info("[Deserialize] Bytes {}-{} (hashPrevBlock): {} ... (32 bytes, padded to 128)",
+            prev_offset, prev_offset + 31, prev_hex.str());
         // Pad to 128 bytes (zero-fill the rest)
         prev_bytes.resize(128, 0);
         block.hashPrevBlock.SetBytes(prev_bytes);
         
         // 3. hashMerkleRoot (32 bytes) - expand to uint512_t (64 bytes)
+        size_t merkle_offset = offset;
         auto merkle_bytes = read_bytes(32);
+        std::ostringstream merkle_hex;
+        merkle_hex << std::hex << std::setfill('0');
+        for (size_t i = 0; i < 16; ++i) {
+            merkle_hex << std::setw(2) << static_cast<unsigned int>(merkle_bytes[i]) << " ";
+        }
+        logger->info("[Deserialize] Bytes {}-{} (hashMerkleRoot): {} ... (32 bytes, padded to 64)",
+            merkle_offset, merkle_offset + 31, merkle_hex.str());
         // Pad to 64 bytes (zero-fill the rest)
         merkle_bytes.resize(64, 0);
         block.hashMerkleRoot.SetBytes(merkle_bytes);
         
-        // 4. nChannel (4 bytes, big-endian)
+        // 4. nChannel (4 bytes, big-endian) - CRITICAL FIELD
+        size_t channel_offset = offset;
+        logger->info("[Deserialize] ═══ CRITICAL: nChannel Field (Compact Format) ═══");
+        logger->info("[Deserialize] nChannel at offset: {}", channel_offset);
+        logger->info("[Deserialize] Raw bytes at offset {}-{}: {:02x} {:02x} {:02x} {:02x}",
+            channel_offset, channel_offset + 3,
+            data[channel_offset], data[channel_offset + 1],
+            data[channel_offset + 2], data[channel_offset + 3]);
+        
         block.nChannel = read_u32();
         
+        // Detailed endianness analysis
+        uint32_t big_endian_value = 
+            (static_cast<uint32_t>(data[channel_offset]) << 24) |
+            (static_cast<uint32_t>(data[channel_offset + 1]) << 16) |
+            (static_cast<uint32_t>(data[channel_offset + 2]) << 8) |
+            static_cast<uint32_t>(data[channel_offset + 3]);
+        
+        uint32_t little_endian_value =
+            static_cast<uint32_t>(data[channel_offset]) |
+            (static_cast<uint32_t>(data[channel_offset + 1]) << 8) |
+            (static_cast<uint32_t>(data[channel_offset + 2]) << 16) |
+            (static_cast<uint32_t>(data[channel_offset + 3]) << 24);
+        
+        logger->info("[Deserialize] nChannel interpretation:");
+        logger->info("[Deserialize]   - Big-endian (used): {}", big_endian_value);
+        logger->info("[Deserialize]   - Little-endian: {}", little_endian_value);
+        logger->info("[Deserialize]   - Final nChannel value: {}", block.nChannel);
+        
+        if (block.nChannel != 1 && block.nChannel != 2) {
+            logger->error("[Deserialize] ❌ CHANNEL MISMATCH DETECTED!");
+            logger->error("[Deserialize]   Expected: 1 (prime) or 2 (hash)");
+            logger->error("[Deserialize]   Got: {}", block.nChannel);
+        } else {
+            logger->info("[Deserialize] ✓ nChannel value valid: {} ({})",
+                block.nChannel, (block.nChannel == 1) ? "prime" : "hash");
+        }
+        
         // 5. nHeight (4 bytes, big-endian)
+        size_t height_offset = offset;
         block.nHeight = read_u32();
+        logger->info("[Deserialize] Bytes {}-{} (nHeight): {:02x} {:02x} {:02x} {:02x} -> uint32: {}",
+            height_offset, height_offset + 3,
+            data[height_offset], data[height_offset + 1],
+            data[height_offset + 2], data[height_offset + 3],
+            block.nHeight);
         
         // 6. nBits (4 bytes, big-endian)
+        size_t bits_offset = offset;
         block.nBits = read_u32();
+        logger->info("[Deserialize] Bytes {}-{} (nBits): {:02x} {:02x} {:02x} {:02x} -> uint32: 0x{:08x}",
+            bits_offset, bits_offset + 3,
+            data[bits_offset], data[bits_offset + 1],
+            data[bits_offset + 2], data[bits_offset + 3],
+            block.nBits);
         
         // 7. nNonce (8 bytes, big-endian)
+        size_t nonce_offset = offset;
         block.nNonce = read_u64();
+        std::ostringstream nonce_hex;
+        nonce_hex << std::hex << std::setfill('0');
+        for (size_t i = 0; i < 8 && (nonce_offset + i) < data.size(); ++i) {
+            nonce_hex << std::setw(2) << static_cast<unsigned int>(data[nonce_offset + i]) << " ";
+        }
+        logger->info("[Deserialize] Bytes {}-{} (nNonce): {} -> uint64: 0x{:016x}",
+            nonce_offset, nonce_offset + 7, nonce_hex.str(), block.nNonce);
         
         // 8. nTime (4 bytes, big-endian)
+        size_t time_offset = offset;
         block.nTime = read_u32();
+        logger->info("[Deserialize] Bytes {}-{} (nTime): {:02x} {:02x} {:02x} {:02x} -> uint32: {}",
+            time_offset, time_offset + 3,
+            data[time_offset], data[time_offset + 1],
+            data[time_offset + 2], data[time_offset + 3],
+            block.nTime);
     }
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // DESERIALIZATION COMPLETE - Summary
+    // ═══════════════════════════════════════════════════════════════════════
+    logger->info("╔═══════════════════════════════════════════════════════════════════╗");
+    logger->info("║  DESERIALIZATION COMPLETE - Block Summary                         ║");
+    logger->info("╠═══════════════════════════════════════════════════════════════════╣");
+    logger->info("║  nVersion:  {}", block.nVersion);
+    logger->info("║  nChannel:  {} ({})", block.nChannel, 
+        (block.nChannel == 1) ? "prime" : (block.nChannel == 2) ? "hash" : "INVALID");
+    logger->info("║  nHeight:   {}", block.nHeight);
+    logger->info("║  nBits:     0x{:08x}", block.nBits);
+    logger->info("║  nNonce:    0x{:016x}", block.nNonce);
+    logger->info("║  nTime:     {}", block.nTime);
+    logger->info("╚═══════════════════════════════════════════════════════════════════╝");
     
     return block;
 }
