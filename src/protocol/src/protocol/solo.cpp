@@ -1599,8 +1599,7 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     // TRAINING WHEELS: Show hex dump of MINER_AUTH_CHALLENGE
     if (packet.m_data) {
         m_logger->info("[Solo Auth] MINER_AUTH_CHALLENGE hex dump:");
-        auto shared_data = std::make_shared<network::Payload>(*packet.m_data);
-        m_logger->info("\n{}", format_llp_payload_hexdump(shared_data, 128));
+        m_logger->info("\n{}", format_llp_payload_hexdump(packet.m_data, 128));
     }
     
     // Defensive bounds check

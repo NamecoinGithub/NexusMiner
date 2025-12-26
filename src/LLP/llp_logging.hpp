@@ -204,7 +204,7 @@ namespace nexusminer
 			for (std::size_t j = 0; j < bytes_per_line && i + j < bytes_to_show; ++j)
 			{
 				unsigned char c = (*payload)[i + j];
-				result << (isprint(c) ? static_cast<char>(c) : '.');
+				result << (std::isprint(c) ? static_cast<char>(c) : '.');
 			}
 			
 			if (i + bytes_per_line < bytes_to_show)

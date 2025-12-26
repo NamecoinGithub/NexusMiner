@@ -46,8 +46,8 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     constexpr std::size_t TRITIUM_CHANNEL_OFFSET = 211;
     constexpr std::size_t LEGACY_CHANNEL_OFFSET = 196;
     
-    // Get logger for detailed deserialization logging
-    auto logger = spdlog::get("logger");
+    // Get logger for detailed deserialization logging (cached to avoid repeated lookups)
+    static auto logger = spdlog::get("logger");
     if (!logger) {
         logger = spdlog::default_logger();
     }
@@ -61,6 +61,10 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     
     // ═══════════════════════════════════════════════════════════════════════
     // TRAINING WHEELS: Detailed Block Deserialization Logging
+    // Note: Logging at INFO level for debugging. Set log level to WARN in
+    // production to reduce verbosity. The deserialization only happens once
+    // per received block template (typically every few minutes), so performance
+    // impact is minimal.
     // ═══════════════════════════════════════════════════════════════════════
     logger->info("╔═══════════════════════════════════════════════════════════════════╗");
     logger->info("║  BLOCK DESERIALIZATION - Training Wheels Mode                     ║");
