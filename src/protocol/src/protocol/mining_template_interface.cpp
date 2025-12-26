@@ -97,6 +97,14 @@ MiningTemplateInterface::read_template(const network::Payload& data,
         return result;
     }
     
+    // Set channel from our connection context
+    // The node does NOT include nChannel in the mining template serialization.
+    // We know what channel we're mining because we specified it during connection setup.
+    tmpl.block.nChannel = m_channel;
+    m_logger->info("[TemplateInterface] Set nChannel from connection context: {} ({})",
+        static_cast<int>(m_channel), (m_channel == 1) ? "prime" : "hash");
+    m_logger->debug("[TemplateInterface]   Block header had nChannel=0 (not serialized in template)");
+    
     tmpl.state = TemplateState::RECEIVED;
     tmpl.nBits = tmpl.block.nBits;
     
