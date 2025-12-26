@@ -346,6 +346,16 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     result.bits_valid = true;
     result.channel_valid = true;
     
+    // TRAINING WHEELS: Show validation details
+    m_logger->info("[TemplateInterface] ═══ TEMPLATE VALIDATION ═══");
+    m_logger->info("[TemplateInterface] Template details:");
+    m_logger->info("[TemplateInterface]   - Height: {}", tmpl.block.nHeight);
+    m_logger->info("[TemplateInterface]   - Channel: {} (expected: {})", 
+        tmpl.block.nChannel, m_channel);
+    m_logger->info("[TemplateInterface]   - nBits: 0x{:08x}", tmpl.block.nBits);
+    m_logger->info("[TemplateInterface]   - nVersion: {}", tmpl.block.nVersion);
+    m_logger->info("[TemplateInterface]   - Current height: {}", m_current_height);
+    
     // Validate channel matches expected
     if (tmpl.block.nChannel != m_channel) {
         result.channel_valid = false;
@@ -353,7 +363,11 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
         result.error_message = "Channel mismatch: expected " + 
             std::to_string(static_cast<int>(m_channel)) + 
             " but got " + std::to_string(tmpl.block.nChannel);
-        m_logger->warn("[TemplateInterface] VALIDATE: {}", result.error_message);
+        m_logger->error("[TemplateInterface] ❌ VALIDATION FAILED: {}", result.error_message);
+        m_logger->error("[TemplateInterface]   This is the channel mismatch bug!");
+        m_logger->error("[TemplateInterface]   Check deserialization logs above for byte-level details");
+    } else {
+        m_logger->info("[TemplateInterface] ✓ Channel validation passed");
     }
     
     // Validate height is reasonable (not stale)
@@ -364,7 +378,9 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
         result.is_valid = false;
         result.error_message = "Template height " + std::to_string(tmpl.block.nHeight) + 
             " is stale (current: " + std::to_string(m_current_height) + ")";
-        m_logger->warn("[TemplateInterface] VALIDATE: {}", result.error_message);
+        m_logger->warn("[TemplateInterface] ❌ VALIDATION FAILED: {}", result.error_message);
+    } else {
+        m_logger->info("[TemplateInterface] ✓ Height validation passed (not stale)");
     }
     
     // Validate nBits (difficulty) is non-zero
@@ -372,7 +388,9 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
         result.bits_valid = false;
         result.is_valid = false;
         result.error_message = "Invalid nBits (difficulty) value: 0";
-        m_logger->error("[TemplateInterface] VALIDATE: {}", result.error_message);
+        m_logger->error("[TemplateInterface] ❌ VALIDATION FAILED: {}", result.error_message);
+    } else {
+        m_logger->info("[TemplateInterface] ✓ Difficulty validation passed");
     }
     
     // Validate merkle root is not all zeros (basic sanity check)
@@ -388,7 +406,17 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
         result.merkle_valid = false;
         result.is_valid = false;
         result.error_message = "Invalid merkle root: all zeros";
-        m_logger->error("[TemplateInterface] VALIDATE: {}", result.error_message);
+        m_logger->error("[TemplateInterface] ❌ VALIDATION FAILED: {}", result.error_message);
+    } else {
+        // Log first few bytes of merkle root for verification
+        std::ostringstream merkle_hex;
+        merkle_hex << std::hex << std::setfill('0');
+        size_t preview_len = std::min(merkle_bytes.size(), static_cast<size_t>(16));
+        for (size_t i = 0; i < preview_len; ++i) {
+            merkle_hex << std::setw(2) << static_cast<unsigned int>(merkle_bytes[i]) << " ";
+        }
+        m_logger->info("[TemplateInterface] ✓ Merkle root validation passed");
+        m_logger->debug("[TemplateInterface]   First {} bytes: {}", preview_len, merkle_hex.str());
     }
     
     auto end_time = std::chrono::high_resolution_clock::now();
@@ -397,8 +425,13 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     m_total_validation_time_us.fetch_add(result.validation_time.count(), std::memory_order_relaxed);
     
     if (result.is_valid) {
-        m_logger->debug("[TemplateInterface] VALIDATE: Template passed all validation checks");
+        m_logger->info("[TemplateInterface] ✅ ALL VALIDATION CHECKS PASSED");
+        m_logger->info("[TemplateInterface]   Validation time: {} μs", result.validation_time.count());
+    } else {
+        m_logger->error("[TemplateInterface] ❌ VALIDATION FAILED");
+        m_logger->error("[TemplateInterface]   Reason: {}", result.error_message);
     }
+    m_logger->info("[TemplateInterface] ═══════════════════════════");
     
     return result;
 }

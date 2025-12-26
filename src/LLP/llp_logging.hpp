@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
+#include <cctype>
 #include "network/types.hpp"
 #include "miner_opcodes.hpp"
 
@@ -163,6 +166,59 @@ namespace nexusminer
 		}
 		
 		return result;
+	}
+	
+	/** Format full payload as multi-line hex dump with offsets **/
+	inline std::string format_llp_payload_hexdump(network::Shared_payload const& payload, std::size_t max_bytes = 256)
+	{
+		if (!payload || payload->empty())
+		{
+			return "[empty payload]";
+		}
+		
+		std::ostringstream result;
+		std::size_t bytes_to_show = std::min(payload->size(), max_bytes);
+		std::size_t bytes_per_line = 16;
+		
+		for (std::size_t i = 0; i < bytes_to_show; i += bytes_per_line)
+		{
+			// Offset
+			result << "  " << std::setw(4) << std::setfill('0') << std::hex << i << ": ";
+			
+			// Hex bytes
+			for (std::size_t j = 0; j < bytes_per_line; ++j)
+			{
+				if (i + j < bytes_to_show)
+				{
+					result << std::setw(2) << std::setfill('0') << std::hex 
+					       << static_cast<unsigned int>((*payload)[i + j]) << " ";
+				}
+				else
+				{
+					result << "   ";
+				}
+			}
+			
+			// ASCII representation
+			result << " | ";
+			for (std::size_t j = 0; j < bytes_per_line && i + j < bytes_to_show; ++j)
+			{
+				unsigned char c = (*payload)[i + j];
+				result << (std::isprint(c) ? static_cast<char>(c) : '.');
+			}
+			
+			if (i + bytes_per_line < bytes_to_show)
+			{
+				result << "\n";
+			}
+		}
+		
+		if (payload->size() > max_bytes)
+		{
+			result << "\n  ... (" << (payload->size() - max_bytes) << " more bytes)";
+		}
+		
+		return result.str();
 	}
 
 }

@@ -394,6 +394,10 @@ network::Shared_payload Solo::login(Login_handler handler)
     
     m_logger->debug("[Solo Auth] Packet validation: SUCCESS - encoded {} bytes", bytes->size());
     
+    // TRAINING WHEELS: Show hex dump of MINER_AUTH_INIT packet
+    m_logger->info("[Solo Auth] MINER_AUTH_INIT packet hex dump (wire format):");
+    m_logger->info("\n{}", format_llp_payload_hexdump(bytes, 128));
+    
     // ═══════════════════════════════════════════════════════════
     // Log summary
     // ═══════════════════════════════════════════════════════════
@@ -453,6 +457,9 @@ network::Shared_payload Solo::get_work()
     auto payload = packet.get_bytes();
     if (payload && !payload->empty()) {
         m_logger->debug("[Solo] GET_BLOCK encoded payload size: {} bytes", payload->size());
+        // TRAINING WHEELS: Show GET_BLOCK packet (should be just header byte)
+        m_logger->info("[Solo] GET_BLOCK packet hex dump:");
+        m_logger->info("\n{}", format_llp_payload_hexdump(payload, 16));
     } else {
         m_logger->error("[Solo] GET_BLOCK get_bytes() returned null or empty payload!");
     }
@@ -652,6 +659,10 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     }
     
     m_logger->debug("[Solo Submit] SUBMIT_BLOCK packet successfully encoded: {} bytes wire format", result->size());
+    
+    // TRAINING WHEELS: Show hex dump of SUBMIT_BLOCK payload (first 256 bytes)
+    m_logger->info("[Solo Submit] SUBMIT_BLOCK packet hex dump (first 256 bytes):");
+    m_logger->info("\n{}", format_llp_payload_hexdump(result, 256));
 
     return result;  
 }
@@ -674,12 +685,31 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     if (connection) {
         auto const& remote_ep = connection->remote_endpoint();
         auto const& local_ep = connection->local_endpoint();
-        m_logger->debug("[Solo] Processing packet: header={} ({}) length={} | Remote: {} | Local: {}", 
-            static_cast<int>(packet.m_header), get_llp_header_name(packet.m_header), 
-            packet.m_length, remote_ep.to_string(), local_ep.to_string());
+        m_logger->info("[Solo] ══════════════════════════════════════════════");
+        m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:02x})", 
+            get_llp_header_name(packet.m_header), static_cast<int>(packet.m_header));
+        m_logger->info("[Solo]   Length: {} bytes", packet.m_length);
+        m_logger->info("[Solo]   Remote: {} | Local: {}", 
+            remote_ep.to_string(), local_ep.to_string());
+        
+        // TRAINING WHEELS: Show hex dump of received packet payload (first 128 bytes)
+        if (packet.m_data && !packet.m_data->empty()) {
+            m_logger->info("[Solo] Payload hex dump:");
+            m_logger->info("\n{}", format_llp_payload_hexdump(packet.m_data, 128));
+        }
+        m_logger->info("[Solo] ══════════════════════════════════════════════");
     } else {
-        m_logger->debug("[Solo] Processing packet: header={} ({}), length={}", 
-            static_cast<int>(packet.m_header), get_llp_header_name(packet.m_header), packet.m_length);
+        m_logger->info("[Solo] ══════════════════════════════════════════════");
+        m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:02x}), length={}", 
+            get_llp_header_name(packet.m_header), static_cast<int>(packet.m_header), 
+            packet.m_length);
+        
+        // TRAINING WHEELS: Show hex dump even without connection
+        if (packet.m_data && !packet.m_data->empty()) {
+            m_logger->info("[Solo] Payload hex dump:");
+            m_logger->info("\n{}", format_llp_payload_hexdump(packet.m_data, 128));
+        }
+        m_logger->info("[Solo] ══════════════════════════════════════════════");
     }
     
     if (packet.m_header == Packet::BLOCK_HEIGHT)
@@ -750,6 +780,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo] BLOCK_DATA payload diagnostics:");
         m_logger->info("[Solo]   - Payload size: {} bytes", packet.m_data->size());
         m_logger->info("[Solo]   - Packet length field: {} bytes", packet.m_length);
+        
+        // TRAINING WHEELS: Full hex dump of BLOCK_DATA payload for debugging
+        m_logger->info("[Solo] BLOCK_DATA hex dump:");
+        m_logger->info("\n{}", format_llp_payload_hexdump(packet.m_data, 256));
         
         // Validate packet has minimum required data
         if (packet.m_length < MIN_BLOCK_HEADER_SIZE) {
@@ -1562,6 +1596,12 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
 {
     m_logger->info("[Solo Phase 2] Received MINER_AUTH_CHALLENGE");
     
+    // TRAINING WHEELS: Show hex dump of MINER_AUTH_CHALLENGE
+    if (packet.m_data) {
+        m_logger->info("[Solo Auth] MINER_AUTH_CHALLENGE hex dump:");
+        m_logger->info("\n{}", format_llp_payload_hexdump(packet.m_data, 128));
+    }
+    
     // Defensive bounds check
     if (!packet.m_data || packet.m_data->size() < 2) {
         m_logger->error("[Solo Phase 2] MINER_AUTH_CHALLENGE too small: {} bytes", 
@@ -1574,6 +1614,9 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     uint16_t nonce_len = (static_cast<uint16_t>((*packet.m_data)[0]) << 8) |
                           static_cast<uint16_t>((*packet.m_data)[1]);
     
+    m_logger->info("[Solo Auth] Challenge nonce length: {} bytes (big-endian encoding)", nonce_len);
+    m_logger->info("[Solo Auth]   Bytes 0-1: {:02x} {:02x}", (*packet.m_data)[0], (*packet.m_data)[1]);
+    
     if (packet.m_data->size() < static_cast<size_t>(2 + nonce_len)) {
         m_logger->error("[Solo Phase 2] MINER_AUTH_CHALLENGE: incomplete nonce (expected {} bytes, got {})", 
                        2 + nonce_len, packet.m_data->size());
@@ -1584,7 +1627,18 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     // Extract nonce
     std::vector<uint8_t> nonce(packet.m_data->begin() + 2, packet.m_data->begin() + 2 + nonce_len);
     
-    m_logger->info("[Solo Phase 2] Received nonce, {} bytes", nonce.size());
+    m_logger->info("[Solo Phase 2] Extracted nonce: {} bytes", nonce.size());
+    
+    // Show first 16 bytes of nonce for verification
+    if (nonce.size() > 0) {
+        std::ostringstream nonce_hex;
+        nonce_hex << std::hex << std::setfill('0');
+        size_t preview_len = std::min(nonce.size(), static_cast<size_t>(16));
+        for (size_t i = 0; i < preview_len; ++i) {
+            nonce_hex << std::setw(2) << static_cast<unsigned int>(nonce[i]) << " ";
+        }
+        m_logger->info("[Solo Auth] Nonce (first {} bytes): {}", preview_len, nonce_hex.str());
+    }
     
     // Sign the NONCE (not address+timestamp!)
     if (!m_falcon_wrapper || !m_falcon_wrapper->is_valid()) {
@@ -1648,6 +1702,10 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     }
     
     m_logger->debug("[Solo Auth] MINER_AUTH_RESPONSE validation: SUCCESS - encoded {} bytes", bytes->size());
+    
+    // TRAINING WHEELS: Show hex dump of MINER_AUTH_RESPONSE packet
+    m_logger->info("[Solo Auth] MINER_AUTH_RESPONSE packet hex dump (wire format):");
+    m_logger->info("\n{}", format_llp_payload_hexdump(bytes, 128));
     
     // Set state to waiting for result
     m_auth_state = AuthState::WAITING_FOR_RESULT;
