@@ -141,13 +141,51 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     if (worker) {
                         worker->set_block(block, nBits, [this](auto id, auto block_data)
                         {
-                            if (m_connection)
-                                m_connection->transmit(m_miner_protocol->submit_block(
-                                    block_data->merkle_root.GetBytes(), block_data->nNonce));
-                            else
+                            if (!m_connection)
                             {
-                                m_logger->error("No connection. Can't submit block.");
+                                m_logger->error("[Worker_manager] No connection. Can't submit block.");
+                                return;
                             }
+                            
+                            // Get the mining template interface to prepare full block submission
+                            auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
+                            if (!solo_protocol)
+                            {
+                                m_logger->error("[Worker_manager] Failed to cast protocol to Solo protocol");
+                                return;
+                            }
+                            
+                            auto* template_interface = solo_protocol->get_template_interface();
+                            if (!template_interface)
+                            {
+                                m_logger->error("[Worker_manager] Template interface not available");
+                                return;
+                            }
+                            
+                            // Prepare full block submission (216 or 220 bytes depending on format)
+                            // This reconstructs the full block from the current template with the
+                            // mined merkle root and nonce
+                            m_logger->info("[Worker_manager] Preparing full block submission");
+                            m_logger->info("[Worker_manager]   Height: {}", block_data->nHeight);
+                            m_logger->info("[Worker_manager]   Nonce:  0x{:016x}", block_data->nNonce);
+                            
+                            auto full_block_bytes = template_interface->prepare_block_submission(
+                                block_data->merkle_root.GetBytes(), 
+                                block_data->nNonce);
+                            
+                            if (full_block_bytes.empty())
+                            {
+                                m_logger->error("[Worker_manager] Failed to prepare block submission - empty payload");
+                                m_logger->error("[Worker_manager]   This indicates template or block data is invalid");
+                                return;
+                            }
+                            
+                            m_logger->info("[Worker_manager] Full block serialized: {} bytes", full_block_bytes.size());
+                            m_logger->info("[Worker_manager] Submitting block to protocol layer...");
+                            
+                            // Submit the full block (not just merkle root)
+                            m_connection->transmit(m_miner_protocol->submit_block(
+                                full_block_bytes, block_data->nNonce));
                         });
                         workers_fed++;
                         m_logger->debug("[Worker_manager] Template sent to worker {}/{}", 
