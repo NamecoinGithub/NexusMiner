@@ -655,6 +655,10 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         m_logger->info("🔍 ENCRYPTION VALIDATION:");
         
         // Check 1: Data should be different (compare first bytes of actual ciphertext, skip nonce)
+        // NOTE: This is validation code, not secret comparison. We're checking if encryption
+        // worked by comparing ciphertext vs plaintext. The result is immediately logged,
+        // so timing information is not sensitive. Actual crypto auth tag verification is
+        // done by OpenSSL's EVP interface using constant-time comparison internally.
         bool dataMatches = false;
         size_t checkSize = std::min(size_t(64), std::min(encrypt_result.data.size(), plaintextPayload.size()));
         
