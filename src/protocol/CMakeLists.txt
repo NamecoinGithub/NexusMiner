@@ -11,6 +11,8 @@ target_include_directories(protocol
     PUBLIC 
         $<INSTALL_INTERFACE:inc>    
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/Util/include
 )
 
 target_link_libraries(protocol PRIVATE network LLP stats config spdlog nlohmann_json::nlohmann_json ${OPENSSL_LIBRARIES})
