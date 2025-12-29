@@ -8,11 +8,13 @@
 #include "LLP/llp_logging.hpp"
 #include "LLP/utils.hpp"
 #include "../miner_keys.hpp"
+#include "hex_utils.h"
 #include <openssl/sha.h>
 #include <chrono>
 #include <sstream>
 #include <iomanip>
 #include <stdexcept>
+#include <cstring>
 
 namespace nexusminer
 {
@@ -47,6 +49,13 @@ static const std::vector<uint8_t> AAD_REWARD_ADDRESS{
 static const std::vector<uint8_t> AAD_REWARD_RESULT{
     'R','E','W','A','R','D','_',
     'R','E','S','U','L','T'
+};
+
+/** AAD for encrypting SUBMIT_BLOCK payload
+ *  Node expects: "BLOCK_SUBMISSION" (16 bytes) */
+static const std::vector<uint8_t> AAD_BLOCK_SUBMISSION{
+    'B','L','O','C','K','_',
+    'S','U','B','M','I','S','S','I','O','N'
 };
 
 // Helper function to serialize uint64 to little-endian bytes
@@ -492,179 +501,237 @@ network::Shared_payload Solo::get_height()
 
 network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce)
 {
-    m_logger->info("Submitting Block...");
-
     // Enhanced diagnostics: Validate block_data before submission
     if (block_data.empty()) {
         m_logger->error("[Solo Submit] CRITICAL: block_data is empty! Cannot submit block.");
-        m_logger->error("[Solo Submit] Recovery: Requesting new work to recover from empty payload scenario");
         return network::Shared_payload{};
     }
-    
-    // LLL-TAO SignedWorkSubmission format (from Disposable Falcon Wrapper - PR #20):
-    // [merkle_root(64)][nonce(8)][timestamp(8)][sig_len(2)][signature]
-    // 
-    // CRITICAL: Signature is REQUIRED for authenticated session block submissions
-    // Blocks without valid signatures will be rejected by the node
     
     // Verify Falcon wrapper is available (required for stateless sessions)
     if (!m_falcon_wrapper || !m_falcon_wrapper->is_valid()) {
         m_logger->error("[Solo Submit] CRITICAL: Falcon wrapper not available for block signing");
         m_logger->error("[Solo Submit] Stateless sessions REQUIRE signed block submissions per LLL-TAO protocol");
-        m_logger->error("[Solo Submit] Block submission cannot proceed without valid Falcon keys");
         return network::Shared_payload{};
     }
     
-    // Enhanced diagnostics: Log block submission structure
-    m_logger->info("[Solo Submit] Block submission payload structure:");
-    m_logger->info("[Solo Submit]   - Block data size: {} bytes (full block)", block_data.size());
-    m_logger->info("[Solo Submit]   - Nonce (already in block): 0x{:016x}", nonce);
+    // ════════════════════════════════════════════════════════════════════════════════
+    // TRAINING WHEELS MODE: Comprehensive SUBMIT_BLOCK logging
+    // ════════════════════════════════════════════════════════════════════════════════
+    m_logger->info("════════════════════════════════════════════════════════");
+    m_logger->info("📤 SUBMIT_BLOCK PREPARATION (Training Wheels Mode)");
+    m_logger->info("════════════════════════════════════════════════════════");
     
     // Get current timestamp for block submission (8 bytes, little-endian)
     uint64_t submission_timestamp = static_cast<uint64_t>(
         std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
     
-    m_logger->info("[Solo Submit]   - Timestamp: {} (0x{:016x})", submission_timestamp, submission_timestamp);
+    /* Block details */
+    m_logger->info("📦 BLOCK DATA:");
+    m_logger->info("   Serialized size: {} bytes (expected: 216)", block_data.size());
+    m_logger->info("   Nonce: 0x{:016x}", nonce);
     
     // Build the complete submission payload: full_block + timestamp
-    // Note: block_data now contains the full serialized block (216 or 220 bytes)
-    // which already includes the nonce, so we don't append it separately
     std::vector<uint8_t> message_to_sign;
     message_to_sign.reserve(block_data.size() + 8);  // full_block + timestamp(8)
     message_to_sign.insert(message_to_sign.end(), block_data.begin(), block_data.end());
     append_uint64_le(message_to_sign, submission_timestamp);
     
     // Generate Falcon signature for block submission
-    m_logger->info("[Solo Submit] Generating required Falcon signature for SignedWorkSubmission");
     auto sig_result = m_falcon_wrapper->sign_payload(message_to_sign, 
         FalconSignatureWrapper::SignatureType::BLOCK);
     
     if (!sig_result.success) {
-        m_logger->error("[Solo Submit] CRITICAL: Falcon signature generation failed: {}", sig_result.error_message);
-        m_logger->error("[Solo Submit] Block submission cannot proceed without valid signature");
+        m_logger->error("❌ Falcon signature generation FAILED: {}", sig_result.error_message);
+        m_logger->error("════════════════════════════════════════════════════════");
         return network::Shared_payload{};
     }
     
-    // Build the packet payload
-    Packet packet{ Packet::SUBMIT_BLOCK };
-    packet.m_data = std::make_shared<network::Payload>();
-    packet.m_data->reserve(block_data.size() + 8 + 2 + sig_result.signature.size());
+    /* Falcon signature details */
+    m_logger->info("🔐 FALCON SIGNATURE:");
+    m_logger->info("   Signature size: {} bytes (expected: 809)", sig_result.signature.size());
+    m_logger->info("   Timestamp: {} (0x{:016x})", submission_timestamp, submission_timestamp);
+    m_logger->info("   Signed data format: [block({})][ timestamp(8)]", block_data.size());
+    
+    /* Build plaintext payload BEFORE encryption */
+    std::vector<uint8_t> plaintextPayload;
+    plaintextPayload.reserve(block_data.size() + 8 + 2 + sig_result.signature.size());
     
     // Append full block (216 or 220 bytes)
-    packet.m_data->insert(packet.m_data->end(), block_data.begin(), block_data.end());
+    plaintextPayload.insert(plaintextPayload.end(), block_data.begin(), block_data.end());
     
     // Append timestamp (8 bytes LE)
-    append_uint64_le(*packet.m_data, submission_timestamp);
+    append_uint64_le(plaintextPayload, submission_timestamp);
     
     // Append signature length (2 bytes LE)
     uint16_t sig_len = static_cast<uint16_t>(sig_result.signature.size());
-    append_uint16_le(*packet.m_data, sig_len);
+    append_uint16_le(plaintextPayload, sig_len);
     
     // Append signature bytes
-    packet.m_data->insert(packet.m_data->end(), 
-                         sig_result.signature.begin(), 
-                         sig_result.signature.end());
+    plaintextPayload.insert(plaintextPayload.end(), 
+                           sig_result.signature.begin(), 
+                           sig_result.signature.end());
     
-    m_logger->info("[Solo Submit] SignedWorkSubmission signature appended");
-    m_logger->info("[Solo Submit]   - Signature length: {} bytes", sig_len);
-    m_logger->info("[Solo Submit]   - Generation time: {} μs", sig_result.generation_time.count());
+    m_logger->info("📄 PLAINTEXT PAYLOAD (BEFORE ENCRYPTION):");
+    m_logger->info("   Total size: {} bytes", plaintextPayload.size());
+    m_logger->info("   Format: [block({})][timestamp(8)][sig_len(2)][signature({})]",
+                   block_data.size(), sig_result.signature.size());
+    m_logger->info("   First 64 bytes (hex - this is PLAINTEXT):");
     
-    // Set packet length to actual data size
-    packet.m_length = packet.m_data->size();
+    std::string hexDump = HexUtils::FormatHexDump(plaintextPayload, 64);
+    std::vector<std::string> lines = HexUtils::SplitHexDump(hexDump, 32);
+    for(const auto& line : lines)
+        m_logger->info("      {}", line);
     
-    // Validate final payload size using FalconConstants
-    // Determine expected sizes based on configuration
-    std::size_t expected_min_size;
-    std::size_t expected_max_size;
-
-    if (m_block_signing_enabled) {
-        // Dual signature mode (Disposable + Physical Block Signature)
-        // Format: [full_block(216/220)][timestamp(8)][sig_len(2)][disposable_sig][physical_sig_len(2)][physical_sig]
-        // Minimum uses Tritium (216), maximum uses Legacy (220) to accept both block types
-        expected_min_size = FalconConstants::FULL_BLOCK_TRITIUM_SIZE + 
-                            FalconConstants::TIMESTAMP_SIZE + 
-                            FalconConstants::LENGTH_FIELD_SIZE +
-                            FalconConstants::FALCON512_SIG_MIN +
-                            FalconConstants::LENGTH_FIELD_SIZE +
-                            FalconConstants::FALCON512_SIG_MIN;
-        
-        if (m_enable_chacha20) {
-            // Use updated constants that already account for full block sizes (PR #65)
-            expected_max_size = FalconConstants::SUBMIT_BLOCK_DUAL_SIG_LEGACY_ENCRYPTED_MAX;
-            m_logger->debug("[Solo Submit] Using DUAL_SIG_ENCRYPTED mode (max {} bytes)", expected_max_size);
-        } else {
-            expected_max_size = FalconConstants::SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX;
-            m_logger->debug("[Solo Submit] Using DUAL_SIG mode (max {} bytes)", expected_max_size);
-        }
-    } else {
-        // Single signature mode (Disposable Falcon only)
-        // Format: [full_block(216/220)][timestamp(8)][sig_len(2)][signature]
-        // Minimum uses Tritium (216), maximum uses Legacy (220) to accept both block types
-        expected_min_size = FalconConstants::FULL_BLOCK_TRITIUM_SIZE + 
-                            FalconConstants::TIMESTAMP_SIZE + 
-                            FalconConstants::LENGTH_FIELD_SIZE +
-                            FalconConstants::FALCON512_SIG_MIN;
-        
-        if (m_enable_chacha20) {
-            // Use updated constants that already account for full block sizes (PR #65)
-            expected_max_size = FalconConstants::SUBMIT_BLOCK_WRAPPER_LEGACY_ENCRYPTED_MAX;
-            m_logger->debug("[Solo Submit] Using WRAPPER_ENCRYPTED mode (max {} bytes)", expected_max_size);
-        } else {
-            expected_max_size = FalconConstants::SUBMIT_BLOCK_WRAPPER_LEGACY_MAX;
-            m_logger->debug("[Solo Submit] Using WRAPPER mode (max {} bytes)", expected_max_size);
-        }
-    }
-
-    // Validate payload size
-    std::size_t actual_size = packet.m_data->size();
-
-    if (actual_size < expected_min_size) {
-        m_logger->error("[Solo Submit] Payload too small: {} bytes < minimum {} bytes", 
-            actual_size, expected_min_size);
-        m_logger->error("[Solo Submit]   - Mode: {}", 
-            m_block_signing_enabled ? "DUAL_SIG" : "SINGLE_SIG");
-        m_logger->error("[Solo Submit]   - ChaCha20: {}", 
-            m_enable_chacha20 ? "ENABLED" : "DISABLED");
-    }
-
-    if (actual_size > expected_max_size) {
-        m_logger->warn("[Solo Submit] Payload larger than expected: {} bytes > max {} bytes",
-            actual_size, expected_max_size);
-        m_logger->warn("[Solo Submit]   - This may indicate serialization issues");
-        m_logger->warn("[Solo Submit]   - Mode: {}", 
-            m_block_signing_enabled ? "DUAL_SIG" : "SINGLE_SIG");
-    }
+    m_logger->info("");
     
-    m_logger->info("[Solo Phase 2] Submitting SignedWorkSubmission (session: 0x{:08x})", m_session_id);
-    m_logger->info("[Solo Submit]   - Signature mode: {}", 
-        m_block_signing_enabled ? "DUAL (Disposable + Physical)" : "SINGLE (Disposable only)");
-    m_logger->info("[Solo Submit]   - ChaCha20 encryption: {}", 
-        m_enable_chacha20 ? "ENABLED" : "DISABLED");
-    m_logger->info("[Solo Submit]   - Total submission payload: {} bytes", actual_size);
-    m_logger->info("[Solo Submit]   - Expected max: {} bytes", expected_max_size);
+    /* Check encryption readiness */
+    m_logger->info("🔒 CHACHA20-POLY1305 ENCRYPTION:");
+    m_logger->info("   Checking encryption context...");
+    m_logger->info("   ChaCha20 enabled: {}", m_enable_chacha20 ? "YES" : "NO");
     
-    if (m_block_signing_enabled) {
-        m_logger->info("[Solo Submit]   - Format: [full_block(216/220)][timestamp(8)][sig_len(2)][signature][phys_sig_len(2)][phys_signature]");
-    } else {
-        m_logger->info("[Solo Submit]   - Format: [full_block(216/220)][timestamp(8)][sig_len(2)][signature]");
-    }
+    // Load genesis for key derivation
+    std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
+    bool has_valid_genesis = is_valid_genesis(tritium_genesis);
     
-    auto result = packet.get_bytes();
+    m_logger->info("   Genesis available: {}", has_valid_genesis ? "YES" : "NO");
+    m_logger->info("   Session ID: 0x{:08x}", m_session_id);
     
-    // Enhanced diagnostics: Validate packet encoding
-    if (!result || result->empty()) {
-        m_logger->error("[Solo Submit] CRITICAL: SUBMIT_BLOCK packet encoding failed! get_bytes() returned empty.");
-        m_logger->error("[Solo Submit] Recovery: Will retry work request after failed submission");
+    if(!m_enable_chacha20 || !has_valid_genesis)
+    {
+        m_logger->error("❌ ENCRYPTION NOT READY - CANNOT SUBMIT!");
+        m_logger->error("   Modern nodes require ChaCha20 encryption");
+        m_logger->error("   ChaCha20 enabled: {}", m_enable_chacha20 ? "YES" : "NO");
+        m_logger->error("   Genesis available: {}", has_valid_genesis ? "YES" : "NO");
+        m_logger->error("   Session may not be authenticated");
+        m_logger->error("   Check that MINER_AUTH was successful");
+        m_logger->error("════════════════════════════════════════════════════════");
         return network::Shared_payload{};
     }
     
-    m_logger->debug("[Solo Submit] SUBMIT_BLOCK packet successfully encoded: {} bytes wire format", result->size());
+    m_logger->info("   Status: Encrypting payload...");
     
-    // TRAINING WHEELS: Show hex dump of SUBMIT_BLOCK payload (first 256 bytes)
-    m_logger->info("[Solo Submit] SUBMIT_BLOCK packet hex dump (first 256 bytes):");
-    m_logger->info("\n{}", format_llp_payload_hexdump(result, 256));
-
-    return result;  
+    /* Encrypt the payload */
+    try {
+        // Initialize ChaCha20 wrapper if not already done
+        if (!m_chacha20_wrapper)
+            m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
+        
+        // Derive session key from genesis
+        auto session_key = derive_chacha20_session_key(tritium_genesis);
+        
+        // Generate random nonce for this encryption
+        auto nonce = ChaCha20Wrapper::generate_nonce();
+        
+        // Encrypt the payload with AAD for domain separation
+        auto encrypt_result = m_chacha20_wrapper->encrypt(plaintextPayload, session_key, nonce, AAD_BLOCK_SUBMISSION);
+        
+        if(!encrypt_result.success || encrypt_result.data.empty())
+        {
+            m_logger->error("❌ ChaCha20 encryption FAILED!");
+            m_logger->error("   Error: {}", encrypt_result.error_message);
+            m_logger->error("   Encryption function returned false or empty result");
+            m_logger->error("   Cannot submit without encryption");
+            m_logger->error("════════════════════════════════════════════════════════");
+            return network::Shared_payload{};
+        }
+        
+        // Build encrypted payload: nonce(12) + ciphertext+tag
+        std::vector<uint8_t> encryptedPayload;
+        encryptedPayload.reserve(12 + encrypt_result.data.size());
+        encryptedPayload.insert(encryptedPayload.end(), nonce.begin(), nonce.end());
+        encryptedPayload.insert(encryptedPayload.end(), encrypt_result.data.begin(), encrypt_result.data.end());
+        
+        m_logger->info("   Status: ✅ ENCRYPTION SUCCESS");
+        m_logger->info("   Encrypted size: {} bytes (includes 12-byte nonce + 16-byte auth tag)", encryptedPayload.size());
+        m_logger->info("   First 64 bytes (hex - this should look RANDOM):");
+        
+        hexDump = HexUtils::FormatHexDump(encryptedPayload, 64);
+        lines = HexUtils::SplitHexDump(hexDump, 32);
+        for(const auto& line : lines)
+            m_logger->info("      {}", line);
+        
+        /* CRITICAL: Validate encryption actually occurred */
+        m_logger->info("");
+        m_logger->info("🔍 ENCRYPTION VALIDATION:");
+        
+        // Check 1: Data should be different (compare first bytes of actual ciphertext, skip nonce)
+        bool dataMatches = false;
+        size_t checkSize = std::min(size_t(64), std::min(encrypt_result.data.size(), plaintextPayload.size()));
+        
+        if(checkSize > 0)
+        {
+            // Compare ciphertext (skip 12-byte nonce) with plaintext
+            dataMatches = (memcmp(encrypt_result.data.data(), plaintextPayload.data(), checkSize) == 0);
+        }
+        
+        if(dataMatches)
+        {
+            m_logger->error("❌ VALIDATION FAILED: Encrypted data MATCHES plaintext!");
+            m_logger->error("   This means encryption DID NOT WORK!");
+            m_logger->error("   Refusing to send - node will reject anyway");
+            m_logger->error("════════════════════════════════════════════════════════");
+            return network::Shared_payload{};
+        }
+        
+        // Check 2: Count matching bytes (should be very few in encrypted data)
+        size_t matchingBytes = 0;
+        for(size_t i = 0; i < checkSize; ++i)
+        {
+            if(encrypt_result.data[i] == plaintextPayload[i])
+                matchingBytes++;
+        }
+        
+        double matchPercent = (double)matchingBytes * 100.0 / checkSize;
+        
+        m_logger->info("   Matching bytes: {}/{} ({}%)",
+                       matchingBytes, checkSize, (int)matchPercent);
+        
+        if(matchPercent > 30.0)
+        {
+            m_logger->error("❌ VALIDATION FAILED: Too many matching bytes ({}%)", (int)matchPercent);
+            m_logger->error("   Encrypted data doesn't look encrypted!");
+            m_logger->error("   Expected < 30% match, encryption may have failed silently");
+            m_logger->error("════════════════════════════════════════════════════════");
+            return network::Shared_payload{};
+        }
+        
+        // Check 3: Heuristic check for plaintext patterns (on ciphertext, not full payload with nonce)
+        if(HexUtils::LooksLikePlaintext(encrypt_result.data, 64))
+        {
+            m_logger->warn("⚠️  WARNING: Encrypted data has plaintext-like patterns");
+            m_logger->warn("   This is suspicious - encryption may not be working");
+        }
+        
+        m_logger->info("   ✅ VALIDATION PASSED: Data is properly encrypted");
+        m_logger->info("   Encrypted data is different from plaintext");
+        m_logger->info("   Safe to send to node");
+        
+        m_logger->info("════════════════════════════════════════════════════════");
+        m_logger->info("📤 Sending encrypted SUBMIT_BLOCK packet to node...");
+        
+        // Build the SUBMIT_BLOCK packet with encrypted payload
+        Packet packet{ Packet::SUBMIT_BLOCK };
+        packet.m_data = std::make_shared<network::Payload>(encryptedPayload);
+        packet.m_length = static_cast<uint32_t>(encryptedPayload.size());
+        
+        auto result = packet.get_bytes();
+        
+        if (!result || result->empty()) {
+            m_logger->error("❌ SUBMIT_BLOCK packet encoding failed!");
+            return network::Shared_payload{};
+        }
+        
+        // Show final wire format hex dump
+        m_logger->info("[Solo Submit] SUBMIT_BLOCK wire format (first 128 bytes):");
+        m_logger->info("\n{}", format_llp_payload_hexdump(result, 128));
+        
+        return result;
+    }
+    catch (const std::exception& e) {
+        m_logger->error("❌ Exception during encryption: {}", e.what());
+        m_logger->error("════════════════════════════════════════════════════════");
+        return network::Shared_payload{};
+    }
 }
 
 void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> connection)  
