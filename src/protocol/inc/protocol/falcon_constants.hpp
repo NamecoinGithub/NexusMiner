@@ -108,11 +108,30 @@ namespace FalconConstants {
     // Full Block Size Constants (PR #65: Full Block Serialization)
     //==========================================================================
     
-    /** Full Tritium block size (with all fields serialized) */
-    constexpr size_t FULL_BLOCK_TRITIUM_SIZE = 216;
+    /** Full Tritium block size
+     *  UPDATED: Now supports blocks with transactions (up to 2MB)
+     *  Previous: 216 bytes (empty Tritium block with coinbase only)
+     *  Current: 2MB (maximum network block size with transactions)
+     *  
+     *  NOTE: Block size varies:
+     *  - Empty block (coinbase only): 216 bytes
+     *  - Block with transactions: up to 2MB (2,097,152 bytes)
+     *  
+     *  This constant defines the maximum buffer size needed for block handling.
+     *  Matches LLL-TAO MAX_BLOCK_SIZE from TAO/Ledger/include/constants.h
+     */
+    constexpr size_t FULL_BLOCK_TRITIUM_SIZE = 2 * 1024 * 1024;  // 2,097,152 bytes (was: 216)
     
-    /** Full Legacy block size (with all fields serialized) */
-    constexpr size_t FULL_BLOCK_LEGACY_SIZE = 220;
+    /** Full Legacy block size
+     *  UPDATED: Now supports blocks with transactions (up to 2MB)
+     *  Previous: 220 bytes (empty Legacy block with coinbase only)
+     *  Current: 2MB (maximum network block size with transactions)
+     *  
+     *  NOTE: Block size varies:
+     *  - Empty block (coinbase only): 220 bytes
+     *  - Block with transactions: up to 2MB (2,097,152 bytes)
+     */
+    constexpr size_t FULL_BLOCK_LEGACY_SIZE = 2 * 1024 * 1024;  // 2,097,152 bytes (was: 220)
     
     /** Compact block header size (Phase-2 stateless mining protocol, legacy pool format) */
     constexpr size_t COMPACT_BLOCK_HEADER_SIZE = 92;
@@ -128,16 +147,18 @@ namespace FalconConstants {
         MERKLE_ROOT_SIZE + NONCE_SIZE + TIMESTAMP_SIZE;  // 80 bytes
     
     /** NEW Tritium full block format (full_block + timestamp)
-     *  full_block(216) + timestamp(8) = 224 bytes
+     *  UPDATED: Now uses 2MB max block size constant
+     *  full_block(2MB max) + timestamp(8) = 2,097,160 bytes max
      *  Used for SOLO mining after PR #65 */
     constexpr size_t SUBMIT_BLOCK_MESSAGE_TRITIUM_SIZE = 
-        FULL_BLOCK_TRITIUM_SIZE + TIMESTAMP_SIZE;  // 224 bytes
+        FULL_BLOCK_TRITIUM_SIZE + TIMESTAMP_SIZE;  // 2,097,160 bytes max (was: 224)
     
     /** NEW Legacy full block format (full_block + timestamp)
-     *  full_block(220) + timestamp(8) = 228 bytes
+     *  UPDATED: Now uses 2MB max block size constant
+     *  full_block(2MB max) + timestamp(8) = 2,097,160 bytes max
      *  Used for SOLO mining after PR #65 */
     constexpr size_t SUBMIT_BLOCK_MESSAGE_LEGACY_SIZE = 
-        FULL_BLOCK_LEGACY_SIZE + TIMESTAMP_SIZE;  // 228 bytes
+        FULL_BLOCK_LEGACY_SIZE + TIMESTAMP_SIZE;  // 2,097,160 bytes max (was: 228)
     
     /** Legacy alias for backward compatibility (deprecated, use SUBMIT_BLOCK_MESSAGE_TRITIUM_SIZE) */
     constexpr size_t SUBMIT_BLOCK_MESSAGE_SIZE = SUBMIT_BLOCK_MESSAGE_COMPACT_SIZE;  // 80 bytes (old)
@@ -147,30 +168,44 @@ namespace FalconConstants {
     //==========================================================================
     
     /** Submit Block wrapper - Tritium LOCALHOST (no encryption)
-     *  full_block(216) + timestamp(8) + sig_len(2) + sig(809) = 1,035 bytes */
+     *  UPDATED: Now supports 2MB blocks with transactions
+     *  Format: [block(2MB max)][timestamp(8)][sig_len(2)][signature(809 max)]
+     *  Calculation: 2,097,152 + 8 + 2 + 809 = 2,097,971 bytes
+     *  Previous: 1,035 bytes (216-byte empty block)
+     */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX = 
         FULL_BLOCK_TRITIUM_SIZE + TIMESTAMP_SIZE + 
-        LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 1,035 bytes
-    static_assert(SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX == 1035, "SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX size calculation mismatch");
+        LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 2,097,971 bytes (was: 1,035)
+    static_assert(SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX == 2097971, "SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX size calculation mismatch");
     
     /** Submit Block wrapper - Tritium PUBLIC MINER (with ChaCha20 encryption)
-     *  nonce(12) + encrypted_payload(1,035) + auth_tag(16) = 1,063 bytes */
+     *  UPDATED: Now supports 2MB blocks with transactions
+     *  ChaCha20-Poly1305 overhead: nonce(12) + auth_tag(16) = 28 bytes
+     *  Calculation: 2,097,971 + 28 = 2,097,999 bytes
+     *  Previous: 1,063 bytes
+     */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX = 
-        SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX + CHACHA20_OVERHEAD;  // 1,063 bytes
-    static_assert(SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX == 1063, "SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX size calculation mismatch");
+        SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX + CHACHA20_OVERHEAD;  // 2,097,999 bytes (was: 1,063)
+    static_assert(SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX == 2097999, "SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX size calculation mismatch");
     
     /** Submit Block wrapper - Legacy LOCALHOST (no encryption)
-     *  full_block(220) + timestamp(8) + sig_len(2) + sig(809) = 1,039 bytes */
+     *  UPDATED: Now supports 2MB blocks with transactions
+     *  Calculation: 2,097,152 + 8 + 2 + 809 = 2,097,971 bytes
+     *  Previous: 1,039 bytes (220-byte empty block)
+     */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_LEGACY_MAX = 
         FULL_BLOCK_LEGACY_SIZE + TIMESTAMP_SIZE + 
-        LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 1,039 bytes
-    static_assert(SUBMIT_BLOCK_WRAPPER_LEGACY_MAX == 1039, "SUBMIT_BLOCK_WRAPPER_LEGACY_MAX size calculation mismatch");
+        LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 2,097,971 bytes (was: 1,039)
+    static_assert(SUBMIT_BLOCK_WRAPPER_LEGACY_MAX == 2097971, "SUBMIT_BLOCK_WRAPPER_LEGACY_MAX size calculation mismatch");
     
     /** Submit Block wrapper - Legacy PUBLIC MINER (with ChaCha20 encryption)
-     *  nonce(12) + encrypted_payload(1,039) + auth_tag(16) = 1,067 bytes */
+     *  UPDATED: Now supports 2MB blocks with transactions
+     *  Calculation: 2,097,971 + 28 = 2,097,999 bytes
+     *  Previous: 1,067 bytes
+     */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_LEGACY_ENCRYPTED_MAX = 
-        SUBMIT_BLOCK_WRAPPER_LEGACY_MAX + CHACHA20_OVERHEAD;  // 1,067 bytes
-    static_assert(SUBMIT_BLOCK_WRAPPER_LEGACY_ENCRYPTED_MAX == 1067, "SUBMIT_BLOCK_WRAPPER_LEGACY_ENCRYPTED_MAX size calculation mismatch");
+        SUBMIT_BLOCK_WRAPPER_LEGACY_MAX + CHACHA20_OVERHEAD;  // 2,097,999 bytes (was: 1,067)
+    static_assert(SUBMIT_BLOCK_WRAPPER_LEGACY_ENCRYPTED_MAX == 2097999, "SUBMIT_BLOCK_WRAPPER_LEGACY_ENCRYPTED_MAX size calculation mismatch");
     
     /** Legacy aliases for backward compatibility (point to Tritium values) */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_MAX = SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX;
@@ -261,32 +296,44 @@ namespace FalconConstants {
     //==========================================================================
     
     /** Submit Block with BOTH signatures - Tritium LOCALHOST (no encryption)
-     *  Combines block submission signature (1,035) + physical signature overhead (811)
+     *  UPDATED: Now supports 2MB blocks with transactions
+     *  Combines block submission signature + physical signature overhead
      *  Used when both session authentication AND permanent proof are required.
      *  Both signatures use the SAME auth key (not separate keys).
-     *  wrapper(1,035) + physical_sig_overhead(811) = 1,846 bytes */
+     *  Calculation: wrapper(2,097,971) + physical_sig_overhead(811) = 2,098,782 bytes
+     *  Previous: 1,846 bytes (216-byte empty block)
+     */
     constexpr size_t SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX = 
-        SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX + PHYSICAL_BLOCK_SIG_OVERHEAD;  // 1,846 bytes
-    static_assert(SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX == 1846, "SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX size calculation mismatch");
+        SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX + PHYSICAL_BLOCK_SIG_OVERHEAD;  // 2,098,782 bytes (was: 1,846)
+    static_assert(SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX == 2098782, "SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX size calculation mismatch");
     
     /** Submit Block with BOTH signatures - Tritium PUBLIC MINER (with ChaCha20 encryption)
+     *  UPDATED: Now supports 2MB blocks with transactions
      *  Dual-signature submission with encryption overhead
-     *  dual_sig(1,846) + chacha20_overhead(28) = 1,874 bytes */
+     *  Calculation: dual_sig(2,098,782) + chacha20_overhead(28) = 2,098,810 bytes
+     *  Previous: 1,874 bytes
+     */
     constexpr size_t SUBMIT_BLOCK_DUAL_SIG_TRITIUM_ENCRYPTED_MAX = 
-        SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX + CHACHA20_OVERHEAD;  // 1,874 bytes
-    static_assert(SUBMIT_BLOCK_DUAL_SIG_TRITIUM_ENCRYPTED_MAX == 1874, "SUBMIT_BLOCK_DUAL_SIG_TRITIUM_ENCRYPTED_MAX size calculation mismatch");
+        SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX + CHACHA20_OVERHEAD;  // 2,098,810 bytes (was: 1,874)
+    static_assert(SUBMIT_BLOCK_DUAL_SIG_TRITIUM_ENCRYPTED_MAX == 2098810, "SUBMIT_BLOCK_DUAL_SIG_TRITIUM_ENCRYPTED_MAX size calculation mismatch");
     
     /** Submit Block with BOTH signatures - Legacy LOCALHOST (no encryption)
-     *  wrapper(1,039) + physical_sig_overhead(811) = 1,850 bytes */
+     *  UPDATED: Now supports 2MB blocks with transactions
+     *  Calculation: wrapper(2,097,971) + physical_sig_overhead(811) = 2,098,782 bytes
+     *  Previous: 1,850 bytes (220-byte empty block)
+     */
     constexpr size_t SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX = 
-        SUBMIT_BLOCK_WRAPPER_LEGACY_MAX + PHYSICAL_BLOCK_SIG_OVERHEAD;  // 1,850 bytes
-    static_assert(SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX == 1850, "SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX size calculation mismatch");
+        SUBMIT_BLOCK_WRAPPER_LEGACY_MAX + PHYSICAL_BLOCK_SIG_OVERHEAD;  // 2,098,782 bytes (was: 1,850)
+    static_assert(SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX == 2098782, "SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX size calculation mismatch");
     
     /** Submit Block with BOTH signatures - Legacy PUBLIC MINER (with ChaCha20 encryption)
-     *  dual_sig(1,850) + chacha20_overhead(28) = 1,878 bytes */
+     *  UPDATED: Now supports 2MB blocks with transactions
+     *  Calculation: dual_sig(2,098,782) + chacha20_overhead(28) = 2,098,810 bytes
+     *  Previous: 1,878 bytes
+     */
     constexpr size_t SUBMIT_BLOCK_DUAL_SIG_LEGACY_ENCRYPTED_MAX = 
-        SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX + CHACHA20_OVERHEAD;  // 1,878 bytes
-    static_assert(SUBMIT_BLOCK_DUAL_SIG_LEGACY_ENCRYPTED_MAX == 1878, "SUBMIT_BLOCK_DUAL_SIG_LEGACY_ENCRYPTED_MAX size calculation mismatch");
+        SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX + CHACHA20_OVERHEAD;  // 2,098,810 bytes (was: 1,878)
+    static_assert(SUBMIT_BLOCK_DUAL_SIG_LEGACY_ENCRYPTED_MAX == 2098810, "SUBMIT_BLOCK_DUAL_SIG_LEGACY_ENCRYPTED_MAX size calculation mismatch");
     
     /** Legacy aliases for backward compatibility (point to Tritium values) */
     constexpr size_t SUBMIT_BLOCK_DUAL_SIG_MAX = SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX;
