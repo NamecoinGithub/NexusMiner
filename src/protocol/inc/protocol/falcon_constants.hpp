@@ -16,12 +16,20 @@ namespace protocol {
  * IMPORTANT: All multi-byte integer fields use LITTLE-ENDIAN byte order
  * for consistency with the rest of the protocol (nonce, timestamp, etc.)
  * 
- * DUAL SIGNATURE ARCHITECTURE:
- * 1. Disposable Falcon Wrapper - Signs fixed 80-byte message (merkle + nonce + timestamp)
- *    for session authentication. NOT stored on blockchain. Always enabled.
- * 2. Physical Block Signature - Signs full block data + nonce for permanent proof
- *    of authorship. STORED on blockchain. Enabled via "enable_block_signing": true.
- *    This is the emergency backup system.
+ * SIGNATURE ARCHITECTURE:
+ * The miner uses a SINGLE Falcon key pair (the auth key) for ALL operations:
+ * 1. Authentication - Signs challenge with auth private key during handshake
+ * 2. Block Submission - Signs block data with SAME auth private key
+ * 3. Node Verification - Node uses auth public key (from mapSessionKeys) to verify ALL signatures
+ * 
+ * This ensures signature verification succeeds because signing and verifying keys match.
+ * The auth key is session-specific (generated fresh for each mining session) but is 
+ * used consistently throughout that session for both authentication and block signatures.
+ * 
+ * Optional Physical Block Signature:
+ * - Signs full block data + nonce for permanent proof of authorship
+ * - STORED on blockchain if enabled via "enable_block_signing": true
+ * - Also uses the auth key (same key as authentication and block submission)
  * 
  * References:
  * - LLL-TAO: src/LLC/falcon/falcon.h (FALCON_SIG_VARTIME_MAXSIZE)
@@ -206,22 +214,23 @@ namespace FalconConstants {
     constexpr uint32_t MAX_TRANSACTION_CONTRACTS = 100;
 
     //==========================================================================
-    // Physical Block Signature (Stored on Blockchain - Emergency Backup System)
+    // Physical Block Signature (Stored on Blockchain - Optional Enhanced Validation)
     //==========================================================================
     
     /** Physical block signature - signs full block data + nonce
      *  This signature IS stored on the blockchain for permanent proof of authorship.
      *  Enabled via config: "enable_block_signing": true
      *  
-     *  Unlike the Disposable Falcon wrapper (which signs a fixed 80-byte message),
-     *  the Physical Block Signature signs the FULL block data which can be up to
-     *  MAX_BLOCK_SIZE (2MB).
+     *  Uses the SAME auth key as block submission signatures (not a separate key).
+     *  The Physical Block Signature signs the FULL block data which can be up to
+     *  MAX_BLOCK_SIZE (2MB), whereas the block submission signature signs a fixed
+     *  80-byte message (merkle + nonce + timestamp).
      *  
      *  Message format: [block_data (variable, up to MAX_BLOCK_SIZE)] + [nonce (8 bytes LE)]
      *  Signature: Falcon-512 (~600-809 bytes)
      *  
-     *  This is the emergency backup system for proving block authorship when
-     *  the Disposable Falcon session authentication is insufficient.
+     *  This provides enhanced validation for proving block authorship with the same
+     *  auth key used throughout the mining session.
      */
     
     /** Minimum physical block signature size */
@@ -248,12 +257,13 @@ namespace FalconConstants {
     }
 
     //==========================================================================
-    // Dual-Signature Submit Block (Disposable + Physical Combined)
+    // Dual-Signature Submit Block (Block Submission + Physical Combined)
     //==========================================================================
     
     /** Submit Block with BOTH signatures - Tritium LOCALHOST (no encryption)
-     *  Combines disposable wrapper (1,035) + physical signature overhead (811)
+     *  Combines block submission signature (1,035) + physical signature overhead (811)
      *  Used when both session authentication AND permanent proof are required.
+     *  Both signatures use the SAME auth key (not separate keys).
      *  wrapper(1,035) + physical_sig_overhead(811) = 1,846 bytes */
     constexpr size_t SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX = 
         SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX + PHYSICAL_BLOCK_SIG_OVERHEAD;  // 1,846 bytes
