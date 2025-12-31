@@ -168,6 +168,13 @@ private:
      */
     bool validate_keys() const;
     
+    /**
+     * @brief Log public key fingerprint for debugging
+     * @param prefix Log prefix (e.g., "[Auth]" or "[Submit]")
+     * @param message Additional context message
+     */
+    void log_key_fingerprint(const std::string& prefix, const std::string& message) const;
+    
     // Member variables
     std::vector<uint8_t> m_pubkey;
     std::vector<uint8_t> m_privkey;
