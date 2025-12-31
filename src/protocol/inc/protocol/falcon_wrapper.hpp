@@ -19,10 +19,19 @@ namespace protocol {
  * signature operations in the mining protocol. It supports:
  * 
  * - Authentication signatures (MINER_AUTH_RESPONSE protocol)
- * - Optional block signatures for enhanced validation
- * - Optional payload signatures for work verification
+ * - Block signatures for enhanced validation
+ * - Payload signatures for work verification
  * - Signature caching and reuse for performance optimization
  * - Thread-safe operations for multi-worker environments
+ * 
+ * KEY CONSISTENCY: This wrapper uses a SINGLE Falcon key pair (the auth key)
+ * for ALL signature operations throughout the mining session:
+ * 1. During authentication: Signs with auth private key, sends auth public key to node
+ * 2. During block submission: Signs with SAME auth private key
+ * 3. Node verification: Node uses auth public key (from mapSessionKeys) to verify ALL signatures
+ * 
+ * This ensures signature verification succeeds because the signing key and
+ * verifying key are from the SAME key pair (no ephemeral/session keys for blocks).
  * 
  * The wrapper builds upon Phase 2 MINER_AUTH_RESPONSE protocol and aligns
  * with updated LLL-TAO node-side protocols for seamless integration.
@@ -82,9 +91,11 @@ public:
     /**
      * @brief Sign a block for submission validation
      * 
-     * Optional feature for enhanced block validation. Signs the complete
-     * block payload (merkle_root + nonce) to provide cryptographic proof
-     * of block authorship.
+     * Signs the complete block payload (merkle_root + nonce) to provide 
+     * cryptographic proof of block authorship. Uses the SAME auth private key
+     * that was used during authentication (whose public key was sent to the node
+     * and is stored in mapSessionKeys). This ensures the node can verify the
+     * signature using the auth public key it received during authentication.
      * 
      * @param block_data Block merkle root (64 bytes)
      * @param nonce Block nonce (8 bytes)
@@ -97,7 +108,10 @@ public:
      * @brief Sign arbitrary payload data
      * 
      * Generic signature function for protocol extensions or custom
-     * payload validation requirements.
+     * payload validation requirements. Uses the auth private key
+     * (the same key used for authentication and block signatures).
+     * The node can verify this signature using the auth public key
+     * from mapSessionKeys.
      * 
      * @param payload Data to sign
      * @param type Signature type for logging/metrics
@@ -153,6 +167,13 @@ private:
      * @return true if keys are valid Falcon-512 format
      */
     bool validate_keys() const;
+    
+    /**
+     * @brief Log public key fingerprint for debugging
+     * @param prefix Log prefix (e.g., "[Auth]" or "[Submit]")
+     * @param message Additional context message
+     */
+    void log_key_fingerprint(const std::string& prefix, const std::string& message) const;
     
     // Member variables
     std::vector<uint8_t> m_pubkey;

@@ -72,6 +72,9 @@ FalconSignatureWrapper::sign_authentication(const std::string& address,
         return SignatureResult{false, {}, "Wrapper not initialized", {}};
     }
     
+    // Log auth key being used (first 16 bytes for identification)
+    log_key_fingerprint("[Auth]", "Using Falcon auth key for authentication");
+    
     // Build authentication message: address + timestamp (8 bytes LE)
     std::vector<uint8_t> auth_message;
     auth_message.insert(auth_message.end(), address.begin(), address.end());
@@ -142,6 +145,9 @@ FalconSignatureWrapper::sign_block(const std::vector<uint8_t>& block_data,
         return SignatureResult{false, {}, "Wrapper not initialized", {}};
     }
     
+    // Log that we're using the SAME auth key as used during authentication
+    log_key_fingerprint("[Submit]", "Using Falcon auth key for block signature (same key as authentication)");
+    
     // Build block signature payload: block_data + nonce (8 bytes LE)
     std::vector<uint8_t> block_payload;
     block_payload.reserve(block_data.size() + 8);
@@ -208,6 +214,7 @@ FalconSignatureWrapper::sign_internal(const std::vector<uint8_t>& data,
     const char* type_str = (type == SignatureType::AUTHENTICATION) ? "AUTHENTICATION" :
                            (type == SignatureType::BLOCK) ? "BLOCK" : "PAYLOAD";
     m_logger->debug("[FalconWrapper] sign_internal: type={}, data_size={}", type_str, data.size());
+    m_logger->debug("[FalconWrapper] Using auth private key (same key for all signature types)");
     
     // Validate input
     if (data.empty()) {
@@ -227,6 +234,8 @@ FalconSignatureWrapper::sign_internal(const std::vector<uint8_t>& data,
     m_logger->debug("[FalconWrapper] SYNC_STATE: Private key size: {} bytes", m_privkey.size());
     
     // Use the miner_keys module for actual signature generation
+    // IMPORTANT: Always uses m_privkey (auth private key) for ALL signature types
+    // This ensures the node can verify signatures using the auth public key from mapSessionKeys
     if (!keys::falcon_sign(m_privkey, data, result.signature)) {
         result.error_message = "Falcon signature generation failed";
         result.success = false;
@@ -246,6 +255,20 @@ FalconSignatureWrapper::sign_internal(const std::vector<uint8_t>& data,
     m_total_time_us.fetch_add(result.generation_time.count(), std::memory_order_relaxed);
     
     return result;
+}
+
+void FalconSignatureWrapper::log_key_fingerprint(const std::string& prefix, 
+                                                 const std::string& message) const
+{
+    if (m_pubkey.size() >= 16) {
+        m_logger->info("{} {}", prefix, message);
+        m_logger->info("{} Auth public key (first 16 bytes): {:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                      prefix,
+                      m_pubkey[0], m_pubkey[1], m_pubkey[2], m_pubkey[3],
+                      m_pubkey[4], m_pubkey[5], m_pubkey[6], m_pubkey[7],
+                      m_pubkey[8], m_pubkey[9], m_pubkey[10], m_pubkey[11],
+                      m_pubkey[12], m_pubkey[13], m_pubkey[14], m_pubkey[15]);
+    }
 }
 
 FalconSignatureWrapper::PerformanceStats FalconSignatureWrapper::get_stats() const
