@@ -330,8 +330,18 @@ void Worker_prime::run()
 			if (is_valid)
 			{
 				m_segmented_sieve->m_best_chain = std::max(actual_difficulty, m_segmented_sieve->m_best_chain);
-				m_logger->info(m_log_leader + "✓ FOUND VALID PRIME BLOCK! Difficulty: {:.6f} (required: {:.6f}), Offsets: {}", 
-					actual_difficulty, required_difficulty, offsets.size());
+				
+				// Format offsets for logging
+				std::ostringstream offsets_str;
+				offsets_str << "[";
+				for (size_t i = 0; i < offsets.size(); ++i) {
+					if (i > 0) offsets_str << ", ";
+					offsets_str << static_cast<int>(offsets[i]);
+				}
+				offsets_str << "]";
+				
+				m_logger->info(m_log_leader + "✓ FOUND VALID PRIME BLOCK! Difficulty: {:.6f} (required: {:.6f}), Chain length: {}, Offsets: {}", 
+					actual_difficulty, required_difficulty, offsets.size(), offsets_str.str());
 				
 				//we found a valid chain.  submit it. 
 				{

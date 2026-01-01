@@ -11,6 +11,9 @@ namespace {
         2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47
     };
     const size_t NUM_SMALL_PRIMES = sizeof(SMALL_PRIMES) / sizeof(SMALL_PRIMES[0]);
+    
+    // Fractional remainder constant for perfect primes
+    constexpr double PRIME_FRACTIONAL_REMAINDER = 0.999;
 }
 
 /** SmallDivisors
@@ -110,13 +113,23 @@ bool PrimeCheck(const uint1024_t& hashTest)
     return FermatTest(hashTest);
 }
 
-bool GetOffsets(const uint1024_t& hashPrime, std::vector<uint8_t>& vOffsets)
+/** GetOffsets - with pre-validation flag to avoid duplicate PrimeCheck
+ *
+ *  Find Cunningham chain offsets for prime cluster.
+ *
+ *  @param[in] hashPrime The prime base number
+ *  @param[out] vOffsets Vector to store offsets
+ *  @param[in] alreadyValidated If true, skip initial PrimeCheck (caller already validated)
+ *
+ *  @return True if valid cluster found, false otherwise
+ **/
+static bool GetOffsetsImpl(const uint1024_t& hashPrime, std::vector<uint8_t>& vOffsets, bool alreadyValidated = false)
 {
     // Clear output vector
     vOffsets.clear();
     
-    // Check if base is prime
-    if (!PrimeCheck(hashPrime))
+    // Check if base is prime (skip if already validated)
+    if (!alreadyValidated && !PrimeCheck(hashPrime))
         return false;
     
     // Start building Cunningham chain
@@ -130,13 +143,14 @@ bool GetOffsets(const uint1024_t& hashPrime, std::vector<uint8_t>& vOffsets)
     
     // Test consecutive odd numbers up to lastPrime + 12
     // Maximum gap in cluster is 12 (as per Nexus protocol)
+    // Note: lastPrime is updated in the loop, so the search extends with each prime found
     while (next <= lastPrime + 12)
     {
         nOffset += 2;
         
         if (PrimeCheck(next))
         {
-            // Found a prime in the chain
+            // Found a prime in the chain - extend search range
             lastPrime = next;
             vOffsets.push_back(nOffset);
             nOffset = 0; // Reset offset counter after finding a prime
@@ -147,6 +161,11 @@ bool GetOffsets(const uint1024_t& hashPrime, std::vector<uint8_t>& vOffsets)
     
     // A valid cluster needs at least the base prime
     return !vOffsets.empty();
+}
+
+bool GetOffsets(const uint1024_t& hashPrime, std::vector<uint8_t>& vOffsets)
+{
+    return GetOffsetsImpl(hashPrime, vOffsets, false);
 }
 
 double GetPrimeDifficulty(const uint1024_t& hashPrime, const std::vector<uint8_t>& vOffsets)
@@ -217,7 +236,7 @@ double GetPrimeDifficulty(const uint1024_t& hashPrime, const std::vector<uint8_t
         // If remainder is large, next candidate is far from prime (fractional = ~0.0)
         if (remainder == 1)
         {
-            fractionalRemainder = 0.999; // Almost exactly prime
+            fractionalRemainder = PRIME_FRACTIONAL_REMAINDER; // Almost exactly prime
         }
         else
         {
@@ -250,8 +269,8 @@ bool ValidatePrimeCandidate(
         return false;
     }
     
-    // Step 2: Find Cunningham chain offsets
-    if (!GetOffsets(hashPrime, vOffsets))
+    // Step 2: Find Cunningham chain offsets (skip redundant PrimeCheck)
+    if (!GetOffsetsImpl(hashPrime, vOffsets, true))
     {
         nDifficulty = 0.0;
         return false;
