@@ -113,9 +113,58 @@ bool PrimeCheck(const uint1024_t& hashTest)
     return FermatTest(hashTest);
 }
 
+/** GetFractionalDifficulty
+ *
+ *  Calculate fractional difficulty from Fermat test remainder.
+ *  Matches LLL-TAO implementation exactly.
+ *
+ *  @param[in] hashComposite The composite number to test
+ *
+ *  @return Fractional difficulty as uint32_t
+ **/
+static uint32_t GetFractionalDifficulty(const uint1024_t& hashComposite)
+{
+    // Convert to boost::multiprecision for calculation
+    std::string hexStr = hashComposite.GetHex();
+    if (hexStr.empty()) {
+        return 0;
+    }
+    
+    boost::multiprecision::uint1024_t composite;
+    try {
+        composite = boost::multiprecision::uint1024_t("0x" + hexStr);
+    } catch (...) {
+        return 0;
+    }
+    
+    // Fermat test: compute 2^(composite-1) mod composite
+    boost::multiprecision::uint1024_t base = 2;
+    boost::multiprecision::uint1024_t exponent = composite - 1;
+    boost::multiprecision::uint1024_t remainder;
+    
+    try {
+        remainder = boost::multiprecision::powm(base, exponent, composite);
+    } catch (...) {
+        return 0;
+    }
+    
+    // Formula from LLL-TAO: ((composite - remainder) << 24) / composite
+    boost::multiprecision::uint1024_t numerator = (composite - remainder) << 24;
+    boost::multiprecision::uint1024_t result = numerator / composite;
+    
+    // Convert to uint32_t
+    // If result is too large, return max uint32_t
+    if (result > 0xFFFFFFFF) {
+        return 0xFFFFFFFF;
+    }
+    
+    return static_cast<uint32_t>(result & 0xFFFFFFFF);
+}
+
 /** GetOffsets - with pre-validation flag to avoid duplicate PrimeCheck
  *
  *  Find Cunningham chain offsets for prime cluster.
+ *  Matches LLL-TAO implementation exactly.
  *
  *  @param[in] hashPrime The prime base number
  *  @param[out] vOffsets Vector to store offsets
@@ -132,34 +181,45 @@ static bool GetOffsetsImpl(const uint1024_t& hashPrime, std::vector<uint8_t>& vO
     if (!alreadyValidated && !PrimeCheck(hashPrime))
         return false;
     
-    // Start building Cunningham chain
-    // Offsets represent gaps from previous prime in chain
-    // First offset is always 0 (base prime)
-    vOffsets.push_back(0);
-    
+    // Start building Cunningham chain - matching LLL-TAO exactly
+    // Don't push initial 0 - start with nOffset = 2
     uint1024_t lastPrime = hashPrime;
     uint1024_t next = hashPrime + 2;
-    uint8_t nOffset = 0;
+    uint8_t nOffset = 2;  // Start at 2, not 0
     
-    // Test consecutive odd numbers up to lastPrime + 12
+    // Test consecutive odd numbers
     // Maximum gap in cluster is 12 (as per Nexus protocol)
-    // Note: lastPrime is updated in the loop, so the search extends with each prime found
-    while (next <= lastPrime + 12)
+    // Use nOffset <= 12 as loop condition per LLL-TAO
+    while (nOffset <= 12)
     {
-        nOffset += 2;
-        
         if (PrimeCheck(next))
         {
             // Found a prime in the chain - extend search range
             lastPrime = next;
             vOffsets.push_back(nOffset);
-            nOffset = 0; // Reset offset counter after finding a prime
+            nOffset = 2;  // Reset to 2 after finding a prime (will test next+2)
+            next = lastPrime + 2;  // Start from last prime + 2
         }
-        
-        next += 2; // Move to next odd number
+        else
+        {
+            nOffset += 2;  // Increment offset
+            next += 2;     // Move to next odd number
+        }
     }
     
-    // A valid cluster needs at least the base prime
+    // Append fractional difficulty as 4-byte value at the end
+    if (!vOffsets.empty())
+    {
+        // Calculate fractional difficulty for the next candidate after the chain
+        uint32_t fractional = GetFractionalDifficulty(next);
+        
+        // Append as 4 bytes (big-endian)
+        vOffsets.push_back((fractional >> 24) & 0xFF);
+        vOffsets.push_back((fractional >> 16) & 0xFF);
+        vOffsets.push_back((fractional >> 8) & 0xFF);
+        vOffsets.push_back(fractional & 0xFF);
+    }
+    
     return !vOffsets.empty();
 }
 
@@ -174,82 +234,30 @@ double GetPrimeDifficulty(const uint1024_t& hashPrime, const std::vector<uint8_t
         return 0.0;
     
     // Cluster size is the number of primes found
-    size_t clusterSize = vOffsets.size();
+    // Note: last 4 bytes are fractional difficulty, not offsets
+    size_t clusterSize = (vOffsets.size() >= 4) ? (vOffsets.size() - 4) : vOffsets.size();
     
-    // Calculate the position of the last prime in the chain
-    // by summing all offsets
-    uint1024_t lastPrime = hashPrime;
-    uint32_t totalOffset = 0;
-    for (uint8_t offset : vOffsets)
-    {
-        totalOffset += offset;
-    }
-    lastPrime = hashPrime + totalOffset;
-    
-    // Test next candidate (lastPrime + 2) for fractional difficulty
-    uint1024_t nextCandidate = lastPrime + 2;
-    
-    // Perform partial Fermat test to get fractional difficulty
-    // This measures "how close" the next number is to being prime
-    std::string hexStr = nextCandidate.GetHex();
-    if (hexStr.empty())
-        return static_cast<double>(clusterSize);
-    
-    boost::multiprecision::uint1024_t bn;
-    try {
-        bn = boost::multiprecision::uint1024_t("0x" + hexStr);
-    } catch (...) {
-        return static_cast<double>(clusterSize);
-    }
-    
-    // Compute Fermat test remainder: 2^(n-1) mod n
-    boost::multiprecision::uint1024_t base = 2;
-    boost::multiprecision::uint1024_t exponent = bn - 1;
-    boost::multiprecision::uint1024_t remainder;
-    
-    try {
-        remainder = boost::multiprecision::powm(base, exponent, bn);
-    } catch (...) {
-        return static_cast<double>(clusterSize);
-    }
-    
-    // Calculate fractional component similar to Prime::GetFractionalDifficulty
-    // Formula from reference: 1000000.0 / ((composite - fermatRemainder) << 24 / composite)
-    // Simplified: measure how close remainder is to 1 (which indicates primality)
+    // Extract fractional difficulty from last 4 bytes if present
     double fractionalRemainder = 0.0;
     
-    if (remainder != 0)
+    if (vOffsets.size() >= 4)
     {
-        // Use simplified calculation: 1000000 / fractional_difficulty_bits
-        // This gives a value in [0, 1] range
+        // Extract 4-byte fractional difficulty (big-endian)
+        uint32_t fractional = 
+            (static_cast<uint32_t>(vOffsets[vOffsets.size() - 4]) << 24) |
+            (static_cast<uint32_t>(vOffsets[vOffsets.size() - 3]) << 16) |
+            (static_cast<uint32_t>(vOffsets[vOffsets.size() - 2]) << 8) |
+            static_cast<uint32_t>(vOffsets[vOffsets.size() - 1]);
         
-        // Count bits in remainder to estimate fractional difficulty
-        int remainderBits = 0;
-        boost::multiprecision::uint1024_t temp = remainder;
-        while (temp > 0)
+        // Calculate fractional remainder using LLL-TAO formula: 1000000.0 / fractional
+        if (fractional != 0)
         {
-            temp >>= 1;
-            remainderBits++;
+            fractionalRemainder = 1000000.0 / static_cast<double>(fractional);
+            
+            // Keep fractional in bounds [0, 1]
+            if (fractionalRemainder > 1.0 || fractionalRemainder < 0.0)
+                fractionalRemainder = 0.0;
         }
-        
-        // If remainder is 1, next candidate is prime (fractional = ~1.0)
-        // If remainder is large, next candidate is far from prime (fractional = ~0.0)
-        if (remainder == 1)
-        {
-            fractionalRemainder = PRIME_FRACTIONAL_REMAINDER; // Almost exactly prime
-        }
-        else
-        {
-            // Compute fractional based on bit position
-            // Higher bit count = larger remainder = lower fractional difficulty
-            fractionalRemainder = 1.0 / (static_cast<double>(remainderBits) + 1.0);
-        }
-        
-        // Keep fractional in bounds [0, 1]
-        if (fractionalRemainder > 1.0)
-            fractionalRemainder = 1.0;
-        if (fractionalRemainder < 0.0)
-            fractionalRemainder = 0.0;
     }
     
     return static_cast<double>(clusterSize) + fractionalRemainder;
