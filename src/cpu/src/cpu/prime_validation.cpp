@@ -120,34 +120,32 @@ bool GetOffsets(const uint1024_t& hashPrime, std::vector<uint8_t>& vOffsets)
         return false;
     
     // Start building Cunningham chain
-    // Test consecutive odd numbers: hashPrime+2, hashPrime+4, hashPrime+6, ...
-    // Maximum gap in cluster is 12 (as per Nexus protocol)
-    vOffsets.push_back(0); // Base prime at offset 0
+    // Offsets represent gaps from previous prime in chain
+    // First offset is always 0 (base prime)
+    vOffsets.push_back(0);
     
-    uint8_t nOffset = 0;
     uint1024_t lastPrime = hashPrime;
+    uint1024_t next = hashPrime + 2;
+    uint8_t nOffset = 0;
     
-    // Test offsets up to +12 from the last prime found
-    for (uint8_t testOffset = 2; testOffset <= 12; testOffset += 2)
+    // Test consecutive odd numbers up to lastPrime + 12
+    // Maximum gap in cluster is 12 (as per Nexus protocol)
+    while (next <= lastPrime + 12)
     {
-        uint1024_t candidate = hashPrime + (lastPrime - hashPrime + testOffset);
         nOffset += 2;
         
-        if (PrimeCheck(candidate))
+        if (PrimeCheck(next))
         {
             // Found a prime in the chain
-            lastPrime = candidate;
+            lastPrime = next;
             vOffsets.push_back(nOffset);
             nOffset = 0; // Reset offset counter after finding a prime
         }
         
-        // Stop if we've gone beyond the maximum gap
-        if (nOffset > 12)
-            break;
+        next += 2; // Move to next odd number
     }
     
-    // A valid cluster needs at least some primes
-    // Return true if we found at least the base prime
+    // A valid cluster needs at least the base prime
     return !vOffsets.empty();
 }
 
@@ -159,17 +157,17 @@ double GetPrimeDifficulty(const uint1024_t& hashPrime, const std::vector<uint8_t
     // Cluster size is the number of primes found
     size_t clusterSize = vOffsets.size();
     
-    // Calculate fractional remainder
-    // Test the next candidate after the last prime
+    // Calculate the position of the last prime in the chain
+    // by summing all offsets
     uint1024_t lastPrime = hashPrime;
-    uint8_t totalOffset = 0;
+    uint32_t totalOffset = 0;
     for (uint8_t offset : vOffsets)
     {
         totalOffset += offset;
-        lastPrime = hashPrime + totalOffset;
     }
+    lastPrime = hashPrime + totalOffset;
     
-    // Test next candidate (lastPrime + 2)
+    // Test next candidate (lastPrime + 2) for fractional difficulty
     uint1024_t nextCandidate = lastPrime + 2;
     
     // Perform partial Fermat test to get fractional difficulty
@@ -196,19 +194,17 @@ double GetPrimeDifficulty(const uint1024_t& hashPrime, const std::vector<uint8_t
         return static_cast<double>(clusterSize);
     }
     
-    // Calculate fractional component
-    // Formula: (n - remainder) / n gives a value in [0, 1]
-    // Scale by a factor to get reasonable fractional difficulty
+    // Calculate fractional component similar to Prime::GetFractionalDifficulty
+    // Formula from reference: 1000000.0 / ((composite - fermatRemainder) << 24 / composite)
+    // Simplified: measure how close remainder is to 1 (which indicates primality)
     double fractionalRemainder = 0.0;
     
-    if (remainder < bn)
+    if (remainder != 0)
     {
-        // Convert to double for calculation
-        // Use a simplified formula: 1.0 - (remainder / n)
-        // This gives higher fractional values for numbers closer to prime
+        // Use simplified calculation: 1000000 / fractional_difficulty_bits
+        // This gives a value in [0, 1] range
         
-        // Since we can't easily convert huge numbers to double,
-        // use a heuristic based on bit length
+        // Count bits in remainder to estimate fractional difficulty
         int remainderBits = 0;
         boost::multiprecision::uint1024_t temp = remainder;
         while (temp > 0)
@@ -217,12 +213,18 @@ double GetPrimeDifficulty(const uint1024_t& hashPrime, const std::vector<uint8_t
             remainderBits++;
         }
         
-        // If remainder is close to n (high bit count), fractional is low
-        // If remainder is 1 (next candidate is prime), fractional is highest
+        // If remainder is 1, next candidate is prime (fractional = ~1.0)
+        // If remainder is large, next candidate is far from prime (fractional = ~0.0)
         if (remainder == 1)
+        {
             fractionalRemainder = 0.999; // Almost exactly prime
+        }
         else
-            fractionalRemainder = 1.0 / (1.0 + static_cast<double>(remainderBits));
+        {
+            // Compute fractional based on bit position
+            // Higher bit count = larger remainder = lower fractional difficulty
+            fractionalRemainder = 1.0 / (static_cast<double>(remainderBits) + 1.0);
+        }
         
         // Keep fractional in bounds [0, 1]
         if (fractionalRemainder > 1.0)
