@@ -1,0 +1,272 @@
+#include "cpu/prime_validation.hpp"
+#include <boost/multiprecision/cpp_int.hpp>
+#include <spdlog/spdlog.h>
+
+namespace nexusminer {
+namespace prime {
+
+namespace {
+    // Small primes for divisibility check
+    const unsigned int SMALL_PRIMES[] = {
+        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47
+    };
+    const size_t NUM_SMALL_PRIMES = sizeof(SMALL_PRIMES) / sizeof(SMALL_PRIMES[0]);
+}
+
+/** SmallDivisors
+ *
+ *  Quick primality filter using small prime divisibility.
+ *  Tests if the number is divisible by small primes.
+ *
+ *  @param[in] n The number to test
+ *
+ *  @return True if NOT divisible by small primes (passes filter), false otherwise
+ **/
+bool SmallDivisors(const uint1024_t& n)
+{
+    // Convert to boost::multiprecision for modulo operations
+    boost::multiprecision::uint1024_t bn;
+    
+    // Convert uint1024_t to boost uint1024_t
+    std::string hexStr = n.GetHex();
+    if (hexStr.empty()) {
+        return false;
+    }
+    
+    try {
+        bn = boost::multiprecision::uint1024_t("0x" + hexStr);
+    } catch (...) {
+        return false;
+    }
+    
+    // Check divisibility by small primes
+    for (size_t i = 0; i < NUM_SMALL_PRIMES; i++)
+    {
+        // Check if n % prime == 0 (i.e., n is divisible by prime)
+        if (bn % SMALL_PRIMES[i] == 0)
+        {
+            // Special case: if n equals the prime itself, it's prime
+            if (bn == SMALL_PRIMES[i])
+                return true;
+            
+            // Otherwise, it's composite (divisible by a small prime)
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+/** FermatTest
+ *
+ *  Performs Fermat primality test: checks if 2^(n-1) mod n == 1.
+ *  This is a probabilistic primality test.
+ *
+ *  @param[in] n The number to test for primality
+ *
+ *  @return True if n passes Fermat test (likely prime), false otherwise
+ **/
+bool FermatTest(const uint1024_t& n)
+{
+    // Convert to boost::multiprecision for modular exponentiation
+    std::string hexStr = n.GetHex();
+    if (hexStr.empty()) {
+        return false;
+    }
+    
+    boost::multiprecision::uint1024_t bn;
+    try {
+        bn = boost::multiprecision::uint1024_t("0x" + hexStr);
+    } catch (...) {
+        return false;
+    }
+    
+    // Base case: numbers less than 2 are not prime
+    if (bn < 2)
+        return false;
+    
+    // Fermat test: compute 2^(n-1) mod n
+    // If result is 1, n is probably prime
+    boost::multiprecision::uint1024_t base = 2;
+    boost::multiprecision::uint1024_t exponent = bn - 1;
+    boost::multiprecision::uint1024_t result;
+    
+    try {
+        result = boost::multiprecision::powm(base, exponent, bn);
+    } catch (...) {
+        return false;
+    }
+    
+    return (result == 1);
+}
+
+bool PrimeCheck(const uint1024_t& hashTest)
+{
+    // Quick filter: check divisibility by small primes
+    if (!SmallDivisors(hashTest))
+        return false;
+    
+    // Fermat primality test
+    return FermatTest(hashTest);
+}
+
+bool GetOffsets(const uint1024_t& hashPrime, std::vector<uint8_t>& vOffsets)
+{
+    // Clear output vector
+    vOffsets.clear();
+    
+    // Check if base is prime
+    if (!PrimeCheck(hashPrime))
+        return false;
+    
+    // Start building Cunningham chain
+    // Test consecutive odd numbers: hashPrime+2, hashPrime+4, hashPrime+6, ...
+    // Maximum gap in cluster is 12 (as per Nexus protocol)
+    vOffsets.push_back(0); // Base prime at offset 0
+    
+    uint8_t nOffset = 0;
+    uint1024_t lastPrime = hashPrime;
+    
+    // Test offsets up to +12 from the last prime found
+    for (uint8_t testOffset = 2; testOffset <= 12; testOffset += 2)
+    {
+        uint1024_t candidate = hashPrime + (lastPrime - hashPrime + testOffset);
+        nOffset += 2;
+        
+        if (PrimeCheck(candidate))
+        {
+            // Found a prime in the chain
+            lastPrime = candidate;
+            vOffsets.push_back(nOffset);
+            nOffset = 0; // Reset offset counter after finding a prime
+        }
+        
+        // Stop if we've gone beyond the maximum gap
+        if (nOffset > 12)
+            break;
+    }
+    
+    // A valid cluster needs at least some primes
+    // Return true if we found at least the base prime
+    return !vOffsets.empty();
+}
+
+double GetPrimeDifficulty(const uint1024_t& hashPrime, const std::vector<uint8_t>& vOffsets)
+{
+    if (vOffsets.empty())
+        return 0.0;
+    
+    // Cluster size is the number of primes found
+    size_t clusterSize = vOffsets.size();
+    
+    // Calculate fractional remainder
+    // Test the next candidate after the last prime
+    uint1024_t lastPrime = hashPrime;
+    uint8_t totalOffset = 0;
+    for (uint8_t offset : vOffsets)
+    {
+        totalOffset += offset;
+        lastPrime = hashPrime + totalOffset;
+    }
+    
+    // Test next candidate (lastPrime + 2)
+    uint1024_t nextCandidate = lastPrime + 2;
+    
+    // Perform partial Fermat test to get fractional difficulty
+    // This measures "how close" the next number is to being prime
+    std::string hexStr = nextCandidate.GetHex();
+    if (hexStr.empty())
+        return static_cast<double>(clusterSize);
+    
+    boost::multiprecision::uint1024_t bn;
+    try {
+        bn = boost::multiprecision::uint1024_t("0x" + hexStr);
+    } catch (...) {
+        return static_cast<double>(clusterSize);
+    }
+    
+    // Compute Fermat test remainder: 2^(n-1) mod n
+    boost::multiprecision::uint1024_t base = 2;
+    boost::multiprecision::uint1024_t exponent = bn - 1;
+    boost::multiprecision::uint1024_t remainder;
+    
+    try {
+        remainder = boost::multiprecision::powm(base, exponent, bn);
+    } catch (...) {
+        return static_cast<double>(clusterSize);
+    }
+    
+    // Calculate fractional component
+    // Formula: (n - remainder) / n gives a value in [0, 1]
+    // Scale by a factor to get reasonable fractional difficulty
+    double fractionalRemainder = 0.0;
+    
+    if (remainder < bn)
+    {
+        // Convert to double for calculation
+        // Use a simplified formula: 1.0 - (remainder / n)
+        // This gives higher fractional values for numbers closer to prime
+        
+        // Since we can't easily convert huge numbers to double,
+        // use a heuristic based on bit length
+        int remainderBits = 0;
+        boost::multiprecision::uint1024_t temp = remainder;
+        while (temp > 0)
+        {
+            temp >>= 1;
+            remainderBits++;
+        }
+        
+        // If remainder is close to n (high bit count), fractional is low
+        // If remainder is 1 (next candidate is prime), fractional is highest
+        if (remainder == 1)
+            fractionalRemainder = 0.999; // Almost exactly prime
+        else
+            fractionalRemainder = 1.0 / (1.0 + static_cast<double>(remainderBits));
+        
+        // Keep fractional in bounds [0, 1]
+        if (fractionalRemainder > 1.0)
+            fractionalRemainder = 1.0;
+        if (fractionalRemainder < 0.0)
+            fractionalRemainder = 0.0;
+    }
+    
+    return static_cast<double>(clusterSize) + fractionalRemainder;
+}
+
+bool ValidatePrimeCandidate(
+    const uint1024_t& hashPrime,
+    double nRequiredDifficulty,
+    std::vector<uint8_t>& vOffsets,
+    double& nDifficulty)
+{
+    // Step 1: Check if base is prime
+    if (!PrimeCheck(hashPrime))
+    {
+        nDifficulty = 0.0;
+        vOffsets.clear();
+        return false;
+    }
+    
+    // Step 2: Find Cunningham chain offsets
+    if (!GetOffsets(hashPrime, vOffsets))
+    {
+        nDifficulty = 0.0;
+        return false;
+    }
+    
+    // Step 3: Calculate difficulty
+    nDifficulty = GetPrimeDifficulty(hashPrime, vOffsets);
+    
+    // Step 4: Check if difficulty meets requirement
+    if (nDifficulty < nRequiredDifficulty)
+    {
+        return false;
+    }
+    
+    // All checks passed
+    return true;
+}
+
+} // namespace prime
+} // namespace nexusminer

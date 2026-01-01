@@ -1,5 +1,6 @@
 #include "cpu/worker_hash.hpp"
 #include "cpu/thread_utils.hpp"
+#include "cpu/hash_validation.hpp"
 #include "config/config.hpp"
 #include "stats/stats_collector.hpp"
 #include "block.hpp"
