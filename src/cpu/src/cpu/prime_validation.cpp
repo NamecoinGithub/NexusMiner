@@ -213,11 +213,11 @@ static bool GetOffsetsImpl(const uint1024_t& hashPrime, std::vector<uint8_t>& vO
         // Calculate fractional difficulty for the next candidate after the chain
         uint32_t fractional = GetFractionalDifficulty(next);
         
-        // Append as 4 bytes (big-endian)
-        vOffsets.push_back((fractional >> 24) & 0xFF);
-        vOffsets.push_back((fractional >> 16) & 0xFF);
-        vOffsets.push_back((fractional >> 8) & 0xFF);
+        // Append as little-endian (LSB first) to match LLL-TAO
         vOffsets.push_back(fractional & 0xFF);
+        vOffsets.push_back((fractional >> 8) & 0xFF);
+        vOffsets.push_back((fractional >> 16) & 0xFF);
+        vOffsets.push_back((fractional >> 24) & 0xFF);
     }
     
     return !vOffsets.empty();
@@ -233,21 +233,21 @@ double GetPrimeDifficulty(const uint1024_t& hashPrime, const std::vector<uint8_t
     if (vOffsets.empty())
         return 0.0;
     
-    // Cluster size is the number of primes found
+    // Cluster size = 1 (base prime) + number of offsets found
     // Note: last 4 bytes are fractional difficulty, not offsets
-    size_t clusterSize = (vOffsets.size() >= 4) ? (vOffsets.size() - 4) : vOffsets.size();
+    size_t clusterSize = 1 + ((vOffsets.size() >= 4) ? (vOffsets.size() - 4) : vOffsets.size());
     
     // Extract fractional difficulty from last 4 bytes if present
     double fractionalRemainder = 0.0;
     
     if (vOffsets.size() >= 4)
     {
-        // Extract 4-byte fractional difficulty (big-endian)
+        // Extract 4-byte fractional difficulty (little-endian)
         uint32_t fractional = 
-            (static_cast<uint32_t>(vOffsets[vOffsets.size() - 4]) << 24) |
-            (static_cast<uint32_t>(vOffsets[vOffsets.size() - 3]) << 16) |
-            (static_cast<uint32_t>(vOffsets[vOffsets.size() - 2]) << 8) |
-            static_cast<uint32_t>(vOffsets[vOffsets.size() - 1]);
+            static_cast<uint32_t>(vOffsets[vOffsets.size() - 4]) |
+            (static_cast<uint32_t>(vOffsets[vOffsets.size() - 3]) << 8) |
+            (static_cast<uint32_t>(vOffsets[vOffsets.size() - 2]) << 16) |
+            (static_cast<uint32_t>(vOffsets[vOffsets.size() - 1]) << 24);
         
         // Calculate fractional remainder using LLL-TAO formula: 1000000.0 / fractional
         if (fractional != 0)
