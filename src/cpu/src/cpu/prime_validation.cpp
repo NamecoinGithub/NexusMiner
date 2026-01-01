@@ -18,19 +18,21 @@ namespace {
  **/
 bool SmallDivisors(const uint1024_t& hashTest)
 {
+    // Handle edge cases - these would never occur in real mining but are useful for testing
+    if (hashTest <= 1)
+        return false;
+    
     // Use native uint1024_t modulo operations (no conversion needed)
     // Match LLL-TAO: check all 11 primes, return false if divisible
-    // Special case: if hashTest equals one of the small primes, it IS prime
     for (int i = 0; i < 11; ++i)
     {
-        uint32_t remainder = (hashTest % SMALL_PRIMES[i]);
-        if (remainder == 0)
+        if ((hashTest % SMALL_PRIMES[i]) == 0)
         {
-            // Check if hashTest equals the prime itself
+            // If hashTest equals the small prime itself, it's prime
+            // This only happens in test scenarios, not in real mining
             if (hashTest == SMALL_PRIMES[i])
-                continue;  // It's the prime itself, keep checking
-            else
-                return false;  // It's divisible by this prime (composite)
+                continue;
+            return false;  // Divisible by this prime (composite)
         }
     }
     
@@ -44,6 +46,12 @@ bool SmallDivisors(const uint1024_t& hashTest)
  **/
 uint1024_t FermatTest(const uint1024_t& hashTest)
 {
+    // Handle edge cases
+    if (hashTest <= 1)
+        return uint1024_t(0);
+    if (hashTest == 2)
+        return uint1024_t(1);  // 2 is prime
+    
     try {
         LLC::CAutoBN_CTX ctx;
         LLC::CBigNum bnPrime(hashTest);
