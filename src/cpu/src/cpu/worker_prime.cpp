@@ -1,5 +1,6 @@
 #include "cpu/worker_prime.hpp"
 #include "cpu/thread_utils.hpp"
+#include "cpu/prime_validation.hpp"
 #include "config/config.hpp"
 #include "stats/stats_collector.hpp"
 #include "prime/prime.hpp"
@@ -311,11 +312,37 @@ void Worker_prime::run()
 		{
 			m_block.nNonce = m_nonce + x;
 			uint1k chain_start = m_base_hash + m_block.nNonce;
-			double difficulty = getDifficulty(chain_start);
-			m_segmented_sieve->m_best_chain = std::max(difficulty, m_segmented_sieve->m_best_chain);
-			m_logger->info("Actual difficulty {} required {}", difficulty, getNetworkDifficulty());
-			if (difficulty_check(chain_start))
+			
+			// Enhanced validation using new prime_validation module
+			uint1024_t hashPrime = boost_uint1024_t_to_uint1024_t(chain_start);
+			double required_difficulty = getNetworkDifficulty();
+			std::vector<uint8_t> offsets;
+			double actual_difficulty = 0.0;
+			
+			// Use the new comprehensive validation
+			bool is_valid = nexusminer::prime::ValidatePrimeCandidate(
+				hashPrime, 
+				required_difficulty, 
+				offsets, 
+				actual_difficulty
+			);
+			
+			if (is_valid)
 			{
+				m_segmented_sieve->m_best_chain = std::max(actual_difficulty, m_segmented_sieve->m_best_chain);
+				
+				// Format offsets for logging
+				std::ostringstream offsets_str;
+				offsets_str << "[";
+				for (size_t i = 0; i < offsets.size(); ++i) {
+					if (i > 0) offsets_str << ", ";
+					offsets_str << static_cast<int>(offsets[i]);
+				}
+				offsets_str << "]";
+				
+				m_logger->info(m_log_leader + "✓ FOUND VALID PRIME BLOCK! Difficulty: {:.6f} (required: {:.6f}), Chain length: {}, Offsets: {}", 
+					actual_difficulty, required_difficulty, offsets.size(), offsets_str.str());
+				
 				//we found a valid chain.  submit it. 
 				{
 					if (m_found_nonce_callback)
@@ -330,6 +357,11 @@ void Worker_prime::run()
 						m_logger->debug(m_log_leader + "Miner callback function not set.");
 					}
 				}
+			}
+			else
+			{
+				m_logger->debug(m_log_leader + "Candidate validation failed (difficulty {:.6f} < {:.6f} or invalid prime), continuing...",
+					actual_difficulty, required_difficulty);
 			}
 		}
 		low += segment_size;
@@ -406,6 +438,17 @@ LLC::CBigNum Worker_prime::boost_uint1024_t_to_CBignum(uint1k p)
 	LLC::CBigNum p_CBignum;
 	p_CBignum.SetHex(p_hex_str);
 	return p_CBignum;
+}
+
+// Helper function to convert boost::multiprecision::uint1024_t to LLC::uint1024_t
+uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(uint1k p)
+{
+	std::stringstream ss;
+	ss << std::hex << p;
+	std::string p_hex_str = ss.str();
+	uint1024_t result;
+	result.SetHex(p_hex_str);
+	return result;
 }
 
 void Worker_prime::update_statistics(stats::Collector& stats_collector)
