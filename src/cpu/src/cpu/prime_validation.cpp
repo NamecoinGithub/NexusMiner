@@ -106,12 +106,12 @@ static uint32_t GetFractionalDifficulty(const uint1024_t& hashComposite)
     boost::multiprecision::uint1024_t fermatResult = FermatTestResult(hashComposite);
     
     // LLL-TAO formula: ((a - b) << 24) / a
-    // Use larger type to prevent overflow during shift
-    boost::multiprecision::uint1056_t a(composite);
-    boost::multiprecision::uint1056_t b(fermatResult);
+    // Use cpp_int (arbitrary precision) to prevent overflow during shift
+    boost::multiprecision::cpp_int a(composite);
+    boost::multiprecision::cpp_int b(fermatResult);
     
-    boost::multiprecision::uint1056_t numerator = (a - b) << 24;
-    boost::multiprecision::uint1056_t result = numerator / a;
+    boost::multiprecision::cpp_int numerator = (a - b) << 24;
+    boost::multiprecision::cpp_int result = numerator / a;
     
     // Convert to uint32_t
     return static_cast<uint32_t>(result & 0xFFFFFFFF);
