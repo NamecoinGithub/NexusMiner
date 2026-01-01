@@ -1,5 +1,6 @@
 #include "cpu/prime_validation.hpp"
-#include <boost/multiprecision/cpp_int.hpp>
+#include "LLC/types/bignum.h"
+#include <openssl/bn.h>
 #include <spdlog/spdlog.h>
 
 namespace nexusminer {
@@ -17,58 +18,54 @@ namespace {
  **/
 bool SmallDivisors(const uint1024_t& hashTest)
 {
-    // Convert to boost for modulo operations
-    std::string hexStr = hashTest.GetHex();
-    if (hexStr.empty())
+    // Handle edge cases - these would never occur in real mining but are useful for testing
+    if (hashTest <= 1)
         return false;
     
-    boost::multiprecision::uint1024_t bn;
-    try {
-        bn = boost::multiprecision::uint1024_t("0x" + hexStr);
-    } catch (...) {
-        return false;
-    }
-    
+    // Use native uint1024_t modulo operations (no conversion needed)
     // Match LLL-TAO: check all 11 primes, return false if divisible
-    // NO special case for small primes - they would never appear in mining anyway
     for (int i = 0; i < 11; ++i)
     {
-        if (bn % SMALL_PRIMES[i] == 0)
-            return false;
+        if ((hashTest % SMALL_PRIMES[i]) == 0)
+        {
+            // If hashTest equals the small prime itself, it's prime
+            // This only happens in test scenarios, not in real mining
+            if (hashTest == SMALL_PRIMES[i])
+                continue;
+            return false;  // Divisible by this prime (composite)
+        }
     }
     
     return true;
 }
 
-/** FermatTestResult
- *  Performs Fermat primality test: 2^(n-1) mod n
- *  Returns the RESULT (not bool) to match LLL-TAO.
+/** FermatTest
+ *  Performs Fermat primality test using OpenSSL (matching LLL-TAO exactly).
+ *  Computes 2^(n-1) mod n and returns the result.
  *  If result == 1, the number is probably prime.
  **/
-boost::multiprecision::uint1024_t FermatTestResult(const uint1024_t& hashTest)
+uint1024_t FermatTest(const uint1024_t& hashTest)
 {
-    std::string hexStr = hashTest.GetHex();
-    if (hexStr.empty())
-        return boost::multiprecision::uint1024_t(0);
-    
-    boost::multiprecision::uint1024_t bn;
-    try {
-        bn = boost::multiprecision::uint1024_t("0x" + hexStr);
-    } catch (...) {
-        return boost::multiprecision::uint1024_t(0);
-    }
-    
-    if (bn < 2)
-        return boost::multiprecision::uint1024_t(0);
-    
-    // Fermat test: 2^(n-1) mod n
-    boost::multiprecision::uint1024_t base = 2;
-    boost::multiprecision::uint1024_t exponent = bn - 1;
+    // Handle edge cases
+    if (hashTest <= 1)
+        return uint1024_t(0);
+    if (hashTest == 2)
+        return uint1024_t(1);  // 2 is prime
     
     try {
-        return boost::multiprecision::powm(base, exponent, bn);
+        LLC::CAutoBN_CTX ctx;
+        LLC::CBigNum bnPrime(hashTest);
+        LLC::CBigNum bnBase(2);
+        LLC::CBigNum bnExp = bnPrime - 1;
+        LLC::CBigNum bnResult;
+        
+        // Compute 2^(prime-1) mod prime using OpenSSL
+        if (BN_mod_exp(bnResult.getBN(), bnBase.getBN(), bnExp.getBN(), bnPrime.getBN(), ctx) == 0)
+            return uint1024_t(0);
+        
+        return bnResult.getuint1024();
     } catch (...) {
-        return boost::multiprecision::uint1024_t(0);
+        return uint1024_t(0);
     }
 }
 
@@ -79,7 +76,7 @@ bool PrimeCheck(const uint1024_t& hashTest)
         return false;
     
     // Step 2: Fermat test - check if result equals 1
-    boost::multiprecision::uint1024_t result = FermatTestResult(hashTest);
+    uint1024_t result = FermatTest(hashTest);
     if (result != 1)
         return false;
     
@@ -88,33 +85,32 @@ bool PrimeCheck(const uint1024_t& hashTest)
 
 /** GetFractionalDifficulty
  *  Match LLL-TAO formula: ((composite - fermatResult) << 24) / composite
+ *  Uses OpenSSL for all operations to match node exactly.
  **/
 static uint32_t GetFractionalDifficulty(const uint1024_t& hashComposite)
 {
-    std::string hexStr = hashComposite.GetHex();
-    if (hexStr.empty())
-        return 0;
-    
-    boost::multiprecision::uint1024_t composite;
     try {
-        composite = boost::multiprecision::uint1024_t("0x" + hexStr);
+        LLC::CAutoBN_CTX ctx;
+        
+        // Get Fermat test result
+        uint1024_t fermatResult = FermatTest(hashComposite);
+        
+        // Convert to CBigNum
+        LLC::CBigNum bnA(hashComposite);
+        LLC::CBigNum bnB(fermatResult);
+        
+        // numerator = (a - b) << 24
+        LLC::CBigNum bnNumerator = bnA - bnB;
+        bnNumerator <<= 24;
+        
+        // result = numerator / a
+        LLC::CBigNum bnResult = bnNumerator / bnA;
+        
+        // Convert to uint32_t
+        return bnResult.getuint32();
     } catch (...) {
         return 0;
     }
-    
-    // Get Fermat test result
-    boost::multiprecision::uint1024_t fermatResult = FermatTestResult(hashComposite);
-    
-    // LLL-TAO formula: ((a - b) << 24) / a
-    // Use cpp_int (arbitrary precision) to prevent overflow during shift
-    boost::multiprecision::cpp_int a(composite);
-    boost::multiprecision::cpp_int b(fermatResult);
-    
-    boost::multiprecision::cpp_int numerator = (a - b) << 24;
-    boost::multiprecision::cpp_int result = numerator / a;
-    
-    // Convert to uint32_t
-    return static_cast<uint32_t>(result & 0xFFFFFFFF);
 }
 
 /** GetOffsets - Match LLL-TAO exactly
