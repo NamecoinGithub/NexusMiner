@@ -6,129 +6,94 @@ namespace nexusminer {
 namespace prime {
 
 namespace {
-    // Small primes for divisibility check
-    const unsigned int SMALL_PRIMES[] = {
-        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47
-    };
-    const size_t NUM_SMALL_PRIMES = sizeof(SMALL_PRIMES) / sizeof(SMALL_PRIMES[0]);
-    
-    // Fractional remainder constant for perfect primes
-    constexpr double PRIME_FRACTIONAL_REMAINDER = 0.999;
+    // Match LLL-TAO exactly: 11 small primes
+    const uint16_t SMALL_PRIMES[11] = { 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31 };
 }
 
 /** SmallDivisors
- *
- *  Quick primality filter using small prime divisibility.
- *  Tests if the number is divisible by small primes.
- *
- *  @param[in] n The number to test
- *
- *  @return True if NOT divisible by small primes (passes filter), false otherwise
+ *  Match LLL-TAO implementation exactly.
+ *  Returns false if divisible by any small prime (composite).
+ *  Returns true if passes all small prime tests (might be prime).
  **/
-bool SmallDivisors(const uint1024_t& n)
+bool SmallDivisors(const uint1024_t& hashTest)
 {
-    // Convert to boost::multiprecision for modulo operations
-    boost::multiprecision::uint1024_t bn;
-    
-    // Convert uint1024_t to boost uint1024_t
-    std::string hexStr = n.GetHex();
-    if (hexStr.empty()) {
+    // Convert to boost for modulo operations
+    std::string hexStr = hashTest.GetHex();
+    if (hexStr.empty())
         return false;
-    }
     
+    boost::multiprecision::uint1024_t bn;
     try {
         bn = boost::multiprecision::uint1024_t("0x" + hexStr);
     } catch (...) {
         return false;
     }
     
-    // Check divisibility by small primes
-    for (size_t i = 0; i < NUM_SMALL_PRIMES; i++)
+    // Match LLL-TAO: check all 11 primes, return false if divisible
+    // NO special case for small primes - they would never appear in mining anyway
+    for (int i = 0; i < 11; ++i)
     {
-        // Check if n % prime == 0 (i.e., n is divisible by prime)
         if (bn % SMALL_PRIMES[i] == 0)
-        {
-            // Special case: if n equals the prime itself, it's prime
-            if (bn == SMALL_PRIMES[i])
-                return true;
-            
-            // Otherwise, it's composite (divisible by a small prime)
             return false;
-        }
     }
     
     return true;
 }
 
-/** FermatTest
- *
- *  Performs Fermat primality test: checks if 2^(n-1) mod n == 1.
- *  This is a probabilistic primality test.
- *
- *  @param[in] n The number to test for primality
- *
- *  @return True if n passes Fermat test (likely prime), false otherwise
+/** FermatTestResult
+ *  Performs Fermat primality test: 2^(n-1) mod n
+ *  Returns the RESULT (not bool) to match LLL-TAO.
+ *  If result == 1, the number is probably prime.
  **/
-bool FermatTest(const uint1024_t& n)
+boost::multiprecision::uint1024_t FermatTestResult(const uint1024_t& hashTest)
 {
-    // Convert to boost::multiprecision for modular exponentiation
-    std::string hexStr = n.GetHex();
-    if (hexStr.empty()) {
-        return false;
-    }
+    std::string hexStr = hashTest.GetHex();
+    if (hexStr.empty())
+        return boost::multiprecision::uint1024_t(0);
     
     boost::multiprecision::uint1024_t bn;
     try {
         bn = boost::multiprecision::uint1024_t("0x" + hexStr);
     } catch (...) {
-        return false;
+        return boost::multiprecision::uint1024_t(0);
     }
     
-    // Base case: numbers less than 2 are not prime
     if (bn < 2)
-        return false;
+        return boost::multiprecision::uint1024_t(0);
     
-    // Fermat test: compute 2^(n-1) mod n
-    // If result is 1, n is probably prime
+    // Fermat test: 2^(n-1) mod n
     boost::multiprecision::uint1024_t base = 2;
     boost::multiprecision::uint1024_t exponent = bn - 1;
-    boost::multiprecision::uint1024_t result;
     
     try {
-        result = boost::multiprecision::powm(base, exponent, bn);
+        return boost::multiprecision::powm(base, exponent, bn);
     } catch (...) {
-        return false;
+        return boost::multiprecision::uint1024_t(0);
     }
-    
-    return (result == 1);
 }
 
 bool PrimeCheck(const uint1024_t& hashTest)
 {
-    // Quick filter: check divisibility by small primes
+    // Step 1: Small divisor tests (fast rejection)
     if (!SmallDivisors(hashTest))
         return false;
     
-    // Fermat primality test
-    return FermatTest(hashTest);
+    // Step 2: Fermat test - check if result equals 1
+    boost::multiprecision::uint1024_t result = FermatTestResult(hashTest);
+    if (result != 1)
+        return false;
+    
+    return true;
 }
 
 /** GetFractionalDifficulty
- *
- *  Calculate fractional difficulty from Fermat test remainder.
- *  Matches LLL-TAO implementation exactly.
- *
- *  @param[in] hashComposite The composite number to test
- *
- *  @return Fractional difficulty as uint32_t
+ *  Match LLL-TAO formula: ((composite - fermatResult) << 24) / composite
  **/
 static uint32_t GetFractionalDifficulty(const uint1024_t& hashComposite)
 {
-    // Convert to boost::multiprecision for calculation
     std::string hexStr = hashComposite.GetHex();
-    if (hexStr.empty()) {
+    if (hexStr.empty())
         return 0;
-    }
     
     boost::multiprecision::uint1024_t composite;
     try {
@@ -137,90 +102,55 @@ static uint32_t GetFractionalDifficulty(const uint1024_t& hashComposite)
         return 0;
     }
     
-    // Fermat test: compute 2^(composite-1) mod composite
-    boost::multiprecision::uint1024_t base = 2;
-    boost::multiprecision::uint1024_t exponent = composite - 1;
-    boost::multiprecision::uint1024_t remainder;
+    // Get Fermat test result
+    boost::multiprecision::uint1024_t fermatResult = FermatTestResult(hashComposite);
     
-    try {
-        remainder = boost::multiprecision::powm(base, exponent, composite);
-    } catch (...) {
-        return 0;
-    }
+    // LLL-TAO formula: ((a - b) << 24) / a
+    // Use cpp_int (arbitrary precision) to prevent overflow during shift
+    boost::multiprecision::cpp_int a(composite);
+    boost::multiprecision::cpp_int b(fermatResult);
     
-    // Formula from LLL-TAO: ((composite - remainder) << 24) / composite
-    boost::multiprecision::uint1024_t numerator = (composite - remainder) << 24;
-    boost::multiprecision::uint1024_t result = numerator / composite;
+    boost::multiprecision::cpp_int numerator = (a - b) << 24;
+    boost::multiprecision::cpp_int result = numerator / a;
     
     // Convert to uint32_t
-    // If result is too large, return max uint32_t
-    if (result > 0xFFFFFFFF) {
-        return 0xFFFFFFFF;
-    }
-    
     return static_cast<uint32_t>(result & 0xFFFFFFFF);
 }
 
-/** GetOffsets - with pre-validation flag to avoid duplicate PrimeCheck
- *
- *  Find Cunningham chain offsets for prime cluster.
- *  Matches LLL-TAO implementation exactly.
- *
- *  @param[in] hashPrime The prime base number
- *  @param[out] vOffsets Vector to store offsets
- *  @param[in] alreadyValidated If true, skip initial PrimeCheck (caller already validated)
- *
- *  @return True if valid cluster found, false otherwise
+/** GetOffsets - Match LLL-TAO exactly
  **/
 static bool GetOffsetsImpl(const uint1024_t& hashPrime, std::vector<uint8_t>& vOffsets, bool alreadyValidated = false)
 {
-    // Clear output vector
     vOffsets.clear();
     
-    // Check if base is prime (skip if already validated)
+    // Check if base is prime
     if (!alreadyValidated && !PrimeCheck(hashPrime))
         return false;
     
-    // Start building Cunningham chain - matching LLL-TAO exactly
-    // Don't push initial 0 - start with nOffset = 2
-    uint1024_t lastPrime = hashPrime;
-    uint1024_t next = hashPrime + 2;
-    uint8_t nOffset = 2;  // Start at 2, not 0
+    // Match LLL-TAO loop structure exactly
+    uint8_t nOffset = 2;
+    uint1024_t hashLast = hashPrime;
     
-    // Test consecutive odd numbers
-    // Maximum gap in cluster is 12 (as per Nexus protocol)
-    // Use nOffset <= 12 as loop condition per LLL-TAO
-    while (nOffset <= 12)
+    for (uint1024_t hashNext = hashPrime + 2; nOffset <= 12; hashNext += 2, nOffset += 2)
     {
-        if (PrimeCheck(next))
+        if (PrimeCheck(hashNext))
         {
-            // Found a prime in the chain - extend search range
-            lastPrime = next;
+            hashLast = hashNext;
             vOffsets.push_back(nOffset);
-            nOffset = 2;  // Reset to 2 after finding a prime (will test next+2)
-            next = lastPrime + 2;  // Start from last prime + 2
-        }
-        else
-        {
-            nOffset += 2;  // Increment offset
-            next += 2;     // Move to next odd number
+            nOffset = 0;  // Reset after finding prime
         }
     }
     
-    // Append fractional difficulty as 4-byte value at the end
-    if (!vOffsets.empty())
-    {
-        // Calculate fractional difficulty for the next candidate after the chain
-        uint32_t fractional = GetFractionalDifficulty(next);
-        
-        // Append as little-endian (LSB first) to match LLL-TAO
-        vOffsets.push_back(fractional & 0xFF);
-        vOffsets.push_back((fractional >> 8) & 0xFF);
-        vOffsets.push_back((fractional >> 16) & 0xFF);
-        vOffsets.push_back((fractional >> 24) & 0xFF);
-    }
+    // Append fractional difficulty as 4 bytes (LITTLE-ENDIAN to match LLL-TAO)
+    uint32_t nFraction = GetFractionalDifficulty(hashLast + nOffset);
     
-    return !vOffsets.empty();
+    // LLL-TAO uses raw memory insert which is little-endian on x86/x64
+    vOffsets.push_back(nFraction & 0xFF);
+    vOffsets.push_back((nFraction >> 8) & 0xFF);
+    vOffsets.push_back((nFraction >> 16) & 0xFF);
+    vOffsets.push_back((nFraction >> 24) & 0xFF);
+    
+    return true;  // Always return true if base was prime (offsets may be empty but fractional is appended)
 }
 
 bool GetOffsets(const uint1024_t& hashPrime, std::vector<uint8_t>& vOffsets)
@@ -230,37 +160,33 @@ bool GetOffsets(const uint1024_t& hashPrime, std::vector<uint8_t>& vOffsets)
 
 double GetPrimeDifficulty(const uint1024_t& hashPrime, const std::vector<uint8_t>& vOffsets)
 {
-    if (vOffsets.empty())
+    if (vOffsets.size() < 4)
         return 0.0;
     
     // Cluster size = 1 (base prime) + number of offsets found
-    // Note: last 4 bytes are fractional difficulty, not offsets
-    size_t clusterSize = 1 + ((vOffsets.size() >= 4) ? (vOffsets.size() - 4) : vOffsets.size());
+    // Last 4 bytes are fractional, so offset count = size - 4
+    size_t nOffsetCount = vOffsets.size() - 4;
+    uint32_t nClusterSize = 1 + static_cast<uint32_t>(nOffsetCount);
     
-    // Extract fractional difficulty from last 4 bytes if present
-    double fractionalRemainder = 0.0;
+    // Extract fractional difficulty from last 4 bytes (LITTLE-ENDIAN)
+    uint32_t nFraction = 
+        static_cast<uint32_t>(vOffsets[vOffsets.size() - 4]) |
+        (static_cast<uint32_t>(vOffsets[vOffsets.size() - 3]) << 8) |
+        (static_cast<uint32_t>(vOffsets[vOffsets.size() - 2]) << 16) |
+        (static_cast<uint32_t>(vOffsets[vOffsets.size() - 1]) << 24);
     
-    if (vOffsets.size() >= 4)
+    // Calculate fractional remainder: 1000000.0 / nFraction
+    double nRemainder = 0.0;
+    if (nFraction != 0)
     {
-        // Extract 4-byte fractional difficulty (little-endian)
-        uint32_t fractional = 
-            static_cast<uint32_t>(vOffsets[vOffsets.size() - 4]) |
-            (static_cast<uint32_t>(vOffsets[vOffsets.size() - 3]) << 8) |
-            (static_cast<uint32_t>(vOffsets[vOffsets.size() - 2]) << 16) |
-            (static_cast<uint32_t>(vOffsets[vOffsets.size() - 1]) << 24);
+        nRemainder = 1000000.0 / static_cast<double>(nFraction);
         
-        // Calculate fractional remainder using LLL-TAO formula: 1000000.0 / fractional
-        if (fractional != 0)
-        {
-            fractionalRemainder = 1000000.0 / static_cast<double>(fractional);
-            
-            // Keep fractional in bounds [0, 1]
-            if (fractionalRemainder > 1.0 || fractionalRemainder < 0.0)
-                fractionalRemainder = 0.0;
-        }
+        // Keep in bounds [0, 1] per LLL-TAO
+        if (nRemainder > 1.0 || nRemainder < 0.0)
+            nRemainder = 0.0;
     }
     
-    return static_cast<double>(clusterSize) + fractionalRemainder;
+    return static_cast<double>(nClusterSize) + nRemainder;
 }
 
 bool ValidatePrimeCandidate(
