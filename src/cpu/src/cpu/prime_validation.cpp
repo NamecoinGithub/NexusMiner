@@ -20,10 +20,18 @@ bool SmallDivisors(const uint1024_t& hashTest)
 {
     // Use native uint1024_t modulo operations (no conversion needed)
     // Match LLL-TAO: check all 11 primes, return false if divisible
+    // Special case: if hashTest equals one of the small primes, it IS prime
     for (int i = 0; i < 11; ++i)
     {
-        if ((hashTest % SMALL_PRIMES[i]) == 0)
-            return false;
+        uint32_t remainder = (hashTest % SMALL_PRIMES[i]);
+        if (remainder == 0)
+        {
+            // Check if hashTest equals the prime itself
+            if (hashTest == SMALL_PRIMES[i])
+                continue;  // It's the prime itself, keep checking
+            else
+                return false;  // It's divisible by this prime (composite)
+        }
     }
     
     return true;
