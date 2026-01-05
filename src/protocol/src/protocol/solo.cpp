@@ -91,7 +91,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_miner_id{"NexusMiner"}  // Default miner ID
 , m_falcon_wrapper{nullptr}
 , m_block_signing_enabled{true}  // ALWAYS ON - Disposable Falcon (core protocol, accepts both F-512/F-1024)
-, m_physical_falcon_enabled{false}  // CONFIGURABLE - Physical Falcon OFF by default (lazy miner economics, 0 blockchain bytes)
+, m_physical_falcon_enabled{false}  // CONFIGURABLE - Physical Falcon OFF by default (lazy miner economics, 61% blockchain savings)
 , m_chacha20_wrapper{nullptr}  // Lazy initialization when needed
 , m_enable_chacha20{true}  // ALWAYS ON - Core implementation (localhost miners, SessionID protection, etc.)
 , m_session_manager{nullptr}
