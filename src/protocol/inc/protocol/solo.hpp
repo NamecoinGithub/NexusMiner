@@ -50,9 +50,13 @@ public:
     void enable_chacha20_wrapping(bool enable) { m_enable_chacha20 = enable; }
     bool is_chacha20_enabled() const { return m_enable_chacha20; }
     
-    // Enable/disable optional block signing (default: disabled for performance)
-    void enable_block_signing(bool enable) { m_block_signing_enabled = enable; }
-    bool is_block_signing_enabled() const { return m_block_signing_enabled; }
+    // Disposable Falcon is ALWAYS ON (core protocol) - method kept for backward compatibility only
+    void enable_disposable_falcon(bool enable) { m_disposable_falcon_enabled = enable; }
+    bool is_disposable_falcon_enabled() const { return m_disposable_falcon_enabled; }
+    
+    // Legacy method names (deprecated - kept for backward compatibility)
+    void enable_block_signing(bool enable) { m_disposable_falcon_enabled = enable; }
+    bool is_block_signing_enabled() const { return m_disposable_falcon_enabled; }
     
     // Enable/disable Physical Falcon signatures (default: disabled per lazy miner economics)
     void enable_physical_falcon(bool enable) { m_physical_falcon_enabled = enable; }
@@ -116,12 +120,12 @@ private:
     
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
-    bool m_block_signing_enabled;  // Optional block signing feature
-    bool m_physical_falcon_enabled;  // Enable Physical Falcon signatures (default: OFF for lazy miner economics)
+    bool m_disposable_falcon_enabled;     // Disposable Falcon signing (ALWAYS ON - core protocol, 0 blockchain overhead)
+    bool m_physical_falcon_enabled;       // Physical Falcon signing (CONFIGURABLE - future blockchain integration, adds signature to chain)
     
     // ChaCha20 encryption wrapper for Falcon pubkey protection
     std::unique_ptr<ChaCha20Wrapper> m_chacha20_wrapper;
-    bool m_enable_chacha20;  // Enable ChaCha20 wrapping (auto for remote, optional for localhost)
+    bool m_enable_chacha20;  // ChaCha20 encryption (ALWAYS ON - core security for localhost + SessionID)
     
     // Session manager for adaptive cache management
     std::unique_ptr<SessionManager> m_session_manager;

@@ -52,7 +52,9 @@ public:
 	std::string const& get_miner_falcon_pubkey() const { return m_miner_falcon_pubkey; }
 	std::string const& get_miner_falcon_privkey() const { return m_miner_falcon_privkey; }
 	bool has_miner_falcon_keys() const { return !m_miner_falcon_pubkey.empty() && !m_miner_falcon_privkey.empty(); }
-	bool get_enable_block_signing() const { return m_enable_block_signing; }
+	bool get_enable_disposable_falcon() const { return m_enable_disposable_falcon; }
+	// Legacy method name (deprecated - kept for backward compatibility)
+	bool get_enable_block_signing() const { return m_enable_disposable_falcon; }
 	
 	// Tritium GenesisHash and session management
 	std::string const& get_tritium_genesis() const { return m_tritium_genesis; }
@@ -99,7 +101,9 @@ public:
 	// Falcon authentication setters
 	void set_miner_falcon_pubkey(const std::string& pubkey) { m_miner_falcon_pubkey = pubkey; }
 	void set_miner_falcon_privkey(const std::string& privkey) { m_miner_falcon_privkey = privkey; }
-	void set_enable_block_signing(bool enable) { m_enable_block_signing = enable; }
+	void set_enable_disposable_falcon(bool enable) { m_enable_disposable_falcon = enable; }
+	// Legacy method name (deprecated - kept for backward compatibility)
+	void set_enable_block_signing(bool enable) { m_enable_disposable_falcon = enable; }
 	
 	// ChaCha20 and TLS setters
 	void set_enable_chacha20_wrapping(bool enable) { m_enable_chacha20_wrapping = enable; }
@@ -144,7 +148,7 @@ private:
 	std::string m_miner_falcon_privkey;
 	
 	// Unified Falcon Signature Protocol options
-	bool m_enable_block_signing;  // Optional block signing for enhanced validation (default: false)
+	bool m_enable_disposable_falcon;  // Disposable Falcon signing (ALWAYS ON - core protocol, 0 blockchain overhead)
 	
 	// Tritium GenesisHash and adaptive cache management (Phase 2 enhancement)
 	std::string m_tritium_genesis;  // Tritium account genesis hash (32 bytes hex) for reward binding

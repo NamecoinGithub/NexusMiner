@@ -223,16 +223,12 @@ SOLO mining uses stateless protocol: Direct Falcon auth (MINER_AUTH_RESPONSE) â†
 
 **Unified Hybrid Falcon Signature Protocol:**
 NexusMiner includes an optimized signature wrapper for all Falcon-512 operations:
-- **Authentication signatures**: Required for MINER_AUTH_RESPONSE (always enabled)
-- **Optional block signatures**: Enhanced validation for block submissions (disabled by default)
+- **Disposable Falcon signatures**: ALWAYS ON - Required for session authentication (0 bytes blockchain overhead)
+- **Physical Falcon signatures**: CONFIGURABLE - Optional blockchain-stored proof (adds 809-1577 bytes/block, OFF by default)
+- **ChaCha20 encryption**: ALWAYS ON - Core security for all connections (SessionID protection, localhost miners)
 - **Performance optimized**: Thread-safe with minimal overhead (~100-500 Î¼s per signature)
 
-To enable optional block signing, add to your config:
-```json
-{
-    "enable_block_signing": true
-}
-```
+Disposable Falcon is core protocol functionality and cannot be disabled. Physical Falcon signatures can be enabled via the `enable_physical_falcon()` API when needed for future blockchain integration.
 
 See [docs/unified_falcon_signature_protocol.md](docs/unified_falcon_signature_protocol.md) for details.
 

@@ -176,9 +176,10 @@ namespace config
                     {
                         config.set_miner_falcon_privkey(parse_string_value(value));
                     }
-                    else if (key == "enable_block_signing")
+                    else if (key == "enable_block_signing" || key == "enable_disposable_falcon")
                     {
-                        config.set_enable_block_signing(parse_bool_value(value));
+                        // Support both old and new config keys for backward compatibility
+                        config.set_enable_disposable_falcon(parse_bool_value(value));
                     }
                 }
                 else if (current_section == "advanced")
