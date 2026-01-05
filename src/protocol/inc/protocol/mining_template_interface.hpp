@@ -175,6 +175,64 @@ public:
     void mark_template_stale(const std::string& reason = "");
     
     // =========================================================================
+    // Template Staleness Prevention (LLL-TAO PR #131 Client-Side Integration)
+    // =========================================================================
+    
+    /**
+     * @brief Check if template is stale (age > 60s)
+     * 
+     * Matches LLL-TAO MAX_TEMPLATE_AGE_SECONDS constant for coordinated
+     * template lifecycle management.
+     * 
+     * @return true if template age exceeds 60 seconds
+     */
+    bool is_template_stale() const;
+    
+    /**
+     * @brief Check if template is old (age > 50s, warning threshold)
+     * 
+     * Proactive warning threshold to request fresh template before
+     * hard expiration at 60s, reducing wasted mining work.
+     * 
+     * @return true if template age exceeds 50 seconds
+     */
+    bool is_template_old() const;
+    
+    /**
+     * @brief Get template age in seconds
+     * 
+     * @return Age of current template in seconds, 0 if no template
+     */
+    uint64_t get_template_age() const;
+    
+    /**
+     * @brief Update blockchain height (auto-discards if height mismatch)
+     * 
+     * Called from GET_ROUND polling thread when NEW_ROUND is detected.
+     * Automatically discards current template if height has advanced.
+     * 
+     * @param new_height Current blockchain height from GET_ROUND
+     * @return true if template was discarded due to height change
+     */
+    bool update_height(uint32_t new_height);
+    
+    /**
+     * @brief Discard current template with reason
+     * 
+     * Explicitly discard the current template and log the reason.
+     * 
+     * @param reason Reason for discarding template
+     */
+    void discard_template(const std::string& reason);
+    
+    /**
+     * @brief Get current template height
+     * 
+     * @return Height of current template, 0 if no template
+     */
+    uint32_t get_template_height() const;
+    
+    // =========================================================================
     // Create Block Verification
     // =========================================================================
     
@@ -259,6 +317,8 @@ public:
         uint64_t blocks_submitted;
         uint64_t total_read_time_us;
         uint64_t total_validation_time_us;
+        uint64_t templates_expired_age;       // Templates expired due to age (>60s)
+        uint64_t templates_expired_height;    // Templates expired due to height change
     };
     
     /**
@@ -305,6 +365,10 @@ private:
     
     std::shared_ptr<spdlog::logger> m_logger;
     
+    // Template staleness prevention constants (synchronized with LLL-TAO PR #131)
+    static constexpr uint64_t MAX_TEMPLATE_AGE = 60;       // Match LLL-TAO node-side constant
+    static constexpr uint64_t WARNING_TEMPLATE_AGE = 50;   // Proactive warning threshold
+    
     // Thread-safe statistics (atomic for multi-worker safety)
     std::atomic<uint64_t> m_templates_received;
     std::atomic<uint64_t> m_templates_validated;
@@ -315,6 +379,10 @@ private:
     std::atomic<uint64_t> m_blocks_submitted;
     std::atomic<uint64_t> m_total_read_time_us;
     std::atomic<uint64_t> m_total_validation_time_us;
+    
+    // Template expiration tracking
+    std::atomic<uint64_t> m_templates_expired_age{0};      // Templates expired due to age
+    std::atomic<uint64_t> m_templates_expired_height{0};   // Templates expired due to height change
 };
 
 } // namespace protocol

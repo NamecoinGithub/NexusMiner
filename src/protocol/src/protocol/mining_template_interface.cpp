@@ -309,6 +309,8 @@ MiningTemplateInterface::TemplateStats MiningTemplateInterface::get_stats() cons
     stats.blocks_submitted = m_blocks_submitted.load(std::memory_order_relaxed);
     stats.total_read_time_us = m_total_read_time_us.load(std::memory_order_relaxed);
     stats.total_validation_time_us = m_total_validation_time_us.load(std::memory_order_relaxed);
+    stats.templates_expired_age = m_templates_expired_age.load(std::memory_order_relaxed);
+    stats.templates_expired_height = m_templates_expired_height.load(std::memory_order_relaxed);
     return stats;
 }
 
@@ -323,6 +325,8 @@ void MiningTemplateInterface::reset_stats()
     m_blocks_submitted.store(0, std::memory_order_relaxed);
     m_total_read_time_us.store(0, std::memory_order_relaxed);
     m_total_validation_time_us.store(0, std::memory_order_relaxed);
+    m_templates_expired_age.store(0, std::memory_order_relaxed);
+    m_templates_expired_height.store(0, std::memory_order_relaxed);
     
     m_logger->debug("[TemplateInterface] Statistics reset");
 }
@@ -493,6 +497,104 @@ bool MiningTemplateInterface::parse_block_header(const network::Payload& data,
         
         return false;
     }
+}
+
+// =========================================================================
+// Template Staleness Prevention (LLL-TAO PR #131 Client-Side Integration)
+// =========================================================================
+
+bool MiningTemplateInterface::is_template_stale() const
+{
+    if (m_current_template.state == TemplateState::EMPTY ||
+        m_current_template.state == TemplateState::STALE) {
+        return true;
+    }
+    
+    uint64_t age = get_template_age();
+    return age > MAX_TEMPLATE_AGE;
+}
+
+bool MiningTemplateInterface::is_template_old() const
+{
+    if (m_current_template.state == TemplateState::EMPTY ||
+        m_current_template.state == TemplateState::STALE) {
+        return true;
+    }
+    
+    uint64_t age = get_template_age();
+    return age > WARNING_TEMPLATE_AGE;
+}
+
+uint64_t MiningTemplateInterface::get_template_age() const
+{
+    if (m_current_template.state == TemplateState::EMPTY ||
+        m_current_template.timestamp_received == 0) {
+        return 0;
+    }
+    
+    auto now = std::chrono::system_clock::now();
+    uint64_t current_time = static_cast<uint64_t>(
+        std::chrono::system_clock::to_time_t(now));
+    
+    // Handle clock skew - if current time is less than timestamp, treat as stale
+    if (current_time < m_current_template.timestamp_received) {
+        m_logger->warn("[TemplateInterface] Clock skew detected: current time < template timestamp");
+        return MAX_TEMPLATE_AGE + 1;  // Return value > MAX_TEMPLATE_AGE to trigger staleness
+    }
+    
+    return current_time - m_current_template.timestamp_received;
+}
+
+bool MiningTemplateInterface::update_height(uint32_t new_height)
+{
+    m_logger->debug("[TemplateInterface] Height update: {} -> {}", m_current_height, new_height);
+    
+    // Check if template should be discarded due to height change
+    bool template_discarded = false;
+    
+    if (new_height > m_current_height && has_valid_template()) {
+        // Height has advanced - discard current template
+        uint32_t old_height = m_current_template.block.nHeight;
+        
+        m_logger->info("[TemplateInterface] 🔔 Height changed: {} -> {} (template at height {})",
+            m_current_height, new_height, old_height);
+        
+        if (old_height < new_height) {
+            m_logger->info("[TemplateInterface] ❌ Template is now stale - discarding");
+            discard_template("Height changed");
+            template_discarded = true;
+            m_templates_expired_height.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    
+    // Always update current height
+    m_current_height = new_height;
+    
+    return template_discarded;
+}
+
+void MiningTemplateInterface::discard_template(const std::string& reason)
+{
+    if (m_current_template.state == TemplateState::EMPTY) {
+        m_logger->debug("[TemplateInterface] No template to discard");
+        return;
+    }
+    
+    m_logger->info("[TemplateInterface] Discarding template: {}", reason);
+    m_logger->info("[TemplateInterface]   - Height: {}", m_current_template.block.nHeight);
+    m_logger->info("[TemplateInterface]   - Age: {}s", get_template_age());
+    m_logger->info("[TemplateInterface]   - State: {}", state_to_string(m_current_template.state));
+    
+    // Mark as stale
+    mark_template_stale(reason);
+}
+
+uint32_t MiningTemplateInterface::get_template_height() const
+{
+    if (m_current_template.state == TemplateState::EMPTY) {
+        return 0;
+    }
+    return m_current_template.block.nHeight;
 }
 
 } // namespace protocol

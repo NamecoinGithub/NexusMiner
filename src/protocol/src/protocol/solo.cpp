@@ -99,6 +99,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_connection{nullptr}
 , m_reward_address{""}  // Empty until configured
 , m_reward_bound{false}  // Not bound until successful MINER_REWARD_RESULT
+, m_last_round_status{false, 0}  // Initialize GET_ROUND status
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -492,6 +493,29 @@ network::Shared_payload Solo::get_height()
         m_logger->debug("[Solo] GET_HEIGHT encoded payload size: {} bytes (header-only)", payload->size());
     } else {
         m_logger->error("[Solo] GET_HEIGHT get_bytes() returned null or empty payload!");
+    }
+    
+    return payload;
+}
+
+network::Shared_payload Solo::send_get_round()
+{
+    m_logger->debug("[Solo GET_ROUND] Requesting round status via GET_ROUND");
+    
+    // GET_ROUND is a header-only request packet (opcode 133, >= 128)
+    Packet packet{ Packet::GET_ROUND };
+    
+    // Debug logging to verify packet encoding
+    m_logger->debug("[Solo GET_ROUND] Packet: header=0x{:02x} length={} is_valid={}", 
+                   static_cast<int>(packet.m_header),
+                   packet.m_length, 
+                   packet.is_valid());
+    
+    auto payload = packet.get_bytes();
+    if (payload && !payload->empty()) {
+        m_logger->debug("[Solo GET_ROUND] Encoded payload size: {} bytes (header-only)", payload->size());
+    } else {
+        m_logger->error("[Solo GET_ROUND] get_bytes() returned null or empty payload!");
     }
     
     return payload;
@@ -1159,6 +1183,61 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         } else {
             connection->transmit(work_payload);
         }
+    }
+    // Handle NEW_ROUND response (Template Staleness Prevention - LLL-TAO PR #131)
+    else if (packet.m_header == Packet::NEW_ROUND)
+    {
+        // NEW_ROUND indicates height has changed
+        // Payload: [height(4 bytes, big-endian)]
+        if (!packet.m_data || packet.m_length < 4) {
+            m_logger->warn("[Solo GET_ROUND] NEW_ROUND packet has invalid data or length < 4");
+            return;
+        }
+        
+        uint32_t new_height = bytes2uint(*packet.m_data);
+        
+        m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND received - Height: {}", new_height);
+        
+        // Update round status
+        m_last_round_status.is_new_round = true;
+        m_last_round_status.height = new_height;
+        
+        // Update template interface height (auto-discards if height mismatch)
+        if (m_template_interface) {
+            bool template_discarded = m_template_interface->update_height(new_height);
+            if (template_discarded) {
+                m_logger->info("[Solo GET_ROUND] Template discarded due to height change");
+                
+                // Request fresh template
+                m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK");
+                if (connection) {
+                    auto work_payload = get_work();
+                    if (work_payload && !work_payload->empty()) {
+                        connection->transmit(work_payload);
+                    }
+                }
+            }
+        }
+    }
+    // Handle OLD_ROUND response (Template Staleness Prevention - LLL-TAO PR #131)
+    else if (packet.m_header == Packet::OLD_ROUND)
+    {
+        // OLD_ROUND indicates height unchanged
+        // Payload: [height(4 bytes, big-endian)]
+        if (!packet.m_data || packet.m_length < 4) {
+            m_logger->warn("[Solo GET_ROUND] OLD_ROUND packet has invalid data or length < 4");
+            return;
+        }
+        
+        uint32_t current_height = bytes2uint(*packet.m_data);
+        
+        m_logger->debug("[Solo GET_ROUND] OLD_ROUND received - Height: {} (unchanged)", current_height);
+        
+        // Update round status
+        m_last_round_status.is_new_round = false;
+        m_last_round_status.height = current_height;
+        
+        // No action needed - continue mining on current template
     }
     else if (packet.m_header == Packet::MINER_AUTH_CHALLENGE)
     {
