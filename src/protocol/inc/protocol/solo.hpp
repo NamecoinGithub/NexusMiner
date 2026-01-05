@@ -36,6 +36,14 @@ public:
 
     void process_messages(Packet packet, std::shared_ptr<network::Connection> connection) override;
     
+    // GET_ROUND protocol support (Template Staleness Prevention - LLL-TAO PR #131)
+    struct RoundStatus {
+        bool is_new_round;      // true if NEW_ROUND (204), false if OLD_ROUND (205)
+        uint32_t height;        // Current blockchain height
+    };
+    network::Shared_payload send_get_round();
+    RoundStatus get_last_round_status() const { return m_last_round_status; }
+    
     // Falcon miner authentication
     void set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_t> const& privkey);
     bool is_authenticated() const { return m_authenticated; }
@@ -142,6 +150,9 @@ private:
     // Stateless mining reward address binding (MINER_SET_REWARD protocol)
     std::string m_reward_address;  // NXS account address for mining rewards
     bool m_reward_bound;  // True after successful MINER_REWARD_RESULT
+    
+    // GET_ROUND status tracking (Template Staleness Prevention - LLL-TAO PR #131)
+    RoundStatus m_last_round_status;  // Last received round status
 };
 
 }

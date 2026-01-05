@@ -17,6 +17,7 @@ Timer_manager::Timer_manager(chrono::Timer_factory::Sptr timer_factory)
     m_ping_timer = m_timer_factory->create_timer();
     m_stats_collector_timer = m_timer_factory->create_timer();
     m_stats_printer_timer = m_timer_factory->create_timer();
+    m_get_round_timer = m_timer_factory->create_timer();  // Template Staleness Prevention
 }
 
 void Timer_manager::start_connection_retry_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager, 
@@ -48,6 +49,11 @@ void Timer_manager::start_stats_printer_timer(std::uint16_t timer_interval, std:
     m_stats_printer_timer->start(chrono::Seconds(timer_interval), stats_printer_handler(timer_interval, std::move(stats_printers)));
 }
 
+void Timer_manager::start_get_round_timer(std::uint16_t timer_interval, std::weak_ptr<network::Connection> connection)
+{
+    m_get_round_timer->start(chrono::Seconds(timer_interval), get_round_handler(timer_interval, std::move(connection)));
+}
+
 void Timer_manager::stop()
 {
     m_connection_retry_timer->cancel();
@@ -55,6 +61,7 @@ void Timer_manager::stop()
     m_ping_timer->cancel();
     m_stats_collector_timer->cancel();
     m_stats_printer_timer->cancel();
+    m_get_round_timer->cancel();  // Template Staleness Prevention
 }
 
 chrono::Timer::Handler Timer_manager::connection_retry_handler(std::weak_ptr<Worker_manager> worker_manager,
@@ -156,6 +163,29 @@ chrono::Timer::Handler Timer_manager::stats_printer_handler(std::uint16_t stats_
         // restart timer
          m_stats_printer_timer->start(chrono::Seconds(stats_printer_interval), stats_printer_handler(stats_printer_interval, 
             std::move(stats_printers)));
+    }; 
+}
+
+chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_interval, std::weak_ptr<network::Connection> connection)
+{
+    return [this, connection, get_round_interval](bool canceled)
+    {
+        if (canceled)	// don't do anything if the timer has been canceled
+        {
+            return;
+        }
+
+        auto connection_shared = connection.lock();
+        if(connection_shared)
+        {
+            // Send GET_ROUND request (opcode 133)
+            Packet packet_get_round{ Packet::GET_ROUND };
+            connection_shared->transmit(packet_get_round.get_bytes());
+
+            // restart timer - use weak_ptr to avoid move invalidation
+            m_get_round_timer->start(chrono::Seconds(get_round_interval), 
+                get_round_handler(get_round_interval, connection));
+        }
     }; 
 }
 
