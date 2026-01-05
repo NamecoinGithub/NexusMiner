@@ -543,9 +543,24 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         return network::Shared_payload{};
     }
     
-    /* Falcon signature details */
-    m_logger->info("🔐 FALCON SIGNATURE:");
-    m_logger->info("   Signature size: {} bytes (expected: 809)", sig_result.signature.size());
+    /* Falcon signature details and validation */
+    size_t expected_sig_size = m_falcon_wrapper->get_signature_size();
+    std::string falcon_version = m_falcon_wrapper->is_falcon1024() ? "Falcon-1024" : "Falcon-512";
+    
+    m_logger->info("🔐 FALCON SIGNATURE ({}):", falcon_version);
+    m_logger->info("   Signature size: {} bytes (expected: {})", 
+                   sig_result.signature.size(), expected_sig_size);
+    
+    // Validate signature size matches the Falcon version
+    if (sig_result.signature.size() != expected_sig_size) {
+        m_logger->error("❌ SIGNATURE SIZE MISMATCH!");
+        m_logger->error("   Expected: {} bytes ({})", expected_sig_size, falcon_version);
+        m_logger->error("   Got: {} bytes", sig_result.signature.size());
+        m_logger->error("   This indicates a key version mismatch or signing error");
+        m_logger->error("════════════════════════════════════════════════════════");
+        return network::Shared_payload{};
+    }
+    
     m_logger->info("   Timestamp: {} (0x{:016x})", submission_timestamp, submission_timestamp);
     m_logger->info("   Signed data format: [block({})][ timestamp(8)]", block_data.size());
     
@@ -1551,8 +1566,17 @@ void Solo::set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_
 {
     m_miner_pubkey = pubkey;
     m_miner_privkey = privkey;
-    m_logger->info("[Solo] Miner Falcon keys configured (pubkey: {} bytes, privkey: {} bytes)", 
-        pubkey.size(), privkey.size());
+    
+    // Detect Falcon version from key size
+    bool is_falcon1024 = (pubkey.size() == FalconConstants::FALCON1024_PUBKEY_SIZE);
+    std::string version = is_falcon1024 ? "Falcon-1024" : "Falcon-512";
+    size_t expected_sig_size = is_falcon1024 ? 
+        FalconConstants::FALCON1024_SIG_CT_SIZE : FalconConstants::FALCON512_SIG_CT_SIZE;
+    
+    m_logger->info("[Solo] Miner {} keys configured", version);
+    m_logger->info("[Solo]   Public key:  {} bytes", pubkey.size());
+    m_logger->info("[Solo]   Private key: {} bytes", privkey.size());
+    m_logger->info("[Solo]   Signature:   {} bytes (CT)", expected_sig_size);
     
     // Initialize the Unified Falcon Signature Wrapper
     try {
@@ -1722,7 +1746,22 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
         return;
     }
     
-    m_logger->info("[Solo Phase 2] Signed nonce, signature {} bytes", sign_result.signature.size());
+    // Validate signature size
+    size_t expected_sig_size = m_falcon_wrapper->get_signature_size();
+    std::string falcon_version = m_falcon_wrapper->is_falcon1024() ? "Falcon-1024" : "Falcon-512";
+    
+    m_logger->info("[Solo Phase 2] Signed nonce with {}", falcon_version);
+    m_logger->info("[Solo Phase 2]   Signature: {} bytes (expected: {})", 
+                   sign_result.signature.size(), expected_sig_size);
+    
+    if (sign_result.signature.size() != expected_sig_size) {
+        m_logger->error("[Solo Phase 2] SIGNATURE SIZE MISMATCH!");
+        m_logger->error("[Solo Phase 2]   Expected: {} bytes ({})", expected_sig_size, falcon_version);
+        m_logger->error("[Solo Phase 2]   Got: {} bytes", sign_result.signature.size());
+        m_logger->error("[Solo Phase 2]   This indicates a key version mismatch");
+        reset_auth_state();
+        return;
+    }
     
     // Build MINER_AUTH_RESPONSE packet
     Packet response_packet(Packet::MINER_AUTH_RESPONSE);  // 209 - m_is_valid = true automatically
