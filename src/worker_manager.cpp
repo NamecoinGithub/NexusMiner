@@ -81,12 +81,12 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         m_logger->info("[Worker_manager] Keepalive interval: {} hours", m_config.get_keepalive_interval());
         
         // ChaCha20 encryption is ALWAYS ON (core security) - no configuration needed
-        // The protocol defaults to true, but we can still call the method for clarity
+        // Explicit call kept for code clarity and to ensure proper initialization logging
         solo_protocol->enable_chacha20_wrapping(true);
         m_logger->info("[Worker_manager] ChaCha20 encryption: ENABLED (ALWAYS ON - core security)");
         
         // Disposable Falcon signing is ALWAYS ON (core protocol) - no configuration needed
-        // The protocol defaults to true, but we can still call the method for clarity
+        // Explicit call kept for code clarity and to ensure proper initialization logging
         solo_protocol->enable_block_signing(true);
         m_logger->info("[Worker_manager] Disposable Falcon signing: ENABLED (ALWAYS ON - core protocol, 0 blockchain overhead)");
         
