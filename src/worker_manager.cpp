@@ -80,24 +80,19 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         solo_protocol->set_keepalive_interval(m_config.get_keepalive_interval());
         m_logger->info("[Worker_manager] Keepalive interval: {} hours", m_config.get_keepalive_interval());
         
-        // Configure ChaCha20 wrapping (auto-enable for remote, optional for localhost)
-        bool enable_chacha20 = m_config.get_enable_chacha20_wrapping();
-        if (!enable_chacha20 && !m_config.is_localhost_mining()) {
-            // Auto-enable for remote mining
-            enable_chacha20 = true;
-            m_logger->info("[Worker_manager] ChaCha20 wrapping AUTO-ENABLED for remote mining");
-        }
-        solo_protocol->enable_chacha20_wrapping(enable_chacha20);
-        m_logger->info("[Worker_manager] ChaCha20 wrapping: {}", enable_chacha20 ? "ENABLED" : "DISABLED");
+        // ChaCha20 encryption is ALWAYS ON (core security) - no configuration needed
+        // Explicit call kept for code clarity and to ensure proper initialization logging
+        solo_protocol->enable_chacha20_wrapping(true);
+        m_logger->info("[Worker_manager] ChaCha20 encryption: ENABLED (ALWAYS ON - core security)");
         
-        // Configure optional block signing
-        if (m_config.get_enable_block_signing()) {
-            solo_protocol->enable_block_signing(true);
-            m_logger->info("[Worker_manager] Block signing ENABLED for enhanced validation");
-            m_logger->warn("[Worker_manager] Note: Block signing adds ~690 bytes to each submission");
-        } else {
-            m_logger->info("[Worker_manager] Block signing DISABLED (default for performance)");
-        }
+        // Disposable Falcon signing is ALWAYS ON (core protocol) - no configuration needed
+        // Explicit call kept for code clarity and to ensure proper initialization logging
+        solo_protocol->enable_disposable_falcon(true);
+        m_logger->info("[Worker_manager] Disposable Falcon signing: ENABLED (ALWAYS ON - core protocol, 0 blockchain overhead)");
+        
+        // Physical Falcon signatures remain configurable (optional feature)
+        // This is separate from Disposable Falcon and controlled via enable_physical_falcon()
+        // Default: OFF for lazy miner economics (61% blockchain savings)
         
         // Configure reward address for stateless mining (MINER_SET_REWARD protocol)
         if (m_config.has_reward_address()) {
