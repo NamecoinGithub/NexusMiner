@@ -32,10 +32,10 @@ namespace config
 		, m_ping_interval{10}
 		, m_miner_falcon_pubkey{""}
 		, m_miner_falcon_privkey{""}
-		, m_enable_block_signing{false}
+		, m_enable_block_signing{true}  // ALWAYS ON - Disposable Falcon (core protocol)
 		, m_tritium_genesis{""}
 		, m_keepalive_interval{24}  // Default: 1 ping per day
-		, m_enable_chacha20_wrapping{false}  // Default: auto-detect based on connection
+		, m_enable_chacha20_wrapping{true}  // ALWAYS ON - Core security implementation
 		, m_enable_tls{false}  // Default: auto-detect based on connection
 		, m_tls_ca_cert_path{""}  // Default: use system CA bundle
 		, m_tls_verify_peer{true}  // Default: always verify peer
@@ -177,10 +177,16 @@ namespace config
 			}
 			
 			// Unified Falcon Signature Protocol options (optional)
-			m_enable_block_signing = false;  // Default: disabled for performance
+			m_enable_block_signing = true;  // ALWAYS ON - Disposable Falcon (core protocol)
 			if (j.count("enable_block_signing") != 0)
 			{
 				j.at("enable_block_signing").get_to(m_enable_block_signing);
+				// Log warning if user tries to disable (kept for backward compatibility)
+				if (!m_enable_block_signing)
+				{
+					m_logger->warn("enable_block_signing=false is deprecated. Disposable Falcon is ALWAYS ON (core protocol).");
+					m_enable_block_signing = true;  // Force to true
+				}
 			}
 			
 			// Tritium GenesisHash and adaptive cache management (Phase 2 enhancement)
@@ -206,11 +212,17 @@ namespace config
 				if (m_keepalive_interval > 168) m_keepalive_interval = 168;
 			}
 			
-			// ChaCha20 wrapping (default: false, auto-enabled for remote connections)
-			m_enable_chacha20_wrapping = false;  // Default
+			// ChaCha20 wrapping (ALWAYS ON - core security)
+			m_enable_chacha20_wrapping = true;  // ALWAYS ON
 			if (j.count("enable_chacha20_wrapping") != 0)
 			{
 				j.at("enable_chacha20_wrapping").get_to(m_enable_chacha20_wrapping);
+				// Log warning if user tries to disable (kept for backward compatibility)
+				if (!m_enable_chacha20_wrapping)
+				{
+					m_logger->warn("enable_chacha20_wrapping=false is deprecated. ChaCha20 is ALWAYS ON (core security).");
+					m_enable_chacha20_wrapping = true;  // Force to true
+				}
 			}
 			
 			// TLS/HTTPS configuration (default: false, auto-enabled for remote connections)
