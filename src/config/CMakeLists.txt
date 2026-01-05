@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.19)
 
 add_library(config STATIC "src/config/config.cpp"
                           "src/config/validator.cpp"
-                          "src/config/toml_config.cpp")
+                          "src/config/toml_config.cpp"
+                          "src/config/miner_config.cpp")
                     
 target_include_directories(config
     PUBLIC 
@@ -10,4 +11,4 @@ target_include_directories(config
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>
 )
 
-target_link_libraries(config spdlog nlohmann_json::nlohmann_json)
+target_link_libraries(config spdlog nlohmann_json::nlohmann_json LLC)

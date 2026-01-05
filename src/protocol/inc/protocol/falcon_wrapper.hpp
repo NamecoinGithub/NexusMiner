@@ -133,6 +133,18 @@ public:
     bool is_valid() const { return m_initialized; }
     
     /**
+     * @brief Get expected signature size based on key version
+     * @return Signature size in bytes (809 for Falcon-512, 1577 for Falcon-1024)
+     */
+    size_t get_signature_size() const;
+    
+    /**
+     * @brief Check if using Falcon-1024 (vs Falcon-512)
+     * @return true if Falcon-1024, false if Falcon-512
+     */
+    bool is_falcon1024() const;
+    
+    /**
      * @brief Get performance statistics
      */
     struct PerformanceStats {

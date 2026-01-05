@@ -11,13 +11,14 @@ namespace keys
 {
 
 /**
- * @brief Generate a Falcon-512 keypair for miner authentication
+ * @brief Generate a Falcon-1024 keypair for miner authentication
  * 
- * This function generates a quantum-resistant Falcon-512 keypair suitable
- * for miner authentication with LLL-TAO nodes.
+ * This function generates a quantum-resistant Falcon-1024 keypair suitable
+ * for miner authentication with LLL-TAO nodes. Falcon-1024 provides 256-bit
+ * quantum security (maximum protection) and is the default/recommended version.
  * 
- * @param[out] pubkey Generated public key (897 bytes for Falcon-512)
- * @param[out] privkey Generated private key (1281 bytes for Falcon-512)
+ * @param[out] pubkey Generated public key (1793 bytes for Falcon-1024)
+ * @param[out] privkey Generated private key (2305 bytes for Falcon-1024)
  * @return true if generation succeeded, false otherwise
  */
 bool generate_falcon_keypair(std::vector<uint8_t>& pubkey, std::vector<uint8_t>& privkey);

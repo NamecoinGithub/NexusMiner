@@ -16,12 +16,12 @@ namespace keys
 bool generate_falcon_keypair(std::vector<uint8_t>& pubkey, std::vector<uint8_t>& privkey)
 {
     try {
-        // Create a new Falcon key using LLC::FLKey
+        // Create a new Falcon-1024 key (default for maximum quantum security)
         LLC::FLKey key;
-        key.MakeNewKey();
+        key.MakeNewKey(LLC::FalconVersion::FALCON_1024);
         
         if (!key.IsValid()) {
-            spdlog::error("Failed to generate valid Falcon keypair");
+            spdlog::error("Failed to generate valid Falcon-1024 keypair");
             return false;
         }
         
@@ -32,8 +32,8 @@ bool generate_falcon_keypair(std::vector<uint8_t>& pubkey, std::vector<uint8_t>&
         LLC::CPrivKey securePrivKey = key.GetPrivKey();
         privkey.assign(securePrivKey.begin(), securePrivKey.end());
         
-        spdlog::info("Generated Falcon-512 keypair (pubkey: {} bytes, privkey: {} bytes)", 
-            pubkey.size(), privkey.size());
+        spdlog::info("Generated Falcon-1024 keypair (pubkey: {} bytes, privkey: {} bytes, signature: {} bytes)", 
+            pubkey.size(), privkey.size(), key.GetSignatureSize());
         
         return true;
     }
@@ -148,7 +148,7 @@ bool create_falcon_config(const std::string& config_filename,
         // Generate Falcon keypair
         std::vector<uint8_t> pubkey, privkey;
         
-        spdlog::info("Generating Falcon-512 keypair for SOLO mining config...");
+        spdlog::info("Generating Falcon-1024 keypair for SOLO mining config...");
         
         if (!generate_falcon_keypair(pubkey, privkey)) {
             spdlog::error("Failed to generate Falcon keypair");

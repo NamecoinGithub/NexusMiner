@@ -171,6 +171,7 @@ add_subdirectory(src/protocol)
 add_subdirectory(src/cpu)
 add_subdirectory(src/fpga)
 add_subdirectory(src/TAO)
+add_subdirectory(src/tools)
 
 
 if(WITH_GPU_CUDA OR WITH_GPU_AMD)

@@ -26,15 +26,19 @@ FalconSignatureWrapper::FalconSignatureWrapper(const std::vector<uint8_t>& pubke
     // Validate keys on construction
     if (validate_keys()) {
         m_initialized = true;
-        m_logger->info("[FalconWrapper] Initialized successfully");
+        std::string version = is_falcon1024() ? "Falcon-1024" : "Falcon-512";
+        m_logger->info("[FalconWrapper] Initialized successfully ({})", version);
         m_logger->debug("[FalconWrapper]   - Public key: {} bytes", m_pubkey.size());
         m_logger->debug("[FalconWrapper]   - Private key: {} bytes", m_privkey.size());
+        m_logger->debug("[FalconWrapper]   - Signature size: {} bytes (CT)", get_signature_size());
     } else {
         m_logger->error("[FalconWrapper] Initialization failed - invalid key sizes");
-        m_logger->error("[FalconWrapper]   - Expected pubkey: {} bytes, got: {}", 
-                       FalconConstants::FALCON512_PUBKEY_SIZE, m_pubkey.size());
-        m_logger->error("[FalconWrapper]   - Expected privkey: {} bytes, got: {}", 
-                       FalconConstants::FALCON512_PRIVKEY_SIZE, m_privkey.size());
+        m_logger->error("[FalconWrapper]   - Got: pubkey {} bytes, privkey {} bytes", 
+                       m_pubkey.size(), m_privkey.size());
+        m_logger->error("[FalconWrapper]   - Expected Falcon-512: pubkey {} bytes, privkey {} bytes", 
+                       FalconConstants::FALCON512_PUBKEY_SIZE, FalconConstants::FALCON512_PRIVKEY_SIZE);
+        m_logger->error("[FalconWrapper]   - Expected Falcon-1024: pubkey {} bytes, privkey {} bytes", 
+                       FalconConstants::FALCON1024_PUBKEY_SIZE, FalconConstants::FALCON1024_PRIVKEY_SIZE);
     }
 }
 
@@ -53,9 +57,28 @@ FalconSignatureWrapper::~FalconSignatureWrapper()
 
 bool FalconSignatureWrapper::validate_keys() const
 {
-    // Use shared constants from falcon_constants.hpp
-    return (m_pubkey.size() == FalconConstants::FALCON512_PUBKEY_SIZE) && 
-           (m_privkey.size() == FalconConstants::FALCON512_PRIVKEY_SIZE);
+    // Support both Falcon-512 and Falcon-1024
+    bool is_falcon512 = (m_pubkey.size() == FalconConstants::FALCON512_PUBKEY_SIZE) && 
+                        (m_privkey.size() == FalconConstants::FALCON512_PRIVKEY_SIZE);
+    
+    bool is_falcon1024 = (m_pubkey.size() == FalconConstants::FALCON1024_PUBKEY_SIZE) && 
+                         (m_privkey.size() == FalconConstants::FALCON1024_PRIVKEY_SIZE);
+    
+    return is_falcon512 || is_falcon1024;
+}
+
+bool FalconSignatureWrapper::is_falcon1024() const
+{
+    return m_pubkey.size() == FalconConstants::FALCON1024_PUBKEY_SIZE;
+}
+
+size_t FalconSignatureWrapper::get_signature_size() const
+{
+    if (is_falcon1024()) {
+        return FalconConstants::FALCON1024_SIG_CT_SIZE;  // 1577 bytes
+    } else {
+        return FalconConstants::FALCON512_SIG_CT_SIZE;   // 809 bytes
+    }
 }
 
 FalconSignatureWrapper::SignatureResult 

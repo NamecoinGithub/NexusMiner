@@ -49,6 +49,16 @@ namespace FalconConstants {
     constexpr size_t FALCON512_PRIVKEY_SIZE = 1281;
 
     //==========================================================================
+    // Falcon-1024 Key Sizes (Fixed per Falcon Specification)
+    //==========================================================================
+    
+    /** Falcon-1024 public key size (fixed) */
+    constexpr size_t FALCON1024_PUBKEY_SIZE = 1793;
+    
+    /** Falcon-1024 private key size (fixed) */
+    constexpr size_t FALCON1024_PRIVKEY_SIZE = 2305;
+
+    //==========================================================================
     // Falcon-512 Signature Sizes (Variable due to compression algorithm)
     //==========================================================================
     
@@ -71,6 +81,30 @@ namespace FalconConstants {
     
     /** Legacy alias for backward compatibility */
     constexpr size_t FALCON512_SIG_MAX = FALCON512_SIG_ABSOLUTE_MAX;
+
+    //==========================================================================
+    // Falcon-1024 Signature Sizes (Variable due to compression algorithm)
+    //==========================================================================
+    
+    /** Minimum Falcon-1024 signature size (typical lower bound) */
+    constexpr size_t FALCON1024_SIG_MIN = 1100;
+    
+    /** Typical maximum for VARIABLE-TIME signatures (reference only)
+     *  Per Falcon spec: FALCON_SIG_VARTIME_MAXSIZE(logn=10) = 1462 bytes
+     *  This is the maximum for variable-time signatures, but LLL-TAO uses constant-time mode. */
+    constexpr size_t FALCON1024_SIG_VARTIME_MAX = 1462;
+    
+    /** Constant-Time Falcon-1024 signature size (exact)
+     *  Per Falcon spec: FALCON_SIG_CT_SIZE(logn=10) = 1577 bytes
+     *  LLL-TAO's FLKey::Sign() uses ct=1, producing exactly 1577 bytes */
+    constexpr size_t FALCON1024_SIG_CT_SIZE = 1577;
+    
+    /** Absolute maximum Falcon-1024 signature size
+     *  This is the CT size since LLL-TAO uses constant-time signing */
+    constexpr size_t FALCON1024_SIG_ABSOLUTE_MAX = 1577;
+    
+    /** Alias for consistency */
+    constexpr size_t FALCON1024_SIG_MAX = FALCON1024_SIG_ABSOLUTE_MAX;
 
     //==========================================================================
     // ChaCha20-Poly1305 AEAD Encryption Constants
