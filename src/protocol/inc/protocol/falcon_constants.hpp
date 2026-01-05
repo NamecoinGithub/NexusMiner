@@ -28,8 +28,9 @@ namespace protocol {
  * 
  * Optional Physical Block Signature:
  * - Signs full block data + nonce for permanent proof of authorship
- * - STORED on blockchain if enabled via "enable_block_signing": true
+ * - STORED on blockchain if enabled via "enable_physical_falcon": true (Physical Falcon)
  * - Also uses the auth key (same key as authentication and block submission)
+ * - Note: Disposable Falcon signatures (for session auth) are ALWAYS ON and NOT stored on blockchain
  * 
  * References:
  * - LLL-TAO: src/LLC/falcon/falcon.h (FALCON_SIG_VARTIME_MAXSIZE)
@@ -288,7 +289,10 @@ namespace FalconConstants {
     
     /** Physical block signature - signs full block data + nonce
      *  This signature IS stored on the blockchain for permanent proof of authorship.
-     *  Enabled via config: "enable_block_signing": true
+     *  Enabled via config: "enable_physical_falcon": true (Physical Falcon signatures)
+     *  
+     *  NOTE: This is different from Disposable Falcon signatures which are ALWAYS ON
+     *  for session authentication but NOT stored on blockchain (0 bytes overhead).
      *  
      *  Uses the SAME auth key as block submission signatures (not a separate key).
      *  The Physical Block Signature signs the FULL block data which can be up to

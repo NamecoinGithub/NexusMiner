@@ -32,7 +32,7 @@ namespace config
 		, m_ping_interval{10}
 		, m_miner_falcon_pubkey{""}
 		, m_miner_falcon_privkey{""}
-		, m_enable_block_signing{true}  // ALWAYS ON - Disposable Falcon (core protocol)
+		, m_enable_disposable_falcon{true}  // ALWAYS ON - Disposable Falcon (core protocol)
 		, m_tritium_genesis{""}
 		, m_keepalive_interval{24}  // Default: 1 ping per day
 		, m_enable_chacha20_wrapping{true}  // ALWAYS ON - Core security implementation
@@ -176,17 +176,18 @@ namespace config
 				j.at("miner_falcon_privkey").get_to(m_miner_falcon_privkey);
 			}
 			
-			// Unified Falcon Signature Protocol options (optional)
-			m_enable_block_signing = true;  // ALWAYS ON - Disposable Falcon (core protocol)
+			// Unified Falcon Signature Protocol options
+			m_enable_disposable_falcon = true;  // ALWAYS ON - Disposable Falcon (core protocol)
 			if (j.count("enable_block_signing") != 0)
 			{
-				j.at("enable_block_signing").get_to(m_enable_block_signing);
+				bool temp_value;
+				j.at("enable_block_signing").get_to(temp_value);
 				// Log warning if user tries to disable (kept for backward compatibility)
-				if (!m_enable_block_signing)
+				if (!temp_value)
 				{
 					m_logger->warn("enable_block_signing=false is deprecated. Disposable Falcon is ALWAYS ON (core protocol).");
-					m_enable_block_signing = true;  // Force to true
 				}
+				m_enable_disposable_falcon = true;  // Force to true
 			}
 			
 			// Tritium GenesisHash and adaptive cache management (Phase 2 enhancement)
