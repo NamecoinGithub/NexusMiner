@@ -168,7 +168,7 @@ chrono::Timer::Handler Timer_manager::stats_printer_handler(std::uint16_t stats_
 
 chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_interval, std::weak_ptr<network::Connection> connection)
 {
-    return[this, connection, get_round_interval](bool canceled)
+    return [this, connection, get_round_interval](bool canceled)
     {
         if (canceled)	// don't do anything if the timer has been canceled
         {
@@ -182,9 +182,9 @@ chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_
             Packet packet_get_round{ Packet::GET_ROUND };
             connection_shared->transmit(packet_get_round.get_bytes());
 
-            // restart timer
+            // restart timer - use weak_ptr to avoid move invalidation
             m_get_round_timer->start(chrono::Seconds(get_round_interval), 
-                get_round_handler(get_round_interval, std::move(connection_shared)));
+                get_round_handler(get_round_interval, connection));
         }
     }; 
 }

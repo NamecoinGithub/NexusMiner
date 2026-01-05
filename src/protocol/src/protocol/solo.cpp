@@ -1189,8 +1189,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     {
         // NEW_ROUND indicates height has changed
         // Payload: [height(4 bytes, big-endian)]
-        if (!packet.m_data || packet.m_length < 4) {
-            m_logger->warn("[Solo GET_ROUND] NEW_ROUND packet has invalid data or length < 4");
+        if (!packet.m_data || packet.m_length != 4) {
+            m_logger->warn("[Solo GET_ROUND] NEW_ROUND packet has invalid data or length != 4 (got: {})", 
+                packet.m_length);
             return;
         }
         
@@ -1224,8 +1225,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     {
         // OLD_ROUND indicates height unchanged
         // Payload: [height(4 bytes, big-endian)]
-        if (!packet.m_data || packet.m_length < 4) {
-            m_logger->warn("[Solo GET_ROUND] OLD_ROUND packet has invalid data or length < 4");
+        if (!packet.m_data || packet.m_length != 4) {
+            m_logger->warn("[Solo GET_ROUND] OLD_ROUND packet has invalid data or length != 4 (got: {})", 
+                packet.m_length);
             return;
         }
         

@@ -539,7 +539,9 @@ uint64_t MiningTemplateInterface::get_template_age() const
     // Handle clock skew - if current time is less than timestamp, treat as stale
     if (current_time < m_current_template.timestamp_received) {
         m_logger->warn("[TemplateInterface] Clock skew detected: current time < template timestamp");
-        return MAX_TEMPLATE_AGE + 1;  // Return value > MAX_TEMPLATE_AGE to trigger staleness
+        // Return a value greater than MAX_TEMPLATE_AGE to trigger staleness
+        constexpr uint64_t CLOCK_SKEW_STALENESS_VALUE = MAX_TEMPLATE_AGE + 1;
+        return CLOCK_SKEW_STALENESS_VALUE;
     }
     
     return current_time - m_current_template.timestamp_received;
