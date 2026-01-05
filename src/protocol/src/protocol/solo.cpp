@@ -91,6 +91,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_miner_id{"NexusMiner"}  // Default miner ID
 , m_falcon_wrapper{nullptr}
 , m_block_signing_enabled{false}  // Disabled by default for performance
+, m_physical_falcon_enabled{false}  // Disabled by default (lazy miner economics)
 , m_chacha20_wrapper{nullptr}  // Lazy initialization when needed
 , m_enable_chacha20{false}  // Auto-detect based on connection type
 , m_session_manager{nullptr}
@@ -566,7 +567,13 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     
     /* Build plaintext payload BEFORE encryption */
     std::vector<uint8_t> plaintextPayload;
-    plaintextPayload.reserve(block_data.size() + 8 + 2 + sig_result.signature.size());
+    
+    // Calculate total size: block + timestamp + siglen + sig + physiglen + (optional)physical_sig
+    size_t payload_size = block_data.size() + 8 + 2 + sig_result.signature.size() + 2;
+    if (m_physical_falcon_enabled) {
+        payload_size += sig_result.signature.size();  // Physical signature same size as Disposable
+    }
+    plaintextPayload.reserve(payload_size);
     
     // Append full block (216 or 220 bytes)
     plaintextPayload.insert(plaintextPayload.end(), block_data.begin(), block_data.end());
@@ -574,19 +581,73 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // Append timestamp (8 bytes LE)
     append_uint64_le(plaintextPayload, submission_timestamp);
     
-    // Append signature length (2 bytes LE)
+    // Append Disposable signature length (2 bytes LE)
     uint16_t sig_len = static_cast<uint16_t>(sig_result.signature.size());
     append_uint16_le(plaintextPayload, sig_len);
     
-    // Append signature bytes
+    // Append Disposable signature bytes
     plaintextPayload.insert(plaintextPayload.end(), 
                            sig_result.signature.begin(), 
                            sig_result.signature.end());
     
+    // Physical Falcon signature (optional, based on configuration)
+    std::vector<uint8_t> physical_signature;
+    uint16_t physical_sig_len = 0;
+    
+    if (m_physical_falcon_enabled) {
+        m_logger->info("🔐 PHYSICAL FALCON SIGNATURE:");
+        m_logger->info("   Generating Physical signature (permanent blockchain proof)...");
+        
+        // Sign the same message again for Physical signature (key bonding)
+        auto physical_sig_result = m_falcon_wrapper->sign_payload(message_to_sign, 
+            FalconSignatureWrapper::SignatureType::BLOCK);
+        
+        if (!physical_sig_result.success) {
+            m_logger->error("❌ Physical Falcon signature generation FAILED: {}", physical_sig_result.error_message);
+            m_logger->error("   Continuing without Physical signature");
+            // Set physiglen to 0 and continue
+        } else {
+            // Validate Physical signature size matches Disposable (key bonding requirement)
+            if (physical_sig_result.signature.size() != sig_result.signature.size()) {
+                m_logger->error("❌ KEY BONDING VIOLATION!");
+                m_logger->error("   Disposable sig: {} bytes", sig_result.signature.size());
+                m_logger->error("   Physical sig:   {} bytes", physical_sig_result.signature.size());
+                m_logger->error("   Both signatures MUST be same size (same key)");
+                m_logger->error("════════════════════════════════════════════════════════");
+                return network::Shared_payload{};
+            }
+            
+            physical_signature = physical_sig_result.signature;
+            physical_sig_len = static_cast<uint16_t>(physical_signature.size());
+            
+            m_logger->info("   Physical signature: {} bytes (matches Disposable)", physical_sig_len);
+            m_logger->info("   Key bonding verified: Both signatures same size ✓");
+            m_logger->info("   Blockchain overhead: {} bytes/block", physical_sig_len);
+        }
+    } else {
+        m_logger->info("🔐 PHYSICAL FALCON: DISABLED (lazy miner economics)");
+        m_logger->info("   Blockchain overhead: 0 bytes/block ✓");
+    }
+    
+    // Append Physical signature length (2 bytes LE) - always present, even if 0
+    append_uint16_le(plaintextPayload, physical_sig_len);
+    
+    // Append Physical signature bytes (only if present)
+    if (physical_sig_len > 0) {
+        plaintextPayload.insert(plaintextPayload.end(), 
+                               physical_signature.begin(), 
+                               physical_signature.end());
+    }
+    
     m_logger->info("📄 PLAINTEXT PAYLOAD (BEFORE ENCRYPTION):");
     m_logger->info("   Total size: {} bytes", plaintextPayload.size());
-    m_logger->info("   Format: [block({})][timestamp(8)][sig_len(2)][signature({})]",
-                   block_data.size(), sig_result.signature.size());
+    if (m_physical_falcon_enabled && physical_sig_len > 0) {
+        m_logger->info("   Format: [block({})][timestamp(8)][siglen(2)][disposable_sig({})][physiglen(2)][physical_sig({})]",
+                       block_data.size(), sig_result.signature.size(), physical_sig_len);
+    } else {
+        m_logger->info("   Format: [block({})][timestamp(8)][siglen(2)][disposable_sig({})][physiglen(2=0)]",
+                       block_data.size(), sig_result.signature.size());
+    }
     m_logger->info("   First 64 bytes (hex - this is PLAINTEXT):");
     
     std::string hexDump = HexUtils::FormatHexDump(plaintextPayload, 64);

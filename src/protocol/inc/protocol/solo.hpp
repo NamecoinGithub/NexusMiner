@@ -54,6 +54,10 @@ public:
     void enable_block_signing(bool enable) { m_block_signing_enabled = enable; }
     bool is_block_signing_enabled() const { return m_block_signing_enabled; }
     
+    // Enable/disable Physical Falcon signatures (default: disabled per lazy miner economics)
+    void enable_physical_falcon(bool enable) { m_physical_falcon_enabled = enable; }
+    bool is_physical_falcon_enabled() const { return m_physical_falcon_enabled; }
+    
     // Session management (LLL-TAO PR #22)
     network::Shared_payload send_session_keepalive();
     std::uint32_t get_session_id() const;
@@ -113,6 +117,7 @@ private:
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
     bool m_block_signing_enabled;  // Optional block signing feature
+    bool m_physical_falcon_enabled;  // Enable Physical Falcon signatures (default: OFF for lazy miner economics)
     
     // ChaCha20 encryption wrapper for Falcon pubkey protection
     std::unique_ptr<ChaCha20Wrapper> m_chacha20_wrapper;
