@@ -116,12 +116,12 @@ private:
     
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
-    bool m_block_signing_enabled;  // Optional block signing feature
-    bool m_physical_falcon_enabled;  // Enable Physical Falcon signatures (default: OFF for lazy miner economics)
+    bool m_block_signing_enabled;     // Disposable Falcon signing (ALWAYS ON - core protocol, 0 blockchain overhead)
+    bool m_physical_falcon_enabled;   // Physical Falcon signing (CONFIGURABLE - future blockchain integration, adds signature to chain)
     
     // ChaCha20 encryption wrapper for Falcon pubkey protection
     std::unique_ptr<ChaCha20Wrapper> m_chacha20_wrapper;
-    bool m_enable_chacha20;  // Enable ChaCha20 wrapping (auto for remote, optional for localhost)
+    bool m_enable_chacha20;  // ChaCha20 encryption (ALWAYS ON - core security for localhost + SessionID)
     
     // Session manager for adaptive cache management
     std::unique_ptr<SessionManager> m_session_manager;
