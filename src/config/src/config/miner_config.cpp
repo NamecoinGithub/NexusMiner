@@ -165,7 +165,8 @@ bool MinerConfig::Save(const std::string& filename) const
     else
     {
         file << "#   - Your miner: " << GetSignatureSize() << " bytes/block → ";
-        file << "~" << (GetSignatureSize() * 52560000 / 1024 / 1024 / 1024) << " GB total (Physical stored)\n";
+        // 100 years: 630,720 blocks/year × 100 = 63,072,000 blocks
+        file << "~" << (GetSignatureSize() * 63072000ULL / 1024 / 1024 / 1024) << " GB total (Physical stored)\n";
         file << "#   - Providing permanent proof of block authorship\n";
     }
     file << "\n";

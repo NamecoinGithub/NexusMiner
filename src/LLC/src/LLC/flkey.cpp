@@ -189,6 +189,12 @@ namespace LLC
             fVersion = FalconVersion::FALCON_512;
         else if (vchPrivKey.size() == FALCON_PRIVKEY_SIZE(10))
             fVersion = FalconVersion::FALCON_1024;
+        else
+        {
+            /* Invalid key size - reset and return error */
+            Reset();
+            return false;
+        }
 
         /* Set key as active. */
         fSet = true;
@@ -215,6 +221,12 @@ namespace LLC
             fVersion = FalconVersion::FALCON_512;
         else if (vchPubKey.size() == FALCON_PUBKEY_SIZE(10))
             fVersion = FalconVersion::FALCON_1024;
+        else
+        {
+            /* Invalid key size - reset and return error */
+            Reset();
+            return false;
+        }
 
         /* Set key as active. */
         fSet = true;
