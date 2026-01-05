@@ -26,6 +26,17 @@ ________________________________________________________________________________
 namespace LLC
 {
 
+    /** FalconVersion
+     *
+     *  Enum for Falcon signature scheme versions
+     *
+     **/
+    enum class FalconVersion : uint8_t
+    {
+        FALCON_512  = 9,   // logn=9, 128-bit quantum security, 897-byte pubkey, 809-byte CT sig
+        FALCON_1024 = 10   // logn=10, 256-bit quantum security, 1793-byte pubkey, 1577-byte CT sig
+    };
+
 
     /** FLKey
      *
@@ -33,13 +44,15 @@ namespace LLC
      *  Falcon is a post-quantum lattice based signature scheme
      *
      *  It stands for Fast-Fourier Lattice-based Compact Signatures Over NTRU
-     *  This class uses a LOG value of 9, for 512-bit keys. It's relative
-     *  Classical security parameters are equivilent to RSA-2048.
+     *  This class supports both Falcon-512 (logn=9) and Falcon-1024 (logn=10).
      *
-     *  It is considered a quantum resistant signature scheme and is a second
-     *  Round candidate out of 9 other for the NIST post-quantum competetition:
+     *  Falcon-512: 128-bit quantum security, equivalent to RSA-2048
+     *  Falcon-1024: 256-bit quantum security, equivalent to RSA-4096
      *
-     *  https://csrc.nist.gov/Projects/Post-Quantum-Cryptography/Round-2-Submissions
+     *  It is considered a quantum resistant signature scheme and is a NIST
+     *  Post-Quantum Cryptography standardization finalist:
+     *
+     *  https://csrc.nist.gov/Projects/Post-Quantum-Cryptography
      *
      *
      **/
@@ -60,6 +73,10 @@ namespace LLC
 
         /** FALCON context. **/
         shake256_context ctx;
+        
+        
+        /** Falcon version (512 or 1024). **/
+        FalconVersion fVersion;
 
 
     public:
@@ -118,10 +135,10 @@ namespace LLC
          *
          *  Create a new key from the Falcon random PRNG seeds
          *
-         *  @param[in] fCompressed Flag whether to make key in compressed form.
+         *  @param[in] version Falcon version (512 or 1024, default: 1024)
          *
          **/
-        void MakeNewKey();
+        void MakeNewKey(FalconVersion version = FalconVersion::FALCON_1024);
 
 
         /** SetPrivKey
@@ -220,6 +237,46 @@ namespace LLC
          *
          **/
         bool IsValid() const;
+
+
+        /** GetVersion
+         *
+         *  Get the Falcon version of this key.
+         *
+         *  @return The Falcon version (512 or 1024).
+         *
+         **/
+        FalconVersion GetVersion() const;
+
+
+        /** GetSignatureSize
+         *
+         *  Get the constant-time signature size for this key version.
+         *
+         *  @return Signature size in bytes (809 for Falcon-512, 1577 for Falcon-1024).
+         *
+         **/
+        size_t GetSignatureSize() const;
+
+
+        /** GetPublicKeySize
+         *
+         *  Get the public key size for this key version.
+         *
+         *  @return Public key size in bytes (897 for Falcon-512, 1793 for Falcon-1024).
+         *
+         **/
+        size_t GetPublicKeySize() const;
+
+
+        /** GetPrivateKeySize
+         *
+         *  Get the private key size for this key version.
+         *
+         *  @return Private key size in bytes (1281 for Falcon-512, 2305 for Falcon-1024).
+         *
+         **/
+        size_t GetPrivateKeySize() const;
 
     };
 }
