@@ -4,6 +4,26 @@
 
 The Unified Hybrid Falcon Signature Protocol provides a centralized, optimized wrapper for all Falcon-512 signature operations in NexusMiner. This implementation builds upon the Phase 2 Direct MINER_AUTH_RESPONSE protocol and aligns with updated LLL-TAO node-side protocols for seamless integration.
 
+## Two Types of Falcon Signatures
+
+### Disposable Falcon Signatures (ALWAYS ON)
+
+**Purpose**: Session authentication for mining protocol
+**Status**: Core protocol feature, ALWAYS ENABLED, cannot be disabled
+**Blockchain Storage**: NOT stored (0 bytes overhead)
+**Use Case**: Authenticates each block submission to the node
+
+Disposable signatures are ephemeral authentication tokens that prove the miner has the private key without storing anything on the blockchain. They are generated for every block submission and are verified by the node but not permanently recorded.
+
+### Physical Falcon Signatures (CONFIGURABLE)
+
+**Purpose**: Optional blockchain-stored proof of authorship
+**Status**: Optional feature, OFF by default (lazy miner economics)
+**Blockchain Storage**: Adds 809 bytes (Falcon-512) or 1577 bytes (Falcon-1024) per block
+**Use Case**: Future blockchain integration for permanent mining authorship records
+
+Physical signatures are the optional dual-signature system that stores the signature permanently on the blockchain for future proof of mining work. Most miners keep this OFF to save 61% blockchain space.
+
 ## Architecture
 
 ### FalconSignatureWrapper Class
@@ -32,21 +52,22 @@ if (sig_result.success) {
 
 **Message format**: `address + timestamp (8 bytes LE)`
 
-#### 2. Block Signatures (Optional)
+#### 2. Disposable Block Signatures (ALWAYS ON)
 
-Optional feature for enhanced block validation and authorship proof:
+Core protocol feature for session authentication:
 
 ```cpp
 auto sig_result = wrapper->sign_block(merkle_root, nonce);
 if (sig_result.success) {
-    // Append signature to SUBMIT_BLOCK packet
-    // Provides cryptographic proof of block authorship
+    // Included in SUBMIT_BLOCK packet
+    // Provides cryptographic proof for this mining session
+    // NOT stored on blockchain (0 bytes overhead)
 }
 ```
 
 **Payload format**: `merkle_root (64 bytes) + nonce (8 bytes LE)`
 
-**Note**: Block signing is **disabled by default** for performance. Enable with `enable_block_signing: true` in config.
+**Note**: Disposable Falcon signatures are **ALWAYS ON** (core protocol). Physical Falcon signatures are optional and configurable separately.
 
 #### 3. Generic Payload Signatures
 
@@ -62,8 +83,8 @@ The `Solo` protocol class has been updated to use the wrapper:
 
 1. **Wrapper initialization**: Created when `set_miner_keys()` is called
 2. **Authentication**: `login()` uses wrapper for MINER_AUTH_RESPONSE signatures
-3. **Block submission**: `submit_block()` optionally signs blocks if enabled
-4. **Fallback support**: Falls back to direct signing if wrapper is unavailable
+3. **Disposable signatures**: `submit_block()` ALWAYS generates Disposable Falcon signatures (core protocol)
+4. **Physical signatures**: Optional via `enable_physical_falcon()` API (OFF by default)
 
 ## Configuration
 
@@ -85,32 +106,17 @@ Standard SOLO mining configuration:
 ```
 
 **Default behavior**: 
-- Authentication signatures: **ENABLED** (required for SOLO mining)
-- Block signatures: **DISABLED** (for performance)
+- Disposable Falcon signatures: **ALWAYS ON** (core protocol, cannot be disabled)
+- Physical Falcon signatures: **OFF** (optional, for blockchain storage)
+- ChaCha20 encryption: **ALWAYS ON** (core security)
 
 ### Enhanced Configuration (with Block Signing)
 
-Enable optional block signing for enhanced validation:
+### Note on Configuration
 
-```json
-{
-    "version": 1,
-    "wallet_ip": "127.0.0.1",
-    "port": 8323,
-    "local_ip": "127.0.0.1",
-    "mining_mode": "PRIME",
-    "miner_falcon_pubkey": "<your_public_key_hex>",
-    "miner_falcon_privkey": "<your_private_key_hex>",
-    "enable_block_signing": true,
-    "workers": [...]
-}
-```
+**Important**: Disposable Falcon signatures and ChaCha20 encryption are ALWAYS ON and cannot be configured. The configuration options `enable_block_signing` and `enable_chacha20_wrapping` are deprecated and ignored (forced to true).
 
-**With block signing enabled**:
-- Authentication signatures: **ENABLED**
-- Block signatures: **ENABLED**
-- Each block submission includes ~690 byte signature
-- Provides cryptographic proof of block authorship
+For Physical Falcon signatures (optional blockchain storage), use the `enable_physical_falcon()` API method instead of configuration files.
 
 ## Performance Considerations
 
@@ -118,8 +124,8 @@ Enable optional block signing for enhanced validation:
 
 Typical Falcon-512 signature generation time: **~100-500 μs** (depending on CPU)
 
-- Authentication: Once per session (negligible impact)
-- Block signing: Per block found (only when enabled)
+- Disposable Falcon: Per block submission (always enabled, minimal overhead)
+- Physical Falcon: Per block submission when enabled (optional)
 
 ### Performance Statistics
 
