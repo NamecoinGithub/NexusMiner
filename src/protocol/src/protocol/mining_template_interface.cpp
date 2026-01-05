@@ -118,8 +118,14 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     
     if (result.is_valid) {
         tmpl.state = TemplateState::VALIDATED;
-        m_current_template = tmpl;
-        m_current_height = tmpl.block.nHeight;
+        
+        // Protect template assignment with mutex
+        {
+            std::lock_guard<std::mutex> lock(m_template_mutex);
+            m_current_template = tmpl;
+            m_current_height = tmpl.block.nHeight;
+        }
+        
         m_templates_validated.fetch_add(1, std::memory_order_relaxed);
         
         m_logger->info("[TemplateInterface] READ SUCCESS: Template validated for height {} (channel: {}, nBits: 0x{:08x})",
@@ -155,6 +161,13 @@ MiningTemplateInterface::read_template(network::Shared_payload data,
 
 bool MiningTemplateInterface::has_valid_template() const
 {
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    return has_valid_template_unsafe();
+}
+
+bool MiningTemplateInterface::has_valid_template_unsafe() const
+{
+    // ASSUMES: m_template_mutex is already locked by caller
     return m_current_template.state == TemplateState::VALIDATED ||
            m_current_template.state == TemplateState::ACTIVE;
 }
@@ -162,7 +175,9 @@ bool MiningTemplateInterface::has_valid_template() const
 const MiningTemplateInterface::MiningTemplate* 
 MiningTemplateInterface::get_current_template() const
 {
-    if (has_valid_template()) {
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    
+    if (has_valid_template_unsafe()) {
         return &m_current_template;
     }
     return nullptr;
@@ -176,7 +191,9 @@ void MiningTemplateInterface::set_template_feed_handler(TemplateFeedHandler hand
 
 bool MiningTemplateInterface::feed_current_template()
 {
-    if (!has_valid_template()) {
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    
+    if (!has_valid_template_unsafe()) {
         m_logger->warn("[TemplateInterface] FEED: No valid template to feed");
         return false;
     }
@@ -202,6 +219,13 @@ bool MiningTemplateInterface::feed_current_template()
 
 void MiningTemplateInterface::mark_template_stale(const std::string& reason)
 {
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    mark_template_stale_unsafe(reason);
+}
+
+void MiningTemplateInterface::mark_template_stale_unsafe(const std::string& reason)
+{
+    // ASSUMES: m_template_mutex is already locked by caller
     if (m_current_template.state != TemplateState::EMPTY &&
         m_current_template.state != TemplateState::STALE) {
         
@@ -254,6 +278,8 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
         return {};
     }
     
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    
     // Create a copy of the current block template with the solved merkle root and nonce
     ::LLP::CBlock solved_block = m_current_template.block;
     
@@ -279,6 +305,8 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
 
 void MiningTemplateInterface::set_session_id(uint32_t session_id)
 {
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    
     m_session_id = session_id;
     m_current_template.session_id = session_id;
     m_logger->info("[TemplateInterface] Session ID set to 0x{:08x}", session_id);
@@ -505,28 +533,39 @@ bool MiningTemplateInterface::parse_block_header(const network::Payload& data,
 
 bool MiningTemplateInterface::is_template_stale() const
 {
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    
     if (m_current_template.state == TemplateState::EMPTY ||
         m_current_template.state == TemplateState::STALE) {
         return true;
     }
     
-    uint64_t age = get_template_age();
+    uint64_t age = get_template_age_unsafe();
     return age > MAX_TEMPLATE_AGE;
 }
 
 bool MiningTemplateInterface::is_template_old() const
 {
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    
     if (m_current_template.state == TemplateState::EMPTY ||
         m_current_template.state == TemplateState::STALE) {
         return true;
     }
     
-    uint64_t age = get_template_age();
+    uint64_t age = get_template_age_unsafe();
     return age > WARNING_TEMPLATE_AGE;
 }
 
 uint64_t MiningTemplateInterface::get_template_age() const
 {
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    return get_template_age_unsafe();
+}
+
+uint64_t MiningTemplateInterface::get_template_age_unsafe() const
+{
+    // ASSUMES: m_template_mutex is already locked by caller
     if (m_current_template.state == TemplateState::EMPTY ||
         m_current_template.timestamp_received == 0) {
         return 0;
@@ -549,12 +588,14 @@ uint64_t MiningTemplateInterface::get_template_age() const
 
 bool MiningTemplateInterface::update_height(uint32_t new_height)
 {
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    
     m_logger->debug("[TemplateInterface] Height update: {} -> {}", m_current_height, new_height);
     
     // Check if template should be discarded due to height change
     bool template_discarded = false;
     
-    if (new_height > m_current_height && has_valid_template()) {
+    if (new_height > m_current_height && has_valid_template_unsafe()) {
         // Height has advanced - discard current template
         uint32_t old_height = m_current_template.block.nHeight;
         
@@ -563,7 +604,7 @@ bool MiningTemplateInterface::update_height(uint32_t new_height)
         
         if (old_height < new_height) {
             m_logger->info("[TemplateInterface] ❌ Template is now stale - discarding");
-            discard_template("Height changed");
+            discard_template_unsafe("Height changed");
             template_discarded = true;
             m_templates_expired_height.fetch_add(1, std::memory_order_relaxed);
         }
@@ -577,6 +618,13 @@ bool MiningTemplateInterface::update_height(uint32_t new_height)
 
 void MiningTemplateInterface::discard_template(const std::string& reason)
 {
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    discard_template_unsafe(reason);
+}
+
+void MiningTemplateInterface::discard_template_unsafe(const std::string& reason)
+{
+    // ASSUMES: m_template_mutex is already locked by caller
     if (m_current_template.state == TemplateState::EMPTY) {
         m_logger->debug("[TemplateInterface] No template to discard");
         return;
@@ -584,15 +632,17 @@ void MiningTemplateInterface::discard_template(const std::string& reason)
     
     m_logger->info("[TemplateInterface] Discarding template: {}", reason);
     m_logger->info("[TemplateInterface]   - Height: {}", m_current_template.block.nHeight);
-    m_logger->info("[TemplateInterface]   - Age: {}s", get_template_age());
+    m_logger->info("[TemplateInterface]   - Age: {}s", get_template_age_unsafe());
     m_logger->info("[TemplateInterface]   - State: {}", state_to_string(m_current_template.state));
     
     // Mark as stale
-    mark_template_stale(reason);
+    mark_template_stale_unsafe(reason);
 }
 
 uint32_t MiningTemplateInterface::get_template_height() const
 {
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    
     if (m_current_template.state == TemplateState::EMPTY) {
         return 0;
     }

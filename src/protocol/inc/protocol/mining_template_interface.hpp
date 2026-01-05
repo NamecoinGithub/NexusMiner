@@ -8,6 +8,7 @@
 #include <chrono>
 #include <functional>
 #include <atomic>
+#include <mutex>
 #include "LLP/block.hpp"
 #include "network/types.hpp"
 #include "spdlog/spdlog.h"
@@ -355,6 +356,12 @@ private:
      */
     bool parse_block_header(const network::Payload& data, ::LLP::CBlock& block);
     
+    // Thread-unsafe helper methods (must be called with m_template_mutex locked)
+    bool has_valid_template_unsafe() const;
+    uint64_t get_template_age_unsafe() const;
+    void mark_template_stale_unsafe(const std::string& reason);
+    void discard_template_unsafe(const std::string& reason);
+    
     // Member variables
     uint8_t m_channel;
     uint32_t m_session_id;
@@ -362,6 +369,7 @@ private:
     
     MiningTemplate m_current_template;
     TemplateFeedHandler m_feed_handler;
+    mutable std::mutex m_template_mutex;  // Protects m_current_template access
     
     std::shared_ptr<spdlog::logger> m_logger;
     
