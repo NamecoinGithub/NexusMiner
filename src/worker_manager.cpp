@@ -157,6 +157,29 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                 return;
                             }
                             
+                            // ✅ NEW: Final staleness check before submission (Template Staleness Prevention)
+                            uint64_t template_age = template_interface->get_template_age();
+                            if (template_interface->is_template_stale())
+                            {
+                                m_logger->error("[Worker_manager] ❌ Solution found but template is STALE!");
+                                m_logger->error("[Worker_manager]    Age: {}s (max: 60s)", template_age);
+                                m_logger->error("[Worker_manager]    Solution will likely be rejected - discarding");
+                                template_interface->discard_template("Stale before submission");
+                                
+                                // Request fresh template
+                                m_logger->info("[Worker_manager] Requesting fresh template via GET_BLOCK");
+                                auto* solo_conn_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
+                                if (solo_conn_protocol && m_connection) {
+                                    auto work_payload = solo_conn_protocol->get_work();
+                                    if (work_payload && !work_payload->empty()) {
+                                        m_connection->transmit(work_payload);
+                                    }
+                                }
+                                return;
+                            }
+                            
+                            m_logger->info("[Worker_manager] 💎 Solution found! Template age: {}s (valid)", template_age);
+                            
                             // Prepare full block submission (216 or 220 bytes depending on format)
                             // This reconstructs the full block from the current template with the
                             // mined merkle root and nonce
@@ -401,6 +424,13 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     // Solo mining uses stateless protocol with mandatory Falcon authentication (no GET_HEIGHT)
                     self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
                     self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
+                    
+                    // Start GET_ROUND polling for template staleness prevention (LLL-TAO PR #131)
+                    constexpr uint16_t GET_ROUND_INTERVAL = 5;  // Poll every 5 seconds
+                    self->m_timer_manager.start_get_round_timer(GET_ROUND_INTERVAL, self->m_connection);
+                    self->m_logger->info("[Solo GET_ROUND] Polling timer started (interval: {}s) - Template staleness prevention active", 
+                                        GET_ROUND_INTERVAL);
+                    
                     // Note: Block handler already registered in Worker_manager constructor
                 }));
             }
