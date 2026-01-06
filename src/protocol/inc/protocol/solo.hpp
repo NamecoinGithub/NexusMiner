@@ -36,10 +36,30 @@ public:
 
     void process_messages(Packet packet, std::shared_ptr<network::Connection> connection) override;
     
-    // GET_ROUND protocol support (Template Staleness Prevention - LLL-TAO PR #131)
+    // GET_ROUND protocol support (Multi-Channel Height Tracking - LLL-TAO PR #135 client-side)
     struct RoundStatus {
         bool is_new_round;      // true if NEW_ROUND (204), false if OLD_ROUND (205)
-        uint32_t height;        // Current blockchain height
+        uint32_t height;        // Current unified blockchain height
+        
+        // Multi-channel heights (LLL-TAO PR #135 enhanced GET_ROUND response)
+        uint32_t prime_height;  // Prime channel height (channel 1)
+        uint32_t hash_height;   // Hash channel height (channel 2)
+        uint32_t stake_height;  // Stake channel height (channel 3)
+        bool has_channel_heights; // True if enhanced response received (16 bytes)
+        
+        /**
+         * @brief Get channel-specific height
+         * @param channel Channel number (1=Prime, 2=Hash, 3=Stake)
+         * @return Channel height, or 0 if channel is invalid
+         */
+        uint32_t get_channel_height(uint32_t channel) const {
+            switch(channel) {
+                case 1:  return prime_height;
+                case 2:  return hash_height;
+                case 3:  return stake_height;
+                default: return 0;
+            }
+        }
     };
     network::Shared_payload send_get_round();
     RoundStatus get_last_round_status() const { return m_last_round_status; }
@@ -107,6 +127,10 @@ private:
     
     // Handle reward result response from node (MINER_REWARD_RESULT)
     void handle_reward_result(const Packet& packet);
+    
+    // Helper method to finalize template with channel height
+    // Returns true if template was finalized, false if already finalized or no template
+    bool finalize_template_with_channel_height(uint32_t node_channel_height, const std::string& context);
 
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;
