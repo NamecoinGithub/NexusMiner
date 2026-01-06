@@ -118,6 +118,11 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     m_session_manager = std::make_unique<SessionManager>(24);
     m_logger->info("[Solo] Session manager initialized for adaptive cache management");
     
+    // Initialize client-side channel managers (mirrors NODE's PR #136)
+    m_prime_manager = std::make_unique<mining::PrimeClientManager>();
+    m_hash_manager = std::make_unique<mining::HashClientManager>();
+    m_logger->info("[Solo] Client channel managers initialized (Prime + Hash)");
+    
     // Initialize the Mining Template Interface for unified READ/FEED operations
     // Session ID starts at 0 (unauthenticated) and will be updated after MINER_AUTH_RESULT
     // The session ID binds the template interface to the FALCON authenticated tunnel
@@ -1230,6 +1235,23 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (enhanced) - Unified: {}, Prime: {}, Hash: {}, Stake: {}",
                     new_height, m_last_round_status.prime_height, 
                     m_last_round_status.hash_height, m_last_round_status.stake_height);
+                
+                // Update client channel managers (mirrors NODE's state sync)
+                m_prime_manager->UpdateFromGetRound(new_height, m_last_round_status.prime_height);
+                m_hash_manager->UpdateFromGetRound(new_height, m_last_round_status.hash_height);
+                
+                // Check for fork detection
+                if (m_prime_manager->IsForkDetected() || m_hash_manager->IsForkDetected()) {
+                    uint32_t nPrevHeight = m_prime_manager->IsForkDetected() ? 
+                        m_last_round_status.height : new_height;
+                    m_logger->warn("[Solo GET_ROUND] ⚠ FORK DETECTED!");
+                    m_logger->warn("[Solo GET_ROUND]    Rolled back from {} to {} ({} blocks)",
+                        nPrevHeight, new_height, (nPrevHeight > new_height ? nPrevHeight - new_height : 0));
+                    
+                    // Clear fork flags
+                    m_prime_manager->ClearForkFlag();
+                    m_hash_manager->ClearForkFlag();
+                }
             }
         } else {
             // Legacy response: only unified height
@@ -1314,6 +1336,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->debug("[Solo GET_ROUND] ✓ OLD_ROUND (enhanced) - Unified: {}, Prime: {}, Hash: {}, Stake: {}",
                     current_height, m_last_round_status.prime_height, 
                     m_last_round_status.hash_height, m_last_round_status.stake_height);
+                
+                // Update client channel managers (mirrors NODE's state sync)
+                m_prime_manager->UpdateFromGetRound(current_height, m_last_round_status.prime_height);
+                m_hash_manager->UpdateFromGetRound(current_height, m_last_round_status.hash_height);
                 
                 // Check if template needs channel height finalization
                 if (m_template_interface) {
@@ -2205,6 +2231,23 @@ bool Solo::finalize_template_with_channel_height(uint32_t node_channel_height, c
     }
     
     return false;
+}
+
+mining::ClientChannelManager* Solo::get_channel_manager() const
+{
+    return get_channel_manager(m_channel);
+}
+
+mining::ClientChannelManager* Solo::get_channel_manager(uint32_t channel) const
+{
+    switch (channel) {
+        case 1:  // Prime
+            return m_prime_manager.get();
+        case 2:  // Hash
+            return m_hash_manager.get();
+        default:
+            return nullptr;
+    }
 }
 
 void Solo::handle_reward_result(const Packet& packet)
