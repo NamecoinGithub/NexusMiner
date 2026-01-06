@@ -10,6 +10,11 @@
 namespace nexusminer {
 namespace mining {
 
+// Mining channel constants
+constexpr uint32_t CHANNEL_PRIME = 1;
+constexpr uint32_t CHANNEL_HASH = 2;
+constexpr uint32_t CHANNEL_STAKE = 3;
+
 /**
  * @brief ClientBlock - CLIENT-SIDE equivalent of NODE's Block class
  * 
@@ -58,21 +63,8 @@ public:
     }
     
     /**
-     * @brief Get block hash
-     * @return Block hash (1024-bit)
-     * @note This is a placeholder - actual mining uses SK1024 hash on NODE side
-     */
-    uint1024_t GetHash() const
-    {
-        // For CLIENT-SIDE, we don't compute actual hashes
-        // The real hash verification happens on NODE side
-        // Return the previous block hash as a placeholder identifier
-        return hashPrevBlock;
-    }
-    
-    /**
      * @brief Get mining channel
-     * @return Channel number (1=Prime, 2=Hash, 3=Stake)
+     * @return Channel number (CHANNEL_PRIME, CHANNEL_HASH, or CHANNEL_STAKE)
      */
     uint32_t GetChannel() const
     {
@@ -90,34 +82,56 @@ public:
     
     /**
      * @brief Check if this is a Prime channel block
-     * @return true if Prime channel (channel 1)
+     * @return true if Prime channel
      */
     bool IsPrime() const
     {
-        return nChannel == 1;
+        return nChannel == CHANNEL_PRIME;
     }
     
     /**
      * @brief Check if this is a Hash channel block
-     * @return true if Hash channel (channel 2)
+     * @return true if Hash channel
      */
     bool IsHash() const
     {
-        return nChannel == 2;
+        return nChannel == CHANNEL_HASH;
     }
     
     /**
-     * @brief Get human-readable channel name
-     * @return Channel name string
+     * @brief Get channel name as string (for logging/debugging)
+     * @return Channel name string ("PRIME", "HASH", "STAKE", or "UNKNOWN")
+     * @note Does NOT compute actual block hash - use GetPlaceholderHash() for identifier
      */
     const char* GetChannelName() const
     {
         switch (nChannel) {
-            case 1: return "PRIME";
-            case 2: return "HASH";
-            case 3: return "STAKE";
+            case CHANNEL_PRIME: return "PRIME";
+            case CHANNEL_HASH: return "HASH";
+            case CHANNEL_STAKE: return "STAKE";
             default: return "UNKNOWN";
         }
+    }
+    
+    /**
+     * @brief Get placeholder hash for identification
+     * @return Previous block hash as identifier
+     * @note This is NOT a real hash computation. Real hash verification happens on NODE.
+     *       CLIENT-SIDE doesn't need to compute actual hashes.
+     */
+    uint1024_t GetPlaceholderHash() const
+    {
+        return hashPrevBlock;
+    }
+    
+    /**
+     * @brief Get block hash (legacy method - calls GetPlaceholderHash)
+     * @deprecated Use GetPlaceholderHash() to make intent clear
+     * @return Placeholder hash (previous block hash)
+     */
+    uint1024_t GetHash() const
+    {
+        return GetPlaceholderHash();
     }
     
     /**

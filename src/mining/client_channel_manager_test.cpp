@@ -22,7 +22,7 @@ void test_client_block_creation()
     ClientBlock block;
     block.nVersion = 8;
     block.nHeight = 6535681;
-    block.nChannel = 1;  // Prime
+    block.nChannel = CHANNEL_PRIME;
     block.nBits = 0x8063ba01;
     block.nNonce = 12345;
     block.nTime = 1609459200;
@@ -30,8 +30,8 @@ void test_client_block_creation()
     assert(block.nHeight == 6535681);
     assert(block.IsPrime() == true);
     assert(block.IsHash() == false);
-    assert(std::strcmp(block.GetChannelName(), "PRIME") == 0);
-    assert(block.GetChannel() == 1);
+    assert(std::string(block.GetChannelName()) == "PRIME");
+    assert(block.GetChannel() == CHANNEL_PRIME);
     assert(!block.IsNull());
     
     std::cout << "  ✓ ClientBlock: " << block.ToString() << std::endl;
@@ -44,7 +44,7 @@ void test_client_block_state()
     
     ClientBlock block;
     block.nHeight = 6535681;
-    block.nChannel = 1;
+    block.nChannel = CHANNEL_PRIME;
     block.nVersion = 8;
     
     ClientBlockState state(block, 2301904);
@@ -91,7 +91,7 @@ void test_template_validation()
     // Valid template (both heights correct)
     ClientBlock block;
     block.nHeight = 6535681;  // Unified + 1
-    block.nChannel = 1;
+    block.nChannel = CHANNEL_PRIME;
     ClientBlockState validState(block, 2301904);  // Channel + 1
     
     bool isValid = mgr.ValidateTemplate(&validState);
@@ -122,7 +122,7 @@ void test_template_age_timeout()
     
     ClientBlock block;
     block.nHeight = 6535681;
-    block.nChannel = 1;
+    block.nChannel = CHANNEL_PRIME;
     
     ClientBlockState state(block, 2301904);
     
@@ -178,7 +178,7 @@ void test_template_lifecycle()
     // Set template
     ClientBlock block;
     block.nHeight = 6535681;
-    block.nChannel = 1;
+    block.nChannel = CHANNEL_PRIME;
     auto pState = std::make_unique<ClientBlockState>(block, 2301904);
     mgr.SetCurrentTemplate(std::move(pState));
     

@@ -231,9 +231,9 @@ public:
     virtual const char* GetChannelName() const
     {
         switch (m_nChannel) {
-            case 1: return "PRIME";
-            case 2: return "HASH";
-            case 3: return "STAKE";
+            case CHANNEL_PRIME: return "PRIME";
+            case CHANNEL_HASH: return "HASH";
+            case CHANNEL_STAKE: return "STAKE";
             default: return "UNKNOWN";
         }
     }
@@ -278,7 +278,7 @@ protected:
 };
 
 /**
- * @brief PrimeClientManager - Prime channel (channel 1) manager
+ * @brief PrimeClientManager - Prime channel (CHANNEL_PRIME) manager
  * 
  * Architecture Alignment:
  *   NODE: PrimeStateManager
@@ -288,7 +288,7 @@ class PrimeClientManager : public ClientChannelManager
 {
 public:
     PrimeClientManager() 
-        : ClientChannelManager(1) 
+        : ClientChannelManager(CHANNEL_PRIME) 
     {
     }
     
@@ -299,7 +299,7 @@ public:
 };
 
 /**
- * @brief HashClientManager - Hash channel (channel 2) manager
+ * @brief HashClientManager - Hash channel (CHANNEL_HASH) manager
  * 
  * Architecture Alignment:
  *   NODE: HashStateManager
@@ -309,7 +309,7 @@ class HashClientManager : public ClientChannelManager
 {
 public:
     HashClientManager() 
-        : ClientChannelManager(2) 
+        : ClientChannelManager(CHANNEL_HASH) 
     {
     }
     

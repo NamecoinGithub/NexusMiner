@@ -1242,11 +1242,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 
                 // Check for fork detection
                 if (m_prime_manager->IsForkDetected() || m_hash_manager->IsForkDetected()) {
-                    uint32_t nPrevHeight = m_prime_manager->IsForkDetected() ? 
+                    // Get previous height from previous round status for accurate rollback calculation
+                    uint32_t nPrevHeight = (m_last_round_status.height > new_height) ? 
                         m_last_round_status.height : new_height;
+                    uint32_t nRollback = (nPrevHeight > new_height) ? (nPrevHeight - new_height) : 0;
+                    
                     m_logger->warn("[Solo GET_ROUND] ⚠ FORK DETECTED!");
-                    m_logger->warn("[Solo GET_ROUND]    Rolled back from {} to {} ({} blocks)",
-                        nPrevHeight, new_height, (nPrevHeight > new_height ? nPrevHeight - new_height : 0));
+                    m_logger->warn("[Solo GET_ROUND]    Blockchain rolled back {} blocks (from {} to {})",
+                        nRollback, nPrevHeight, new_height);
                     
                     // Clear fork flags
                     m_prime_manager->ClearForkFlag();
