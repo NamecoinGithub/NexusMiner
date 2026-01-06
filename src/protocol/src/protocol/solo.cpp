@@ -1253,12 +1253,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 
                 if (node_channel_height > 0) {
                     // Check if template needs finalization first
-                    if (m_template_interface->needs_channel_height_finalization()) {
-                        // Template builds NEXT block, so channel height = node height + 1
-                        uint32_t template_channel_height = node_channel_height + 1;
-                        m_template_interface->set_channel_height(template_channel_height);
-                        m_logger->info("[Solo GET_ROUND] ✓ Template finalized with channel height {} (NEW_ROUND)", 
-                            template_channel_height);
+                    bool finalized = finalize_template_with_channel_height(node_channel_height, "NEW_ROUND");
+                    
+                    if (finalized) {
                         // Now check if it's still valid (shouldn't be discarded on NEW_ROUND right after finalization)
                     }
                     
@@ -1325,13 +1322,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     
                     if (node_channel_height > 0) {
                         // Check if template needs finalization
-                        if (m_template_interface->needs_channel_height_finalization()) {
-                            // Template builds NEXT block, so channel height = node height + 1
-                            uint32_t template_channel_height = node_channel_height + 1;
-                            m_template_interface->set_channel_height(template_channel_height);
-                            m_logger->info("[Solo GET_ROUND] ✓ Template finalized with channel height {}", 
-                                template_channel_height);
-                        } else {
+                        bool finalized = finalize_template_with_channel_height(node_channel_height, "OLD_ROUND");
+                        
+                        if (!finalized) {
                             // Template already has channel height, validate it
                             bool template_discarded = m_template_interface->update_channel_height(channel, node_channel_height);
                             
@@ -2193,6 +2186,25 @@ network::Shared_payload Solo::send_set_reward()
     m_logger->info("[Solo Reward] MINER_SET_REWARD packet built: {} bytes", packet.m_length);
     
     return packet.get_bytes();
+}
+
+bool Solo::finalize_template_with_channel_height(uint32_t node_channel_height, const std::string& context)
+{
+    if (!m_template_interface || node_channel_height == 0) {
+        return false;
+    }
+    
+    // Check if template needs finalization
+    if (m_template_interface->needs_channel_height_finalization()) {
+        // Template builds NEXT block, so channel height = node height + 1
+        uint32_t template_channel_height = node_channel_height + 1;
+        m_template_interface->set_channel_height(template_channel_height);
+        m_logger->info("[Solo GET_ROUND] ✓ Template finalized with channel height {} ({})", 
+            template_channel_height, context);
+        return true;
+    }
+    
+    return false;
 }
 
 void Solo::handle_reward_result(const Packet& packet)

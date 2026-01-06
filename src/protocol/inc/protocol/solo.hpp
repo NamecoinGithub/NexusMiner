@@ -127,6 +127,10 @@ private:
     
     // Handle reward result response from node (MINER_REWARD_RESULT)
     void handle_reward_result(const Packet& packet);
+    
+    // Helper method to finalize template with channel height
+    // Returns true if template was finalized, false if already finalized or no template
+    bool finalize_template_with_channel_height(uint32_t node_channel_height, const std::string& context);
 
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;
