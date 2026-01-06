@@ -6,12 +6,14 @@
 #include "protocol/chacha20_wrapper.hpp"
 #include "protocol/session_manager.hpp"
 #include "protocol/mining_template_interface.hpp"
+#include "mining/client_channel_manager.h"
 #include "spdlog/spdlog.h"
 #include <memory>
 
 namespace nexusminer {
 namespace network { class Connection; }
 namespace stats { class Collector; }
+namespace mining { class PrimeClientManager; class HashClientManager; }
 namespace protocol
 {
 
@@ -131,6 +133,10 @@ private:
     // Helper method to finalize template with channel height
     // Returns true if template was finalized, false if already finalized or no template
     bool finalize_template_with_channel_height(uint32_t node_channel_height, const std::string& context);
+    
+    // Helper method to get channel manager for current channel
+    mining::ClientChannelManager* get_channel_manager() const;
+    mining::ClientChannelManager* get_channel_manager(uint32_t channel) const;
 
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;
@@ -177,6 +183,32 @@ private:
     
     // GET_ROUND status tracking (Template Staleness Prevention - LLL-TAO PR #131)
     RoundStatus m_last_round_status;  // Last received round status
+    
+    // Client-side fork-aware channel managers (mirrors NODE's PR #136)
+    // INTEGRATION PATTERN:
+    // - MiningTemplateInterface (m_template_interface): Manages template storage and worker distribution
+    // - ClientChannelManagers (m_prime_manager, m_hash_manager): Track heights and detect forks
+    // 
+    // Division of Responsibilities:
+    // 1. MiningTemplateInterface:
+    //    - Stores current mining template (MiningTemplate with LLP::CBlock)
+    //    - Feeds templates to worker threads
+    //    - Handles template age tracking (for 60s timeout)
+    //    - Manages channel height (set via set_channel_height())
+    // 
+    // 2. ClientChannelManagers:
+    //    - Track node heights from GET_ROUND (unified + channel)
+    //    - Detect blockchain forks (height regression)
+    //    - Provide validation logic (ValidateTemplate mirrors NODE's Block::Accept)
+    //    - Do NOT store templates in production (use MiningTemplateInterface instead)
+    // 
+    // Fork Detection Flow:
+    //   GET_ROUND response → Update managers → Fork detected? → Clear MiningTemplateInterface
+    // 
+    // This separation mirrors NODE's architecture where ChannelStateManager tracks state
+    // but doesn't duplicate Block storage - blocks live in the blockchain database.
+    std::unique_ptr<mining::PrimeClientManager> m_prime_manager;
+    std::unique_ptr<mining::HashClientManager> m_hash_manager;
 };
 
 }
