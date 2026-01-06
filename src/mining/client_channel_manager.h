@@ -26,6 +26,25 @@ namespace mining {
  * Architecture Alignment:
  *   NODE: ChannelStateManager
  *   CLIENT: ClientChannelManager (this class)
+ * 
+ * INTEGRATION NOTE:
+ * This class provides height tracking and fork detection capabilities. It CAN store
+ * templates (m_pCurrentTemplate) for standalone use or testing, but in the current
+ * Solo protocol integration, template management is delegated to MiningTemplateInterface.
+ * 
+ * Current Integration Pattern (in Solo protocol):
+ * - MiningTemplateInterface: Handles actual template storage and feeding to workers
+ * - ClientChannelManager: Provides height tracking, fork detection, and validation
+ * - Managers update heights from GET_ROUND responses
+ * - Managers detect forks and trigger template invalidation in MiningTemplateInterface
+ * 
+ * The template storage in ClientChannelManager exists to:
+ * 1. Mirror NODE's ChannelStateManager architecture completely
+ * 2. Support standalone testing (see client_channel_manager_test.cpp)
+ * 3. Allow future alternative integrations if needed
+ * 
+ * For production Solo mining, use MiningTemplateInterface for template management
+ * and ClientChannelManager for height/fork tracking.
  */
 class ClientChannelManager
 {

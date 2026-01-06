@@ -185,6 +185,28 @@ private:
     RoundStatus m_last_round_status;  // Last received round status
     
     // Client-side fork-aware channel managers (mirrors NODE's PR #136)
+    // INTEGRATION PATTERN:
+    // - MiningTemplateInterface (m_template_interface): Manages template storage and worker distribution
+    // - ClientChannelManagers (m_prime_manager, m_hash_manager): Track heights and detect forks
+    // 
+    // Division of Responsibilities:
+    // 1. MiningTemplateInterface:
+    //    - Stores current mining template (MiningTemplate with LLP::CBlock)
+    //    - Feeds templates to worker threads
+    //    - Handles template age tracking (for 60s timeout)
+    //    - Manages channel height (set via set_channel_height())
+    // 
+    // 2. ClientChannelManagers:
+    //    - Track node heights from GET_ROUND (unified + channel)
+    //    - Detect blockchain forks (height regression)
+    //    - Provide validation logic (ValidateTemplate mirrors NODE's Block::Accept)
+    //    - Do NOT store templates in production (use MiningTemplateInterface instead)
+    // 
+    // Fork Detection Flow:
+    //   GET_ROUND response → Update managers → Fork detected? → Clear MiningTemplateInterface
+    // 
+    // This separation mirrors NODE's architecture where ChannelStateManager tracks state
+    // but doesn't duplicate Block storage - blocks live in the blockchain database.
     std::unique_ptr<mining::PrimeClientManager> m_prime_manager;
     std::unique_ptr<mining::HashClientManager> m_hash_manager;
 };
