@@ -60,13 +60,14 @@ public:
     /**
      * @brief Get block hash
      * @return Block hash (1024-bit)
-     * @note For actual mining, would need proper SK1024 hash
+     * @note This is a placeholder - actual mining uses SK1024 hash on NODE side
      */
     uint1024_t GetHash() const
     {
-        // Simplified hash for now - in production would use SK1024
-        // This is CLIENT-SIDE, actual hash verification happens on NODE
-        return hashPrevBlock + hashMerkleRoot;
+        // For CLIENT-SIDE, we don't compute actual hashes
+        // The real hash verification happens on NODE side
+        // Return the previous block hash as a placeholder identifier
+        return hashPrevBlock;
     }
     
     /**
