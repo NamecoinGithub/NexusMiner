@@ -90,12 +90,12 @@ public:
     
     /**
      * @brief Basic staleness check (age-based)
-     * @return true if template is older than 60 seconds
+     * @return true if template is older than MAX_TEMPLATE_AGE_SECONDS
      * @note Use ClientChannelManager for complete validation with height checks
      */
     bool IsStale() const
     {
-        return GetAge() > 60;
+        return GetAge() > MAX_TEMPLATE_AGE_SECONDS;
     }
     
     /**

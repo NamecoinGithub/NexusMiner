@@ -2246,9 +2246,9 @@ mining::ClientChannelManager* Solo::get_channel_manager() const
 mining::ClientChannelManager* Solo::get_channel_manager(uint32_t channel) const
 {
     switch (channel) {
-        case 1:  // Prime
+        case mining::CHANNEL_PRIME:
             return m_prime_manager.get();
-        case 2:  // Hash
+        case mining::CHANNEL_HASH:
             return m_hash_manager.get();
         default:
             return nullptr;

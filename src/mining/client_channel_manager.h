@@ -135,8 +135,8 @@ public:
         if (pTemplate->nChannelHeight != nNodeChannel + 1)
             return false;  // Channel advanced
         
-        // Age timeout (60s safety net)
-        if (pTemplate->GetAge() > 60)
+        // Age timeout (MAX_TEMPLATE_AGE_SECONDS safety net)
+        if (pTemplate->GetAge() > MAX_TEMPLATE_AGE_SECONDS)
             return false;  // Too old
         
         return true;  // FRESH
