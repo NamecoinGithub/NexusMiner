@@ -1245,13 +1245,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             if (fEnhancedResponse) {
                 // PRIMARY: Channel-specific staleness check
                 uint32_t channel = m_template_interface->get_channel();
-                uint32_t node_channel_height = 0;
+                uint32_t node_channel_height = m_last_round_status.get_channel_height(channel);
                 
-                if (channel == 1) {
-                    node_channel_height = m_last_round_status.prime_height;
-                } else if (channel == 2) {
-                    node_channel_height = m_last_round_status.hash_height;
-                } else {
+                if (node_channel_height == 0) {
                     m_logger->warn("[Solo GET_ROUND] Unknown channel: {}", channel);
                 }
                 
@@ -1325,13 +1321,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 // Check if template needs channel height finalization
                 if (m_template_interface) {
                     uint32_t channel = m_template_interface->get_channel();
-                    uint32_t node_channel_height = 0;
-                    
-                    if (channel == 1) {
-                        node_channel_height = m_last_round_status.prime_height;
-                    } else if (channel == 2) {
-                        node_channel_height = m_last_round_status.hash_height;
-                    }
+                    uint32_t node_channel_height = m_last_round_status.get_channel_height(channel);
                     
                     if (node_channel_height > 0) {
                         // Check if template needs finalization

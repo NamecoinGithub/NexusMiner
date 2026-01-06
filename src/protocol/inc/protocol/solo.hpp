@@ -46,6 +46,20 @@ public:
         uint32_t hash_height;   // Hash channel height (channel 2)
         uint32_t stake_height;  // Stake channel height (channel 3)
         bool has_channel_heights; // True if enhanced response received (16 bytes)
+        
+        /**
+         * @brief Get channel-specific height
+         * @param channel Channel number (1=Prime, 2=Hash, 3=Stake)
+         * @return Channel height, or 0 if channel is invalid
+         */
+        uint32_t get_channel_height(uint32_t channel) const {
+            switch(channel) {
+                case 1:  return prime_height;
+                case 2:  return hash_height;
+                case 3:  return stake_height;
+                default: return 0;
+            }
+        }
     };
     network::Shared_payload send_get_round();
     RoundStatus get_last_round_status() const { return m_last_round_status; }
