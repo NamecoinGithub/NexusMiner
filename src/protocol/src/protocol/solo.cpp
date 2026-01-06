@@ -1236,33 +1236,23 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     new_height, m_last_round_status.prime_height, 
                     m_last_round_status.hash_height, m_last_round_status.stake_height);
                 
-                // Update client channel managers (mirrors NODE's state sync)
-                m_prime_manager->UpdateFromGetRound(new_height, m_last_round_status.prime_height);
-                m_hash_manager->UpdateFromGetRound(new_height, m_last_round_status.hash_height);
+                // Get channel height for THIS miner's channel
+                uint32_t my_channel_height = (m_channel == mining::CHANNEL_PRIME) 
+                    ? m_last_round_status.prime_height 
+                    : m_last_round_status.hash_height;
                 
-                // Check for fork detection (handle each manager separately)
-                if (m_prime_manager->IsForkDetected()) {
-                    auto prevHeights = m_prime_manager->GetPreviousHeights();
-                    uint32_t nPrevHeight = prevHeights.first;
-                    uint32_t nRollback = (nPrevHeight > new_height) ? (nPrevHeight - new_height) : 0;
-                    
-                    m_logger->warn("[Solo GET_ROUND] ⚠ FORK DETECTED on PRIME channel!");
-                    m_logger->warn("[Solo GET_ROUND]    Blockchain rolled back {} blocks (from {} to {})",
-                        nRollback, nPrevHeight, new_height);
-                    
-                    m_prime_manager->ClearForkFlag();
-                }
+                // Single call handles: update managers, fork detection, finalization, validation
+                bool template_valid = sync_template_state(new_height, my_channel_height);
                 
-                if (m_hash_manager->IsForkDetected()) {
-                    auto prevHeights = m_hash_manager->GetPreviousHeights();
-                    uint32_t nPrevHeight = prevHeights.first;
-                    uint32_t nRollback = (nPrevHeight > new_height) ? (nPrevHeight - new_height) : 0;
-                    
-                    m_logger->warn("[Solo GET_ROUND] ⚠ FORK DETECTED on HASH channel!");
-                    m_logger->warn("[Solo GET_ROUND]    Blockchain rolled back {} blocks (from {} to {})",
-                        nRollback, nPrevHeight, new_height);
-                    
-                    m_hash_manager->ClearForkFlag();
+                if (!template_valid && m_template_interface) {
+                    m_logger->info("[Solo] Requesting fresh template after state sync");
+                    // Template was invalidated - request new one
+                    if (connection) {
+                        auto work_payload = get_work();
+                        if (work_payload && !work_payload->empty()) {
+                            connection->transmit(work_payload);
+                        }
+                    }
                 }
             }
         } else {
@@ -1270,46 +1260,21 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (legacy) - Height: {} (old node, no channel heights)",
                 new_height);
             m_logger->debug("[Solo GET_ROUND] Falling back to unified height staleness detection only");
-        }
-        
-        // Update template interface
-        if (m_template_interface) {
-            bool template_discarded = false;
             
-            if (fEnhancedResponse) {
-                // PRIMARY: Channel-specific staleness check
-                uint32_t channel = m_template_interface->get_channel();
-                uint32_t node_channel_height = m_last_round_status.get_channel_height(channel);
+            // Fallback: use unified height for legacy nodes
+            if (m_template_interface) {
+                bool template_discarded = m_template_interface->update_height(new_height);
                 
-                if (node_channel_height == 0) {
-                    m_logger->warn("[Solo GET_ROUND] Unknown channel: {}", channel);
-                }
-                
-                if (node_channel_height > 0) {
-                    // Check if template needs finalization first
-                    bool finalized = finalize_template_with_channel_height(node_channel_height, "NEW_ROUND");
+                if (template_discarded) {
+                    m_logger->info("[Solo GET_ROUND] Template discarded due to height change");
                     
-                    if (finalized) {
-                        // Now check if it's still valid (shouldn't be discarded on NEW_ROUND right after finalization)
-                    }
-                    
-                    // Check staleness
-                    template_discarded = m_template_interface->update_channel_height(channel, node_channel_height);
-                }
-            } else {
-                // FALLBACK: Unified height-based staleness (legacy nodes)
-                template_discarded = m_template_interface->update_height(new_height);
-            }
-            
-            if (template_discarded) {
-                m_logger->info("[Solo GET_ROUND] Template discarded due to height change");
-                
-                // Request fresh template
-                m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK");
-                if (connection) {
-                    auto work_payload = get_work();
-                    if (work_payload && !work_payload->empty()) {
-                        connection->transmit(work_payload);
+                    // Request fresh template
+                    m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK");
+                    if (connection) {
+                        auto work_payload = get_work();
+                        if (work_payload && !work_payload->empty()) {
+                            connection->transmit(work_payload);
+                        }
                     }
                 }
             }
@@ -1349,59 +1314,22 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     current_height, m_last_round_status.prime_height, 
                     m_last_round_status.hash_height, m_last_round_status.stake_height);
                 
-                // Update client channel managers (mirrors NODE's state sync)
-                m_prime_manager->UpdateFromGetRound(current_height, m_last_round_status.prime_height);
-                m_hash_manager->UpdateFromGetRound(current_height, m_last_round_status.hash_height);
+                // Get channel height for THIS miner's channel
+                uint32_t my_channel_height = (m_channel == mining::CHANNEL_PRIME) 
+                    ? m_last_round_status.prime_height 
+                    : m_last_round_status.hash_height;
                 
-                // Check for fork detection (handle each manager separately)
-                if (m_prime_manager->IsForkDetected()) {
-                    auto prevHeights = m_prime_manager->GetPreviousHeights();
-                    uint32_t nPrevHeight = prevHeights.first;
-                    uint32_t nRollback = (nPrevHeight > current_height) ? (nPrevHeight - current_height) : 0;
-                    
-                    m_logger->warn("[Solo GET_ROUND] ⚠ FORK DETECTED on PRIME channel (OLD_ROUND)!");
-                    m_logger->warn("[Solo GET_ROUND]    Blockchain rolled back {} blocks (from {} to {})",
-                        nRollback, nPrevHeight, current_height);
-                    
-                    m_prime_manager->ClearForkFlag();
-                }
+                // Single call handles: update managers, fork detection, finalization, validation
+                bool template_valid = sync_template_state(current_height, my_channel_height);
                 
-                if (m_hash_manager->IsForkDetected()) {
-                    auto prevHeights = m_hash_manager->GetPreviousHeights();
-                    uint32_t nPrevHeight = prevHeights.first;
-                    uint32_t nRollback = (nPrevHeight > current_height) ? (nPrevHeight - current_height) : 0;
+                if (!template_valid && m_template_interface) {
+                    m_logger->warn("[Solo GET_ROUND] Unexpected: Template invalidated on OLD_ROUND");
                     
-                    m_logger->warn("[Solo GET_ROUND] ⚠ FORK DETECTED on HASH channel (OLD_ROUND)!");
-                    m_logger->warn("[Solo GET_ROUND]    Blockchain rolled back {} blocks (from {} to {})",
-                        nRollback, nPrevHeight, current_height);
-                    
-                    m_hash_manager->ClearForkFlag();
-                }
-                
-                // Check if template needs channel height finalization
-                if (m_template_interface) {
-                    uint32_t channel = m_template_interface->get_channel();
-                    uint32_t node_channel_height = m_last_round_status.get_channel_height(channel);
-                    
-                    if (node_channel_height > 0) {
-                        // Check if template needs finalization
-                        bool finalized = finalize_template_with_channel_height(node_channel_height, "OLD_ROUND");
-                        
-                        if (!finalized) {
-                            // Template already has channel height, validate it
-                            bool template_discarded = m_template_interface->update_channel_height(channel, node_channel_height);
-                            
-                            if (template_discarded) {
-                                m_logger->warn("[Solo GET_ROUND] Unexpected: Template discarded on OLD_ROUND (race condition?)");
-                                
-                                // Request fresh template
-                                if (connection) {
-                                    auto work_payload = get_work();
-                                    if (work_payload && !work_payload->empty()) {
-                                        connection->transmit(work_payload);
-                                    }
-                                }
-                            }
+                    // Request fresh template
+                    if (connection) {
+                        auto work_payload = get_work();
+                        if (work_payload && !work_payload->empty()) {
+                            connection->transmit(work_payload);
                         }
                     }
                 }
@@ -2285,6 +2213,92 @@ mining::ClientChannelManager* Solo::get_channel_manager(uint32_t channel) const
         default:
             return nullptr;
     }
+}
+
+bool Solo::sync_template_state(uint32_t unified_height, uint32_t channel_height)
+{
+    // Get the appropriate channel manager for this miner's channel
+    auto* pManager = get_channel_manager();
+    if (!pManager) {
+        m_logger->error("[Solo Sync] No channel manager for channel {}", m_channel);
+        return false;
+    }
+    
+    // Step 1: Update channel manager with new heights from GET_ROUND
+    pManager->UpdateFromGetRound(unified_height, channel_height);
+    
+    // Step 2: Check for fork detection (height regression)
+    if (pManager->IsForkDetected()) {
+        handle_fork_detected(pManager, unified_height);
+        return false;  // Template was invalidated
+    }
+    
+    // Step 3: Finalize template channel height if needed
+    if (m_template_interface && m_template_interface->needs_channel_height_finalization()) {
+        uint32_t template_channel_height = channel_height + 1;
+        m_template_interface->set_channel_height(template_channel_height);
+        m_logger->info("[Solo Sync] ✓ Template finalized with channel height {}", 
+            template_channel_height);
+    }
+    
+    // Step 4: Validate current template
+    return validate_current_template();
+}
+
+bool Solo::validate_current_template()
+{
+    auto* pManager = get_channel_manager();
+    if (!pManager) {
+        return false;
+    }
+    
+    if (!m_template_interface || !m_template_interface->has_valid_template()) {
+        return true;  // No template to validate - that's OK
+    }
+    
+    // Get expected heights from channel manager (single source of truth)
+    auto [expectedUnified, expectedChannel] = pManager->GetExpectedHeights();
+    
+    // Get template height
+    uint32_t templateHeight = m_template_interface->get_template_height();
+    
+    // Validation 1: Unified height (mirrors Block::Accept)
+    if (templateHeight != expectedUnified) {
+        m_logger->warn("[Solo Validate] Unified height mismatch: template={}, expected={}",
+            templateHeight, expectedUnified);
+        m_template_interface->discard_template("Unified height stale");
+        return false;
+    }
+    
+    // Note: Age timeout validation (60s safety net) is handled internally by
+    // MiningTemplateInterface. No additional validation needed here.
+    
+    m_logger->debug("[Solo Validate] ✓ Template valid (height={}, channel={})", 
+        templateHeight, pManager->GetChannelName());
+    return true;
+}
+
+void Solo::handle_fork_detected(mining::ClientChannelManager* pManager, uint32_t current_height)
+{
+    if (!pManager) return;
+    
+    auto prevHeights = pManager->GetPreviousHeights();
+    uint32_t nPrevHeight = prevHeights.first;
+    uint32_t nRollback = (nPrevHeight > current_height) ? (nPrevHeight - current_height) : 0;
+    
+    m_logger->warn("[Solo Fork] ⚠ FORK DETECTED on {} channel!", pManager->GetChannelName());
+    m_logger->warn("[Solo Fork]    Previous unified height: {}", nPrevHeight);
+    m_logger->warn("[Solo Fork]    Current unified height:  {}", current_height);
+    m_logger->warn("[Solo Fork]    Blocks rolled back:      {}", nRollback);
+    
+    // Auto-invalidate template in MiningTemplateInterface
+    if (m_template_interface && m_template_interface->has_valid_template()) {
+        m_template_interface->discard_template("Fork detected - blockchain rollback");
+        m_logger->info("[Solo Fork] ✗ Template invalidated due to fork");
+    }
+    
+    // Clear fork flag
+    pManager->ClearForkFlag();
 }
 
 void Solo::handle_reward_result(const Packet& packet)

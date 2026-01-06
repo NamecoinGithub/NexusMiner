@@ -137,6 +137,47 @@ private:
     // Helper method to get channel manager for current channel
     mining::ClientChannelManager* get_channel_manager() const;
     mining::ClientChannelManager* get_channel_manager(uint32_t channel) const;
+    
+    // Integration helper functions (bridge MiningTemplateInterface and ClientChannelManager)
+    /**
+     * @brief Synchronize channel manager state with template interface
+     * 
+     * Called after GET_ROUND response to:
+     * 1. Update channel manager heights
+     * 2. Check for forks (auto-invalidate template if detected)
+     * 3. Finalize template channel height if needed
+     * 4. Validate current template against channel manager state
+     * 
+     * @param unified_height Current unified height from GET_ROUND
+     * @param channel_height Current channel height from GET_ROUND (for THIS channel)
+     * @return true if template is still valid, false if invalidated
+     */
+    bool sync_template_state(uint32_t unified_height, uint32_t channel_height);
+    
+    /**
+     * @brief Check if current template is valid using channel manager state
+     * 
+     * Performs dual-height validation mirroring NODE's Block::Accept():
+     * - Unified height: template.nHeight == node_unified + 1
+     * - Channel height: template.nChannelHeight == node_channel + 1
+     * - Age timeout: template age < 60 seconds
+     * 
+     * @return true if template valid, false if stale/invalid
+     */
+    bool validate_current_template();
+    
+    /**
+     * @brief Handle fork detection and template invalidation
+     * 
+     * Called when fork is detected to:
+     * - Log rollback information
+     * - Invalidate current template in MiningTemplateInterface
+     * - Clear fork flag in channel manager
+     * 
+     * @param pManager Channel manager that detected the fork
+     * @param current_height Current unified height after rollback
+     */
+    void handle_fork_detected(mining::ClientChannelManager* pManager, uint32_t current_height);
 
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;
