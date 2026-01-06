@@ -1240,21 +1240,28 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_prime_manager->UpdateFromGetRound(new_height, m_last_round_status.prime_height);
                 m_hash_manager->UpdateFromGetRound(new_height, m_last_round_status.hash_height);
                 
-                // Check for fork detection
-                if (m_prime_manager->IsForkDetected() || m_hash_manager->IsForkDetected()) {
-                    // Get previous height from the manager that detected the fork
-                    auto prevHeights = m_prime_manager->IsForkDetected() ? 
-                        m_prime_manager->GetPreviousHeights() : 
-                        m_hash_manager->GetPreviousHeights();
-                    uint32_t nPrevHeight = prevHeights.first;  // Previous unified height
+                // Check for fork detection (handle each manager separately)
+                if (m_prime_manager->IsForkDetected()) {
+                    auto prevHeights = m_prime_manager->GetPreviousHeights();
+                    uint32_t nPrevHeight = prevHeights.first;
                     uint32_t nRollback = (nPrevHeight > new_height) ? (nPrevHeight - new_height) : 0;
                     
-                    m_logger->warn("[Solo GET_ROUND] ⚠ FORK DETECTED!");
+                    m_logger->warn("[Solo GET_ROUND] ⚠ FORK DETECTED on PRIME channel!");
                     m_logger->warn("[Solo GET_ROUND]    Blockchain rolled back {} blocks (from {} to {})",
                         nRollback, nPrevHeight, new_height);
                     
-                    // Clear fork flags
                     m_prime_manager->ClearForkFlag();
+                }
+                
+                if (m_hash_manager->IsForkDetected()) {
+                    auto prevHeights = m_hash_manager->GetPreviousHeights();
+                    uint32_t nPrevHeight = prevHeights.first;
+                    uint32_t nRollback = (nPrevHeight > new_height) ? (nPrevHeight - new_height) : 0;
+                    
+                    m_logger->warn("[Solo GET_ROUND] ⚠ FORK DETECTED on HASH channel!");
+                    m_logger->warn("[Solo GET_ROUND]    Blockchain rolled back {} blocks (from {} to {})",
+                        nRollback, nPrevHeight, new_height);
+                    
                     m_hash_manager->ClearForkFlag();
                 }
             }
@@ -1345,6 +1352,31 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 // Update client channel managers (mirrors NODE's state sync)
                 m_prime_manager->UpdateFromGetRound(current_height, m_last_round_status.prime_height);
                 m_hash_manager->UpdateFromGetRound(current_height, m_last_round_status.hash_height);
+                
+                // Check for fork detection (handle each manager separately)
+                if (m_prime_manager->IsForkDetected()) {
+                    auto prevHeights = m_prime_manager->GetPreviousHeights();
+                    uint32_t nPrevHeight = prevHeights.first;
+                    uint32_t nRollback = (nPrevHeight > current_height) ? (nPrevHeight - current_height) : 0;
+                    
+                    m_logger->warn("[Solo GET_ROUND] ⚠ FORK DETECTED on PRIME channel (OLD_ROUND)!");
+                    m_logger->warn("[Solo GET_ROUND]    Blockchain rolled back {} blocks (from {} to {})",
+                        nRollback, nPrevHeight, current_height);
+                    
+                    m_prime_manager->ClearForkFlag();
+                }
+                
+                if (m_hash_manager->IsForkDetected()) {
+                    auto prevHeights = m_hash_manager->GetPreviousHeights();
+                    uint32_t nPrevHeight = prevHeights.first;
+                    uint32_t nRollback = (nPrevHeight > current_height) ? (nPrevHeight - current_height) : 0;
+                    
+                    m_logger->warn("[Solo GET_ROUND] ⚠ FORK DETECTED on HASH channel (OLD_ROUND)!");
+                    m_logger->warn("[Solo GET_ROUND]    Blockchain rolled back {} blocks (from {} to {})",
+                        nRollback, nPrevHeight, current_height);
+                    
+                    m_hash_manager->ClearForkFlag();
+                }
                 
                 // Check if template needs channel height finalization
                 if (m_template_interface) {
