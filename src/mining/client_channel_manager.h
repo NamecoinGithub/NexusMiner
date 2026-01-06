@@ -204,6 +204,18 @@ public:
     }
     
     /**
+     * @brief Get previous node heights (before last update)
+     * @return Pair of (previous unified height, previous channel height)
+     */
+    std::pair<uint32_t, uint32_t> GetPreviousHeights() const
+    {
+        return std::make_pair(
+            m_nPrevUnifiedHeight.load(),
+            m_nPrevChannelHeight.load()
+        );
+    }
+    
+    /**
      * @brief Get expected heights for next block
      * @return Pair of (expected unified, expected channel)
      */

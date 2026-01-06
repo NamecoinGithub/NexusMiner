@@ -1242,9 +1242,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 
                 // Check for fork detection
                 if (m_prime_manager->IsForkDetected() || m_hash_manager->IsForkDetected()) {
-                    // Get previous height from previous round status for accurate rollback calculation
-                    uint32_t nPrevHeight = (m_last_round_status.height > new_height) ? 
-                        m_last_round_status.height : new_height;
+                    // Get previous height from the manager that detected the fork
+                    auto prevHeights = m_prime_manager->IsForkDetected() ? 
+                        m_prime_manager->GetPreviousHeights() : 
+                        m_hash_manager->GetPreviousHeights();
+                    uint32_t nPrevHeight = prevHeights.first;  // Previous unified height
                     uint32_t nRollback = (nPrevHeight > new_height) ? (nPrevHeight - new_height) : 0;
                     
                     m_logger->warn("[Solo GET_ROUND] ⚠ FORK DETECTED!");
