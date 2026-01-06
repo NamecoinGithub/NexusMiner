@@ -2270,9 +2270,8 @@ bool Solo::validate_current_template()
         return false;
     }
     
-    // Validation 2: Age timeout (60s safety net)
-    // Note: MiningTemplateInterface already tracks age internally
-    // This is a secondary check using channel manager validation
+    // Note: Age timeout validation (60s safety net) is handled internally by
+    // MiningTemplateInterface. No additional validation needed here.
     
     m_logger->debug("[Solo Validate] ✓ Template valid (height={}, channel={})", 
         templateHeight, pManager->GetChannelName());
