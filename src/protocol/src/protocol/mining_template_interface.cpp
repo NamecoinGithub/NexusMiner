@@ -703,6 +703,14 @@ void MiningTemplateInterface::discard_template_unsafe(const std::string& reason)
     mark_template_stale_unsafe(reason);
 }
 
+bool MiningTemplateInterface::needs_channel_height_finalization() const
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    
+    // Template needs finalization if it's valid but channel height not set
+    return has_valid_template_unsafe() && m_current_template.nChannelHeight == 0;
+}
+
 uint32_t MiningTemplateInterface::get_template_height() const
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);

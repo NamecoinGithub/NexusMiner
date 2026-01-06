@@ -1011,6 +1011,19 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Update height tracking
             m_current_height = tmpl->block.nHeight;
             
+            // Multi-channel height tracking: Request GET_ROUND immediately to finalize template
+            // Template needs channel height before it can be used for mining
+            if (m_template_interface->needs_channel_height_finalization()) {
+                m_logger->info("[Solo] Template pending channel height finalization - requesting GET_ROUND");
+                auto round_payload = send_get_round();
+                if (round_payload && !round_payload->empty() && connection) {
+                    connection->transmit(round_payload);
+                    m_logger->debug("[Solo] GET_ROUND request sent for channel height finalization");
+                }
+                // Note: Template will be finalized when OLD_ROUND/NEW_ROUND response arrives
+                // Workers will receive template after finalization
+            }
+            
             // FEED: Dispatch to block handler
             if (!m_set_block_handler) {
                 m_logger->error("[Solo FEED] CRITICAL: No block handler set - cannot process BLOCK_DATA");
@@ -1243,6 +1256,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 }
                 
                 if (node_channel_height > 0) {
+                    // Check if template needs finalization first
+                    if (m_template_interface->needs_channel_height_finalization()) {
+                        // Template builds NEXT block, so channel height = node height + 1
+                        uint32_t template_channel_height = node_channel_height + 1;
+                        m_template_interface->set_channel_height(template_channel_height);
+                        m_logger->info("[Solo GET_ROUND] ✓ Template finalized with channel height {} (NEW_ROUND)", 
+                            template_channel_height);
+                        // Now check if it's still valid (shouldn't be discarded on NEW_ROUND right after finalization)
+                    }
+                    
+                    // Check staleness
                     template_discarded = m_template_interface->update_channel_height(channel, node_channel_height);
                 }
             } else {
@@ -1298,7 +1322,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     current_height, m_last_round_status.prime_height, 
                     m_last_round_status.hash_height, m_last_round_status.stake_height);
                 
-                // Validate channel height (template should still be fresh)
+                // Check if template needs channel height finalization
                 if (m_template_interface) {
                     uint32_t channel = m_template_interface->get_channel();
                     uint32_t node_channel_height = 0;
@@ -1310,17 +1334,26 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     }
                     
                     if (node_channel_height > 0) {
-                        // This should not discard template if everything is working correctly
-                        bool template_discarded = m_template_interface->update_channel_height(channel, node_channel_height);
-                        
-                        if (template_discarded) {
-                            m_logger->warn("[Solo GET_ROUND] Unexpected: Template discarded on OLD_ROUND (race condition?)");
+                        // Check if template needs finalization
+                        if (m_template_interface->needs_channel_height_finalization()) {
+                            // Template builds NEXT block, so channel height = node height + 1
+                            uint32_t template_channel_height = node_channel_height + 1;
+                            m_template_interface->set_channel_height(template_channel_height);
+                            m_logger->info("[Solo GET_ROUND] ✓ Template finalized with channel height {}", 
+                                template_channel_height);
+                        } else {
+                            // Template already has channel height, validate it
+                            bool template_discarded = m_template_interface->update_channel_height(channel, node_channel_height);
                             
-                            // Request fresh template
-                            if (connection) {
-                                auto work_payload = get_work();
-                                if (work_payload && !work_payload->empty()) {
-                                    connection->transmit(work_payload);
+                            if (template_discarded) {
+                                m_logger->warn("[Solo GET_ROUND] Unexpected: Template discarded on OLD_ROUND (race condition?)");
+                                
+                                // Request fresh template
+                                if (connection) {
+                                    auto work_payload = get_work();
+                                    if (work_payload && !work_payload->empty()) {
+                                        connection->transmit(work_payload);
+                                    }
                                 }
                             }
                         }

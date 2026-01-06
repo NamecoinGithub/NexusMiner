@@ -248,6 +248,16 @@ public:
     void set_channel_height(uint32_t channel_height);
     
     /**
+     * @brief Check if template needs channel height finalization
+     * 
+     * Returns true if template is valid but channel height not yet set.
+     * This indicates we need to request GET_ROUND to finalize the template.
+     * 
+     * @return true if template needs channel height set
+     */
+    bool needs_channel_height_finalization() const;
+    
+    /**
      * @brief Discard current template with reason
      * 
      * Explicitly discard the current template and log the reason.
