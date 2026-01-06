@@ -32,6 +32,7 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     m_current_template.state = TemplateState::EMPTY;
     m_current_template.session_id = session_id;
     m_current_template.timestamp_received = 0;
+    m_current_template.nChannelHeight = 0;
     
     // Validate channel
     if (m_channel != 1 && m_channel != 2) {
@@ -104,6 +105,9 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     m_logger->info("[TemplateInterface] Set nChannel from connection context: {} ({})",
         static_cast<int>(m_channel), (m_channel == 1) ? "prime" : "hash");
     m_logger->debug("[TemplateInterface]   Block header had nChannel=0 (not serialized in template)");
+    
+    // Initialize channel height (will be set later when GET_ROUND response arrives)
+    tmpl.nChannelHeight = 0;
     
     tmpl.state = TemplateState::RECEIVED;
     tmpl.nBits = tmpl.block.nBits;
@@ -614,6 +618,66 @@ bool MiningTemplateInterface::update_height(uint32_t new_height)
     m_current_height = new_height;
     
     return template_discarded;
+}
+
+bool MiningTemplateInterface::update_channel_height(uint32_t channel, uint32_t new_channel_height)
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    
+    m_logger->debug("[TemplateInterface] Channel {} height update: {}", 
+        channel, new_channel_height);
+    
+    // Check if we have a valid template
+    if (!has_valid_template_unsafe()) {
+        m_logger->debug("[TemplateInterface] No active template to check");
+        return false;
+    }
+    
+    // Only check if this is the same channel as our template
+    if (m_current_template.block.nChannel != channel) {
+        m_logger->debug("[TemplateInterface] Template is for channel {}, update is for channel {} - no action needed",
+            m_current_template.block.nChannel, channel);
+        return false;
+    }
+    
+    // Check if template is stale based on channel height
+    // Template builds NEXT block, so template channel height = node height + 1
+    // Template is stale if: node_channel_height != (template_channel_height - 1)
+    if (m_current_template.nChannelHeight == 0) {
+        m_logger->debug("[TemplateInterface] Template channel height not yet set (pending finalization)");
+        return false;
+    }
+    
+    uint32_t expected_node_height = m_current_template.nChannelHeight - 1;
+    
+    if (new_channel_height != expected_node_height) {
+        m_logger->info("[TemplateInterface] ⚠ Channel {} height mismatch detected!", channel);
+        m_logger->info("[TemplateInterface]   Expected node height: {}", expected_node_height);
+        m_logger->info("[TemplateInterface]   Actual node height:   {}", new_channel_height);
+        m_logger->info("[TemplateInterface]   → Another {} block was mined",
+            (channel == 1) ? "Prime" : (channel == 2) ? "Hash" : "Stake");
+        m_logger->info("[TemplateInterface] ✗ Discarding stale template (channel-specific staleness)");
+        
+        discard_template_unsafe("Channel height advanced");
+        m_templates_expired_height.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    
+    m_logger->debug("[TemplateInterface] ✓ Template is FRESH - channel height matches");
+    return false;
+}
+
+void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    
+    if (m_current_template.state == TemplateState::EMPTY) {
+        m_logger->warn("[TemplateInterface] Cannot set channel height - no active template");
+        return;
+    }
+    
+    m_current_template.nChannelHeight = channel_height;
+    m_logger->info("[TemplateInterface] ✓ Template channel height set to {}", channel_height);
 }
 
 void MiningTemplateInterface::discard_template(const std::string& reason)

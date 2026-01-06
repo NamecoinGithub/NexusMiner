@@ -80,6 +80,11 @@ public:
         uint32_t session_id;        // Falcon session ID
         std::string source_endpoint;// Node endpoint that sent template
         BlockFormat format;         // Block format (Tritium/Legacy/Compact)
+        
+        // Multi-channel height tracking (LLL-TAO PR #135 client-side integration)
+        uint32_t nChannelHeight;    // Channel-specific height (CRITICAL for staleness detection)
+                                    // Only increments when THIS channel mines a block
+                                    // Examples: Prime channel: 2165443, Hash channel: 4165001
     };
     
     /**
@@ -216,6 +221,31 @@ public:
      * @return true if template was discarded due to height change
      */
     bool update_height(uint32_t new_height);
+    
+    /**
+     * @brief Update channel-specific height (multi-channel staleness detection)
+     * 
+     * Called from GET_ROUND polling with enhanced response (LLL-TAO PR #135).
+     * Checks if template's channel height has advanced, auto-discards if stale.
+     * 
+     * This is the PRIMARY staleness detection method for multi-channel mining.
+     * Templates should only be discarded when THEIR SPECIFIC CHANNEL advances.
+     * 
+     * @param channel Channel number (1=Prime, 2=Hash, 3=Stake)
+     * @param new_channel_height Current channel height from node
+     * @return true if template was discarded due to channel height change
+     */
+    bool update_channel_height(uint32_t channel, uint32_t new_channel_height);
+    
+    /**
+     * @brief Set the channel height for the current template
+     * 
+     * Called when template is finalized after receiving GET_ROUND response.
+     * Template builds NEXT block, so channel height = node height + 1.
+     * 
+     * @param channel_height Channel height for the template
+     */
+    void set_channel_height(uint32_t channel_height);
     
     /**
      * @brief Discard current template with reason

@@ -36,10 +36,16 @@ public:
 
     void process_messages(Packet packet, std::shared_ptr<network::Connection> connection) override;
     
-    // GET_ROUND protocol support (Template Staleness Prevention - LLL-TAO PR #131)
+    // GET_ROUND protocol support (Multi-Channel Height Tracking - LLL-TAO PR #135 client-side)
     struct RoundStatus {
         bool is_new_round;      // true if NEW_ROUND (204), false if OLD_ROUND (205)
-        uint32_t height;        // Current blockchain height
+        uint32_t height;        // Current unified blockchain height
+        
+        // Multi-channel heights (LLL-TAO PR #135 enhanced GET_ROUND response)
+        uint32_t prime_height;  // Prime channel height (channel 1)
+        uint32_t hash_height;   // Hash channel height (channel 2)
+        uint32_t stake_height;  // Stake channel height (channel 3)
+        bool has_channel_heights; // True if enhanced response received (16 bytes)
     };
     network::Shared_payload send_get_round();
     RoundStatus get_last_round_status() const { return m_last_round_status; }

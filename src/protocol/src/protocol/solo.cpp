@@ -99,7 +99,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_connection{nullptr}
 , m_reward_address{""}  // Empty until configured
 , m_reward_bound{false}  // Not bound until successful MINER_REWARD_RESULT
-, m_last_round_status{false, 0}  // Initialize GET_ROUND status
+, m_last_round_status{false, 0, 0, 0, 0, false}  // Initialize GET_ROUND status (with channel heights)
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -1184,28 +1184,72 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             connection->transmit(work_payload);
         }
     }
-    // Handle NEW_ROUND response (Template Staleness Prevention - LLL-TAO PR #131)
+    // Handle NEW_ROUND response (Multi-Channel Height Tracking - LLL-TAO PR #135 client-side)
     else if (packet.m_header == Packet::NEW_ROUND)
     {
         // NEW_ROUND indicates height has changed
-        // Payload: [height(4 bytes, big-endian)]
-        if (!packet.m_data || packet.m_length != 4) {
-            m_logger->warn("[Solo GET_ROUND] NEW_ROUND packet has invalid data or length != 4 (got: {})", 
+        // Enhanced Payload (PR #135): [unified_height(4)] [prime_height(4)] [hash_height(4)] [stake_height(4)] (16 bytes total)
+        // Legacy Payload (pre-PR #135): [height(4 bytes)] (4 bytes total)
+        
+        if (!packet.m_data || (packet.m_length != 4 && packet.m_length != 16)) {
+            m_logger->warn("[Solo GET_ROUND] NEW_ROUND packet has invalid length (expected 4 or 16, got: {})", 
                 packet.m_length);
             return;
         }
         
-        uint32_t new_height = bytes2uint(*packet.m_data);
+        bool fEnhancedResponse = (packet.m_length == 16);
         
-        m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND received - Height: {}", new_height);
+        // Always read unified height (first 4 bytes, big-endian)
+        uint32_t new_height = bytes2uint(*packet.m_data);
         
         // Update round status
         m_last_round_status.is_new_round = true;
         m_last_round_status.height = new_height;
+        m_last_round_status.has_channel_heights = fEnhancedResponse;
         
-        // Update template interface height (auto-discards if height mismatch)
+        if (fEnhancedResponse) {
+            // Enhanced response: parse channel heights (all big-endian)
+            if (packet.m_data->size() >= 16) {
+                m_last_round_status.prime_height = bytes2uint(*packet.m_data, 4);
+                m_last_round_status.hash_height = bytes2uint(*packet.m_data, 8);
+                m_last_round_status.stake_height = bytes2uint(*packet.m_data, 12);
+                
+                m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (enhanced) - Unified: {}, Prime: {}, Hash: {}, Stake: {}",
+                    new_height, m_last_round_status.prime_height, 
+                    m_last_round_status.hash_height, m_last_round_status.stake_height);
+            }
+        } else {
+            // Legacy response: only unified height
+            m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (legacy) - Height: {} (old node, no channel heights)",
+                new_height);
+            m_logger->debug("[Solo GET_ROUND] Falling back to unified height staleness detection only");
+        }
+        
+        // Update template interface
         if (m_template_interface) {
-            bool template_discarded = m_template_interface->update_height(new_height);
+            bool template_discarded = false;
+            
+            if (fEnhancedResponse) {
+                // PRIMARY: Channel-specific staleness check
+                uint32_t channel = m_template_interface->get_channel();
+                uint32_t node_channel_height = 0;
+                
+                if (channel == 1) {
+                    node_channel_height = m_last_round_status.prime_height;
+                } else if (channel == 2) {
+                    node_channel_height = m_last_round_status.hash_height;
+                } else {
+                    m_logger->warn("[Solo GET_ROUND] Unknown channel: {}", channel);
+                }
+                
+                if (node_channel_height > 0) {
+                    template_discarded = m_template_interface->update_channel_height(channel, node_channel_height);
+                }
+            } else {
+                // FALLBACK: Unified height-based staleness (legacy nodes)
+                template_discarded = m_template_interface->update_height(new_height);
+            }
+            
             if (template_discarded) {
                 m_logger->info("[Solo GET_ROUND] Template discarded due to height change");
                 
@@ -1220,26 +1264,75 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
     }
-    // Handle OLD_ROUND response (Template Staleness Prevention - LLL-TAO PR #131)
+    // Handle OLD_ROUND response (Multi-Channel Height Tracking - LLL-TAO PR #135 client-side)
     else if (packet.m_header == Packet::OLD_ROUND)
     {
         // OLD_ROUND indicates height unchanged
-        // Payload: [height(4 bytes, big-endian)]
-        if (!packet.m_data || packet.m_length != 4) {
-            m_logger->warn("[Solo GET_ROUND] OLD_ROUND packet has invalid data or length != 4 (got: {})", 
+        // Enhanced Payload (PR #135): [unified_height(4)] [prime_height(4)] [hash_height(4)] [stake_height(4)] (16 bytes total)
+        // Legacy Payload (pre-PR #135): [height(4 bytes)] (4 bytes total)
+        
+        if (!packet.m_data || (packet.m_length != 4 && packet.m_length != 16)) {
+            m_logger->warn("[Solo GET_ROUND] OLD_ROUND packet has invalid length (expected 4 or 16, got: {})", 
                 packet.m_length);
             return;
         }
         
-        uint32_t current_height = bytes2uint(*packet.m_data);
+        bool fEnhancedResponse = (packet.m_length == 16);
         
-        m_logger->debug("[Solo GET_ROUND] OLD_ROUND received - Height: {} (unchanged)", current_height);
+        // Always read unified height (first 4 bytes, big-endian)
+        uint32_t current_height = bytes2uint(*packet.m_data);
         
         // Update round status
         m_last_round_status.is_new_round = false;
         m_last_round_status.height = current_height;
+        m_last_round_status.has_channel_heights = fEnhancedResponse;
         
-        // No action needed - continue mining on current template
+        if (fEnhancedResponse) {
+            // Enhanced response: parse channel heights (all big-endian)
+            if (packet.m_data->size() >= 16) {
+                m_last_round_status.prime_height = bytes2uint(*packet.m_data, 4);
+                m_last_round_status.hash_height = bytes2uint(*packet.m_data, 8);
+                m_last_round_status.stake_height = bytes2uint(*packet.m_data, 12);
+                
+                m_logger->debug("[Solo GET_ROUND] ✓ OLD_ROUND (enhanced) - Unified: {}, Prime: {}, Hash: {}, Stake: {}",
+                    current_height, m_last_round_status.prime_height, 
+                    m_last_round_status.hash_height, m_last_round_status.stake_height);
+                
+                // Validate channel height (template should still be fresh)
+                if (m_template_interface) {
+                    uint32_t channel = m_template_interface->get_channel();
+                    uint32_t node_channel_height = 0;
+                    
+                    if (channel == 1) {
+                        node_channel_height = m_last_round_status.prime_height;
+                    } else if (channel == 2) {
+                        node_channel_height = m_last_round_status.hash_height;
+                    }
+                    
+                    if (node_channel_height > 0) {
+                        // This should not discard template if everything is working correctly
+                        bool template_discarded = m_template_interface->update_channel_height(channel, node_channel_height);
+                        
+                        if (template_discarded) {
+                            m_logger->warn("[Solo GET_ROUND] Unexpected: Template discarded on OLD_ROUND (race condition?)");
+                            
+                            // Request fresh template
+                            if (connection) {
+                                auto work_payload = get_work();
+                                if (work_payload && !work_payload->empty()) {
+                                    connection->transmit(work_payload);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Legacy response: only unified height
+            m_logger->debug("[Solo GET_ROUND] ✓ OLD_ROUND (legacy) - Height: {} (unchanged)", current_height);
+        }
+        
+        // No action needed for OLD_ROUND - continue mining on current template
     }
     else if (packet.m_header == Packet::MINER_AUTH_CHALLENGE)
     {
