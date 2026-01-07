@@ -51,6 +51,9 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     // Note: Tritium blocks no longer use separate nChannel offset - it's in sequential order
     constexpr std::size_t LEGACY_CHANNEL_OFFSET = 196;
     
+    // Sanity check threshold for mainnet block height (conservative lower bound)
+    constexpr uint32_t MAINNET_MIN_HEIGHT = 1000000;
+    
     // Get logger for detailed deserialization logging (cached to avoid repeated lookups)
     static auto logger = spdlog::get("logger");
     if (!logger) {
@@ -238,9 +241,9 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
             block.nHeight);
         
         // Sanity check for height (mainnet is past 6M blocks)
-        if (block.nHeight < 1000000) {
-            logger->warn("[Deserialize] ⚠️  Suspicious nHeight: {} (expected > 1000000 for mainnet)",
-                block.nHeight);
+        if (block.nHeight < MAINNET_MIN_HEIGHT) {
+            logger->warn("[Deserialize] ⚠️  Suspicious nHeight: {} (expected > {} for mainnet)",
+                block.nHeight, MAINNET_MIN_HEIGHT);
         }
         
         // ✅ 6. nBits (4 bytes, calculated offset: 200+4=204) - THEN READ THIS!
@@ -255,9 +258,10 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         // ✅ 7. nNonce (8 bytes, calculated offset: 204+4=208) - FIXED TO 8 BYTES!
         size_t nonce_offset = offset;
         block.nNonce = read_u64();
+        // Log all 8 bytes of nNonce (already validated by read_u64)
         std::ostringstream nonce_hex;
         nonce_hex << std::hex << std::setfill('0');
-        for (size_t i = 0; i < 8 && (nonce_offset + i) < data.size(); ++i) {
+        for (size_t i = 0; i < 8; ++i) {
             nonce_hex << std::setw(2) << static_cast<unsigned int>(data[nonce_offset + i]) << " ";
         }
         logger->info("[Deserialize] Bytes {}-{} (nNonce): {} -> uint64: 0x{:016x}",
