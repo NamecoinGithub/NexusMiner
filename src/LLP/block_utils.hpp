@@ -19,8 +19,13 @@ namespace llp_utils {
  * This function handles both Tritium and Legacy block formats:
  * 
  * Tritium blocks (216 bytes):
- *   - Full serialized block with nChannel at offset 211
- *   - Used by modern LLL-TAO nodes
+ *   [0-3]     nVersion (4 bytes)
+ *   [4-131]   hashPrevBlock (128 bytes)
+ *   [132-195] hashMerkleRoot (64 bytes)
+ *   [196-199] nChannel (4 bytes)      ← READ FIRST!
+ *   [200-203] nHeight (4 bytes)       ← THEN THIS!
+ *   [204-207] nBits (4 bytes)         ← THEN THIS!
+ *   [208-215] nNonce (8 bytes)        ← FINALLY THIS!
  * 
  * Legacy blocks (220+ bytes):
  *   - Full serialized block with nChannel at offset 196
@@ -43,8 +48,11 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     constexpr std::size_t MIN_SIZE = 92;
     constexpr std::size_t TRITIUM_BLOCK_SIZE = 216;
     constexpr std::size_t LEGACY_BLOCK_MIN_SIZE = 220;
-    constexpr std::size_t TRITIUM_CHANNEL_OFFSET = 211;
+    // Note: Tritium blocks no longer use separate nChannel offset - it's in sequential order
     constexpr std::size_t LEGACY_CHANNEL_OFFSET = 196;
+    
+    // Sanity check threshold for mainnet block height (conservative lower bound)
+    constexpr uint32_t MAINNET_MIN_HEIGHT = 1000000;
     
     // Get logger for detailed deserialization logging (cached to avoid repeated lookups)
     static auto logger = spdlog::get("logger");
@@ -75,7 +83,7 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     std::string block_type;
     if (data.size() == TRITIUM_BLOCK_SIZE) {
         block_type = "Tritium (216 bytes)";
-        logger->info("║  Block type: {} - nChannel NOT serialized (set by caller)", block_type);
+        logger->info("║  Block type: {} - nChannel IS serialized at offset 196", block_type);
     } else if (data.size() >= LEGACY_BLOCK_MIN_SIZE) {
         block_type = "Legacy (220+ bytes)";
         logger->info("║  Block type: {} - nChannel at offset {}", block_type, LEGACY_CHANNEL_OFFSET);
@@ -159,21 +167,18 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     
     ::LLP::CBlock block;
     
-    // Tritium-specific field sizes
-    constexpr std::size_t TRITIUM_NONCE_SIZE = 7;   // 7 bytes for Tritium nNonce
-    constexpr std::size_t TRITIUM_TIME_SIZE = 1;    // 1 byte for Tritium nTime
-    
     // Detect block type by size (check Tritium first as it's more specific)
     bool is_tritium = (data.size() == TRITIUM_BLOCK_SIZE);
     bool is_legacy = (!is_tritium && data.size() >= LEGACY_BLOCK_MIN_SIZE);
     
     if (is_tritium) {
-        // Tritium block (216 bytes) with nChannel at offset 211
+        // Tritium block (216 bytes) - CORRECTED FORMAT
         // Structure: nVersion(4) + hashPrevBlock(128) + hashMerkleRoot(64) + 
-        //            nHeight(4) + nBits(4) + nNonce(7) + nChannel(4) + nTime(1)
-        // Total: 4+128+64+4+4+7+4+1 = 216 bytes
+        //            nChannel(4) + nHeight(4) + nBits(4) + nNonce(8)
+        // Total: 4+128+64+4+4+4+8 = 216 bytes
         
         logger->info("[Deserialize] ═══ TRITIUM BLOCK FORMAT (216 bytes) ═══");
+        logger->info("[Deserialize] ✅ CORRECTED: Reading fields in proper order");
         
         // 1. nVersion (4 bytes at offset 0)
         size_t version_offset = offset;
@@ -208,7 +213,25 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         logger->info("[Deserialize] Bytes {}-{} (hashMerkleRoot): {} ... (64 bytes total)",
             merkle_offset, merkle_offset + 63, merkle_hex.str());
         
-        // 4. nHeight (4 bytes, calculated offset: 4+128+64=196)
+        // ✅ 4. nChannel (4 bytes, calculated offset: 4+128+64=196) - READ THIS FIRST!
+        size_t channel_offset = offset;
+        block.nChannel = read_u32();
+        logger->info("[Deserialize] Bytes {}-{} (nChannel): {:02x} {:02x} {:02x} {:02x} -> uint32: {}",
+            channel_offset, channel_offset + 3,
+            data[channel_offset], data[channel_offset + 1],
+            data[channel_offset + 2], data[channel_offset + 3],
+            block.nChannel);
+        
+        // Validate nChannel value
+        if (block.nChannel != 1 && block.nChannel != 2) {
+            logger->warn("[Deserialize] ⚠️  Unexpected nChannel value: {} (expected 1=Prime or 2=Hash)",
+                block.nChannel);
+        } else {
+            logger->info("[Deserialize] ✓ nChannel valid: {} ({})",
+                block.nChannel, (block.nChannel == 1) ? "Prime" : "Hash");
+        }
+        
+        // ✅ 5. nHeight (4 bytes, calculated offset: 196+4=200) - THEN READ THIS!
         size_t height_offset = offset;
         block.nHeight = read_u32();
         logger->info("[Deserialize] Bytes {}-{} (nHeight): {:02x} {:02x} {:02x} {:02x} -> uint32: {}",
@@ -217,7 +240,13 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
             data[height_offset + 2], data[height_offset + 3],
             block.nHeight);
         
-        // 5. nBits (4 bytes, calculated offset: 196+4=200)
+        // Sanity check for height (mainnet is past 6M blocks)
+        if (block.nHeight < MAINNET_MIN_HEIGHT) {
+            logger->warn("[Deserialize] ⚠️  Suspicious nHeight: {} (expected > {} for mainnet)",
+                block.nHeight, MAINNET_MIN_HEIGHT);
+        }
+        
+        // ✅ 6. nBits (4 bytes, calculated offset: 200+4=204) - THEN READ THIS!
         size_t bits_offset = offset;
         block.nBits = read_u32();
         logger->info("[Deserialize] Bytes {}-{} (nBits): {:02x} {:02x} {:02x} {:02x} -> uint32: 0x{:08x}",
@@ -226,44 +255,23 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
             data[bits_offset + 2], data[bits_offset + 3],
             block.nBits);
         
-        // 6. nNonce (7 bytes, calculated offset: 200+4=204)
-        // Tritium uses 7-byte nNonce instead of standard 8 bytes
+        // ✅ 7. nNonce (8 bytes, calculated offset: 204+4=208) - FIXED TO 8 BYTES!
         size_t nonce_offset = offset;
-        std::uint64_t nonce_bytes = 0;
+        block.nNonce = read_u64();
+        // Log all 8 bytes of nNonce (already validated by read_u64)
         std::ostringstream nonce_hex;
         nonce_hex << std::hex << std::setfill('0');
-        for (std::size_t i = 0; i < TRITIUM_NONCE_SIZE; ++i) {
-            nonce_hex << std::setw(2) << static_cast<unsigned int>(data[offset]) << " ";
-            nonce_bytes = (nonce_bytes << 8) | data[offset++];
+        for (size_t i = 0; i < 8; ++i) {
+            nonce_hex << std::setw(2) << static_cast<unsigned int>(data[nonce_offset + i]) << " ";
         }
-        block.nNonce = nonce_bytes;
         logger->info("[Deserialize] Bytes {}-{} (nNonce): {} -> uint64: 0x{:016x}",
-            nonce_offset, nonce_offset + 6, nonce_hex.str(), block.nNonce);
+            nonce_offset, nonce_offset + 7, nonce_hex.str(), block.nNonce);
         
-        // 7. nChannel - NOT INCLUDED in serialized Tritium block template!
-        // The mining template sent by the node does NOT include the channel field.
-        // The miner already knows what channel it's mining (from connection setup).
-        // The caller (MiningTemplateInterface) will set this from m_channel.
-        logger->info("[Deserialize] ═══ nChannel Field (Tritium) ═══");
-        logger->info("[Deserialize] nChannel is NOT included in Tritium block template serialization");
-        logger->info("[Deserialize] Setting nChannel to 0 (placeholder)");
-        logger->info("[Deserialize] Caller MUST set nChannel from connection context");
-        
-        block.nChannel = 0;  // Placeholder - caller must set from m_channel
-        
-        // 8. nTime (1 byte at offset 211, after 7-byte nNonce)
-        // Tritium uses 1-byte nTime instead of standard 4 bytes
-        // Store in uint32 field (will be small value)
-        // Current offset should be 211 after reading 7-byte nNonce
-        if (offset < data.size()) {
-            block.nTime = data[offset];
-            logger->info("[Deserialize] Byte {} (nTime): {:02x} -> uint32: {}",
-                offset, data[offset], block.nTime);
-            offset++; // Move past nTime
-        } else {
-            block.nTime = 0;
-            logger->warn("[Deserialize] nTime not present in payload, defaulting to 0");
-        }
+        // 8. nTime - Not present in 216-byte Tritium template
+        // The 216-byte format ends at nNonce (offset 215)
+        // nTime will be set by the miner when creating the block
+        block.nTime = 0;
+        logger->info("[Deserialize] nTime not in 216-byte Tritium template (set by miner during mining)");
         
     } else if (is_legacy) {
         // Legacy block (220+ bytes) with nChannel at offset 196
@@ -514,8 +522,7 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     logger->info("╠═══════════════════════════════════════════════════════════════════╣");
     logger->info("║  nVersion:  {}", block.nVersion);
     logger->info("║  nChannel:  {} ({})", block.nChannel, 
-        (block.nChannel == 0) ? "NOT SET - caller must set from connection" :
-        (block.nChannel == 1) ? "prime" : (block.nChannel == 2) ? "hash" : "INVALID");
+        (block.nChannel == 1) ? "Prime" : (block.nChannel == 2) ? "Hash" : "INVALID");
     logger->info("║  nHeight:   {}", block.nHeight);
     logger->info("║  nBits:     0x{:08x}", block.nBits);
     logger->info("║  nNonce:    0x{:016x}", block.nNonce);
@@ -529,7 +536,7 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
  * Serialize a full block for submission to LLL-TAO node.
  * 
  * Serializes the block in the format expected by the node based on block type:
- * - Tritium: 216 bytes with 7-byte nNonce and 1-byte nTime
+ * - Tritium: 216 bytes with 8-byte nNonce (nTime not included in template)
  * - Legacy: 220 bytes with 8-byte nNonce and 4-byte nTime
  * 
  * @param block The block to serialize
@@ -561,7 +568,10 @@ inline std::vector<std::uint8_t> serialize_full_block(::LLP::CBlock const& block
     };
     
     if (is_tritium) {
-        // Tritium block format (216 bytes)
+        // Tritium block format (216 bytes) - CORRECTED ORDER
+        // Structure: nVersion(4) + hashPrevBlock(128) + hashMerkleRoot(64) + 
+        //            nChannel(4) + nHeight(4) + nBits(4) + nNonce(8)
+        // Total: 4+128+64+4+4+4+8 = 216 bytes
         data.reserve(216);
         
         // 1. nVersion (4 bytes)
@@ -575,22 +585,17 @@ inline std::vector<std::uint8_t> serialize_full_block(::LLP::CBlock const& block
         auto merkle_bytes = block.hashMerkleRoot.GetBytes();
         data.insert(data.end(), merkle_bytes.begin(), merkle_bytes.end());
         
-        // 4. nHeight (4 bytes)
-        write_u32(block.nHeight);
-        
-        // 5. nBits (4 bytes)
-        write_u32(block.nBits);
-        
-        // 6. nNonce (7 bytes for Tritium)
-        for (int i = 6; i >= 0; --i) {
-            data.push_back((block.nNonce >> (i * 8)) & 0xFF);
-        }
-        
-        // 7. nChannel (4 bytes)
+        // ✅ 4. nChannel (4 bytes at offset 196) - WRITE THIS FIRST!
         write_u32(block.nChannel);
         
-        // 8. nTime (1 byte for Tritium)
-        data.push_back(block.nTime & 0xFF);
+        // ✅ 5. nHeight (4 bytes at offset 200) - THEN THIS!
+        write_u32(block.nHeight);
+        
+        // ✅ 6. nBits (4 bytes at offset 204) - THEN THIS!
+        write_u32(block.nBits);
+        
+        // ✅ 7. nNonce (8 bytes at offset 208) - FIXED TO 8 BYTES!
+        write_u64(block.nNonce);
         
     } else {
         // Legacy block format (220 bytes)
