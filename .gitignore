@@ -20,3 +20,5 @@ include/gmpxx.h
 *.log
 _codeql_detected_source_root
 _codeql_build_dir/
+test_nchannel
+test_nchannel_fix.cpp
