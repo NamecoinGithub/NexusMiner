@@ -14,6 +14,10 @@ namespace network
     class Endpoint;
     class Connection;
 }
+namespace protocol
+{
+    class Solo;
+}
 namespace stats
 {
     class Printer;
@@ -38,7 +42,8 @@ public:
     void start_stats_printer_timer(std::uint16_t timer_interval, std::vector<std::shared_ptr<stats::Printer>> stats_printers);
     
     // Template Staleness Prevention (LLL-TAO PR #131 Client-Side Integration)
-    void start_get_round_timer(std::uint16_t timer_interval, std::weak_ptr<network::Connection> connection);
+    void start_get_round_timer(std::uint16_t timer_interval, std::weak_ptr<network::Connection> connection,
+        std::weak_ptr<protocol::Solo> solo_protocol);
 
     void stop();
 
@@ -51,7 +56,8 @@ private:
     chrono::Timer::Handler stats_collector_handler(std::uint16_t stats_collector_interval, std::vector<std::shared_ptr<Worker>> workers, 
         std::shared_ptr<stats::Collector> stats_collector);
     chrono::Timer::Handler stats_printer_handler(std::uint16_t stats_printer_interval, std::vector<std::shared_ptr<stats::Printer>> stats_printers);
-    chrono::Timer::Handler get_round_handler(std::uint16_t get_round_interval, std::weak_ptr<network::Connection> connection);
+    chrono::Timer::Handler get_round_handler(std::uint16_t get_round_interval, std::weak_ptr<network::Connection> connection,
+        std::weak_ptr<protocol::Solo> solo_protocol);
 
     chrono::Timer_factory::Sptr m_timer_factory;
     chrono::Timer::Uptr m_connection_retry_timer;

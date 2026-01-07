@@ -6,6 +6,7 @@
 #include "stats/stats_collector.hpp"
 #include "stats/stats_printer.hpp"
 #include "worker.hpp"
+#include "protocol/solo.hpp"
 
 namespace nexusminer
 {
@@ -49,9 +50,10 @@ void Timer_manager::start_stats_printer_timer(std::uint16_t timer_interval, std:
     m_stats_printer_timer->start(chrono::Seconds(timer_interval), stats_printer_handler(timer_interval, std::move(stats_printers)));
 }
 
-void Timer_manager::start_get_round_timer(std::uint16_t timer_interval, std::weak_ptr<network::Connection> connection)
+void Timer_manager::start_get_round_timer(std::uint16_t timer_interval, std::weak_ptr<network::Connection> connection,
+    std::weak_ptr<protocol::Solo> solo_protocol)
 {
-    m_get_round_timer->start(chrono::Seconds(timer_interval), get_round_handler(timer_interval, std::move(connection)));
+    m_get_round_timer->start(chrono::Seconds(timer_interval), get_round_handler(timer_interval, std::move(connection), std::move(solo_protocol)));
 }
 
 void Timer_manager::stop()
@@ -166,9 +168,10 @@ chrono::Timer::Handler Timer_manager::stats_printer_handler(std::uint16_t stats_
     }; 
 }
 
-chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_interval, std::weak_ptr<network::Connection> connection)
+chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_interval, std::weak_ptr<network::Connection> connection,
+    std::weak_ptr<protocol::Solo> solo_protocol)
 {
-    return [this, connection, get_round_interval](bool canceled)
+    return [this, connection, solo_protocol, get_round_interval](bool canceled)
     {
         if (canceled)	// don't do anything if the timer has been canceled
         {
@@ -176,15 +179,22 @@ chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_
         }
 
         auto connection_shared = connection.lock();
-        if(connection_shared)
+        auto protocol_shared = solo_protocol.lock();
+        
+        if(connection_shared && protocol_shared)
         {
-            // Send GET_ROUND request (opcode 133)
-            Packet packet_get_round{ Packet::GET_ROUND };
-            connection_shared->transmit(packet_get_round.get_bytes());
+            // Intelligent polling: only send if protocol says it's time
+            if (protocol_shared->should_send_get_round())
+            {
+                // Send GET_ROUND request (opcode 133)
+                Packet packet_get_round{ Packet::GET_ROUND };
+                connection_shared->transmit(packet_get_round.get_bytes());
+            }
 
             // restart timer - use weak_ptr to avoid move invalidation
+            // Timer wakes up frequently (1s) but protocol controls actual sending
             m_get_round_timer->start(chrono::Seconds(get_round_interval), 
-                get_round_handler(get_round_interval, connection));
+                get_round_handler(get_round_interval, connection, solo_protocol));
         }
     }; 
 }

@@ -66,6 +66,9 @@ public:
     network::Shared_payload send_get_round();
     RoundStatus get_last_round_status() const { return m_last_round_status; }
     
+    // Intelligent polling: Check if GET_ROUND should be sent now
+    bool should_send_get_round() const { return const_cast<Solo*>(this)->should_poll_get_round(); }
+    
     // Falcon miner authentication
     void set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_t> const& privkey);
     bool is_authenticated() const { return m_authenticated; }
@@ -250,6 +253,32 @@ private:
     // but doesn't duplicate Block storage - blocks live in the blockchain database.
     std::unique_ptr<mining::PrimeClientManager> m_prime_manager;
     std::unique_ptr<mining::HashClientManager> m_hash_manager;
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // GET_ROUND INTELLIGENT POLLING STATE
+    // ═══════════════════════════════════════════════════════════════════════
+    
+    // Timing state
+    std::chrono::steady_clock::time_point m_last_get_round_time;
+    uint32_t m_current_poll_interval_ms;  // Current interval (adaptive)
+    
+    // Configuration constants
+    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 5000;     // 5 seconds minimum
+    static constexpr uint32_t POLL_INTERVAL_MAX_MS = 60000;    // 60 seconds maximum
+    static constexpr float BACKOFF_MULTIPLIER = 1.5f;          // Exponential backoff rate
+    static constexpr uint32_t UNIFIED_HEIGHT_DELTA_TRIGGER = 5; // Trigger fresh template if unified moves 5+ blocks
+    static constexpr uint32_t POST_TEMPLATE_POLL_DELAY_MS = 100; // Wait 100ms after template before polling
+    
+    // State flags
+    bool m_needs_initial_round_check;  // Set true when new template received
+    uint32_t m_template_unified_height;    // Unified height when template was created
+    
+    // Helper methods for intelligent polling
+    bool should_poll_get_round();
+    void on_new_round_received(uint32_t new_unified_height);
+    void on_old_round_received();
+    void on_template_received(uint32_t template_height);
+    void check_unified_height_delta(uint32_t current_unified_height);
 };
 
 }

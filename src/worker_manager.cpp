@@ -425,11 +425,19 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
                     self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
                     
-                    // Start GET_ROUND polling for template staleness prevention (LLL-TAO PR #131)
-                    constexpr uint16_t GET_ROUND_INTERVAL = 5;  // Poll every 5 seconds
-                    self->m_timer_manager.start_get_round_timer(GET_ROUND_INTERVAL, self->m_connection);
-                    self->m_logger->info("[Solo GET_ROUND] Polling timer started (interval: {}s) - Template staleness prevention active", 
-                                        GET_ROUND_INTERVAL);
+                    // Start GET_ROUND intelligent polling timer (LLL-TAO PR #131 + Intelligent Polling)
+                    // Timer wakes up every 1 second, but protocol decides if GET_ROUND should actually be sent
+                    // This implements exponential backoff (5s → 60s) and event-driven polling
+                    constexpr uint16_t GET_ROUND_TIMER_INTERVAL = 1;  // Wake up every 1 second to check
+                    auto solo_protocol_ptr = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol);
+                    if (solo_protocol_ptr) {
+                        self->m_timer_manager.start_get_round_timer(GET_ROUND_TIMER_INTERVAL, self->m_connection, solo_protocol_ptr);
+                        self->m_logger->info("[Solo Poll] Intelligent polling timer started (check interval: {}s, adaptive: 5s-60s)", 
+                                            GET_ROUND_TIMER_INTERVAL);
+                        self->m_logger->info("[Solo Poll] Uses exponential backoff + event-driven polling to minimize node spam");
+                    } else {
+                        self->m_logger->error("[Solo Poll] Failed to cast protocol to Solo - polling timer not started");
+                    }
                     
                     // Note: Block handler already registered in Worker_manager constructor
                 }));

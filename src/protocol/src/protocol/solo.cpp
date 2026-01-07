@@ -100,6 +100,10 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_reward_address{""}  // Empty until configured
 , m_reward_bound{false}  // Not bound until successful MINER_REWARD_RESULT
 , m_last_round_status{false, 0, 0, 0, 0, false}  // Initialize GET_ROUND status (with channel heights)
+, m_last_get_round_time{std::chrono::steady_clock::now()}  // Initialize to now
+, m_current_poll_interval_ms{POLL_INTERVAL_MIN_MS}  // Start at minimum interval (5s)
+, m_needs_initial_round_check{false}  // No template yet
+, m_template_unified_height{0}  // No template yet
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -1016,6 +1020,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Update height tracking
             m_current_height = tmpl->block.nHeight;
             
+            // Trigger intelligent polling: template received, will poll once after 100ms
+            on_template_received(tmpl->block.nHeight);
+            
             // Multi-channel height tracking: Request GET_ROUND immediately to finalize template
             // Template needs channel height before it can be used for mining
             if (m_template_interface->needs_channel_height_finalization()) {
@@ -1225,6 +1232,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_last_round_status.height = new_height;
         m_last_round_status.has_channel_heights = fEnhancedResponse;
         
+        // Call intelligent polling handler
+        on_new_round_received(new_height);
+        
         if (fEnhancedResponse) {
             // Enhanced response: parse channel heights (all big-endian)
             if (packet.m_data->size() >= 16) {
@@ -1302,6 +1312,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_last_round_status.is_new_round = false;
         m_last_round_status.height = current_height;
         m_last_round_status.has_channel_heights = fEnhancedResponse;
+        
+        // Call intelligent polling handler
+        on_old_round_received();
         
         if (fEnhancedResponse) {
             // Enhanced response: parse channel heights (all big-endian)
@@ -2423,6 +2436,97 @@ void Solo::handle_reward_result(const Packet& packet)
             m_logger->error("[Solo Reward] Closing connection due to reward binding failure");
             m_connection->close();
             m_connection = nullptr;  // Reset to prevent use-after-close
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// INTELLIGENT GET_ROUND POLLING IMPLEMENTATION
+// ═══════════════════════════════════════════════════════════════════════
+
+bool Solo::should_poll_get_round()
+{
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_last_get_round_time).count();
+    
+    // Case 1: Need initial round check after new template (wait 100ms)
+    if (m_needs_initial_round_check && elapsed_ms >= POST_TEMPLATE_POLL_DELAY_MS) {
+        m_logger->debug("[Solo Poll] Initial round check after new template");
+        m_last_get_round_time = now;
+        m_needs_initial_round_check = false;
+        return true;
+    }
+    
+    // Case 2: Current interval elapsed (exponential backoff)
+    if (elapsed_ms >= m_current_poll_interval_ms) {
+        m_logger->debug("[Solo Poll] Interval elapsed ({}ms), polling GET_ROUND", 
+            m_current_poll_interval_ms);
+        m_last_get_round_time = now;
+        return true;
+    }
+    
+    return false;  // Not time to poll yet
+}
+
+void Solo::on_new_round_received(uint32_t new_unified_height)
+{
+    // NEW_ROUND = block was found, reset to fast polling
+    m_current_poll_interval_ms = POLL_INTERVAL_MIN_MS;
+    m_logger->info("[Solo Poll] 🔔 NEW_ROUND received! Reset poll interval to {}ms", 
+        m_current_poll_interval_ms);
+    
+    // Check unified height delta
+    check_unified_height_delta(new_unified_height);
+}
+
+void Solo::on_old_round_received()
+{
+    // OLD_ROUND = nothing changed, back off polling
+    uint32_t old_interval = m_current_poll_interval_ms;
+    m_current_poll_interval_ms = std::min(
+        static_cast<uint32_t>(m_current_poll_interval_ms * BACKOFF_MULTIPLIER),
+        POLL_INTERVAL_MAX_MS
+    );
+    
+    if (m_current_poll_interval_ms != old_interval) {
+        m_logger->debug("[Solo Poll] OLD_ROUND: backing off interval {}ms → {}ms",
+            old_interval, m_current_poll_interval_ms);
+    }
+}
+
+void Solo::on_template_received(uint32_t template_height)
+{
+    // New template received, need to poll GET_ROUND once to finalize channel height
+    m_needs_initial_round_check = true;
+    m_template_unified_height = template_height;
+    m_last_get_round_time = std::chrono::steady_clock::now();  // Reset timer
+    m_logger->debug("[Solo Poll] Template received (height {}), will poll GET_ROUND in {}ms",
+        template_height, POST_TEMPLATE_POLL_DELAY_MS);
+}
+
+void Solo::check_unified_height_delta(uint32_t current_unified_height)
+{
+    if (m_template_unified_height == 0) {
+        return;  // No template yet
+    }
+    
+    // Check if unified height moved significantly (other channel found blocks)
+    if (current_unified_height > m_template_unified_height) {
+        uint32_t delta = current_unified_height - m_template_unified_height;
+        
+        if (delta >= UNIFIED_HEIGHT_DELTA_TRIGGER) {
+            m_logger->warn("[Solo Poll] ⚠️ Unified height moved {} blocks ({} → {})",
+                delta, m_template_unified_height, current_unified_height);
+            m_logger->warn("[Solo Poll]    Other channel(s) found blocks - requesting fresh template");
+            
+            // Request fresh template
+            if (m_template_interface) {
+                m_template_interface->discard_template("Unified height delta exceeded");
+            }
+            
+            // Trigger GET_BLOCK request
+            // (The main loop will see no valid template and request one)
         }
     }
 }
