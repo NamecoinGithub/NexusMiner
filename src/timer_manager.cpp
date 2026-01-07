@@ -191,7 +191,7 @@ chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_
                 connection_shared->transmit(packet_get_round.get_bytes());
             }
 
-            // restart timer - use weak_ptr to avoid move invalidation
+            // Restart timer - use weak_ptr to avoid move invalidation
             // Timer wakes up frequently (1s) but protocol controls actual sending
             m_get_round_timer->start(chrono::Seconds(get_round_interval), 
                 get_round_handler(get_round_interval, connection, solo_protocol));

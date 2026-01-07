@@ -67,7 +67,8 @@ public:
     RoundStatus get_last_round_status() const { return m_last_round_status; }
     
     // Intelligent polling: Check if GET_ROUND should be sent now
-    bool should_send_get_round() const { return const_cast<Solo*>(this)->should_poll_get_round(); }
+    // Note: This modifies internal timing state, so cannot be truly const
+    bool should_send_get_round() { return should_poll_get_round(); }
     
     // Falcon miner authentication
     void set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_t> const& privkey);

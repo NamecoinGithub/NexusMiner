@@ -2484,10 +2484,10 @@ void Solo::on_old_round_received()
 {
     // OLD_ROUND = nothing changed, back off polling
     uint32_t old_interval = m_current_poll_interval_ms;
-    m_current_poll_interval_ms = std::min(
-        static_cast<uint32_t>(m_current_poll_interval_ms * BACKOFF_MULTIPLIER),
-        POLL_INTERVAL_MAX_MS
-    );
+    // Integer arithmetic for 1.5x: interval + (interval / 2)
+    // This avoids floating-point precision issues
+    uint32_t new_interval = m_current_poll_interval_ms + (m_current_poll_interval_ms >> 1);
+    m_current_poll_interval_ms = std::min(new_interval, POLL_INTERVAL_MAX_MS);
     
     if (m_current_poll_interval_ms != old_interval) {
         m_logger->debug("[Solo Poll] OLD_ROUND: backing off interval {}ms → {}ms",
@@ -2524,6 +2524,9 @@ void Solo::check_unified_height_delta(uint32_t current_unified_height)
             if (m_template_interface) {
                 m_template_interface->discard_template("Unified height delta exceeded");
             }
+            
+            // Reset template height to prevent repeated triggers
+            m_template_unified_height = 0;
             
             // Trigger GET_BLOCK request
             // (The main loop will see no valid template and request one)
