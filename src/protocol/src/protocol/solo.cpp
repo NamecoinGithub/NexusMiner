@@ -1296,25 +1296,36 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // OLD_ROUND indicates height unchanged
         // Enhanced Payload (PR #135): [unified_height(4)] [prime_height(4)] [hash_height(4)] [stake_height(4)] (16 bytes total)
         // Legacy Payload (pre-PR #135): [height(4 bytes)] (4 bytes total)
+        // Empty Payload: Node may send OLD_ROUND with no data - still means "nothing changed"
         
-        if (!packet.m_data || (packet.m_length != 4 && packet.m_length != 16)) {
-            m_logger->warn("[Solo GET_ROUND] OLD_ROUND packet has invalid length (expected 4 or 16, got: {})", 
-                packet.m_length);
-            return;
+        m_logger->info("[Solo] ═══════════════════════════════════════════════════════════════");
+        m_logger->info("[Solo] RECEIVED PACKET: OLD_ROUND (0xcd)");
+        m_logger->info("[Solo]    Length: {} bytes", packet.m_data ? packet.m_data->size() : 0);
+        m_logger->info("[Solo] ═══════════════════════════════════════════════════════════════");
+        
+        // ✅ CRITICAL: Call intelligent polling handler FIRST
+        // OLD_ROUND with empty data still means "nothing changed" = back off
+        on_old_round_received();
+        
+        // Default values for legacy/empty response
+        uint32_t current_height = m_current_height;  // Use last known height
+        bool fEnhancedResponse = false;
+        
+        // Parse data only if available
+        if (packet.m_data && packet.m_data->size() >= 4) {
+            current_height = bytes2uint(*packet.m_data);
+            
+            if (packet.m_data->size() >= 16) {
+                fEnhancedResponse = true;
+            }
+        } else {
+            m_logger->debug("[Solo] OLD_ROUND with no data - using last known height {}", current_height);
         }
-        
-        bool fEnhancedResponse = (packet.m_length == 16);
-        
-        // Always read unified height (first 4 bytes, big-endian)
-        uint32_t current_height = bytes2uint(*packet.m_data);
         
         // Update round status
         m_last_round_status.is_new_round = false;
         m_last_round_status.height = current_height;
         m_last_round_status.has_channel_heights = fEnhancedResponse;
-        
-        // Call intelligent polling handler
-        on_old_round_received();
         
         if (fEnhancedResponse) {
             // Enhanced response: parse channel heights (all big-endian)
