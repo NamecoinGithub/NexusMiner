@@ -143,8 +143,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             m_logger->info("[Solo]   Channel:         {} ({})", tmpl.block.nChannel, channel_name);
             m_logger->info("[Solo]   Unified height:  {} (reference only)", tmpl.block.nHeight);
             if (tmpl.nChannelHeight > 0) {
-                m_logger->info("[Solo]   Channel height:  {} ← Mining for block {}", 
-                              tmpl.nChannelHeight, tmpl.nChannelHeight);
+                m_logger->info("[Solo]   Channel height:  {} (mining for next block)", tmpl.nChannelHeight);
             } else {
                 m_logger->info("[Solo]   Channel height:  (pending finalization via GET_ROUND)");
             }
@@ -2295,8 +2294,8 @@ bool Solo::sync_template_state(uint32_t unified_height, uint32_t channel_height)
     if (m_template_interface && m_template_interface->needs_channel_height_finalization()) {
         uint32_t template_channel_height = channel_height + 1;
         m_template_interface->set_channel_height(template_channel_height);
-        m_logger->info("[Solo Sync] ✓ Template finalized: channel height {} (mining for block {})", 
-            template_channel_height, template_channel_height);
+        m_logger->info("[Solo Sync] ✓ Template finalized: mining for channel height {}", 
+            template_channel_height);
     }
     
     // Step 4: Validate current template
