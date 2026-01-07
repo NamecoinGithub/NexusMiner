@@ -101,6 +101,17 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     // ═══════════════════════════════════════════════════════════════════════
     // 📥 TEMPLATE RECEIVED FROM NODE - Trust Node's nChannel Value
     // ═══════════════════════════════════════════════════════════════════════
+    
+    // Helper lambda for hex preview formatting (reduces code duplication)
+    auto format_hash_preview = [](const std::vector<uint8_t>& bytes, size_t preview_len = 8) -> std::string {
+        std::ostringstream hex;
+        hex << std::hex << std::setfill('0');
+        for (size_t i = 0; i < std::min(preview_len, bytes.size()); ++i) {
+            hex << std::setw(2) << static_cast<unsigned int>(bytes[i]);
+        }
+        return hex.str();
+    };
+    
     m_logger->info("[TemplateInterface] 📥 Template received from node:");
     m_logger->info("[TemplateInterface]   nVersion: {}", tmpl.block.nVersion);
     m_logger->info("[TemplateInterface]   nHeight: {}", tmpl.block.nHeight);
@@ -112,22 +123,12 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     m_logger->info("[TemplateInterface]   nBits: 0x{:08x}", tmpl.block.nBits);
     
     auto merkle_bytes = tmpl.block.hashMerkleRoot.GetBytes();
-    std::ostringstream merkle_preview;
-    merkle_preview << std::hex << std::setfill('0');
-    for (size_t i = 0; i < std::min(size_t(8), merkle_bytes.size()); ++i) {
-        merkle_preview << std::setw(2) << static_cast<unsigned int>(merkle_bytes[i]);
-    }
     m_logger->info("[TemplateInterface]   hashMerkleRoot: {}... ({} bytes)", 
-        merkle_preview.str(), merkle_bytes.size());
+        format_hash_preview(merkle_bytes), merkle_bytes.size());
     
     auto prev_bytes = tmpl.block.hashPrevBlock.GetBytes();
-    std::ostringstream prev_preview;
-    prev_preview << std::hex << std::setfill('0');
-    for (size_t i = 0; i < std::min(size_t(8), prev_bytes.size()); ++i) {
-        prev_preview << std::setw(2) << static_cast<unsigned int>(prev_bytes[i]);
-    }
     m_logger->info("[TemplateInterface]   hashPrevBlock: {}... ({} bytes)", 
-        prev_preview.str(), prev_bytes.size());
+        format_hash_preview(prev_bytes), prev_bytes.size());
     
     // ✅ CRITICAL: Do NOT modify any template fields from node
     // Node is authoritative for all template fields
@@ -468,47 +469,28 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     // VALIDATE nChannel (CRITICAL - Do NOT overwrite, only validate)
     // ═══════════════════════════════════════════════════════════════════════
     
-    // Validation 1: Check if channel is valid (1=Prime or 2=Hash)
-    if (tmpl.block.nChannel == 0) {
-        result.channel_valid = false;
-        result.is_valid = false;
-        result.error_message = "❌ Node sent template with nChannel=0 (invalid)";
-        m_logger->error("[TemplateInterface] {}", result.error_message);
-        m_logger->error("[TemplateInterface]   This is a NODE-side bug - template serialization failed");
-        m_logger->error("[TemplateInterface]   The node MUST set nChannel before sending template");
-        return result;  // Reject template immediately
-    }
-    
+    // Validation: Check if channel is valid (1=Prime or 2=Hash)
+    // Note: nChannel should never be 0 at this point because we set it for Tritium templates
+    // in read_template() before calling validate_template()
     if (tmpl.block.nChannel != 1 && tmpl.block.nChannel != 2) {
         result.channel_valid = false;
         result.is_valid = false;
-        result.error_message = "❌ Node sent template with invalid channel: " + 
+        result.error_message = "❌ Invalid channel value: " + 
             std::to_string(tmpl.block.nChannel);
         m_logger->error("[TemplateInterface] {}", result.error_message);
         m_logger->error("[TemplateInterface]   Expected: 1 (Prime) or 2 (Hash)");
         m_logger->error("[TemplateInterface]   Got: {}", tmpl.block.nChannel);
-        m_logger->error("[TemplateInterface]   This is a NODE-side bug");
+        m_logger->error("[TemplateInterface]   This indicates a bug in template handling");
         return result;  // Reject template immediately
     }
     
-    // Validation 2: Check if channel matches our connection preference
+    // Check if channel matches our connection preference (informational only)
     if (tmpl.block.nChannel != m_channel) {
-        // NOTE: This is a WARNING, not an ERROR
-        // The node is authoritative - we mine what it sends
-        m_logger->warn("[TemplateInterface] ⚠️  WARNING: Channel preference mismatch");
-        m_logger->warn("[TemplateInterface]   - Node sent: {} ({})", 
-            tmpl.block.nChannel,
-            (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
-        m_logger->warn("[TemplateInterface]   - Miner prefers: {} ({})",
-            static_cast<int>(m_channel), 
-            (m_channel == 1) ? "Prime" : "Hash");
-        m_logger->warn("[TemplateInterface]   - Mining what node sent (node is authoritative)");
-        
-        // Update our channel preference to match what node is sending
-        // This prevents repeated warnings and keeps miner in sync with node
-        m_channel = tmpl.block.nChannel;
-        m_logger->info("[TemplateInterface] ✓ Updated channel preference to match node: {} ({})",
-            static_cast<int>(m_channel), (m_channel == 1) ? "Prime" : "Hash");
+        // NOTE: This is just informational logging - we don't reject the template
+        // The node is authoritative, and we mine what it sends
+        m_logger->info("[TemplateInterface] ℹ️  Channel info: Node sent channel {} but connection is for channel {}",
+            tmpl.block.nChannel, static_cast<int>(m_channel));
+        m_logger->info("[TemplateInterface]   Mining what node sent (node is authoritative)");
     }
     
     m_logger->info("[TemplateInterface] ✓ nChannel validation passed: {} ({})", 
