@@ -1221,10 +1221,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Enhanced Payload (PR #135): [unified_height(4)] [prime_height(4)] [hash_height(4)] [stake_height(4)] (16 bytes total)
         // Legacy Payload (pre-PR #135): [height(4 bytes)] (4 bytes total)
         
-        m_logger->info("[Solo GET_ROUND] ═══════════════════════════════════════");
-        m_logger->info("[Solo GET_ROUND] NEW_ROUND response received");
-        m_logger->info("[Solo GET_ROUND]   Packet length field: {} bytes", packet.m_length);
-        m_logger->info("[Solo GET_ROUND]   Data payload size:   {} bytes", 
+        m_logger->debug("[Solo GET_ROUND] NEW_ROUND response received");
+        m_logger->debug("[Solo GET_ROUND]   Packet length field: {} bytes", packet.m_length);
+        m_logger->debug("[Solo GET_ROUND]   Data payload size:   {} bytes", 
                        packet.m_data ? packet.m_data->size() : 0);
         
         if (!packet.m_data || (packet.m_length != 4 && packet.m_length != 16)) {
@@ -1233,7 +1232,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->error("[Solo GET_ROUND]   Received: {} bytes (length field), {} bytes (actual data)", 
                            packet.m_length, packet.m_data ? packet.m_data->size() : 0);
             m_logger->error("[Solo GET_ROUND]   Node may be running old version or protocol mismatch");
-            m_logger->info("[Solo GET_ROUND] ═══════════════════════════════════════");
             return;
         }
         
@@ -1257,26 +1255,33 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_last_round_status.hash_height = bytes2uint(*packet.m_data, 8);
                 m_last_round_status.stake_height = bytes2uint(*packet.m_data, 12);
                 
-                std::string my_channel_name = (m_channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
-                uint32_t my_channel_height = (m_channel == mining::CHANNEL_PRIME) 
-                    ? m_last_round_status.prime_height 
-                    : m_last_round_status.hash_height;
+                // Determine channel name with support for all three channels
+                std::string my_channel_name;
+                uint32_t my_channel_height;
+                if (m_channel == mining::CHANNEL_PRIME) {
+                    my_channel_name = "Prime";
+                    my_channel_height = m_last_round_status.prime_height;
+                } else if (m_channel == mining::CHANNEL_HASH) {
+                    my_channel_name = "Hash";
+                    my_channel_height = m_last_round_status.hash_height;
+                } else {
+                    my_channel_name = "Stake";
+                    my_channel_height = m_last_round_status.stake_height;
+                }
                 
-                m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (16 bytes - multi-channel):");
-                m_logger->info("[Solo GET_ROUND]   Unified height:  {} (reference only)", new_height);
-                m_logger->info("[Solo GET_ROUND]   Prime height:    {}", m_last_round_status.prime_height);
-                m_logger->info("[Solo GET_ROUND]   Hash height:     {}", m_last_round_status.hash_height);
-                m_logger->info("[Solo GET_ROUND]   Stake height:    {}", m_last_round_status.stake_height);
-                m_logger->info("[Solo GET_ROUND]   → Mining {} channel, height: {}", 
+                m_logger->debug("[Solo GET_ROUND] NEW_ROUND (16 bytes - multi-channel):");
+                m_logger->debug("[Solo GET_ROUND]   Unified height:  {} (reference only)", new_height);
+                m_logger->debug("[Solo GET_ROUND]   Prime height:    {}", m_last_round_status.prime_height);
+                m_logger->debug("[Solo GET_ROUND]   Hash height:     {}", m_last_round_status.hash_height);
+                m_logger->debug("[Solo GET_ROUND]   Stake height:    {}", m_last_round_status.stake_height);
+                m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND: Mining {} channel at height {}", 
                               my_channel_name, my_channel_height);
                 
                 // Single call handles: update managers, fork detection, finalization, validation
                 bool template_valid = sync_template_state(new_height, my_channel_height);
                 
                 if (!template_valid && m_template_interface) {
-                    m_logger->info("[Solo GET_ROUND] ✗ Template invalidated - {} channel height changed",
-                                  my_channel_name);
-                    m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK");
+                    m_logger->info("[Solo GET_ROUND] ✗ Template stale, requesting fresh work");
                     // Template was invalidated - request new one
                     if (connection) {
                         auto work_payload = get_work();
@@ -1285,25 +1290,22 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                         }
                     }
                 } else {
-                    m_logger->info("[Solo GET_ROUND] ✓ Template still valid (channel height unchanged)");
+                    m_logger->debug("[Solo GET_ROUND] Template still valid");
                 }
             }
         } else {
             // Legacy response: only unified height
-            m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (4 bytes - legacy):");
-            m_logger->info("[Solo GET_ROUND]   Unified height: {} (no channel-specific data)", new_height);
-            m_logger->warn("[Solo GET_ROUND]   ⚠ Old node - using unified height for staleness detection");
-            m_logger->warn("[Solo GET_ROUND]   ⚠ May have false stale detections in multi-channel mining");
+            m_logger->debug("[Solo GET_ROUND] NEW_ROUND (4 bytes - legacy): Unified height {}", new_height);
+            m_logger->warn("[Solo GET_ROUND] Old node - unified height only, may cause false stale detections");
             
             // Fallback: use unified height for legacy nodes
             if (m_template_interface) {
                 bool template_discarded = m_template_interface->update_height(new_height);
                 
                 if (template_discarded) {
-                    m_logger->info("[Solo GET_ROUND] ✗ Template discarded (unified height changed)");
+                    m_logger->info("[Solo GET_ROUND] ✗ Template stale, requesting fresh work");
                     
                     // Request fresh template
-                    m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK");
                     if (connection) {
                         auto work_payload = get_work();
                         if (work_payload && !work_payload->empty()) {
@@ -1311,11 +1313,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                         }
                     }
                 } else {
-                    m_logger->info("[Solo GET_ROUND] ✓ Template still valid (unified height unchanged)");
+                    m_logger->debug("[Solo GET_ROUND] Template still valid");
                 }
             }
         }
-        m_logger->info("[Solo GET_ROUND] ═══════════════════════════════════════");
     }
     // Handle OLD_ROUND response (Multi-Channel Height Tracking - LLL-TAO PR #135 client-side)
     else if (packet.m_header == Packet::OLD_ROUND)
@@ -1361,14 +1362,21 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_last_round_status.hash_height = bytes2uint(*packet.m_data, 8);
                 m_last_round_status.stake_height = bytes2uint(*packet.m_data, 12);
                 
-                std::string my_channel_name = (m_channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
-                uint32_t my_channel_height = (m_channel == mining::CHANNEL_PRIME) 
-                    ? m_last_round_status.prime_height 
-                    : m_last_round_status.hash_height;
+                // Determine channel name with support for all three channels
+                std::string my_channel_name;
+                uint32_t my_channel_height;
+                if (m_channel == mining::CHANNEL_PRIME) {
+                    my_channel_name = "Prime";
+                    my_channel_height = m_last_round_status.prime_height;
+                } else if (m_channel == mining::CHANNEL_HASH) {
+                    my_channel_name = "Hash";
+                    my_channel_height = m_last_round_status.hash_height;
+                } else {
+                    my_channel_name = "Stake";
+                    my_channel_height = m_last_round_status.stake_height;
+                }
                 
-                m_logger->info("[Solo GET_ROUND] ✓ OLD_ROUND (16 bytes - multi-channel):");
-                m_logger->info("[Solo GET_ROUND]   Unified height:  {} (reference only)", current_height);
-                m_logger->info("[Solo GET_ROUND]   {} channel height: {} (UNCHANGED - continuing work)", 
+                m_logger->debug("[Solo GET_ROUND] OLD_ROUND: {} channel height {} unchanged", 
                               my_channel_name, my_channel_height);
                 
                 // Single call handles: update managers, fork detection, finalization, validation
@@ -1388,7 +1396,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         } else {
             // Legacy response: only unified height
-            m_logger->debug("[Solo GET_ROUND] ✓ OLD_ROUND (legacy) - Height: {} (unchanged)", current_height);
+            m_logger->debug("[Solo GET_ROUND] OLD_ROUND: Height {} unchanged", current_height);
         }
         
         // No action needed for OLD_ROUND - continue mining on current template
