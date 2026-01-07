@@ -98,13 +98,77 @@ MiningTemplateInterface::read_template(const network::Payload& data,
         return result;
     }
     
-    // Set channel from our connection context
-    // The node does NOT include nChannel in the mining template serialization.
-    // We know what channel we're mining because we specified it during connection setup.
-    tmpl.block.nChannel = m_channel;
-    m_logger->info("[TemplateInterface] Set nChannel from connection context: {} ({})",
-        static_cast<int>(m_channel), (m_channel == 1) ? "prime" : "hash");
-    m_logger->debug("[TemplateInterface]   Block header had nChannel=0 (not serialized in template)");
+    // ═══════════════════════════════════════════════════════════════════════
+    // 📥 TEMPLATE RECEIVED FROM NODE - Trust Node's nChannel Value
+    // ═══════════════════════════════════════════════════════════════════════
+    m_logger->info("[TemplateInterface] 📥 Template received from node:");
+    m_logger->info("[TemplateInterface]   nVersion: {}", tmpl.block.nVersion);
+    m_logger->info("[TemplateInterface]   nHeight: {}", tmpl.block.nHeight);
+    m_logger->info("[TemplateInterface]   nChannel: {} ({})", 
+        tmpl.block.nChannel,
+        (tmpl.block.nChannel == 0) ? "NOT SET (Tritium format)" :
+        (tmpl.block.nChannel == 1) ? "Prime" : 
+        (tmpl.block.nChannel == 2) ? "Hash" : "INVALID");
+    m_logger->info("[TemplateInterface]   nBits: 0x{:08x}", tmpl.block.nBits);
+    
+    auto merkle_bytes = tmpl.block.hashMerkleRoot.GetBytes();
+    std::ostringstream merkle_preview;
+    merkle_preview << std::hex << std::setfill('0');
+    for (size_t i = 0; i < std::min(size_t(8), merkle_bytes.size()); ++i) {
+        merkle_preview << std::setw(2) << static_cast<unsigned int>(merkle_bytes[i]);
+    }
+    m_logger->info("[TemplateInterface]   hashMerkleRoot: {}... ({} bytes)", 
+        merkle_preview.str(), merkle_bytes.size());
+    
+    auto prev_bytes = tmpl.block.hashPrevBlock.GetBytes();
+    std::ostringstream prev_preview;
+    prev_preview << std::hex << std::setfill('0');
+    for (size_t i = 0; i < std::min(size_t(8), prev_bytes.size()); ++i) {
+        prev_preview << std::setw(2) << static_cast<unsigned int>(prev_bytes[i]);
+    }
+    m_logger->info("[TemplateInterface]   hashPrevBlock: {}... ({} bytes)", 
+        prev_preview.str(), prev_bytes.size());
+    
+    // ✅ CRITICAL: Do NOT modify any template fields from node
+    // Node is authoritative for all template fields
+    // 
+    // For Tritium templates (216 bytes):
+    //   - nChannel is NOT serialized by node (will be 0 after deserialization)
+    //   - We must set it from our connection context
+    // 
+    // For Legacy/Compact templates:
+    //   - nChannel IS serialized by node
+    //   - We must TRUST and VALIDATE what node sent, not overwrite
+    
+    if (tmpl.block.nChannel == 0) {
+        // Tritium template: nChannel not serialized, set from connection
+        m_logger->info("[TemplateInterface] ✓ Template format: Tritium (nChannel not serialized)");
+        m_logger->info("[TemplateInterface] ✓ Setting nChannel from connection context: {} ({})",
+            static_cast<int>(m_channel), (m_channel == 1) ? "Prime" : "Hash");
+        tmpl.block.nChannel = m_channel;
+    } else {
+        // Legacy/Compact template: nChannel serialized by node - VALIDATE only
+        m_logger->info("[TemplateInterface] ✓ Template format: Legacy/Compact (nChannel serialized)");
+        m_logger->info("[TemplateInterface] ✓ Node sent nChannel: {} ({})", 
+            tmpl.block.nChannel,
+            (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
+        
+        // VALIDATE: Check if node's channel matches our connection
+        if (tmpl.block.nChannel != m_channel) {
+            m_logger->warn("[TemplateInterface] ⚠️  WARNING: Channel mismatch detected!");
+            m_logger->warn("[TemplateInterface]   - Node sent: {} ({})", 
+                tmpl.block.nChannel,
+                (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
+            m_logger->warn("[TemplateInterface]   - Connection expects: {} ({})",
+                static_cast<int>(m_channel), (m_channel == 1) ? "Prime" : "Hash");
+            m_logger->warn("[TemplateInterface]   - Mining what node sent (node is authoritative)");
+        } else {
+            m_logger->info("[TemplateInterface] ✓ Channel validation passed: matches connection");
+        }
+    }
+    
+    m_logger->info("[TemplateInterface] ✓ Final nChannel value: {} ({})",
+        tmpl.block.nChannel, (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
     
     // Initialize channel height (will be set later when GET_ROUND response arrives)
     tmpl.nChannelHeight = 0;
@@ -400,19 +464,56 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     m_logger->info("[TemplateInterface]   - nVersion: {}", tmpl.block.nVersion);
     m_logger->info("[TemplateInterface]   - Current height: {}", m_current_height);
     
-    // Validate channel matches expected
-    if (tmpl.block.nChannel != m_channel) {
+    // ═══════════════════════════════════════════════════════════════════════
+    // VALIDATE nChannel (CRITICAL - Do NOT overwrite, only validate)
+    // ═══════════════════════════════════════════════════════════════════════
+    
+    // Validation 1: Check if channel is valid (1=Prime or 2=Hash)
+    if (tmpl.block.nChannel == 0) {
         result.channel_valid = false;
         result.is_valid = false;
-        result.error_message = "Channel mismatch: expected " + 
-            std::to_string(static_cast<int>(m_channel)) + 
-            " but got " + std::to_string(tmpl.block.nChannel);
-        m_logger->error("[TemplateInterface] ❌ VALIDATION FAILED: {}", result.error_message);
-        m_logger->error("[TemplateInterface]   This is the channel mismatch bug!");
-        m_logger->error("[TemplateInterface]   Check deserialization logs above for byte-level details");
-    } else {
-        m_logger->info("[TemplateInterface] ✓ Channel validation passed");
+        result.error_message = "❌ Node sent template with nChannel=0 (invalid)";
+        m_logger->error("[TemplateInterface] {}", result.error_message);
+        m_logger->error("[TemplateInterface]   This is a NODE-side bug - template serialization failed");
+        m_logger->error("[TemplateInterface]   The node MUST set nChannel before sending template");
+        return result;  // Reject template immediately
     }
+    
+    if (tmpl.block.nChannel != 1 && tmpl.block.nChannel != 2) {
+        result.channel_valid = false;
+        result.is_valid = false;
+        result.error_message = "❌ Node sent template with invalid channel: " + 
+            std::to_string(tmpl.block.nChannel);
+        m_logger->error("[TemplateInterface] {}", result.error_message);
+        m_logger->error("[TemplateInterface]   Expected: 1 (Prime) or 2 (Hash)");
+        m_logger->error("[TemplateInterface]   Got: {}", tmpl.block.nChannel);
+        m_logger->error("[TemplateInterface]   This is a NODE-side bug");
+        return result;  // Reject template immediately
+    }
+    
+    // Validation 2: Check if channel matches our connection preference
+    if (tmpl.block.nChannel != m_channel) {
+        // NOTE: This is a WARNING, not an ERROR
+        // The node is authoritative - we mine what it sends
+        m_logger->warn("[TemplateInterface] ⚠️  WARNING: Channel preference mismatch");
+        m_logger->warn("[TemplateInterface]   - Node sent: {} ({})", 
+            tmpl.block.nChannel,
+            (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
+        m_logger->warn("[TemplateInterface]   - Miner prefers: {} ({})",
+            static_cast<int>(m_channel), 
+            (m_channel == 1) ? "Prime" : "Hash");
+        m_logger->warn("[TemplateInterface]   - Mining what node sent (node is authoritative)");
+        
+        // Update our channel preference to match what node is sending
+        // This prevents repeated warnings and keeps miner in sync with node
+        m_channel = tmpl.block.nChannel;
+        m_logger->info("[TemplateInterface] ✓ Updated channel preference to match node: {} ({})",
+            static_cast<int>(m_channel), (m_channel == 1) ? "Prime" : "Hash");
+    }
+    
+    m_logger->info("[TemplateInterface] ✓ nChannel validation passed: {} ({})", 
+        tmpl.block.nChannel,
+        (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
     
     // Validate height is reasonable (not stale)
     // Stale templates are marked as invalid since we don't want to mine on old blocks
