@@ -237,9 +237,9 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
             data[height_offset + 2], data[height_offset + 3],
             block.nHeight);
         
-        // Sanity check for height
+        // Sanity check for height (mainnet is past 6M blocks)
         if (block.nHeight < 1000000) {
-            logger->warn("[Deserialize] ⚠️  Suspicious nHeight: {} (expected > 6000000 for mainnet)",
+            logger->warn("[Deserialize] ⚠️  Suspicious nHeight: {} (expected > 1000000 for mainnet)",
                 block.nHeight);
         }
         
@@ -532,7 +532,7 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
  * Serialize a full block for submission to LLL-TAO node.
  * 
  * Serializes the block in the format expected by the node based on block type:
- * - Tritium: 216 bytes with 7-byte nNonce and 1-byte nTime
+ * - Tritium: 216 bytes with 8-byte nNonce (nTime not included in template)
  * - Legacy: 220 bytes with 8-byte nNonce and 4-byte nTime
  * 
  * @param block The block to serialize
