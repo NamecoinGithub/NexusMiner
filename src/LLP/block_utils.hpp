@@ -267,7 +267,7 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         // The 216-byte format ends at nNonce (offset 215)
         // nTime will be set by the miner when creating the block
         block.nTime = 0;
-        logger->info("[Deserialize] nTime not in 216-byte Tritium template (set by miner during mining)")
+        logger->info("[Deserialize] nTime not in 216-byte Tritium template (set by miner during mining)");
         
     } else if (is_legacy) {
         // Legacy block (220+ bytes) with nChannel at offset 196
