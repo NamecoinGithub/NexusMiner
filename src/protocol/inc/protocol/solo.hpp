@@ -266,9 +266,9 @@ private:
     // Configuration constants
     static constexpr uint32_t POLL_INTERVAL_MIN_MS = 5000;     // 5 seconds minimum
     static constexpr uint32_t POLL_INTERVAL_MAX_MS = 60000;    // 60 seconds maximum
-    static constexpr float BACKOFF_MULTIPLIER = 1.5f;          // Exponential backoff rate
     static constexpr uint32_t UNIFIED_HEIGHT_DELTA_TRIGGER = 5; // Trigger fresh template if unified moves 5+ blocks
     static constexpr uint32_t POST_TEMPLATE_POLL_DELAY_MS = 100; // Wait 100ms after template before polling
+    // Note: Backoff multiplier is 1.5x, implemented via integer arithmetic: interval + (interval >> 1)
     
     // State flags
     bool m_needs_initial_round_check;  // Set true when new template received
