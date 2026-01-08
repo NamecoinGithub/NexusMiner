@@ -38,21 +38,22 @@ public:
 
     void process_messages(Packet packet, std::shared_ptr<network::Connection> connection) override;
     
-    // GET_ROUND protocol support (Multi-Channel Height Tracking - LLL-TAO PR #135 client-side)
+    // GET_ROUND protocol support (12-byte response from LLL-TAO PR #151)
     struct RoundStatus {
-        bool is_new_round;      // true if NEW_ROUND (204), false if OLD_ROUND (205)
-        uint32_t height;        // Current unified blockchain height
+        bool is_new_round;          // true if NEW_ROUND (204), false if OLD_ROUND (205)
+        uint32_t height;            // Unified blockchain height (reference only)
+        uint32_t difficulty;        // Mining difficulty in compact nBits format (big-endian)
         
-        // Multi-channel heights (LLL-TAO PR #135 enhanced GET_ROUND response)
-        uint32_t prime_height;  // Prime channel height (channel 1)
-        uint32_t hash_height;   // Hash channel height (channel 2)
-        uint32_t stake_height;  // Stake channel height (channel 3)
-        bool has_channel_heights; // True if enhanced response received (16 bytes)
+        // Channel-specific heights (miner's channel only)
+        uint32_t prime_height;      // Prime channel height (if mining Prime)
+        uint32_t hash_height;       // Hash channel height (if mining Hash)
+        uint32_t stake_height;      // Stake channel height (unused by stateless miners)
+        bool has_channel_heights;   // True if 12-byte response parsed successfully
         
         /**
          * @brief Get channel-specific height
          * @param channel Channel number (1=Prime, 2=Hash, 3=Stake)
-         * @return Channel height, or 0 if channel is invalid
+         * @return Channel height, or 0 if not set
          */
         uint32_t get_channel_height(uint32_t channel) const {
             switch(channel) {
