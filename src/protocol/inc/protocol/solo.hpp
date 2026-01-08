@@ -42,7 +42,7 @@ public:
     struct RoundStatus {
         bool is_new_round;          // true if NEW_ROUND (204), false if OLD_ROUND (205)
         uint32_t height;            // Unified blockchain height (reference only)
-        uint32_t difficulty;        // Current mining difficulty
+        uint32_t difficulty;        // Mining difficulty in compact nBits format (big-endian)
         
         // Channel-specific heights (miner's channel only)
         uint32_t prime_height;      // Prime channel height (if mining Prime)

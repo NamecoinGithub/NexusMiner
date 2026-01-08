@@ -75,6 +75,15 @@ static void append_uint16_le(std::vector<uint8_t>& dest, uint16_t value) {
     dest.push_back((value >> 8) & 0xFF);
 }
 
+// Helper function to get channel name string for logging
+static std::string get_channel_name(uint32_t channel) {
+    switch(channel) {
+        case mining::CHANNEL_PRIME: return "Prime";
+        case mining::CHANNEL_HASH:  return "Hash";
+        default:                     return "Unknown";
+    }
+}
+
 Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector)
 : m_channel{channel}
 , m_logger{spdlog::get("logger")}
@@ -1235,8 +1244,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         uint32_t difficulty = bytes2uint(*packet.m_data, 8);
         
         // Determine channel name for logging
-        std::string channel_name = (m_channel == mining::CHANNEL_PRIME) ? "Prime" : 
-                                   (m_channel == mining::CHANNEL_HASH) ? "Hash" : "Unknown";
+        std::string channel_name = get_channel_name(m_channel);
         
         // Log response details
         m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND:");
@@ -1251,12 +1259,18 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_last_round_status.has_channel_heights = true;
         
         // Set channel-specific height based on miner's channel
+        // Reset all channels first, then set only the active channel
+        m_last_round_status.prime_height = 0;
+        m_last_round_status.hash_height = 0;
+        m_last_round_status.stake_height = 0;
+        
         if (m_channel == mining::CHANNEL_PRIME) {
             m_last_round_status.prime_height = channel_height;
         } else if (m_channel == mining::CHANNEL_HASH) {
             m_last_round_status.hash_height = channel_height;
         } else {
             m_logger->error("[Solo GET_ROUND] Invalid channel: {}", m_channel);
+            m_logger->error("[Solo GET_ROUND] Expected 1 (Prime) or 2 (Hash), got {}", m_channel);
             return;
         }
         
@@ -1309,8 +1323,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         uint32_t channel_height = bytes2uint(*packet.m_data, 4);
         uint32_t difficulty = bytes2uint(*packet.m_data, 8);
         
-        std::string channel_name = (m_channel == mining::CHANNEL_PRIME) ? "Prime" : 
-                                   (m_channel == mining::CHANNEL_HASH) ? "Hash" : "Unknown";
+        std::string channel_name = get_channel_name(m_channel);
         
         m_logger->info("[Solo GET_ROUND] ✓ OLD_ROUND (template still valid):");
         m_logger->info("[Solo GET_ROUND]   Unified:  {}", unified_height);
@@ -1323,10 +1336,20 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_last_round_status.difficulty = difficulty;
         m_last_round_status.has_channel_heights = true;
         
+        // Set channel-specific height based on miner's channel
+        // Reset all channels first, then set only the active channel
+        m_last_round_status.prime_height = 0;
+        m_last_round_status.hash_height = 0;
+        m_last_round_status.stake_height = 0;
+        
         if (m_channel == mining::CHANNEL_PRIME) {
             m_last_round_status.prime_height = channel_height;
         } else if (m_channel == mining::CHANNEL_HASH) {
             m_last_round_status.hash_height = channel_height;
+        } else {
+            m_logger->error("[Solo GET_ROUND] Invalid channel: {}", m_channel);
+            m_logger->error("[Solo GET_ROUND] Expected 1 (Prime) or 2 (Hash), got {}", m_channel);
+            return;
         }
         
         // Update intelligent polling state
