@@ -1352,6 +1352,16 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
         
+        // Finalize template with channel height if pending (same as NEW_ROUND)
+        if (m_template_interface && m_template_interface->needs_channel_height_finalization()) {
+            uint32_t template_channel_height = channel_height + 1;
+            m_template_interface->set_channel_height(template_channel_height);
+            
+            m_logger->info("[Solo GET_ROUND] ✓ Template finalized (via OLD_ROUND):");
+            m_logger->info("[Solo GET_ROUND]   Node {} height:     {}", channel_name, channel_height);
+            m_logger->info("[Solo GET_ROUND]   Template {} height: {}", channel_name, template_channel_height);
+        }
+        
         // Update intelligent polling state
         on_old_round_received();
     }
