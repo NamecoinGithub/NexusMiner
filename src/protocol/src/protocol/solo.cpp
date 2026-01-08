@@ -1274,31 +1274,18 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
         
-        // Finalize template with channel height (template builds NEXT block)
-        if (m_template_interface && m_template_interface->needs_channel_height_finalization()) {
-            uint32_t template_channel_height = channel_height + 1;
-            m_template_interface->set_channel_height(template_channel_height);
-            
-            m_logger->info("[Solo GET_ROUND] ✓ Template finalized:");
-            m_logger->info("[Solo GET_ROUND]   Node {} height:     {}", channel_name, channel_height);
-            m_logger->info("[Solo GET_ROUND]   Template {} height: {}", channel_name, template_channel_height);
-        }
+        // Use sync_template_state to handle: channel manager updates, fork detection, 
+        // template finalization, and template validation
+        bool template_valid = sync_template_state(unified_height, channel_height);
         
-        // Check for template staleness (channel-specific)
-        if (m_template_interface && m_template_interface->has_valid_template()) {
-            bool template_invalidated = m_template_interface->update_channel_height(m_channel, channel_height);
-            
-            if (template_invalidated) {
-                m_logger->info("[Solo GET_ROUND] ✗ Template stale - {} height changed", channel_name);
-                m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK");
-                
-                // Request new template
-                auto get_block_payload = get_work();
-                if (connection && get_block_payload) {
-                    connection->transmit(get_block_payload);
+        if (!template_valid && m_template_interface) {
+            m_logger->info("[Solo GET_ROUND] ✗ Template stale, requesting fresh work");
+            // Template was invalidated - request new one
+            if (connection) {
+                auto work_payload = get_work();
+                if (work_payload && !work_payload->empty()) {
+                    connection->transmit(work_payload);
                 }
-            } else {
-                m_logger->info("[Solo GET_ROUND] ✓ Template valid - {} height unchanged", channel_name);
             }
         }
         
@@ -1352,14 +1339,20 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
         
-        // Finalize template with channel height if pending (same as NEW_ROUND)
-        if (m_template_interface && m_template_interface->needs_channel_height_finalization()) {
-            uint32_t template_channel_height = channel_height + 1;
-            m_template_interface->set_channel_height(template_channel_height);
+        // Use sync_template_state to handle: channel manager updates, fork detection,
+        // template finalization, and template validation
+        bool template_valid = sync_template_state(unified_height, channel_height);
+        
+        if (!template_valid && m_template_interface) {
+            m_logger->warn("[Solo GET_ROUND] Unexpected: Template invalidated on OLD_ROUND");
             
-            m_logger->info("[Solo GET_ROUND] ✓ Template finalized (via OLD_ROUND):");
-            m_logger->info("[Solo GET_ROUND]   Node {} height:     {}", channel_name, channel_height);
-            m_logger->info("[Solo GET_ROUND]   Template {} height: {}", channel_name, template_channel_height);
+            // Request fresh template
+            if (connection) {
+                auto work_payload = get_work();
+                if (work_payload && !work_payload->empty()) {
+                    connection->transmit(work_payload);
+                }
+            }
         }
         
         // Update intelligent polling state
