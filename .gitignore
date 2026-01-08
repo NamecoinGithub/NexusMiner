@@ -22,3 +22,4 @@ _codeql_detected_source_root
 _codeql_build_dir/
 test_nchannel
 test_nchannel_fix.cpp
+*.md.legacy
