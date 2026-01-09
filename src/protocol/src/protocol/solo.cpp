@@ -27,6 +27,12 @@ constexpr size_t ADDRESS_DISPLAY_TRUNCATE = 40;  // Max characters to display fo
 constexpr size_t MIN_GENESIS_LOG_SIZE = 8;  // Minimum genesis bytes to log (for sanity check)
 constexpr size_t MAX_GENESIS_LOG_BYTES = 32;  // Maximum genesis bytes to log (avoid excessive output)
 
+// Push notification payload offsets (12-byte format, big-endian)
+constexpr size_t PUSH_NOTIFICATION_UNIFIED_HEIGHT_OFFSET = 0;   // Unified blockchain height (4 bytes)
+constexpr size_t PUSH_NOTIFICATION_CHANNEL_HEIGHT_OFFSET = 4;   // Channel-specific height (4 bytes)
+constexpr size_t PUSH_NOTIFICATION_DIFFICULTY_OFFSET = 8;       // Mining difficulty (4 bytes)
+constexpr size_t PUSH_NOTIFICATION_PAYLOAD_SIZE = 12;           // Total payload size
+
 // ChaCha20 key derivation domain separator
 static const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
 
@@ -1705,12 +1711,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         auto miner_ready_payload = send_miner_ready();
         if (!miner_ready_payload || miner_ready_payload->empty()) {
             m_logger->error("[Solo Push] Failed to send MINER_READY - falling back to polling");
-        } else {
+        } else if (connection) {
             connection->transmit(miner_ready_payload);
             m_logger->info("[Solo Push] MINER_READY transmitted - waiting for immediate notification");
             // Node will send PRIME_BLOCK_AVAILABLE or HASH_BLOCK_AVAILABLE immediately
             // We'll request work when we receive that notification
             return;  // Don't request work yet - wait for push notification
+        } else {
+            m_logger->error("[Solo Push] No connection available - cannot subscribe to push notifications");
         }
         
         // Fallback: Request work directly if push notifications failed
@@ -1842,16 +1850,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         
         /* Validate packet length */
-        if (!packet.m_data || packet.m_length != 12)
+        if (!packet.m_data || packet.m_length != PUSH_NOTIFICATION_PAYLOAD_SIZE)
         {
-            m_logger->error("[Solo Push] Invalid packet length: {} (expected 12)", packet.m_length);
+            m_logger->error("[Solo Push] Invalid packet length: {} (expected {})", 
+                          packet.m_length, PUSH_NOTIFICATION_PAYLOAD_SIZE);
             return;
         }
         
         /* Parse notification (big-endian) */
-        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
-        uint32_t prime_height = bytes2uint(*packet.m_data, 4);
-        uint32_t difficulty = bytes2uint(*packet.m_data, 8);
+        uint32_t unified_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_UNIFIED_HEIGHT_OFFSET);
+        uint32_t prime_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_CHANNEL_HEIGHT_OFFSET);
+        uint32_t difficulty = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_DIFFICULTY_OFFSET);
         
         m_logger->info("[Solo Push]   Unified height: {}", unified_height);
         m_logger->info("[Solo Push]   Prime height:   {}", prime_height);
@@ -1913,16 +1922,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         
         /* Validate packet */
-        if (!packet.m_data || packet.m_length != 12)
+        if (!packet.m_data || packet.m_length != PUSH_NOTIFICATION_PAYLOAD_SIZE)
         {
-            m_logger->error("[Solo Push] Invalid packet length: {}", packet.m_length);
+            m_logger->error("[Solo Push] Invalid packet length: {} (expected {})", 
+                          packet.m_length, PUSH_NOTIFICATION_PAYLOAD_SIZE);
             return;
         }
         
         /* Parse notification (big-endian) */
-        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
-        uint32_t hash_height = bytes2uint(*packet.m_data, 4);
-        uint32_t difficulty = bytes2uint(*packet.m_data, 8);
+        uint32_t unified_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_UNIFIED_HEIGHT_OFFSET);
+        uint32_t hash_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_CHANNEL_HEIGHT_OFFSET);
+        uint32_t difficulty = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_DIFFICULTY_OFFSET);
         
         m_logger->info("[Solo Push]   Unified height: {}", unified_height);
         m_logger->info("[Solo Push]   Hash height:    {}", hash_height);
