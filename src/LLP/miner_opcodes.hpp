@@ -250,6 +250,51 @@ enum MinerOpcodes : std::uint8_t
     MINER_REWARD_RESULT = 214,
     
     // ============================================================================
+    // PUSH NOTIFICATIONS (216-218)
+    // LLL-TAO PR #156: Event-driven block notifications (replaces polling)
+    // ============================================================================
+    
+    /**
+     * MINER_READY: Miner subscribes to push notifications
+     * Direction: Miner -> Node
+     * Payload: None (header-only)
+     * Requirements:
+     *   - Must be sent AFTER successful authentication
+     *   - Must be sent AFTER SET_CHANNEL (1=Prime or 2=Hash)
+     *   - Stake channel (0) is REJECTED
+     * Response:
+     *   - Immediate PRIME_BLOCK_AVAILABLE or HASH_BLOCK_AVAILABLE
+     *   - Then pushed on every block validation
+     */
+    MINER_READY = 216,
+    
+    /**
+     * PRIME_BLOCK_AVAILABLE: Node notifies Prime miners of new block
+     * Direction: Node -> Miner (Prime channel only)
+     * Payload: 12 bytes (big-endian)
+     *   [0-3]   unified_height (uint32)
+     *   [4-7]   prime_height (uint32)
+     *   [8-11]  difficulty (uint32)
+     * Triggered:
+     *   - Immediately after MINER_READY
+     *   - On every Prime block validation
+     */
+    PRIME_BLOCK_AVAILABLE = 217,
+    
+    /**
+     * HASH_BLOCK_AVAILABLE: Node notifies Hash miners of new block
+     * Direction: Node -> Miner (Hash channel only)
+     * Payload: 12 bytes (big-endian)
+     *   [0-3]   unified_height (uint32)
+     *   [4-7]   hash_height (uint32)
+     *   [8-11]  difficulty (uint32)
+     * Triggered:
+     *   - Immediately after MINER_READY
+     *   - On every Hash block validation
+     */
+    HASH_BLOCK_AVAILABLE = 218,
+    
+    // ============================================================================
     // GENERIC PACKETS (253-254)
     // Protocol-level control messages
     // ============================================================================

@@ -1700,8 +1700,21 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
         
-        // Stateless mining with Falcon authentication: Request work directly (no GET_HEIGHT polling)
-        m_logger->info("[Solo Phase 2] Channel set successfully, requesting initial work via GET_BLOCK");
+        // Push notifications: Subscribe to block notifications (LLL-TAO PR #156)
+        m_logger->info("[Solo Phase 2] Channel set successfully, subscribing to push notifications");
+        auto miner_ready_payload = send_miner_ready();
+        if (!miner_ready_payload || miner_ready_payload->empty()) {
+            m_logger->error("[Solo Push] Failed to send MINER_READY - falling back to polling");
+        } else {
+            connection->transmit(miner_ready_payload);
+            m_logger->info("[Solo Push] MINER_READY transmitted - waiting for immediate notification");
+            // Node will send PRIME_BLOCK_AVAILABLE or HASH_BLOCK_AVAILABLE immediately
+            // We'll request work when we receive that notification
+            return;  // Don't request work yet - wait for push notification
+        }
+        
+        // Fallback: Request work directly if push notifications failed
+        m_logger->info("[Solo Phase 2] Requesting initial work via GET_BLOCK (fallback)");
         m_logger->debug("[Solo Phase 2] Pre-GET_BLOCK state:");
         m_logger->debug("[Solo Phase 2]   - Connection valid: {}", connection ? "YES" : "NO");
         m_logger->debug("[Solo Phase 2]   - Session ID: 0x{:08x}", m_session_id);
@@ -1814,6 +1827,145 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     {
         // Phase 2: Handle MINER_REWARD_RESULT (reward binding result from node)
         handle_reward_result(packet);
+    }
+    else if (packet.m_header == Packet::PRIME_BLOCK_AVAILABLE)
+    {
+        m_logger->info("[Solo Push] ✉️  PRIME_BLOCK_AVAILABLE received");
+        
+        /* Validate channel (should only receive if mining Prime) */
+        if (m_channel != mining::CHANNEL_PRIME)
+        {
+            m_logger->error("[Solo Push] ❌ Received PRIME_BLOCK_AVAILABLE but mining {} channel!",
+                          m_channel == mining::CHANNEL_HASH ? "Hash" : "Unknown");
+            m_logger->error("[Solo Push]    This should never happen (node filters by channel)");
+            return;  // Protocol error
+        }
+        
+        /* Validate packet length */
+        if (!packet.m_data || packet.m_length != 12)
+        {
+            m_logger->error("[Solo Push] Invalid packet length: {} (expected 12)", packet.m_length);
+            return;
+        }
+        
+        /* Parse notification (big-endian) */
+        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
+        uint32_t prime_height = bytes2uint(*packet.m_data, 4);
+        uint32_t difficulty = bytes2uint(*packet.m_data, 8);
+        
+        m_logger->info("[Solo Push]   Unified height: {}", unified_height);
+        m_logger->info("[Solo Push]   Prime height:   {}", prime_height);
+        m_logger->info("[Solo Push]   Difficulty:     0x{:08x}", difficulty);
+        
+        /* Check if current template is stale */
+        if (m_template_interface && m_template_interface->has_valid_template())
+        {
+            auto const* tmpl = m_template_interface->get_current_template();
+            if (tmpl)
+            {
+                uint32_t current_prime_height = tmpl->nChannelHeight;
+                uint32_t current_unified_height = tmpl->block.nHeight;
+                
+                m_logger->debug("[Solo Push] Current template: unified={}, prime={}", 
+                              current_unified_height, current_prime_height);
+                
+                if (prime_height > current_prime_height)
+                {
+                    m_logger->info("[Solo Push] ✗ Template stale (was mining {}, new block {})", 
+                                 current_prime_height, prime_height);
+                    m_logger->info("[Solo Push] Requesting fresh Prime template...");
+                    
+                    if (connection) {
+                        connection->transmit(get_work());
+                    }
+                }
+                else if (prime_height == current_prime_height && unified_height > current_unified_height)
+                {
+                    m_logger->info("[Solo Push] ✓ Prime unchanged, unified advanced ({} → {})", 
+                                 current_unified_height, unified_height);
+                    // Continue mining current template
+                }
+                else
+                {
+                    m_logger->debug("[Solo Push] ✓ Template still valid");
+                }
+            }
+        }
+        else
+        {
+            /* No template yet - request one */
+            m_logger->info("[Solo Push] No template - requesting initial Prime template");
+            if (connection) {
+                connection->transmit(get_work());
+            }
+        }
+    }
+    else if (packet.m_header == Packet::HASH_BLOCK_AVAILABLE)
+    {
+        m_logger->info("[Solo Push] ✉️  HASH_BLOCK_AVAILABLE received");
+        
+        /* Validate channel */
+        if (m_channel != mining::CHANNEL_HASH)
+        {
+            m_logger->error("[Solo Push] ❌ Received HASH_BLOCK_AVAILABLE but mining {} channel!",
+                          m_channel == mining::CHANNEL_PRIME ? "Prime" : "Unknown");
+            return;
+        }
+        
+        /* Validate packet */
+        if (!packet.m_data || packet.m_length != 12)
+        {
+            m_logger->error("[Solo Push] Invalid packet length: {}", packet.m_length);
+            return;
+        }
+        
+        /* Parse notification (big-endian) */
+        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
+        uint32_t hash_height = bytes2uint(*packet.m_data, 4);
+        uint32_t difficulty = bytes2uint(*packet.m_data, 8);
+        
+        m_logger->info("[Solo Push]   Unified height: {}", unified_height);
+        m_logger->info("[Solo Push]   Hash height:    {}", hash_height);
+        m_logger->info("[Solo Push]   Difficulty:     0x{:08x}", difficulty);
+        
+        /* Check template staleness */
+        if (m_template_interface && m_template_interface->has_valid_template())
+        {
+            auto const* tmpl = m_template_interface->get_current_template();
+            if (tmpl)
+            {
+                uint32_t current_hash_height = tmpl->nChannelHeight;
+                uint32_t current_unified_height = tmpl->block.nHeight;
+                
+                m_logger->debug("[Solo Push] Current template: unified={}, hash={}", 
+                              current_unified_height, current_hash_height);
+                
+                if (hash_height > current_hash_height)
+                {
+                    m_logger->info("[Solo Push] ✗ Template stale - requesting fresh Hash template");
+                    if (connection) {
+                        connection->transmit(get_work());
+                    }
+                }
+                else if (hash_height == current_hash_height && unified_height > current_unified_height)
+                {
+                    m_logger->info("[Solo Push] ✓ Hash unchanged, unified advanced ({} → {})", 
+                                 current_unified_height, unified_height);
+                    // Continue mining current template
+                }
+                else
+                {
+                    m_logger->debug("[Solo Push] ✓ Template still valid");
+                }
+            }
+        }
+        else
+        {
+            m_logger->info("[Solo Push] Requesting initial Hash template");
+            if (connection) {
+                connection->transmit(get_work());
+            }
+        }
     }
     else
     {
@@ -2194,6 +2346,38 @@ network::Shared_payload Solo::send_set_reward()
     m_logger->info("[Solo Reward] MINER_SET_REWARD packet built: {} bytes", packet.m_length);
     
     return packet.get_bytes();
+}
+
+network::Shared_payload Solo::send_miner_ready()
+{
+    m_logger->info("[Solo Push] Sending MINER_READY (subscribe to push notifications)");
+    m_logger->info("[Solo Push]   Channel: {} ({})", 
+                   m_channel, 
+                   m_channel == mining::CHANNEL_PRIME ? "Prime" : "Hash");
+    
+    // MINER_READY is a header-only packet (no payload)
+    Packet packet{ Packet::MINER_READY };
+    
+    m_logger->debug("[Solo Push] MINER_READY packet: header=0x{:02x} length={} is_valid={}", 
+                   static_cast<int>(packet.m_header),
+                   packet.m_length, 
+                   packet.is_valid());
+    
+    auto payload = packet.get_bytes();
+    if (payload && !payload->empty()) {
+        m_logger->info("[Solo Push] ✓ Subscribed to push notifications");
+        m_logger->info("[Solo Push]   Node will send immediate {} notification",
+                      m_channel == mining::CHANNEL_PRIME ? "PRIME_BLOCK_AVAILABLE" : "HASH_BLOCK_AVAILABLE");
+        m_logger->info("[Solo Push]   Then push on every block validation");
+        
+        // TRAINING WHEELS: Show MINER_READY packet (should be just header byte)
+        m_logger->info("[Solo Push] MINER_READY packet hex dump:");
+        m_logger->info("\n{}", format_llp_payload_hexdump(payload, 16));
+    } else {
+        m_logger->error("[Solo Push] Failed to encode MINER_READY packet");
+    }
+    
+    return payload;
 }
 
 bool Solo::finalize_template_with_channel_height(uint32_t node_channel_height, const std::string& context)
