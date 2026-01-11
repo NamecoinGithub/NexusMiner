@@ -292,7 +292,7 @@
 #endif
 #define Zf(name)             Zf_(FALCON_PREFIX, name)
 #define Zf_(prefix, name)    Zf__(prefix, name)
-#define Zf__(prefix, name)   prefix ## _ ## name  
+#define Zf__(prefix, name)   prefix ## _ ## name
 // yyyPQCLEAN- yyySUPERCOP-
 
 // yyyAVX2+1
