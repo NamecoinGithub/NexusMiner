@@ -24,7 +24,7 @@
     "logfile": "",
     
     "_auth_comment": "═══════════════════════════════════════════════════════════════",
-    "_auth_comment2": "  FALCON AUTHENTICATION (required)                              ",
+    "_auth_comment2": "  FALCON AUTHENTICATION (required)                             ",
     "_auth_comment3": "  Generate keys: ./NexusMiner --create-keys                      ",
     "_auth_comment4": "═══════════════════════════════════════════════════════════════",
     "miner_falcon_pubkey": "<YOUR_897_BYTE_FALCON_PUBLIC_KEY_HEX>",
