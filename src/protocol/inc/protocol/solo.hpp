@@ -114,6 +114,9 @@ public:
     bool has_reward_address() const { return !m_reward_address.empty(); }
     bool is_reward_bound() const { return m_reward_bound; }
     network::Shared_payload send_set_reward();
+    
+    // Push notification subscription (LLL-TAO PR #156)
+    network::Shared_payload send_miner_ready();
 
 private:
     
