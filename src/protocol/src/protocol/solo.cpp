@@ -1731,9 +1731,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         if (!work_payload || work_payload->empty()) {
             m_logger->error("[Solo] CRITICAL: GET_BLOCK request returned empty payload!");
             m_logger->error("[Solo] This may indicate a packet encoding issue");
-        } else {
+        } else if (connection) {
             connection->transmit(work_payload);
             m_logger->info("[Solo] GET_BLOCK transmitted successfully");
+        } else {
+            m_logger->error("[Solo] No connection available - cannot request work");
         }
     }
     else if (packet.m_header == Packet::SESSION_START)
