@@ -553,7 +553,7 @@ int falcon_expand_privkey(void *expanded_key, size_t expanded_key_len,
  * FALCON_SIG_VARTIME_MAXSIZE(logn) (where 'logn' qualifies the Falcon
  * degree encoded in the private key and can be obtained with
  * falcon_get_logn()). If ct is non-zero, then the signature length will
- * be exactl FALCON_SIG_CT_SIZE(logn) bytes.
+ * be exactly FALCON_SIG_CT_SIZE(logn) bytes.
  *
  * Regardless of 'ct', the process is constant-time with regards to the
  * private key. When ct != 0, it is also constant-time with regards to
