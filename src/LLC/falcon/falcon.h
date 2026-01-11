@@ -623,7 +623,7 @@ int falcon_sign_start(shake256_context *rng,
  * FALCON_SIG_VARTIME_MAXSIZE(logn) (where 'logn' qualifies the Falcon
  * degree encoded in the private key and can be obtained with
  * falcon_get_logn()). If ct is non-zero, then the signature length will
- * be exactl FALCON_SIG_CT_SIZE(logn) bytes.
+ * be exactly FALCON_SIG_CT_SIZE(logn) bytes.
  *
  * The tmp[] buffer is used to hold temporary values. Its size tmp_len
  * MUST be at least FALCON_TMPSIZE_SIGNDYN(logn) bytes.
