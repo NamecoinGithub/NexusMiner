@@ -1979,9 +1979,156 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
     }
+    // ═══════════════════════════════════════════════════════════════════════
+    // NEW STATELESS MINING PROTOCOL HANDLERS (uint16_t opcodes, 0xD000+)
+    // ═══════════════════════════════════════════════════════════════════════
+    else if (packet.m_header == Packet::STATELESS_GET_BLOCK)
+    {
+        m_logger->info("[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD008) received!");
+        m_logger->info("[Solo Stateless] This is the NEW push notification protocol");
+        m_logger->info("[Solo Stateless] Template size: {} bytes (expected: 228)", packet.m_length);
+        
+        // Validate 228-byte template format (12 metadata + 216 block)
+        constexpr size_t TEMPLATE_SIZE = 228;
+        constexpr size_t METADATA_SIZE = 12;
+        constexpr size_t BLOCK_SIZE = 216;
+        
+        if (!packet.m_data || packet.m_length != TEMPLATE_SIZE) {
+            m_logger->error("[Solo Stateless] Invalid template size: {} (expected {})", 
+                           packet.m_length, TEMPLATE_SIZE);
+            return;
+        }
+        
+        // Parse 12-byte metadata (big-endian)
+        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
+        uint32_t channel_height = bytes2uint(*packet.m_data, 4);
+        uint32_t difficulty = bytes2uint(*packet.m_data, 8);
+        
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        m_logger->info("[Solo Stateless] 📦 NEW MINING TEMPLATE");
+        m_logger->info("[Solo Stateless]   Unified height: {}", unified_height);
+        m_logger->info("[Solo Stateless]   Channel height: {}", channel_height);
+        m_logger->info("[Solo Stateless]   Difficulty:     0x{:08x}", difficulty);
+        m_logger->info("[Solo Stateless]   Block size:     {} bytes", BLOCK_SIZE);
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        
+        // Extract 216-byte block template
+        std::vector<uint8_t> block_template(packet.m_data->begin() + METADATA_SIZE,
+                                             packet.m_data->end());
+        
+        if (block_template.size() != BLOCK_SIZE) {
+            m_logger->error("[Solo Stateless] Block size mismatch: {} (expected {})",
+                           block_template.size(), BLOCK_SIZE);
+            return;
+        }
+        
+        // Process the block template using existing infrastructure
+        // The block_template contains the serialized block data
+        m_logger->info("[Solo Stateless] Processing 216-byte block template...");
+        
+        // Feed to the template interface (same as BLOCK_DATA handling)
+        if (m_template_interface) {
+            auto block_payload = std::make_shared<network::Payload>(block_template);
+            auto validation_result = m_template_interface->read_template(block_payload, 
+                connection ? connection->remote_endpoint().to_string() : "unknown");
+            
+            if (!validation_result.is_valid) {
+                m_logger->error("[Solo Stateless] Template validation failed: {}", 
+                               validation_result.error_message);
+                return;
+            }
+            
+            m_logger->info("[Solo Stateless] ✅ Template validated in {} μs", 
+                          validation_result.validation_time.count());
+            
+            // Update height tracking
+            m_current_height = unified_height;
+            
+            // Set channel height on the template
+            m_template_interface->set_channel_height(channel_height);
+            
+            // Template is now ready for mining!
+            m_logger->info("[Solo Stateless] 🎯 Template ready for mining!");
+            m_logger->info("[Solo Stateless] Mining for block height: {} (channel: {})",
+                          unified_height, channel_height);
+        }
+        else {
+            m_logger->error("[Solo Stateless] No template interface available!");
+        }
+    }
+    else if (packet.m_header == Packet::STATELESS_NEW_BLOCK)
+    {
+        m_logger->info("[Solo Stateless] 🔔 STATELESS_NEW_BLOCK (0xD009) received!");
+        m_logger->info("[Solo Stateless] Network has advanced - NEW template pushed!");
+        
+        // Validate 228-byte template format (12 metadata + 216 block)
+        constexpr size_t TEMPLATE_SIZE = 228;
+        constexpr size_t METADATA_SIZE = 12;
+        constexpr size_t BLOCK_SIZE = 216;
+        
+        if (!packet.m_data || packet.m_length != TEMPLATE_SIZE) {
+            m_logger->error("[Solo Stateless] Invalid template size: {} (expected {})",
+                           packet.m_length, TEMPLATE_SIZE);
+            return;
+        }
+        
+        // Parse 12-byte metadata (big-endian)
+        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
+        uint32_t channel_height = bytes2uint(*packet.m_data, 4);
+        uint32_t difficulty = bytes2uint(*packet.m_data, 8);
+        
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        m_logger->info("[Solo Stateless] 🆕 NETWORK UPDATE (Push Notification)");
+        m_logger->info("[Solo Stateless]   New unified height: {}", unified_height);
+        m_logger->info("[Solo Stateless]   New channel height: {}", channel_height);
+        m_logger->info("[Solo Stateless]   New difficulty:     0x{:08x}", difficulty);
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        
+        // CRITICAL: Abandon current work and switch to new template!
+        m_logger->warn("[Solo Stateless] ⚠️  Abandoning current work (network advanced)");
+        
+        // Extract 216-byte block template
+        std::vector<uint8_t> block_template(packet.m_data->begin() + METADATA_SIZE,
+                                             packet.m_data->end());
+        
+        if (block_template.size() != BLOCK_SIZE) {
+            m_logger->error("[Solo Stateless] Block size mismatch: {} (expected {})",
+                           block_template.size(), BLOCK_SIZE);
+            return;
+        }
+        
+        // Discard old template and process new one
+        if (m_template_interface) {
+            m_template_interface->discard_template("Network advanced (NEW_BLOCK push)");
+            
+            auto block_payload = std::make_shared<network::Payload>(block_template);
+            auto validation_result = m_template_interface->read_template(block_payload,
+                connection ? connection->remote_endpoint().to_string() : "unknown");
+            
+            if (!validation_result.is_valid) {
+                m_logger->error("[Solo Stateless] New template validation failed: {}",
+                               validation_result.error_message);
+                return;
+            }
+            
+            m_logger->info("[Solo Stateless] ✅ New template validated in {} μs",
+                          validation_result.validation_time.count());
+            
+            // Update height tracking
+            m_current_height = unified_height;
+            
+            // Set channel height on the template
+            m_template_interface->set_channel_height(channel_height);
+            
+            m_logger->info("[Solo Stateless] ✅ Switched to new template - resumed mining!");
+        }
+        else {
+            m_logger->error("[Solo Stateless] No template interface available!");
+        }
+    }
     else
     {
-        m_logger->debug("Invalid header received: 0x{:02x}", packet.m_header);
+        m_logger->debug("Invalid header received: 0x{:04x}", packet.m_header);
     } 
 }
 
