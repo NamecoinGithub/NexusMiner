@@ -96,6 +96,31 @@ namespace nexusminer
 			// LEGACY - kept for pool compatibility
 			BLOCK = LLP::BLOCK,
 			STALE = LLP::STALE,
+			
+			/** NEW STATELESS MINING PROTOCOL (uint16_t opcodes, 0xD000+) **/
+			/** These require Packet(uint16_t) constructor **/
+			
+			// Authentication (0xD000-0xD001)
+			STATELESS_MINER_AUTH = LLP::StatelessMining::MINER_AUTH,
+			STATELESS_MINER_AUTH_RESPONSE = LLP::StatelessMining::MINER_AUTH_RESPONSE,
+			
+			// Configuration (0xD003-0xD006)
+			STATELESS_MINER_SET_REWARD = LLP::StatelessMining::MINER_SET_REWARD,
+			STATELESS_MINER_REWARD_RESULT = LLP::StatelessMining::MINER_REWARD_RESULT,
+			STATELESS_SET_CHANNEL = LLP::StatelessMining::SET_CHANNEL,
+			STATELESS_CHANNEL_ACK = LLP::StatelessMining::CHANNEL_ACK,
+			
+			// Subscription (0xD007)
+			STATELESS_MINER_READY = LLP::StatelessMining::MINER_READY,
+			
+			// Template delivery (0xD008-0xD009) - THE KEY OPCODES!
+			STATELESS_GET_BLOCK = LLP::StatelessMining::GET_BLOCK,
+			STATELESS_NEW_BLOCK = LLP::StatelessMining::NEW_BLOCK,
+			
+			// Solution submission (0xD00A-0xD00C)
+			STATELESS_SUBMIT_BLOCK = LLP::StatelessMining::SUBMIT_BLOCK,
+			STATELESS_BLOCK_ACCEPTED = LLP::StatelessMining::BLOCK_ACCEPTED,
+			STATELESS_BLOCK_REJECTED = LLP::StatelessMining::BLOCK_REJECTED,
 
 			/** GENERIC **/
 			PING = LLP::PING,
