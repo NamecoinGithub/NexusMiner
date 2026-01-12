@@ -883,8 +883,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         auto const& remote_ep = connection->remote_endpoint();
         auto const& local_ep = connection->local_endpoint();
         m_logger->info("[Solo] ══════════════════════════════════════════════");
-        m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:02x})", 
-            get_llp_header_name(packet.m_header), static_cast<int>(packet.m_header));
+        // Use appropriate format based on opcode type
+        if (packet.m_is_uint16_opcode) {
+            m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:04x})", 
+                get_llp_header_name(packet.m_header), packet.m_header);
+        } else {
+            m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:02x})", 
+                get_llp_header_name(static_cast<uint8_t>(packet.m_header)), 
+                static_cast<uint8_t>(packet.m_header));
+        }
         m_logger->info("[Solo]   Length: {} bytes", packet.m_length);
         m_logger->info("[Solo]   Remote: {} | Local: {}", 
             remote_ep.to_string(), local_ep.to_string());
@@ -897,9 +904,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo] ══════════════════════════════════════════════");
     } else {
         m_logger->info("[Solo] ══════════════════════════════════════════════");
-        m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:02x}), length={}", 
-            get_llp_header_name(packet.m_header), static_cast<int>(packet.m_header), 
-            packet.m_length);
+        if (packet.m_is_uint16_opcode) {
+            m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:04x}), length={}", 
+                get_llp_header_name(packet.m_header), packet.m_header,
+                packet.m_length);
+        } else {
+            m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:02x}), length={}", 
+                get_llp_header_name(static_cast<uint8_t>(packet.m_header)), 
+                static_cast<uint8_t>(packet.m_header), packet.m_length);
+        }
         
         // TRAINING WHEELS: Show hex dump even without connection
         if (packet.m_data && !packet.m_data->empty()) {

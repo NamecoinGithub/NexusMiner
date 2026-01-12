@@ -13,6 +13,24 @@
 
 namespace nexusminer
 {
+	// Packet protocol constants
+	namespace PacketConstants {
+		// Invalid header marker for error conditions
+		static constexpr uint16_t INVALID_HEADER = 0xFFFF;
+		
+		// Threshold for detecting stateless mining protocol (uint16_t opcodes)
+		// First byte >= 0xD0 indicates uint16_t opcode (0xD000+)
+		static constexpr uint8_t STATELESS_OPCODE_THRESHOLD = 0xD0;
+		
+		// Threshold for stateless mining opcode range (uint16_t values)
+		static constexpr uint16_t STATELESS_OPCODE_MIN = 0xD000;
+		
+		// Helper function to check if opcode is in stateless mining range
+		inline bool is_stateless_opcode(uint16_t opcode) {
+			return opcode >= STATELESS_OPCODE_MIN;
+		}
+	}
+	
 	/** Class to handle sending and receiving of LLP Packets. **/
 	class Packet
 	{
@@ -128,7 +146,7 @@ namespace nexusminer
 		};
 
 		Packet()
-			: m_header{ 0xFFFF }
+			: m_header{ PacketConstants::INVALID_HEADER }
 			, m_length{ 0 }
 			, m_is_valid{ false }
 			, m_is_uint16_opcode{ false }
@@ -147,7 +165,7 @@ namespace nexusminer
 		Packet(std::uint16_t header, network::Payload const& data)
 			: m_header{ header }
 			, m_is_valid{ true }
-			, m_is_uint16_opcode{ header >= 0xD000 }
+			, m_is_uint16_opcode{ PacketConstants::is_stateless_opcode(header) }
 		{
 			m_data = std::make_shared<network::Payload>(data);
 			m_length = m_data->size();
@@ -170,7 +188,7 @@ namespace nexusminer
 			: m_header{ header }
 			, m_length{ 0 }
 			, m_is_valid{ true }
-			, m_is_uint16_opcode{ header >= 0xD000 }
+			, m_is_uint16_opcode{ PacketConstants::is_stateless_opcode(header) }
 		{
 			if (data)
 			{
@@ -191,7 +209,7 @@ namespace nexusminer
 			: m_header{ header }
 			, m_length{ 0 }
 			, m_is_valid{ true }
-			, m_is_uint16_opcode{ header >= 0xD000 }
+			, m_is_uint16_opcode{ PacketConstants::is_stateless_opcode(header) }
 		{
 		}
 
@@ -203,7 +221,7 @@ namespace nexusminer
 			
 			if (buffer->empty())
 			{
-				m_header = 0xFFFF;
+				m_header = PacketConstants::INVALID_HEADER;
 				m_is_valid = false;
 				m_length = 0;
 				return;
@@ -212,7 +230,7 @@ namespace nexusminer
 			// Detect opcode format based on first byte
 			uint8_t first_byte = (*buffer)[0];
 			
-			if (first_byte >= 0xD0)
+			if (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD)
 			{
 				// NEW uint16_t opcode format (2-byte header, big-endian)
 				m_is_uint16_opcode = true;
@@ -515,7 +533,7 @@ namespace nexusminer
 		// Detect opcode format based on first byte
 		uint8_t first_byte = (*buffer)[start_index];
 		
-		if (first_byte >= 0xD0)
+		if (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD)
 		{
 			// NEW uint16_t opcode format
 			packet.m_is_uint16_opcode = true;
