@@ -321,7 +321,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Auth] Authentication timestamp set: {} (0x{:016x})", 
                    m_auth_timestamp, m_auth_timestamp);
     
-    Packet packet(Packet::MINER_AUTH_INIT);  // 207 - m_is_valid = true automatically
+    Packet packet(static_cast<uint8_t>(Packet::MINER_AUTH_INIT));  // 207 - m_is_valid = true automatically
     packet.m_data = std::make_shared<network::Payload>();
     
     // ═══════════════════════════════════════════════════════════
@@ -482,7 +482,7 @@ network::Shared_payload Solo::get_work()
     m_logger->info("[Solo]   Reward bound: {}", m_reward_bound ? "YES" : "NO");
 
     /* Build GET_BLOCK packet (header-only, no payload) */
-    Packet packet{ Packet::GET_BLOCK };  // Header = 129 (0x81)
+    Packet packet{ static_cast<uint8_t>(Packet::GET_BLOCK) };  // Header = 129 (0x81)
     packet.m_length = 0;  // No payload for GET_BLOCK
     
     // Debug logging to diagnose packet encoding
@@ -509,7 +509,7 @@ network::Shared_payload Solo::get_height()
     m_logger->info("[Solo] Requesting blockchain height via GET_HEIGHT");
     
     // GET_HEIGHT is a header-only request packet (opcode 130, >= 128)
-    Packet packet{ Packet::GET_HEIGHT };
+    Packet packet{ static_cast<uint8_t>(Packet::GET_HEIGHT) };
     
     // Debug logging to verify packet encoding
     m_logger->debug("[Solo] GET_HEIGHT packet: header=0x{:02x} length={} is_valid={}", 
@@ -532,7 +532,7 @@ network::Shared_payload Solo::send_get_round()
     m_logger->debug("[Solo GET_ROUND] Requesting round status via GET_ROUND");
     
     // GET_ROUND is a header-only request packet (opcode 133, >= 128)
-    Packet packet{ Packet::GET_ROUND };
+    Packet packet{ static_cast<uint8_t>(Packet::GET_ROUND) };
     
     // Debug logging to verify packet encoding
     m_logger->debug("[Solo GET_ROUND] Packet: header=0x{:02x} length={} is_valid={}", 
@@ -840,7 +840,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         m_logger->info("📤 Sending encrypted SUBMIT_BLOCK packet to node...");
         
         // Build the SUBMIT_BLOCK packet with encrypted payload
-        Packet packet{ Packet::SUBMIT_BLOCK };
+        Packet packet{ static_cast<uint8_t>(Packet::SUBMIT_BLOCK) };
         packet.m_data = std::make_shared<network::Payload>(encryptedPayload);
         packet.m_length = static_cast<uint32_t>(encryptedPayload.size());
         
@@ -2025,7 +2025,7 @@ network::Shared_payload Solo::send_session_keepalive()
     std::vector<uint8_t> keepalive_data;
     append_uint32_le(keepalive_data, m_session_id);
     
-    Packet packet{ Packet::SESSION_KEEPALIVE, std::make_shared<network::Payload>(keepalive_data) };
+    Packet packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE), std::make_shared<network::Payload>(keepalive_data) };
     return packet.get_bytes();
 }
 
@@ -2035,7 +2035,7 @@ void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
     m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
     
     std::vector<uint8_t> channel_data(1, m_channel);
-    Packet set_channel_packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(channel_data) };
+    Packet set_channel_packet{ static_cast<uint8_t>(Packet::SET_CHANNEL), std::make_shared<network::Payload>(channel_data) };
     connection->transmit(set_channel_packet.get_bytes());
 }
 
@@ -2187,7 +2187,7 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     }
     
     // Build MINER_AUTH_RESPONSE packet
-    Packet response_packet(Packet::MINER_AUTH_RESPONSE);  // 209 - m_is_valid = true automatically
+    Packet response_packet(static_cast<uint8_t>(Packet::MINER_AUTH_RESPONSE));  // 209 - m_is_valid = true automatically
     response_packet.m_data = std::make_shared<network::Payload>();
     
     // NOTE: MINER_AUTH_RESPONSE uses little-endian encoding per protocol specification
@@ -2351,7 +2351,7 @@ network::Shared_payload Solo::send_set_reward()
     }
     
     // Build the MINER_SET_REWARD packet
-    Packet packet(Packet::MINER_SET_REWARD);
+    Packet packet(static_cast<uint8_t>(Packet::MINER_SET_REWARD));
     packet.m_data = std::make_shared<network::Payload>(payload_data);
     packet.m_length = static_cast<uint32_t>(payload_data.size());
     
@@ -2368,7 +2368,7 @@ network::Shared_payload Solo::send_miner_ready()
                    m_channel == mining::CHANNEL_PRIME ? "Prime" : "Hash");
     
     // MINER_READY is a header-only packet (no payload)
-    Packet packet{ Packet::MINER_READY };
+    Packet packet{ static_cast<uint8_t>(Packet::MINER_READY) };
     
     m_logger->debug("[Solo Push] MINER_READY packet: header=0x{:02x} length={} is_valid={}", 
                    static_cast<int>(packet.m_header),
