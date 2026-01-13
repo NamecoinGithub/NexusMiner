@@ -33,7 +33,56 @@ Our default configuration achieves **51% blockchain savings** over 100 years:
 - 70% of miners use defaults → 0 blockchain bytes, maximum security
 - Net result: ~19.9 GB vs ~51 GB (all-Falcon-512) = **61% savings!**
 
-📖 **Full Guide:** [docs/FALCON_INTEGRATION.md](docs/FALCON_INTEGRATION.md)
+📖 **Full Guide:** [docs/current/authentication/falcon-integration.md](docs/current/authentication/falcon-integration.md)
+
+---
+
+## 📚 Documentation
+
+**Quick Links:**
+- **[Configuration Reference](docs/reference/nexus.conf.md)** - Complete guide to all config options
+- **[Quick Start Examples](docs/reference/config-examples/)** - Ready-to-use config templates
+- **[Stateless Mining Protocol](docs/current/mining-protocols/stateless-mining.md)** - Modern push protocol
+- **[Troubleshooting Guide](docs/current/troubleshooting.md)** - Common issues and solutions
+
+### By Topic
+
+**Authentication:**
+- [Falcon Integration Guide](docs/current/authentication/falcon-integration.md) - Getting started with post-quantum security
+- [Falcon Key Generation](docs/current/authentication/falcon-keygen-guide.md) - How to generate Falcon keys
+- [Genesis-First Protocol](docs/current/authentication/genesis-first-protocol.md) - Genesis-based key derivation
+- [Unified Falcon Protocol](docs/current/authentication/unified-falcon-protocol.md) - Disposable vs physical signatures
+- [Falcon Handshake Cache](docs/current/authentication/falcon-handshake-cache.md) - Session management
+
+**Mining Protocols:**
+- [Stateless Mining Protocol](docs/current/mining-protocols/stateless-mining.md) - Modern push-notification protocol
+- [Push Notifications](docs/current/mining-protocols/push-notifications.md) - GET_BLOCK/NEW_BLOCK implementation
+- [Channel Management](docs/current/mining-protocols/channel-management.md) - Prime/Hash channel handling
+- [Height Tracking](docs/current/mining-protocols/height-tracking.md) - Multi-channel height management
+- [Template Read Feed](docs/current/mining-protocols/template-read-feed.md) - Template delivery system
+
+**Security:**
+- [Security Overview](docs/current/security/security-overview.md) - Overall security architecture
+- [ChaCha20 Encryption](docs/current/security/chacha20-encryption.md) - Session encryption
+- [Falcon Security](docs/current/security/falcon-security.md) - Post-quantum cryptography details
+- [TLS/HTTPS Integration](docs/current/security/tls-https.md) - Secure remote mining
+- [Mutual TLS](docs/current/security/mutual-tls.md) - Client certificate authentication
+
+**Configuration:**
+- [nexus.conf Reference](docs/reference/nexus.conf.md) - Comprehensive configuration documentation
+- [TOML Format Guide](docs/reference/toml-format.md) - TOML configuration syntax
+- [Opcodes Reference](docs/reference/opcodes-reference.md) - LLP protocol opcodes
+- [Config Examples](docs/reference/config-examples/) - Ready-to-use configuration templates
+
+**Troubleshooting:**
+- [Troubleshooting Guide](docs/current/troubleshooting.md) - Common issues and solutions
+- [Enhanced Diagnostics](docs/current/troubleshooting/enhanced-diagnostics.md) - Advanced debugging
+- [Dynamic Port Detection](docs/current/troubleshooting/dynamic-port-detection.md) - Port configuration
+- [Cross Validation Recovery](docs/current/troubleshooting/cross-validation-recovery.md) - Validation issues
+
+**Upgrade Guides:**
+- [Legacy to Stateless Migration](docs/upgrade-guides/legacy-to-stateless.md) - Upgrading to modern protocol
+- [Legacy Features Removed](docs/upgrade-guides/legacy-features-removed.md) - Deprecated features
 
 ---
 
@@ -71,10 +120,11 @@ GPUs are the most efficient hardware for mining the Nexus Prime channel.  Suppor
   ```
   
   **TOML Example Files:**
-  - `miner-solo-prime.config` - Prime mining template
-  - `miner-solo-hash.config` - Hash mining template
-  - `MASTER-REFERENCE.config` - Complete TOML documentation
-  - See [docs/toml_configuration.md](docs/toml_configuration.md) for full guide
+  - `docs/reference/config-examples/solo-mining-prime.conf` - Prime mining template
+  - `docs/reference/config-examples/solo-mining-hash.conf` - Hash mining template
+  - `docs/reference/config-examples/master-reference.config` - Complete TOML documentation
+  - `docs/reference/config-examples/stateless-mining.conf` - Modern stateless protocol
+  - See [docs/reference/toml-format.md](docs/reference/toml-format.md) for full guide
   
   ### JSON Format (.conf) - Traditional Format
   
@@ -94,12 +144,12 @@ GPUs are the most efficient hardware for mining the Nexus Prime channel.  Suppor
 ```
 
 **See Example Configs:**
-- `example_configs/MASTER_simple.conf` - Quick start template
-- `example_configs/MASTER_reference.conf` - Complete documentation of ALL options
-- `example_configs/multi_gpu_hash.conf` - Multi-GPU with power controls
-- `example_configs/threadripper_128core_prime.conf` - High-core-count CPU mining
-- `example_configs/hybrid_cpu_gpu.conf` - Combined CPU+GPU mining
-- `example_configs/remote_tls_mining.conf` - Secure remote mining
+- `docs/reference/config-examples/MASTER_simple.conf` - Quick start template
+- `docs/reference/config-examples/MASTER_REFERENCE.conf` - Complete documentation of ALL options
+- `docs/reference/config-examples/multi_gpu_hash.conf` - Multi-GPU with power controls
+- `docs/reference/config-examples/threadripper_128core_prime.conf` - High-core-count CPU mining
+- `docs/reference/config-examples/hybrid_cpu_gpu.conf` - Combined CPU+GPU mining
+- `docs/reference/config-examples/remote_tls_mining.conf` - Secure remote mining
 
 ## GPU Power Controls
 
@@ -187,7 +237,7 @@ For CPUs with many cores (Threadripper, EPYC), create multiple workers:
 ]
 ```
 
-See `example_configs/threadripper_128core_prime.conf` for a complete 96-worker configuration.
+See `docs/reference/config-examples/threadripper_128core_prime.conf` for a complete 96-worker configuration.
 
 ## Command line option arguments
 ```
@@ -230,7 +280,7 @@ NexusMiner includes an optimized signature wrapper for all Falcon-512 operations
 
 Disposable Falcon is core protocol functionality and cannot be disabled. Physical Falcon signatures can be enabled via the `enable_physical_falcon()` API when needed for future blockchain integration.
 
-See [docs/unified_falcon_signature_protocol.md](docs/unified_falcon_signature_protocol.md) for details.
+See [docs/current/authentication/unified-falcon-protocol.md](docs/current/authentication/unified-falcon-protocol.md) for details.
 
 **Enhanced Falcon Handshake and Cache Management:**
 NexusMiner now supports enhanced handshake with adaptive cache management:
@@ -248,7 +298,7 @@ Configuration example:
 }
 ```
 
-See [docs/falcon_handshake_cache_management.md](docs/falcon_handshake_cache_management.md) for complete documentation.
+See [docs/current/authentication/falcon-handshake-cache.md](docs/current/authentication/falcon-handshake-cache.md) for complete documentation.
 
 **TLS/HTTPS Integration for Secure Remote Mining:**
 NexusMiner supports TLS/HTTPS encrypted connections for secure remote mining:
@@ -279,14 +329,14 @@ Configuration example:
 }
 ```
 
-See [docs/tls_https_integration.md](docs/tls_https_integration.md) for TLS documentation and [docs/mutual_tls_authentication.md](docs/mutual_tls_authentication.md) for mTLS setup.
+See [docs/current/security/tls-https.md](docs/current/security/tls-https.md) for TLS documentation and [docs/current/security/mutual-tls.md](docs/current/security/mutual-tls.md) for mTLS setup.
 
 **Alternative - Generate keys only:**
 ```bash
 ./NexusMiner --create-keys
 ```
 
-Add the generated keys to your `miner.conf`. See [docs/falcon_authentication.md](docs/falcon_authentication.md) and [PHASE2_INTEGRATION.md](PHASE2_INTEGRATION.md) for detailed instructions.
+Add the generated keys to your `miner.conf`. See [docs/current/authentication/falcon-keygen-guide.md](docs/current/authentication/falcon-keygen-guide.md) and [docs/current/authentication/falcon-phase2-integration.md](docs/current/authentication/falcon-phase2-integration.md) for detailed instructions.
 
 **Important:** Falcon authentication is **required** for solo mining. Legacy authentication has been removed for security reasons.
 
@@ -305,7 +355,7 @@ For optimal multi-core mining performance, configure multiple CPU worker instanc
 }
 ```
 
-Each worker runs independently on a separate thread and processes different nonce ranges. See `example_configs/threadripper_128core_prime.conf` for high-core-count systems (96+ workers).
+Each worker runs independently on a separate thread and processes different nonce ranges. See `docs/reference/config-examples/threadripper_128core_prime.conf` for high-core-count systems (96+ workers).
 
 **Available CPU options:**
 - `threads`: Threads per worker (default: 1, multi-threading planned for future)
@@ -377,7 +427,7 @@ cmake -DOPENSSL_ROOT_DIR=/usr \
 
 **Simplified Config System Removed** - The dual config system (`.conf` vs `.config`) caused confusion. All power controls are now unified in the `.conf` format.
 
-See [docs/LEGACY_REMOVED.md](docs/LEGACY_REMOVED.md) for migration guide and details.
+See [docs/upgrade-guides/legacy-features-removed.md](docs/upgrade-guides/legacy-features-removed.md) for migration guide and details.
 
 ## Support
 * [Nexus Miners](https://t.me/NexusMiners) on telegram.
