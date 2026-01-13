@@ -121,7 +121,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_template_unified_height{0}  // No template yet
 , m_stateless_protocol_active{false}  // Start with stateless protocol inactive
 , m_waiting_for_stateless_response{false}  // Not waiting initially
-, m_miner_ready_sent_time{}  // Will be set when MINER_READY is sent
+, m_miner_ready_sent_time_ns{0}  // Will be set when MINER_READY is sent (nanoseconds since epoch)
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -1754,7 +1754,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             
             // Set waiting flags for protocol negotiation
             m_waiting_for_stateless_response = true;
-            m_miner_ready_sent_time = std::chrono::steady_clock::now();
+            m_miner_ready_sent_time_ns = std::chrono::steady_clock::now().time_since_epoch().count();
             
             m_logger->info("[Solo Protocol] ✓ MINER_READY transmitted");
             m_logger->info("[Solo Protocol] Waiting for STATELESS_GET_BLOCK (0xD008) response...");
@@ -2041,13 +2041,13 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_stateless_protocol_active = true;
             m_waiting_for_stateless_response = false;
             
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - m_miner_ready_sent_time
-            ).count();
+            auto now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+            auto sent_ns = m_miner_ready_sent_time_ns.load();
+            auto elapsed_ms = (now_ns - sent_ns) / 1000000;  // Convert nanoseconds to milliseconds
             
             m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
             m_logger->info("[Solo Protocol] ✅ STATELESS PROTOCOL ACTIVE!");
-            m_logger->info("[Solo Protocol]   Response time: {}ms", elapsed);
+            m_logger->info("[Solo Protocol]   Response time: {}ms", elapsed_ms);
             m_logger->info("[Solo Protocol]   Node supports push notifications (0xD008/0xD009)");
             m_logger->info("[Solo Protocol]   Legacy GET_ROUND polling disabled");
             m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
@@ -3166,13 +3166,12 @@ void Solo::check_stateless_protocol_timeout(std::shared_ptr<network::Connection>
     }
     
     // Calculate elapsed time since MINER_READY was sent
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-        now - m_miner_ready_sent_time
-    ).count();
+    auto now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto sent_ns = m_miner_ready_sent_time_ns.load();
+    auto elapsed_seconds = (now_ns - sent_ns) / 1000000000;  // Convert nanoseconds to seconds
     
     // Check if timeout expired
-    if (elapsed >= STATELESS_PROTOCOL_TIMEOUT_SECONDS) {
+    if (elapsed_seconds >= STATELESS_PROTOCOL_TIMEOUT_SECONDS) {
         // Timeout: Node doesn't support stateless protocol
         m_waiting_for_stateless_response = false;
         m_stateless_protocol_active = false;

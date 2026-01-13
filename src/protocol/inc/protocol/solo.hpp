@@ -296,7 +296,7 @@ private:
     // - Worker threads: submit_block() reads m_stateless_protocol_active
     std::atomic<bool> m_stateless_protocol_active;           // True when using stateless protocol (0xD008/0xD009)
     std::atomic<bool> m_waiting_for_stateless_response;      // True after MINER_READY sent, waiting for GET_BLOCK
-    std::chrono::steady_clock::time_point m_miner_ready_sent_time;  // Timestamp when MINER_READY sent
+    std::atomic<int64_t> m_miner_ready_sent_time_ns;         // Timestamp when MINER_READY sent (nanoseconds since epoch, atomic for thread safety)
     
     // Configuration constants for stateless protocol negotiation
     static constexpr uint32_t STATELESS_PROTOCOL_TIMEOUT_SECONDS = 5;  // 5 second timeout
