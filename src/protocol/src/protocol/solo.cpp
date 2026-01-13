@@ -2013,10 +2013,21 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         
         // ═══════════════════════════════════════════════════════════════════
-        // VALIDATION: Dump raw metadata bytes for format verification
+        // CRITICAL VERIFICATION: Is metadata HOT (inserted on wire) or part of block?
         // ═══════════════════════════════════════════════════════════════════
         m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
-        m_logger->info("[Solo Stateless] 📦 RAW METADATA VALIDATION (12 bytes)");
+        m_logger->info("[Solo Stateless] ⚠️  CRITICAL ASSUMPTION VERIFICATION");
+        m_logger->info("[Solo Stateless] Template format: 228 bytes = 12 metadata + 216 block");
+        m_logger->info("[Solo Stateless] Assumption: Node sends HOT metadata (prepended on wire)");
+        m_logger->info("[Solo Stateless]   - Bytes 0-11:   Metadata (unified_height, channel_height, difficulty)");
+        m_logger->info("[Solo Stateless]   - Bytes 12-227: Block template (216-byte Tritium format)");
+        m_logger->info("[Solo Stateless] Alternative: Metadata extracted from block fields (nHeight, nBits)");
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // VALIDATION: Dump raw metadata bytes for format verification
+        // ═══════════════════════════════════════════════════════════════════
+        m_logger->info("[Solo Stateless] 📦 RAW METADATA (First 12 bytes of 228-byte payload)");
         m_logger->info("[Solo Stateless] Hex dump of metadata:");
         std::string metadata_hex;
         for (size_t i = 0; i < METADATA_SIZE && i < packet.m_data->size(); ++i) {
@@ -2026,6 +2037,18 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             if ((i + 1) % 4 == 0) metadata_hex += " | ";  // Group by uint32
         }
         m_logger->info("[Solo Stateless]   {}", metadata_hex);
+        
+        // Also show first 32 bytes of block template for comparison
+        m_logger->info("[Solo Stateless] 📦 RAW BLOCK START (Bytes 12-43 of 228-byte payload)");
+        std::string block_hex;
+        for (size_t i = METADATA_SIZE; i < METADATA_SIZE + 32 && i < packet.m_data->size(); ++i) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02x ", (*packet.m_data)[i]);
+            block_hex += buf;
+            if ((i - METADATA_SIZE + 1) % 8 == 0) block_hex += " | ";
+        }
+        m_logger->info("[Solo Stateless]   {}", block_hex);
+        m_logger->info("[Solo Stateless] Expected block start: nVersion (4 bytes) = first uint32 shown above");
         m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
         
         // Parse 12-byte metadata (big-endian per LLL-TAO PR #170)
@@ -2154,10 +2177,20 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         
         // ═══════════════════════════════════════════════════════════════════
-        // VALIDATION: Dump raw metadata bytes for format verification
+        // CRITICAL VERIFICATION: Is metadata HOT (inserted on wire) or part of block?
         // ═══════════════════════════════════════════════════════════════════
         m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
-        m_logger->info("[Solo Stateless] 📦 RAW METADATA VALIDATION (12 bytes)");
+        m_logger->info("[Solo Stateless] ⚠️  CRITICAL ASSUMPTION VERIFICATION (NEW_BLOCK)");
+        m_logger->info("[Solo Stateless] Template format: 228 bytes = 12 metadata + 216 block");
+        m_logger->info("[Solo Stateless] Assumption: Node sends HOT metadata (prepended on wire)");
+        m_logger->info("[Solo Stateless]   - Bytes 0-11:   Metadata (unified_height, channel_height, difficulty)");
+        m_logger->info("[Solo Stateless]   - Bytes 12-227: Block template (216-byte Tritium format)");
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // VALIDATION: Dump raw metadata bytes for format verification
+        // ═══════════════════════════════════════════════════════════════════
+        m_logger->info("[Solo Stateless] 📦 RAW METADATA (First 12 bytes of 228-byte payload)");
         m_logger->info("[Solo Stateless] Hex dump of metadata:");
         std::string metadata_hex;
         for (size_t i = 0; i < METADATA_SIZE && i < packet.m_data->size(); ++i) {
@@ -2167,6 +2200,18 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             if ((i + 1) % 4 == 0) metadata_hex += " | ";  // Group by uint32
         }
         m_logger->info("[Solo Stateless]   {}", metadata_hex);
+        
+        // Also show first 32 bytes of block template for comparison
+        m_logger->info("[Solo Stateless] 📦 RAW BLOCK START (Bytes 12-43 of 228-byte payload)");
+        std::string block_hex;
+        for (size_t i = METADATA_SIZE; i < METADATA_SIZE + 32 && i < packet.m_data->size(); ++i) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02x ", (*packet.m_data)[i]);
+            block_hex += buf;
+            if ((i - METADATA_SIZE + 1) % 8 == 0) block_hex += " | ";
+        }
+        m_logger->info("[Solo Stateless]   {}", block_hex);
+        m_logger->info("[Solo Stateless] Expected block start: nVersion (4 bytes) = first uint32 shown above");
         m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
         
         // Parse 12-byte metadata (big-endian per LLL-TAO PR #170)
