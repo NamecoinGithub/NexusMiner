@@ -96,7 +96,7 @@ chrono::Timer::Handler Timer_manager::get_height_handler(std::uint16_t get_heigh
         auto connection_shared = connection.lock();
         if(connection_shared)
         {
-            Packet packet_get_height{ Packet::GET_HEIGHT };
+            Packet packet_get_height{ static_cast<uint8_t>(Packet::GET_HEIGHT) };
             connection_shared->transmit(packet_get_height.get_bytes());
 
             // restart timer
@@ -118,7 +118,7 @@ chrono::Timer::Handler Timer_manager::ping_handler(std::uint16_t ping_interval, 
         auto connection_shared = connection.lock();
         if (connection_shared)
         {
-            Packet packet{ Packet::PING };
+            Packet packet{ static_cast<uint8_t>(Packet::PING) };
             connection_shared->transmit(packet.get_bytes());
 
             // restart timer
@@ -187,7 +187,7 @@ chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_
             if (protocol_shared->should_send_get_round())
             {
                 // Send GET_ROUND request (opcode 133)
-                Packet packet_get_round{ Packet::GET_ROUND };
+                Packet packet_get_round{ static_cast<uint8_t>(Packet::GET_ROUND) };
                 connection_shared->transmit(packet_get_round.get_bytes());
             }
 

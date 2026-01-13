@@ -13,6 +13,24 @@
 
 namespace nexusminer
 {
+	// Packet protocol constants
+	namespace PacketConstants {
+		// Invalid header marker for error conditions
+		static constexpr uint16_t INVALID_HEADER = 0xFFFF;
+		
+		// Threshold for detecting stateless mining protocol (uint16_t opcodes)
+		// First byte >= 0xD0 indicates uint16_t opcode (0xD000+)
+		static constexpr uint8_t STATELESS_OPCODE_THRESHOLD = 0xD0;
+		
+		// Threshold for stateless mining opcode range (uint16_t values)
+		static constexpr uint16_t STATELESS_OPCODE_MIN = 0xD000;
+		
+		// Helper function to check if opcode is in stateless mining range
+		inline bool is_stateless_opcode(uint16_t opcode) {
+			return opcode >= STATELESS_OPCODE_MIN;
+		}
+	}
+	
 	/** Class to handle sending and receiving of LLP Packets. **/
 	class Packet
 	{
@@ -20,7 +38,8 @@ namespace nexusminer
 
 		// Packet headers - use centralized definitions from miner_opcodes.hpp
 		// These values MUST match the node implementation exactly for protocol compatibility
-		enum
+		// Underlying type is uint16_t to support stateless mining opcodes (0xD000+)
+		enum : uint16_t
 		{
 			/** DATA PACKETS **/
 			BLOCK_DATA = LLP::BLOCK_DATA,
@@ -96,6 +115,31 @@ namespace nexusminer
 			// LEGACY - kept for pool compatibility
 			BLOCK = LLP::BLOCK,
 			STALE = LLP::STALE,
+			
+			/** NEW STATELESS MINING PROTOCOL (uint16_t opcodes, 0xD000+) **/
+			/** These require Packet(uint16_t) constructor **/
+			
+			// Authentication (0xD000-0xD001)
+			STATELESS_MINER_AUTH = LLP::StatelessMining::MINER_AUTH,
+			STATELESS_MINER_AUTH_RESPONSE = LLP::StatelessMining::MINER_AUTH_RESPONSE,
+			
+			// Configuration (0xD003-0xD006)
+			STATELESS_MINER_SET_REWARD = LLP::StatelessMining::MINER_SET_REWARD,
+			STATELESS_MINER_REWARD_RESULT = LLP::StatelessMining::MINER_REWARD_RESULT,
+			STATELESS_SET_CHANNEL = LLP::StatelessMining::SET_CHANNEL,
+			STATELESS_CHANNEL_ACK = LLP::StatelessMining::CHANNEL_ACK,
+			
+			// Subscription (0xD007)
+			STATELESS_MINER_READY = LLP::StatelessMining::MINER_READY,
+			
+			// Template delivery (0xD008-0xD009) - THE KEY OPCODES!
+			STATELESS_GET_BLOCK = LLP::StatelessMining::GET_BLOCK,
+			STATELESS_NEW_BLOCK = LLP::StatelessMining::NEW_BLOCK,
+			
+			// Solution submission (0xD00A-0xD00C)
+			STATELESS_SUBMIT_BLOCK = LLP::StatelessMining::SUBMIT_BLOCK,
+			STATELESS_BLOCK_ACCEPTED = LLP::StatelessMining::BLOCK_ACCEPTED,
+			STATELESS_BLOCK_REJECTED = LLP::StatelessMining::BLOCK_REJECTED,
 
 			/** GENERIC **/
 			PING = LLP::PING,
@@ -103,15 +147,26 @@ namespace nexusminer
 		};
 
 		Packet()
-			: m_header{ 255 }
+			: m_header{ PacketConstants::INVALID_HEADER }
 			, m_length{ 0 }
 			, m_is_valid{ false }
+			, m_is_uint16_opcode{ false }
 		{
 		}
 
 		Packet(std::uint8_t header, network::Payload const& data)
 			: m_header{ header }
 			, m_is_valid{ true }
+			, m_is_uint16_opcode{ false }
+		{
+			m_data = std::make_shared<network::Payload>(data);
+			m_length = m_data->size();
+		}
+		
+		Packet(std::uint16_t header, network::Payload const& data)
+			: m_header{ header }
+			, m_is_valid{ true }
+			, m_is_uint16_opcode{ PacketConstants::is_stateless_opcode(header) }
 		{
 			m_data = std::make_shared<network::Payload>(data);
 			m_length = m_data->size();
@@ -121,6 +176,20 @@ namespace nexusminer
 			: m_header{ header }
 			, m_length{ 0 }
 			, m_is_valid{ true }
+			, m_is_uint16_opcode{ false }
+		{
+			if (data)
+			{
+				m_data = std::move(data);
+				m_length = m_data->size();
+			}
+		}
+		
+		Packet(std::uint16_t header, network::Shared_payload data)
+			: m_header{ header }
+			, m_length{ 0 }
+			, m_is_valid{ true }
+			, m_is_uint16_opcode{ PacketConstants::is_stateless_opcode(header) }
 		{
 			if (data)
 			{
@@ -133,6 +202,15 @@ namespace nexusminer
 			: m_header{ header }
 			, m_length{ 0 }
 			, m_is_valid{ true }
+			, m_is_uint16_opcode{ false }
+		{
+		}
+		
+		explicit Packet(std::uint16_t header)
+			: m_header{ header }
+			, m_length{ 0 }
+			, m_is_valid{ true }
+			, m_is_uint16_opcode{ PacketConstants::is_stateless_opcode(header) }
 		{
 		}
 
@@ -140,35 +218,108 @@ namespace nexusminer
 		explicit Packet(network::Shared_payload buffer)
 		{
 			m_is_valid = true;
+			m_is_uint16_opcode = false;
+			
 			if (buffer->empty())
 			{
-				m_header = 255;
+				m_header = PacketConstants::INVALID_HEADER;
 				m_is_valid = false;
+				m_length = 0;
+				return;
+			}
+			
+			// Detect opcode format based on first byte
+			uint8_t first_byte = (*buffer)[0];
+			
+			if (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD)
+			{
+				// NEW uint16_t opcode format (2-byte header, big-endian)
+				m_is_uint16_opcode = true;
+				
+				if (buffer->size() < 2)
+				{
+					m_header = 0xFFFF;
+					m_is_valid = false;
+					m_length = 0;
+					return;
+				}
+				
+				// Parse 2-byte header (big-endian)
+				m_header = (static_cast<uint16_t>((*buffer)[0]) << 8) | 
+				           static_cast<uint16_t>((*buffer)[1]);
+				
+				// Check if we have length field (need at least 6 bytes total: header(2) + length(4))
+				if (buffer->size() < 6)
+				{
+					m_is_valid = false;
+					m_length = 0;
+					return;
+				}
+				
+				// Parse length (4 bytes, big-endian, starts at offset 2)
+				m_length = ((*buffer)[2] << 24) + ((*buffer)[3] << 16) + 
+				           ((*buffer)[4] << 8) + (*buffer)[5];
+				
+				// Extract data (starts at offset 6)
+				if (buffer->size() >= 6 + m_length)
+				{
+					m_data = std::make_shared<network::Payload>(buffer->begin() + 6, 
+					                                             buffer->begin() + 6 + m_length);
+				}
+				else
+				{
+					m_is_valid = false;
+					m_length = 0;
+				}
 			}
 			else
 			{
-				m_header = (*buffer)[0];
-			}
-			m_length = 0;
-			if (buffer->size() > 1 && buffer->size() < 5)
-			{
-				m_is_valid = false;
-			}
-			else if (buffer->size() > 4)
-			{
-				m_length = ((*buffer)[1] << 24) + ((*buffer)[2] << 16) + ((*buffer)[3] << 8) + ((*buffer)[4]);
-				m_data = std::make_shared<network::Payload>(buffer->begin() + 5, buffer->end());
+				// LEGACY uint8_t opcode format (1-byte header)
+				m_is_uint16_opcode = false;
+				m_header = first_byte;
+				m_length = 0;
+				
+				if (buffer->size() > 1 && buffer->size() < 5)
+				{
+					m_is_valid = false;
+				}
+				else if (buffer->size() >= 5)
+				{
+					// Parse length (4 bytes, big-endian, starts at offset 1)
+					m_length = ((*buffer)[1] << 24) + ((*buffer)[2] << 16) + 
+					           ((*buffer)[3] << 8) + ((*buffer)[4]);
+					
+					// Extract data (starts at offset 5)
+					if (buffer->size() >= 5 + m_length)
+					{
+						m_data = std::make_shared<network::Payload>(buffer->begin() + 5, 
+						                                             buffer->begin() + 5 + m_length);
+					}
+					else
+					{
+						m_is_valid = false;
+						m_length = 0;
+					}
+				}
 			}
 		}
 
 		/** Components of an LLP Packet.
-			BYTE 0       : Header
-			BYTE 1 - 5   : Length
-			BYTE 6 - End : Data      **/
-		std::uint8_t		m_header;
+			LEGACY FORMAT (uint8_t opcodes, < 0xD0):
+				BYTE 0       : Header (1 byte)
+				BYTE 1 - 4   : Length (4 bytes, big-endian)
+				BYTE 5 - End : Data
+			
+			NEW FORMAT (uint16_t opcodes, >= 0xD000):
+				BYTE 0 - 1   : Header (2 bytes, big-endian)
+				BYTE 2 - 5   : Length (4 bytes, big-endian)
+				BYTE 6 - End : Data
+		**/
+		std::uint16_t		m_header;  // Changed from uint8_t to support 0xD000+ opcodes
 		std::uint32_t		m_length;
 		network::Shared_payload m_data;
 		bool m_is_valid;
+		bool m_is_uint16_opcode;  // True if this packet uses uint16_t opcode (>= 0xD000)
 
 		/**
 		 * @brief Check if packet header is part of stateless mining protocol (206-214)
@@ -254,7 +405,17 @@ namespace nexusminer
 			{
 				return false;
 			}
+			
+			// NEW uint16_t opcode protocol (0xD000+)
+			if (m_is_uint16_opcode)
+			{
+				// All uint16_t opcodes in 0xD000+ range are valid if parsing succeeded
+				// Validation is done during parsing
+				return true;
+			}
 
+			// LEGACY uint8_t opcodes below...
+			
 			// Special case: LOGIN message (legacy compatibility)
 			if (m_header == 0 && m_length == 0)
 				return true;
@@ -292,19 +453,51 @@ namespace nexusminer
 				return network::Shared_payload{};
 			}
 
-			network::Payload BYTES(1, m_header);
-
-			/** Handle for Data Packets (header < 128) or Authentication Packets (207-212) **/
-			// Both standard data packets and Falcon auth packets use the same wire format:
-			// [header (1 byte)] [length (4 bytes, big-endian)] [payload data]
-			if ((m_header < 128 || is_auth_packet()) && m_length > 0)
+			network::Payload BYTES;
+			
+			if (m_is_uint16_opcode)
 			{
-				BYTES.push_back((m_length >> 24));
-				BYTES.push_back((m_length >> 16));
-				BYTES.push_back((m_length >> 8));
-				BYTES.push_back(m_length);
+				// NEW uint16_t opcode format: [header(2)][length(4)][data]
+				// Header (2 bytes, big-endian)
+				BYTES.push_back((m_header >> 8) & 0xFF);
+				BYTES.push_back(m_header & 0xFF);
+				
+				// Length (4 bytes, big-endian) - if payload exists
+				if (m_length > 0 && m_data)
+				{
+					BYTES.push_back((m_length >> 24) & 0xFF);
+					BYTES.push_back((m_length >> 16) & 0xFF);
+					BYTES.push_back((m_length >> 8) & 0xFF);
+					BYTES.push_back(m_length & 0xFF);
+					
+					// Data
+					BYTES.insert(BYTES.end(), m_data->begin(), m_data->end());
+				}
+				else if (m_length > 0)
+				{
+					// Payload expected but missing - invalid
+					return network::Shared_payload{};
+				}
+				// else: header-only packet, no length/data needed
+			}
+			else
+			{
+				// LEGACY uint8_t opcode format: [header(1)][length(4)][data]
+				// Header (1 byte)
+				BYTES.push_back(static_cast<uint8_t>(m_header));
 
-				BYTES.insert(BYTES.end(), m_data->begin(), m_data->end());
+				/** Handle for Data Packets (header < 128) or Authentication Packets (207-212) **/
+				// Both standard data packets and Falcon auth packets use the same wire format:
+				// [header (1 byte)] [length (4 bytes, big-endian)] [payload data]
+				if ((m_header < 128 || is_auth_packet()) && m_length > 0)
+				{
+					BYTES.push_back((m_length >> 24));
+					BYTES.push_back((m_length >> 16));
+					BYTES.push_back((m_length >> 8));
+					BYTES.push_back(m_length);
+
+					BYTES.insert(BYTES.end(), m_data->begin(), m_data->end());
+				}
 			}
 
 			return std::make_shared<network::Payload>(BYTES);
@@ -337,34 +530,92 @@ namespace nexusminer
 
 		auto const buffer_start = buffer->begin() + start_index;
 		auto const buffer_size = std::distance(buffer_start, buffer->end());
-		if (buffer_size == 1)
+		
+		// Detect opcode format based on first byte
+		uint8_t first_byte = (*buffer)[start_index];
+		
+		if (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD)
 		{
-			packet.m_header = (*buffer)[start_index];
+			// NEW uint16_t opcode format
+			packet.m_is_uint16_opcode = true;
+			
+			if (buffer_size < 2)
+			{
+				// Not enough data for header
+				return packet;
+			}
+			
+			// Parse 2-byte header (big-endian)
+			packet.m_header = (static_cast<uint16_t>((*buffer)[start_index]) << 8) | 
+			                  static_cast<uint16_t>((*buffer)[start_index + 1]);
 			packet.m_is_valid = true;
-			remaining_size = 0;		// buffer has only 1 byte size left -> header
-			return packet;
-		}
-		else if (buffer_size > 1 && buffer_size < 5)	// data paket but not even correct length field was transmitted
-		{
-			return packet;
+			
+			if (buffer_size == 2)
+			{
+				// Header-only packet
+				packet.m_length = 0;
+				remaining_size = 0;
+				return packet;
+			}
+			else if (buffer_size < 6)
+			{
+				// Not enough data for length field
+				packet.m_is_valid = false;
+				return packet;
+			}
+			else
+			{
+				// Parse length (4 bytes, big-endian, starts at offset 2)
+				std::uint32_t const length = ((*buffer)[start_index + 2] << 24) + 
+				                              ((*buffer)[start_index + 3] << 16) + 
+				                              ((*buffer)[start_index + 4] << 8) + 
+				                              (*buffer)[start_index + 5];
+				
+				if (length > std::distance(buffer_start + 6, buffer->end()))
+				{
+					// Not enough data for payload
+					packet.m_is_valid = false;
+					return packet;
+				}
+				
+				packet.m_length = length;
+				packet.m_data = std::make_shared<network::Payload>(buffer_start + 6, buffer_start + 6 + length);
+				remaining_size = buffer_size - (6 + packet.m_data->size());		// header (2 bytes) + 4 byte length
+			}
 		}
 		else
 		{
-			std::uint32_t const length = ((*buffer)[start_index + 1] << 24) + ((*buffer)[start_index + 2] << 16) + ((*buffer)[start_index + 3] << 8) + ((*buffer)[start_index + 4]);
-
-			if (length > std::distance(buffer_start + 5, buffer->end()))
+			// LEGACY uint8_t opcode format
+			packet.m_is_uint16_opcode = false;
+			
+			if (buffer_size == 1)
+			{
+				packet.m_header = first_byte;
+				packet.m_is_valid = true;
+				remaining_size = 0;		// buffer has only 1 byte size left -> header
+				return packet;
+			}
+			else if (buffer_size > 1 && buffer_size < 5)	// data packet but not even correct length field was transmitted
 			{
 				return packet;
 			}
+			else
+			{
+				std::uint32_t const length = ((*buffer)[start_index + 1] << 24) + ((*buffer)[start_index + 2] << 16) + ((*buffer)[start_index + 3] << 8) + ((*buffer)[start_index + 4]);
 
-			packet.m_is_valid = true;
-			packet.m_header = (*buffer)[start_index];
-			packet.m_length = length;
-			packet.m_data = std::make_shared<network::Payload>(buffer_start + 5, buffer_start + 5 + length);
+				if (length > std::distance(buffer_start + 5, buffer->end()))
+				{
+					return packet;
+				}
 
-			remaining_size = buffer_size - (5 + packet.m_data->size());		// header (1 byte) + 4 byte length 
+				packet.m_is_valid = true;
+				packet.m_header = first_byte;
+				packet.m_length = length;
+				packet.m_data = std::make_shared<network::Payload>(buffer_start + 5, buffer_start + 5 + length);
+
+				remaining_size = buffer_size - (5 + packet.m_data->size());		// header (1 byte) + 4 byte length 
+			}
 		}
-
 
 		return packet;
 	}

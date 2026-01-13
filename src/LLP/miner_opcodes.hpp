@@ -22,10 +22,13 @@ namespace LLP
 {
 
 /**
- * LLP Packet Header Opcodes
+ * LLP Packet Header Opcodes (Legacy uint8_t opcodes)
  * 
  * These opcodes define the message types in the Lower Level Protocol (LLP)
  * used for communication between NexusMiner and LLL-TAO mining servers.
+ * 
+ * NOTE: These are legacy uint8_t opcodes. For new stateless mining protocol,
+ * see StatelessMining namespace below with uint16_t opcodes (0xD000+ range).
  */
 enum MinerOpcodes : std::uint8_t
 {
@@ -305,6 +308,182 @@ enum MinerOpcodes : std::uint8_t
     /** Close connection */
     CLOSE = 254
 };
+
+// ============================================================================
+// NEW STATELESS MINING PROTOCOL (LLL-TAO PR #170)
+// uint16_t opcodes in 0xD000+ range for GET_BLOCK/NEW_BLOCK push protocol
+// ============================================================================
+
+/**
+ * @namespace StatelessMining
+ * @brief NEW stateless mining protocol opcodes (uint16_t, 0xD000+ range)
+ * 
+ * This namespace contains the opcodes for the modern stateless mining protocol
+ * implemented in LLL-TAO PR #170. These opcodes use uint16_t (2-byte) headers
+ * instead of the legacy uint8_t (1-byte) headers.
+ * 
+ * KEY FEATURES:
+ * - Push notifications (no polling!)
+ * - 228-byte templates (12-byte metadata + 216-byte block)
+ * - Immediate template delivery after MINER_READY
+ * - NEW_BLOCK push updates when blockchain advances
+ * 
+ * WIRE FORMAT:
+ * [header(2 bytes, big-endian)][length(4 bytes, big-endian)][payload]
+ */
+namespace StatelessMining {
+    
+    // ========================================================================
+    // AUTHENTICATION (0xD000-0xD002)
+    // ========================================================================
+    
+    /**
+     * MINER_AUTH: Miner initiates Falcon authentication
+     * Direction: Miner → Node
+     * Payload: [genesis(32)][pubkey_len(2)][pubkey][miner_id_len(2)][miner_id]
+     */
+    constexpr uint16_t MINER_AUTH = 0xD000;
+    
+    /**
+     * MINER_AUTH_RESPONSE: Node responds to authentication
+     * Direction: Node → Miner
+     * Payload: [status(1)][session_id(4, optional)]
+     *   status: 0x01 = success, 0x00 = failure
+     */
+    constexpr uint16_t MINER_AUTH_RESPONSE = 0xD001;
+    
+    // ========================================================================
+    // CONFIGURATION (0xD003-0xD006)
+    // ========================================================================
+    
+    /**
+     * MINER_SET_REWARD: Miner sends encrypted reward address
+     * Direction: Miner → Node
+     * Payload (ChaCha20 encrypted): [encrypted_address(32)]
+     */
+    constexpr uint16_t MINER_SET_REWARD = 0xD003;
+    
+    /**
+     * MINER_REWARD_RESULT: Node confirms reward binding
+     * Direction: Node → Miner
+     * Payload (ChaCha20 encrypted): [status(1)][msg_len(1)][message(optional)]
+     */
+    constexpr uint16_t MINER_REWARD_RESULT = 0xD004;
+    
+    /**
+     * SET_CHANNEL: Miner sets mining channel
+     * Direction: Miner → Node
+     * Payload: [channel(1)]  // 1=Prime, 2=Hash
+     */
+    constexpr uint16_t SET_CHANNEL = 0xD005;
+    
+    /**
+     * CHANNEL_ACK: Node acknowledges channel selection
+     * Direction: Node → Miner
+     * Payload: [channel(1)]  // Confirmed channel
+     */
+    constexpr uint16_t CHANNEL_ACK = 0xD006;
+    
+    // ========================================================================
+    // SUBSCRIPTION (0xD007)
+    // ========================================================================
+    
+    /**
+     * MINER_READY: Miner subscribes to push notifications
+     * Direction: Miner → Node
+     * Payload: None (header-only)
+     * 
+     * Requirements:
+     * - Must be sent AFTER successful authentication
+     * - Must be sent AFTER SET_CHANNEL
+     * 
+     * Response:
+     * - Node sends GET_BLOCK immediately (228-byte template)
+     * - Then sends NEW_BLOCK on every block validation
+     */
+    constexpr uint16_t MINER_READY = 0xD007;
+    
+    // ========================================================================
+    // TEMPLATE DELIVERY (0xD008-0xD009) - THE KEY OPCODES!
+    // ========================================================================
+    
+    /**
+     * GET_BLOCK: Node sends initial mining template (PUSH!)
+     * Direction: Node → Miner
+     * Payload: 228 bytes (12-byte metadata + 216-byte block)
+     * 
+     * Metadata (12 bytes, big-endian):
+     *   [0-3]   nUnifiedHeight  - Overall blockchain height
+     *   [4-7]   nChannelHeight  - Channel-specific height
+     *   [8-11]  nDifficulty     - Mining target (nBits)
+     * 
+     * Block (216 bytes):
+     *   Full serialized block template for mining
+     * 
+     * Triggered:
+     * - Immediately after MINER_READY (no polling needed!)
+     * - When miner requests new work (if needed)
+     */
+    constexpr uint16_t GET_BLOCK = 0xD008;
+    
+    /**
+     * NEW_BLOCK: Node pushes updated template when blockchain advances
+     * Direction: Node → Miner (PUSH!)
+     * Payload: 228 bytes (12-byte metadata + 216-byte block)
+     * 
+     * Same format as GET_BLOCK - node pushes this automatically!
+     * 
+     * Triggered:
+     * - When a new block is validated on the blockchain
+     * - Pushed to ALL subscribed miners (channel-specific)
+     * 
+     * Miner action:
+     * - Abandon current work
+     * - Switch to new template immediately
+     * - Resume mining
+     */
+    constexpr uint16_t NEW_BLOCK = 0xD009;
+    
+    // ========================================================================
+    // SOLUTION SUBMISSION (0xD00A-0xD00C)
+    // ========================================================================
+    
+    /**
+     * SUBMIT_BLOCK: Miner submits solved block
+     * Direction: Miner → Node
+     * Payload: 216 bytes (solved block)
+     */
+    constexpr uint16_t SUBMIT_BLOCK = 0xD00A;
+    
+    /**
+     * BLOCK_ACCEPTED: Node accepts submitted block
+     * Direction: Node → Miner
+     * Payload: None or [height(4)][hash(32)] (optional)
+     */
+    constexpr uint16_t BLOCK_ACCEPTED = 0xD00B;
+    
+    /**
+     * BLOCK_REJECTED: Node rejects submitted block
+     * Direction: Node → Miner
+     * Payload: [reason(1)]
+     * 
+     * Rejection reasons:
+     */
+    constexpr uint16_t BLOCK_REJECTED = 0xD00C;
+    
+    /**
+     * @enum RejectionReason
+     * @brief Reasons why a block might be rejected
+     */
+    enum RejectionReason : uint8_t {
+        STALE       = 0x01,  // Block already found (height mismatch)
+        INVALID_POW = 0x02,  // Proof-of-work doesn't meet difficulty
+        INVALID_SIG = 0x03,  // Falcon signature verification failed
+        DUPLICATE   = 0x04,  // Duplicate block submission
+        FORK        = 0x05,  // Blockchain forked, block invalid
+    };
+    
+} // namespace StatelessMining
 
 } // namespace LLP
 } // namespace nexusminer

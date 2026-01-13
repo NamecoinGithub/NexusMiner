@@ -97,7 +97,7 @@ namespace nexusminer
 		};
 	}
 
-	/** Get human-readable name for LLP packet header code **/
+	/** Get human-readable name for LLP packet header code (uint8_t legacy) **/
 	inline const char* get_llp_header_name(std::uint8_t header)
 	{
 		switch(header)
@@ -146,6 +146,44 @@ namespace nexusminer
 			case LLP_Headers::PING: return "PING";
 			case LLP_Headers::CLOSE: return "CLOSE";
 			default: return "UNKNOWN";
+		}
+	}
+	
+	/** Get human-readable name for LLP packet header code (uint16_t stateless) **/
+	inline const char* get_llp_header_name(std::uint16_t header)
+	{
+		// Check if it's in the uint16_t range (0xD000+)
+		switch(header)
+		{
+			// Authentication (0xD000-0xD001)
+			case LLP::StatelessMining::MINER_AUTH: return "STATELESS_MINER_AUTH (0xD000)";
+			case LLP::StatelessMining::MINER_AUTH_RESPONSE: return "STATELESS_MINER_AUTH_RESPONSE (0xD001)";
+			
+			// Configuration (0xD003-0xD006)
+			case LLP::StatelessMining::MINER_SET_REWARD: return "STATELESS_MINER_SET_REWARD (0xD003)";
+			case LLP::StatelessMining::MINER_REWARD_RESULT: return "STATELESS_MINER_REWARD_RESULT (0xD004)";
+			case LLP::StatelessMining::SET_CHANNEL: return "STATELESS_SET_CHANNEL (0xD005)";
+			case LLP::StatelessMining::CHANNEL_ACK: return "STATELESS_CHANNEL_ACK (0xD006)";
+			
+			// Subscription (0xD007)
+			case LLP::StatelessMining::MINER_READY: return "STATELESS_MINER_READY (0xD007)";
+			
+			// Template delivery (0xD008-0xD009) - THE KEY OPCODES!
+			case LLP::StatelessMining::GET_BLOCK: return "STATELESS_GET_BLOCK (0xD008)";
+			case LLP::StatelessMining::NEW_BLOCK: return "STATELESS_NEW_BLOCK (0xD009)";
+			
+			// Solution submission (0xD00A-0xD00C)
+			case LLP::StatelessMining::SUBMIT_BLOCK: return "STATELESS_SUBMIT_BLOCK (0xD00A)";
+			case LLP::StatelessMining::BLOCK_ACCEPTED: return "STATELESS_BLOCK_ACCEPTED (0xD00B)";
+			case LLP::StatelessMining::BLOCK_REJECTED: return "STATELESS_BLOCK_REJECTED (0xD00C)";
+			
+			default:
+				// Fall back to uint8_t check if it's < 256
+				if (header < 256)
+				{
+					return get_llp_header_name(static_cast<uint8_t>(header));
+				}
+				return "UNKNOWN";
 		}
 	}
 

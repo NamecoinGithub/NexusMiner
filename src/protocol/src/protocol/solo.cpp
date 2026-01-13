@@ -321,7 +321,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Auth] Authentication timestamp set: {} (0x{:016x})", 
                    m_auth_timestamp, m_auth_timestamp);
     
-    Packet packet(Packet::MINER_AUTH_INIT);  // 207 - m_is_valid = true automatically
+    Packet packet(static_cast<uint8_t>(Packet::MINER_AUTH_INIT));  // 207 - m_is_valid = true automatically
     packet.m_data = std::make_shared<network::Payload>();
     
     // ═══════════════════════════════════════════════════════════
@@ -482,7 +482,7 @@ network::Shared_payload Solo::get_work()
     m_logger->info("[Solo]   Reward bound: {}", m_reward_bound ? "YES" : "NO");
 
     /* Build GET_BLOCK packet (header-only, no payload) */
-    Packet packet{ Packet::GET_BLOCK };  // Header = 129 (0x81)
+    Packet packet{ static_cast<uint8_t>(Packet::GET_BLOCK) };  // Header = 129 (0x81)
     packet.m_length = 0;  // No payload for GET_BLOCK
     
     // Debug logging to diagnose packet encoding
@@ -509,7 +509,7 @@ network::Shared_payload Solo::get_height()
     m_logger->info("[Solo] Requesting blockchain height via GET_HEIGHT");
     
     // GET_HEIGHT is a header-only request packet (opcode 130, >= 128)
-    Packet packet{ Packet::GET_HEIGHT };
+    Packet packet{ static_cast<uint8_t>(Packet::GET_HEIGHT) };
     
     // Debug logging to verify packet encoding
     m_logger->debug("[Solo] GET_HEIGHT packet: header=0x{:02x} length={} is_valid={}", 
@@ -532,7 +532,7 @@ network::Shared_payload Solo::send_get_round()
     m_logger->debug("[Solo GET_ROUND] Requesting round status via GET_ROUND");
     
     // GET_ROUND is a header-only request packet (opcode 133, >= 128)
-    Packet packet{ Packet::GET_ROUND };
+    Packet packet{ static_cast<uint8_t>(Packet::GET_ROUND) };
     
     // Debug logging to verify packet encoding
     m_logger->debug("[Solo GET_ROUND] Packet: header=0x{:02x} length={} is_valid={}", 
@@ -840,7 +840,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         m_logger->info("📤 Sending encrypted SUBMIT_BLOCK packet to node...");
         
         // Build the SUBMIT_BLOCK packet with encrypted payload
-        Packet packet{ Packet::SUBMIT_BLOCK };
+        Packet packet{ static_cast<uint8_t>(Packet::SUBMIT_BLOCK) };
         packet.m_data = std::make_shared<network::Payload>(encryptedPayload);
         packet.m_length = static_cast<uint32_t>(encryptedPayload.size());
         
@@ -883,8 +883,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         auto const& remote_ep = connection->remote_endpoint();
         auto const& local_ep = connection->local_endpoint();
         m_logger->info("[Solo] ══════════════════════════════════════════════");
-        m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:02x})", 
-            get_llp_header_name(packet.m_header), static_cast<int>(packet.m_header));
+        // Use appropriate format based on opcode type
+        if (packet.m_is_uint16_opcode) {
+            m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:04x})", 
+                get_llp_header_name(packet.m_header), packet.m_header);
+        } else {
+            m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:02x})", 
+                get_llp_header_name(static_cast<uint8_t>(packet.m_header)), 
+                static_cast<uint8_t>(packet.m_header));
+        }
         m_logger->info("[Solo]   Length: {} bytes", packet.m_length);
         m_logger->info("[Solo]   Remote: {} | Local: {}", 
             remote_ep.to_string(), local_ep.to_string());
@@ -897,9 +904,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo] ══════════════════════════════════════════════");
     } else {
         m_logger->info("[Solo] ══════════════════════════════════════════════");
-        m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:02x}), length={}", 
-            get_llp_header_name(packet.m_header), static_cast<int>(packet.m_header), 
-            packet.m_length);
+        if (packet.m_is_uint16_opcode) {
+            m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:04x}), length={}", 
+                get_llp_header_name(packet.m_header), packet.m_header,
+                packet.m_length);
+        } else {
+            m_logger->info("[Solo] RECEIVED PACKET: {} (0x{:02x}), length={}", 
+                get_llp_header_name(static_cast<uint8_t>(packet.m_header)), 
+                static_cast<uint8_t>(packet.m_header), packet.m_length);
+        }
         
         // TRAINING WHEELS: Show hex dump even without connection
         if (packet.m_data && !packet.m_data->empty()) {
@@ -1979,9 +1992,353 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
     }
+    // ═══════════════════════════════════════════════════════════════════════
+    // NEW STATELESS MINING PROTOCOL HANDLERS (uint16_t opcodes, 0xD000+)
+    // ═══════════════════════════════════════════════════════════════════════
+    else if (packet.m_header == Packet::STATELESS_GET_BLOCK)
+    {
+        m_logger->info("[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD008) received!");
+        m_logger->info("[Solo Stateless] This is the NEW push notification protocol");
+        m_logger->info("[Solo Stateless] Template size: {} bytes (expected: 228)", packet.m_length);
+        
+        // Validate 228-byte template format (12 metadata + 216 block)
+        constexpr size_t TEMPLATE_SIZE = 228;
+        constexpr size_t METADATA_SIZE = 12;
+        constexpr size_t BLOCK_SIZE = 216;
+        
+        if (!packet.m_data || packet.m_length != TEMPLATE_SIZE) {
+            m_logger->error("[Solo Stateless] Invalid template size: {} (expected {})", 
+                           packet.m_length, TEMPLATE_SIZE);
+            return;
+        }
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // CRITICAL VERIFICATION: Is metadata HOT (inserted on wire) or part of block?
+        // ═══════════════════════════════════════════════════════════════════
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        m_logger->info("[Solo Stateless] ⚠️  CRITICAL ASSUMPTION VERIFICATION");
+        m_logger->info("[Solo Stateless] Template format: 228 bytes = 12 metadata + 216 block");
+        m_logger->info("[Solo Stateless] Assumption: Node sends HOT metadata (prepended on wire)");
+        m_logger->info("[Solo Stateless]   - Bytes 0-11:   Metadata (unified_height, channel_height, difficulty)");
+        m_logger->info("[Solo Stateless]   - Bytes 12-227: Block template (216-byte Tritium format)");
+        m_logger->info("[Solo Stateless] Alternative: Metadata extracted from block fields (nHeight, nBits)");
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // VALIDATION: Dump raw metadata bytes for format verification
+        // ═══════════════════════════════════════════════════════════════════
+        m_logger->info("[Solo Stateless] 📦 RAW METADATA (First 12 bytes of 228-byte payload)");
+        m_logger->info("[Solo Stateless] Hex dump of metadata:");
+        std::string metadata_hex;
+        for (size_t i = 0; i < METADATA_SIZE && i < packet.m_data->size(); ++i) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02x ", (*packet.m_data)[i]);
+            metadata_hex += buf;
+            if ((i + 1) % 4 == 0) metadata_hex += " | ";  // Group by uint32
+        }
+        m_logger->info("[Solo Stateless]   {}", metadata_hex);
+        
+        // Also show first 32 bytes of block template for comparison
+        m_logger->info("[Solo Stateless] 📦 RAW BLOCK START (Bytes 12-43 of 228-byte payload)");
+        std::string block_hex;
+        for (size_t i = METADATA_SIZE; i < METADATA_SIZE + 32 && i < packet.m_data->size(); ++i) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02x ", (*packet.m_data)[i]);
+            block_hex += buf;
+            if ((i - METADATA_SIZE + 1) % 8 == 0) block_hex += " | ";
+        }
+        m_logger->info("[Solo Stateless]   {}", block_hex);
+        m_logger->info("[Solo Stateless] Expected block start: nVersion (4 bytes) = first uint32 shown above");
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        
+        // Parse 12-byte metadata (big-endian per LLL-TAO PR #170)
+        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
+        uint32_t channel_height = bytes2uint(*packet.m_data, 4);
+        uint32_t difficulty = bytes2uint(*packet.m_data, 8);
+        
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        m_logger->info("[Solo Stateless] 📦 PARSED TEMPLATE METADATA");
+        m_logger->info("[Solo Stateless]   Unified height: {} (0x{:08x})", unified_height, unified_height);
+        m_logger->info("[Solo Stateless]   Channel height: {} (0x{:08x})", channel_height, channel_height);
+        m_logger->info("[Solo Stateless]   Difficulty:     0x{:08x} ({})", difficulty, difficulty);
+        m_logger->info("[Solo Stateless]   Block size:     {} bytes", BLOCK_SIZE);
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // SANITY CHECKS: Validate parsed values are reasonable
+        // ═══════════════════════════════════════════════════════════════════
+        bool validation_warnings = false;
+        
+        if (unified_height == 0) {
+            m_logger->warn("[Solo Stateless] ⚠️  Unified height is 0 - unusual but possible for genesis");
+            validation_warnings = true;
+        }
+        if (unified_height > 100000000) {
+            m_logger->error("[Solo Stateless] ❌ Unified height {} exceeds reasonable limit - possible byte order issue!", 
+                           unified_height);
+            validation_warnings = true;
+        }
+        
+        if (channel_height == 0) {
+            m_logger->warn("[Solo Stateless] ⚠️  Channel height is 0 - unusual but possible for genesis");
+            validation_warnings = true;
+        }
+        if (channel_height > unified_height) {
+            m_logger->error("[Solo Stateless] ❌ Channel height {} > unified height {} - invalid!", 
+                           channel_height, unified_height);
+            validation_warnings = true;
+        }
+        if (channel_height > 100000000) {
+            m_logger->error("[Solo Stateless] ❌ Channel height {} exceeds reasonable limit - possible byte order issue!", 
+                           channel_height);
+            validation_warnings = true;
+        }
+        
+        if (difficulty == 0) {
+            m_logger->error("[Solo Stateless] ❌ Difficulty is 0 - invalid!");
+            validation_warnings = true;
+        }
+        
+        if (validation_warnings) {
+            m_logger->warn("[Solo Stateless] ⚠️  VALIDATION WARNINGS DETECTED - verify metadata format with LLL-TAO PR #170");
+            m_logger->warn("[Solo Stateless] ⚠️  Current parsing assumes: [unified_height(4)][channel_height(4)][difficulty(4)] in BIG-ENDIAN");
+        } else {
+            m_logger->info("[Solo Stateless] ✅ Metadata validation passed - values appear reasonable");
+        }
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        
+        // Extract 216-byte block template
+        std::vector<uint8_t> block_template(packet.m_data->begin() + METADATA_SIZE,
+                                             packet.m_data->end());
+        
+        if (block_template.size() != BLOCK_SIZE) {
+            m_logger->error("[Solo Stateless] Block size mismatch: {} (expected {})",
+                           block_template.size(), BLOCK_SIZE);
+            return;
+        }
+        
+        // Process the block template using existing infrastructure
+        // The block_template contains the serialized block data
+        m_logger->info("[Solo Stateless] Processing 216-byte block template...");
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // VERIFICATION: Confirm read_template can parse 216-byte Tritium blocks
+        // ═══════════════════════════════════════════════════════════════════
+        m_logger->info("[Solo Stateless] Verifying 216-byte Tritium block format:");
+        m_logger->info("[Solo Stateless]   - Block size: {} bytes (Tritium format)", block_template.size());
+        m_logger->info("[Solo Stateless]   - read_template supports: 92 (Compact), 216 (Tritium), 220+ (Legacy)");
+        m_logger->info("[Solo Stateless]   - Expected: parse_block_header will deserialize as Tritium");
+        
+        // Feed to the template interface (same as BLOCK_DATA handling)
+        if (m_template_interface) {
+            auto block_payload = std::make_shared<network::Payload>(block_template);
+            auto validation_result = m_template_interface->read_template(block_payload, 
+                connection ? connection->remote_endpoint().to_string() : "unknown");
+            
+            if (!validation_result.is_valid) {
+                m_logger->error("[Solo Stateless] Template validation failed: {}", 
+                               validation_result.error_message);
+                m_logger->error("[Solo Stateless] This may indicate block format mismatch or parsing issue");
+                return;
+            }
+            
+            m_logger->info("[Solo Stateless] ✅ Template validated in {} μs", 
+                          validation_result.validation_time.count());
+            m_logger->info("[Solo Stateless] ✅ read_template successfully parsed 216-byte Tritium block");
+            
+            // Update height tracking
+            m_current_height = unified_height;
+            
+            // Set channel height on the template
+            m_template_interface->set_channel_height(channel_height);
+            
+            // Template is now ready for mining!
+            m_logger->info("[Solo Stateless] 🎯 Template ready for mining!");
+            m_logger->info("[Solo Stateless] Mining for block height: {} (channel: {})",
+                          unified_height, channel_height);
+        }
+        else {
+            m_logger->error("[Solo Stateless] No template interface available!");
+        }
+    }
+    else if (packet.m_header == Packet::STATELESS_NEW_BLOCK)
+    {
+        m_logger->info("[Solo Stateless] 🔔 STATELESS_NEW_BLOCK (0xD009) received!");
+        m_logger->info("[Solo Stateless] Network has advanced - NEW template pushed!");
+        
+        // Validate 228-byte template format (12 metadata + 216 block)
+        constexpr size_t TEMPLATE_SIZE = 228;
+        constexpr size_t METADATA_SIZE = 12;
+        constexpr size_t BLOCK_SIZE = 216;
+        
+        if (!packet.m_data || packet.m_length != TEMPLATE_SIZE) {
+            m_logger->error("[Solo Stateless] Invalid template size: {} (expected {})",
+                           packet.m_length, TEMPLATE_SIZE);
+            return;
+        }
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // CRITICAL VERIFICATION: Is metadata HOT (inserted on wire) or part of block?
+        // ═══════════════════════════════════════════════════════════════════
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        m_logger->info("[Solo Stateless] ⚠️  CRITICAL ASSUMPTION VERIFICATION (NEW_BLOCK)");
+        m_logger->info("[Solo Stateless] Template format: 228 bytes = 12 metadata + 216 block");
+        m_logger->info("[Solo Stateless] Assumption: Node sends HOT metadata (prepended on wire)");
+        m_logger->info("[Solo Stateless]   - Bytes 0-11:   Metadata (unified_height, channel_height, difficulty)");
+        m_logger->info("[Solo Stateless]   - Bytes 12-227: Block template (216-byte Tritium format)");
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // VALIDATION: Dump raw metadata bytes for format verification
+        // ═══════════════════════════════════════════════════════════════════
+        m_logger->info("[Solo Stateless] 📦 RAW METADATA (First 12 bytes of 228-byte payload)");
+        m_logger->info("[Solo Stateless] Hex dump of metadata:");
+        std::string metadata_hex;
+        for (size_t i = 0; i < METADATA_SIZE && i < packet.m_data->size(); ++i) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02x ", (*packet.m_data)[i]);
+            metadata_hex += buf;
+            if ((i + 1) % 4 == 0) metadata_hex += " | ";  // Group by uint32
+        }
+        m_logger->info("[Solo Stateless]   {}", metadata_hex);
+        
+        // Also show first 32 bytes of block template for comparison
+        m_logger->info("[Solo Stateless] 📦 RAW BLOCK START (Bytes 12-43 of 228-byte payload)");
+        std::string block_hex;
+        for (size_t i = METADATA_SIZE; i < METADATA_SIZE + 32 && i < packet.m_data->size(); ++i) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02x ", (*packet.m_data)[i]);
+            block_hex += buf;
+            if ((i - METADATA_SIZE + 1) % 8 == 0) block_hex += " | ";
+        }
+        m_logger->info("[Solo Stateless]   {}", block_hex);
+        m_logger->info("[Solo Stateless] Expected block start: nVersion (4 bytes) = first uint32 shown above");
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        
+        // Parse 12-byte metadata (big-endian per LLL-TAO PR #170)
+        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
+        uint32_t channel_height = bytes2uint(*packet.m_data, 4);
+        uint32_t difficulty = bytes2uint(*packet.m_data, 8);
+        
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        m_logger->info("[Solo Stateless] 🆕 NETWORK UPDATE (Push Notification)");
+        m_logger->info("[Solo Stateless]   New unified height: {} (0x{:08x})", unified_height, unified_height);
+        m_logger->info("[Solo Stateless]   New channel height: {} (0x{:08x})", channel_height, channel_height);
+        m_logger->info("[Solo Stateless]   New difficulty:     0x{:08x} ({})", difficulty, difficulty);
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // SANITY CHECKS: Validate parsed values are reasonable
+        // ═══════════════════════════════════════════════════════════════════
+        bool validation_warnings = false;
+        
+        if (unified_height == 0) {
+            m_logger->warn("[Solo Stateless] ⚠️  Unified height is 0 - unusual for NEW_BLOCK");
+            validation_warnings = true;
+        }
+        if (unified_height > 100000000) {
+            m_logger->error("[Solo Stateless] ❌ Unified height {} exceeds reasonable limit - possible byte order issue!", 
+                           unified_height);
+            validation_warnings = true;
+        }
+        
+        if (channel_height > unified_height) {
+            m_logger->error("[Solo Stateless] ❌ Channel height {} > unified height {} - invalid!", 
+                           channel_height, unified_height);
+            validation_warnings = true;
+        }
+        if (channel_height > 100000000) {
+            m_logger->error("[Solo Stateless] ❌ Channel height {} exceeds reasonable limit - possible byte order issue!", 
+                           channel_height);
+            validation_warnings = true;
+        }
+        
+        if (difficulty == 0) {
+            m_logger->error("[Solo Stateless] ❌ Difficulty is 0 - invalid!");
+            validation_warnings = true;
+        }
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // EDGE CASE HANDLING: Reject stale or duplicate NEW_BLOCK pushes
+        // ═══════════════════════════════════════════════════════════════════
+        
+        // Check if heights advanced (they should for NEW_BLOCK)
+        if (m_current_height > 0 && unified_height <= m_current_height) {
+            m_logger->warn("[Solo Stateless] ⚠️  NEW_BLOCK unified height {} not greater than current {} - possible stale/duplicate push",
+                          unified_height, m_current_height);
+            
+            // Reject stale templates to avoid wasted mining effort
+            if (unified_height < m_current_height) {
+                m_logger->error("[Solo Stateless] ❌ REJECTING stale NEW_BLOCK (height {} < current {})",
+                               unified_height, m_current_height);
+                m_logger->error("[Solo Stateless] This may indicate network glitch or node issue");
+                return;
+            }
+            
+            // Equal height = duplicate push, warn but continue (might be valid reorg)
+            if (unified_height == m_current_height) {
+                m_logger->warn("[Solo Stateless] ⚠️  Duplicate NEW_BLOCK at same height {} - continuing (possible reorg)",
+                              unified_height);
+                m_logger->warn("[Solo Stateless] Consider tracking template hash to detect true duplicates");
+            }
+        }
+        
+        if (validation_warnings) {
+            m_logger->warn("[Solo Stateless] ⚠️  VALIDATION WARNINGS DETECTED - verify metadata format with LLL-TAO PR #170");
+            m_logger->warn("[Solo Stateless] ⚠️  Current parsing assumes: [unified_height(4)][channel_height(4)][difficulty(4)] in BIG-ENDIAN");
+        } else {
+            m_logger->info("[Solo Stateless] ✅ Metadata validation passed - values appear reasonable");
+        }
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        
+        // CRITICAL: Abandon current work and switch to new template!
+        m_logger->warn("[Solo Stateless] ⚠️  Abandoning current work (network advanced)");
+        
+        // Extract 216-byte block template
+        std::vector<uint8_t> block_template(packet.m_data->begin() + METADATA_SIZE,
+                                             packet.m_data->end());
+        
+        if (block_template.size() != BLOCK_SIZE) {
+            m_logger->error("[Solo Stateless] Block size mismatch: {} (expected {})",
+                           block_template.size(), BLOCK_SIZE);
+            return;
+        }
+        
+        // Discard old template and process new one
+        m_logger->info("[Solo Stateless] Processing NEW 216-byte block template...");
+        m_logger->info("[Solo Stateless]   - Block size: {} bytes (Tritium format)", block_template.size());
+        
+        if (m_template_interface) {
+            m_template_interface->discard_template("Network advanced (NEW_BLOCK push)");
+            
+            auto block_payload = std::make_shared<network::Payload>(block_template);
+            auto validation_result = m_template_interface->read_template(block_payload,
+                connection ? connection->remote_endpoint().to_string() : "unknown");
+            
+            if (!validation_result.is_valid) {
+                m_logger->error("[Solo Stateless] New template validation failed: {}",
+                               validation_result.error_message);
+                m_logger->error("[Solo Stateless] This may indicate block format mismatch or parsing issue");
+                return;
+            }
+            
+            m_logger->info("[Solo Stateless] ✅ New template validated in {} μs",
+                          validation_result.validation_time.count());
+            m_logger->info("[Solo Stateless] ✅ read_template successfully parsed 216-byte Tritium block");
+            
+            // Update height tracking
+            m_current_height = unified_height;
+            
+            // Set channel height on the template
+            m_template_interface->set_channel_height(channel_height);
+            
+            m_logger->info("[Solo Stateless] ✅ Switched to new template - resumed mining!");
+        }
+        else {
+            m_logger->error("[Solo Stateless] No template interface available!");
+        }
+    }
     else
     {
-        m_logger->debug("Invalid header received: 0x{:02x}", packet.m_header);
+        m_logger->debug("Invalid header received: 0x{:04x}", packet.m_header);
     } 
 }
 
@@ -2025,7 +2382,7 @@ network::Shared_payload Solo::send_session_keepalive()
     std::vector<uint8_t> keepalive_data;
     append_uint32_le(keepalive_data, m_session_id);
     
-    Packet packet{ Packet::SESSION_KEEPALIVE, std::make_shared<network::Payload>(keepalive_data) };
+    Packet packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE), std::make_shared<network::Payload>(keepalive_data) };
     return packet.get_bytes();
 }
 
@@ -2035,7 +2392,7 @@ void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
     m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
     
     std::vector<uint8_t> channel_data(1, m_channel);
-    Packet set_channel_packet{ Packet::SET_CHANNEL, std::make_shared<network::Payload>(channel_data) };
+    Packet set_channel_packet{ static_cast<uint8_t>(Packet::SET_CHANNEL), std::make_shared<network::Payload>(channel_data) };
     connection->transmit(set_channel_packet.get_bytes());
 }
 
@@ -2187,7 +2544,7 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     }
     
     // Build MINER_AUTH_RESPONSE packet
-    Packet response_packet(Packet::MINER_AUTH_RESPONSE);  // 209 - m_is_valid = true automatically
+    Packet response_packet(static_cast<uint8_t>(Packet::MINER_AUTH_RESPONSE));  // 209 - m_is_valid = true automatically
     response_packet.m_data = std::make_shared<network::Payload>();
     
     // NOTE: MINER_AUTH_RESPONSE uses little-endian encoding per protocol specification
@@ -2351,7 +2708,7 @@ network::Shared_payload Solo::send_set_reward()
     }
     
     // Build the MINER_SET_REWARD packet
-    Packet packet(Packet::MINER_SET_REWARD);
+    Packet packet(static_cast<uint8_t>(Packet::MINER_SET_REWARD));
     packet.m_data = std::make_shared<network::Payload>(payload_data);
     packet.m_length = static_cast<uint32_t>(payload_data.size());
     
@@ -2368,7 +2725,7 @@ network::Shared_payload Solo::send_miner_ready()
                    m_channel == mining::CHANNEL_PRIME ? "Prime" : "Hash");
     
     // MINER_READY is a header-only packet (no payload)
-    Packet packet{ Packet::MINER_READY };
+    Packet packet{ static_cast<uint8_t>(Packet::MINER_READY) };
     
     m_logger->debug("[Solo Push] MINER_READY packet: header=0x{:02x} length={} is_valid={}", 
                    static_cast<int>(packet.m_header),
