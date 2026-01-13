@@ -2256,10 +2256,29 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             validation_warnings = true;
         }
         
+        // ═══════════════════════════════════════════════════════════════════
+        // EDGE CASE HANDLING: Reject stale or duplicate NEW_BLOCK pushes
+        // ═══════════════════════════════════════════════════════════════════
+        
         // Check if heights advanced (they should for NEW_BLOCK)
         if (m_current_height > 0 && unified_height <= m_current_height) {
-            m_logger->warn("[Solo Stateless] ⚠️  NEW_BLOCK unified height {} not greater than current {} - network may not have advanced",
+            m_logger->warn("[Solo Stateless] ⚠️  NEW_BLOCK unified height {} not greater than current {} - possible stale/duplicate push",
                           unified_height, m_current_height);
+            
+            // Reject stale templates to avoid wasted mining effort
+            if (unified_height < m_current_height) {
+                m_logger->error("[Solo Stateless] ❌ REJECTING stale NEW_BLOCK (height {} < current {})",
+                               unified_height, m_current_height);
+                m_logger->error("[Solo Stateless] This may indicate network glitch or node issue");
+                return;
+            }
+            
+            // Equal height = duplicate push, warn but continue (might be valid reorg)
+            if (unified_height == m_current_height) {
+                m_logger->warn("[Solo Stateless] ⚠️  Duplicate NEW_BLOCK at same height {} - continuing (possible reorg)",
+                              unified_height);
+                m_logger->warn("[Solo Stateless] Consider tracking template hash to detect true duplicates");
+            }
         }
         
         if (validation_warnings) {
