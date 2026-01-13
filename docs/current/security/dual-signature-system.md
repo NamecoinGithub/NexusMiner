@@ -28,26 +28,38 @@ Nexus mining uses a **dual Falcon signature system** that separates session auth
 - ❌ If compromised, entire account is at risk
 - ❌ Key must be on mining machine (hot storage)
 - ❌ Cannot rotate without blockchain transaction
+- ❌ Every block adds signature to blockchain (storage bloat)
 
 **Nexus Solution:** Separate operational and ownership keys:
-- ✅ Disposable key for frequent operations (session auth)
-- ✅ Physical key for blockchain proof (block ownership)
-- ✅ Compromise isolation (losing one doesn't lose account)
-- ✅ Operational efficiency (hot key rotatable without blockchain transaction)
+- ✅ **Disposable key** for block authentication (MANDATORY, always enabled)
+  - Verified but NOT stored on blockchain (0 bytes overhead)
+  - Rotatable without blockchain transaction
+  - Hot storage acceptable (mining machine)
+- ✅ **Physical key** for blockchain proof (OPTIONAL, off by default)
+  - Stored on blockchain only when enabled
+  - Embedded with Disposable signature in SUBMIT_BLOCK
+  - Cold storage required (hardware wallet/HSM)
+- ✅ Compromise isolation (losing disposable doesn't lose account)
+- ✅ Operational efficiency (61% blockchain savings with defaults)
 
 ### Critical Sequence
 
 **ALWAYS in this order:**
 
 ```
-STEP 1: Disposable Signature → Authenticate session with node
+STEP 1: Mine for solution (10-60 seconds typical)
                 ↓
-STEP 2: Mine for solution (10-60 seconds typical)
+STEP 2: Disposable Signature → Sign block in SUBMIT_BLOCK (MANDATORY, always enabled)
                 ↓
-STEP 3: Physical Signature → Prove block ownership on blockchain
+STEP 3: Physical Signature → Embedded with Disposable, stored on blockchain (OPTIONAL)
 ```
 
-**If either signature fails, mining fails!**
+**Important:**
+- **Disposable signature is MANDATORY** (always enabled by default, cannot be disabled)
+- **Physical signature is OPTIONAL** (disabled by default, configurable)
+- Both signatures are included in SUBMIT_BLOCK packet when Physical is enabled
+- Disposable signature is verified but NOT stored on blockchain (0 bytes overhead)
+- Physical signature is stored on blockchain if enabled (809/1577 bytes per block)
 
 ---
 
@@ -57,57 +69,63 @@ STEP 3: Physical Signature → Prove block ownership on blockchain
 
 | Aspect | Disposable Signature | Physical Signature |
 |--------|---------------------|-------------------|
-| **Purpose** | Session authentication | Blockchain proof |
-| **Used In** | MINER_AUTH (0xD000) | SUBMIT_BLOCK (0x0005) |
-| **Frequency** | Every 24h-7d (session timeout) | Every block found (~1-2/day typical) |
+| **Purpose** | Block submission authentication | Blockchain proof (optional) |
+| **Used In** | SUBMIT_BLOCK (0x0005) - MANDATORY | SUBMIT_BLOCK (0x0005) - OPTIONAL |
+| **Enabled** | ALWAYS (cannot disable) | Optional (OFF by default) |
+| **Frequency** | Every block found (~1-2/day typical) | Every block found if enabled |
 | **Storage** | Mining machine (hot) | Hardware wallet/secure server (cold) |
-| **Lifetime** | 24h-7d (configurable) | Permanent (blockchain account) |
-| **Persisted** | Session cache (node memory) | Blockchain block data |
+| **Size** | 809 bytes (F-512 CT) or 1577 bytes (F-1024 CT) | Same as disposable |
+| **Persisted** | Verified, then discarded (0 bytes overhead) | Blockchain block data (embedded with Disposable) |
 | **Rotation** | Easy (no blockchain transaction) | Hard (requires blockchain transaction) |
-| **Compromise** | Limited impact (session only) | Critical (full account) |
+| **Compromise** | Limited impact (block auth only) | Critical (full account) |
 | **Key File** | `disposable.key` | `physical.key` or hardware wallet |
 
 ---
 
 ### Disposable Signature
 
-**Role:** Authenticate miner identity for session
+**Role:** Authenticate block submission (MANDATORY, always enabled)
 
 **Properties:**
+- **ALWAYS ENABLED** by default (cannot be disabled - core protocol requirement)
 - Generated fresh for each deployment (or rotated periodically)
 - Can be stored on mining machine disk
-- Used only for MINER_AUTH packet
-- Node caches pubkey for 24h-7d
-- NOT stored on blockchain
+- Used in SUBMIT_BLOCK packet for every block found
+- Signature is **verified but NOT stored** on blockchain (discarded after verification)
+- Provides cryptographic proof without blockchain overhead (0 bytes)
+- Signature size: 809 bytes (Falcon-512 CT) or 1577 bytes (Falcon-1024 CT)
 - If compromised: Generate new key, re-authenticate
 
 **When Used:**
 ```
-Miner startup → Load disposable key → Sign MINER_AUTH → Send to node
+Block found → Load disposable key → Sign block in SUBMIT_BLOCK → Node verifies → Discarded
 ```
 
-**Security Level:** Medium (hot storage acceptable)
+**Security Level:** Medium (hot storage acceptable, no blockchain persistence)
 
 ---
 
 ### Physical Signature
 
-**Role:** Prove block ownership on blockchain
+**Role:** Prove block ownership on blockchain (OPTIONAL, disabled by default)
 
 **Properties:**
+- **OPTIONAL feature** (OFF by default for 0 blockchain overhead)
 - Linked permanently to blockchain account (genesis hash)
 - Should be in hardware wallet or secure offline storage
-- Used only for SUBMIT_BLOCK packet
-- Stored permanently in blockchain block data
-- Required for reward distribution
+- **Embedded with Disposable signature** in SUBMIT_BLOCK packet
+- Physical signature comes AFTER Disposable signature in the packet structure
+- Stored permanently in blockchain block data when enabled
+- Signature size: 809 bytes (Falcon-512 CT) or 1577 bytes (Falcon-1024 CT)
+- Required for reward distribution when enabled
 - If compromised: CRITICAL - full account at risk
 
 **When Used:**
 ```
-Solution found → Load physical key → Sign block hash → Submit to node
+Block found → Disposable signature created → Physical signature embedded → Both in SUBMIT_BLOCK
 ```
 
-**Security Level:** Maximum (cold storage required)
+**Security Level:** Maximum (cold storage required, permanent blockchain record)
 
 ---
 
@@ -125,45 +143,7 @@ sequenceDiagram
     
     Note over Miner,Blockchain: CRITICAL: Dual Signature System
     
-    rect rgb(255, 230, 230)
-        Note over Miner,Node: PHASE 1: Session Authentication (Disposable)
-        
-        Miner->>Miner: Start mining process
-        
-        Miner->>DisposableKey: Load disposable.key
-        Note right of DisposableKey: Hot key on local disk<br>or in-memory
-        
-        DisposableKey-->>Miner: Disposable private key
-        
-        Miner->>Miner: Derive message to sign
-        Note right of Miner: message = genesis ‖ timestamp ‖ nonce
-        
-        Miner->>DisposableKey: Sign(message)
-        Note right of DisposableKey: Falcon-1024 signature<br>Time: 1-2ms
-        
-        DisposableKey-->>Miner: Disposable signature (690/1330 bytes)
-        
-        Miner->>Node: MINER_AUTH (0xD000)
-        Note right of Miner: Contains:<br>• Genesis hash<br>• Disposable pubkey<br>• Disposable signature<br>• Miner ID
-        
-        Node->>Node: Verify disposable signature
-        Note left of Node: Falcon::Verify()<br>Time: 2-5ms
-        
-        alt Disposable Signature Valid
-            Node->>Node: Create session
-            Note left of Node: Cache disposable pubkey<br>TTL: 24h-7d
-            
-            Node-->>Miner: MINER_AUTH_RESPONSE (success)
-            Note left of Node: Session ID returned
-            
-            Note over Miner,Node: ✓ SESSION AUTHENTICATED
-        else Disposable Signature Invalid
-            Node-->>Miner: MINER_AUTH_RESPONSE (reject)
-            Note over Miner: Authentication failed<br>Cannot proceed
-        end
-    end
-    
-    Note over Miner,Blockchain: Mining happens (10-60 seconds typical)
+    Note over Miner,Node: Mining Process Starts
     
     Miner->>Node: GET_BLOCK (0xD008)
     Node-->>Miner: Block template
@@ -173,8 +153,8 @@ sequenceDiagram
     
     Note over Miner: SOLUTION FOUND!
     
-    rect rgb(230, 255, 230)
-        Note over Miner,Blockchain: PHASE 2: Block Submission (Physical)
+    rect rgb(255, 230, 230)
+        Note over Miner,Blockchain: PHASE 1: Disposable Signature (MANDATORY - Always Enabled)
         
         Miner->>Miner: Construct complete block
         Note right of Miner: Header + transactions + solution
@@ -182,69 +162,106 @@ sequenceDiagram
         Miner->>Miner: Calculate block hash
         Note right of Miner: uint1024_t blockHash = GetHash()
         
-        Miner->>PhysicalKey: Load physical key
-        Note right of PhysicalKey: CRITICAL: Cold storage<br>Hardware wallet or<br>remote signing service
+        Miner->>DisposableKey: Load disposable.key
+        Note right of DisposableKey: MANDATORY key<br>Hot storage on mining machine
         
-        alt Hardware Wallet
-            Miner->>PhysicalKey: Request signature (USB/network)
-            PhysicalKey->>PhysicalKey: Sign on secure element
-            Note right of PhysicalKey: Private key never leaves device
-            PhysicalKey-->>Miner: Physical signature
-        else Remote Signing Service
-            Miner->>PhysicalKey: Call signing API (TLS)
-            PhysicalKey->>PhysicalKey: Sign on secure server
-            Note right of PhysicalKey: Private key in HSM
-            PhysicalKey-->>Miner: Physical signature
-        else Local File (NOT RECOMMENDED)
-            Miner->>PhysicalKey: Read physical.key from disk
-            Note right of PhysicalKey: ⚠️ RISK: Key on hot machine
-            Miner->>Miner: Sign locally
-            PhysicalKey-->>Miner: Physical signature
+        DisposableKey-->>Miner: Disposable private key
+        
+        Miner->>DisposableKey: Sign(block_data)
+        Note right of DisposableKey: Falcon-512/1024 signature<br>Size: 809 or 1577 bytes CT<br>Time: 1-2ms
+        
+        DisposableKey-->>Miner: Disposable signature
+        
+        Note over Miner: Disposable signature created<br>(will be verified but NOT stored on blockchain)
+    end
+    
+    rect rgb(230, 255, 230)
+        Note over Miner,Blockchain: PHASE 2: Physical Signature (OPTIONAL - Off by Default)
+        
+        alt Physical Falcon Enabled
+            Miner->>PhysicalKey: Load physical key
+            Note right of PhysicalKey: OPTIONAL key<br>Cold storage required<br>(Hardware wallet/HSM)
+            
+            alt Hardware Wallet
+                Miner->>PhysicalKey: Request signature (USB/network)
+                PhysicalKey->>PhysicalKey: Sign on secure element
+                Note right of PhysicalKey: Private key never leaves device
+                PhysicalKey-->>Miner: Physical signature
+            else Remote Signing Service
+                Miner->>PhysicalKey: Call signing API (TLS)
+                PhysicalKey->>PhysicalKey: Sign on secure server
+                Note right of PhysicalKey: Private key in HSM
+                PhysicalKey-->>Miner: Physical signature
+            else Local File (NOT RECOMMENDED)
+                Miner->>PhysicalKey: Read physical.key from disk
+                Note right of PhysicalKey: ⚠️ RISK: Key on hot machine
+                Miner->>Miner: Sign locally
+                PhysicalKey-->>Miner: Physical signature
+            end
+            
+            Note over Miner: Physical signature embedded AFTER Disposable<br>(will be stored on blockchain)
+        else Physical Falcon Disabled (Default)
+            Note over Miner: Physical signature skipped<br>(0 blockchain overhead)
         end
+    end
+    
+    rect rgb(230, 230, 255)
+        Note over Miner,Blockchain: PHASE 3: Block Submission
         
         Miner->>Node: SUBMIT_BLOCK (0x0005)
-        Note right of Miner: Contains:<br>• Block data<br>• Physical pubkey<br>• Physical signature<br>• Genesis hash
+        Note right of Miner: Contains:<br>• Block data<br>• Disposable signature (MANDATORY)<br>• Physical signature (if enabled)<br>• Genesis hash
         
         Node->>Node: Validate PoW
         Note left of Node: Verify hash < target
         
-        Node->>Node: Verify physical signature
-        Note left of Node: Falcon::Verify()<br>Time: 10-20ms
+        Node->>Node: Verify Disposable signature
+        Note left of Node: Falcon::Verify()<br>Time: 2-5ms<br>MANDATORY verification
         
-        alt Physical Signature Invalid
+        alt Disposable Signature Invalid
             Node-->>Miner: REJECT (0x00)
-            Note left of Node: Signature verification failed
-            Note over Miner: ❌ BLOCK REJECTED<br>Physical signature invalid
+            Note left of Node: Disposable signature failed
+            Note over Miner: ❌ BLOCK REJECTED<br>Disposable signature invalid
         end
         
-        Node->>Blockchain: Check genesis account
-        Note over Blockchain: Verify account exists
-        
-        alt Account Not Found
-            Node-->>Miner: REJECT (0x00)
-            Note over Miner: ❌ BLOCK REJECTED<br>Genesis account doesn't exist
-        end
-        
-        Node->>Blockchain: Get registered pubkey
-        Note over Blockchain: Retrieve account's<br>Falcon pubkey
-        
-        Node->>Node: Compare physical pubkey
-        Note left of Node: Submitted pubkey must match<br>blockchain account pubkey
-        
-        alt Pubkey Mismatch
-            Node-->>Miner: REJECT (0x00)
-            Note over Miner: ❌ BLOCK REJECTED<br>Physical pubkey doesn't match account
+        alt Physical Falcon Enabled
+            Node->>Node: Verify Physical signature
+            Note left of Node: Falcon::Verify()<br>Time: 10-20ms<br>OPTIONAL verification
+            
+            alt Physical Signature Invalid
+                Node-->>Miner: REJECT (0x00)
+                Note left of Node: Physical signature failed
+                Note over Miner: ❌ BLOCK REJECTED<br>Physical signature invalid
+            end
+            
+            Node->>Blockchain: Check genesis account
+            Note over Blockchain: Verify account exists
+            
+            alt Account Not Found
+                Node-->>Miner: REJECT (0x00)
+                Note over Miner: ❌ BLOCK REJECTED<br>Genesis account doesn't exist
+            end
+            
+            Node->>Blockchain: Get registered pubkey
+            Note over Blockchain: Retrieve account's<br>Falcon pubkey
+            
+            Node->>Node: Compare physical pubkey
+            Note left of Node: Submitted pubkey must match<br>blockchain account pubkey
+            
+            alt Pubkey Mismatch
+                Node-->>Miner: REJECT (0x00)
+                Note over Miner: ❌ BLOCK REJECTED<br>Physical pubkey doesn't match account
+            end
         end
         
         Note over Node: ALL VALIDATIONS PASSED
         
         Node->>Blockchain: Add block to chain
-        Note over Blockchain: Block stored with<br>physical signature proof
+        Note over Blockchain: Disposable signature verified, discarded (0 bytes)<br>Physical signature stored if enabled (809/1577 bytes)
         
         Node-->>Miner: ACCEPT (0x01)
         Note left of Node: Block accepted!<br>Reward scheduled
         
-        Note over Miner,Blockchain: ✓ BLOCK ACCEPTED<br>✓ Disposable signature (session auth)<br>✓ Physical signature (blockchain proof)
+        Note over Miner,Blockchain: ✓ BLOCK ACCEPTED<br>✓ Disposable signature (verified, discarded)<br>✓ Physical signature (stored if enabled)
     end
 ```
 
