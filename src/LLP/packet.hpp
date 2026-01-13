@@ -38,7 +38,8 @@ namespace nexusminer
 
 		// Packet headers - use centralized definitions from miner_opcodes.hpp
 		// These values MUST match the node implementation exactly for protocol compatibility
-		enum
+		// Underlying type is uint16_t to support stateless mining opcodes (0xD000+)
+		enum : uint16_t
 		{
 			/** DATA PACKETS **/
 			BLOCK_DATA = LLP::BLOCK_DATA,
