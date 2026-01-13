@@ -473,6 +473,12 @@ network::Shared_payload Solo::get_work()
     /* Validate prerequisites */
     if (!m_authenticated) {
         m_logger->error("[Solo] Cannot request work - not authenticated");
+        m_logger->error("[Solo]   Current auth state: {}", 
+            m_auth_state == AuthState::NOT_AUTHENTICATED ? "NOT_AUTHENTICATED" :
+            m_auth_state == AuthState::WAITING_FOR_CHALLENGE ? "WAITING_FOR_CHALLENGE" :
+            m_auth_state == AuthState::WAITING_FOR_RESULT ? "WAITING_FOR_RESULT" :
+            "AUTHENTICATED");
+        m_logger->error("[Solo]   Waiting for Falcon authentication to complete");
         return nullptr;
     }
     
@@ -536,6 +542,18 @@ network::Shared_payload Solo::get_height()
 
 network::Shared_payload Solo::send_get_round()
 {
+    // CRITICAL: Validate authentication before sending GET_ROUND
+    // Node will reject unauthenticated GET_ROUND requests
+    if (!m_authenticated) {
+        m_logger->warn("[Solo GET_ROUND] Cannot send GET_ROUND - not authenticated yet");
+        m_logger->debug("[Solo GET_ROUND]   Current auth state: {}", 
+            m_auth_state == AuthState::NOT_AUTHENTICATED ? "NOT_AUTHENTICATED" :
+            m_auth_state == AuthState::WAITING_FOR_CHALLENGE ? "WAITING_FOR_CHALLENGE" :
+            m_auth_state == AuthState::WAITING_FOR_RESULT ? "WAITING_FOR_RESULT" :
+            "AUTHENTICATED");
+        return nullptr;
+    }
+    
     m_logger->debug("[Solo GET_ROUND] Requesting round status via GET_ROUND");
     
     // GET_ROUND is a header-only request packet (opcode 133, >= 128)
@@ -3070,6 +3088,22 @@ void Solo::handle_reward_result(const Packet& packet)
 
 bool Solo::should_poll_get_round()
 {
+    // CRITICAL: Do not send GET_ROUND before authentication completes
+    // The node will reject unauthenticated GET_ROUND requests
+    if (!m_authenticated) {
+        // Log only occasionally to avoid spam (every 10 seconds)
+        static auto last_auth_warning = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_auth_warning).count();
+        
+        if (elapsed >= 10) {
+            m_logger->debug("[Solo Poll] Waiting for authentication before sending GET_ROUND (state: {})",
+                static_cast<int>(m_auth_state));
+            last_auth_warning = now;
+        }
+        return false;
+    }
+    
     auto now = std::chrono::steady_clock::now();
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - m_last_get_round_time).count();
