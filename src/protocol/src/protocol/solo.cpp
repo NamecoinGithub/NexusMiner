@@ -119,6 +119,9 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_current_poll_interval_ms{POLL_INTERVAL_MIN_MS}  // Start at minimum interval (5s)
 , m_needs_initial_round_check{false}  // No template yet
 , m_template_unified_height{0}  // No template yet
+, m_stateless_protocol_active{false}  // Start with stateless protocol inactive
+, m_waiting_for_stateless_response{false}  // Not waiting initially
+, m_miner_ready_sent_time_ns{0}  // Will be set when MINER_READY is sent (nanoseconds since epoch)
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -270,6 +273,10 @@ void Solo::reset()
     m_auth_timestamp = 0;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_reward_bound = false;  // Reset reward binding for new session
+    
+    // Reset stateless protocol state
+    m_stateless_protocol_active = false;
+    m_waiting_for_stateless_response = false;
     
     // Reset session manager
     if (m_session_manager) {
@@ -837,22 +844,34 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         m_logger->info("   Safe to send to node");
         
         m_logger->info("════════════════════════════════════════════════════════");
-        m_logger->info("📤 Sending encrypted SUBMIT_BLOCK packet to node...");
         
-        // Build the SUBMIT_BLOCK packet with encrypted payload
-        Packet packet{ static_cast<uint8_t>(Packet::SUBMIT_BLOCK) };
+        // ═══════════════════════════════════════════════════════════════════
+        // CONDITIONAL OPCODE SELECTION: Use correct opcode based on protocol mode
+        // ═══════════════════════════════════════════════════════════════════
+        const char* protocol_name = m_stateless_protocol_active ? "STATELESS" : "LEGACY";
+        const char* packet_name = m_stateless_protocol_active ? "STATELESS_SUBMIT_BLOCK" : "SUBMIT_BLOCK";
+        uint16_t opcode = m_stateless_protocol_active ? 0xD00A : static_cast<uint8_t>(Packet::SUBMIT_BLOCK);
+        
+        // Create packet with appropriate opcode (consistent constructor usage)
+        Packet packet = m_stateless_protocol_active 
+            ? Packet{ static_cast<uint16_t>(Packet::STATELESS_SUBMIT_BLOCK) }  // 0xD00A for stateless protocol
+            : Packet{ static_cast<uint8_t>(Packet::SUBMIT_BLOCK) };  // legacy opcode
+        
         packet.m_data = std::make_shared<network::Payload>(encryptedPayload);
         packet.m_length = static_cast<uint32_t>(encryptedPayload.size());
+        
+        m_logger->info("📤 Submitting block via {} protocol", protocol_name);
+        m_logger->info("📤 Sending encrypted {} packet (opcode: 0x{:04x}) to node...", packet_name, opcode);
         
         auto result = packet.get_bytes();
         
         if (!result || result->empty()) {
-            m_logger->error("❌ SUBMIT_BLOCK packet encoding failed!");
+            m_logger->error("❌ {} packet encoding failed!", packet_name);
             return network::Shared_payload{};
         }
         
         // Show final wire format hex dump
-        m_logger->info("[Solo Submit] SUBMIT_BLOCK wire format (first 128 bytes):");
+        m_logger->info("[Solo Submit] {} wire format (first 128 bytes):", packet_name);
         m_logger->info("\n{}", format_llp_payload_hexdump(result, 128));
         
         return result;
@@ -870,6 +889,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     if (connection) {
         m_connection = connection;
     }
+    
+    // Check for stateless protocol timeout (protocol negotiation)
+    check_stateless_protocol_timeout(connection);
     
     // Reject invalid packets at the start
     if (!packet.m_is_valid) {
@@ -1720,22 +1742,35 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         
         // Push notifications: Subscribe to block notifications (LLL-TAO PR #156)
-        m_logger->info("[Solo Phase 2] Channel set successfully, subscribing to push notifications");
+        // Attempt stateless protocol (0xD007 MINER_READY)
+        m_logger->info("[Solo Protocol] Attempting stateless protocol negotiation");
+        m_logger->info("[Solo Protocol] Sending MINER_READY (0xD007) to subscribe to push notifications");
+        
         auto miner_ready_payload = send_miner_ready();
         if (!miner_ready_payload || miner_ready_payload->empty()) {
-            m_logger->error("[Solo Push] Failed to send MINER_READY - falling back to polling");
+            m_logger->error("[Solo Protocol] Failed to encode MINER_READY - falling back to polling");
         } else if (connection) {
             connection->transmit(miner_ready_payload);
-            m_logger->info("[Solo Push] MINER_READY transmitted - waiting for immediate notification");
-            // Node will send PRIME_BLOCK_AVAILABLE or HASH_BLOCK_AVAILABLE immediately
-            // We'll request work when we receive that notification
-            return;  // Don't request work yet - wait for push notification
+            
+            // Set waiting flags for protocol negotiation
+            m_waiting_for_stateless_response = true;
+            m_miner_ready_sent_time_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+            
+            m_logger->info("[Solo Protocol] ✓ MINER_READY transmitted");
+            m_logger->info("[Solo Protocol] Waiting for STATELESS_GET_BLOCK (0xD008) response...");
+            m_logger->info("[Solo Protocol] Timeout: {} seconds", STATELESS_PROTOCOL_TIMEOUT_SECONDS);
+            m_logger->info("[Solo Protocol] If timeout: Fall back to legacy GET_ROUND polling");
+            
+            // Return here - we'll wait for either:
+            // 1. STATELESS_GET_BLOCK (0xD008) - stateless protocol success
+            // 2. Timeout - fall back to legacy polling (handled in process_messages)
+            return;
         } else {
-            m_logger->error("[Solo Push] No connection available - cannot subscribe to push notifications");
+            m_logger->error("[Solo Protocol] No connection available - cannot send MINER_READY");
         }
         
-        // Fallback: Request work directly if push notifications failed
-        m_logger->info("[Solo Phase 2] Requesting initial work via GET_BLOCK (fallback)");
+        // Fallback: Request work directly if MINER_READY failed
+        m_logger->warn("[Solo Protocol] MINER_READY transmission failed - using legacy GET_BLOCK");
         m_logger->debug("[Solo Phase 2] Pre-GET_BLOCK state:");
         m_logger->debug("[Solo Phase 2]   - Connection valid: {}", connection ? "YES" : "NO");
         m_logger->debug("[Solo Phase 2]   - Session ID: 0x{:08x}", m_session_id);
@@ -1997,6 +2032,30 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     // ═══════════════════════════════════════════════════════════════════════
     else if (packet.m_header == Packet::STATELESS_GET_BLOCK)
     {
+        // ═══════════════════════════════════════════════════════════════════
+        // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!
+        // ═══════════════════════════════════════════════════════════════════
+        
+        // Node supports stateless protocol - activate it!
+        if (m_waiting_for_stateless_response) {
+            m_stateless_protocol_active = true;
+            m_waiting_for_stateless_response = false;
+            
+            auto now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+            auto sent_ns = m_miner_ready_sent_time_ns.load();
+            auto elapsed_ms = (now_ns - sent_ns) / 1000000;  // Convert nanoseconds to milliseconds
+            
+            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+            m_logger->info("[Solo Protocol] ✅ STATELESS PROTOCOL ACTIVE!");
+            m_logger->info("[Solo Protocol]   Response time: {}ms", elapsed_ms);
+            m_logger->info("[Solo Protocol]   Node supports push notifications (0xD008/0xD009)");
+            m_logger->info("[Solo Protocol]   Legacy GET_ROUND polling disabled");
+            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+        } else {
+            // Already in stateless mode, just confirm
+            m_stateless_protocol_active = true;
+        }
+        
         m_logger->info("[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD008) received!");
         m_logger->info("[Solo Stateless] This is the NEW push notification protocol");
         m_logger->info("[Solo Stateless] Template size: {} bytes (expected: 228)", packet.m_length);
@@ -2162,6 +2221,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     }
     else if (packet.m_header == Packet::STATELESS_NEW_BLOCK)
     {
+        // Confirm stateless protocol is active (should already be, but safety check)
+        m_stateless_protocol_active = true;
+        
         m_logger->info("[Solo Stateless] 🔔 STATELESS_NEW_BLOCK (0xD009) received!");
         m_logger->info("[Solo Stateless] Network has advanced - NEW template pushed!");
         
@@ -3092,6 +3154,47 @@ void Solo::check_unified_height_delta(uint32_t current_unified_height)
             
             // Trigger GET_BLOCK request
             // (The main loop will see no valid template and request one)
+        }
+    }
+}
+
+void Solo::check_stateless_protocol_timeout(std::shared_ptr<network::Connection> connection)
+{
+    // Only check if we're waiting for a stateless response
+    if (!m_waiting_for_stateless_response) {
+        return;
+    }
+    
+    // Calculate elapsed time since MINER_READY was sent
+    auto now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto sent_ns = m_miner_ready_sent_time_ns.load();
+    auto elapsed_seconds = (now_ns - sent_ns) / 1000000000;  // Convert nanoseconds to seconds
+    
+    // Check if timeout expired
+    if (elapsed_seconds >= STATELESS_PROTOCOL_TIMEOUT_SECONDS) {
+        // Timeout: Node doesn't support stateless protocol
+        m_waiting_for_stateless_response = false;
+        m_stateless_protocol_active = false;
+        
+        m_logger->warn("[Solo Protocol] ═══════════════════════════════════════");
+        m_logger->warn("[Solo Protocol] ⏱️  STATELESS_GET_BLOCK timeout ({}s)", 
+                      STATELESS_PROTOCOL_TIMEOUT_SECONDS);
+        m_logger->warn("[Solo Protocol] Node doesn't support stateless protocol");
+        m_logger->info("[Solo Protocol] Falling back to legacy GET_ROUND polling");
+        m_logger->warn("[Solo Protocol] ═══════════════════════════════════════");
+        
+        // Start legacy polling by sending initial GET_ROUND
+        if (connection) {
+            m_logger->info("[Solo Protocol] Sending initial GET_ROUND (0x85) - polling mode");
+            auto get_round_payload = send_get_round();
+            if (get_round_payload && !get_round_payload->empty()) {
+                connection->transmit(get_round_payload);
+                m_logger->info("[Solo Protocol] ✓ GET_ROUND transmitted - legacy polling active");
+            } else {
+                m_logger->error("[Solo Protocol] Failed to encode GET_ROUND packet");
+            }
+        } else {
+            m_logger->error("[Solo Protocol] No connection available for fallback GET_ROUND");
         }
     }
 }

@@ -8,6 +8,7 @@
 #include "protocol/mining_template_interface.hpp"
 #include "mining/client_channel_manager.h"
 #include "spdlog/spdlog.h"
+#include <atomic>
 #include <memory>
 
 namespace nexusminer {
@@ -284,6 +285,24 @@ private:
     void on_old_round_received();
     void on_template_received(uint32_t template_height);
     void check_unified_height_delta(uint32_t current_unified_height);
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // STATELESS PROTOCOL AUTO-NEGOTIATION STATE
+    // ═══════════════════════════════════════════════════════════════════════
+    
+    // Protocol mode tracking (atomic for thread safety)
+    // These are accessed from multiple threads:
+    // - I/O thread: process_messages() -> check_stateless_protocol_timeout()
+    // - Worker threads: submit_block() reads m_stateless_protocol_active
+    std::atomic<bool> m_stateless_protocol_active;           // True when using stateless protocol (0xD008/0xD009)
+    std::atomic<bool> m_waiting_for_stateless_response;      // True after MINER_READY sent, waiting for GET_BLOCK
+    std::atomic<int64_t> m_miner_ready_sent_time_ns;         // Timestamp when MINER_READY sent (nanoseconds since epoch, atomic for thread safety)
+    
+    // Configuration constants for stateless protocol negotiation
+    static constexpr uint32_t STATELESS_PROTOCOL_TIMEOUT_SECONDS = 5;  // 5 second timeout
+    
+    // Helper method for timeout checking
+    void check_stateless_protocol_timeout(std::shared_ptr<network::Connection> connection);
 };
 
 }
