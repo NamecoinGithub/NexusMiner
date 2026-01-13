@@ -284,6 +284,21 @@ private:
     void on_old_round_received();
     void on_template_received(uint32_t template_height);
     void check_unified_height_delta(uint32_t current_unified_height);
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // STATELESS PROTOCOL AUTO-NEGOTIATION STATE
+    // ═══════════════════════════════════════════════════════════════════════
+    
+    // Protocol mode tracking
+    bool m_stateless_protocol_active;           // True when using stateless protocol (0xD008/0xD009)
+    bool m_waiting_for_stateless_response;      // True after MINER_READY sent, waiting for GET_BLOCK
+    std::chrono::steady_clock::time_point m_miner_ready_sent_time;  // Timestamp when MINER_READY sent
+    
+    // Configuration constants for stateless protocol negotiation
+    static constexpr uint32_t STATELESS_PROTOCOL_TIMEOUT_SECONDS = 5;  // 5 second timeout
+    
+    // Helper method for timeout checking
+    void check_stateless_protocol_timeout(std::shared_ptr<network::Connection> connection);
 };
 
 }
