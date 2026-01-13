@@ -337,7 +337,7 @@ chown $(whoami):$(whoami) ~/.nexus/disposable.key
 
 ```
 ✓ REQUIRED security:
-  • Hardware wallet (Ledger/Trezor)
+  • Hardware wallet (Ledger/Trezor/YubiKey)
   • Offline encrypted storage
   • Safe or bank vault
   • Multi-signature custody (future)
