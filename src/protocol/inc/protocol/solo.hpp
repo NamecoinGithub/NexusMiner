@@ -8,6 +8,7 @@
 #include "protocol/mining_template_interface.hpp"
 #include "mining/client_channel_manager.h"
 #include "spdlog/spdlog.h"
+#include <atomic>
 #include <memory>
 
 namespace nexusminer {
@@ -289,9 +290,12 @@ private:
     // STATELESS PROTOCOL AUTO-NEGOTIATION STATE
     // ═══════════════════════════════════════════════════════════════════════
     
-    // Protocol mode tracking
-    bool m_stateless_protocol_active;           // True when using stateless protocol (0xD008/0xD009)
-    bool m_waiting_for_stateless_response;      // True after MINER_READY sent, waiting for GET_BLOCK
+    // Protocol mode tracking (atomic for thread safety)
+    // These are accessed from multiple threads:
+    // - I/O thread: process_messages() -> check_stateless_protocol_timeout()
+    // - Worker threads: submit_block() reads m_stateless_protocol_active
+    std::atomic<bool> m_stateless_protocol_active;           // True when using stateless protocol (0xD008/0xD009)
+    std::atomic<bool> m_waiting_for_stateless_response;      // True after MINER_READY sent, waiting for GET_BLOCK
     std::chrono::steady_clock::time_point m_miner_ready_sent_time;  // Timestamp when MINER_READY sent
     
     // Configuration constants for stateless protocol negotiation
