@@ -848,29 +848,30 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         // ═══════════════════════════════════════════════════════════════════
         // CONDITIONAL OPCODE SELECTION: Use correct opcode based on protocol mode
         // ═══════════════════════════════════════════════════════════════════
-        Packet packet = m_stateless_protocol_active 
-            ? Packet{ Packet::STATELESS_SUBMIT_BLOCK }  // 0xD00A for stateless protocol
-            : Packet{ static_cast<uint8_t>(Packet::SUBMIT_BLOCK) };  // legacy opcode
-        
         const char* protocol_name = m_stateless_protocol_active ? "STATELESS" : "LEGACY";
+        const char* packet_name = m_stateless_protocol_active ? "STATELESS_SUBMIT_BLOCK" : "SUBMIT_BLOCK";
         uint16_t opcode = m_stateless_protocol_active ? 0xD00A : static_cast<uint8_t>(Packet::SUBMIT_BLOCK);
         
-        m_logger->info("📤 Submitting block via {} protocol (opcode: 0x{:04x})", protocol_name, opcode);
-        m_logger->info("📤 Sending encrypted SUBMIT_BLOCK packet to node...");
+        // Create packet with appropriate opcode (consistent constructor usage)
+        Packet packet = m_stateless_protocol_active 
+            ? Packet{ static_cast<uint16_t>(Packet::STATELESS_SUBMIT_BLOCK) }  // 0xD00A for stateless protocol
+            : Packet{ static_cast<uint8_t>(Packet::SUBMIT_BLOCK) };  // legacy opcode
         
-        // Build the SUBMIT_BLOCK packet with encrypted payload
         packet.m_data = std::make_shared<network::Payload>(encryptedPayload);
         packet.m_length = static_cast<uint32_t>(encryptedPayload.size());
+        
+        m_logger->info("📤 Submitting block via {} protocol", protocol_name);
+        m_logger->info("📤 Sending encrypted {} packet (opcode: 0x{:04x}) to node...", packet_name, opcode);
         
         auto result = packet.get_bytes();
         
         if (!result || result->empty()) {
-            m_logger->error("❌ SUBMIT_BLOCK packet encoding failed!");
+            m_logger->error("❌ {} packet encoding failed!", packet_name);
             return network::Shared_payload{};
         }
         
         // Show final wire format hex dump
-        m_logger->info("[Solo Submit] SUBMIT_BLOCK wire format (first 128 bytes):");
+        m_logger->info("[Solo Submit] {} wire format (first 128 bytes):", packet_name);
         m_logger->info("\n{}", format_llp_payload_hexdump(result, 128));
         
         return result;
