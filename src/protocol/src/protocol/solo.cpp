@@ -2012,17 +2012,75 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
         
-        // Parse 12-byte metadata (big-endian)
+        // ═══════════════════════════════════════════════════════════════════
+        // VALIDATION: Dump raw metadata bytes for format verification
+        // ═══════════════════════════════════════════════════════════════════
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        m_logger->info("[Solo Stateless] 📦 RAW METADATA VALIDATION (12 bytes)");
+        m_logger->info("[Solo Stateless] Hex dump of metadata:");
+        std::string metadata_hex;
+        for (size_t i = 0; i < METADATA_SIZE && i < packet.m_data->size(); ++i) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02x ", (*packet.m_data)[i]);
+            metadata_hex += buf;
+            if ((i + 1) % 4 == 0) metadata_hex += " | ";  // Group by uint32
+        }
+        m_logger->info("[Solo Stateless]   {}", metadata_hex);
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        
+        // Parse 12-byte metadata (big-endian per LLL-TAO PR #170)
         uint32_t unified_height = bytes2uint(*packet.m_data, 0);
         uint32_t channel_height = bytes2uint(*packet.m_data, 4);
         uint32_t difficulty = bytes2uint(*packet.m_data, 8);
         
         m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
-        m_logger->info("[Solo Stateless] 📦 NEW MINING TEMPLATE");
-        m_logger->info("[Solo Stateless]   Unified height: {}", unified_height);
-        m_logger->info("[Solo Stateless]   Channel height: {}", channel_height);
-        m_logger->info("[Solo Stateless]   Difficulty:     0x{:08x}", difficulty);
+        m_logger->info("[Solo Stateless] 📦 PARSED TEMPLATE METADATA");
+        m_logger->info("[Solo Stateless]   Unified height: {} (0x{:08x})", unified_height, unified_height);
+        m_logger->info("[Solo Stateless]   Channel height: {} (0x{:08x})", channel_height, channel_height);
+        m_logger->info("[Solo Stateless]   Difficulty:     0x{:08x} ({})", difficulty, difficulty);
         m_logger->info("[Solo Stateless]   Block size:     {} bytes", BLOCK_SIZE);
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // SANITY CHECKS: Validate parsed values are reasonable
+        // ═══════════════════════════════════════════════════════════════════
+        bool validation_warnings = false;
+        
+        if (unified_height == 0) {
+            m_logger->warn("[Solo Stateless] ⚠️  Unified height is 0 - unusual but possible for genesis");
+            validation_warnings = true;
+        }
+        if (unified_height > 100000000) {
+            m_logger->error("[Solo Stateless] ❌ Unified height {} exceeds reasonable limit - possible byte order issue!", 
+                           unified_height);
+            validation_warnings = true;
+        }
+        
+        if (channel_height == 0) {
+            m_logger->warn("[Solo Stateless] ⚠️  Channel height is 0 - unusual but possible for genesis");
+            validation_warnings = true;
+        }
+        if (channel_height > unified_height) {
+            m_logger->error("[Solo Stateless] ❌ Channel height {} > unified height {} - invalid!", 
+                           channel_height, unified_height);
+            validation_warnings = true;
+        }
+        if (channel_height > 100000000) {
+            m_logger->error("[Solo Stateless] ❌ Channel height {} exceeds reasonable limit - possible byte order issue!", 
+                           channel_height);
+            validation_warnings = true;
+        }
+        
+        if (difficulty == 0) {
+            m_logger->error("[Solo Stateless] ❌ Difficulty is 0 - invalid!");
+            validation_warnings = true;
+        }
+        
+        if (validation_warnings) {
+            m_logger->warn("[Solo Stateless] ⚠️  VALIDATION WARNINGS DETECTED - verify metadata format with LLL-TAO PR #170");
+            m_logger->warn("[Solo Stateless] ⚠️  Current parsing assumes: [unified_height(4)][channel_height(4)][difficulty(4)] in BIG-ENDIAN");
+        } else {
+            m_logger->info("[Solo Stateless] ✅ Metadata validation passed - values appear reasonable");
+        }
         m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
         
         // Extract 216-byte block template
@@ -2085,16 +2143,76 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
         
-        // Parse 12-byte metadata (big-endian)
+        // ═══════════════════════════════════════════════════════════════════
+        // VALIDATION: Dump raw metadata bytes for format verification
+        // ═══════════════════════════════════════════════════════════════════
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        m_logger->info("[Solo Stateless] 📦 RAW METADATA VALIDATION (12 bytes)");
+        m_logger->info("[Solo Stateless] Hex dump of metadata:");
+        std::string metadata_hex;
+        for (size_t i = 0; i < METADATA_SIZE && i < packet.m_data->size(); ++i) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02x ", (*packet.m_data)[i]);
+            metadata_hex += buf;
+            if ((i + 1) % 4 == 0) metadata_hex += " | ";  // Group by uint32
+        }
+        m_logger->info("[Solo Stateless]   {}", metadata_hex);
+        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
+        
+        // Parse 12-byte metadata (big-endian per LLL-TAO PR #170)
         uint32_t unified_height = bytes2uint(*packet.m_data, 0);
         uint32_t channel_height = bytes2uint(*packet.m_data, 4);
         uint32_t difficulty = bytes2uint(*packet.m_data, 8);
         
         m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
         m_logger->info("[Solo Stateless] 🆕 NETWORK UPDATE (Push Notification)");
-        m_logger->info("[Solo Stateless]   New unified height: {}", unified_height);
-        m_logger->info("[Solo Stateless]   New channel height: {}", channel_height);
-        m_logger->info("[Solo Stateless]   New difficulty:     0x{:08x}", difficulty);
+        m_logger->info("[Solo Stateless]   New unified height: {} (0x{:08x})", unified_height, unified_height);
+        m_logger->info("[Solo Stateless]   New channel height: {} (0x{:08x})", channel_height, channel_height);
+        m_logger->info("[Solo Stateless]   New difficulty:     0x{:08x} ({})", difficulty, difficulty);
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // SANITY CHECKS: Validate parsed values are reasonable
+        // ═══════════════════════════════════════════════════════════════════
+        bool validation_warnings = false;
+        
+        if (unified_height == 0) {
+            m_logger->warn("[Solo Stateless] ⚠️  Unified height is 0 - unusual for NEW_BLOCK");
+            validation_warnings = true;
+        }
+        if (unified_height > 100000000) {
+            m_logger->error("[Solo Stateless] ❌ Unified height {} exceeds reasonable limit - possible byte order issue!", 
+                           unified_height);
+            validation_warnings = true;
+        }
+        
+        if (channel_height > unified_height) {
+            m_logger->error("[Solo Stateless] ❌ Channel height {} > unified height {} - invalid!", 
+                           channel_height, unified_height);
+            validation_warnings = true;
+        }
+        if (channel_height > 100000000) {
+            m_logger->error("[Solo Stateless] ❌ Channel height {} exceeds reasonable limit - possible byte order issue!", 
+                           channel_height);
+            validation_warnings = true;
+        }
+        
+        if (difficulty == 0) {
+            m_logger->error("[Solo Stateless] ❌ Difficulty is 0 - invalid!");
+            validation_warnings = true;
+        }
+        
+        // Check if heights advanced (they should for NEW_BLOCK)
+        if (m_current_height > 0 && unified_height <= m_current_height) {
+            m_logger->warn("[Solo Stateless] ⚠️  NEW_BLOCK unified height {} not greater than current {} - network may not have advanced",
+                          unified_height, m_current_height);
+        }
+        
+        if (validation_warnings) {
+            m_logger->warn("[Solo Stateless] ⚠️  VALIDATION WARNINGS DETECTED - verify metadata format with LLL-TAO PR #170");
+            m_logger->warn("[Solo Stateless] ⚠️  Current parsing assumes: [unified_height(4)][channel_height(4)][difficulty(4)] in BIG-ENDIAN");
+        } else {
+            m_logger->info("[Solo Stateless] ✅ Metadata validation passed - values appear reasonable");
+        }
         m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
         
         // CRITICAL: Abandon current work and switch to new template!
