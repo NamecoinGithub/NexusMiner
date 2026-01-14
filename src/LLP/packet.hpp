@@ -18,14 +18,18 @@ namespace nexusminer
 		// Invalid header marker for error conditions
 		static constexpr uint16_t INVALID_HEADER = 0xFFFF;
 		
-		// Threshold for detecting stateless mining protocol (uint16_t opcodes)
-		// First byte >= 0xD0 indicates uint16_t opcode (0xD000+)
+		// Threshold for detecting POTENTIAL stateless mining protocol (uint16_t opcodes)
+		// First byte >= 0xD0 MAY indicate uint16_t opcode, but we must verify by checking
+		// the full 2-byte header value. Legacy opcodes 208-255 also start with 0xD0-0xFF.
+		// TRUE stateless opcodes are >= 0xD000 (require 2-byte header check).
 		static constexpr uint8_t STATELESS_OPCODE_THRESHOLD = 0xD0;
 		
-		// Threshold for stateless mining opcode range (uint16_t values)
+		// Minimum value for stateless mining opcode range (uint16_t values)
+		// Stateless opcodes are >= 0xD000 (53248 decimal)
 		static constexpr uint16_t STATELESS_OPCODE_MIN = 0xD000;
 		
-		// Helper function to check if opcode is in stateless mining range
+		// Helper function to check if a uint16_t opcode is in stateless mining range
+		// Returns true only if opcode >= 0xD000 (TRUE stateless protocol)
 		inline bool is_stateless_opcode(uint16_t opcode) {
 			return opcode >= STATELESS_OPCODE_MIN;
 		}
@@ -228,53 +232,84 @@ namespace nexusminer
 				return;
 			}
 			
-			// Detect opcode format based on first byte
+			// Detect opcode format: Check if this is a true uint16_t stateless opcode (>= 0xD000)
+			// Legacy opcodes (including MINER_AUTH_CHALLENGE = 208 = 0xD0) are single-byte
+			// Stateless opcodes start at 0xD000 and require 2-byte header
 			uint8_t first_byte = (*buffer)[0];
+			bool is_potential_stateless = (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD);
 			
-			if (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD)
+			if (is_potential_stateless && buffer->size() >= 2)
 			{
-				// NEW uint16_t opcode format (2-byte header, big-endian)
-				m_is_uint16_opcode = true;
+				// Parse potential 2-byte header to check if it's >= 0xD000
+				uint16_t potential_header = (static_cast<uint16_t>(first_byte) << 8) | 
+				                            static_cast<uint16_t>((*buffer)[1]);
 				
-				if (buffer->size() < 2)
+				if (PacketConstants::is_stateless_opcode(potential_header))
 				{
-					m_header = 0xFFFF;
-					m_is_valid = false;
-					m_length = 0;
-					return;
-				}
-				
-				// Parse 2-byte header (big-endian)
-				m_header = (static_cast<uint16_t>((*buffer)[0]) << 8) | 
-				           static_cast<uint16_t>((*buffer)[1]);
-				
-				// Check if we have length field (need at least 6 bytes total: header(2) + length(4))
-				if (buffer->size() < 6)
-				{
-					m_is_valid = false;
-					m_length = 0;
-					return;
-				}
-				
-				// Parse length (4 bytes, big-endian, starts at offset 2)
-				m_length = ((*buffer)[2] << 24) + ((*buffer)[3] << 16) + 
-				           ((*buffer)[4] << 8) + (*buffer)[5];
-				
-				// Extract data (starts at offset 6)
-				if (buffer->size() >= 6 + m_length)
-				{
-					m_data = std::make_shared<network::Payload>(buffer->begin() + 6, 
-					                                             buffer->begin() + 6 + m_length);
+					// NEW uint16_t opcode format (2-byte header, big-endian, >= 0xD000)
+					m_is_uint16_opcode = true;
+					m_header = potential_header;
+					
+					// Check if we have length field (need at least 6 bytes total: header(2) + length(4))
+					if (buffer->size() < 6)
+					{
+						m_is_valid = false;
+						m_length = 0;
+						return;
+					}
+					
+					// Parse length (4 bytes, big-endian, starts at offset 2)
+					m_length = ((*buffer)[2] << 24) + ((*buffer)[3] << 16) + 
+					           ((*buffer)[4] << 8) + (*buffer)[5];
+					
+					// Extract data (starts at offset 6)
+					if (buffer->size() >= 6 + m_length)
+					{
+						m_data = std::make_shared<network::Payload>(buffer->begin() + 6, 
+						                                             buffer->begin() + 6 + m_length);
+					}
+					else
+					{
+						m_is_valid = false;
+						m_length = 0;
+					}
 				}
 				else
 				{
-					m_is_valid = false;
+					// First byte >= 0xD0 but combined value < 0xD000
+					// This is a LEGACY single-byte opcode (e.g., MINER_AUTH_CHALLENGE = 208 = 0xD0)
+					m_is_uint16_opcode = false;
+					m_header = first_byte;
 					m_length = 0;
+					
+					if (buffer->size() > 1 && buffer->size() < 5)
+					{
+						m_is_valid = false;
+					}
+					else if (buffer->size() >= 5)
+					{
+						// Parse length (4 bytes, big-endian, starts at offset 1)
+						m_length = ((*buffer)[1] << 24) + ((*buffer)[2] << 16) + 
+						           ((*buffer)[3] << 8) + ((*buffer)[4]);
+						
+						// Extract data (starts at offset 5)
+						if (buffer->size() >= 5 + m_length)
+						{
+							m_data = std::make_shared<network::Payload>(buffer->begin() + 5, 
+							                                             buffer->begin() + 5 + m_length);
+						}
+						else
+						{
+							m_is_valid = false;
+							m_length = 0;
+						}
+					}
 				}
 			}
 			else
 			{
 				// LEGACY uint8_t opcode format (1-byte header)
+				// Includes: first_byte < 0xD0 OR buffer has only 1 byte
 				m_is_uint16_opcode = false;
 				m_header = first_byte;
 				m_length = 0;
@@ -531,61 +566,100 @@ namespace nexusminer
 		auto const buffer_start = buffer->begin() + start_index;
 		auto const buffer_size = std::distance(buffer_start, buffer->end());
 		
-		// Detect opcode format based on first byte
+		// Detect opcode format: Check if this is a true uint16_t stateless opcode (>= 0xD000)
+		// Legacy opcodes (including MINER_AUTH_CHALLENGE = 208 = 0xD0) are single-byte
+		// Stateless opcodes start at 0xD000 and require 2-byte header
 		uint8_t first_byte = (*buffer)[start_index];
+		bool is_potential_stateless = (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD);
 		
-		if (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD)
+		if (is_potential_stateless && buffer_size >= 2)
 		{
-			// NEW uint16_t opcode format
-			packet.m_is_uint16_opcode = true;
+			// Parse potential 2-byte header to check if it's >= 0xD000
+			uint16_t potential_header = (static_cast<uint16_t>(first_byte) << 8) | 
+			                            static_cast<uint16_t>((*buffer)[start_index + 1]);
 			
-			if (buffer_size < 2)
+			if (PacketConstants::is_stateless_opcode(potential_header))
 			{
-				// Not enough data for header
-				return packet;
-			}
-			
-			// Parse 2-byte header (big-endian)
-			packet.m_header = (static_cast<uint16_t>((*buffer)[start_index]) << 8) | 
-			                  static_cast<uint16_t>((*buffer)[start_index + 1]);
-			packet.m_is_valid = true;
-			
-			if (buffer_size == 2)
-			{
-				// Header-only packet
-				packet.m_length = 0;
-				remaining_size = 0;
-				return packet;
-			}
-			else if (buffer_size < 6)
-			{
-				// Not enough data for length field
-				packet.m_is_valid = false;
-				return packet;
-			}
-			else
-			{
-				// Parse length (4 bytes, big-endian, starts at offset 2)
-				std::uint32_t const length = ((*buffer)[start_index + 2] << 24) + 
-				                              ((*buffer)[start_index + 3] << 16) + 
-				                              ((*buffer)[start_index + 4] << 8) + 
-				                              (*buffer)[start_index + 5];
+				// NEW uint16_t opcode format (2-byte header, big-endian, >= 0xD000)
+				packet.m_is_uint16_opcode = true;
+				packet.m_header = potential_header;
+				packet.m_is_valid = true;
 				
-				if (length > std::distance(buffer_start + 6, buffer->end()))
+				if (buffer_size == 2)
 				{
-					// Not enough data for payload
+					// Header-only packet
+					packet.m_length = 0;
+					remaining_size = 0;
+					return packet;
+				}
+				else if (buffer_size < 6)
+				{
+					// Not enough data for length field
 					packet.m_is_valid = false;
 					return packet;
 				}
+				else
+				{
+					// Parse length (4 bytes, big-endian, starts at offset 2)
+					std::uint32_t const length = ((*buffer)[start_index + 2] << 24) + 
+					                              ((*buffer)[start_index + 3] << 16) + 
+					                              ((*buffer)[start_index + 4] << 8) + 
+					                              (*buffer)[start_index + 5];
+					
+					if (length > std::distance(buffer_start + 6, buffer->end()))
+					{
+						// Not enough data for payload
+						packet.m_is_valid = false;
+						return packet;
+					}
+					
+					packet.m_length = length;
+					packet.m_data = std::make_shared<network::Payload>(buffer_start + 6, buffer_start + 6 + length);
+					remaining_size = buffer_size - (6 + packet.m_data->size());		// header (2 bytes) + 4 byte length
+				}
+			}
+			else
+			{
+				// First byte >= 0xD0 but combined value < 0xD000
+				// This is a LEGACY single-byte opcode (e.g., MINER_AUTH_CHALLENGE = 208 = 0xD0)
+				packet.m_is_uint16_opcode = false;
+				packet.m_header = first_byte;
 				
-				packet.m_length = length;
-				packet.m_data = std::make_shared<network::Payload>(buffer_start + 6, buffer_start + 6 + length);
-				remaining_size = buffer_size - (6 + packet.m_data->size());		// header (2 bytes) + 4 byte length
+				if (buffer_size == 1)
+				{
+					packet.m_is_valid = true;
+					packet.m_length = 0;
+					remaining_size = 0;
+					return packet;
+				}
+				else if (buffer_size > 1 && buffer_size < 5)
+				{
+					// data packet but not even correct length field was transmitted
+					return packet;
+				}
+				else
+				{
+					std::uint32_t const length = ((*buffer)[start_index + 1] << 24) + 
+					                              ((*buffer)[start_index + 2] << 16) + 
+					                              ((*buffer)[start_index + 3] << 8) + 
+					                              ((*buffer)[start_index + 4]);
+
+					if (length > std::distance(buffer_start + 5, buffer->end()))
+					{
+						return packet;
+					}
+
+					packet.m_is_valid = true;
+					packet.m_length = length;
+					packet.m_data = std::make_shared<network::Payload>(buffer_start + 5, buffer_start + 5 + length);
+					remaining_size = buffer_size - (5 + packet.m_data->size());		// header (1 byte) + 4 byte length 
+				}
 			}
 		}
 		else
 		{
-			// LEGACY uint8_t opcode format
+			// LEGACY uint8_t opcode format (1-byte header)
+			// Includes: first_byte < 0xD0 OR buffer has only 1 byte
 			packet.m_is_uint16_opcode = false;
 			
 			if (buffer_size == 1)
