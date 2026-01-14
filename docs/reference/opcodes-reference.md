@@ -109,8 +109,14 @@ Complete reference for all opcodes used in NexusMiner's LLP (Lower Level Protoco
 
 **Purpose:**
 - Indicates miner supports stateless push protocol
-- Node responds with GET_BLOCK if supported
-- No response = fallback to legacy GET_ROUND polling
+- Node responds with GET_BLOCK (0xD008) OR BLOCK_DATA (0x00) if supported
+- No response after 5s timeout = fallback to legacy GET_ROUND polling
+
+**Response Handling (NexusMiner v1.5+):**
+- **Modern nodes:** Send GET_BLOCK (0xD008) with 228-byte template
+- **Legacy nodes:** Send BLOCK_DATA (0x00) with 216-byte template
+- **Miner accepts both:** Automatically activates stateless protocol on either response
+- **Backward compatible:** Works with all node versions
 
 **See:** [docs/current/mining-protocols/stateless-mining.md](stateless-mining.md)
 
@@ -201,7 +207,7 @@ Complete reference for all opcodes used in NexusMiner's LLP (Lower Level Protoco
 
 ---
 
-### BLOCK_DATA (0x06)
+### BLOCK_DATA (0x00)
 **Direction:** Node → Miner  
 **Description:** Mining template response (legacy protocol)  
 **Type:** uint8_t
@@ -209,7 +215,7 @@ Complete reference for all opcodes used in NexusMiner's LLP (Lower Level Protoco
 **Packet Format:**
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Opcode (1)     │ 0x06                                   │
+│ Opcode (1)     │ 0x00                                   │
 ├─────────────────────────────────────────────────────────┤
 │ Template Data  │ Mining template (same as GET_BLOCK)    │
 │ (variable)     │                                        │
@@ -217,9 +223,13 @@ Complete reference for all opcodes used in NexusMiner's LLP (Lower Level Protoco
 ```
 
 **Usage:**
-- Sent in response to GET_ROUND
+- Sent in response to GET_ROUND (legacy polling)
+- **NEW (v1.5+):** Also sent after MINER_READY (push notification)
 - Same template format as stateless GET_BLOCK/NEW_BLOCK
 - Compatibility with older nodes
+
+**Note:** Modern nodes may send BLOCK_DATA instead of GET_BLOCK after MINER_READY.
+NexusMiner v1.5+ automatically handles both opcodes for maximum compatibility.
 
 ---
 
@@ -376,13 +386,19 @@ keepalive_interval = 24  # Hours (1-168)
 4. Miner sends MINER_READY (0xD007)
 5. 
    a) If node responds with GET_BLOCK (0xD008):
-      → Stateless protocol active ✅
+      → Stateless protocol active ✅ (Modern format)
    
-   b) If no response after timeout:
+   b) If node responds with BLOCK_DATA (0x00):
+      → Stateless protocol active ✅ (Legacy format)
+   
+   c) If no response after 5-second timeout:
       → Fallback to legacy GET_ROUND (0x05) polling
 ```
 
-**Detection Timeout:** Typically 5 seconds
+**Detection Timeout:** 5 seconds (configurable)
+
+**NexusMiner v1.5+ Fix:** Accepts both GET_BLOCK and BLOCK_DATA after MINER_READY,
+enabling stateless protocol with both modern and legacy node implementations.
 
 ---
 
@@ -403,7 +419,7 @@ keepalive_interval = 24  # Hours (1-168)
 | Opcode | Value | Direction | Name | Description |
 |--------|-------|-----------|------|-------------|
 | 0x05 | 5 | M → N | GET_ROUND | Poll for template |
-| 0x06 | 6 | N → M | BLOCK_DATA | Template response |
+| 0x00 | 0 | N → M | BLOCK_DATA | Template response |
 | 0xCF | 207 | M → N | MINER_AUTH_INIT | Legacy auth init |
 | 0xD0 | 208 | N → M | MINER_AUTH_CHALLENGE | Legacy challenge |
 | 0xD1 | 209 | M → N | MINER_AUTH_RESPONSE | Legacy response |

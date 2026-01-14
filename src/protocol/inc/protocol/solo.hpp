@@ -139,6 +139,9 @@ private:
     // Handle reward result response from node (MINER_REWARD_RESULT)
     void handle_reward_result(const Packet& packet);
     
+    // Unified handler for initial template reception (called by both BLOCK_DATA and STATELESS_GET_BLOCK handlers)
+    void handle_initial_template_response(const char* opcode_name);
+    
     // Helper method to finalize template with channel height
     // Returns true if template was finalized, false if already finalized or no template
     bool finalize_template_with_channel_height(uint32_t node_channel_height, const std::string& context);
