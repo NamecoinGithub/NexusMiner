@@ -1026,6 +1026,29 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
         
+        // ═══════════════════════════════════════════════════════════════════
+        // CRITICAL FIX: Accept BLOCK_DATA as initial template after MINER_READY
+        // ═══════════════════════════════════════════════════════════════════
+        // Node sends BLOCK_DATA (opcode 0/132) instead of STATELESS_GET_BLOCK (0xD008)
+        // This fixes the 5-second timeout that causes 0.00 GIPS (no mining work)
+        if (m_waiting_for_stateless_response) {
+            m_stateless_protocol_active = true;
+            m_waiting_for_stateless_response = false;
+            
+            auto now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+            auto sent_ns = m_miner_ready_sent_time_ns.load();
+            auto elapsed_ms = (now_ns - sent_ns) / 1000000;  // Convert nanoseconds to milliseconds
+            
+            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+            m_logger->info("[Solo Protocol] ✅ INITIAL TEMPLATE RECEIVED (BLOCK_DATA)");
+            m_logger->info("[Solo Protocol]   Response time: {}ms", elapsed_ms);
+            m_logger->info("[Solo Protocol]   Opcode: BLOCK_DATA (0x{:02x}) - Legacy format", 
+                          static_cast<uint8_t>(Packet::BLOCK_DATA));
+            m_logger->info("[Solo Protocol]   Node supports push notifications via BLOCK_DATA");
+            m_logger->info("[Solo Protocol]   Stateless protocol activated with legacy opcode");
+            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+        }
+        
         // Enhanced diagnostics: Log payload size information
         m_logger->info("[Solo] BLOCK_DATA payload diagnostics:");
         m_logger->info("[Solo]   - Payload size: {} bytes", packet.m_data->size());
