@@ -18,20 +18,34 @@ namespace nexusminer
 		// Invalid header marker for error conditions
 		static constexpr uint16_t INVALID_HEADER = 0xFFFF;
 		
+		// Minimum legacy auth/session opcode (CHANNEL_ACK = 206)
+		// Opcodes 206-255 are always legacy single-byte format, never stateless
+		static constexpr uint8_t LEGACY_AUTH_OPCODE_MIN = 206;
+		
 		// Threshold for detecting POTENTIAL stateless mining protocol (uint16_t opcodes)
 		// First byte >= 0xD0 MAY indicate uint16_t opcode, but we must verify by checking
-		// the full 2-byte header value. Legacy opcodes 208-255 also start with 0xD0-0xFF.
-		// TRUE stateless opcodes are >= 0xD000 (require 2-byte header check).
+		// context. Legacy opcodes 208-255 also start with 0xD0-0xFF.
 		static constexpr uint8_t STATELESS_OPCODE_THRESHOLD = 0xD0;
 		
 		// Minimum value for stateless mining opcode range (uint16_t values)
 		// Stateless opcodes are >= 0xD000 (53248 decimal)
 		static constexpr uint16_t STATELESS_OPCODE_MIN = 0xD000;
 		
-		// Helper function to check if a uint16_t opcode is in stateless mining range
-		// Returns true only if opcode >= 0xD000 (TRUE stateless protocol)
+		// Maximum known stateless opcode (0xD00C = BLOCK_REJECTED)
+		// Used to disambiguate from legacy opcodes 0xD0-0xFF followed by length fields
+		static constexpr uint16_t STATELESS_OPCODE_MAX = 0xD00C;
+		
+		// Helper function to check if a uint16_t opcode is a known stateless mining opcode
+		// Returns true only if opcode is in range [0xD000, 0xD00C]
+		// This avoids false positives from legacy opcodes 0xD0-0xFF followed by small length values
 		inline bool is_stateless_opcode(uint16_t opcode) {
-			return opcode >= STATELESS_OPCODE_MIN;
+			return (opcode >= STATELESS_OPCODE_MIN && opcode <= STATELESS_OPCODE_MAX);
+		}
+		
+		// Helper function to check if a single byte is a legacy auth/session opcode
+		// These are always single-byte format (206-255), never part of uint16_t stateless opcodes
+		inline bool is_legacy_auth_opcode(uint8_t opcode) {
+			return (opcode >= LEGACY_AUTH_OPCODE_MIN);
 		}
 	}
 	
@@ -232,21 +246,54 @@ namespace nexusminer
 				return;
 			}
 			
-			// Detect opcode format: Check if this is a true uint16_t stateless opcode (>= 0xD000)
-			// Legacy opcodes (including MINER_AUTH_CHALLENGE = 208 = 0xD0) are single-byte
-			// Stateless opcodes start at 0xD000 and require 2-byte header
+			// Detect opcode format with disambiguation logic:
+			// 1. Legacy auth/session opcodes (206-255) are ALWAYS single-byte format
+			// 2. Stateless opcodes (0xD000-0xD00C) are ALWAYS two-byte format
+			// 3. For ambiguous cases (first_byte >= 0xD0), check if it's a known legacy opcode
 			uint8_t first_byte = (*buffer)[0];
-			bool is_potential_stateless = (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD);
 			
-			if (is_potential_stateless && buffer->size() >= 2)
+			// PRIORITY 1: Known legacy auth/session opcodes (206-255) - always single-byte
+			if (PacketConstants::is_legacy_auth_opcode(first_byte))
 			{
-				// Parse potential 2-byte header to check if it's >= 0xD000
+				// LEGACY uint8_t opcode format (1-byte header)
+				// This includes MINER_AUTH_CHALLENGE (208) and all auth/session opcodes
+				m_is_uint16_opcode = false;
+				m_header = first_byte;
+				m_length = 0;
+				
+				if (buffer->size() > 1 && buffer->size() < 5)
+				{
+					m_is_valid = false;
+				}
+				else if (buffer->size() >= 5)
+				{
+					// Parse length (4 bytes, big-endian, starts at offset 1)
+					m_length = ((*buffer)[1] << 24) + ((*buffer)[2] << 16) + 
+					           ((*buffer)[3] << 8) + ((*buffer)[4]);
+					
+					// Extract data (starts at offset 5)
+					if (buffer->size() >= 5 + m_length)
+					{
+						m_data = std::make_shared<network::Payload>(buffer->begin() + 5, 
+						                                             buffer->begin() + 5 + m_length);
+					}
+					else
+					{
+						m_is_valid = false;
+						m_length = 0;
+					}
+				}
+			}
+			// PRIORITY 2: Check for stateless opcodes (requires 2 bytes)
+			else if (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD && buffer->size() >= 2)
+			{
+				// Parse potential 2-byte header to check if it's a known stateless opcode
 				uint16_t potential_header = (static_cast<uint16_t>(first_byte) << 8) | 
 				                            static_cast<uint16_t>((*buffer)[1]);
 				
 				if (PacketConstants::is_stateless_opcode(potential_header))
 				{
-					// NEW uint16_t opcode format (2-byte header, big-endian, >= 0xD000)
+					// NEW uint16_t opcode format (2-byte header, big-endian, 0xD000-0xD00C)
 					m_is_uint16_opcode = true;
 					m_header = potential_header;
 					
@@ -276,8 +323,8 @@ namespace nexusminer
 				}
 				else
 				{
-					// First byte >= 0xD0 but combined value < 0xD000
-					// This is a LEGACY single-byte opcode (e.g., MINER_AUTH_CHALLENGE = 208 = 0xD0)
+					// First byte >= 0xD0 but not a known stateless opcode
+					// Treat as legacy single-byte opcode
 					m_is_uint16_opcode = false;
 					m_header = first_byte;
 					m_length = 0;
@@ -309,7 +356,7 @@ namespace nexusminer
 			else
 			{
 				// LEGACY uint8_t opcode format (1-byte header)
-				// Includes: first_byte < 0xD0 OR buffer has only 1 byte
+				// Standard opcodes < 0xD0
 				m_is_uint16_opcode = false;
 				m_header = first_byte;
 				m_length = 0;
@@ -566,21 +613,59 @@ namespace nexusminer
 		auto const buffer_start = buffer->begin() + start_index;
 		auto const buffer_size = std::distance(buffer_start, buffer->end());
 		
-		// Detect opcode format: Check if this is a true uint16_t stateless opcode (>= 0xD000)
-		// Legacy opcodes (including MINER_AUTH_CHALLENGE = 208 = 0xD0) are single-byte
-		// Stateless opcodes start at 0xD000 and require 2-byte header
+		// Detect opcode format with disambiguation logic (same as Packet constructor):
+		// 1. Legacy auth/session opcodes (206-255) are ALWAYS single-byte format
+		// 2. Stateless opcodes (0xD000-0xD00C) are ALWAYS two-byte format  
+		// 3. For ambiguous cases, prioritize known legacy opcodes
 		uint8_t first_byte = (*buffer)[start_index];
-		bool is_potential_stateless = (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD);
 		
-		if (is_potential_stateless && buffer_size >= 2)
+		// PRIORITY 1: Known legacy auth/session opcodes (206-255) - always single-byte
+		if (PacketConstants::is_legacy_auth_opcode(first_byte))
 		{
-			// Parse potential 2-byte header to check if it's >= 0xD000
+			// LEGACY uint8_t opcode format (includes MINER_AUTH_CHALLENGE = 208)
+			packet.m_is_uint16_opcode = false;
+			packet.m_header = first_byte;
+			
+			if (buffer_size == 1)
+			{
+				packet.m_is_valid = true;
+				packet.m_length = 0;
+				remaining_size = 0;
+				return packet;
+			}
+			else if (buffer_size > 1 && buffer_size < 5)
+			{
+				// data packet but not even correct length field was transmitted
+				return packet;
+			}
+			else
+			{
+				std::uint32_t const length = ((*buffer)[start_index + 1] << 24) + 
+				                              ((*buffer)[start_index + 2] << 16) + 
+				                              ((*buffer)[start_index + 3] << 8) + 
+				                              ((*buffer)[start_index + 4]);
+
+				if (length > std::distance(buffer_start + 5, buffer->end()))
+				{
+					return packet;
+				}
+
+				packet.m_is_valid = true;
+				packet.m_length = length;
+				packet.m_data = std::make_shared<network::Payload>(buffer_start + 5, buffer_start + 5 + length);
+				remaining_size = buffer_size - (5 + packet.m_data->size());		// header (1 byte) + 4 byte length 
+			}
+		}
+		// PRIORITY 2: Check for stateless opcodes (requires 2 bytes)
+		else if (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD && buffer_size >= 2)
+		{
+			// Parse potential 2-byte header to check if it's a known stateless opcode
 			uint16_t potential_header = (static_cast<uint16_t>(first_byte) << 8) | 
 			                            static_cast<uint16_t>((*buffer)[start_index + 1]);
 			
 			if (PacketConstants::is_stateless_opcode(potential_header))
 			{
-				// NEW uint16_t opcode format (2-byte header, big-endian, >= 0xD000)
+				// NEW uint16_t opcode format (2-byte header, big-endian, 0xD000-0xD00C)
 				packet.m_is_uint16_opcode = true;
 				packet.m_header = potential_header;
 				packet.m_is_valid = true;
@@ -620,8 +705,8 @@ namespace nexusminer
 			}
 			else
 			{
-				// First byte >= 0xD0 but combined value < 0xD000
-				// This is a LEGACY single-byte opcode (e.g., MINER_AUTH_CHALLENGE = 208 = 0xD0)
+				// First byte >= 0xD0 but not a known stateless opcode
+				// Treat as legacy single-byte opcode
 				packet.m_is_uint16_opcode = false;
 				packet.m_header = first_byte;
 				
