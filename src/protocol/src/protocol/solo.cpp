@@ -1029,25 +1029,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // ═══════════════════════════════════════════════════════════════════
         // CRITICAL FIX: Accept BLOCK_DATA as initial template after MINER_READY
         // ═══════════════════════════════════════════════════════════════════
-        // Node sends BLOCK_DATA (opcode 0/132) instead of STATELESS_GET_BLOCK (0xD008)
+        // Node sends BLOCK_DATA (opcode 0) instead of STATELESS_GET_BLOCK (0xD008)
         // This fixes the 5-second timeout that causes 0.00 GIPS (no mining work)
-        if (m_waiting_for_stateless_response) {
-            m_stateless_protocol_active = true;
-            m_waiting_for_stateless_response = false;
-            
-            auto now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
-            auto sent_ns = m_miner_ready_sent_time_ns.load();
-            auto elapsed_ms = (now_ns - sent_ns) / 1000000;  // Convert nanoseconds to milliseconds
-            
-            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-            m_logger->info("[Solo Protocol] ✅ INITIAL TEMPLATE RECEIVED (BLOCK_DATA)");
-            m_logger->info("[Solo Protocol]   Response time: {}ms", elapsed_ms);
-            m_logger->info("[Solo Protocol]   Opcode: BLOCK_DATA (0x{:02x}) - Legacy format", 
-                          static_cast<uint8_t>(Packet::BLOCK_DATA));
-            m_logger->info("[Solo Protocol]   Node supports push notifications via BLOCK_DATA");
-            m_logger->info("[Solo Protocol]   Stateless protocol activated with legacy opcode");
-            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-        }
+        handle_initial_template_response("BLOCK_DATA (0x00)");
         
         // Enhanced diagnostics: Log payload size information
         m_logger->info("[Solo] BLOCK_DATA payload diagnostics:");
@@ -2077,25 +2061,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!
         // ═══════════════════════════════════════════════════════════════════
         
-        // Node supports stateless protocol - activate it!
-        if (m_waiting_for_stateless_response) {
-            m_stateless_protocol_active = true;
-            m_waiting_for_stateless_response = false;
-            
-            auto now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
-            auto sent_ns = m_miner_ready_sent_time_ns.load();
-            auto elapsed_ms = (now_ns - sent_ns) / 1000000;  // Convert nanoseconds to milliseconds
-            
-            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-            m_logger->info("[Solo Protocol] ✅ STATELESS PROTOCOL ACTIVE!");
-            m_logger->info("[Solo Protocol]   Response time: {}ms", elapsed_ms);
-            m_logger->info("[Solo Protocol]   Node supports push notifications (0xD008/0xD009)");
-            m_logger->info("[Solo Protocol]   Legacy GET_ROUND polling disabled");
-            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-        } else {
-            // Already in stateless mode, just confirm
-            m_stateless_protocol_active = true;
-        }
+        // Unified handler for initial template response
+        handle_initial_template_response("GET_BLOCK (0xD008)");
         
         m_logger->info("[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD008) received!");
         m_logger->info("[Solo Stateless] This is the NEW push notification protocol");
@@ -3103,6 +3070,30 @@ void Solo::handle_reward_result(const Packet& packet)
             m_connection = nullptr;  // Reset to prevent use-after-close
         }
     }
+}
+
+void Solo::handle_initial_template_response(const char* opcode_name)
+{
+    // Check if we're waiting for the initial template after MINER_READY
+    if (!m_waiting_for_stateless_response) {
+        return;  // Not waiting, nothing to do
+    }
+    
+    // Activate stateless protocol and clear waiting flag
+    m_stateless_protocol_active = true;
+    m_waiting_for_stateless_response = false;
+    
+    // Calculate response time
+    auto now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto sent_ns = m_miner_ready_sent_time_ns.load();
+    auto elapsed_ms = (now_ns - sent_ns) / 1000000;  // Convert nanoseconds to milliseconds
+    
+    // Log successful template reception
+    m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+    m_logger->info("[Solo Protocol] ✅ INITIAL TEMPLATE RECEIVED ({})", opcode_name);
+    m_logger->info("[Solo Protocol]   Response time: {}ms", elapsed_ms);
+    m_logger->info("[Solo Protocol]   Stateless protocol activated");
+    m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
