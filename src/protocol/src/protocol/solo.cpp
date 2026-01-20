@@ -1033,10 +1033,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // This fixes the 5-second timeout that causes 0.00 GIPS (no mining work)
         handle_initial_template_response("BLOCK_DATA (0x00)");
         
-        // Enhanced diagnostics: Log payload size information
-        m_logger->info("[Solo] BLOCK_DATA payload diagnostics:");
-        m_logger->info("[Solo]   - Payload size: {} bytes", packet.m_data->size());
-        m_logger->info("[Solo]   - Packet length field: {} bytes", packet.m_length);
+        // ═══════════════════════════════════════════════════════════════════
+        // ENHANCED DIAGNOSTICS: Template delivery tracking
+        // ═══════════════════════════════════════════════════════════════════
+        m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
+        m_logger->info("[Solo Template Delivery] 📥 TEMPLATE RECEIVED VIA: BLOCK_DATA (0x00)");
+        m_logger->info("[Solo Template Delivery]   Delivery Method: Legacy 8-bit opcode");
+        m_logger->info("[Solo Template Delivery]   Payload Size: {} bytes", packet.m_data->size());
+        m_logger->info("[Solo Template Delivery]   Packet Length: {} bytes", packet.m_length);
+        m_logger->info("[Solo Template Delivery]   Protocol Mode: {}", 
+            m_stateless_protocol_active.load() ? "Stateless (after initial)" : "Legacy Polling");
+        m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
         
         // TRAINING WHEELS: Full hex dump of BLOCK_DATA payload for debugging
         m_logger->info("[Solo] BLOCK_DATA hex dump:");
@@ -1344,15 +1351,31 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // template finalization, and template validation
         bool template_valid = sync_template_state(unified_height, channel_height);
         
-        if (!template_valid && m_template_interface) {
-            m_logger->info("[Solo GET_ROUND] ✗ Template stale, requesting fresh work");
-            // Template was invalidated - request new one
+        // CRITICAL FIX: After NEW_ROUND, check if we have a valid template
+        // If not, request one via GET_BLOCK (legacy fallback behavior)
+        bool needs_template = !template_valid || 
+                             (m_template_interface && !m_template_interface->has_valid_template());
+        
+        if (needs_template) {
+            if (!template_valid && m_template_interface) {
+                m_logger->info("[Solo GET_ROUND] ✗ Template stale, requesting fresh work");
+            } else {
+                m_logger->info("[Solo GET_ROUND] ℹ️  NEW_ROUND received but no template - requesting work");
+                m_logger->info("[Solo GET_ROUND]   This handles legacy nodes that send NEW_ROUND without BLOCK_DATA");
+            }
+            
+            // Request template via legacy GET_BLOCK
             if (connection) {
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
+                    m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent after NEW_ROUND");
+                } else {
+                    m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
                 }
             }
+        } else {
+            m_logger->info("[Solo GET_ROUND] ✓ Template valid, continuing to mine");
         }
         
         // Update intelligent polling state
@@ -2062,7 +2085,18 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // ═══════════════════════════════════════════════════════════════════
         
         // Unified handler for initial template response
-        handle_initial_template_response("GET_BLOCK (0xD008)");
+        handle_initial_template_response("STATELESS_GET_BLOCK (0xD008)");
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // ENHANCED DIAGNOSTICS: Template delivery tracking
+        // ═══════════════════════════════════════════════════════════════════
+        m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
+        m_logger->info("[Solo Template Delivery] 📥 TEMPLATE RECEIVED VIA: STATELESS_GET_BLOCK (0xD008)");
+        m_logger->info("[Solo Template Delivery]   Delivery Method: Stateless 16-bit opcode");
+        m_logger->info("[Solo Template Delivery]   Payload Size: {} bytes", packet.m_length);
+        m_logger->info("[Solo Template Delivery]   Expected Format: 12 metadata + 216 block");
+        m_logger->info("[Solo Template Delivery]   Protocol Mode: Stateless Push");
+        m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
         
         m_logger->info("[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD008) received!");
         m_logger->info("[Solo Stateless] This is the NEW push notification protocol");
@@ -2231,6 +2265,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     {
         // Confirm stateless protocol is active (should already be, but safety check)
         m_stateless_protocol_active = true;
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // ENHANCED DIAGNOSTICS: Template delivery tracking
+        // ═══════════════════════════════════════════════════════════════════
+        m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
+        m_logger->info("[Solo Template Delivery] 📥 TEMPLATE RECEIVED VIA: STATELESS_NEW_BLOCK (0xD009)");
+        m_logger->info("[Solo Template Delivery]   Delivery Method: Stateless 16-bit opcode (push notification)");
+        m_logger->info("[Solo Template Delivery]   Payload Size: {} bytes", packet.m_length);
+        m_logger->info("[Solo Template Delivery]   Expected Format: 12 metadata + 216 block");
+        m_logger->info("[Solo Template Delivery]   Protocol Mode: Stateless Push (network advanced)");
+        m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
         
         m_logger->info("[Solo Stateless] 🔔 STATELESS_NEW_BLOCK (0xD009) received!");
         m_logger->info("[Solo Stateless] Network has advanced - NEW template pushed!");
