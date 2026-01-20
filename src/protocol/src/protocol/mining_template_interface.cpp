@@ -172,14 +172,29 @@ MiningTemplateInterface::read_template(const network::Payload& data,
         
         m_templates_validated.fetch_add(1, std::memory_order_relaxed);
         
-        m_logger->info("[TemplateInterface] READ SUCCESS: Template validated for height {} (channel: {}, nBits: 0x{:08x})",
-            tmpl.block.nHeight, tmpl.block.nChannel, tmpl.nBits);
+        m_logger->info("[TemplateInterface] ═══════════════════════════════════════");
+        m_logger->info("[TemplateInterface] ✅ TEMPLATE VALIDATION SUCCESS");
+        m_logger->info("[TemplateInterface]   Height: {}", tmpl.block.nHeight);
+        m_logger->info("[TemplateInterface]   Channel: {} ({})", tmpl.block.nChannel, 
+            (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
+        m_logger->info("[TemplateInterface]   nBits: 0x{:08x}", tmpl.nBits);
+        m_logger->info("[TemplateInterface]   Validation time: {} μs", read_time.count());
+        m_logger->info("[TemplateInterface] ═══════════════════════════════════════");
         
         // Auto-feed to registered handlers
         feed_current_template();
     } else {
         m_templates_rejected.fetch_add(1, std::memory_order_relaxed);
-        m_logger->warn("[TemplateInterface] READ FAILED: {}", result.error_message);
+        
+        m_logger->warn("[TemplateInterface] ═══════════════════════════════════════");
+        m_logger->warn("[TemplateInterface] ❌ TEMPLATE VALIDATION FAILED");
+        m_logger->warn("[TemplateInterface]   Reason: {}", result.error_message);
+        m_logger->warn("[TemplateInterface]   Height valid: {}", result.height_valid);
+        m_logger->warn("[TemplateInterface]   Merkle valid: {}", result.merkle_valid);
+        m_logger->warn("[TemplateInterface]   Bits valid: {}", result.bits_valid);
+        m_logger->warn("[TemplateInterface]   Channel valid: {}", result.channel_valid);
+        m_logger->warn("[TemplateInterface]   Is stale: {}", result.is_stale);
+        m_logger->warn("[TemplateInterface] ═══════════════════════════════════════");
         
         if (result.is_stale) {
             m_templates_stale.fetch_add(1, std::memory_order_relaxed);
