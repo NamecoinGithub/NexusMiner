@@ -865,24 +865,25 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         m_logger->info("════════════════════════════════════════════════════════");
         
         // ═══════════════════════════════════════════════════════════════════
-        // CONDITIONAL OPCODE SELECTION: Use correct opcode based on protocol mode
+        // LANE-BASED OPCODE SELECTION: Use correct opcode based on protocol lane
         // ═══════════════════════════════════════════════════════════════════
-        const char* protocol_name = m_stateless_protocol_active ? "STATELESS" : "LEGACY";
-        const char* packet_name = m_stateless_protocol_active ? "STATELESS_SUBMIT_BLOCK" : "SUBMIT_BLOCK";
+        bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
+        const char* lane_name = use_stateless_opcode ? "STATELESS" : "LEGACY";
+        const char* packet_name = use_stateless_opcode ? "STATELESS_SUBMIT_BLOCK" : "SUBMIT_BLOCK";
         // Mirror-mapped: SUBMIT_BLOCK (1) -> 0xD001 (not 0xD00A!)
-        uint16_t opcode = m_stateless_protocol_active ? 
+        uint16_t opcode = use_stateless_opcode ? 
             static_cast<uint16_t>(Packet::STATELESS_SUBMIT_BLOCK) :  // 0xD001 (mirror-mapped)
             static_cast<uint16_t>(Packet::SUBMIT_BLOCK);             // 1 (legacy)
         
         // Create packet with appropriate opcode (consistent constructor usage)
-        Packet packet = m_stateless_protocol_active 
+        Packet packet = use_stateless_opcode 
             ? Packet{ static_cast<uint16_t>(Packet::STATELESS_SUBMIT_BLOCK) }  // 0xD001 for stateless protocol
             : Packet{ static_cast<uint8_t>(Packet::SUBMIT_BLOCK) };  // legacy opcode
         
         packet.m_data = std::make_shared<network::Payload>(encryptedPayload);
         packet.m_length = static_cast<uint32_t>(encryptedPayload.size());
         
-        m_logger->info("📤 Submitting block via {} protocol", protocol_name);
+        m_logger->info("📤 Submitting block via {} lane", lane_name);
         m_logger->info("📤 Sending encrypted {} packet (opcode: 0x{:04x}) to node...", packet_name, opcode);
         
         auto result = packet.get_bytes();
@@ -1834,51 +1835,64 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
         
-        // Push notifications: Subscribe to block notifications (LLL-TAO PR #156)
-        // Use stateless protocol with mirror-mapped opcodes (LLL-TAO PR #198)
-        m_logger->info("[Solo Protocol] Attempting stateless protocol negotiation");
-        m_logger->info("[Solo Protocol] Sending STATELESS_MINER_READY (0xD0D8) to subscribe to push notifications");
-        m_logger->info("[Solo Protocol]   Mirror-mapped from legacy MINER_READY (216)");
+        // ═══════════════════════════════════════════════════════════════════
+        // LANE-BASED PROTOCOL FLOW (NO NEGOTIATION)
+        // ═══════════════════════════════════════════════════════════════════
         
-        auto miner_ready_payload = send_miner_ready();
-        if (!miner_ready_payload || miner_ready_payload->empty()) {
-            m_logger->error("[Solo Protocol] Failed to encode STATELESS_MINER_READY - falling back to polling");
-        } else if (connection) {
-            connection->transmit(miner_ready_payload);
+        if (m_protocol_lane == ProtocolLane::STATELESS) {
+            // STATELESS LANE: Send MINER_READY to subscribe to push notifications
+            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+            m_logger->info("[Solo Protocol] STATELESS LANE: Using push protocol");
+            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+            m_logger->info("[Solo Protocol] Sending STATELESS_MINER_READY (0xD0D8)");
             
-            // Set waiting flags for protocol negotiation
-            m_waiting_for_stateless_response = true;
-            m_miner_ready_sent_time_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+            auto miner_ready_payload = send_miner_ready();
+            if (!miner_ready_payload || miner_ready_payload->empty()) {
+                m_logger->error("[Solo Protocol] Failed to encode STATELESS_MINER_READY");
+                if (connection) {
+                    connection->close();
+                }
+                return;
+            }
             
-            m_logger->info("[Solo Protocol] ✓ STATELESS_MINER_READY transmitted");
-            m_logger->info("[Solo Protocol] Waiting for STATELESS_GET_BLOCK (0xD081) response...");
-            m_logger->info("[Solo Protocol]   Mirror-mapped from legacy GET_BLOCK (129)");
-            m_logger->info("[Solo Protocol] Timeout: {} seconds", STATELESS_PROTOCOL_TIMEOUT_SECONDS);
-            m_logger->info("[Solo Protocol] If timeout: Fall back to legacy GET_ROUND polling");
+            if (connection) {
+                connection->transmit(miner_ready_payload);
+                m_logger->info("[Solo Protocol] ✓ STATELESS_MINER_READY transmitted");
+                m_logger->info("[Solo Protocol] Waiting for STATELESS_GET_BLOCK (0xD081) pushes...");
+            } else {
+                m_logger->error("[Solo Protocol] No connection available");
+                return;
+            }
+        } else if (m_protocol_lane == ProtocolLane::LEGACY) {
+            // LEGACY LANE: Start polling with GET_ROUND
+            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+            m_logger->info("[Solo Protocol] LEGACY LANE: Using polling protocol");
+            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+            m_logger->info("[Solo Protocol] Starting GET_ROUND polling");
             
-            // Return here - we'll wait for either:
-            // 1. STATELESS_GET_BLOCK (0xD081) - stateless protocol success
-            // 2. Timeout - fall back to legacy polling (handled in process_messages)
+            auto get_round_payload = send_get_round();
+            if (!get_round_payload || get_round_payload->empty()) {
+                m_logger->error("[Solo Protocol] Failed to encode GET_ROUND");
+                if (connection) {
+                    connection->close();
+                }
+                return;
+            }
+            
+            if (connection) {
+                connection->transmit(get_round_payload);
+                m_logger->info("[Solo Protocol] ✓ GET_ROUND (0x85) transmitted");
+                m_logger->info("[Solo Protocol] Waiting for NEW_ROUND/OLD_ROUND response...");
+            } else {
+                m_logger->error("[Solo Protocol] No connection available");
+                return;
+            }
+        } else {
+            m_logger->error("[Solo Protocol] UNKNOWN protocol lane - cannot proceed");
+            if (connection) {
+                connection->close();
+            }
             return;
-        } else {
-            m_logger->error("[Solo Protocol] No connection available - cannot send STATELESS_MINER_READY");
-        }
-        
-        // Fallback: Request work directly if MINER_READY failed
-        m_logger->warn("[Solo Protocol] MINER_READY transmission failed - using legacy GET_BLOCK");
-        m_logger->debug("[Solo Phase 2] Pre-GET_BLOCK state:");
-        m_logger->debug("[Solo Phase 2]   - Connection valid: {}", connection ? "YES" : "NO");
-        m_logger->debug("[Solo Phase 2]   - Session ID: 0x{:08x}", m_session_id);
-        m_logger->debug("[Solo Phase 2]   - Authenticated: {}", m_authenticated ? "YES" : "NO");
-        auto work_payload = get_work();
-        if (!work_payload || work_payload->empty()) {
-            m_logger->error("[Solo] CRITICAL: GET_BLOCK request returned empty payload!");
-            m_logger->error("[Solo] This may indicate a packet encoding issue");
-        } else if (connection) {
-            connection->transmit(work_payload);
-            m_logger->info("[Solo] GET_BLOCK transmitted successfully");
-        } else {
-            m_logger->error("[Solo] No connection available - cannot request work");
         }
     }
     else if (packet.m_header == Packet::SESSION_START)
