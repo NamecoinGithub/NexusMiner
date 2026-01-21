@@ -6,8 +6,13 @@
 
 #include <functional>
 #include <memory>
+#include <cstdint>
 
 namespace nexusminer {
+
+// Forward declaration
+enum class ProtocolLane : uint8_t;
+
 namespace network {
 
 //  Provides connection control, data transfer and information functions
@@ -39,6 +44,9 @@ public:
 
     // Closes the connection
     virtual void close() = 0;
+    
+    // Get protocol lane for this connection
+    virtual ProtocolLane get_protocol_lane() const = 0;
 };
 
 

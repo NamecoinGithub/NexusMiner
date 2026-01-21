@@ -467,9 +467,16 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
 {
     auto remaining_size = receive_buffer->size();
+    
+    // Get protocol lane from connection
+    ProtocolLane lane = m_connection ? m_connection->get_protocol_lane() : ProtocolLane::UNKNOWN;
+    
     do
     {
-        auto packet = extract_packet_from_buffer(receive_buffer, remaining_size, receive_buffer->size() - remaining_size);
+        // Use lane-aware packet extraction
+        auto packet = extract_packet_from_buffer_with_lane(
+            receive_buffer, remaining_size, receive_buffer->size() - remaining_size, lane);
+        
         if (!packet.is_valid())
         {
             m_logger->debug("Received packet is invalid. Header: {0}", packet.m_header);

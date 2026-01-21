@@ -9,8 +9,23 @@
 #include <spdlog/spdlog.h>
 #include <queue>
 #include <memory>
+#include <cstdint>
 
 namespace nexusminer {
+
+// Protocol Lane enum - must match packet.hpp definition
+enum class ProtocolLane : uint8_t {
+    UNKNOWN = 0,
+    LEGACY = 1,
+    STATELESS = 2
+};
+
+// Helper function - must match packet.hpp
+inline ProtocolLane determine_lane_from_port(uint16_t port) {
+    constexpr uint16_t LEGACY_PORT = 8323;
+    return (port == LEGACY_PORT) ? ProtocolLane::LEGACY : ProtocolLane::STATELESS;
+}
+
 namespace network {
 namespace tcp {
 
@@ -42,6 +57,7 @@ public:
     Endpoint const& local_endpoint() const override { return m_local_endpoint; }
     void transmit(Shared_payload tx_buffer) override;
     void close() override;
+    ProtocolLane get_protocol_lane() const override { return m_protocol_lane; }
 
     // interface towards socket
     Result::Code connect();
@@ -62,6 +78,7 @@ private:
     std::queue<Shared_payload> m_tx_queue;
     Connection::Handler m_connection_handler;
     std::shared_ptr<spdlog::logger> m_logger;
+    ProtocolLane m_protocol_lane;
 };
 
 
@@ -76,6 +93,7 @@ inline Connection_impl<ProtocolDescriptionType>::Connection_impl(
     , m_tx_queue{}
     , m_connection_handler{std::move(handler)}
     , m_logger{spdlog::get("logger")}
+    , m_protocol_lane{determine_lane_from_port(m_remote_endpoint.port())}
 {
 }
 
@@ -90,6 +108,7 @@ inline Connection_impl<ProtocolDescriptionType>::Connection_impl(
     , m_tx_queue{}
 	, m_connection_handler{} // will be set later, this constructor is called in accept/listen case
     , m_logger{spdlog::get("logger")}
+    , m_protocol_lane{determine_lane_from_port(m_remote_endpoint.port())}
 {
 }
 
