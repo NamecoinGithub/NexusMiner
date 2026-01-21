@@ -27,19 +27,15 @@ namespace nexusminer
 		// context. Legacy opcodes 208-255 also start with 0xD0-0xFF.
 		static constexpr uint8_t STATELESS_OPCODE_THRESHOLD = 0xD0;
 		
-		// Minimum value for stateless mining opcode range (uint16_t values)
-		// Stateless opcodes are >= 0xD000 (53248 decimal)
+		// Mirror-mapped stateless opcode range (uint16_t values)
+		// Stateless opcodes are 0xD000-0xD0FF (mirror-mapped from legacy 0x00-0xFF)
 		static constexpr uint16_t STATELESS_OPCODE_MIN = 0xD000;
+		static constexpr uint16_t STATELESS_OPCODE_MAX = 0xD0FF;
 		
-		// Maximum known stateless opcode (0xD00C = BLOCK_REJECTED)
-		// Used to disambiguate from legacy opcodes 0xD0-0xFF followed by length fields
-		static constexpr uint16_t STATELESS_OPCODE_MAX = 0xD00C;
-		
-		// Helper function to check if a uint16_t opcode is a known stateless mining opcode
-		// Returns true only if opcode is in range [0xD000, 0xD00C]
-		// This avoids false positives from legacy opcodes 0xD0-0xFF followed by small length values
+		// Helper function to check if a uint16_t opcode is a stateless mining opcode
+		// Returns true if opcode is in range [0xD000, 0xD0FF] (mirror-mapped range)
 		inline bool is_stateless_opcode(uint16_t opcode) {
-			return (opcode >= STATELESS_OPCODE_MIN && opcode <= STATELESS_OPCODE_MAX);
+			return LLP::IsStatelessOpcode(opcode);
 		}
 		
 		// Helper function to check if a single byte is a legacy auth/session opcode
@@ -134,30 +130,20 @@ namespace nexusminer
 			BLOCK = LLP::BLOCK,
 			STALE = LLP::STALE,
 			
-			/** NEW STATELESS MINING PROTOCOL (uint16_t opcodes, 0xD000+) **/
+			/** NEW STATELESS MINING PROTOCOL (uint16_t opcodes, mirror-mapped 0xD0xx) **/
 			/** These require Packet(uint16_t) constructor **/
 			
-			// Authentication (0xD000-0xD001)
-			STATELESS_MINER_AUTH = LLP::StatelessMining::MINER_AUTH,
-			STATELESS_MINER_AUTH_RESPONSE = LLP::StatelessMining::MINER_AUTH_RESPONSE,
-			
-			// Configuration (0xD003-0xD006)
-			STATELESS_MINER_SET_REWARD = LLP::StatelessMining::MINER_SET_REWARD,
-			STATELESS_MINER_REWARD_RESULT = LLP::StatelessMining::MINER_REWARD_RESULT,
-			STATELESS_SET_CHANNEL = LLP::StatelessMining::SET_CHANNEL,
-			STATELESS_CHANNEL_ACK = LLP::StatelessMining::CHANNEL_ACK,
-			
-			// Subscription (0xD007)
-			STATELESS_MINER_READY = LLP::StatelessMining::MINER_READY,
-			
-			// Template delivery (0xD008-0xD009) - THE KEY OPCODES!
-			STATELESS_GET_BLOCK = LLP::StatelessMining::GET_BLOCK,
-			STATELESS_NEW_BLOCK = LLP::StatelessMining::NEW_BLOCK,
-			
-			// Solution submission (0xD00A-0xD00C)
-			STATELESS_SUBMIT_BLOCK = LLP::StatelessMining::SUBMIT_BLOCK,
-			STATELESS_BLOCK_ACCEPTED = LLP::StatelessMining::BLOCK_ACCEPTED,
-			STATELESS_BLOCK_REJECTED = LLP::StatelessMining::BLOCK_REJECTED,
+			// Core mining operations (mirror-mapped from legacy)
+			STATELESS_SUBMIT_BLOCK = LLP::StatelessMining::SUBMIT_BLOCK,              // 0xD001
+			STATELESS_SET_CHANNEL = LLP::StatelessMining::SET_CHANNEL,                // 0xD003
+			STATELESS_GET_BLOCK = LLP::StatelessMining::GET_BLOCK,                    // 0xD081
+			STATELESS_BLOCK_ACCEPTED = LLP::StatelessMining::BLOCK_ACCEPTED,          // 0xD0C8
+			STATELESS_BLOCK_REJECTED = LLP::StatelessMining::BLOCK_REJECTED,          // 0xD0C9
+			STATELESS_MINER_SET_REWARD = LLP::StatelessMining::MINER_SET_REWARD,      // 0xD0D5
+			STATELESS_MINER_REWARD_RESULT = LLP::StatelessMining::MINER_REWARD_RESULT,// 0xD0D6
+			STATELESS_MINER_READY = LLP::StatelessMining::MINER_READY,                // 0xD0D8
+			STATELESS_PRIME_BLOCK_AVAILABLE = LLP::StatelessMining::PRIME_BLOCK_AVAILABLE,  // 0xD0D9
+			STATELESS_HASH_BLOCK_AVAILABLE = LLP::StatelessMining::HASH_BLOCK_AVAILABLE,    // 0xD0DA
 
 			/** GENERIC **/
 			PING = LLP::PING,

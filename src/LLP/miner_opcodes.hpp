@@ -310,19 +310,58 @@ enum MinerOpcodes : std::uint8_t
 };
 
 // ============================================================================
-// NEW STATELESS MINING PROTOCOL (LLL-TAO PR #170)
-// uint16_t opcodes in 0xD000+ range for GET_BLOCK/NEW_BLOCK push protocol
+// MIRROR-MAPPED STATELESS MINING PROTOCOL (LLL-TAO PR #198)
+// Mirror-mapped uint16_t opcodes: 0xD000 | legacyOpcode
 // ============================================================================
 
 /**
+ * @brief Helper function to convert legacy uint8_t opcode to mirror-mapped uint16_t stateless opcode
+ * @param legacy_opcode The legacy uint8_t opcode (e.g., 216 for MINER_READY)
+ * @return Mirror-mapped stateless opcode (e.g., 0xD0D8 for MINER_READY)
+ * 
+ * Mirror-mapping formula: statelessOpcode = 0xD000 | legacyOpcode
+ * Examples:
+ *   - MINER_READY (216 = 0xD8) → 0xD0D8
+ *   - GET_BLOCK (129 = 0x81) → 0xD081
+ *   - SUBMIT_BLOCK (1 = 0x01) → 0xD001
+ */
+constexpr uint16_t MirrorOpcode(uint8_t legacy_opcode) {
+    return 0xD000 | static_cast<uint16_t>(legacy_opcode);
+}
+
+/**
+ * @brief Check if a uint16_t opcode is a stateless mining opcode
+ * @param opcode The opcode to check
+ * @return true if opcode is in the stateless range (0xD000-0xD0FF)
+ * 
+ * Stateless opcodes are mirror-mapped from legacy uint8_t opcodes, so they
+ * always fall in the range 0xD000-0xD0FF (since legacy opcodes are 0x00-0xFF).
+ */
+constexpr bool IsStatelessOpcode(uint16_t opcode) {
+    return (opcode >= 0xD000) && (opcode <= 0xD0FF);
+}
+
+/**
+ * @brief Extract the legacy opcode from a mirror-mapped stateless opcode
+ * @param stateless_opcode The mirror-mapped stateless opcode (e.g., 0xD0D8)
+ * @return The legacy uint8_t opcode (e.g., 216 for 0xD0D8)
+ * 
+ * This is the inverse of MirrorOpcode(): legacyOpcode = statelessOpcode & 0xFF
+ */
+constexpr uint8_t UnmirrorOpcode(uint16_t stateless_opcode) {
+    return static_cast<uint8_t>(stateless_opcode & 0xFF);
+}
+
+/**
  * @namespace StatelessMining
- * @brief NEW stateless mining protocol opcodes (uint16_t, 0xD000+ range)
+ * @brief MIRROR-MAPPED stateless mining protocol opcodes (uint16_t, 0xD000-0xD0FF range)
  * 
  * This namespace contains the opcodes for the modern stateless mining protocol
- * implemented in LLL-TAO PR #170. These opcodes use uint16_t (2-byte) headers
- * instead of the legacy uint8_t (1-byte) headers.
+ * implemented in LLL-TAO PR #198. These opcodes are MIRROR-MAPPED from legacy
+ * uint8_t opcodes using the formula: statelessOpcode = 0xD000 | legacyOpcode
  * 
  * KEY FEATURES:
+ * - Mirror-mapped from legacy opcodes (not sequential!)
  * - Push notifications (no polling!)
  * - 228-byte templates (12-byte metadata + 216-byte block)
  * - Immediate template delivery after MINER_READY
@@ -330,63 +369,97 @@ enum MinerOpcodes : std::uint8_t
  * 
  * WIRE FORMAT:
  * [header(2 bytes, big-endian)][length(4 bytes, big-endian)][payload]
+ * 
+ * IMPORTANT: Port-based lane separation
+ * - Stateless protocol is used on the stateless mining port
+ * - Legacy protocol is used on the legacy mining port
+ * - NO fallback between modes - strict separation enforced
  */
 namespace StatelessMining {
     
     // ========================================================================
-    // AUTHENTICATION (0xD000-0xD002)
+    // MIRROR-MAPPED OPCODES (using 0xD000 | legacyOpcode)
     // ========================================================================
+    // Legacy opcode → Mirror-mapped stateless opcode
+    // SUBMIT_BLOCK (1) → 0xD001
+    // SET_CHANNEL (3) → 0xD003
+    // GET_BLOCK (129) → 0xD081
+    // BLOCK_ACCEPTED (200) → 0xD0C8
+    // BLOCK_REJECTED (201) → 0xD0C9
+    // MINER_SET_REWARD (213) → 0xD0D5
+    // MINER_REWARD_RESULT (214) → 0xD0D6
+    // MINER_READY (216) → 0xD0D8
+    // PRIME_BLOCK_AVAILABLE (217) → 0xD0D9
+    // HASH_BLOCK_AVAILABLE (218) → 0xD0DA
     
     /**
-     * MINER_AUTH: Miner initiates Falcon authentication
+     * SUBMIT_BLOCK: Miner submits solved block
      * Direction: Miner → Node
-     * Payload: [genesis(32)][pubkey_len(2)][pubkey][miner_id_len(2)][miner_id]
+     * Payload: 216 bytes (solved block)
+     * Mirror-mapped from legacy SUBMIT_BLOCK (1) → 0xD001
      */
-    constexpr uint16_t MINER_AUTH = 0xD000;
-    
-    /**
-     * MINER_AUTH_RESPONSE: Node responds to authentication
-     * Direction: Node → Miner
-     * Payload: [status(1)][session_id(4, optional)]
-     *   status: 0x01 = success, 0x00 = failure
-     */
-    constexpr uint16_t MINER_AUTH_RESPONSE = 0xD001;
-    
-    // ========================================================================
-    // CONFIGURATION (0xD003-0xD006)
-    // ========================================================================
-    
-    /**
-     * MINER_SET_REWARD: Miner sends encrypted reward address
-     * Direction: Miner → Node
-     * Payload (ChaCha20 encrypted): [encrypted_address(32)]
-     */
-    constexpr uint16_t MINER_SET_REWARD = 0xD003;
-    
-    /**
-     * MINER_REWARD_RESULT: Node confirms reward binding
-     * Direction: Node → Miner
-     * Payload (ChaCha20 encrypted): [status(1)][msg_len(1)][message(optional)]
-     */
-    constexpr uint16_t MINER_REWARD_RESULT = 0xD004;
+    constexpr uint16_t SUBMIT_BLOCK = MirrorOpcode(LLP::SUBMIT_BLOCK);  // 0xD001
     
     /**
      * SET_CHANNEL: Miner sets mining channel
      * Direction: Miner → Node
      * Payload: [channel(1)]  // 1=Prime, 2=Hash
+     * Mirror-mapped from legacy SET_CHANNEL (3) → 0xD003
      */
-    constexpr uint16_t SET_CHANNEL = 0xD005;
+    constexpr uint16_t SET_CHANNEL = MirrorOpcode(LLP::SET_CHANNEL);  // 0xD003
     
     /**
-     * CHANNEL_ACK: Node acknowledges channel selection
+     * GET_BLOCK: Node sends mining template (PUSH!)
      * Direction: Node → Miner
-     * Payload: [channel(1)]  // Confirmed channel
+     * Payload: 228 bytes (12-byte metadata + 216-byte block)
+     * 
+     * Metadata (12 bytes, big-endian):
+     *   [0-3]   nUnifiedHeight  - Overall blockchain height
+     *   [4-7]   nChannelHeight  - Channel-specific height
+     *   [8-11]  nDifficulty     - Mining target (nBits)
+     * 
+     * Block (216 bytes):
+     *   Full serialized block template for mining
+     * 
+     * Mirror-mapped from legacy GET_BLOCK (129) → 0xD081
+     * 
+     * Triggered:
+     * - Immediately after MINER_READY (no polling needed!)
+     * - When blockchain advances (push notification)
      */
-    constexpr uint16_t CHANNEL_ACK = 0xD006;
+    constexpr uint16_t GET_BLOCK = MirrorOpcode(LLP::GET_BLOCK);  // 0xD081
     
-    // ========================================================================
-    // SUBSCRIPTION (0xD007)
-    // ========================================================================
+    /**
+     * BLOCK_ACCEPTED: Node accepts submitted block
+     * Direction: Node → Miner
+     * Payload: None or [height(4)][hash(32)] (optional)
+     * Mirror-mapped from legacy BLOCK_ACCEPTED (200) → 0xD0C8
+     */
+    constexpr uint16_t BLOCK_ACCEPTED = MirrorOpcode(LLP::BLOCK_ACCEPTED);  // 0xD0C8
+    
+    /**
+     * BLOCK_REJECTED: Node rejects submitted block
+     * Direction: Node → Miner
+     * Payload: [reason(1)]
+     * Mirror-mapped from legacy BLOCK_REJECTED (201) → 0xD0C9
+     */
+    constexpr uint16_t BLOCK_REJECTED = MirrorOpcode(LLP::BLOCK_REJECTED);  // 0xD0C9
+    
+    /**
+     * MINER_SET_REWARD: Miner sends encrypted reward address
+     * Direction: Miner → Node
+     * Payload (ChaCha20 encrypted): [encrypted_address(32)]
+     * Mirror-mapped from legacy MINER_SET_REWARD (213) → 0xD0D5
+     */
+    constexpr uint16_t MINER_SET_REWARD = MirrorOpcode(LLP::MINER_SET_REWARD);  // 0xD0D5
+    
+    /**
+     * MINER_REWARD_RESULT: Node confirms reward binding
+     * Direction: Node → Miner
+     * Payload (ChaCha20 encrypted): [status(1)][msg_len(1)][message(optional)]
+     * Mirror-mapped from legacy MINER_REWARD_RESULT (214) → 0xD0D6
+     */
+    constexpr uint16_t MINER_REWARD_RESULT = MirrorOpcode(LLP::MINER_REWARD_RESULT);  // 0xD0D6
     
     /**
      * MINER_READY: Miner subscribes to push notifications
@@ -399,77 +472,36 @@ namespace StatelessMining {
      * 
      * Response:
      * - Node sends GET_BLOCK immediately (228-byte template)
-     * - Then sends NEW_BLOCK on every block validation
+     * - Then sends GET_BLOCK on every block validation (push)
+     * 
+     * Mirror-mapped from legacy MINER_READY (216) → 0xD0D8
      */
-    constexpr uint16_t MINER_READY = 0xD007;
-    
-    // ========================================================================
-    // TEMPLATE DELIVERY (0xD008-0xD009) - THE KEY OPCODES!
-    // ========================================================================
+    constexpr uint16_t MINER_READY = MirrorOpcode(LLP::MINER_READY);  // 0xD0D8
     
     /**
-     * GET_BLOCK: Node sends initial mining template (PUSH!)
-     * Direction: Node → Miner
-     * Payload: 228 bytes (12-byte metadata + 216-byte block)
-     * 
-     * Metadata (12 bytes, big-endian):
-     *   [0-3]   nUnifiedHeight  - Overall blockchain height
-     *   [4-7]   nChannelHeight  - Channel-specific height
-     *   [8-11]  nDifficulty     - Mining target (nBits)
-     * 
-     * Block (216 bytes):
-     *   Full serialized block template for mining
-     * 
-     * Triggered:
-     * - Immediately after MINER_READY (no polling needed!)
-     * - When miner requests new work (if needed)
+     * PRIME_BLOCK_AVAILABLE: Node notifies Prime miners of new block
+     * Direction: Node → Miner (Prime channel only)
+     * Payload: 12 bytes (big-endian)
+     *   [0-3]   unified_height (uint32)
+     *   [4-7]   prime_height (uint32)
+     *   [8-11]  difficulty (uint32)
+     * Mirror-mapped from legacy PRIME_BLOCK_AVAILABLE (217) → 0xD0D9
      */
-    constexpr uint16_t GET_BLOCK = 0xD008;
+    constexpr uint16_t PRIME_BLOCK_AVAILABLE = MirrorOpcode(LLP::PRIME_BLOCK_AVAILABLE);  // 0xD0D9
     
     /**
-     * NEW_BLOCK: Node pushes updated template when blockchain advances
-     * Direction: Node → Miner (PUSH!)
-     * Payload: 228 bytes (12-byte metadata + 216-byte block)
-     * 
-     * Same format as GET_BLOCK - node pushes this automatically!
-     * 
-     * Triggered:
-     * - When a new block is validated on the blockchain
-     * - Pushed to ALL subscribed miners (channel-specific)
-     * 
-     * Miner action:
-     * - Abandon current work
-     * - Switch to new template immediately
-     * - Resume mining
+     * HASH_BLOCK_AVAILABLE: Node notifies Hash miners of new block
+     * Direction: Node → Miner (Hash channel only)
+     * Payload: 12 bytes (big-endian)
+     *   [0-3]   unified_height (uint32)
+     *   [4-7]   hash_height (uint32)
+     *   [8-11]  difficulty (uint32)
+     * Mirror-mapped from legacy HASH_BLOCK_AVAILABLE (218) → 0xD0DA
      */
-    constexpr uint16_t NEW_BLOCK = 0xD009;
+    constexpr uint16_t HASH_BLOCK_AVAILABLE = MirrorOpcode(LLP::HASH_BLOCK_AVAILABLE);  // 0xD0DA
     
-    // ========================================================================
-    // SOLUTION SUBMISSION (0xD00A-0xD00C)
-    // ========================================================================
-    
-    /**
-     * SUBMIT_BLOCK: Miner submits solved block
-     * Direction: Miner → Node
-     * Payload: 216 bytes (solved block)
-     */
-    constexpr uint16_t SUBMIT_BLOCK = 0xD00A;
-    
-    /**
-     * BLOCK_ACCEPTED: Node accepts submitted block
-     * Direction: Node → Miner
-     * Payload: None or [height(4)][hash(32)] (optional)
-     */
-    constexpr uint16_t BLOCK_ACCEPTED = 0xD00B;
-    
-    /**
-     * BLOCK_REJECTED: Node rejects submitted block
-     * Direction: Node → Miner
-     * Payload: [reason(1)]
-     * 
-     * Rejection reasons:
-     */
-    constexpr uint16_t BLOCK_REJECTED = 0xD00C;
+    // NOTE: NEW_BLOCK has been removed - the node now reuses GET_BLOCK for both
+    // initial template delivery and push notifications when blockchain advances.
     
     /**
      * @enum RejectionReason

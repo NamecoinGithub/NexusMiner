@@ -5,99 +5,218 @@ Complete reference for all opcodes used in NexusMiner's LLP (Lower Level Protoco
 ## Table of Contents
 
 1. [Opcode Formats](#opcode-formats)
-2. [Stateless Mining Opcodes](#stateless-mining-opcodes)
-3. [Legacy Mining Opcodes](#legacy-mining-opcodes)
-4. [Authentication Opcodes](#authentication-opcodes)
-5. [Session Management](#session-management)
-6. [Block Submission](#block-submission)
+2. [Mirror-Mapped Stateless Opcodes](#mirror-mapped-stateless-opcodes)
+3. [Stateless Mining Opcodes](#stateless-mining-opcodes)
+4. [Legacy Mining Opcodes](#legacy-mining-opcodes)
+5. [Authentication Opcodes](#authentication-opcodes)
+6. [Session Management](#session-management)
+7. [Block Submission](#block-submission)
 
 ---
 
 ## Opcode Formats
 
-### Stateless Protocol (Modern)
+### Mirror-Mapped Stateless Protocol (Modern)
 - **Type:** uint16_t (2 bytes)
 - **Range:** 0xD000 - 0xD0FF
-- **Byte Order:** Little-endian
-- **Introduced:** LLL-TAO PR #170, NexusMiner v1.5+
+- **Formula:** `statelessOpcode = 0xD000 | legacyOpcode`
+- **Byte Order:** Big-endian (network order)
+- **Introduced:** LLL-TAO PR #198, NexusMiner v1.6+
+- **Port-Based Selection:** Automatically selected when connecting to stateless mining port
+
+**Mirror Mapping Examples:**
+```
+Legacy (uint8_t)  →  Stateless (uint16_t)
+─────────────────────────────────────────
+SUBMIT_BLOCK (1)   →  0xD001
+SET_CHANNEL (3)    →  0xD003
+GET_BLOCK (129)    →  0xD081
+BLOCK_ACCEPTED (200) → 0xD0C8
+BLOCK_REJECTED (201) → 0xD0C9
+MINER_SET_REWARD (213) → 0xD0D5
+MINER_REWARD_RESULT (214) → 0xD0D6
+MINER_READY (216)  →  0xD0D8
+```
 
 ### Legacy Protocol
 - **Type:** uint8_t (1 byte)
 - **Range:** 0x00 - 0xFF
 - **Byte Order:** N/A (single byte)
 - **Compatibility:** All versions
+- **Port-Based Selection:** Used when connecting to legacy mining port
+
+### Protocol Selection
+
+**Port-Based Lane Separation (Strict):**
+- **Stateless Port:** All packets use 16-bit mirror-mapped opcodes (0xD000-0xD0FF)
+- **Legacy Port:** All packets use 8-bit legacy opcodes (0x00-0xFF)
+- **No Fallback:** Wrong framing type on a port results in disconnection
+- **Detection:** Protocol mode determined by connected port at connection time
+
+**Wire Format Comparison:**
+```
+Legacy Packet:
+┌────────┬────────────┬────────────┐
+│Header  │  Length    │   Data     │
+│(1 byte)│  (4 bytes) │ (variable) │
+└────────┴────────────┴────────────┘
+
+Stateless Packet:
+┌────────┬────────────┬────────────┐
+│Header  │  Length    │   Data     │
+│(2 bytes)│ (4 bytes) │ (variable) │
+└────────┴────────────┴────────────┘
+```
+
+---
+
+## Mirror-Mapped Stateless Opcodes
+
+### Core Mining Operations
+
+#### SUBMIT_BLOCK (0xD001)
+**Direction:** Miner → Node  
+**Mirror-Mapped From:** Legacy SUBMIT_BLOCK (1)  
+**Description:** Submit solved block to node  
+**Introduced:** v1.6+ (mirror-mapped)
+
+**Packet Format:**
+```
+┌─────────────────────────────────────────────────────────┐
+│ Opcode (2)     │ 0xD001 (big-endian)                    │
+├─────────────────────────────────────────────────────────┤
+│ Length (4)     │ 216 (block size)                       │
+├─────────────────────────────────────────────────────────┤
+│ Block (216)    │ ChaCha20 encrypted solved block        │
+│                │ AAD: empty (no domain separation)       │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### GET_BLOCK (0xD081)
+**Direction:** Node → Miner  
+**Mirror-Mapped From:** Legacy GET_BLOCK (129)  
+**Description:** Node pushes mining template (replaces both GET_BLOCK and NEW_BLOCK)  
+**Introduced:** v1.6+ (mirror-mapped)
+
+**Packet Format:**
+```
+┌─────────────────────────────────────────────────────────┐
+│ Opcode (2)     │ 0xD081 (big-endian)                    │
+├─────────────────────────────────────────────────────────┤
+│ Length (4)     │ 228 (12 metadata + 216 block)          │
+├─────────────────────────────────────────────────────────┤
+│ Metadata (12)  │ [unified_height(4)][channel_height(4)] │
+│                │ [difficulty(4)] (all big-endian)       │
+├─────────────────────────────────────────────────────────┤
+│ Block (216)    │ Mining template (Tritium format)       │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Push Behavior:**
+- Sent immediately after MINER_READY
+- Re-sent automatically when blockchain advances
+- No separate NEW_BLOCK opcode in mirror-mapped protocol
+
+---
+
+#### BLOCK_ACCEPTED (0xD0C8)
+**Direction:** Node → Miner  
+**Mirror-Mapped From:** Legacy BLOCK_ACCEPTED (200)  
+**Description:** Block submission accepted  
+
+---
+
+#### BLOCK_REJECTED (0xD0C9)
+**Direction:** Node → Miner  
+**Mirror-Mapped From:** Legacy BLOCK_REJECTED (201)  
+**Description:** Block submission rejected  
+
+**Packet Format:**
+```
+┌─────────────────────────────────────────────────────────┐
+│ Opcode (2)     │ 0xD0C9                                 │
+├─────────────────────────────────────────────────────────┤
+│ Reason (1)     │ Rejection reason code                  │
+│                │ 0x01: STALE                            │
+│                │ 0x02: INVALID_POW                      │
+│                │ 0x03: INVALID_SIG                      │
+│                │ 0x04: DUPLICATE                        │
+│                │ 0x05: FORK                             │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### MINER_READY (0xD0D8)
+**Direction:** Miner → Node  
+**Mirror-Mapped From:** Legacy MINER_READY (216)  
+**Description:** Subscribe to push notifications  
+**Introduced:** v1.6+ (mirror-mapped)
+
+**Packet Format:**
+```
+┌─────────────────────────────────────────────────────────┐
+│ Opcode (2)     │ 0xD0D8 (big-endian)                    │
+├─────────────────────────────────────────────────────────┤
+│ Length (4)     │ 0 (header-only packet)                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Requirements:**
+- Must be sent AFTER successful authentication
+- Must be sent AFTER SET_CHANNEL
+
+**Response:**
+- Node sends GET_BLOCK (0xD081) immediately
+- Then pushes GET_BLOCK on every block validation
+
+---
+
+#### MINER_SET_REWARD (0xD0D5)
+**Direction:** Miner → Node  
+**Mirror-Mapped From:** Legacy MINER_SET_REWARD (213)  
+**Description:** Set encrypted reward address  
+
+**Packet Format:**
+```
+┌─────────────────────────────────────────────────────────┐
+│ Opcode (2)     │ 0xD0D5                                 │
+├─────────────────────────────────────────────────────────┤
+│ Nonce (12)     │ ChaCha20 nonce                         │
+├─────────────────────────────────────────────────────────┤
+│ Encrypted (48) │ ChaCha20 encrypted address + tag       │
+│                │ AAD: "REWARD_ADDRESS"                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### MINER_REWARD_RESULT (0xD0D6)
+**Direction:** Node → Miner  
+**Mirror-Mapped From:** Legacy MINER_REWARD_RESULT (214)  
+**Description:** Reward binding result  
+
+---
+
+#### SET_CHANNEL (0xD003)
+**Direction:** Miner → Node  
+**Mirror-Mapped From:** Legacy SET_CHANNEL (3)  
+**Description:** Set mining channel (1=Prime, 2=Hash)  
 
 ---
 
 ## Stateless Mining Opcodes
 
-### Authentication Opcodes (0xD000-0xD001)
+### Removed Opcodes (v1.6+)
 
-#### MINER_AUTH (0xD000)
-**Direction:** Miner → Node  
-**Description:** Genesis-first authentication packet  
-**Introduced:** v1.5+
+The following opcodes were removed in the mirror-mapped protocol as they are now redundant:
 
-**Packet Format:**
-```
-┌─────────────────────────────────────────────────────────┐
-│ Opcode (2)  │ 0xD000                                    │
-├─────────────────────────────────────────────────────────┤
-│ Genesis (32) │ Tritium account genesis hash             │
-├─────────────────────────────────────────────────────────┤
-│ Pubkey Len (2) │ Length of Falcon public key (897/925)  │
-├─────────────────────────────────────────────────────────┤
-│ Falcon Pubkey │ Falcon-512/1024 public key              │
-│ (897/925/1793) │ (may be ChaCha20 wrapped)              │
-├─────────────────────────────────────────────────────────┤
-│ Miner ID Len (2) │ Length of miner ID string            │
-├─────────────────────────────────────────────────────────┤
-│ Miner ID (var) │ Miner identification string            │
-│                │ (e.g., "NexusMiner")                   │
-└─────────────────────────────────────────────────────────┘
-```
-
-**Notes:**
-- Genesis hash sent FIRST enables key derivation
-- ChaCha20 wrapping auto-enabled for remote mining
-- Session key = SHA256("nexus-mining-chacha20-v1" || genesis)
-
-**See:** [docs/current/authentication/genesis-first-protocol.md](../current/authentication/genesis-first-protocol.md)
+- **NEW_BLOCK:** Removed - node now reuses GET_BLOCK (0xD081) for push notifications
+- **Sequential opcodes (0xD007-0xD00C):** Replaced by mirror-mapped versions
 
 ---
-
-#### MINER_AUTH_RESPONSE (0xD001)
-**Direction:** Node → Miner  
-**Description:** Authentication result and session establishment  
-**Introduced:** v1.5+
-
-**Packet Format:**
-```
-┌─────────────────────────────────────────────────────────┐
-│ Opcode (2)     │ 0xD001                                 │
-├─────────────────────────────────────────────────────────┤
-│ Success (1)    │ 1 = success, 0 = failure               │
-├─────────────────────────────────────────────────────────┤
-│ Session ID (32) │ Unique session identifier             │
-├─────────────────────────────────────────────────────────┤
-│ Nonce (12)     │ ChaCha20 nonce for challenge           │
-├─────────────────────────────────────────────────────────┤
-│ Challenge (64) │ Encrypted challenge data (future use)  │
-└─────────────────────────────────────────────────────────┘
-```
-
-**Response Codes:**
-- `success = 1`: Authentication successful, session established
-- `success = 0`: Authentication failed (invalid keys, genesis, etc.)
-
----
-
-### Mining Protocol Opcodes (0xD007-0xD009)
-
-#### MINER_READY (0xD007)
-**Direction:** Miner → Node  
-**Description:** Signal stateless protocol support  
-**Introduced:** v1.5+
 
 **Packet Format:**
 ```
