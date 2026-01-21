@@ -1,0 +1,472 @@
+/**
+ * @file packet_framing_test.cpp
+ * @brief Unit test harness for LLP packet framing parser with TCP fragmentation
+ * 
+ * Tests the accumulator-based packet parser with various TCP fragmentation scenarios:
+ * - Partial headers split across multiple receives
+ * - Partial length fields split across receives
+ * - Partial payload data split across receives
+ * - Multiple packets arriving in single receive
+ * - Malformed packet detection
+ * 
+ * Run this test to verify TCP stream handling robustness.
+ */
+
+#include "packet.hpp"
+#include "protocol_lane.hpp"
+#include <iostream>
+#include <iomanip>
+#include <cassert>
+#include <vector>
+#include <deque>
+#include <sstream>
+
+using namespace nexusminer;
+
+// Test statistics
+static int tests_run = 0;
+static int tests_passed = 0;
+static int tests_failed = 0;
+
+void print_test_result(const char* name, bool passed) {
+    tests_run++;
+    if (passed) {
+        tests_passed++;
+        std::cout << "  [PASS] " << name << std::endl;
+    } else {
+        tests_failed++;
+        std::cout << "  [FAIL] " << name << std::endl;
+    }
+}
+
+void print_hex(const std::vector<uint8_t>& data, size_t max_bytes = 32) {
+    std::ostringstream ss;
+    ss << std::hex << std::setfill('0');
+    for (size_t i = 0; i < std::min(data.size(), max_bytes); ++i) {
+        if (i > 0) ss << " ";
+        ss << std::setw(2) << static_cast<unsigned>(data[i]);
+    }
+    if (data.size() > max_bytes) {
+        ss << "...";
+    }
+    std::cout << "    Data: " << ss.str() << " (" << data.size() << " bytes)" << std::endl;
+}
+
+/**
+ * Simulates TCP receive accumulator behavior
+ */
+class TestAccumulator {
+public:
+    std::deque<uint8_t> buffer;
+    
+    void feed(const std::vector<uint8_t>& data) {
+        buffer.insert(buffer.end(), data.begin(), data.end());
+    }
+    
+    bool parse_one_packet(ProtocolLane lane, Packet& out_packet, ParseResult& out_result) {
+        if (buffer.empty()) {
+            return false;
+        }
+        
+        // Create view for parsing
+        std::vector<uint8_t> view(buffer.begin(), buffer.end());
+        auto view_shared = std::make_shared<network::Payload>(std::move(view));
+        
+        std::size_t bytes_consumed = 0;
+        out_packet = extract_packet_from_buffer_with_result(
+            view_shared, bytes_consumed, 0, lane, out_result);
+        
+        if (out_result == ParseResult::SUCCESS) {
+            // Remove consumed bytes
+            buffer.erase(buffer.begin(), buffer.begin() + bytes_consumed);
+            return true;
+        } else if (out_result == ParseResult::MALFORMED) {
+            buffer.clear(); // Simulate disconnect
+            return false;
+        }
+        
+        // NEED_MORE_DATA - keep buffer intact
+        return false;
+    }
+    
+    size_t size() const { return buffer.size(); }
+    bool empty() const { return buffer.empty(); }
+    void clear() { buffer.clear(); }
+};
+
+// ============================================================================
+// Test Case 1: Complete packet in single receive
+// ============================================================================
+void test_complete_packet_single_receive() {
+    std::cout << "\nTest 1: Complete packet in single receive" << std::endl;
+    
+    TestAccumulator acc;
+    
+    // Legacy packet: header=0x01, length=5, data="hello"
+    std::vector<uint8_t> complete_packet = {
+        0x01,                           // header
+        0x00, 0x00, 0x00, 0x05,        // length = 5
+        'h', 'e', 'l', 'l', 'o'        // data
+    };
+    
+    acc.feed(complete_packet);
+    
+    Packet packet;
+    ParseResult result;
+    bool parsed = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    
+    bool test_passed = parsed && 
+                       (result == ParseResult::SUCCESS) &&
+                       (packet.m_header == 0x01) &&
+                       (packet.m_length == 5) &&
+                       acc.empty();
+    
+    print_test_result("Complete packet parsed successfully", test_passed);
+}
+
+// ============================================================================
+// Test Case 2: Header + length split across receives
+// ============================================================================
+void test_header_fragmented() {
+    std::cout << "\nTest 2: Header + length split across multiple receives" << std::endl;
+    
+    TestAccumulator acc;
+    
+    // First receive: header + first 2 bytes of length field (incomplete)
+    acc.feed({0x02, 0x00, 0x00});
+    
+    Packet packet;
+    ParseResult result;
+    
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 3);
+    print_test_result("Incomplete length field triggers NEED_MORE_DATA", test1);
+    
+    // Second receive: rest of length + data
+    acc.feed({0x00, 0x03, 'a', 'b', 'c'});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = parsed2 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0x02) &&
+                 (packet.m_length == 3) &&
+                 acc.empty();
+    print_test_result("Complete packet after split length field", test2);
+}
+
+// ============================================================================
+// Test Case 3: Payload split across receives
+// ============================================================================
+void test_payload_fragmented() {
+    std::cout << "\nTest 3: Payload split across multiple receives" << std::endl;
+    
+    TestAccumulator acc;
+    
+    // First receive: header + length
+    acc.feed({0x03, 0x00, 0x00, 0x00, 0x0A}); // length = 10 bytes
+    
+    Packet packet;
+    ParseResult result;
+    
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA);
+    print_test_result("Header+length without payload triggers NEED_MORE_DATA", test1);
+    
+    // Second receive: first 5 bytes of payload
+    acc.feed({'a', 'b', 'c', 'd', 'e'});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = !parsed2 && (result == ParseResult::NEED_MORE_DATA);
+    print_test_result("Partial payload triggers NEED_MORE_DATA", test2);
+    
+    // Third receive: remaining 5 bytes
+    acc.feed({'f', 'g', 'h', 'i', 'j'});
+    
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test3 = parsed3 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_length == 10) &&
+                 acc.empty();
+    print_test_result("Complete payload after fragmentation", test3);
+}
+
+// ============================================================================
+// Test Case 4: Multiple packets in single receive
+// ============================================================================
+void test_multiple_packets_single_receive() {
+    std::cout << "\nTest 4: Multiple packets in single receive" << std::endl;
+    
+    TestAccumulator acc;
+    
+    // Two complete packets back-to-back
+    std::vector<uint8_t> two_packets = {
+        // Packet 1: header=0x04, length=3, data="xyz"
+        0x04, 0x00, 0x00, 0x00, 0x03, 'x', 'y', 'z',
+        // Packet 2: header=0x05, length=2, data="ab"
+        0x05, 0x00, 0x00, 0x00, 0x02, 'a', 'b'
+    };
+    
+    acc.feed(two_packets);
+    
+    // Parse first packet
+    Packet packet1;
+    ParseResult result1;
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet1, result1);
+    bool test1 = parsed1 && (packet1.m_header == 0x04) && (packet1.m_length == 3);
+    print_test_result("First packet parsed from batch", test1);
+    
+    // Parse second packet
+    Packet packet2;
+    ParseResult result2;
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet2, result2);
+    bool test2 = parsed2 && (packet2.m_header == 0x05) && (packet2.m_length == 2) && acc.empty();
+    print_test_result("Second packet parsed from batch", test2);
+}
+
+// ============================================================================
+// Test Case 5: Stateless lane with 16-bit header fragmentation
+// ============================================================================
+void test_stateless_header_fragmented() {
+    std::cout << "\nTest 5: Stateless lane - 16-bit header fragmented" << std::endl;
+    
+    TestAccumulator acc;
+    
+    // First receive: only first byte of 16-bit header
+    acc.feed({0xD0});
+    
+    Packet packet;
+    ParseResult result;
+    
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
+    print_test_result("Partial 16-bit header triggers NEED_MORE_DATA", test1);
+    
+    // Second receive: second byte of header + partial length
+    acc.feed({0x01, 0x00, 0x00});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test2 = !parsed2 && (result == ParseResult::NEED_MORE_DATA);
+    print_test_result("Incomplete length field in stateless", test2);
+    
+    // Third receive: complete length + data
+    acc.feed({0x00, 0x04, 't', 'e', 's', 't'});
+    
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test3 = parsed3 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD001) &&
+                 (packet.m_length == 4) &&
+                 acc.empty();
+    print_test_result("Stateless packet after multiple receives", test3);
+}
+
+// ============================================================================
+// Test Case 6: Malformed packet - unreasonably large length
+// ============================================================================
+void test_malformed_huge_length() {
+    std::cout << "\nTest 6: Malformed packet - unreasonably large length" << std::endl;
+    
+    TestAccumulator acc;
+    
+    // Packet with 100MB length (exceeds 10MB limit)
+    std::vector<uint8_t> malformed = {
+        0x10,                           // header
+        0x06, 0x40, 0x00, 0x00         // length = 100MB
+    };
+    
+    acc.feed(malformed);
+    
+    Packet packet;
+    ParseResult result;
+    bool parsed = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    
+    bool test_passed = !parsed && 
+                       (result == ParseResult::MALFORMED) &&
+                       acc.empty(); // Buffer cleared on malformed
+    
+    print_test_result("Huge length detected as malformed", test_passed);
+}
+
+// ============================================================================
+// Test Case 7: Malformed - invalid stateless opcode
+// ============================================================================
+void test_malformed_invalid_stateless_opcode() {
+    std::cout << "\nTest 7: Malformed - invalid stateless opcode" << std::endl;
+    
+    TestAccumulator acc;
+    
+    // Invalid opcode for stateless lane (not in 0xD000-0xD0FF range)
+    std::vector<uint8_t> malformed = {
+        0x00, 0x01,                    // header = 0x0001 (not stateless)
+        0x00, 0x00, 0x00, 0x00         // length = 0
+    };
+    
+    acc.feed(malformed);
+    
+    Packet packet;
+    ParseResult result;
+    bool parsed = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    
+    bool test_passed = !parsed && 
+                       (result == ParseResult::MALFORMED) &&
+                       acc.empty();
+    
+    print_test_result("Invalid stateless opcode detected", test_passed);
+}
+
+// ============================================================================
+// Test Case 8: Complex scenario - mixed fragmentation and batching
+// ============================================================================
+void test_complex_mixed_scenario() {
+    std::cout << "\nTest 8: Complex scenario - mixed fragmentation and batching" << std::endl;
+    
+    TestAccumulator acc;
+    
+    // Simulate realistic TCP stream:
+    // Receive 1: Partial packet 1
+    acc.feed({0x20, 0x00, 0x00});
+    
+    Packet packet;
+    ParseResult result;
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA);
+    print_test_result("Partial first packet", test1);
+    
+    // Receive 2: Rest of packet 1 + complete packet 2 + partial packet 3
+    acc.feed({
+        0x00, 0x02, 'A', 'B',          // Complete packet 1
+        0x21, 0x00, 0x00, 0x00, 0x01, 'X',  // Complete packet 2
+        0x22, 0x00                     // Partial packet 3
+    });
+    
+    // Parse packet 1
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = parsed2 && (packet.m_header == 0x20) && (packet.m_length == 2);
+    print_test_result("First packet completed", test2);
+    
+    // Parse packet 2
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test3 = parsed3 && (packet.m_header == 0x21) && (packet.m_length == 1);
+    print_test_result("Second packet completed", test3);
+    
+    // Try to parse packet 3 (incomplete)
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test4 = !parsed4 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 2);
+    print_test_result("Third packet incomplete", test4);
+    
+    // Receive 3: Complete packet 3
+    acc.feed({0x00, 0x00, 0x03, 'a', 'b', 'c'});
+    
+    bool parsed5 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test5 = parsed5 && (packet.m_header == 0x22) && (packet.m_length == 3) && acc.empty();
+    print_test_result("Third packet completed", test5);
+}
+
+// ============================================================================
+// Test Case 9: Byte-by-byte feeding (extreme fragmentation)
+// ============================================================================
+void test_byte_by_byte_feeding() {
+    std::cout << "\nTest 9: Extreme fragmentation - byte-by-byte feeding" << std::endl;
+    
+    TestAccumulator acc;
+    
+    // Build a packet byte by byte
+    // Start with at least 2 bytes to avoid header-only packet interpretation
+    std::vector<uint8_t> complete_packet = {
+        0x30, 0x00, 0x00, 0x00, 0x05, 'h', 'e', 'l', 'l', 'o'
+    };
+    
+    Packet packet;
+    ParseResult result;
+    
+    // Feed first two bytes together (header + start of length)
+    acc.feed({complete_packet[0], complete_packet[1]});
+    bool parsed0 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    if (parsed0 || result != ParseResult::NEED_MORE_DATA) {
+        print_test_result("Byte-by-byte feeding - initial state", false);
+        return;
+    }
+    
+    // Feed remaining bytes one at a time
+    for (size_t i = 2; i < complete_packet.size() - 1; ++i) {
+        acc.feed({complete_packet[i]});
+        bool parsed = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+        
+        if (parsed || result != ParseResult::NEED_MORE_DATA) {
+            print_test_result("Byte-by-byte feeding - intermediate", false);
+            return;
+        }
+    }
+    
+    // Feed last byte
+    acc.feed({complete_packet.back()});
+    bool parsed = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    
+    bool test_passed = parsed && 
+                       (result == ParseResult::SUCCESS) &&
+                       (packet.m_header == 0x30) &&
+                       (packet.m_length == 5) &&
+                       acc.empty();
+    
+    print_test_result("Byte-by-byte feeding completes successfully", test_passed);
+}
+
+// ============================================================================
+// Test Case 10: Zero-length payload
+// ============================================================================
+void test_zero_length_payload() {
+    std::cout << "\nTest 10: Zero-length payload packet" << std::endl;
+    
+    TestAccumulator acc;
+    
+    // Packet with zero-length payload
+    std::vector<uint8_t> zero_packet = {
+        0x40, 0x00, 0x00, 0x00, 0x00   // header + length=0
+    };
+    
+    acc.feed(zero_packet);
+    
+    Packet packet;
+    ParseResult result;
+    bool parsed = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    
+    bool test_passed = parsed && 
+                       (result == ParseResult::SUCCESS) &&
+                       (packet.m_header == 0x40) &&
+                       (packet.m_length == 0) &&
+                       acc.empty();
+    
+    print_test_result("Zero-length payload handled correctly", test_passed);
+}
+
+// ============================================================================
+// Main test runner
+// ============================================================================
+int main() {
+    std::cout << "========================================" << std::endl;
+    std::cout << "LLP Packet Framing Test Suite" << std::endl;
+    std::cout << "Testing TCP fragmentation handling" << std::endl;
+    std::cout << "========================================" << std::endl;
+    
+    test_complete_packet_single_receive();
+    test_header_fragmented();
+    test_payload_fragmented();
+    test_multiple_packets_single_receive();
+    test_stateless_header_fragmented();
+    test_malformed_huge_length();
+    test_malformed_invalid_stateless_opcode();
+    test_complex_mixed_scenario();
+    test_byte_by_byte_feeding();
+    test_zero_length_payload();
+    
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "Test Summary" << std::endl;
+    std::cout << "========================================" << std::endl;
+    std::cout << "Tests run:    " << tests_run << std::endl;
+    std::cout << "Tests passed: " << tests_passed << std::endl;
+    std::cout << "Tests failed: " << tests_failed << std::endl;
+    std::cout << "Success rate: " << (tests_run > 0 ? (100 * tests_passed / tests_run) : 0) << "%" << std::endl;
+    std::cout << "========================================" << std::endl;
+    
+    return (tests_failed == 0) ? 0 : 1;
+}
