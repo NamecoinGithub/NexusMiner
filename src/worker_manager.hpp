@@ -10,6 +10,7 @@
 #include "stats/stats_printer.hpp"
 
 #include <memory>
+#include <deque>
 
 namespace asio { class io_context; }
 
@@ -53,7 +54,8 @@ private:
     std::shared_ptr<protocol::Protocol> m_miner_protocol;
     
     // Persistent receive accumulator for TCP stream reassembly
-    std::vector<uint8_t> m_rx_accumulator;
+    // Using deque for O(1) front removal when consuming packets
+    std::deque<uint8_t> m_rx_accumulator;
 
     std::vector<std::shared_ptr<stats::Printer>> m_stats_printers;
     std::vector<std::shared_ptr<Worker>> m_workers;

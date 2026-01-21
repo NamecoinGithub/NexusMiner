@@ -26,6 +26,10 @@ namespace nexusminer
 		// Invalid header marker for error conditions
 		static constexpr uint16_t INVALID_HEADER = 0xFFFF;
 		
+		// Maximum reasonable packet payload length (sanity check to detect malformed data)
+		// 10MB should be more than sufficient for any legitimate mining packet
+		static constexpr uint32_t MAX_REASONABLE_LENGTH = 10 * 1024 * 1024;
+		
 		// Minimum legacy auth/session opcode (CHANNEL_ACK = 206)
 		// Opcodes 206-255 are always legacy single-byte format, never stateless
 		static constexpr uint8_t LEGACY_AUTH_OPCODE_MIN = 206;
@@ -1003,8 +1007,7 @@ namespace nexusminer
 			                              ((*buffer)[start_index + 4]);
 			
 			// Sanity check: unreasonably large length indicates malformed data
-			constexpr std::uint32_t MAX_REASONABLE_LENGTH = 10 * 1024 * 1024; // 10MB
-			if (length > MAX_REASONABLE_LENGTH)
+			if (length > PacketConstants::MAX_REASONABLE_LENGTH)
 			{
 				result = ParseResult::MALFORMED;
 				return packet;
@@ -1083,8 +1086,7 @@ namespace nexusminer
 			                              ((*buffer)[start_index + 5]);
 			
 			// Sanity check: unreasonably large length indicates malformed data
-			constexpr std::uint32_t MAX_REASONABLE_LENGTH = 10 * 1024 * 1024; // 10MB
-			if (length > MAX_REASONABLE_LENGTH)
+			if (length > PacketConstants::MAX_REASONABLE_LENGTH)
 			{
 				result = ParseResult::MALFORMED;
 				return packet;
