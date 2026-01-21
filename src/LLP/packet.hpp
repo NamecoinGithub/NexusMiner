@@ -13,6 +13,45 @@
 
 namespace nexusminer
 {
+	/**
+	 * Protocol Lane: Determines packet framing and behavior based on connection port
+	 * 
+	 * STRICT PORT-LANE SEPARATION:
+	 * - Port 8323: Legacy lane (8-bit header, polling behavior)
+	 * - Port 9323 and others: Stateless lane (16-bit header, push behavior)
+	 * - NO fallback between lanes
+	 */
+	enum class ProtocolLane : uint8_t {
+		UNKNOWN = 0,    // Lane not yet determined (error state)
+		LEGACY = 1,     // Port 8323: 8-bit header, polling (GET_ROUND/GET_BLOCK)
+		STATELESS = 2   // Port 9323+: 16-bit header, push (STATELESS_GET_BLOCK pushes)
+	};
+	
+	// Port constants for lane determination
+	namespace ProtocolPorts {
+		static constexpr uint16_t LEGACY_PORT = 8323;
+	}
+	
+	/**
+	 * Determine protocol lane from remote port
+	 * @param port Remote server port
+	 * @return LEGACY if port == 8323, STATELESS otherwise
+	 */
+	inline ProtocolLane determine_lane_from_port(uint16_t port) {
+		return (port == ProtocolPorts::LEGACY_PORT) ? ProtocolLane::LEGACY : ProtocolLane::STATELESS;
+	}
+	
+	/**
+	 * Get human-readable lane name for logging
+	 */
+	inline const char* get_lane_name(ProtocolLane lane) {
+		switch(lane) {
+			case ProtocolLane::LEGACY: return "Legacy";
+			case ProtocolLane::STATELESS: return "Stateless";
+			default: return "Unknown";
+		}
+	}
+	
 	// Packet protocol constants
 	namespace PacketConstants {
 		// Invalid header marker for error conditions
@@ -762,6 +801,146 @@ namespace nexusminer
 			}
 		}
 
+		return packet;
+	}
+
+	/**
+	 * Lane-aware packet extraction with strict protocol enforcement
+	 * 
+	 * STRICT LANE SEPARATION (no heuristic detection):
+	 * - LEGACY lane: Always parse 8-bit header (1-byte opcode)
+	 * - STATELESS lane: Always parse 16-bit header (2-byte opcode)
+	 * 
+	 * @param buffer Raw buffer containing packet data
+	 * @param remaining_size Output parameter for bytes remaining after packet
+	 * @param start_index Starting position in buffer
+	 * @param lane Protocol lane (determines header width)
+	 * @return Parsed packet (m_is_valid = false on error)
+	 */
+	inline Packet extract_packet_from_buffer_with_lane(
+		network::Shared_payload buffer, 
+		std::size_t& remaining_size, 
+		std::size_t start_index,
+		ProtocolLane lane)
+	{
+		Packet packet;
+		remaining_size = 0;
+		
+		if (!buffer || buffer->empty() || start_index >= buffer->size())
+		{
+			return packet;
+		}
+		
+		auto const buffer_start = buffer->begin() + start_index;
+		auto const buffer_size = std::distance(buffer_start, buffer->end());
+		
+		if (lane == ProtocolLane::LEGACY)
+		{
+			// LEGACY LANE: Always 8-bit header
+			// Format: [header:1B][length:4B][data]
+			packet.m_is_uint16_opcode = false;
+			uint8_t header_byte = (*buffer)[start_index];
+			packet.m_header = header_byte;
+			
+			if (buffer_size == 1)
+			{
+				packet.m_is_valid = true;
+				packet.m_length = 0;
+				remaining_size = 0;
+				return packet;
+			}
+			else if (buffer_size < 5)
+			{
+				// Not enough data for length field
+				packet.m_is_valid = false;
+				return packet;
+			}
+			else
+			{
+				// Parse length (4 bytes, big-endian)
+				std::uint32_t const length = ((*buffer)[start_index + 1] << 24) + 
+				                              ((*buffer)[start_index + 2] << 16) + 
+				                              ((*buffer)[start_index + 3] << 8) + 
+				                              ((*buffer)[start_index + 4]);
+				
+				if (length > std::distance(buffer_start + 5, buffer->end()))
+				{
+					packet.m_is_valid = false;
+					return packet;
+				}
+				
+				packet.m_is_valid = true;
+				packet.m_length = length;
+				if (length > 0)
+				{
+					packet.m_data = std::make_shared<network::Payload>(
+						buffer_start + 5, buffer_start + 5 + length);
+				}
+				remaining_size = buffer_size - (5 + length);
+			}
+		}
+		else if (lane == ProtocolLane::STATELESS)
+		{
+			// STATELESS LANE: Always 16-bit header
+			// Format: [header:2B][length:4B][data]
+			packet.m_is_uint16_opcode = true;
+			
+			if (buffer_size < 2)
+			{
+				// Not enough data for 2-byte header
+				packet.m_is_valid = false;
+				return packet;
+			}
+			
+			// Parse 2-byte header (big-endian)
+			uint16_t header16 = (static_cast<uint16_t>((*buffer)[start_index]) << 8) |
+			                    static_cast<uint16_t>((*buffer)[start_index + 1]);
+			packet.m_header = header16;
+			
+			if (buffer_size == 2)
+			{
+				// Header-only packet
+				packet.m_is_valid = true;
+				packet.m_length = 0;
+				remaining_size = 0;
+				return packet;
+			}
+			else if (buffer_size < 6)
+			{
+				// Not enough data for length field
+				packet.m_is_valid = false;
+				return packet;
+			}
+			else
+			{
+				// Parse length (4 bytes, big-endian)
+				std::uint32_t const length = ((*buffer)[start_index + 2] << 24) + 
+				                              ((*buffer)[start_index + 3] << 16) + 
+				                              ((*buffer)[start_index + 4] << 8) + 
+				                              ((*buffer)[start_index + 5]);
+				
+				if (length > std::distance(buffer_start + 6, buffer->end()))
+				{
+					packet.m_is_valid = false;
+					return packet;
+				}
+				
+				packet.m_is_valid = true;
+				packet.m_length = length;
+				if (length > 0)
+				{
+					packet.m_data = std::make_shared<network::Payload>(
+						buffer_start + 6, buffer_start + 6 + length);
+				}
+				remaining_size = buffer_size - (6 + length);
+			}
+		}
+		else
+		{
+			// UNKNOWN lane - error
+			packet.m_is_valid = false;
+		}
+		
 		return packet;
 	}
 

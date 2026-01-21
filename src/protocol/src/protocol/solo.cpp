@@ -119,6 +119,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_current_poll_interval_ms{POLL_INTERVAL_MIN_MS}  // Start at minimum interval (5s)
 , m_needs_initial_round_check{false}  // No template yet
 , m_template_unified_height{0}  // No template yet
+, m_protocol_lane{ProtocolLane::UNKNOWN}  // Will be determined from connection port
 , m_stateless_protocol_active{false}  // Start with stateless protocol inactive
 , m_waiting_for_stateless_response{false}  // Not waiting initially
 , m_miner_ready_sent_time_ns{0}  // Will be set when MINER_READY is sent (nanoseconds since epoch)
@@ -909,9 +910,50 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     // Store connection for multi-packet authentication flow
     if (connection) {
         m_connection = connection;
+        
+        // Initialize protocol lane from connection port (once, on first message)
+        if (m_protocol_lane == ProtocolLane::UNKNOWN) {
+            initialize_protocol_lane(connection);
+        }
     }
     
-    // Check for stateless protocol timeout (protocol negotiation)
+    // ═══════════════════════════════════════════════════════════════════════
+    // STRICT LANE VALIDATION (NO FALLBACK)
+    // ═══════════════════════════════════════════════════════════════════════
+    // Validate that received packet matches expected lane framing
+    if (m_protocol_lane != ProtocolLane::UNKNOWN) {
+        bool expected_uint16 = (m_protocol_lane == ProtocolLane::STATELESS);
+        bool received_uint16 = packet.m_is_uint16_opcode;
+        
+        if (expected_uint16 != received_uint16) {
+            // LANE MISMATCH: Server speaking wrong protocol on this port
+            auto const& remote_ep = connection->remote_endpoint();
+            m_logger->error("═══════════════════════════════════════════════════════════");
+            m_logger->error("PROTOCOL LANE MISMATCH - DISCONNECTING");
+            m_logger->error("═══════════════════════════════════════════════════════════");
+            m_logger->error("Remote:          {}", remote_ep.to_string());
+            m_logger->error("Remote Port:     {}", remote_ep.port());
+            m_logger->error("Expected Lane:   {} ({}-bit header)", 
+                get_lane_name(m_protocol_lane), expected_uint16 ? 16 : 8);
+            m_logger->error("Received Header: {} (0x{:04x}) - {}-bit format",
+                get_llp_header_name(packet.m_header), packet.m_header, 
+                received_uint16 ? 16 : 8);
+            m_logger->error("═══════════════════════════════════════════════════════════");
+            m_logger->error("Server is speaking the WRONG protocol on this port!");
+            m_logger->error("- Port {} should use {} lane", remote_ep.port(), 
+                get_lane_name(m_protocol_lane));
+            m_logger->error("- NO FALLBACK AVAILABLE (strict port-lane separation)");
+            m_logger->error("═══════════════════════════════════════════════════════════");
+            
+            // Close connection and abort processing
+            if (connection) {
+                connection->close();
+            }
+            return;
+        }
+    }
+    
+    // Check for stateless protocol timeout (DEPRECATED - will be removed)
     check_stateless_protocol_timeout(connection);
     
     // Reject invalid packets at the start
@@ -3068,8 +3110,50 @@ void Solo::check_unified_height_delta(uint32_t current_unified_height)
     }
 }
 
+void Solo::initialize_protocol_lane(std::shared_ptr<network::Connection> connection)
+{
+    if (!connection) {
+        m_logger->error("[Lane Init] No connection available - cannot determine protocol lane");
+        return;
+    }
+    
+    auto const& remote_ep = connection->remote_endpoint();
+    uint16_t remote_port = remote_ep.port();
+    
+    // Determine lane from port
+    m_protocol_lane = determine_lane_from_port(remote_port);
+    
+    // Set stateless protocol flag based on lane
+    m_stateless_protocol_active = (m_protocol_lane == ProtocolLane::STATELESS);
+    
+    // Log lane selection with loud formatting
+    m_logger->info("═══════════════════════════════════════════════════════════");
+    m_logger->info("PROTOCOL LANE INITIALIZATION");
+    m_logger->info("═══════════════════════════════════════════════════════════");
+    m_logger->info("Remote:          {}", remote_ep.to_string());
+    m_logger->info("Remote Port:     {}", remote_port);
+    m_logger->info("Selected Lane:   {}", get_lane_name(m_protocol_lane));
+    
+    if (m_protocol_lane == ProtocolLane::LEGACY) {
+        m_logger->info("Framing:         8-bit header (legacy)");
+        m_logger->info("Behavior:        Polling (GET_ROUND / GET_BLOCK)");
+        m_logger->info("Authentication:  Falcon + ChaCha20 (required)");
+    } else if (m_protocol_lane == ProtocolLane::STATELESS) {
+        m_logger->info("Framing:         16-bit header (0xD000-0xD0FF)");
+        m_logger->info("Behavior:        Push (STATELESS_GET_BLOCK)");
+        m_logger->info("Authentication:  Falcon + ChaCha20 (required)");
+    }
+    
+    m_logger->info("═══════════════════════════════════════════════════════════");
+    m_logger->info("STRICT LANE SEPARATION: NO FALLBACK BETWEEN LANES");
+    m_logger->info("═══════════════════════════════════════════════════════════");
+}
+
 void Solo::check_stateless_protocol_timeout(std::shared_ptr<network::Connection> connection)
 {
+    // DEPRECATED: This function will be removed
+    // Stateless protocol is now determined by port, not by negotiation
+    
     // Only check if we're waiting for a stateless response
     if (!m_waiting_for_stateless_response) {
         return;
