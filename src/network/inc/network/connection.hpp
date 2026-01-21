@@ -3,16 +3,12 @@
 
 #include "network/endpoint.hpp"
 #include "network/types.hpp"
+#include "protocol_lane.hpp"
 
 #include <functional>
 #include <memory>
-#include <cstdint>
 
 namespace nexusminer {
-
-// Forward declaration
-enum class ProtocolLane : uint8_t;
-
 namespace network {
 
 //  Provides connection control, data transfer and information functions

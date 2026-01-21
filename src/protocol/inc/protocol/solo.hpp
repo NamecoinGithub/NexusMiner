@@ -7,6 +7,7 @@
 #include "protocol/session_manager.hpp"
 #include "protocol/mining_template_interface.hpp"
 #include "mining/client_channel_manager.h"
+#include "protocol_lane.hpp"
 #include "spdlog/spdlog.h"
 #include <atomic>
 #include <memory>

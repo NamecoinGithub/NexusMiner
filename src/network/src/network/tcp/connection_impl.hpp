@@ -6,26 +6,12 @@
 #include "network/connection.hpp"
 #include "network/tcp/protocol_description.hpp"
 #include "LLP/llp_logging.hpp"
+#include "protocol_lane.hpp"
 #include <spdlog/spdlog.h>
 #include <queue>
 #include <memory>
-#include <cstdint>
 
 namespace nexusminer {
-
-// Protocol Lane enum - must match packet.hpp definition
-enum class ProtocolLane : uint8_t {
-    UNKNOWN = 0,
-    LEGACY = 1,
-    STATELESS = 2
-};
-
-// Helper function - must match packet.hpp
-inline ProtocolLane determine_lane_from_port(uint16_t port) {
-    constexpr uint16_t LEGACY_PORT = 8323;
-    return (port == LEGACY_PORT) ? ProtocolLane::LEGACY : ProtocolLane::STATELESS;
-}
-
 namespace network {
 namespace tcp {
 
