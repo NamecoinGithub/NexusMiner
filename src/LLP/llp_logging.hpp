@@ -153,10 +153,10 @@ namespace nexusminer
 	inline const char* get_llp_header_name(std::uint16_t header)
 	{
 		// Check if it's in the uint16_t stateless range (0xD000-0xD0FF mirror-mapped)
-		if (LLP::IsStateless(header))
+		if (LLP::IsStatelessOpcode(header))
 		{
 			// Extract the legacy opcode
-			uint8_t legacy_opcode = LLP::Unmirror(header);
+			uint8_t legacy_opcode = LLP::UnmirrorOpcode(header);
 			
 			// Map common stateless opcodes
 			switch(legacy_opcode)
@@ -172,9 +172,9 @@ namespace nexusminer
 				case LLP::PRIME_BLOCK_AVAILABLE: return "STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9)";
 				case LLP::HASH_BLOCK_AVAILABLE: return "STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)";
 				default:
-					// Unknown stateless opcode - show as hex
 					{
-						static char buffer[64];
+						// Thread-safe: use ostringstream instead of static buffer
+						static thread_local char buffer[64];
 						snprintf(buffer, sizeof(buffer), "STATELESS_UNKNOWN (0x%04X)", header);
 						return buffer;
 					}

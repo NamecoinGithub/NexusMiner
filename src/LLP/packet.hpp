@@ -35,7 +35,7 @@ namespace nexusminer
 		// Helper function to check if a uint16_t opcode is a stateless mining opcode
 		// Returns true if opcode is in range [0xD000, 0xD0FF] (mirror-mapped range)
 		inline bool is_stateless_opcode(uint16_t opcode) {
-			return LLP::IsStateless(opcode);
+			return LLP::IsStatelessOpcode(opcode);
 		}
 		
 		// Helper function to check if a single byte is a legacy auth/session opcode

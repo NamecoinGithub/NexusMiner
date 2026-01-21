@@ -325,7 +325,7 @@ enum MinerOpcodes : std::uint8_t
  *   - GET_BLOCK (129 = 0x81) → 0xD081
  *   - SUBMIT_BLOCK (1 = 0x01) → 0xD001
  */
-constexpr uint16_t Mirror(uint8_t legacy_opcode) {
+constexpr uint16_t MirrorOpcode(uint8_t legacy_opcode) {
     return 0xD000 | static_cast<uint16_t>(legacy_opcode);
 }
 
@@ -337,7 +337,7 @@ constexpr uint16_t Mirror(uint8_t legacy_opcode) {
  * Stateless opcodes are mirror-mapped from legacy uint8_t opcodes, so they
  * always fall in the range 0xD000-0xD0FF (since legacy opcodes are 0x00-0xFF).
  */
-constexpr bool IsStateless(uint16_t opcode) {
+constexpr bool IsStatelessOpcode(uint16_t opcode) {
     return (opcode >= 0xD000) && (opcode <= 0xD0FF);
 }
 
@@ -346,9 +346,9 @@ constexpr bool IsStateless(uint16_t opcode) {
  * @param stateless_opcode The mirror-mapped stateless opcode (e.g., 0xD0D8)
  * @return The legacy uint8_t opcode (e.g., 216 for 0xD0D8)
  * 
- * This is the inverse of Mirror(): legacyOpcode = statelessOpcode & 0xFF
+ * This is the inverse of MirrorOpcode(): legacyOpcode = statelessOpcode & 0xFF
  */
-constexpr uint8_t Unmirror(uint16_t stateless_opcode) {
+constexpr uint8_t UnmirrorOpcode(uint16_t stateless_opcode) {
     return static_cast<uint8_t>(stateless_opcode & 0xFF);
 }
 
@@ -398,7 +398,7 @@ namespace StatelessMining {
      * Payload: 216 bytes (solved block)
      * Mirror-mapped from legacy SUBMIT_BLOCK (1) → 0xD001
      */
-    constexpr uint16_t SUBMIT_BLOCK = Mirror(LLP::SUBMIT_BLOCK);  // 0xD001
+    constexpr uint16_t SUBMIT_BLOCK = MirrorOpcode(LLP::SUBMIT_BLOCK);  // 0xD001
     
     /**
      * SET_CHANNEL: Miner sets mining channel
@@ -406,7 +406,7 @@ namespace StatelessMining {
      * Payload: [channel(1)]  // 1=Prime, 2=Hash
      * Mirror-mapped from legacy SET_CHANNEL (3) → 0xD003
      */
-    constexpr uint16_t SET_CHANNEL = Mirror(LLP::SET_CHANNEL);  // 0xD003
+    constexpr uint16_t SET_CHANNEL = MirrorOpcode(LLP::SET_CHANNEL);  // 0xD003
     
     /**
      * GET_BLOCK: Node sends mining template (PUSH!)
@@ -427,7 +427,7 @@ namespace StatelessMining {
      * - Immediately after MINER_READY (no polling needed!)
      * - When blockchain advances (push notification)
      */
-    constexpr uint16_t GET_BLOCK = Mirror(LLP::GET_BLOCK);  // 0xD081
+    constexpr uint16_t GET_BLOCK = MirrorOpcode(LLP::GET_BLOCK);  // 0xD081
     
     /**
      * BLOCK_ACCEPTED: Node accepts submitted block
@@ -435,7 +435,7 @@ namespace StatelessMining {
      * Payload: None or [height(4)][hash(32)] (optional)
      * Mirror-mapped from legacy BLOCK_ACCEPTED (200) → 0xD0C8
      */
-    constexpr uint16_t BLOCK_ACCEPTED = Mirror(LLP::BLOCK_ACCEPTED);  // 0xD0C8
+    constexpr uint16_t BLOCK_ACCEPTED = MirrorOpcode(LLP::BLOCK_ACCEPTED);  // 0xD0C8
     
     /**
      * BLOCK_REJECTED: Node rejects submitted block
@@ -443,7 +443,7 @@ namespace StatelessMining {
      * Payload: [reason(1)]
      * Mirror-mapped from legacy BLOCK_REJECTED (201) → 0xD0C9
      */
-    constexpr uint16_t BLOCK_REJECTED = Mirror(LLP::BLOCK_REJECTED);  // 0xD0C9
+    constexpr uint16_t BLOCK_REJECTED = MirrorOpcode(LLP::BLOCK_REJECTED);  // 0xD0C9
     
     /**
      * MINER_SET_REWARD: Miner sends encrypted reward address
@@ -451,7 +451,7 @@ namespace StatelessMining {
      * Payload (ChaCha20 encrypted): [encrypted_address(32)]
      * Mirror-mapped from legacy MINER_SET_REWARD (213) → 0xD0D5
      */
-    constexpr uint16_t MINER_SET_REWARD = Mirror(LLP::MINER_SET_REWARD);  // 0xD0D5
+    constexpr uint16_t MINER_SET_REWARD = MirrorOpcode(LLP::MINER_SET_REWARD);  // 0xD0D5
     
     /**
      * MINER_REWARD_RESULT: Node confirms reward binding
@@ -459,7 +459,7 @@ namespace StatelessMining {
      * Payload (ChaCha20 encrypted): [status(1)][msg_len(1)][message(optional)]
      * Mirror-mapped from legacy MINER_REWARD_RESULT (214) → 0xD0D6
      */
-    constexpr uint16_t MINER_REWARD_RESULT = Mirror(LLP::MINER_REWARD_RESULT);  // 0xD0D6
+    constexpr uint16_t MINER_REWARD_RESULT = MirrorOpcode(LLP::MINER_REWARD_RESULT);  // 0xD0D6
     
     /**
      * MINER_READY: Miner subscribes to push notifications
@@ -476,7 +476,7 @@ namespace StatelessMining {
      * 
      * Mirror-mapped from legacy MINER_READY (216) → 0xD0D8
      */
-    constexpr uint16_t MINER_READY = Mirror(LLP::MINER_READY);  // 0xD0D8
+    constexpr uint16_t MINER_READY = MirrorOpcode(LLP::MINER_READY);  // 0xD0D8
     
     /**
      * PRIME_BLOCK_AVAILABLE: Node notifies Prime miners of new block
@@ -487,7 +487,7 @@ namespace StatelessMining {
      *   [8-11]  difficulty (uint32)
      * Mirror-mapped from legacy PRIME_BLOCK_AVAILABLE (217) → 0xD0D9
      */
-    constexpr uint16_t PRIME_BLOCK_AVAILABLE = Mirror(LLP::PRIME_BLOCK_AVAILABLE);  // 0xD0D9
+    constexpr uint16_t PRIME_BLOCK_AVAILABLE = MirrorOpcode(LLP::PRIME_BLOCK_AVAILABLE);  // 0xD0D9
     
     /**
      * HASH_BLOCK_AVAILABLE: Node notifies Hash miners of new block
@@ -498,7 +498,7 @@ namespace StatelessMining {
      *   [8-11]  difficulty (uint32)
      * Mirror-mapped from legacy HASH_BLOCK_AVAILABLE (218) → 0xD0DA
      */
-    constexpr uint16_t HASH_BLOCK_AVAILABLE = Mirror(LLP::HASH_BLOCK_AVAILABLE);  // 0xD0DA
+    constexpr uint16_t HASH_BLOCK_AVAILABLE = MirrorOpcode(LLP::HASH_BLOCK_AVAILABLE);  // 0xD0DA
     
     // NOTE: NEW_BLOCK has been removed - the node now reuses GET_BLOCK for both
     // initial template delivery and push notifications when blockchain advances.
