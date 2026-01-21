@@ -186,59 +186,93 @@ inline void Connection_impl<ProtocolDescriptionType>::receive()
                 self->m_asio_socket->receive(asio::buffer(*receive_buffer, receive_buffer->size()), 0, error);
                 if (!error)
                 {
-                    // Log received LLP packets
+                    // Log received LLP packets using lane-aware parsing
                     if (self->m_logger && receive_buffer && !receive_buffer->empty())
                     {
-                        // Try to parse packet(s) from buffer for logging
+                        // Parse packet(s) from buffer using lane-aware framing
                         std::size_t offset = 0;
+                        
                         while (offset < receive_buffer->size())
                         {
-                            if (offset + 1 > receive_buffer->size()) break;
+                            bool is_stateless = (self->m_protocol_lane == ProtocolLane::STATELESS);
+                            std::size_t header_size = is_stateless ? 2 : 1;
                             
-                            std::uint8_t header = (*receive_buffer)[offset];
+                            // Check if we have enough bytes for header
+                            if (offset + header_size > receive_buffer->size()) break;
+                            
+                            // Parse header based on lane
+                            uint16_t header = 0;
+                            if (is_stateless) {
+                                // 16-bit header, big-endian
+                                header = (static_cast<uint16_t>((*receive_buffer)[offset]) << 8) |
+                                        static_cast<uint16_t>((*receive_buffer)[offset + 1]);
+                            } else {
+                                // 8-bit header
+                                header = (*receive_buffer)[offset];
+                            }
+                            
+                            // Check if we have length field
                             std::uint32_t pkt_length = 0;
+                            std::size_t length_offset = offset + header_size;
                             
-                            // Check if it's a data packet (has length field)
-                            if (offset + 5 <= receive_buffer->size())
+                            if (length_offset + 4 <= receive_buffer->size())
                             {
-                                pkt_length = ((*receive_buffer)[offset + 1] << 24) + 
-                                           ((*receive_buffer)[offset + 2] << 16) + 
-                                           ((*receive_buffer)[offset + 3] << 8) + 
-                                           (*receive_buffer)[offset + 4];
+                                // Parse length (4 bytes, big-endian)
+                                pkt_length = ((*receive_buffer)[length_offset] << 24) + 
+                                           ((*receive_buffer)[length_offset + 1] << 16) + 
+                                           ((*receive_buffer)[length_offset + 2] << 8) + 
+                                           (*receive_buffer)[length_offset + 3];
                             }
                             
                             // Create data payload for hex preview
                             network::Shared_payload data_payload;
-                            if (offset + 5 < receive_buffer->size())
+                            std::size_t data_offset = length_offset + 4;
+                            if (pkt_length > 0 && data_offset < receive_buffer->size())
                             {
-                                std::size_t data_end = std::min(offset + 5 + pkt_length, receive_buffer->size());
-                                data_payload = std::make_shared<network::Payload>(
-                                    receive_buffer->begin() + offset + 5, 
-                                    receive_buffer->begin() + data_end);
+                                std::size_t data_end = std::min(data_offset + pkt_length, receive_buffer->size());
+                                if (data_end > data_offset) {
+                                    data_payload = std::make_shared<network::Payload>(
+                                        receive_buffer->begin() + data_offset, 
+                                        receive_buffer->begin() + data_end);
+                                }
                             }
                             
+                            // Log with appropriate format
                             std::string hex_preview = format_llp_payload_hex(data_payload, 16);
-                            if (!hex_preview.empty())
-                            {
-                                self->m_logger->info("[LLP RECV] header={} (0x{:02x}) {} length={} payload=[{}]", 
-                                    static_cast<int>(header), header, get_llp_header_name(header), 
-                                    pkt_length, hex_preview);
-                            }
-                            else
-                            {
-                                self->m_logger->info("[LLP RECV] header={} (0x{:02x}) {} length={}", 
-                                    static_cast<int>(header), header, get_llp_header_name(header), pkt_length);
+                            if (is_stateless) {
+                                if (!hex_preview.empty()) {
+                                    self->m_logger->info("[LLP RECV] header=0x{:04x} {} length={} payload=[{}]", 
+                                        header, get_llp_header_name(header), pkt_length, hex_preview);
+                                } else {
+                                    self->m_logger->info("[LLP RECV] header=0x{:04x} {} length={}", 
+                                        header, get_llp_header_name(header), pkt_length);
+                                }
+                            } else {
+                                if (!hex_preview.empty()) {
+                                    self->m_logger->info("[LLP RECV] header=0x{:02x} {} length={} payload=[{}]", 
+                                        static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)), 
+                                        pkt_length, hex_preview);
+                                } else {
+                                    self->m_logger->info("[LLP RECV] header=0x{:02x} {} length={}", 
+                                        static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)), 
+                                        pkt_length);
+                                }
                             }
                             
-                            // Move to next packet (header + 4 bytes length + data)
-                            if (pkt_length > 0 && offset + 5 + pkt_length <= receive_buffer->size())
+                            // Move to next packet
+                            if (pkt_length > 0 && data_offset + pkt_length <= receive_buffer->size())
                             {
-                                offset += 5 + pkt_length;
+                                offset = data_offset + pkt_length;
                             }
-                            else if (pkt_length == 0)
+                            else if (pkt_length == 0 && length_offset + 4 <= receive_buffer->size())
                             {
-                                // Request packet (no data)
-                                offset += 1;
+                                // Header-only packet with length field = 0
+                                offset = length_offset + 4;
+                            }
+                            else if (length_offset > receive_buffer->size())
+                            {
+                                // Header-only packet without length field
+                                offset += header_size;
                             }
                             else
                             {
@@ -394,61 +428,89 @@ void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
         return;
     }
     
-    // Log LLP packet send with robust size checking
+    // Log LLP packet send using lane-aware parsing
     if (m_logger)
     {
-        // Ensure we can safely read the header
-        if (payload->size() >= 1)
+        bool is_stateless = (m_protocol_lane == ProtocolLane::STATELESS);
+        std::size_t header_size = is_stateless ? 2 : 1;
+        
+        // Check if we have enough bytes for header
+        if (payload->size() >= header_size)
         {
-            std::uint8_t header = (*payload)[0];
-            std::uint32_t length = 0;
-            
-            // Distinguish header-only (size == 1) vs header+payload packets
-            if (payload->size() == 1)
-            {
-                // Header-only request packet (GET_BLOCK, GET_HEIGHT, PING, etc.)
-                m_logger->info("[LLP SEND] header={} (0x{:02x}) {} length=0 (header-only)", 
-                    static_cast<int>(header), header, get_llp_header_name(header));
+            // Parse header based on lane
+            uint16_t header = 0;
+            if (is_stateless) {
+                // 16-bit header, big-endian
+                header = (static_cast<uint16_t>((*payload)[0]) << 8) |
+                        static_cast<uint16_t>((*payload)[1]);
+            } else {
+                // 8-bit header
+                header = (*payload)[0];
             }
-            else if (payload->size() >= 5)
+            
+            // Check if we have length field
+            std::uint32_t length = 0;
+            std::size_t length_offset = header_size;
+            
+            if (payload->size() == header_size)
             {
-                // Header + length field + data
-                length = (static_cast<std::uint32_t>((*payload)[1]) << 24) |
-                         (static_cast<std::uint32_t>((*payload)[2]) << 16) |
-                         (static_cast<std::uint32_t>((*payload)[3]) << 8) |
-                         static_cast<std::uint32_t>((*payload)[4]);
+                // Header-only packet
+                if (is_stateless) {
+                    m_logger->info("[LLP SEND] header=0x{:04x} {} length=0 (header-only)", 
+                        header, get_llp_header_name(header));
+                } else {
+                    m_logger->info("[LLP SEND] header=0x{:02x} {} length=0 (header-only)", 
+                        static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)));
+                }
+            }
+            else if (payload->size() >= header_size + 4)
+            {
+                // Parse length (4 bytes, big-endian)
+                length = (static_cast<std::uint32_t>((*payload)[length_offset]) << 24) |
+                         (static_cast<std::uint32_t>((*payload)[length_offset + 1]) << 16) |
+                         (static_cast<std::uint32_t>((*payload)[length_offset + 2]) << 8) |
+                         static_cast<std::uint32_t>((*payload)[length_offset + 3]);
                 
                 // Create a shared pointer to the data portion for hex formatting
                 network::Shared_payload data_payload;
-                if (payload->size() > 5)
+                std::size_t data_offset = length_offset + 4;
+                if (payload->size() > data_offset)
                 {
-                    std::size_t data_start = 5;
-                    std::size_t data_end = std::min(data_start + length, payload->size());
-                    if (data_end > data_start)
+                    std::size_t data_end = std::min(data_offset + length, payload->size());
+                    if (data_end > data_offset)
                     {
                         data_payload = std::make_shared<network::Payload>(
-                            payload->begin() + data_start, 
+                            payload->begin() + data_offset, 
                             payload->begin() + data_end);
                     }
                 }
                 
                 std::string hex_preview = format_llp_payload_hex(data_payload, 16);
-                if (!hex_preview.empty())
-                {
-                    m_logger->info("[LLP SEND] header={} (0x{:02x}) {} length={} payload=[{}]", 
-                        static_cast<int>(header), header, get_llp_header_name(header), length, hex_preview);
-                }
-                else
-                {
-                    m_logger->info("[LLP SEND] header={} (0x{:02x}) {} length={}", 
-                        static_cast<int>(header), header, get_llp_header_name(header), length);
+                if (is_stateless) {
+                    if (!hex_preview.empty()) {
+                        m_logger->info("[LLP SEND] header=0x{:04x} {} length={} payload=[{}]", 
+                            header, get_llp_header_name(header), length, hex_preview);
+                    } else {
+                        m_logger->info("[LLP SEND] header=0x{:04x} {} length={}", 
+                            header, get_llp_header_name(header), length);
+                    }
+                } else {
+                    if (!hex_preview.empty()) {
+                        m_logger->info("[LLP SEND] header=0x{:02x} {} length={} payload=[{}]", 
+                            static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)), 
+                            length, hex_preview);
+                    } else {
+                        m_logger->info("[LLP SEND] header=0x{:02x} {} length={}", 
+                            static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)), 
+                            length);
+                    }
                 }
             }
             else
             {
-                // Malformed packet: size is between 2 and 4
-                m_logger->error("[LLP SEND] Malformed LLP payload: size={} (expected 1 for header-only or >=5 for data packet)", 
-                    payload->size());
+                // Malformed packet
+                m_logger->error("[LLP SEND] Malformed LLP payload: size={} (expected {} for header-only or >={} for data packet)", 
+                    payload->size(), header_size, header_size + 4);
             }
         }
     }
