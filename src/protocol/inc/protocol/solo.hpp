@@ -7,6 +7,7 @@
 #include "protocol/session_manager.hpp"
 #include "protocol/mining_template_interface.hpp"
 #include "mining/client_channel_manager.h"
+#include "protocol_lane.hpp"
 #include "spdlog/spdlog.h"
 #include <atomic>
 #include <memory>
@@ -290,8 +291,20 @@ private:
     void check_unified_height_delta(uint32_t current_unified_height);
     
     // ═══════════════════════════════════════════════════════════════════════
-    // STATELESS PROTOCOL AUTO-NEGOTIATION STATE
+    // PORT-LANE SEPARATION STATE (STRICT - NO FALLBACK)
     // ═══════════════════════════════════════════════════════════════════════
+    
+    // Protocol lane (determined once from connection port, never changes)
+    ProtocolLane m_protocol_lane;
+    
+    // Helper method to determine and log lane from connection
+    void initialize_protocol_lane(std::shared_ptr<network::Connection> connection);
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // DEPRECATED: STATELESS PROTOCOL AUTO-NEGOTIATION STATE (REMOVED)
+    // ═══════════════════════════════════════════════════════════════════════
+    // NOTE: Auto-negotiation and timeout logic removed in favor of strict
+    // port-lane separation. Variables kept temporarily for compatibility.
     
     // Protocol mode tracking (atomic for thread safety)
     // These are accessed from multiple threads:

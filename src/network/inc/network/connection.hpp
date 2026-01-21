@@ -3,6 +3,7 @@
 
 #include "network/endpoint.hpp"
 #include "network/types.hpp"
+#include "protocol_lane.hpp"
 
 #include <functional>
 #include <memory>
@@ -39,6 +40,9 @@ public:
 
     // Closes the connection
     virtual void close() = 0;
+    
+    // Get protocol lane for this connection
+    virtual ProtocolLane get_protocol_lane() const = 0;
 };
 
 
