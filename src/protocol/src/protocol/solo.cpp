@@ -868,11 +868,14 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         // ═══════════════════════════════════════════════════════════════════
         const char* protocol_name = m_stateless_protocol_active ? "STATELESS" : "LEGACY";
         const char* packet_name = m_stateless_protocol_active ? "STATELESS_SUBMIT_BLOCK" : "SUBMIT_BLOCK";
-        uint16_t opcode = m_stateless_protocol_active ? 0xD00A : static_cast<uint8_t>(Packet::SUBMIT_BLOCK);
+        // Mirror-mapped: SUBMIT_BLOCK (1) -> 0xD001 (not 0xD00A!)
+        uint16_t opcode = m_stateless_protocol_active ? 
+            static_cast<uint16_t>(Packet::STATELESS_SUBMIT_BLOCK) :  // 0xD001 (mirror-mapped)
+            static_cast<uint16_t>(Packet::SUBMIT_BLOCK);             // 1 (legacy)
         
         // Create packet with appropriate opcode (consistent constructor usage)
         Packet packet = m_stateless_protocol_active 
-            ? Packet{ static_cast<uint16_t>(Packet::STATELESS_SUBMIT_BLOCK) }  // 0xD00A for stateless protocol
+            ? Packet{ static_cast<uint16_t>(Packet::STATELESS_SUBMIT_BLOCK) }  // 0xD001 for stateless protocol
             : Packet{ static_cast<uint8_t>(Packet::SUBMIT_BLOCK) };  // legacy opcode
         
         packet.m_data = std::make_shared<network::Payload>(encryptedPayload);
@@ -1029,7 +1032,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // ═══════════════════════════════════════════════════════════════════
         // CRITICAL FIX: Accept BLOCK_DATA as initial template after MINER_READY
         // ═══════════════════════════════════════════════════════════════════
-        // Node sends BLOCK_DATA (opcode 0) instead of STATELESS_GET_BLOCK (0xD008)
+        // Node sends BLOCK_DATA (opcode 0) instead of STATELESS_GET_BLOCK (0xD081)
         // This fixes the 5-second timeout that causes 0.00 GIPS (no mining work)
         handle_initial_template_response("BLOCK_DATA (0x00)");
         
@@ -1790,13 +1793,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         
         // Push notifications: Subscribe to block notifications (LLL-TAO PR #156)
-        // Attempt stateless protocol (0xD007 MINER_READY)
+        // Use stateless protocol with mirror-mapped opcodes (LLL-TAO PR #198)
         m_logger->info("[Solo Protocol] Attempting stateless protocol negotiation");
-        m_logger->info("[Solo Protocol] Sending MINER_READY (0xD007) to subscribe to push notifications");
+        m_logger->info("[Solo Protocol] Sending STATELESS_MINER_READY (0xD0D8) to subscribe to push notifications");
+        m_logger->info("[Solo Protocol]   Mirror-mapped from legacy MINER_READY (216)");
         
         auto miner_ready_payload = send_miner_ready();
         if (!miner_ready_payload || miner_ready_payload->empty()) {
-            m_logger->error("[Solo Protocol] Failed to encode MINER_READY - falling back to polling");
+            m_logger->error("[Solo Protocol] Failed to encode STATELESS_MINER_READY - falling back to polling");
         } else if (connection) {
             connection->transmit(miner_ready_payload);
             
@@ -1804,17 +1808,18 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_waiting_for_stateless_response = true;
             m_miner_ready_sent_time_ns = std::chrono::steady_clock::now().time_since_epoch().count();
             
-            m_logger->info("[Solo Protocol] ✓ MINER_READY transmitted");
-            m_logger->info("[Solo Protocol] Waiting for STATELESS_GET_BLOCK (0xD008) response...");
+            m_logger->info("[Solo Protocol] ✓ STATELESS_MINER_READY transmitted");
+            m_logger->info("[Solo Protocol] Waiting for STATELESS_GET_BLOCK (0xD081) response...");
+            m_logger->info("[Solo Protocol]   Mirror-mapped from legacy GET_BLOCK (129)");
             m_logger->info("[Solo Protocol] Timeout: {} seconds", STATELESS_PROTOCOL_TIMEOUT_SECONDS);
             m_logger->info("[Solo Protocol] If timeout: Fall back to legacy GET_ROUND polling");
             
             // Return here - we'll wait for either:
-            // 1. STATELESS_GET_BLOCK (0xD008) - stateless protocol success
+            // 1. STATELESS_GET_BLOCK (0xD081) - stateless protocol success
             // 2. Timeout - fall back to legacy polling (handled in process_messages)
             return;
         } else {
-            m_logger->error("[Solo Protocol] No connection available - cannot send MINER_READY");
+            m_logger->error("[Solo Protocol] No connection available - cannot send STATELESS_MINER_READY");
         }
         
         // Fallback: Request work directly if MINER_READY failed
@@ -2085,20 +2090,21 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // ═══════════════════════════════════════════════════════════════════
         
         // Unified handler for initial template response
-        handle_initial_template_response("STATELESS_GET_BLOCK (0xD008)");
+        handle_initial_template_response("STATELESS_GET_BLOCK (0xD081)");
         
         // ═══════════════════════════════════════════════════════════════════
         // ENHANCED DIAGNOSTICS: Template delivery tracking
         // ═══════════════════════════════════════════════════════════════════
         m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
-        m_logger->info("[Solo Template Delivery] 📥 TEMPLATE RECEIVED VIA: STATELESS_GET_BLOCK (0xD008)");
+        m_logger->info("[Solo Template Delivery] 📥 TEMPLATE RECEIVED VIA: STATELESS_GET_BLOCK (0xD081)");
+        m_logger->info("[Solo Template Delivery]   Mirror-mapped from legacy GET_BLOCK (129)");
         m_logger->info("[Solo Template Delivery]   Delivery Method: Stateless 16-bit opcode");
         m_logger->info("[Solo Template Delivery]   Payload Size: {} bytes", packet.m_length);
         m_logger->info("[Solo Template Delivery]   Expected Format: 12 metadata + 216 block");
         m_logger->info("[Solo Template Delivery]   Protocol Mode: Stateless Push");
         m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
         
-        m_logger->info("[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD008) received!");
+        m_logger->info("[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD081) received!");
         m_logger->info("[Solo Stateless] This is the NEW push notification protocol");
         m_logger->info("[Solo Stateless] Template size: {} bytes (expected: 228)", packet.m_length);
         
@@ -2834,31 +2840,32 @@ network::Shared_payload Solo::send_set_reward()
 
 network::Shared_payload Solo::send_miner_ready()
 {
-    m_logger->info("[Solo Push] Sending MINER_READY (subscribe to push notifications)");
+    m_logger->info("[Solo Push] Sending STATELESS_MINER_READY (subscribe to push notifications)");
+    m_logger->info("[Solo Push]   Opcode: 0xD0D8 (mirror-mapped from legacy MINER_READY 216)");
     m_logger->info("[Solo Push]   Channel: {} ({})", 
                    m_channel, 
                    m_channel == mining::CHANNEL_PRIME ? "Prime" : "Hash");
     
-    // MINER_READY is a header-only packet (no payload)
-    Packet packet{ static_cast<uint8_t>(Packet::MINER_READY) };
+    // STATELESS_MINER_READY is a header-only packet (no payload)
+    // Using mirror-mapped opcode 0xD0D8 (from legacy MINER_READY 216)
+    Packet packet{ static_cast<uint16_t>(Packet::STATELESS_MINER_READY) };
     
-    m_logger->debug("[Solo Push] MINER_READY packet: header=0x{:02x} length={} is_valid={}", 
-                   static_cast<int>(packet.m_header),
+    m_logger->debug("[Solo Push] STATELESS_MINER_READY packet: header=0x{:04x} length={} is_valid={}", 
+                   packet.m_header,
                    packet.m_length, 
                    packet.is_valid());
     
     auto payload = packet.get_bytes();
     if (payload && !payload->empty()) {
-        m_logger->info("[Solo Push] ✓ Subscribed to push notifications");
-        m_logger->info("[Solo Push]   Node will send immediate {} notification",
-                      m_channel == mining::CHANNEL_PRIME ? "PRIME_BLOCK_AVAILABLE" : "HASH_BLOCK_AVAILABLE");
-        m_logger->info("[Solo Push]   Then push on every block validation");
+        m_logger->info("[Solo Push] ✓ Subscribed to push notifications (stateless protocol)");
+        m_logger->info("[Solo Push]   Node will send immediate STATELESS_GET_BLOCK (0xD081)");
+        m_logger->info("[Solo Push]   Then push STATELESS_GET_BLOCK on every block validation");
         
-        // TRAINING WHEELS: Show MINER_READY packet (should be just header byte)
-        m_logger->info("[Solo Push] MINER_READY packet hex dump:");
+        // TRAINING WHEELS: Show STATELESS_MINER_READY packet (should be 2-byte header)
+        m_logger->info("[Solo Push] STATELESS_MINER_READY packet hex dump:");
         m_logger->info("\n{}", format_llp_payload_hexdump(payload, 16));
     } else {
-        m_logger->error("[Solo Push] Failed to encode MINER_READY packet");
+        m_logger->error("[Solo Push] Failed to encode STATELESS_MINER_READY packet");
     }
     
     return payload;
