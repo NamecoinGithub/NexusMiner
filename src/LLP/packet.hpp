@@ -14,6 +14,13 @@
 
 namespace nexusminer
 {
+	// Parse result for distinguishing incomplete vs malformed data
+	enum class ParseResult : uint8_t {
+		SUCCESS = 0,        // Packet parsed successfully
+		NEED_MORE_DATA = 1, // Not enough bytes yet, wait for more data
+		MALFORMED = 2       // Invalid/malformed packet data, disconnect required
+	};
+	
 	// Packet protocol constants
 	namespace PacketConstants {
 		// Invalid header marker for error conditions
@@ -901,6 +908,211 @@ namespace nexusminer
 		{
 			// UNKNOWN lane - error
 			packet.m_is_valid = false;
+		}
+		
+		return packet;
+	}
+
+	/**
+	 * Lane-aware packet extraction with explicit parse result
+	 * 
+	 * This function distinguishes between:
+	 * - SUCCESS: Packet parsed successfully
+	 * - NEED_MORE_DATA: Not enough bytes yet (wait for more TCP data)
+	 * - MALFORMED: Invalid packet structure (disconnect immediately)
+	 * 
+	 * STRICT LANE SEPARATION (no heuristic detection):
+	 * - LEGACY lane: Always parse 8-bit header (1-byte opcode)
+	 * - STATELESS lane: Always parse 16-bit header (2-byte opcode)
+	 * 
+	 * @param buffer Raw buffer containing packet data
+	 * @param bytes_consumed Output parameter for bytes consumed from buffer
+	 * @param start_index Starting position in buffer
+	 * @param lane Protocol lane (determines header width)
+	 * @param result Output parameter indicating parse result
+	 * @return Parsed packet (only valid if result == SUCCESS)
+	 */
+	inline Packet extract_packet_from_buffer_with_result(
+		network::Shared_payload buffer, 
+		std::size_t& bytes_consumed, 
+		std::size_t start_index,
+		ProtocolLane lane,
+		ParseResult& result)
+	{
+		Packet packet;
+		bytes_consumed = 0;
+		result = ParseResult::MALFORMED;
+		
+		// Validate inputs
+		if (!buffer || buffer->empty() || start_index >= buffer->size())
+		{
+			result = ParseResult::NEED_MORE_DATA;
+			return packet;
+		}
+		
+		if (lane == ProtocolLane::UNKNOWN)
+		{
+			result = ParseResult::MALFORMED;
+			return packet;
+		}
+		
+		auto const buffer_start = buffer->begin() + start_index;
+		auto const buffer_size = std::distance(buffer_start, buffer->end());
+		
+		if (lane == ProtocolLane::LEGACY)
+		{
+			// LEGACY LANE: Always 8-bit header
+			// Format: [header:1B][length:4B][data]
+			constexpr std::size_t HEADER_SIZE = 1;
+			constexpr std::size_t LENGTH_SIZE = 4;
+			constexpr std::size_t MIN_PACKET_SIZE = HEADER_SIZE + LENGTH_SIZE;
+			
+			packet.m_is_uint16_opcode = false;
+			
+			// Need at least 1 byte for header
+			if (buffer_size < HEADER_SIZE)
+			{
+				result = ParseResult::NEED_MORE_DATA;
+				return packet;
+			}
+			
+			uint8_t header_byte = (*buffer)[start_index];
+			packet.m_header = header_byte;
+			
+			// Header-only packet (valid for some opcodes)
+			if (buffer_size == 1)
+			{
+				packet.m_is_valid = true;
+				packet.m_length = 0;
+				bytes_consumed = 1;
+				result = ParseResult::SUCCESS;
+				return packet;
+			}
+			
+			// Need at least 5 bytes for header + length field
+			if (buffer_size < MIN_PACKET_SIZE)
+			{
+				result = ParseResult::NEED_MORE_DATA;
+				return packet;
+			}
+			
+			// Parse length (4 bytes, big-endian)
+			std::uint32_t const length = ((*buffer)[start_index + 1] << 24) + 
+			                              ((*buffer)[start_index + 2] << 16) + 
+			                              ((*buffer)[start_index + 3] << 8) + 
+			                              ((*buffer)[start_index + 4]);
+			
+			// Sanity check: unreasonably large length indicates malformed data
+			constexpr std::uint32_t MAX_REASONABLE_LENGTH = 10 * 1024 * 1024; // 10MB
+			if (length > MAX_REASONABLE_LENGTH)
+			{
+				result = ParseResult::MALFORMED;
+				return packet;
+			}
+			
+			// Check if we have the full payload
+			std::size_t total_packet_size = MIN_PACKET_SIZE + length;
+			if (buffer_size < total_packet_size)
+			{
+				result = ParseResult::NEED_MORE_DATA;
+				return packet;
+			}
+			
+			// Successfully parsed complete packet
+			packet.m_is_valid = true;
+			packet.m_length = length;
+			if (length > 0)
+			{
+				packet.m_data = std::make_shared<network::Payload>(
+					buffer_start + MIN_PACKET_SIZE, buffer_start + total_packet_size);
+			}
+			bytes_consumed = total_packet_size;
+			result = ParseResult::SUCCESS;
+		}
+		else if (lane == ProtocolLane::STATELESS)
+		{
+			// STATELESS LANE: Always 16-bit header
+			// Format: [header:2B][length:4B][data]
+			constexpr std::size_t HEADER_SIZE = 2;
+			constexpr std::size_t LENGTH_SIZE = 4;
+			constexpr std::size_t MIN_PACKET_SIZE = HEADER_SIZE + LENGTH_SIZE;
+			
+			packet.m_is_uint16_opcode = true;
+			
+			// Need at least 2 bytes for header
+			if (buffer_size < HEADER_SIZE)
+			{
+				result = ParseResult::NEED_MORE_DATA;
+				return packet;
+			}
+			
+			// Parse 2-byte header (big-endian)
+			uint16_t header16 = (static_cast<uint16_t>((*buffer)[start_index]) << 8) |
+			                    static_cast<uint16_t>((*buffer)[start_index + 1]);
+			packet.m_header = header16;
+			
+			// Validate that this is actually a stateless opcode for this lane
+			if (!PacketConstants::is_stateless_opcode(header16))
+			{
+				// Invalid opcode for stateless lane - malformed
+				result = ParseResult::MALFORMED;
+				return packet;
+			}
+			
+			// Header-only packet (valid for some opcodes)
+			if (buffer_size == 2)
+			{
+				packet.m_is_valid = true;
+				packet.m_length = 0;
+				bytes_consumed = 2;
+				result = ParseResult::SUCCESS;
+				return packet;
+			}
+			
+			// Need at least 6 bytes for header + length field
+			if (buffer_size < MIN_PACKET_SIZE)
+			{
+				result = ParseResult::NEED_MORE_DATA;
+				return packet;
+			}
+			
+			// Parse length (4 bytes, big-endian)
+			std::uint32_t const length = ((*buffer)[start_index + 2] << 24) + 
+			                              ((*buffer)[start_index + 3] << 16) + 
+			                              ((*buffer)[start_index + 4] << 8) + 
+			                              ((*buffer)[start_index + 5]);
+			
+			// Sanity check: unreasonably large length indicates malformed data
+			constexpr std::uint32_t MAX_REASONABLE_LENGTH = 10 * 1024 * 1024; // 10MB
+			if (length > MAX_REASONABLE_LENGTH)
+			{
+				result = ParseResult::MALFORMED;
+				return packet;
+			}
+			
+			// Check if we have the full payload
+			std::size_t total_packet_size = MIN_PACKET_SIZE + length;
+			if (buffer_size < total_packet_size)
+			{
+				result = ParseResult::NEED_MORE_DATA;
+				return packet;
+			}
+			
+			// Successfully parsed complete packet
+			packet.m_is_valid = true;
+			packet.m_length = length;
+			if (length > 0)
+			{
+				packet.m_data = std::make_shared<network::Payload>(
+					buffer_start + MIN_PACKET_SIZE, buffer_start + total_packet_size);
+			}
+			bytes_consumed = total_packet_size;
+			result = ParseResult::SUCCESS;
+		}
+		else
+		{
+			// UNKNOWN lane - error
+			result = ParseResult::MALFORMED;
 		}
 		
 		return packet;

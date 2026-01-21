@@ -21,6 +21,8 @@
 #include "miner_keys.hpp"
 #include "protocol/solo.hpp"
 #include <variant>
+#include <iomanip>
+#include <sstream>
 
 namespace nexusminer
 {
@@ -466,34 +468,136 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 
 void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
 {
-    auto remaining_size = receive_buffer->size();
+    // Append newly received data to accumulator
+    if (receive_buffer && !receive_buffer->empty())
+    {
+        std::size_t old_size = m_rx_accumulator.size();
+        m_rx_accumulator.insert(m_rx_accumulator.end(), 
+                               receive_buffer->begin(), 
+                               receive_buffer->end());
+        
+        m_logger->trace("[RX] Received {} bytes, accumulator: {} -> {} bytes", 
+                       receive_buffer->size(), old_size, m_rx_accumulator.size());
+        
+        // Warn if accumulator is growing large (possible stuck parsing or slow drain)
+        constexpr std::size_t WARN_THRESHOLD = 100 * 1024; // 100KB
+        if (m_rx_accumulator.size() > WARN_THRESHOLD && old_size <= WARN_THRESHOLD)
+        {
+            m_logger->warn("[RX] Accumulator growing large: {} bytes - possible parsing issue", 
+                          m_rx_accumulator.size());
+        }
+    }
     
     // Get protocol lane from connection
     ProtocolLane lane = m_connection ? m_connection->get_protocol_lane() : ProtocolLane::UNKNOWN;
     
-    do
+    if (lane == ProtocolLane::UNKNOWN)
     {
-        // Use lane-aware packet extraction
-        auto packet = extract_packet_from_buffer_with_lane(
-            receive_buffer, remaining_size, receive_buffer->size() - remaining_size, lane);
+        m_logger->error("[RX] FATAL: Protocol lane is UNKNOWN - cannot parse packets");
+        m_logger->error("[RX] Remote endpoint: {}", 
+                       m_connection ? m_connection->remote_endpoint().to_string() : "no connection");
+        m_logger->error("[RX] Disconnecting due to unknown protocol lane");
+        if (m_connection)
+        {
+            m_connection->close();
+        }
+        m_rx_accumulator.clear();
+        return;
+    }
+    
+    // Parse packets from accumulator
+    std::size_t offset = 0;
+    while (offset < m_rx_accumulator.size())
+    {
+        // Create a shared_payload view of the remaining data
+        auto buffer_view = std::make_shared<network::Payload>(
+            m_rx_accumulator.begin() + offset, m_rx_accumulator.end());
         
-        if (!packet.is_valid())
+        ParseResult parse_result;
+        std::size_t bytes_consumed = 0;
+        
+        // Use new lane-aware parser with explicit result
+        auto packet = extract_packet_from_buffer_with_result(
+            buffer_view, bytes_consumed, 0, lane, parse_result);
+        
+        if (parse_result == ParseResult::NEED_MORE_DATA)
         {
-            m_logger->debug("Received packet is invalid. Header: {0}", packet.m_header);
-            continue;
+            // Not enough data yet - keep bytes in accumulator and wait for more
+            m_logger->trace("[RX] Need more data: {} bytes in accumulator (lane: {})", 
+                           m_rx_accumulator.size() - offset, get_lane_name(lane));
+            break;
         }
-
-        if (packet.m_header == Packet::PING)
+        else if (parse_result == ParseResult::MALFORMED)
         {
-            m_logger->trace("PING received");
+            // Malformed packet - log loudly and disconnect
+            m_logger->error("[RX] ========================================");
+            m_logger->error("[RX] MALFORMED PACKET DETECTED!");
+            m_logger->error("[RX] ========================================");
+            m_logger->error("[RX] Lane: {} ({})", 
+                           get_lane_name(lane), 
+                           lane == ProtocolLane::LEGACY ? "8-bit header" : "16-bit header");
+            m_logger->error("[RX] Expected header width: {} bytes", 
+                           lane == ProtocolLane::LEGACY ? 1 : 2);
+            m_logger->error("[RX] Accumulator size: {} bytes", m_rx_accumulator.size() - offset);
+            m_logger->error("[RX] Remote endpoint: {}", 
+                           m_connection ? m_connection->remote_endpoint().to_string() : "no connection");
+            
+            // Log first few bytes for diagnostics
+            std::size_t bytes_to_log = std::min<std::size_t>(16, m_rx_accumulator.size() - offset);
+            if (bytes_to_log > 0)
+            {
+                std::ostringstream hex_dump;
+                hex_dump << std::hex << std::setfill('0');
+                for (std::size_t i = 0; i < bytes_to_log; ++i)
+                {
+                    if (i > 0) hex_dump << " ";
+                    hex_dump << std::setw(2) << static_cast<unsigned>(m_rx_accumulator[offset + i]);
+                }
+                m_logger->error("[RX] First {} bytes: {}", bytes_to_log, hex_dump.str());
+            }
+            
+            m_logger->error("[RX] DISCONNECTING due to malformed packet");
+            m_logger->error("[RX] ========================================");
+            
+            // Disconnect immediately
+            if (m_connection)
+            {
+                m_connection->close();
+            }
+            
+            // Clear accumulator
+            m_rx_accumulator.clear();
+            return;
         }
-        else
+        else // ParseResult::SUCCESS
         {
-            // solo/pool specific messages
-            m_miner_protocol->process_messages(std::move(packet), m_connection);
+            // Successfully parsed packet
+            m_logger->trace("[RX] Parsed packet: header=0x{:04x}, length={}, consumed={} bytes", 
+                           packet.m_header, packet.m_length, bytes_consumed);
+            
+            // Advance offset
+            offset += bytes_consumed;
+            
+            // Process the packet
+            if (packet.m_header == Packet::PING)
+            {
+                m_logger->trace("PING received");
+            }
+            else
+            {
+                // solo/pool specific messages
+                m_miner_protocol->process_messages(std::move(packet), m_connection);
+            }
         }
     }
-    while (remaining_size != 0);
+    
+    // Remove consumed bytes from accumulator front
+    if (offset > 0)
+    {
+        m_rx_accumulator.erase(m_rx_accumulator.begin(), m_rx_accumulator.begin() + offset);
+        m_logger->trace("[RX] Consumed {} bytes, {} bytes remaining in accumulator", 
+                       offset, m_rx_accumulator.size());
+    }
 }
 
 }
