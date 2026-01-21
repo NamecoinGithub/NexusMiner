@@ -510,7 +510,11 @@ void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
     std::size_t total_consumed = 0;
     while (!m_rx_accumulator.empty())
     {
-        // Create a vector view of the deque for parsing (deque doesn't guarantee contiguous storage)
+        // For performance: deque doesn't guarantee contiguous storage, but in practice
+        // most implementations do provide it. We copy to vector for parsing to ensure
+        // compatibility with the parsing function that expects contiguous storage.
+        // TODO: Consider refactoring extract_packet_from_buffer_with_result to work
+        // with iterators instead of requiring contiguous storage.
         std::vector<uint8_t> buffer_view(m_rx_accumulator.begin(), m_rx_accumulator.end());
         auto buffer_shared = std::make_shared<network::Payload>(std::move(buffer_view));
         
@@ -576,11 +580,9 @@ void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
             m_logger->trace("[RX] Parsed packet: header=0x{:04x}, length={}, consumed={} bytes", 
                            packet.m_header, packet.m_length, bytes_consumed);
             
-            // Remove consumed bytes from front of deque (O(1) operation)
-            for (std::size_t i = 0; i < bytes_consumed; ++i)
-            {
-                m_rx_accumulator.pop_front();
-            }
+            // Remove consumed bytes from front of deque (O(bytes_consumed) operation)
+            m_rx_accumulator.erase(m_rx_accumulator.begin(), 
+                                   m_rx_accumulator.begin() + bytes_consumed);
             total_consumed += bytes_consumed;
             
             // Process the packet
