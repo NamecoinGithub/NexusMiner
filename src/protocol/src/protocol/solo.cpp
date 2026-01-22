@@ -3174,6 +3174,7 @@ void Solo::check_stateless_protocol_timeout(std::shared_ptr<network::Connection>
     // - New behavior: Port determines lane (8323=LEGACY, 9323+=STATELESS), no fallback
     // 
     // TODO: Remove this function and related state variables in future cleanup:
+    // - m_stateless_protocol_active
     // - m_waiting_for_stateless_response
     // - m_miner_ready_sent_time_ns
     // - STATELESS_PROTOCOL_TIMEOUT_SECONDS
