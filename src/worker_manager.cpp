@@ -169,14 +169,37 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                 m_logger->error("[Worker_manager]    Solution will likely be rejected - discarding");
                                 template_interface->discard_template("Stale before submission");
                                 
-                                // Request fresh template
-                                m_logger->info("[Worker_manager] Requesting fresh template via GET_BLOCK");
-                                auto* solo_conn_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
-                                if (solo_conn_protocol && m_connection) {
-                                    auto work_payload = solo_conn_protocol->get_work();
-                                    if (work_payload && !work_payload->empty()) {
-                                        m_connection->transmit(work_payload);
+                                // ====== LANE-GATED STALE TEMPLATE REFRESH ======
+                                // Lane-aware recovery: only use legacy polling on legacy lane
+                                ProtocolLane lane = m_connection->get_protocol_lane();
+                                uint16_t remote_port = m_connection->remote_endpoint().port();
+                                
+                                m_logger->info("[Worker_manager] Stale template recovery on {} lane (port {})", 
+                                              get_lane_name(lane), remote_port);
+                                
+                                if (lane == ProtocolLane::LEGACY) {
+                                    // Legacy lane: Request fresh template via GET_BLOCK polling
+                                    m_logger->info("[Worker_manager] → Sending GET_BLOCK request (legacy polling)");
+                                    auto* solo_conn_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
+                                    if (solo_conn_protocol && m_connection) {
+                                        auto work_payload = solo_conn_protocol->get_work();
+                                        if (work_payload && !work_payload->empty()) {
+                                            m_connection->transmit(work_payload);
+                                        }
                                     }
+                                } else if (lane == ProtocolLane::STATELESS) {
+                                    // Stateless lane: Re-send STATELESS_MINER_READY to prompt node state machine
+                                    m_logger->info("[Worker_manager] → Re-sending STATELESS_MINER_READY (no polling)");
+                                    m_logger->info("[Worker_manager]   Prompts node to push fresh STATELESS_GET_BLOCK");
+                                    auto* solo_conn_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
+                                    if (solo_conn_protocol && m_connection) {
+                                        auto miner_ready_payload = solo_conn_protocol->send_miner_ready();
+                                        if (miner_ready_payload && !miner_ready_payload->empty()) {
+                                            m_connection->transmit(miner_ready_payload);
+                                        }
+                                    }
+                                } else {
+                                    m_logger->error("[Worker_manager] → Unknown protocol lane - cannot recover");
                                 }
                                 return;
                             }
@@ -428,18 +451,36 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
                     self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
                     
-                    // Start GET_ROUND intelligent polling timer (LLL-TAO PR #131 + Intelligent Polling)
-                    // Timer wakes up every 1 second, but protocol decides if GET_ROUND should actually be sent
-                    // This implements exponential backoff (5s → 60s) and event-driven polling
-                    constexpr uint16_t GET_ROUND_TIMER_INTERVAL = 1;  // Wake up every 1 second to check
-                    auto solo_protocol_ptr = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol);
-                    if (solo_protocol_ptr) {
-                        self->m_timer_manager.start_get_round_timer(GET_ROUND_TIMER_INTERVAL, self->m_connection, solo_protocol_ptr);
-                        self->m_logger->info("[Solo Poll] Intelligent polling timer started (check interval: {}s, adaptive: 5s-60s)", 
-                                            GET_ROUND_TIMER_INTERVAL);
-                        self->m_logger->info("[Solo Poll] Uses exponential backoff + event-driven polling to minimize node spam");
+                    // ====== LANE-GATED GET_ROUND TIMER (Legacy Lane Only) ======
+                    // GET_ROUND/NEW_ROUND polling is ONLY for legacy lane (port 8323)
+                    // Stateless lane (port 9323+) uses push notifications instead
+                    ProtocolLane lane = self->m_connection->get_protocol_lane();
+                    uint16_t remote_port = self->m_connection->remote_endpoint().port();
+                    
+                    self->m_logger->info("[Worker_manager Lane] Reading protocol lane from connection");
+                    self->m_logger->info("[Worker_manager Lane]   Lane: {} (port {})", get_lane_name(lane), remote_port);
+                    self->m_logger->info("[Worker_manager Lane]   Verifying lane agreement with Solo protocol layer");
+                    
+                    if (lane == ProtocolLane::LEGACY) {
+                        // Legacy lane: Start GET_ROUND intelligent polling timer
+                        // Timer wakes up every 1 second, but protocol decides if GET_ROUND should actually be sent
+                        // This implements exponential backoff (5s → 60s) and event-driven polling
+                        constexpr uint16_t GET_ROUND_TIMER_INTERVAL = 1;  // Wake up every 1 second to check
+                        auto solo_protocol_ptr = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol);
+                        if (solo_protocol_ptr) {
+                            self->m_timer_manager.start_get_round_timer(GET_ROUND_TIMER_INTERVAL, self->m_connection, solo_protocol_ptr);
+                            self->m_logger->info("[Solo Poll] ✓ GET_ROUND timer started on LEGACY lane (port {})", remote_port);
+                            self->m_logger->info("[Solo Poll]   Check interval: {}s, adaptive: 5s-60s", GET_ROUND_TIMER_INTERVAL);
+                            self->m_logger->info("[Solo Poll]   Uses exponential backoff + event-driven polling");
+                        } else {
+                            self->m_logger->error("[Solo Poll] Failed to cast protocol to Solo - polling timer not started");
+                        }
+                    } else if (lane == ProtocolLane::STATELESS) {
+                        // Stateless lane: NO polling timer - uses push notifications
+                        self->m_logger->info("[Solo Poll] ✓ GET_ROUND timer SKIPPED on STATELESS lane (port {})", remote_port);
+                        self->m_logger->info("[Solo Poll]   Stateless mining uses push notifications (no polling)");
                     } else {
-                        self->m_logger->error("[Solo Poll] Failed to cast protocol to Solo - polling timer not started");
+                        self->m_logger->error("[Solo Poll] ✗ Unknown protocol lane - GET_ROUND timer not started");
                     }
                     
                     // Note: Block handler already registered in Worker_manager constructor

@@ -120,9 +120,6 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_needs_initial_round_check{false}  // No template yet
 , m_template_unified_height{0}  // No template yet
 , m_protocol_lane{ProtocolLane::UNKNOWN}  // Will be determined from connection port
-, m_stateless_protocol_active{false}  // Start with stateless protocol inactive
-, m_waiting_for_stateless_response{false}  // Not waiting initially
-, m_miner_ready_sent_time_ns{0}  // Will be set when MINER_READY is sent (nanoseconds since epoch)
 {
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -274,10 +271,6 @@ void Solo::reset()
     m_auth_timestamp = 0;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_reward_bound = false;  // Reset reward binding for new session
-    
-    // Reset stateless protocol state
-    m_stateless_protocol_active = false;
-    m_waiting_for_stateless_response = false;
     
     // Reset session manager
     if (m_session_manager) {
@@ -954,8 +947,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
     }
     
-    // Check for stateless protocol timeout (DEPRECATED - will be removed)
-    check_stateless_protocol_timeout(connection);
+    // Protocol lane is strictly determined by port at connection time (no negotiation/timeout)
     
     // Reject invalid packets at the start
     if (!packet.m_is_valid) {
@@ -1087,8 +1079,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo Template Delivery]   Delivery Method: Legacy 8-bit opcode");
         m_logger->info("[Solo Template Delivery]   Payload Size: {} bytes", packet.m_data->size());
         m_logger->info("[Solo Template Delivery]   Packet Length: {} bytes", packet.m_length);
-        m_logger->info("[Solo Template Delivery]   Protocol Mode: {}", 
-            m_stateless_protocol_active.load() ? "Stateless (after initial)" : "Legacy Polling");
+        m_logger->info("[Solo Template Delivery]   Protocol Lane: {}", 
+            get_lane_name(m_protocol_lane));
         m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
         
         // TRAINING WHEELS: Full hex dump of BLOCK_DATA payload for debugging
@@ -2992,26 +2984,10 @@ void Solo::handle_reward_result(const Packet& packet)
 
 void Solo::handle_initial_template_response(const char* opcode_name)
 {
-    // Check if we're waiting for the initial template after MINER_READY
-    if (!m_waiting_for_stateless_response) {
-        return;  // Not waiting, nothing to do
-    }
-    
-    // Activate stateless protocol and clear waiting flag
-    m_stateless_protocol_active = true;
-    m_waiting_for_stateless_response = false;
-    
-    // Calculate response time
-    auto now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
-    auto sent_ns = m_miner_ready_sent_time_ns.load();
-    auto elapsed_ms = (now_ns - sent_ns) / 1000000;  // Convert nanoseconds to milliseconds
-    
-    // Log successful template reception
-    m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-    m_logger->info("[Solo Protocol] ✅ INITIAL TEMPLATE RECEIVED ({})", opcode_name);
-    m_logger->info("[Solo Protocol]   Response time: {}ms", elapsed_ms);
-    m_logger->info("[Solo Protocol]   Stateless protocol activated");
-    m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+    // Log template reception for diagnostic purposes
+    // No timing or state tracking - lane is authoritative, determined at connection time
+    m_logger->info("[Solo Protocol] ✅ Template received via {}", opcode_name);
+    m_logger->debug("[Solo Protocol]   Protocol lane: {}", get_lane_name(m_protocol_lane));
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -3134,19 +3110,17 @@ void Solo::initialize_protocol_lane(std::shared_ptr<network::Connection> connect
     auto const& remote_ep = connection->remote_endpoint();
     uint16_t remote_port = remote_ep.port();
     
-    // Determine lane from port
+    // Determine lane from port (authoritative)
     m_protocol_lane = determine_lane_from_port(remote_port);
-    
-    // Set stateless protocol flag based on lane
-    m_stateless_protocol_active = (m_protocol_lane == ProtocolLane::STATELESS);
     
     // Log lane selection with loud formatting
     m_logger->info("═══════════════════════════════════════════════════════════");
-    m_logger->info("PROTOCOL LANE INITIALIZATION");
+    m_logger->info("PROTOCOL LANE INITIALIZATION (Solo Protocol Layer)");
     m_logger->info("═══════════════════════════════════════════════════════════");
     m_logger->info("Remote:          {}", remote_ep.to_string());
     m_logger->info("Remote Port:     {}", remote_port);
     m_logger->info("Selected Lane:   {}", get_lane_name(m_protocol_lane));
+    m_logger->info("Lane Source:     Port-determined (authoritative)");
     
     if (m_protocol_lane == ProtocolLane::LEGACY) {
         m_logger->info("Framing:         8-bit header (legacy)");
@@ -3161,50 +3135,6 @@ void Solo::initialize_protocol_lane(std::shared_ptr<network::Connection> connect
     m_logger->info("═══════════════════════════════════════════════════════════");
     m_logger->info("STRICT LANE SEPARATION: NO FALLBACK BETWEEN LANES");
     m_logger->info("═══════════════════════════════════════════════════════════");
-}
-
-void Solo::check_stateless_protocol_timeout(std::shared_ptr<network::Connection> connection)
-{
-    // DEPRECATED: This function will be removed
-    // Stateless protocol is now determined by port, not by negotiation
-    
-    // Only check if we're waiting for a stateless response
-    if (!m_waiting_for_stateless_response) {
-        return;
-    }
-    
-    // Calculate elapsed time since MINER_READY was sent
-    auto now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
-    auto sent_ns = m_miner_ready_sent_time_ns.load();
-    auto elapsed_seconds = (now_ns - sent_ns) / 1000000000;  // Convert nanoseconds to seconds
-    
-    // Check if timeout expired
-    if (elapsed_seconds >= STATELESS_PROTOCOL_TIMEOUT_SECONDS) {
-        // Timeout: Node doesn't support stateless protocol
-        m_waiting_for_stateless_response = false;
-        m_stateless_protocol_active = false;
-        
-        m_logger->warn("[Solo Protocol] ═══════════════════════════════════════");
-        m_logger->warn("[Solo Protocol] ⏱️  STATELESS_GET_BLOCK timeout ({}s)", 
-                      STATELESS_PROTOCOL_TIMEOUT_SECONDS);
-        m_logger->warn("[Solo Protocol] Node doesn't support stateless protocol");
-        m_logger->info("[Solo Protocol] Falling back to legacy GET_ROUND polling");
-        m_logger->warn("[Solo Protocol] ═══════════════════════════════════════");
-        
-        // Start legacy polling by sending initial GET_ROUND
-        if (connection) {
-            m_logger->info("[Solo Protocol] Sending initial GET_ROUND (0x85) - polling mode");
-            auto get_round_payload = send_get_round();
-            if (get_round_payload && !get_round_payload->empty()) {
-                connection->transmit(get_round_payload);
-                m_logger->info("[Solo Protocol] ✓ GET_ROUND transmitted - legacy polling active");
-            } else {
-                m_logger->error("[Solo Protocol] Failed to encode GET_ROUND packet");
-            }
-        } else {
-            m_logger->error("[Solo Protocol] No connection available for fallback GET_ROUND");
-        }
-    }
 }
 
 }

@@ -301,24 +301,16 @@ private:
     void initialize_protocol_lane(std::shared_ptr<network::Connection> connection);
     
     // ═══════════════════════════════════════════════════════════════════════
-    // DEPRECATED: STATELESS PROTOCOL AUTO-NEGOTIATION STATE (REMOVED)
+    // PROTOCOL LANE DETERMINATION
     // ═══════════════════════════════════════════════════════════════════════
-    // NOTE: Auto-negotiation and timeout logic removed in favor of strict
-    // port-lane separation. Variables kept temporarily for compatibility.
-    
-    // Protocol mode tracking (atomic for thread safety)
-    // These are accessed from multiple threads:
-    // - I/O thread: process_messages() -> check_stateless_protocol_timeout()
-    // - Worker threads: submit_block() reads m_stateless_protocol_active
-    std::atomic<bool> m_stateless_protocol_active;           // True when using stateless protocol (0xD008/0xD009)
-    std::atomic<bool> m_waiting_for_stateless_response;      // True after MINER_READY sent, waiting for GET_BLOCK
-    std::atomic<int64_t> m_miner_ready_sent_time_ns;         // Timestamp when MINER_READY sent (nanoseconds since epoch, atomic for thread safety)
-    
-    // Configuration constants for stateless protocol negotiation
-    static constexpr uint32_t STATELESS_PROTOCOL_TIMEOUT_SECONDS = 5;  // 5 second timeout
-    
-    // Helper method for timeout checking
-    void check_stateless_protocol_timeout(std::shared_ptr<network::Connection> connection);
+    // Protocol lane is strictly determined by connection port (no negotiation/fallback):
+    // - Port 8323: Legacy lane (8-bit opcodes, polling)
+    // - Port 9323+: Stateless lane (16-bit opcodes, push notifications)
+    // 
+    // State is anchored on:
+    // - m_protocol_lane: Authoritative lane identifier (set at connection time)
+    // - m_auth_state: Authentication state (managed by session manager)
+    // - Push readiness: Inferred from actual template delivery events
 };
 
 }
