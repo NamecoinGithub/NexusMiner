@@ -188,9 +188,16 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                         }
                                     }
                                 } else if (lane == ProtocolLane::STATELESS) {
-                                    // Stateless lane: Do NOT send legacy polling - wait for push notifications
-                                    m_logger->info("[Worker_manager] → No action (stateless push notifications)");
-                                    m_logger->info("[Worker_manager]   Fresh template will arrive via STATELESS_GET_BLOCK push");
+                                    // Stateless lane: Re-send STATELESS_MINER_READY to prompt node state machine
+                                    m_logger->info("[Worker_manager] → Re-sending STATELESS_MINER_READY (no polling)");
+                                    m_logger->info("[Worker_manager]   Prompts node to push fresh STATELESS_GET_BLOCK");
+                                    auto* solo_conn_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
+                                    if (solo_conn_protocol && m_connection) {
+                                        auto miner_ready_payload = solo_conn_protocol->send_miner_ready();
+                                        if (miner_ready_payload && !miner_ready_payload->empty()) {
+                                            m_connection->transmit(miner_ready_payload);
+                                        }
+                                    }
                                 } else {
                                     m_logger->error("[Worker_manager] → Unknown protocol lane - cannot recover");
                                 }
@@ -450,7 +457,9 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     ProtocolLane lane = self->m_connection->get_protocol_lane();
                     uint16_t remote_port = self->m_connection->remote_endpoint().port();
                     
-                    self->m_logger->info("[Solo Lane] Protocol lane: {} (port {})", get_lane_name(lane), remote_port);
+                    self->m_logger->info("[Worker_manager Lane] Reading protocol lane from connection");
+                    self->m_logger->info("[Worker_manager Lane]   Lane: {} (port {})", get_lane_name(lane), remote_port);
+                    self->m_logger->info("[Worker_manager Lane]   Verifying lane agreement with Solo protocol layer");
                     
                     if (lane == ProtocolLane::LEGACY) {
                         // Legacy lane: Start GET_ROUND intelligent polling timer

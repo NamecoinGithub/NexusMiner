@@ -3115,11 +3115,12 @@ void Solo::initialize_protocol_lane(std::shared_ptr<network::Connection> connect
     
     // Log lane selection with loud formatting
     m_logger->info("═══════════════════════════════════════════════════════════");
-    m_logger->info("PROTOCOL LANE INITIALIZATION");
+    m_logger->info("PROTOCOL LANE INITIALIZATION (Solo Protocol Layer)");
     m_logger->info("═══════════════════════════════════════════════════════════");
     m_logger->info("Remote:          {}", remote_ep.to_string());
     m_logger->info("Remote Port:     {}", remote_port);
     m_logger->info("Selected Lane:   {}", get_lane_name(m_protocol_lane));
+    m_logger->info("Lane Source:     Port-determined (authoritative)");
     
     if (m_protocol_lane == ProtocolLane::LEGACY) {
         m_logger->info("Framing:         8-bit header (legacy)");
