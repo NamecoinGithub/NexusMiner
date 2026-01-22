@@ -301,23 +301,16 @@ private:
     void initialize_protocol_lane(std::shared_ptr<network::Connection> connection);
     
     // ═══════════════════════════════════════════════════════════════════════
-    // DEPRECATED: STATELESS PROTOCOL AUTO-NEGOTIATION STATE (REMOVED)
+    // PROTOCOL LANE DETERMINATION
     // ═══════════════════════════════════════════════════════════════════════
-    // DEPRECATED: Auto-negotiation and timeout logic removed in favor of strict
-    // port-lane separation. Variables kept for API compatibility but no longer used.
-    // TODO: Remove in future cleanup once all callers are verified safe.
-    
-    // Protocol mode tracking (atomic for thread safety)
-    // These are no longer used but kept for API compatibility:
-    std::atomic<bool> m_stateless_protocol_active;           // UNUSED: Lane determined by port
-    std::atomic<bool> m_waiting_for_stateless_response;      // UNUSED: No negotiation
-    std::atomic<int64_t> m_miner_ready_sent_time_ns;         // UNUSED: No timeout
-    
-    // Configuration constants for stateless protocol negotiation (UNUSED)
-    static constexpr uint32_t STATELESS_PROTOCOL_TIMEOUT_SECONDS = 5;  // UNUSED
-    
-    // DEPRECATED: No-op stub kept for API compatibility
-    void check_stateless_protocol_timeout(std::shared_ptr<network::Connection> connection);
+    // Protocol lane is strictly determined by connection port (no negotiation/fallback):
+    // - Port 8323: Legacy lane (8-bit opcodes, polling)
+    // - Port 9323+: Stateless lane (16-bit opcodes, push notifications)
+    // 
+    // State is anchored on:
+    // - m_protocol_lane: Authoritative lane identifier (set at connection time)
+    // - m_auth_state: Authentication state (managed by session manager)
+    // - Push readiness: Inferred from actual template delivery events
 };
 
 }
