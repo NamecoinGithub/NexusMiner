@@ -954,8 +954,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
     }
     
-    // Check for stateless protocol timeout (DEPRECATED - will be removed)
-    check_stateless_protocol_timeout(connection);
+    // DEPRECATED: Stateless protocol timeout check removed - protocol lane is now determined by port
+    // The check_stateless_protocol_timeout() function is now a no-op (see line ~3166)
     
     // Reject invalid packets at the start
     if (!packet.m_is_valid) {
@@ -3165,46 +3165,21 @@ void Solo::initialize_protocol_lane(std::shared_ptr<network::Connection> connect
 
 void Solo::check_stateless_protocol_timeout(std::shared_ptr<network::Connection> connection)
 {
-    // DEPRECATED: This function will be removed
-    // Stateless protocol is now determined by port, not by negotiation
-    
-    // Only check if we're waiting for a stateless response
-    if (!m_waiting_for_stateless_response) {
-        return;
-    }
-    
-    // Calculate elapsed time since MINER_READY was sent
-    auto now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
-    auto sent_ns = m_miner_ready_sent_time_ns.load();
-    auto elapsed_seconds = (now_ns - sent_ns) / 1000000000;  // Convert nanoseconds to seconds
-    
-    // Check if timeout expired
-    if (elapsed_seconds >= STATELESS_PROTOCOL_TIMEOUT_SECONDS) {
-        // Timeout: Node doesn't support stateless protocol
-        m_waiting_for_stateless_response = false;
-        m_stateless_protocol_active = false;
-        
-        m_logger->warn("[Solo Protocol] ═══════════════════════════════════════");
-        m_logger->warn("[Solo Protocol] ⏱️  STATELESS_GET_BLOCK timeout ({}s)", 
-                      STATELESS_PROTOCOL_TIMEOUT_SECONDS);
-        m_logger->warn("[Solo Protocol] Node doesn't support stateless protocol");
-        m_logger->info("[Solo Protocol] Falling back to legacy GET_ROUND polling");
-        m_logger->warn("[Solo Protocol] ═══════════════════════════════════════");
-        
-        // Start legacy polling by sending initial GET_ROUND
-        if (connection) {
-            m_logger->info("[Solo Protocol] Sending initial GET_ROUND (0x85) - polling mode");
-            auto get_round_payload = send_get_round();
-            if (get_round_payload && !get_round_payload->empty()) {
-                connection->transmit(get_round_payload);
-                m_logger->info("[Solo Protocol] ✓ GET_ROUND transmitted - legacy polling active");
-            } else {
-                m_logger->error("[Solo Protocol] Failed to encode GET_ROUND packet");
-            }
-        } else {
-            m_logger->error("[Solo Protocol] No connection available for fallback GET_ROUND");
-        }
-    }
+    // DEPRECATED NO-OP: This function is no longer used
+    // Protocol lane is now strictly determined by port at connection time.
+    // There is no negotiation or timeout - lane is set once and never changes.
+    // 
+    // Historical context:
+    // - Old behavior: Send MINER_READY and wait for response, with timeout fallback
+    // - New behavior: Port determines lane (8323=LEGACY, 9323+=STATELESS), no fallback
+    // 
+    // TODO: Remove this function and related state variables in future cleanup:
+    // - m_waiting_for_stateless_response
+    // - m_miner_ready_sent_time_ns
+    // - STATELESS_PROTOCOL_TIMEOUT_SECONDS
+    // 
+    // Kept as no-op stub to avoid breaking callers during transition.
+    (void)connection;  // Suppress unused parameter warning
 }
 
 }
