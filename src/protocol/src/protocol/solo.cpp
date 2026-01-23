@@ -11,6 +11,7 @@
 #include "hex_utils.h"
 #include <openssl/sha.h>
 #include <chrono>
+#include <algorithm>
 #include <sstream>
 #include <iomanip>
 #include <stdexcept>
@@ -116,7 +117,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_reward_bound{false}  // Not bound until successful MINER_REWARD_RESULT
 , m_last_round_status{false, 0, 0, 0, 0, 0, false}  // Initialize GET_ROUND status (with difficulty and channel heights)
 , m_last_get_round_time{std::chrono::steady_clock::now()}  // Initialize to now
-, m_current_poll_interval_ms{POLL_INTERVAL_MIN_MS}  // Start at minimum interval (5s)
+, m_current_poll_interval_ms{POLL_INTERVAL_MIN_MS}  // Start at minimum interval (configured)
 , m_needs_initial_round_check{false}  // No template yet
 , m_template_unified_height{0}  // No template yet
 , m_protocol_lane{ProtocolLane::UNKNOWN}  // Will be determined from connection port
@@ -1391,6 +1392,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
         
+        uint32_t previous_channel_height = m_last_round_status.get_channel_height(m_channel);
+
         // Determine channel name for logging
         std::string channel_name = get_channel_name(m_channel);
         
@@ -1472,7 +1475,12 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         
         // Update intelligent polling state
-        on_new_round_received(unified_height);
+        if (channel_height == 0 || channel_height == previous_channel_height) {
+            m_logger->info("[Solo GET_ROUND] NEW_ROUND received but channel height unchanged; treating as OLD_ROUND/backoff");
+            on_old_round_received();
+        } else {
+            on_new_round_received(unified_height);
+        }
     }
     // Handle OLD_ROUND response (LLL-TAO PR #151 - 12-byte format, legacy 16-byte compatibility)
     else if (packet.m_header == Packet::OLD_ROUND)
@@ -3149,6 +3157,8 @@ void Solo::on_new_round_received(uint32_t new_unified_height)
 {
     // NEW_ROUND = block was found, reset to fast polling
     m_current_poll_interval_ms = POLL_INTERVAL_MIN_MS;
+    // Hard clamp: never allow polling below configured minimum
+    m_current_poll_interval_ms = std::max(m_current_poll_interval_ms, POLL_INTERVAL_MIN_MS);
     m_logger->info("[Solo Poll] 🔔 NEW_ROUND received! Reset poll interval to {}ms", 
         m_current_poll_interval_ms);
     
@@ -3164,6 +3174,8 @@ void Solo::on_old_round_received()
     // This avoids floating-point precision issues
     uint32_t new_interval = m_current_poll_interval_ms + (m_current_poll_interval_ms >> 1);
     m_current_poll_interval_ms = std::min(new_interval, POLL_INTERVAL_MAX_MS);
+    // Hard clamp: never allow polling below configured minimum
+    m_current_poll_interval_ms = std::max(m_current_poll_interval_ms, POLL_INTERVAL_MIN_MS);
     
     if (m_current_poll_interval_ms != old_interval) {
         m_logger->debug("[Solo Poll] OLD_ROUND: backing off interval {}ms → {}ms",
