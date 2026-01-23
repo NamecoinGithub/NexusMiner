@@ -1,12 +1,12 @@
-# GET_ROUND Protocol: Clean 12-Byte Implementation
+# GET_ROUND Protocol: 12-Byte + Legacy Compatibility
 
 ## Overview
 
-NexusMiner uses a **single, clean protocol format** for GET_ROUND/NEW_ROUND/OLD_ROUND responses, matching LLL-TAO PR #151 exactly.
+NexusMiner prefers the **12-byte protocol format** for GET_ROUND/NEW_ROUND/OLD_ROUND responses (LLL-TAO PR #151), but the legacy lane also accepts the 16-byte multi-channel format for compatibility.
 
 ## Protocol Specification
 
-### Response Format (12 bytes ONLY)
+### Response Format (12 bytes preferred)
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -24,7 +24,8 @@ NexusMiner uses a **single, clean protocol format** for GET_ROUND/NEW_ROUND/OLD_
 │             │               │ target                │
 └─────────────┴───────────────┴───────────────────────┘
 
-Total: 12 bytes (STRICT - no other sizes accepted)
+Total: 12 bytes (preferred)
+Legacy: 16 bytes (unified + prime + hash + stake) in legacy lane; miner derives channel height from the active channel.
 ```
 
 ### Example (Prime Miner)
@@ -62,47 +63,21 @@ Node → Miner:  NEW_ROUND (opcode 204)
 
 ## Migration
 
-**BREAKING CHANGE:** Clean break, no backward compatibility.
-
-**Requirements:**
-- Node: LLL-TAO PR #151+ (commit 70e74ce5db37 or later)
-- Miner: This PR (12-byte parsing only)
-
-**Deployment:**
-1. Deploy LLL-TAO node update first
-2. Deploy NexusMiner update
-3. All miners MUST upgrade (old miners will not work)
-
-## Code Cleanup
-
-### Removed Code (Legacy Support)
-
-- ❌ 4-byte parsing (legacy unified height only)
-- ❌ 16-byte parsing (legacy multi-channel)
-- ❌ Protocol version detection logic
-- ❌ Backward compatibility flags
-- ❌ Fallback mechanisms
-
-### Simplified Code (Clean)
-
-- ✅ Single format: 12 bytes
-- ✅ Single validation: packet.m_length == 12
-- ✅ Single parsing path: unified + channel + difficulty
-- ✅ Clear error messages: "Expected 12 bytes"
-- ✅ No confusion: One way to do it
+**Legacy compatibility:** Legacy lane miners accept both 12-byte and 16-byte responses. Stateless lane remains strict.
 
 ## Validation Rules
 
-**STRICT:** Any packet that is not exactly 12 bytes is REJECTED.
+**Legacy lane:** Accepts 12 or 16 bytes.
+**Stateless lane:** Strict 12-byte responses only.
 
 ```cpp
-// ✅ VALID
+// ✅ VALID (legacy lane)
 packet.m_length == 12 && packet.m_data != nullptr
+packet.m_length == 16 && packet.m_data != nullptr
 
-// ❌ INVALID (all rejected)
+// ❌ INVALID (legacy lane examples)
 packet.m_length == 4   // Legacy
 packet.m_length == 8   // Invalid
-packet.m_length == 16  // Legacy multi-channel
 packet.m_length == 20  // Invalid
 packet.m_data == nullptr  // Null data
 ```
@@ -125,15 +100,15 @@ packet.m_data == nullptr  // Null data
 [Solo GET_ROUND] ✓ Template valid - Prime height unchanged
 ```
 
-### Protocol Error (Wrong Node Version)
+### Protocol Error (Invalid Packet Length)
 
 ```
 [Solo GET_ROUND] NEW_ROUND response received
 [Solo GET_ROUND] ❌ PROTOCOL ERROR: Invalid packet length
 [Solo GET_ROUND]   Expected:  12 bytes (unified + channel + difficulty)
-[Solo GET_ROUND]   Received:  16 bytes
+[Solo GET_ROUND]              16 bytes (unified + prime + hash + stake)
+[Solo GET_ROUND]   Received:  20 bytes
 [Solo GET_ROUND]   Node may be running incompatible version
-[Solo GET_ROUND]   Required:  LLL-TAO PR #151 or later
 ```
 
 ## Template Staleness Detection
@@ -174,62 +149,3 @@ T1: Prime block mined (our channel advanced!)
     Check: 2301207 == (2301207 - 1)? NO ❌
     Action: Discard template, request fresh work
 ```
-
-## Performance Improvements
-
-| Metric | Before (16-byte) | After (12-byte) | Improvement |
-|--------|------------------|-----------------|-------------|
-| **Packet Size** | 16 bytes | 12 bytes | ✅ -25% |
-| **Wasted Work** | ~40% | <5% | ✅ -87.5% |
-| **Staleness Detection** | 60s timeout | 5-10s real-time | ✅ 6-12x faster |
-| **False Positives** | High | Minimal | ✅ 95% reduction |
-| **Code Complexity** | 3 paths | 1 path | ✅ Simplified |
-
-## Testing
-
-```bash
-# Build
-cd NexusMiner
-make clean
-make
-
-# Run with updated node
-./build/NexusMiner --config miner.conf
-
-# Verify logs show "12 bytes"
-# Look for:
-#   [Solo GET_ROUND] NEW_ROUND response received
-#   [Solo GET_ROUND] 🔔 NEW_ROUND:
-#   [Solo GET_ROUND]   Prime height: XXXXXX
-```
-
-## Security Considerations
-
-- ✅ Strict packet size validation (prevents buffer overflows)
-- ✅ Big-endian parsing (consistent with LLL-TAO)
-- ✅ Channel validation (prevents invalid channel values)
-- ✅ Null pointer checks (prevents crashes)
-- ✅ Clear error messages (aids troubleshooting)
-
-## References
-
-- **LLL-TAO PR #151:** 12-byte GET_ROUND response (node-side)
-- **Commit:** 70e74ce5db37 or later
-- **Previous Implementation:** MULTI_CHANNEL_HEIGHT_TRACKING.md (legacy, removed)
-
-## Conclusion
-
-This implementation provides:
-
-- **Clean, simple protocol**: One format, one code path
-- **Accurate staleness detection**: Channel-specific, real-time
-- **Better performance**: -25% packet size, <5% wasted work
-- **No backward compatibility baggage**: Clean break, clean code
-
-**Status:** ✅ **PRODUCTION READY**
-
----
-
-**Document Version:** 2.0  
-**Last Updated:** 2026-01-08  
-**Implementation Status:** ✅ COMPLETE
