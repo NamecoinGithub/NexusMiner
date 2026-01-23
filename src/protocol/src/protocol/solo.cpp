@@ -1334,55 +1334,110 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             connection->transmit(work_payload);
         }
     }
-    // Handle NEW_ROUND response (LLL-TAO PR #151 - 12-byte format ONLY)
+    // Handle NEW_ROUND response (LLL-TAO PR #151 - 12-byte format, legacy 16-byte compatibility)
     else if (packet.m_header == Packet::NEW_ROUND)
     {
         m_logger->info("[Solo GET_ROUND] NEW_ROUND response received");
         
-        // ✅ STRICT VALIDATION: ONLY 12 bytes accepted
-        if (!packet.m_data || packet.m_length != 12) {
+        bool legacy_lane = (m_protocol_lane == ProtocolLane::LEGACY);
+        bool valid_length = (packet.m_length == 12) || (legacy_lane && packet.m_length == 16);
+        
+        // ✅ ACCEPTED FORMATS: 12 bytes (preferred) or 16 bytes (legacy multi-channel, legacy lane only)
+        if (!packet.m_data || !valid_length) {
             m_logger->error("[Solo GET_ROUND] ❌ PROTOCOL ERROR: Invalid packet length");
-            m_logger->error("[Solo GET_ROUND]   Expected:  12 bytes (unified + channel + difficulty)");
+            if (legacy_lane) {
+                m_logger->error("[Solo GET_ROUND]   Expected:  12 bytes (unified + channel + difficulty)");
+                m_logger->error("[Solo GET_ROUND]              16 bytes (unified + prime + hash + stake)");
+            } else {
+                m_logger->error("[Solo GET_ROUND]   Expected:  12 bytes (unified + channel + difficulty)");
+                m_logger->error("[Solo GET_ROUND]   Lane:      {}", get_lane_name(m_protocol_lane));
+            }
             m_logger->error("[Solo GET_ROUND]   Received:  {} bytes", packet.m_length);
             m_logger->error("[Solo GET_ROUND]   Node may be running incompatible version");
             m_logger->error("[Solo GET_ROUND]   Required:  LLL-TAO PR #151 or later");
             return;
         }
         
-        // Parse 12-byte response (all big-endian)
-        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
-        uint32_t channel_height = bytes2uint(*packet.m_data, 4);
-        uint32_t difficulty = bytes2uint(*packet.m_data, 8);
+        uint32_t unified_height = 0;
+        uint32_t channel_height = 0;
+        uint32_t difficulty = m_last_round_status.difficulty;
+        uint32_t prime_height = 0;
+        uint32_t hash_height = 0;
+        uint32_t stake_height = 0;
+        bool has_difficulty = false;
+        bool is_legacy_multichannel = legacy_lane && (packet.m_length == 16);
+        
+        if (packet.m_length == 12) {
+            // Parse 12-byte response (all big-endian)
+            unified_height = bytes2uint(*packet.m_data, 0);
+            channel_height = bytes2uint(*packet.m_data, 4);
+            difficulty = bytes2uint(*packet.m_data, 8);
+            has_difficulty = true;
+        } else {
+            // Parse 16-byte legacy response (all big-endian)
+            unified_height = bytes2uint(*packet.m_data, 0);
+            prime_height = bytes2uint(*packet.m_data, 4);
+            hash_height = bytes2uint(*packet.m_data, 8);
+            stake_height = bytes2uint(*packet.m_data, 12);
+            
+            if (m_channel == mining::CHANNEL_PRIME) {
+                channel_height = prime_height;
+            } else if (m_channel == mining::CHANNEL_HASH) {
+                channel_height = hash_height;
+            } else {
+                m_logger->error("[Solo GET_ROUND] Invalid channel: {}", m_channel);
+                m_logger->error("[Solo GET_ROUND] Expected 1 (Prime) or 2 (Hash), got {}", m_channel);
+                return;
+            }
+        }
         
         // Determine channel name for logging
         std::string channel_name = get_channel_name(m_channel);
         
         // Log response details
-        m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND:");
-        m_logger->info("[Solo GET_ROUND]   Unified height:  {} (reference)", unified_height);
-        m_logger->info("[Solo GET_ROUND]   {} height:      {}", channel_name, channel_height);
-        m_logger->info("[Solo GET_ROUND]   Difficulty:      0x{:08x}", difficulty);
+        if (is_legacy_multichannel) {
+            m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (legacy 16-byte format):");
+            m_logger->info("[Solo GET_ROUND]   Unified height:  {} (reference)", unified_height);
+            m_logger->info("[Solo GET_ROUND]   Prime height:    {}", prime_height);
+            m_logger->info("[Solo GET_ROUND]   Hash height:     {}", hash_height);
+            m_logger->info("[Solo GET_ROUND]   Stake height:    {}", stake_height);
+            m_logger->info("[Solo GET_ROUND]   {} height:      {} (derived)", channel_name, channel_height);
+            m_logger->info("[Solo GET_ROUND]   Difficulty:      (unchanged; not in 16-byte payload)");
+        } else {
+            m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (12-byte format):");
+            m_logger->info("[Solo GET_ROUND]   Unified height:  {} (reference)", unified_height);
+            m_logger->info("[Solo GET_ROUND]   {} height:      {}", channel_name, channel_height);
+            m_logger->info("[Solo GET_ROUND]   Difficulty:      0x{:08x}", difficulty);
+        }
         
         // Update RoundStatus
         m_last_round_status.is_new_round = true;
         m_last_round_status.height = unified_height;
-        m_last_round_status.difficulty = difficulty;
+        if (has_difficulty) {
+            m_last_round_status.difficulty = difficulty;
+        }
         m_last_round_status.has_channel_heights = true;
         
         // Set channel-specific height based on miner's channel
         // Reset all channels first, then set only the active channel
-        m_last_round_status.prime_height = 0;
-        m_last_round_status.hash_height = 0;
-        m_last_round_status.stake_height = 0;
-        
-        if (m_channel == mining::CHANNEL_PRIME) {
-            m_last_round_status.prime_height = channel_height;
-        } else if (m_channel == mining::CHANNEL_HASH) {
-            m_last_round_status.hash_height = channel_height;
+        if (is_legacy_multichannel) {
+            m_last_round_status.prime_height = prime_height;
+            m_last_round_status.hash_height = hash_height;
+            m_last_round_status.stake_height = stake_height;
         } else {
-            m_logger->error("[Solo GET_ROUND] Invalid channel: {}", m_channel);
-            m_logger->error("[Solo GET_ROUND] Expected 1 (Prime) or 2 (Hash), got {}", m_channel);
-            return;
+            m_last_round_status.prime_height = 0;
+            m_last_round_status.hash_height = 0;
+            m_last_round_status.stake_height = 0;
+            
+            if (m_channel == mining::CHANNEL_PRIME) {
+                m_last_round_status.prime_height = channel_height;
+            } else if (m_channel == mining::CHANNEL_HASH) {
+                m_last_round_status.hash_height = channel_height;
+            } else {
+                m_logger->error("[Solo GET_ROUND] Invalid channel: {}", m_channel);
+                m_logger->error("[Solo GET_ROUND] Expected 1 (Prime) or 2 (Hash), got {}", m_channel);
+                return;
+            }
         }
         
         // Use sync_template_state to handle: channel manager updates, fork detection, 
@@ -1419,51 +1474,106 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Update intelligent polling state
         on_new_round_received(unified_height);
     }
-    // Handle OLD_ROUND response (LLL-TAO PR #151 - 12-byte format ONLY)
+    // Handle OLD_ROUND response (LLL-TAO PR #151 - 12-byte format, legacy 16-byte compatibility)
     else if (packet.m_header == Packet::OLD_ROUND)
     {
         m_logger->info("[Solo GET_ROUND] OLD_ROUND response received");
         
-        // ✅ STRICT VALIDATION: ONLY 12 bytes accepted
-        if (!packet.m_data || packet.m_length != 12) {
+        bool legacy_lane = (m_protocol_lane == ProtocolLane::LEGACY);
+        bool valid_length = (packet.m_length == 12) || (legacy_lane && packet.m_length == 16);
+        
+        // ✅ ACCEPTED FORMATS: 12 bytes (preferred) or 16 bytes (legacy multi-channel, legacy lane only)
+        if (!packet.m_data || !valid_length) {
             m_logger->error("[Solo GET_ROUND] ❌ PROTOCOL ERROR: Invalid packet length");
-            m_logger->error("[Solo GET_ROUND]   Expected:  12 bytes");
+            if (legacy_lane) {
+                m_logger->error("[Solo GET_ROUND]   Expected:  12 bytes (unified + channel + difficulty)");
+                m_logger->error("[Solo GET_ROUND]              16 bytes (unified + prime + hash + stake)");
+            } else {
+                m_logger->error("[Solo GET_ROUND]   Expected:  12 bytes (unified + channel + difficulty)");
+                m_logger->error("[Solo GET_ROUND]   Lane:      {}", get_lane_name(m_protocol_lane));
+            }
             m_logger->error("[Solo GET_ROUND]   Received:  {} bytes", packet.m_length);
             return;
         }
         
-        // Parse 12-byte response (all big-endian)
-        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
-        uint32_t channel_height = bytes2uint(*packet.m_data, 4);
-        uint32_t difficulty = bytes2uint(*packet.m_data, 8);
+        uint32_t unified_height = 0;
+        uint32_t channel_height = 0;
+        uint32_t difficulty = m_last_round_status.difficulty;
+        uint32_t prime_height = 0;
+        uint32_t hash_height = 0;
+        uint32_t stake_height = 0;
+        bool has_difficulty = false;
+        bool is_legacy_multichannel = legacy_lane && (packet.m_length == 16);
+        
+        if (packet.m_length == 12) {
+            // Parse 12-byte response (all big-endian)
+            unified_height = bytes2uint(*packet.m_data, 0);
+            channel_height = bytes2uint(*packet.m_data, 4);
+            difficulty = bytes2uint(*packet.m_data, 8);
+            has_difficulty = true;
+        } else {
+            // Parse 16-byte legacy response (all big-endian)
+            unified_height = bytes2uint(*packet.m_data, 0);
+            prime_height = bytes2uint(*packet.m_data, 4);
+            hash_height = bytes2uint(*packet.m_data, 8);
+            stake_height = bytes2uint(*packet.m_data, 12);
+            
+            if (m_channel == mining::CHANNEL_PRIME) {
+                channel_height = prime_height;
+            } else if (m_channel == mining::CHANNEL_HASH) {
+                channel_height = hash_height;
+            } else {
+                m_logger->error("[Solo GET_ROUND] Invalid channel: {}", m_channel);
+                m_logger->error("[Solo GET_ROUND] Expected 1 (Prime) or 2 (Hash), got {}", m_channel);
+                return;
+            }
+        }
         
         std::string channel_name = get_channel_name(m_channel);
         
-        m_logger->info("[Solo GET_ROUND] ✓ OLD_ROUND (template still valid):");
-        m_logger->info("[Solo GET_ROUND]   Unified:  {}", unified_height);
-        m_logger->info("[Solo GET_ROUND]   {} height: {} (unchanged)", channel_name, channel_height);
-        m_logger->info("[Solo GET_ROUND]   Difficulty: 0x{:08x}", difficulty);
+        if (is_legacy_multichannel) {
+            m_logger->info("[Solo GET_ROUND] ✓ OLD_ROUND (legacy 16-byte format):");
+            m_logger->info("[Solo GET_ROUND]   Unified:       {}", unified_height);
+            m_logger->info("[Solo GET_ROUND]   Prime height:  {}", prime_height);
+            m_logger->info("[Solo GET_ROUND]   Hash height:   {}", hash_height);
+            m_logger->info("[Solo GET_ROUND]   Stake height:  {}", stake_height);
+            m_logger->info("[Solo GET_ROUND]   {} height:   {} (derived)", channel_name, channel_height);
+            m_logger->info("[Solo GET_ROUND]   Difficulty:    (unchanged; not in 16-byte payload)");
+        } else {
+            m_logger->info("[Solo GET_ROUND] ✓ OLD_ROUND (12-byte format):");
+            m_logger->info("[Solo GET_ROUND]   Unified:  {}", unified_height);
+            m_logger->info("[Solo GET_ROUND]   {} height: {} (unchanged)", channel_name, channel_height);
+            m_logger->info("[Solo GET_ROUND]   Difficulty: 0x{:08x}", difficulty);
+        }
         
         // Update RoundStatus
         m_last_round_status.is_new_round = false;
         m_last_round_status.height = unified_height;
-        m_last_round_status.difficulty = difficulty;
+        if (has_difficulty) {
+            m_last_round_status.difficulty = difficulty;
+        }
         m_last_round_status.has_channel_heights = true;
         
         // Set channel-specific height based on miner's channel
         // Reset all channels first, then set only the active channel
-        m_last_round_status.prime_height = 0;
-        m_last_round_status.hash_height = 0;
-        m_last_round_status.stake_height = 0;
-        
-        if (m_channel == mining::CHANNEL_PRIME) {
-            m_last_round_status.prime_height = channel_height;
-        } else if (m_channel == mining::CHANNEL_HASH) {
-            m_last_round_status.hash_height = channel_height;
+        if (is_legacy_multichannel) {
+            m_last_round_status.prime_height = prime_height;
+            m_last_round_status.hash_height = hash_height;
+            m_last_round_status.stake_height = stake_height;
         } else {
-            m_logger->error("[Solo GET_ROUND] Invalid channel: {}", m_channel);
-            m_logger->error("[Solo GET_ROUND] Expected 1 (Prime) or 2 (Hash), got {}", m_channel);
-            return;
+            m_last_round_status.prime_height = 0;
+            m_last_round_status.hash_height = 0;
+            m_last_round_status.stake_height = 0;
+            
+            if (m_channel == mining::CHANNEL_PRIME) {
+                m_last_round_status.prime_height = channel_height;
+            } else if (m_channel == mining::CHANNEL_HASH) {
+                m_last_round_status.hash_height = channel_height;
+            } else {
+                m_logger->error("[Solo GET_ROUND] Invalid channel: {}", m_channel);
+                m_logger->error("[Solo GET_ROUND] Expected 1 (Prime) or 2 (Hash), got {}", m_channel);
+                return;
+            }
         }
         
         // Use sync_template_state to handle: channel manager updates, fork detection,
