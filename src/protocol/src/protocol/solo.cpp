@@ -117,7 +117,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_reward_bound{false}  // Not bound until successful MINER_REWARD_RESULT
 , m_last_round_status{false, 0, 0, 0, 0, 0, false}  // Initialize GET_ROUND status (with difficulty and channel heights)
 , m_last_get_round_time{std::chrono::steady_clock::now()}  // Initialize to now
-, m_current_poll_interval_ms{POLL_INTERVAL_MIN_MS}  // Start at minimum interval (10s)
+, m_current_poll_interval_ms{POLL_INTERVAL_MIN_MS}  // Start at minimum interval (configured)
 , m_needs_initial_round_check{false}  // No template yet
 , m_template_unified_height{0}  // No template yet
 , m_protocol_lane{ProtocolLane::UNKNOWN}  // Will be determined from connection port
@@ -3161,8 +3161,8 @@ bool Solo::should_poll_get_round()
 void Solo::on_new_round_received(uint32_t new_unified_height)
 {
     // NEW_ROUND = block was found, reset to fast polling
-    m_current_poll_interval_ms = POLL_INTERVAL_MIN_MS;
-    m_current_poll_interval_ms = std::max(m_current_poll_interval_ms, POLL_INTERVAL_MIN_MS);
+    uint32_t new_interval = POLL_INTERVAL_MIN_MS;
+    m_current_poll_interval_ms = std::max(new_interval, POLL_INTERVAL_MIN_MS);
     m_logger->info("[Solo Poll] 🔔 NEW_ROUND received! Reset poll interval to {}ms", 
         m_current_poll_interval_ms);
     
