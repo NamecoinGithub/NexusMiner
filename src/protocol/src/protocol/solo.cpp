@@ -3161,8 +3161,7 @@ bool Solo::should_poll_get_round()
 void Solo::on_new_round_received(uint32_t new_unified_height)
 {
     // NEW_ROUND = block was found, reset to fast polling
-    uint32_t new_interval = POLL_INTERVAL_MIN_MS;
-    m_current_poll_interval_ms = std::max(new_interval, POLL_INTERVAL_MIN_MS);
+    m_current_poll_interval_ms = POLL_INTERVAL_MIN_MS;
     m_logger->info("[Solo Poll] 🔔 NEW_ROUND received! Reset poll interval to {}ms", 
         m_current_poll_interval_ms);
     
