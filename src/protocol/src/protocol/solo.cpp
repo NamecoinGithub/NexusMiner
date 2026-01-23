@@ -1392,12 +1392,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
         
-        uint32_t previous_channel_height = 0;
-        if (m_channel == mining::CHANNEL_PRIME) {
-            previous_channel_height = m_last_round_status.prime_height;
-        } else if (m_channel == mining::CHANNEL_HASH) {
-            previous_channel_height = m_last_round_status.hash_height;
-        }
+        uint32_t previous_channel_height = m_last_round_status.get_channel_height(m_channel);
 
         // Determine channel name for logging
         std::string channel_name = get_channel_name(m_channel);
