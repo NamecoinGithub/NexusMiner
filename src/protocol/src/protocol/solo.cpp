@@ -3162,6 +3162,8 @@ void Solo::on_new_round_received(uint32_t new_unified_height)
 {
     // NEW_ROUND = block was found, reset to fast polling
     m_current_poll_interval_ms = POLL_INTERVAL_MIN_MS;
+    // Hard clamp: never allow polling below configured minimum
+    m_current_poll_interval_ms = std::max(m_current_poll_interval_ms, POLL_INTERVAL_MIN_MS);
     m_logger->info("[Solo Poll] 🔔 NEW_ROUND received! Reset poll interval to {}ms", 
         m_current_poll_interval_ms);
     
@@ -3177,6 +3179,7 @@ void Solo::on_old_round_received()
     // This avoids floating-point precision issues
     uint32_t new_interval = m_current_poll_interval_ms + (m_current_poll_interval_ms >> 1);
     m_current_poll_interval_ms = std::min(new_interval, POLL_INTERVAL_MAX_MS);
+    // Hard clamp: never allow polling below configured minimum
     m_current_poll_interval_ms = std::max(m_current_poll_interval_ms, POLL_INTERVAL_MIN_MS);
     
     if (m_current_poll_interval_ms != old_interval) {
