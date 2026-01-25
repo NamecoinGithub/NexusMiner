@@ -2929,25 +2929,30 @@ bool Solo::validate_current_template()
         return true;  // No template to validate - that's OK
     }
     
-    // Get expected heights from channel manager (single source of truth)
-    auto [expectedUnified, expectedChannel] = pManager->GetExpectedHeights();
+    // Get expected channel height from channel manager
+    auto expectedHeights = pManager->GetExpectedHeights();
+    uint32_t expectedChannel = expectedHeights.second;
     
-    // Get template height
-    uint32_t templateHeight = m_template_interface->get_template_height();
+    // Get current template
+    auto const* tmpl = m_template_interface->get_current_template();
+    if (!tmpl) {
+        return true;
+    }
     
-    // Validation 1: Unified height (mirrors Block::Accept)
-    if (templateHeight != expectedUnified) {
-        m_logger->warn("[Solo Validate] Unified height mismatch: template={}, expected={}",
-            templateHeight, expectedUnified);
-        m_template_interface->discard_template("Unified height stale");
+    // Validation: Channel height only (unified height may advance due to other channels)
+    if (expectedChannel != 0 && tmpl->nChannelHeight != 0 && tmpl->nChannelHeight != expectedChannel) {
+        m_logger->warn("[Solo Validate] Channel height mismatch: template={}, expected={}",
+            tmpl->nChannelHeight, expectedChannel);
+        m_logger->warn("[Solo Validate] Unified height mismatch is expected when other channels advance");
+        m_template_interface->discard_template("Channel height stale");
         return false;
     }
     
     // Note: Age timeout validation (60s safety net) is handled internally by
     // MiningTemplateInterface. No additional validation needed here.
     
-    m_logger->debug("[Solo Validate] ✓ Template valid (height={}, channel={})", 
-        templateHeight, pManager->GetChannelName());
+    m_logger->debug("[Solo Validate] ✓ Template valid (channel={}, unified={})", 
+        pManager->GetChannelName(), tmpl->block.nHeight);
     return true;
 }
 

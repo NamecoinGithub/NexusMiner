@@ -238,12 +238,12 @@ public:
     bool update_channel_height(uint32_t channel, uint32_t new_channel_height);
     
     /**
-     * @brief Set the channel height for the current template
+     * @brief Set the node channel height for the current template
      * 
      * Called when template is finalized after receiving GET_ROUND response.
-     * Template builds NEXT block, so channel height = node height + 1.
+     * Template builds NEXT block, so template channel height = node height + 1.
      * 
-     * @param channel_height Channel height for the template
+     * @param channel_height Node channel height from GET_ROUND
      */
     void set_channel_height(uint32_t channel_height);
     
@@ -387,6 +387,7 @@ private:
      * @return ValidationResult
      */
     ValidationResult validate_template(const MiningTemplate& tmpl);
+    uint32_t get_node_channel_height() const;
     
     /**
      * @brief Parse block header from raw bytes
@@ -406,6 +407,7 @@ private:
     uint8_t m_channel;
     uint32_t m_session_id;
     uint32_t m_current_height;
+    uint32_t m_current_channel_height;
     
     MiningTemplate m_current_template;
     TemplateFeedHandler m_feed_handler;
