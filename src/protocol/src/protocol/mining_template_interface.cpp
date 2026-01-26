@@ -12,6 +12,7 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     : m_channel(channel)
     , m_session_id(session_id)
     , m_current_height(0)
+    , m_current_channel_height(0)
     , m_feed_handler(nullptr)
     , m_logger(spdlog::get("logger"))
     , m_templates_received(0)
@@ -229,6 +230,11 @@ bool MiningTemplateInterface::has_valid_template_unsafe() const
     // ASSUMES: m_template_mutex is already locked by caller
     return m_current_template.state == TemplateState::VALIDATED ||
            m_current_template.state == TemplateState::ACTIVE;
+}
+
+uint32_t MiningTemplateInterface::get_node_channel_height() const
+{
+    return m_current_channel_height;
 }
 
 const MiningTemplateInterface::MiningTemplate* 
@@ -453,7 +459,10 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
         tmpl.block.nChannel, m_channel);
     m_logger->info("[TemplateInterface]   - nBits: 0x{:08x}", tmpl.block.nBits);
     m_logger->info("[TemplateInterface]   - nVersion: {}", tmpl.block.nVersion);
-    m_logger->info("[TemplateInterface]   - Current height: {}", m_current_height);
+    m_logger->info("[TemplateInterface]   - Unified height: {}", m_current_height);
+    m_logger->info("[TemplateInterface]   - Node channel height: {}", m_current_channel_height);
+    m_logger->info("[TemplateInterface]   - Channel height: {}",
+        (tmpl.nChannelHeight != 0) ? std::to_string(tmpl.nChannelHeight) : "pending");
     
     // ═══════════════════════════════════════════════════════════════════════
     // VALIDATE nChannel (CRITICAL - Do NOT overwrite, only validate)
@@ -486,17 +495,22 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
         tmpl.block.nChannel,
         (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
     
-    // Validate height is reasonable (not stale)
-    // Stale templates are marked as invalid since we don't want to mine on old blocks
-    if (m_current_height > 0 && tmpl.block.nHeight < m_current_height) {
-        result.is_stale = true;
-        result.height_valid = false;
-        result.is_valid = false;
-        result.error_message = "Template height " + std::to_string(tmpl.block.nHeight) + 
-            " is stale (current: " + std::to_string(m_current_height) + ")";
-        m_logger->warn("[TemplateInterface] ❌ VALIDATION FAILED: {}", result.error_message);
+    // Validate channel height if available (only mark stale when THIS channel advanced)
+    uint32_t node_channel_height = get_node_channel_height();
+    if (tmpl.nChannelHeight != 0 && node_channel_height > 0) {
+        uint32_t expected_height = tmpl.nChannelHeight;
+        if (node_channel_height >= expected_height) {
+            result.is_stale = true;
+            result.height_valid = false;
+            result.is_valid = false;
+            result.error_message = "Template channel height " + std::to_string(expected_height) +
+                " is stale (node channel height: " + std::to_string(node_channel_height) + ")";
+            m_logger->warn("[TemplateInterface] ❌ VALIDATION FAILED: {}", result.error_message);
+        } else {
+            m_logger->info("[TemplateInterface] ✓ Channel height validation passed");
+        }
     } else {
-        m_logger->info("[TemplateInterface] ✓ Height validation passed (not stale)");
+        m_logger->info("[TemplateInterface] ✓ Channel height pending, skipping staleness check");
     }
     
     // Validate nBits (difficulty) is non-zero
@@ -696,6 +710,8 @@ bool MiningTemplateInterface::update_channel_height(uint32_t channel, uint32_t n
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
     
+    m_current_channel_height = new_channel_height;
+
     m_logger->debug("[TemplateInterface] Channel {} height update: {}", 
         channel, new_channel_height);
     
@@ -749,6 +765,7 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
     }
     
     m_current_template.nChannelHeight = channel_height;
+    m_current_channel_height = (channel_height > 0) ? (channel_height - 1) : 0;
     m_logger->info("[TemplateInterface] ✓ Template channel height set to {}", channel_height);
 }
 

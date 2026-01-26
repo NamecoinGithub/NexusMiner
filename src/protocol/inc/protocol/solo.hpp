@@ -170,9 +170,9 @@ private:
     /**
      * @brief Check if current template is valid using channel manager state
      * 
-     * Performs dual-height validation mirroring NODE's Block::Accept():
-     * - Unified height: template.nHeight == node_unified + 1
+     * Validates channel-specific staleness:
      * - Channel height: template.nChannelHeight == node_channel + 1
+     * - Unified height differences are informational (other channels may advance)
      * - Age timeout: template age < 60 seconds
      * 
      * @return true if template valid, false if stale/invalid
