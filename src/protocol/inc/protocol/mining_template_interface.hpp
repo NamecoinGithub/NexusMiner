@@ -237,15 +237,15 @@ public:
      */
     bool update_channel_height(uint32_t channel, uint32_t new_channel_height);
     
-    /**
-     * @brief Set the channel height for the current template
-     * 
-     * Called when template is finalized after receiving GET_ROUND response.
-     * Template builds NEXT block, so channel height = node height + 1.
-     * 
-     * @param channel_height Channel height for the template
-     */
-    void set_channel_height(uint32_t channel_height);
+     /**
+      * @brief Set the current node channel height (used to finalize template height)
+      * 
+      * Called when template is finalized after receiving GET_ROUND response.
+      * Template builds NEXT block, so template channel height = node height + 1.
+      * 
+      * @param channel_height Current node channel height from GET_ROUND
+      */
+     void set_channel_height(uint32_t channel_height);
     
     /**
      * @brief Check if template needs channel height finalization
@@ -266,12 +266,19 @@ public:
      */
     void discard_template(const std::string& reason);
     
-    /**
-     * @brief Get current template height
-     * 
-     * @return Height of current template, 0 if no template
-     */
-    uint32_t get_template_height() const;
+     /**
+      * @brief Get current template height
+      * 
+      * @return Height of current template, 0 if no template
+      */
+     uint32_t get_template_height() const;
+     
+     /**
+      * @brief Get current node channel height
+      * 
+      * @return Current node channel height, 0 if unknown
+      */
+     uint32_t get_node_channel_height() const;
     
     // =========================================================================
     // Create Block Verification
@@ -405,7 +412,8 @@ private:
     // Member variables
     uint8_t m_channel;
     uint32_t m_session_id;
-    uint32_t m_current_height;
+     uint32_t m_current_height;
+     uint32_t m_current_channel_height;
     
     MiningTemplate m_current_template;
     TemplateFeedHandler m_feed_handler;
