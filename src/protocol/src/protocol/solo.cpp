@@ -1443,6 +1443,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
         
+        // Pass channel height to template interface for staleness validation
+        if (m_template_interface) {
+            m_template_interface->update_channel_height(m_channel, channel_height);
+            
+            m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
+                channel_height, 
+                (m_channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash");
+        }
+        
         // Use sync_template_state to handle: channel manager updates, fork detection, 
         // template finalization, and template validation
         bool template_valid = sync_template_state(unified_height, channel_height);
@@ -1582,6 +1591,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->error("[Solo GET_ROUND] Expected 1 (Prime) or 2 (Hash), got {}", m_channel);
                 return;
             }
+        }
+        
+        // Pass channel height to template interface for staleness validation
+        if (m_template_interface) {
+            m_template_interface->update_channel_height(m_channel, channel_height);
+            
+            m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
+                channel_height, 
+                (m_channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash");
         }
         
         // Use sync_template_state to handle: channel manager updates, fork detection,
