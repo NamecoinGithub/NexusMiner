@@ -236,6 +236,32 @@ public:
      * @return true if template was discarded due to channel height change
      */
     bool update_channel_height(uint32_t channel, uint32_t new_channel_height);
+
+    /**
+     * @brief Store channel height snapshot when template is received
+     *
+     * Used for legacy GET_ROUND delta staleness checks when template
+     * channel height is still pending.
+     *
+     * @param channel_height Current channel height from last GET_ROUND
+     */
+    void set_template_channel_height_snapshot(uint32_t channel_height);
+
+    /**
+     * @brief Clear template channel height snapshot
+     */
+    void clear_template_channel_height_snapshot();
+
+    /**
+     * @brief Check staleness by comparing current channel height to snapshot
+     *
+     * Template is stale only if the current channel height advanced past
+     * the height recorded when the template was received.
+     *
+     * @param current_channel_height Current channel height from GET_ROUND
+     * @return true if template is stale due to channel advance
+     */
+    bool check_staleness_by_channel_delta(uint32_t current_channel_height);
     
     /**
      * @brief Set the node channel height for the current template
@@ -408,6 +434,8 @@ private:
     uint32_t m_session_id;
     uint32_t m_current_height;
     uint32_t m_current_channel_height;
+    uint32_t m_template_channel_height_snapshot;
+    bool m_has_snapshot;
     
     MiningTemplate m_current_template;
     TemplateFeedHandler m_feed_handler;

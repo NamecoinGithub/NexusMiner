@@ -13,6 +13,8 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     , m_session_id(session_id)
     , m_current_height(0)
     , m_current_channel_height(0)
+    , m_template_channel_height_snapshot(0)
+    , m_has_snapshot(false)
     , m_feed_handler(nullptr)
     , m_logger(spdlog::get("logger"))
     , m_templates_received(0)
@@ -34,6 +36,8 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     m_current_template.session_id = session_id;
     m_current_template.timestamp_received = 0;
     m_current_template.nChannelHeight = 0;
+    m_template_channel_height_snapshot = 0;
+    m_has_snapshot = false;
     
     // Validate channel
     if (m_channel != 1 && m_channel != 2) {
@@ -299,6 +303,8 @@ void MiningTemplateInterface::mark_template_stale_unsafe(const std::string& reas
         
         m_logger->info("[TemplateInterface] Template marked stale{}{}", 
             reason.empty() ? "" : ": ", reason);
+        m_template_channel_height_snapshot = 0;
+        m_has_snapshot = false;
     }
 }
 
@@ -774,6 +780,44 @@ bool MiningTemplateInterface::update_channel_height(uint32_t channel, uint32_t n
     return false;
 }
 
+void MiningTemplateInterface::set_template_channel_height_snapshot(uint32_t channel_height)
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    m_template_channel_height_snapshot = channel_height;
+    m_has_snapshot = true;
+    m_logger->debug("[TemplateInterface] Snapshot channel height set to {}", channel_height);
+}
+
+void MiningTemplateInterface::clear_template_channel_height_snapshot()
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    m_template_channel_height_snapshot = 0;
+    m_has_snapshot = false;
+    m_logger->debug("[TemplateInterface] Snapshot channel height cleared");
+}
+
+bool MiningTemplateInterface::check_staleness_by_channel_delta(uint32_t current_channel_height)
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+
+    if (!m_has_snapshot) {
+        m_logger->debug("[TemplateInterface] No snapshot, skipping staleness check");
+        return false;
+    }
+
+    if (current_channel_height > m_template_channel_height_snapshot) {
+        m_logger->warn("[TemplateInterface] STALE: channel advanced from {} to {}",
+            m_template_channel_height_snapshot, current_channel_height);
+        discard_template_unsafe("Channel height advanced past snapshot");
+        m_templates_expired_height.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    m_logger->debug("[TemplateInterface] ✓ VALID: channel unchanged at {}",
+        current_channel_height);
+    return false;
+}
+
 void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
@@ -785,6 +829,8 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
     
     m_current_template.nChannelHeight = channel_height;
     m_current_channel_height = (channel_height > 0) ? (channel_height - 1) : 0;
+    m_template_channel_height_snapshot = 0;
+    m_has_snapshot = false;
     m_logger->info("[TemplateInterface] ✓ Template channel height set to {}", channel_height);
 }
 
@@ -809,6 +855,8 @@ void MiningTemplateInterface::discard_template_unsafe(const std::string& reason)
     
     // Mark as stale
     mark_template_stale_unsafe(reason);
+    m_template_channel_height_snapshot = 0;
+    m_has_snapshot = false;
 }
 
 bool MiningTemplateInterface::needs_channel_height_finalization() const
