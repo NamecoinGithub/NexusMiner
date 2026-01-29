@@ -282,6 +282,7 @@ void Solo::reset()
     if (m_template_interface) {
         m_template_interface->set_session_id(0);
         m_template_interface->reset_stats();
+        m_template_interface->clear_template_channel_height_snapshot();
     }
 }
 
@@ -1145,6 +1146,16 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             
             // Update height tracking
             m_current_height = tmpl->block.nHeight;
+
+            // Snapshot current channel height for legacy GET_ROUND delta staleness
+            if (m_last_round_status.has_channel_heights) {
+                uint32_t snapshot_height = m_last_round_status.get_channel_height(m_channel);
+                if (snapshot_height > 0) {
+                    m_template_interface->set_template_channel_height_snapshot(snapshot_height);
+                    m_logger->info("[Solo] Template snapshot: channel={} height={}",
+                        get_channel_name(m_channel), snapshot_height);
+                }
+            }
             
             // Trigger intelligent polling: template received, will poll once after 100ms
             on_template_received(tmpl->block.nHeight);
@@ -1446,6 +1457,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Pass channel height to template interface for staleness validation
         if (m_template_interface) {
             m_template_interface->update_channel_height(m_channel, channel_height);
+            m_template_interface->check_staleness_by_channel_delta(channel_height);
             
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
                 channel_height, 
@@ -1596,6 +1608,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Pass channel height to template interface for staleness validation
         if (m_template_interface) {
             m_template_interface->update_channel_height(m_channel, channel_height);
+            m_template_interface->check_staleness_by_channel_delta(channel_height);
             
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
                 channel_height, 
@@ -1703,6 +1716,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 // Update template interface with authenticated session ID (FALCON tunnel established)
                 if (m_template_interface) {
                     m_template_interface->set_session_id(m_session_id);
+                    m_template_interface->clear_template_channel_height_snapshot();
                     m_logger->info("[Solo Phase 2] FALCON tunnel established - Template interface bound to session");
                 }
             } else {
