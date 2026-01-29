@@ -496,18 +496,37 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
         (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
     
     // Validate channel height if available (only mark stale when THIS channel advanced)
+    // Use channel height from GET_ROUND - this is the CRITICAL staleness check
     uint32_t node_channel_height = get_node_channel_height();
+    
+    // Template semantics:
+    //   - nChannelHeight = height of block being mined (node_height + 1)
+    //   - node_channel_height = current height on blockchain for this channel
+    // Template is stale only if node's channel reached or passed the height we're mining for
     if (tmpl.nChannelHeight != 0 && node_channel_height > 0) {
-        uint32_t expected_height = tmpl.nChannelHeight;
-        if (node_channel_height >= expected_height) {
+        if (node_channel_height >= tmpl.nChannelHeight) {
             result.is_stale = true;
             result.height_valid = false;
             result.is_valid = false;
-            result.error_message = "Template channel height " + std::to_string(expected_height) +
-                " is stale (node channel height: " + std::to_string(node_channel_height) + ")";
-            m_logger->warn("[TemplateInterface] ❌ VALIDATION FAILED: {}", result.error_message);
-        } else {
-            m_logger->info("[TemplateInterface] ✓ Channel height validation passed");
+            // Use template's actual channel for accurate error messages
+            std::string channel_name = (tmpl.block.nChannel == 1) ? "Prime" : "Hash";
+            result.error_message = channel_name + " channel stale: template for height " + 
+                std::to_string(tmpl.nChannelHeight) + " but node already at " + 
+                std::to_string(node_channel_height);
+            
+            m_logger->warn("[TemplateInterface] {}", result.error_message);
+            return result;
+        }
+        
+        // Log success - unified height can differ and that's NORMAL
+        m_logger->debug("[TemplateInterface] ✓ Template valid: node channel height {} < template height {}",
+            node_channel_height, tmpl.nChannelHeight);
+        
+        // If unified height differs, log informational message
+        if (tmpl.block.nHeight != m_current_height) {
+            m_logger->debug("[TemplateInterface] ℹ️  Unified height differs (template={}, current={})",
+                tmpl.block.nHeight, m_current_height);
+            m_logger->debug("[TemplateInterface]    This is NORMAL when other channels mine blocks");
         }
     } else {
         m_logger->info("[TemplateInterface] ✓ Channel height pending, skipping staleness check");
