@@ -2421,7 +2421,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Update height tracking
             m_current_height = unified_height;
             
-            // Set channel height on the template
+            // Update template interface with node's current channel height (for staleness detection)
+            m_template_interface->update_channel_height(m_channel, channel_height);
+            
+            // Set channel height on the template (template builds next block: node height + 1)
             m_template_interface->set_channel_height(channel_height);
             
             // Template is now ready for mining!
@@ -2906,7 +2909,15 @@ bool Solo::sync_template_state(uint32_t unified_height, uint32_t channel_height)
         return false;  // Template was invalidated
     }
     
-    // Step 3: Finalize template channel height if needed
+    // Step 3: Update template interface with current node channel height
+    // This enables accurate staleness detection - template is stale only when THIS channel advances
+    if (m_template_interface) {
+        m_template_interface->update_channel_height(m_channel, channel_height);
+        m_logger->debug("[Solo Sync] ✓ Template interface updated with {} channel height {}", 
+            channel_name, channel_height);
+    }
+    
+    // Step 4: Finalize template channel height if needed
     if (m_template_interface && m_template_interface->needs_channel_height_finalization()) {
         uint32_t template_channel_height = channel_height + 1;
         m_template_interface->set_channel_height(template_channel_height);
@@ -2914,7 +2925,7 @@ bool Solo::sync_template_state(uint32_t unified_height, uint32_t channel_height)
             template_channel_height);
     }
     
-    // Step 4: Validate current template
+    // Step 5: Validate current template
     return validate_current_template();
 }
 
