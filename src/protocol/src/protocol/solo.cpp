@@ -1161,9 +1161,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 uint32_t snapshot_height = m_last_round_status.get_channel_height(m_channel);
                 if (snapshot_height > 0) {
                     m_template_interface->set_template_channel_height_snapshot(snapshot_height);
-                    std::string channel_name = (m_channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
                     m_logger->info("[Solo] 📸 Snapshot: {} at height {} (template is for height {})",
-                        channel_name, snapshot_height, tmpl->block.nHeight);
+                        get_channel_name(m_channel), snapshot_height, tmpl->block.nHeight);
                 }
             }
             
@@ -1469,15 +1468,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_template_interface->update_channel_height(m_channel, channel_height);
             
             // Check staleness using delta-based detection
-            std::string channel_name = (m_channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
             bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
             
             if (is_stale) {
-                m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE: {} channel advanced", channel_name);
+                m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE: {} channel advanced", 
+                    get_channel_name(m_channel));
             }
             
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
-                channel_height, channel_name);
+                channel_height, get_channel_name(m_channel));
         }
         
         // Use sync_template_state to handle: channel manager updates, fork detection, 
@@ -1491,7 +1490,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         
         if (needs_template) {
             if (!template_valid && m_template_interface) {
-                std::string channel_name = (m_channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
                 m_logger->info("[Solo GET_ROUND] ⚠️  Template stale, requesting fresh template via GET_BLOCK...");
             } else {
                 m_logger->info("[Solo GET_ROUND] ℹ️  NEW_ROUND received but no template - requesting work");
@@ -1627,15 +1625,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_template_interface->update_channel_height(m_channel, channel_height);
             
             // Check staleness using delta-based detection
-            std::string channel_name = (m_channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
             bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
             
             if (is_stale) {
-                m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE: {} channel advanced", channel_name);
+                m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE: {} channel advanced", 
+                    get_channel_name(m_channel));
             }
             
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
-                channel_height, channel_name);
+                channel_height, get_channel_name(m_channel));
         }
         
         // Use sync_template_state to handle: channel manager updates, fork detection,
