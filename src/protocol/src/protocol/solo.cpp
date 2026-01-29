@@ -154,10 +154,10 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     m_template_interface->set_template_feed_handler(
         [this](const MiningTemplateInterface::MiningTemplate& tmpl, uint32_t nBits) {
             // Log new template (infrequent: once per block, typically every few minutes)
-            std::string channel_name = (tmpl.block.nChannel == 1) ? "Prime" : "Hash";
             m_logger->info("[Solo] ═══════════════════════════════════════");
             m_logger->info("[Solo] 🆕 NEW MINING TEMPLATE RECEIVED");
-            m_logger->info("[Solo]   Channel:         {} ({})", tmpl.block.nChannel, channel_name);
+            m_logger->info("[Solo]   Channel:         {} ({})", tmpl.block.nChannel, 
+                get_channel_name(tmpl.block.nChannel));
             
             // FIX: After LLL-TAO PR#212, block.nHeight contains CHANNEL height, not unified height
             // Template height = channel height (what block we're mining for)
