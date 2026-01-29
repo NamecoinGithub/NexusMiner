@@ -173,6 +173,8 @@ MiningTemplateInterface::read_template(const network::Payload& data,
             std::lock_guard<std::mutex> lock(m_template_mutex);
             m_current_template = tmpl;
             m_current_height = tmpl.block.nHeight;
+            m_template_channel_height_snapshot = 0;
+            m_has_snapshot = false;
         }
         
         m_templates_validated.fetch_add(1, std::memory_order_relaxed);
