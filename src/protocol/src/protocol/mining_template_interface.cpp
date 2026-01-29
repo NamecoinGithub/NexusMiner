@@ -803,12 +803,16 @@ bool MiningTemplateInterface::check_staleness_by_channel_delta(uint32_t current_
     std::lock_guard<std::mutex> lock(m_template_mutex);
 
     if (!m_has_snapshot) {
-        m_logger->debug("[TemplateInterface] No snapshot, skipping staleness check");
+        m_logger->debug("[TemplateInterface] No snapshot, cannot check staleness");
         return false;
     }
 
+    // Log the comparison for diagnostics
+    m_logger->debug("[TemplateInterface] Staleness check: current={} snapshot={}",
+        current_channel_height, m_template_channel_height_snapshot);
+
     if (current_channel_height > m_template_channel_height_snapshot) {
-        m_logger->warn("[TemplateInterface] STALE: channel advanced from {} to {}",
+        m_logger->warn("[TemplateInterface] ⚠️  STALE: channel advanced {} → {}",
             m_template_channel_height_snapshot, current_channel_height);
         discard_template_unsafe("Channel height advanced past snapshot");
         m_templates_expired_height.fetch_add(1, std::memory_order_relaxed);
