@@ -2425,7 +2425,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_template_interface->update_channel_height(m_channel, channel_height);
             
             // Set channel height on the template (template builds next block: node height + 1)
-            m_template_interface->set_channel_height(channel_height);
+            uint32_t template_channel_height = channel_height + 1;
+            m_template_interface->set_channel_height(template_channel_height);
             
             // Template is now ready for mining!
             m_logger->info("[Solo Stateless] 🎯 Template ready for mining!");
