@@ -499,15 +499,17 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     // Use channel height from GET_ROUND - this is the CRITICAL staleness check
     uint32_t node_channel_height = get_node_channel_height();
     
-    // Template semantics: nHeight in block header = channelHeight + 1 (mining NEXT block in channel)
-    // BUT nChannelHeight in template struct = actual channel height we're mining for
-    // Template is stale only if node's channel reached or passed template height
+    // Template semantics:
+    //   - nChannelHeight = height of block being mined (node_height + 1)
+    //   - node_channel_height = current height on blockchain for this channel
+    // Template is stale only if node's channel reached or passed the height we're mining for
     if (tmpl.nChannelHeight != 0 && node_channel_height > 0) {
         if (node_channel_height >= tmpl.nChannelHeight) {
             result.is_stale = true;
             result.height_valid = false;
             result.is_valid = false;
-            std::string channel_name = (m_channel == 1) ? "Prime" : "Hash";
+            // Use template's actual channel for accurate error messages
+            std::string channel_name = (tmpl.block.nChannel == 1) ? "Prime" : "Hash";
             result.error_message = channel_name + " channel stale: template for height " + 
                 std::to_string(tmpl.nChannelHeight) + " but node already at " + 
                 std::to_string(node_channel_height);
