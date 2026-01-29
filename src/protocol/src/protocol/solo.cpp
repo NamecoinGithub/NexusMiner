@@ -1483,6 +1483,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     } else {
                         m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
                     }
+                } else {
+                    m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
                 }
                 return;
             }
@@ -1652,6 +1654,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     } else {
                         m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
                     }
+                } else {
+                    m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
                 }
                 return;
             }
