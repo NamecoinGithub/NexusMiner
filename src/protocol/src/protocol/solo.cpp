@@ -154,13 +154,22 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     m_template_interface->set_template_feed_handler(
         [this](const MiningTemplateInterface::MiningTemplate& tmpl, uint32_t nBits) {
             // Log new template (infrequent: once per block, typically every few minutes)
-            std::string channel_name = (tmpl.block.nChannel == 1) ? "Prime" : "Hash";
             m_logger->info("[Solo] ═══════════════════════════════════════");
             m_logger->info("[Solo] 🆕 NEW MINING TEMPLATE RECEIVED");
-            m_logger->info("[Solo]   Channel:         {} ({})", tmpl.block.nChannel, channel_name);
-            m_logger->info("[Solo]   Unified height:  {} (reference only)", tmpl.block.nHeight);
+            m_logger->info("[Solo]   Channel:         {} ({})", tmpl.block.nChannel, 
+                get_channel_name(tmpl.block.nChannel));
+            
+            // FIX: After LLL-TAO PR#212, block.nHeight contains CHANNEL height, not unified height
+            // Template height = channel height (what block we're mining for)
+            m_logger->info("[Solo]   Template height: {} (channel-specific)", tmpl.block.nHeight);
+            
+            // Show unified height from last GET_ROUND (reference only - other channels may differ)
+            if (m_last_round_status.height > 0) {
+                m_logger->info("[Solo]   Unified height:  {} (reference only)", m_last_round_status.height);
+            }
+            
             if (tmpl.nChannelHeight > 0) {
-                m_logger->info("[Solo]   Channel height:  {} (mining for next block)", tmpl.nChannelHeight);
+                m_logger->info("[Solo]   Channel height:  {} (current chain tip)", tmpl.nChannelHeight);
             } else {
                 m_logger->info("[Solo]   Channel height:  (pending finalization via GET_ROUND)");
             }
@@ -1152,8 +1161,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 uint32_t snapshot_height = m_last_round_status.get_channel_height(m_channel);
                 if (snapshot_height > 0) {
                     m_template_interface->set_template_channel_height_snapshot(snapshot_height);
-                    m_logger->info("[Solo] Template snapshot: channel={} height={}",
-                        get_channel_name(m_channel), snapshot_height);
+                    m_logger->info("[Solo] 📸 Snapshot: {} at height {} (template is for height {})",
+                        get_channel_name(m_channel), snapshot_height, tmpl->block.nHeight);
                 }
             }
             
@@ -1457,11 +1466,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Pass channel height to template interface for staleness validation
         if (m_template_interface) {
             m_template_interface->update_channel_height(m_channel, channel_height);
-            m_template_interface->check_staleness_by_channel_delta(channel_height);
+            
+            // Check staleness using delta-based detection
+            bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
+            
+            if (is_stale) {
+                m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE: {} channel advanced", 
+                    get_channel_name(m_channel));
+            }
             
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
-                channel_height, 
-                (m_channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash");
+                channel_height, get_channel_name(m_channel));
         }
         
         // Use sync_template_state to handle: channel manager updates, fork detection, 
@@ -1475,7 +1490,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         
         if (needs_template) {
             if (!template_valid && m_template_interface) {
-                m_logger->info("[Solo GET_ROUND] ✗ Template stale, requesting fresh work");
+                m_logger->info("[Solo GET_ROUND] ⚠️  Template stale, requesting fresh template via GET_BLOCK...");
             } else {
                 m_logger->info("[Solo GET_ROUND] ℹ️  NEW_ROUND received but no template - requesting work");
                 m_logger->info("[Solo GET_ROUND]   This handles legacy nodes that send NEW_ROUND without BLOCK_DATA");
@@ -1486,13 +1501,13 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
-                    m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent after NEW_ROUND");
+                    m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 } else {
                     m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
                 }
             }
         } else {
-            m_logger->info("[Solo GET_ROUND] ✓ Template valid, continuing to mine");
+            m_logger->debug("[Solo GET_ROUND] ✓ Template valid, continuing to mine");
         }
         
         // Update intelligent polling state
@@ -1608,11 +1623,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Pass channel height to template interface for staleness validation
         if (m_template_interface) {
             m_template_interface->update_channel_height(m_channel, channel_height);
-            m_template_interface->check_staleness_by_channel_delta(channel_height);
+            
+            // Check staleness using delta-based detection
+            bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
+            
+            if (is_stale) {
+                m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE: {} channel advanced", 
+                    get_channel_name(m_channel));
+            }
             
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
-                channel_height, 
-                (m_channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash");
+                channel_height, get_channel_name(m_channel));
         }
         
         // Use sync_template_state to handle: channel manager updates, fork detection,
@@ -1621,12 +1642,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         
         if (!template_valid && m_template_interface) {
             m_logger->warn("[Solo GET_ROUND] Unexpected: Template invalidated on OLD_ROUND");
+            m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
             
             // Request fresh template
             if (connection) {
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
+                    m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 }
             }
         }
