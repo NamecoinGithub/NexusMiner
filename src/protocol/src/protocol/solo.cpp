@@ -1473,6 +1473,20 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             if (is_stale) {
                 m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE: {} channel advanced", 
                     get_channel_name(m_channel));
+
+                m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
+                if (connection) {
+                    auto work_payload = get_work();
+                    if (work_payload && !work_payload->empty()) {
+                        connection->transmit(work_payload);
+                        m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
+                    } else {
+                        m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
+                    }
+                } else {
+                    m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
+                }
+                return;
             }
             
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
@@ -1630,6 +1644,20 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             if (is_stale) {
                 m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE: {} channel advanced", 
                     get_channel_name(m_channel));
+
+                m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
+                if (connection) {
+                    auto work_payload = get_work();
+                    if (work_payload && !work_payload->empty()) {
+                        connection->transmit(work_payload);
+                        m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
+                    } else {
+                        m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
+                    }
+                } else {
+                    m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
+                }
+                return;
             }
             
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
