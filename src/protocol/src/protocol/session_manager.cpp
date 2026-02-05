@@ -119,7 +119,11 @@ void SessionManager::start_keepalive_timer()
 
     m_keepalive_active = true;
 
-    auto self = shared_from_this();
+    auto self = weak_from_this().lock();
+    if (!self) {
+        m_logger->warn("[SessionManager] Keepalive timer requires shared ownership");
+        return;
+    }
     m_keepalive_timer->expires_after(KEEPALIVE_EARLY_INTERVAL);
     m_keepalive_timer->async_wait([self](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) {
