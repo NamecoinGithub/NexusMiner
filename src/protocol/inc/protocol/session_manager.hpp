@@ -89,6 +89,8 @@ public:
 
     /**
      * @brief Start keepalive timer (early + regular interval)
+     *
+     * Requires SessionManager to be managed by std::shared_ptr.
      */
     void start_keepalive_timer();
 
