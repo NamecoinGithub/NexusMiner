@@ -6,6 +6,7 @@
 #include <string>
 #include <memory>
 #include <chrono>
+#include <atomic>
 #include "asio/io_context.hpp"
 #include "asio/steady_timer.hpp"
 #include "network/types.hpp"
@@ -216,7 +217,7 @@ private:
 
     std::shared_ptr<asio::io_context> m_io_context;
     std::shared_ptr<asio::steady_timer> m_keepalive_timer;
-    bool m_keepalive_active;
+    std::atomic_bool m_keepalive_active;
     std::weak_ptr<network::Connection> m_connection;
     
     // Logger

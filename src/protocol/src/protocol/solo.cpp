@@ -76,6 +76,17 @@ static void append_uint32_le(std::vector<uint8_t>& dest, uint32_t value) {
     }
 }
 
+// Helper function to parse uint32 from little-endian bytes
+static uint32_t read_uint32_le(const std::vector<uint8_t>& src, size_t offset = 0) {
+    if (src.size() < offset + 4) {
+        return 0;
+    }
+    return static_cast<uint32_t>(src[offset]) |
+           (static_cast<uint32_t>(src[offset + 1]) << 8) |
+           (static_cast<uint32_t>(src[offset + 2]) << 16) |
+           (static_cast<uint32_t>(src[offset + 3]) << 24);
+}
+
 // Helper function to serialize uint16 to little-endian bytes  
 static void append_uint16_le(std::vector<uint8_t>& dest, uint16_t value) {
     dest.push_back(value & 0xFF);
@@ -2181,8 +2192,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->debug("[Solo Session] Received SESSION_KEEPALIVE response");
         
         if (packet.m_data && packet.m_length >= 4) {
-            // Parse remaining timeout (4 bytes, big-endian - bytes2uint is big-endian)
-            uint32_t remaining_timeout = bytes2uint(*packet.m_data);
+            // Parse remaining timeout (4 bytes, little-endian per LLL-TAO)
+            uint32_t remaining_timeout = read_uint32_le(*packet.m_data);
             
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
             
