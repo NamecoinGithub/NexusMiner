@@ -46,8 +46,8 @@ namespace nexusminer
 		static constexpr uint16_t STATELESS_OPCODE_MAX = 0xD0FF;
 		
 		// Known corrupted opcode patterns (byte-order or range errors)
-		static constexpr uint16_t CORRUPT_OPCODE_LEGACY_SHIFT = 0xCF00;
-		static constexpr uint16_t CORRUPT_OPCODE_RANGE_OVERFLOW = 0xD400;
+		static constexpr uint16_t CORRUPT_OPCODE_LEGACY_SHIFT = 0xCF00;      // Observed byte-order corruption
+		static constexpr uint16_t CORRUPT_OPCODE_RANGE_OVERFLOW = 0xD400;    // Observed range overflow
 		
 		// Helper function to check if a uint16_t opcode is a stateless mining opcode
 		// Returns true if opcode is in range [0xD000, 0xD0FF] (mirror-mapped range)
@@ -557,8 +557,8 @@ namespace nexusminer
 			{
 				// NEW uint16_t opcode format: [header(2)][length(4)][data]
 				// Header (2 bytes, big-endian)
-				uint8_t header_msb = static_cast<uint8_t>((m_header >> 8) & 0xFF);
-				uint8_t header_lsb = static_cast<uint8_t>(m_header & 0xFF);
+				uint8_t header_msb = (m_header >> 8) & 0xFF;
+				uint8_t header_lsb = m_header & 0xFF;
 				BYTES.push_back(header_msb);
 				BYTES.push_back(header_lsb);
 				

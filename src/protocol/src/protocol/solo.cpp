@@ -1584,7 +1584,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
-                    requested_template = true;
                     m_logger->debug("[Solo GET_ROUND] ✓ GET_BLOCK sent (<100ms after NEW_ROUND)");
                 } else {
                     m_logger->error("[Solo GET_ROUND] Failed to build GET_BLOCK packet");
@@ -1761,7 +1760,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
-                    requested_template = true;
                     m_logger->debug("[Solo GET_ROUND] ✓ GET_BLOCK sent (<100ms after OLD_ROUND)");
                 } else {
                     m_logger->error("[Solo GET_ROUND] Failed to build GET_BLOCK packet");
