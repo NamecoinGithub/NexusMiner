@@ -137,8 +137,7 @@ void SessionManager::stop_keepalive_timer()
 {
     m_keepalive_active = false;
     if (m_keepalive_timer) {
-        asio::error_code error;
-        m_keepalive_timer->cancel(error);
+        m_keepalive_timer->cancel();
     }
 }
 
