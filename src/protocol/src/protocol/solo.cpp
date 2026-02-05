@@ -91,7 +91,8 @@ static std::string get_channel_name(uint32_t channel) {
     }
 }
 
-Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector)
+Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
+           std::shared_ptr<asio::io_context> io_context)
 : m_channel{channel}
 , m_logger{spdlog::get("logger")}
 , m_current_height{0}
@@ -136,7 +137,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     // This avoids unnecessary resource allocation when ChaCha20 is not needed
     
     // Initialize session manager with default keepalive interval (24 hours)
-    m_session_manager = std::make_unique<SessionManager>(24);
+    m_session_manager = std::make_shared<SessionManager>(24, std::move(io_context));
     m_logger->info("[Solo] Session manager initialized for adaptive cache management");
     
     // Initialize client-side channel managers (mirrors NODE's PR #136)
@@ -914,7 +915,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
 {
     // Store connection for multi-packet authentication flow
     if (connection) {
-        m_connection = connection;
+        set_connection(connection);
         
         // Initialize protocol lane from connection port (once, on first message)
         if (m_protocol_lane == ProtocolLane::UNKNOWN) {
@@ -1770,7 +1771,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 if (m_session_manager) {
                     m_session_manager->set_state(SessionManager::SessionState::AUTHENTICATED);
                     m_session_manager->start_session(m_session_id);
+                    m_session_manager->start_keepalive_timer();
                     m_logger->info("[Solo Session] Session started in session manager");
+                    m_logger->info("[Solo Session] Keepalive timer started (10s early, 30s regular)");
                 }
                 
                 // Update template interface with authenticated session ID (FALCON tunnel established)
@@ -2178,11 +2181,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->debug("[Solo Session] Received SESSION_KEEPALIVE response");
         
         if (packet.m_data && packet.m_length >= 4) {
-            // Parse remaining timeout (4 bytes, little-endian)
-            uint32_t remaining_timeout = (*packet.m_data)[0] |
-                                         ((*packet.m_data)[1] << 8) |
-                                         ((*packet.m_data)[2] << 16) |
-                                         ((*packet.m_data)[3] << 24);
+            // Parse remaining timeout (4 bytes, big-endian)
+            uint32_t remaining_timeout = bytes2uint(*packet.m_data);
             
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
             
@@ -2644,6 +2644,14 @@ bool Solo::is_keepalive_due() const
         return m_session_manager->is_keepalive_due();
     }
     return false;
+}
+
+void Solo::set_connection(std::shared_ptr<network::Connection> connection)
+{
+    m_connection = std::move(connection);
+    if (m_session_manager) {
+        m_session_manager->set_connection(m_connection);
+    }
 }
 
 void Solo::reset_auth_state()
