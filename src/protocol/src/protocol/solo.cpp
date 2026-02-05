@@ -1359,6 +1359,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     else if (packet.m_header == Packet::NEW_ROUND)
     {
         m_logger->info("[Solo GET_ROUND] NEW_ROUND response received");
+
+        if (m_session_manager) {
+            if (!m_session_manager->is_active()) {
+                m_logger->error("[Solo GET_ROUND] NEW_ROUND received but no active session");
+            } else {
+                auto session_id = m_session_manager->get_session_id();
+                m_logger->info("[Solo GET_ROUND] NEW_ROUND received, keeping session 0x{:08X}", session_id);
+            }
+        }
         
         bool legacy_lane = (m_protocol_lane == ProtocolLane::LEGACY);
         bool valid_length = (packet.m_length == 12) || (legacy_lane && packet.m_length == 16);
