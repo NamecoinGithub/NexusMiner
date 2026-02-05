@@ -200,7 +200,7 @@ public:
 
 private:
 
-    void schedule_regular_keepalives();
+    void schedule_regular_keepalives(const std::shared_ptr<SessionManager>& self);
     void send_keepalive(const char* cadence);
     
     // Session information

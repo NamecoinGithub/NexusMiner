@@ -119,20 +119,19 @@ void SessionManager::start_keepalive_timer()
 
     m_keepalive_active = true;
 
-    auto self = weak_from_this();
-    if (self.expired()) {
+    auto self = weak_from_this().lock();
+    if (!self) {
         m_logger->warn("[SessionManager] Keepalive timer requires shared ownership");
         return;
     }
     m_keepalive_timer->expires_after(KEEPALIVE_EARLY_INTERVAL);
     m_keepalive_timer->async_wait([self](const asio::error_code& error) {
-        auto shared_self = self.lock();
-        if (!shared_self || error || !shared_self->m_keepalive_active || !shared_self->is_active()) {
+        if (error || !self->m_keepalive_active || !self->is_active()) {
             return;
         }
 
-        shared_self->send_keepalive("early");
-        shared_self->schedule_regular_keepalives();
+        self->send_keepalive("early");
+        self->schedule_regular_keepalives(self);
     });
 
     m_logger->info("[SessionManager] Keepalive timer started (early: {}s, interval: {}s)",
@@ -147,25 +146,20 @@ void SessionManager::stop_keepalive_timer()
     }
 }
 
-void SessionManager::schedule_regular_keepalives()
+void SessionManager::schedule_regular_keepalives(const std::shared_ptr<SessionManager>& self)
 {
     if (!m_keepalive_timer || !m_keepalive_active) {
         return;
     }
 
-    auto self = weak_from_this();
-    if (self.expired()) {
-        return;
-    }
     m_keepalive_timer->expires_after(KEEPALIVE_REGULAR_INTERVAL);
     m_keepalive_timer->async_wait([self](const asio::error_code& error) {
-        auto shared_self = self.lock();
-        if (!shared_self || error || !shared_self->m_keepalive_active || !shared_self->is_active()) {
+        if (error || !self->m_keepalive_active || !self->is_active()) {
             return;
         }
 
-        shared_self->send_keepalive("regular");
-        shared_self->schedule_regular_keepalives();
+        self->send_keepalive("regular");
+        self->schedule_regular_keepalives(self);
     });
 }
 
