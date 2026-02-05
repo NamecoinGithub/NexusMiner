@@ -31,6 +31,9 @@ namespace nexusminer
 		// 10MB should be more than sufficient for any legitimate mining packet
 		static constexpr uint32_t MAX_REASONABLE_LENGTH = 10 * 1024 * 1024;
 		
+		// Safety cap for outbound packets to detect corruption (100KB is far above normal payload sizes)
+		static constexpr uint32_t MAX_PACKET_LENGTH = 100000;
+		
 		// Minimum legacy auth/session opcode (CHANNEL_ACK = 206)
 		// Opcodes 206-255 are always legacy single-byte format, never stateless
 		static constexpr uint8_t LEGACY_AUTH_OPCODE_MIN = 206;
@@ -538,14 +541,12 @@ namespace nexusminer
 				return network::Shared_payload{};
 			}
 
-			// Safety cap: mining packets are far smaller than 100KB; larger indicates corruption.
-			constexpr std::uint32_t MAX_PACKET_LENGTH = 100000;
 			auto logger = spdlog::get("logger");
-			if (m_length > MAX_PACKET_LENGTH)
+			if (m_length > PacketConstants::MAX_PACKET_LENGTH)
 			{
 				if (logger)
 				{
-					logger->error("[Packet] INVALID LENGTH: {} bytes (max: {} bytes)", m_length, MAX_PACKET_LENGTH);
+					logger->error("[Packet] INVALID LENGTH: {} bytes (max: {} bytes)", m_length, PacketConstants::MAX_PACKET_LENGTH);
 					logger->error("[Packet]   This indicates buffer corruption");
 				}
 				return network::Shared_payload{};
@@ -557,7 +558,7 @@ namespace nexusminer
 			{
 				// NEW uint16_t opcode format: [header(2)][length(4)][data]
 				// Header (2 bytes, big-endian)
-				// Keep explicit bytes for debug logging of opcode encoding.
+				// Keep explicit bytes for encoding and debug logging of opcode encoding.
 				uint8_t header_msb = (m_header >> 8) & 0xFF;
 				uint8_t header_lsb = m_header & 0xFF;
 				BYTES.push_back(header_msb);
