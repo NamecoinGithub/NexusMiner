@@ -2181,7 +2181,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->debug("[Solo Session] Received SESSION_KEEPALIVE response");
         
         if (packet.m_data && packet.m_length >= 4) {
-            // Parse remaining timeout (4 bytes, big-endian)
+            // Parse remaining timeout (4 bytes, big-endian - bytes2uint is big-endian)
             uint32_t remaining_timeout = bytes2uint(*packet.m_data);
             
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
