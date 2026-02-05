@@ -6,9 +6,14 @@
 #include <string>
 #include <memory>
 #include <chrono>
+#include <atomic>
+#include "asio/io_context.hpp"
+#include "asio/steady_timer.hpp"
+#include "network/types.hpp"
 #include "spdlog/spdlog.h"
 
 namespace nexusminer {
+namespace network { class Connection; }
 namespace protocol {
 
 /**
@@ -23,7 +28,7 @@ namespace protocol {
  * The session is established during the Falcon Handshake and maintained through
  * periodic SESSION_KEEPALIVE pings to prevent cache eviction.
  */
-class SessionManager {
+class SessionManager : public std::enable_shared_from_this<SessionManager> {
 public:
     
     /**
@@ -53,8 +58,10 @@ public:
     /**
      * @brief Constructor
      * @param keepalive_interval_hours Interval between keepalive pings (default: 24 hours)
+     * @param io_context io_context for keepalive timers (nullptr disables timer scheduling)
      */
-    explicit SessionManager(uint16_t keepalive_interval_hours = 24);
+    explicit SessionManager(uint16_t keepalive_interval_hours = 24,
+                            std::shared_ptr<asio::io_context> io_context = nullptr);
     
     /**
      * @brief Destructor
@@ -76,6 +83,29 @@ public:
      * @brief End current session
      */
     void end_session();
+
+    /**
+     * @brief Set the active connection for keepalive traffic
+     */
+    void set_connection(std::shared_ptr<network::Connection> connection);
+
+    /**
+     * @brief Start keepalive timer (early + regular interval)
+     *
+     * Uses aggressive 10s/30s cadence regardless of keepalive_interval_hours.
+     * Requires SessionManager to be managed by std::shared_ptr.
+     */
+    void start_keepalive_timer();
+
+    /**
+     * @brief Stop keepalive timer
+     */
+    void stop_keepalive_timer();
+
+    /**
+     * @brief Build SESSION_KEEPALIVE packet bytes
+     */
+    network::Shared_payload build_keepalive_packet() const;
     
     /**
      * @brief Check if keepalive ping is due
@@ -174,6 +204,9 @@ public:
     uint16_t get_keepalive_interval() const { return m_keepalive_interval_hours; }
 
 private:
+
+    void schedule_regular_keepalives(const std::shared_ptr<SessionManager>& self);
+    void send_keepalive(const char* cadence);
     
     // Session information
     SessionInfo m_session;
@@ -181,6 +214,11 @@ private:
     // Configuration
     uint16_t m_keepalive_interval_hours;
     bool m_preserve_genesis_on_disconnect;  // Preserve genesis across sessions for reconnection
+
+    std::shared_ptr<asio::io_context> m_io_context;
+    std::shared_ptr<asio::steady_timer> m_keepalive_timer;
+    std::atomic_bool m_keepalive_active;
+    std::weak_ptr<network::Connection> m_connection;
     
     // Logger
     std::shared_ptr<spdlog::logger> m_logger;

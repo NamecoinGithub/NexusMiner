@@ -1,4 +1,6 @@
 #include "protocol/session_manager.hpp"
+#include "network/connection.hpp"
+#include "packet.hpp"
 #include <algorithm>
 
 namespace nexusminer {
@@ -7,11 +9,25 @@ namespace protocol {
 // Session management constants
 constexpr uint16_t MIN_KEEPALIVE_HOURS = 1;
 constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
+constexpr auto KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);
+constexpr auto KEEPALIVE_REGULAR_INTERVAL = std::chrono::seconds(30);
+// Aggressive keepalive cadence prevents node timeout; separate from long-term cache interval settings.
 
-SessionManager::SessionManager(uint16_t keepalive_interval_hours)
+// SESSION_KEEPALIVE requests encode session_id as little-endian (wire format requirement).
+static void append_uint32_le(std::vector<uint8_t>& dest, uint32_t value) {
+    for (uint32_t i = 0; i < 4; ++i) {
+        dest.push_back((value >> (i * 8)) & 0xFF);
+    }
+}
+
+SessionManager::SessionManager(uint16_t keepalive_interval_hours,
+                               std::shared_ptr<asio::io_context> io_context)
     : m_session{}
     , m_keepalive_interval_hours(keepalive_interval_hours)
     , m_preserve_genesis_on_disconnect(true)  // Enable genesis preservation for reconnection support
+    , m_io_context(io_context)
+    , m_keepalive_timer(nullptr)
+    , m_keepalive_active(false)
     , m_logger(spdlog::get("logger"))
 {
     if (!m_logger) {
@@ -33,6 +49,7 @@ SessionManager::SessionManager(uint16_t keepalive_interval_hours)
 
 SessionManager::~SessionManager()
 {
+    stop_keepalive_timer();
     end_session();
 }
 
@@ -40,6 +57,7 @@ void SessionManager::start_session(uint32_t session_id,
                                    const std::vector<uint8_t>& session_key,
                                    const std::vector<uint8_t>& tritium_genesis)
 {
+    stop_keepalive_timer();
     m_session.session_id = session_id;
     m_session.session_key = session_key;
     m_session.tritium_genesis = tritium_genesis;
@@ -70,6 +88,7 @@ void SessionManager::end_session()
     
     m_session.session_id = 0;
     m_session.session_key.clear();
+    stop_keepalive_timer();
     
     // Preserve tritium_genesis if configured (enables reconnection without reconfiguration)
     if (!m_preserve_genesis_on_disconnect) {
@@ -81,6 +100,98 @@ void SessionManager::end_session()
     
     m_session.state = SessionState::DISCONNECTED;
     m_session.keepalive_count = 0;
+}
+
+void SessionManager::set_connection(std::shared_ptr<network::Connection> connection)
+{
+    m_connection = connection;
+}
+
+void SessionManager::start_keepalive_timer()
+{
+    if (!m_io_context) {
+        m_logger->warn("[SessionManager] Keepalive timer unavailable - missing io_context");
+        return;
+    }
+
+    if (!m_keepalive_timer) {
+        m_keepalive_timer = std::make_shared<asio::steady_timer>(*m_io_context);
+    }
+
+    m_keepalive_active = true;
+
+    auto self = shared_from_this();
+    m_keepalive_timer->expires_after(KEEPALIVE_EARLY_INTERVAL);
+    m_keepalive_timer->async_wait([self](const asio::error_code& error) {
+        if (error || !self->m_keepalive_active || !self->is_active()) {
+            return;
+        }
+
+        self->send_keepalive("early");
+        self->schedule_regular_keepalives(self);
+    });
+
+    m_logger->info("[SessionManager] Keepalive timer started (early: {}s, interval: {}s)",
+                  KEEPALIVE_EARLY_INTERVAL.count(), KEEPALIVE_REGULAR_INTERVAL.count());
+}
+
+void SessionManager::stop_keepalive_timer()
+{
+    m_keepalive_active = false;
+    if (m_keepalive_timer) {
+        m_keepalive_timer->cancel();
+    }
+}
+
+void SessionManager::schedule_regular_keepalives(const std::shared_ptr<SessionManager>& self)
+{
+    if (!m_keepalive_timer || !m_keepalive_active) {
+        return;
+    }
+
+    m_keepalive_timer->expires_after(KEEPALIVE_REGULAR_INTERVAL);
+    m_keepalive_timer->async_wait([self](const asio::error_code& error) {
+        if (error || !self->m_keepalive_active || !self->is_active()) {
+            return;
+        }
+
+        self->send_keepalive("regular");
+        self->schedule_regular_keepalives(self);
+    });
+}
+
+void SessionManager::send_keepalive(const char* cadence)
+{
+    auto connection = m_connection.lock();
+    if (!connection) {
+        m_logger->warn("[SessionManager] Keepalive skipped - no active connection");
+        stop_keepalive_timer();
+        return;
+    }
+
+    auto payload = build_keepalive_packet();
+    if (!payload || payload->empty()) {
+        m_logger->warn("[SessionManager] Keepalive skipped - no session packet");
+        return;
+    }
+
+    connection->transmit(payload);
+    m_logger->info("[SessionManager] Keepalive sent ({}) for session 0x{:08X}",
+                  cadence, m_session.session_id);
+}
+
+network::Shared_payload SessionManager::build_keepalive_packet() const
+{
+    if (m_session.session_id == 0) {
+        return network::Shared_payload{};
+    }
+
+    std::vector<uint8_t> payload;
+    append_uint32_le(payload, m_session.session_id);
+
+    Packet packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE),
+                   std::make_shared<network::Payload>(payload) };
+    return packet.get_bytes();
 }
 
 bool SessionManager::is_keepalive_due() const

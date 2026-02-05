@@ -37,7 +37,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 , m_timer_manager{std::move(timer_factory)}
 {
     // Solo mining requires Falcon authentication - no legacy fallback
-    auto solo_protocol = std::make_shared<protocol::Solo>(m_config.get_mining_mode() == config::Mining_mode::PRIME ? 1U : 2U, m_stats_collector);
+    auto solo_protocol = std::make_shared<protocol::Solo>(m_config.get_mining_mode() == config::Mining_mode::PRIME ? 1U : 2U,
+        m_stats_collector, m_io_context);
     
     // Falcon miner authentication is mandatory for solo mining
     if (!m_config.has_miner_falcon_keys())

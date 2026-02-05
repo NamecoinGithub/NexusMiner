@@ -76,6 +76,17 @@ static void append_uint32_le(std::vector<uint8_t>& dest, uint32_t value) {
     }
 }
 
+// Helper function to parse uint32 from little-endian bytes
+static uint32_t read_uint32_le(const std::vector<uint8_t>& src, size_t offset = 0) {
+    if (src.size() < offset + 4) {
+        return 0;
+    }
+    return static_cast<uint32_t>(src[offset]) |
+           (static_cast<uint32_t>(src[offset + 1]) << 8) |
+           (static_cast<uint32_t>(src[offset + 2]) << 16) |
+           (static_cast<uint32_t>(src[offset + 3]) << 24);
+}
+
 // Helper function to serialize uint16 to little-endian bytes  
 static void append_uint16_le(std::vector<uint8_t>& dest, uint16_t value) {
     dest.push_back(value & 0xFF);
@@ -91,7 +102,8 @@ static std::string get_channel_name(uint32_t channel) {
     }
 }
 
-Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector)
+Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
+           std::shared_ptr<asio::io_context> io_context)
 : m_channel{channel}
 , m_logger{spdlog::get("logger")}
 , m_current_height{0}
@@ -136,7 +148,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     // This avoids unnecessary resource allocation when ChaCha20 is not needed
     
     // Initialize session manager with default keepalive interval (24 hours)
-    m_session_manager = std::make_unique<SessionManager>(24);
+    m_session_manager = std::make_shared<SessionManager>(24, io_context);
     m_logger->info("[Solo] Session manager initialized for adaptive cache management");
     
     // Initialize client-side channel managers (mirrors NODE's PR #136)
@@ -914,7 +926,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
 {
     // Store connection for multi-packet authentication flow
     if (connection) {
-        m_connection = connection;
+        set_connection(connection);
         
         // Initialize protocol lane from connection port (once, on first message)
         if (m_protocol_lane == ProtocolLane::UNKNOWN) {
@@ -1770,7 +1782,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 if (m_session_manager) {
                     m_session_manager->set_state(SessionManager::SessionState::AUTHENTICATED);
                     m_session_manager->start_session(m_session_id);
+                    m_session_manager->start_keepalive_timer();
                     m_logger->info("[Solo Session] Session started in session manager");
+                    m_logger->info("[Solo Session] Keepalive timer started (early ping + regular cadence)");
                 }
                 
                 // Update template interface with authenticated session ID (FALCON tunnel established)
@@ -2178,11 +2192,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->debug("[Solo Session] Received SESSION_KEEPALIVE response");
         
         if (packet.m_data && packet.m_length >= 4) {
-            // Parse remaining timeout (4 bytes, little-endian)
-            uint32_t remaining_timeout = (*packet.m_data)[0] |
-                                         ((*packet.m_data)[1] << 8) |
-                                         ((*packet.m_data)[2] << 16) |
-                                         ((*packet.m_data)[3] << 24);
+            // Parse remaining timeout (4 bytes, little-endian per LLL-TAO)
+            uint32_t remaining_timeout = read_uint32_le(*packet.m_data);
             
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
             
@@ -2644,6 +2655,14 @@ bool Solo::is_keepalive_due() const
         return m_session_manager->is_keepalive_due();
     }
     return false;
+}
+
+void Solo::set_connection(std::shared_ptr<network::Connection> connection)
+{
+    m_connection = std::move(connection);
+    if (m_session_manager) {
+        m_session_manager->set_connection(m_connection);
+    }
 }
 
 void Solo::reset_auth_state()

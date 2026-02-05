@@ -29,7 +29,8 @@ enum class AuthState {
 class Solo : public Protocol {
 public:
 
-    Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector);
+    Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
+         std::shared_ptr<asio::io_context> io_context);
 
     void reset() override;
     network::Shared_payload login(Login_handler handler) override;
@@ -106,6 +107,9 @@ public:
     
     // Check if keep-alive ping is due
     bool is_keepalive_due() const;
+
+    // SessionManager keepalive needs connection context
+    void set_connection(std::shared_ptr<network::Connection> connection);
     
     // Mining Template Interface access (unified READ/FEED system)
     MiningTemplateInterface* get_template_interface() { return m_template_interface.get(); }
@@ -220,7 +224,7 @@ private:
     bool m_enable_chacha20;  // ChaCha20 encryption (ALWAYS ON - core security for localhost + SessionID)
     
     // Session manager for adaptive cache management
-    std::unique_ptr<SessionManager> m_session_manager;
+    std::shared_ptr<SessionManager> m_session_manager;
     
     // Mining Template Interface for unified READ/FEED operations
     std::unique_ptr<MiningTemplateInterface> m_template_interface;
