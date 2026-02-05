@@ -11,6 +11,7 @@
 #include "miner_opcodes.hpp"
 #include "llp_logging.hpp"
 #include "protocol_lane.hpp"
+#include <spdlog/spdlog.h>
 
 namespace nexusminer
 {
@@ -30,6 +31,9 @@ namespace nexusminer
 		// 10MB should be more than sufficient for any legitimate mining packet
 		static constexpr uint32_t MAX_REASONABLE_LENGTH = 10 * 1024 * 1024;
 		
+		// Safety cap for outbound packets to detect corruption (100KB is far above normal payload sizes)
+		static constexpr uint32_t MAX_PACKET_LENGTH = 100000;
+		
 		// Minimum legacy auth/session opcode (CHANNEL_ACK = 206)
 		// Opcodes 206-255 are always legacy single-byte format, never stateless
 		static constexpr uint8_t LEGACY_AUTH_OPCODE_MIN = 206;
@@ -43,6 +47,10 @@ namespace nexusminer
 		// Stateless opcodes are 0xD000-0xD0FF (mirror-mapped from legacy 0x00-0xFF)
 		static constexpr uint16_t STATELESS_OPCODE_MIN = 0xD000;
 		static constexpr uint16_t STATELESS_OPCODE_MAX = 0xD0FF;
+		
+		// Known corrupted opcode patterns (byte-order or range errors)
+		static constexpr uint16_t CORRUPT_OPCODE_LEGACY_SHIFT = 0xCF00;      // Observed byte-order corruption
+		static constexpr uint16_t CORRUPT_OPCODE_RANGE_OVERFLOW = 0xD400;    // Observed range overflow
 		
 		// Helper function to check if a uint16_t opcode is a stateless mining opcode
 		// Returns true if opcode is in range [0xD000, 0xD0FF] (mirror-mapped range)
@@ -533,14 +541,34 @@ namespace nexusminer
 				return network::Shared_payload{};
 			}
 
+			auto logger = spdlog::get("logger");
+			if (m_length > PacketConstants::MAX_PACKET_LENGTH)
+			{
+				if (logger)
+				{
+					logger->error("[Packet] INVALID LENGTH: {} bytes (max: {} bytes)", m_length, PacketConstants::MAX_PACKET_LENGTH);
+					logger->error("[Packet]   This indicates buffer corruption");
+				}
+				return network::Shared_payload{};
+			}
+
 			network::Payload BYTES;
 			
 			if (m_is_uint16_opcode)
 			{
 				// NEW uint16_t opcode format: [header(2)][length(4)][data]
 				// Header (2 bytes, big-endian)
-				BYTES.push_back((m_header >> 8) & 0xFF);
-				BYTES.push_back(m_header & 0xFF);
+				// Keep explicit bytes for encoding and debug logging of opcode encoding.
+				uint8_t header_msb = (m_header >> 8) & 0xFF;
+				uint8_t header_lsb = m_header & 0xFF;
+				BYTES.push_back(header_msb);
+				BYTES.push_back(header_lsb);
+				
+				if (logger)
+				{
+					logger->debug("[Packet] Encoded 16-bit opcode: 0x{:04x} → [{:02x}][{:02x}]",
+						m_header, header_msb, header_lsb);
+				}
 				
 				// Length (4 bytes, big-endian) - if payload exists
 				if (m_length > 0 && m_data)
@@ -580,7 +608,30 @@ namespace nexusminer
 				}
 			}
 
-			return std::make_shared<network::Payload>(BYTES);
+			auto payload = std::make_shared<network::Payload>(BYTES);
+			
+			if (m_is_uint16_opcode && payload->size() >= 2)
+			{
+				uint16_t wire_opcode = (static_cast<uint16_t>((*payload)[0]) << 8) |
+					static_cast<uint16_t>((*payload)[1]);
+				
+				if (!PacketConstants::is_stateless_opcode(wire_opcode) ||
+					wire_opcode == PacketConstants::CORRUPT_OPCODE_LEGACY_SHIFT ||
+					wire_opcode == PacketConstants::CORRUPT_OPCODE_RANGE_OVERFLOW)
+				{
+					if (logger)
+					{
+						logger->error("[Packet] CORRUPTED OPCODE DETECTED: 0x{:04x}", wire_opcode);
+						logger->error("[Packet]   Expected range: 0x{:04x}-0x{:04x} (stateless opcodes)",
+							PacketConstants::STATELESS_OPCODE_MIN, PacketConstants::STATELESS_OPCODE_MAX);
+						logger->error("[Packet]   This packet will be REJECTED by node");
+						logger->error("[Packet]   Original header: 0x{:04x}", m_header);
+					}
+					return network::Shared_payload{};
+				}
+			}
+			
+			return payload;
 		}
 
 		inline Packet get_packet(std::uint8_t header) const

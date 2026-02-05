@@ -78,6 +78,7 @@ public:
     void set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_t> const& privkey);
     bool is_authenticated() const { return m_authenticated; }
     void set_address(std::string const& address) { m_address = address; }
+    void set_protocol_lane(ProtocolLane lane);
     
     // Tritium GenesisHash for reward binding
     void set_tritium_genesis(std::vector<uint8_t> const& genesis);
