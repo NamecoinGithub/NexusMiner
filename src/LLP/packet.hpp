@@ -45,6 +45,10 @@ namespace nexusminer
 		static constexpr uint16_t STATELESS_OPCODE_MIN = 0xD000;
 		static constexpr uint16_t STATELESS_OPCODE_MAX = 0xD0FF;
 		
+		// Known corrupted opcode patterns (byte-order or range errors)
+		static constexpr uint16_t CORRUPT_OPCODE_LEGACY_SHIFT = 0xCF00;
+		static constexpr uint16_t CORRUPT_OPCODE_RANGE_OVERFLOW = 0xD400;
+		
 		// Helper function to check if a uint16_t opcode is a stateless mining opcode
 		// Returns true if opcode is in range [0xD000, 0xD0FF] (mirror-mapped range)
 		inline bool is_stateless_opcode(uint16_t opcode) {
@@ -608,7 +612,9 @@ namespace nexusminer
 				uint16_t wire_opcode = (static_cast<uint16_t>((*payload)[0]) << 8) |
 					static_cast<uint16_t>((*payload)[1]);
 				
-				if (!PacketConstants::is_stateless_opcode(wire_opcode) || wire_opcode == 0xcf00 || wire_opcode == 0xd400)
+				if (!PacketConstants::is_stateless_opcode(wire_opcode) ||
+					wire_opcode == PacketConstants::CORRUPT_OPCODE_LEGACY_SHIFT ||
+					wire_opcode == PacketConstants::CORRUPT_OPCODE_RANGE_OVERFLOW)
 				{
 					if (logger)
 					{

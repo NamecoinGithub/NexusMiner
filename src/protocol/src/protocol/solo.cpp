@@ -2179,28 +2179,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     }
     else if (matches_opcode(Packet::SESSION_START))
     {
-        // LLL-TAO PR #22: Handle SESSION_START for session management
-        m_logger->info("[Solo Session] Received SESSION_START from node");
-        
-        if (packet.m_data && packet.m_length >= 4) {
-            // Parse session timeout (4 bytes, little-endian)
-            uint32_t session_timeout = (*packet.m_data)[0] |
-                                       ((*packet.m_data)[1] << 8) |
-                                       ((*packet.m_data)[2] << 16) |
-                                       ((*packet.m_data)[3] << 24);
-            
-            m_logger->info("[Solo Session] Session parameters:");
-            m_logger->info("[Solo Session]   - Timeout: {} seconds", session_timeout);
-            m_logger->info("[Solo Session]   - Session ID: 0x{:08x}", m_session_id);
-            
-            // Parse optional genesis hash if present (32 bytes)
-            if (packet.m_length >= 36) {
-                m_logger->info("[Solo Session] GenesisHash reward mapping received");
-            }
-        }
-    }
-    else if (matches_opcode(Packet::SESSION_START))
-    {
         // LLL-TAO PR #22: Handle SESSION_START (session parameters from node)
         // Format: [timeout(4, LE)][optional: session_key][optional: genesis_hash(32)]
         m_logger->info("[Solo Session] Received SESSION_START from node");
