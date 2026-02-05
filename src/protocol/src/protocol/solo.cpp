@@ -1410,7 +1410,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
         
-        bool requested_template = false;
+        bool requested_template = false;  // Track whether GET_BLOCK was already requested in this handler
         
         bool legacy_lane = (m_protocol_lane == ProtocolLane::LEGACY);
         bool valid_length = (packet.m_length == 12) || (legacy_lane && packet.m_length == 16);
@@ -1607,7 +1607,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     {
         m_logger->info("[Solo GET_ROUND] OLD_ROUND response received");
         
-        bool requested_template = false;
+        bool requested_template = false;  // Track whether GET_BLOCK was already requested in this handler
         bool legacy_lane = (m_protocol_lane == ProtocolLane::LEGACY);
         bool valid_length = (packet.m_length == 12) || (legacy_lane && packet.m_length == 16);
         
@@ -2399,7 +2399,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     // ═══════════════════════════════════════════════════════════════════════
     // NEW STATELESS MINING PROTOCOL HANDLERS (uint16_t opcodes, 0xD000+)
     // ═══════════════════════════════════════════════════════════════════════
-    else if (matches_opcode(Packet::GET_BLOCK))
+    else if (packet.m_is_uint16_opcode && matches_opcode(Packet::GET_BLOCK))
     {
         // ═══════════════════════════════════════════════════════════════════
         // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!

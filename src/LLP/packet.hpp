@@ -538,6 +538,7 @@ namespace nexusminer
 				return network::Shared_payload{};
 			}
 
+			// Safety cap: mining packets are far smaller than 100KB; larger indicates corruption.
 			constexpr std::uint32_t MAX_PACKET_LENGTH = 100000;
 			auto logger = spdlog::get("logger");
 			if (m_length > MAX_PACKET_LENGTH)
