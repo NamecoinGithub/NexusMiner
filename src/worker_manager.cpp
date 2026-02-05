@@ -435,6 +435,11 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     actual_remote_port);
 
                 // login
+                if (auto solo_protocol = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol))
+                {
+                    solo_protocol->set_protocol_lane(self->m_connection->get_protocol_lane());
+                }
+
                 self->m_connection->transmit(self->m_miner_protocol->login([self, wallet_endpoint](bool login_result)
                 {
                     if(!login_result)

@@ -333,7 +333,13 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("[Solo Auth] Authentication timestamp set: {} (0x{:016x})", 
                    m_auth_timestamp, m_auth_timestamp);
     
-    Packet packet(static_cast<uint8_t>(Packet::MINER_AUTH_INIT));  // 207 - m_is_valid = true automatically
+    if (m_protocol_lane == ProtocolLane::UNKNOWN) {
+        m_logger->warn("[Solo Auth] Protocol lane unknown - defaulting to legacy auth opcode");
+    }
+    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
+    Packet packet = use_stateless_opcode
+        ? Packet{ static_cast<uint16_t>(LLP::MirrorOpcode(static_cast<uint8_t>(Packet::MINER_AUTH_INIT))) }
+        : Packet{ static_cast<uint8_t>(Packet::MINER_AUTH_INIT) };
     packet.m_data = std::make_shared<network::Payload>();
     
     // ═══════════════════════════════════════════════════════════
@@ -500,14 +506,22 @@ network::Shared_payload Solo::get_work()
     m_logger->info("[Solo]   Reward bound: {}", m_reward_bound ? "YES" : "NO");
 
     /* Build GET_BLOCK packet (header-only, no payload) */
-    Packet packet{ static_cast<uint8_t>(Packet::GET_BLOCK) };  // Header = 129 (0x81)
+    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
+    Packet packet = use_stateless_opcode
+        ? Packet{ static_cast<uint16_t>(Packet::STATELESS_GET_BLOCK) }
+        : Packet{ static_cast<uint8_t>(Packet::GET_BLOCK) };  // Header = 129 (0x81)
     packet.m_length = 0;  // No payload for GET_BLOCK
     
     // Debug logging to diagnose packet encoding
-    m_logger->debug("[Solo] GET_BLOCK packet: header=0x{:02x} length={} is_valid={}", 
-                   static_cast<int>(packet.m_header),
-                   packet.m_length, 
-                   packet.is_valid());
+    if (packet.m_is_uint16_opcode) {
+        m_logger->debug("[Solo] GET_BLOCK packet: header=0x{:04x} length={} is_valid={}", 
+                       packet.m_header, packet.m_length, packet.is_valid());
+    } else {
+        m_logger->debug("[Solo] GET_BLOCK packet: header=0x{:02x} length={} is_valid={}", 
+                       static_cast<int>(packet.m_header),
+                       packet.m_length, 
+                       packet.is_valid());
+    }
     
     auto payload = packet.get_bytes();
     if (payload && !payload->empty()) {
@@ -527,13 +541,23 @@ network::Shared_payload Solo::get_height()
     m_logger->info("[Solo] Requesting blockchain height via GET_HEIGHT");
     
     // GET_HEIGHT is a header-only request packet (opcode 130, >= 128)
-    Packet packet{ static_cast<uint8_t>(Packet::GET_HEIGHT) };
+    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
+    Packet packet = use_stateless_opcode
+        ? Packet{ static_cast<uint16_t>(LLP::MirrorOpcode(static_cast<uint8_t>(Packet::GET_HEIGHT))) }
+        : Packet{ static_cast<uint8_t>(Packet::GET_HEIGHT) };
     
     // Debug logging to verify packet encoding
-    m_logger->debug("[Solo] GET_HEIGHT packet: header=0x{:02x} length={} is_valid={}", 
-                   static_cast<int>(packet.m_header),
-                   packet.m_length, 
-                   packet.is_valid());
+    if (packet.m_is_uint16_opcode) {
+        m_logger->debug("[Solo] GET_HEIGHT packet: header=0x{:04x} length={} is_valid={}", 
+                       packet.m_header,
+                       packet.m_length, 
+                       packet.is_valid());
+    } else {
+        m_logger->debug("[Solo] GET_HEIGHT packet: header=0x{:02x} length={} is_valid={}", 
+                       static_cast<int>(packet.m_header),
+                       packet.m_length, 
+                       packet.is_valid());
+    }
     
     auto payload = packet.get_bytes();
     if (payload && !payload->empty()) {
@@ -562,13 +586,23 @@ network::Shared_payload Solo::send_get_round()
     m_logger->debug("[Solo GET_ROUND] Requesting round status via GET_ROUND");
     
     // GET_ROUND is a header-only request packet (opcode 133, >= 128)
-    Packet packet{ static_cast<uint8_t>(Packet::GET_ROUND) };
+    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
+    Packet packet = use_stateless_opcode
+        ? Packet{ static_cast<uint16_t>(LLP::MirrorOpcode(static_cast<uint8_t>(Packet::GET_ROUND))) }
+        : Packet{ static_cast<uint8_t>(Packet::GET_ROUND) };
     
     // Debug logging to verify packet encoding
-    m_logger->debug("[Solo GET_ROUND] Packet: header=0x{:02x} length={} is_valid={}", 
-                   static_cast<int>(packet.m_header),
-                   packet.m_length, 
-                   packet.is_valid());
+    if (packet.m_is_uint16_opcode) {
+        m_logger->debug("[Solo GET_ROUND] Packet: header=0x{:04x} length={} is_valid={}", 
+                       packet.m_header,
+                       packet.m_length, 
+                       packet.is_valid());
+    } else {
+        m_logger->debug("[Solo GET_ROUND] Packet: header=0x{:02x} length={} is_valid={}", 
+                       static_cast<int>(packet.m_header),
+                       packet.m_length, 
+                       packet.is_valid());
+    }
     
     auto payload = packet.get_bytes();
     if (payload && !payload->empty()) {
@@ -1011,7 +1045,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo] ══════════════════════════════════════════════");
     }
     
-    if (packet.m_header == Packet::BLOCK_HEIGHT)
+    auto matches_opcode = [&packet](uint16_t legacy_opcode) {
+        if (packet.m_is_uint16_opcode) {
+            return packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
+        }
+        return packet.m_header == legacy_opcode;
+    };
+    
+    if (matches_opcode(Packet::BLOCK_HEIGHT))
     {
         // Validate packet data before processing
         if (!packet.m_data || packet.m_length < 4) {
@@ -1044,7 +1085,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
     }
     // Handle BLOCK_REWARD response
-    else if (packet.m_header == Packet::BLOCK_REWARD)
+    else if (matches_opcode(Packet::BLOCK_REWARD))
     {
         // Validate packet data before processing
         if (!packet.m_data || packet.m_length < 8) {
@@ -1058,7 +1099,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo] Received BLOCK_REWARD: reward={}", m_current_reward);
     }
     // Block from wallet received
-    else if(packet.m_header == Packet::BLOCK_DATA)
+    else if(matches_opcode(Packet::BLOCK_DATA))
     {
         // Enhanced diagnostics: Check payload is non-null
         if (!packet.m_data) {
@@ -1286,7 +1327,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
     }
-    else if(packet.m_header == Packet::ACCEPT)
+    else if(matches_opcode(Packet::ACCEPT))
     {
         stats::Global global_stats{};
         global_stats.m_accepted_blocks = 1;
@@ -1318,7 +1359,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             connection->transmit(work_payload);
         }
     }
-    else if(packet.m_header == Packet::REJECT)
+    else if(matches_opcode(Packet::REJECT))
     {
         stats::Global global_stats{};
         global_stats.m_rejected_blocks = 1;
@@ -1356,7 +1397,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
     }
     // Handle NEW_ROUND response (LLL-TAO PR #151 - 12-byte format, legacy 16-byte compatibility)
-    else if (packet.m_header == Packet::NEW_ROUND)
+    else if (matches_opcode(Packet::NEW_ROUND))
     {
         m_logger->info("[Solo GET_ROUND] NEW_ROUND response received");
 
@@ -1368,6 +1409,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->info("[Solo GET_ROUND] NEW_ROUND received, keeping session 0x{:08X}", session_id);
             }
         }
+        
+        bool requested_template = false;
         
         bool legacy_lane = (m_protocol_lane == ProtocolLane::LEGACY);
         bool valid_length = (packet.m_length == 12) || (legacy_lane && packet.m_length == 16);
@@ -1488,6 +1531,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
+                        requested_template = true;
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                     } else {
                         m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
@@ -1524,6 +1568,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
+                    requested_template = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 } else {
                     m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
@@ -1531,6 +1576,22 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         } else {
             m_logger->debug("[Solo GET_ROUND] ✓ Template valid, continuing to mine");
+        }
+
+        if (!requested_template) {
+            if (connection) {
+                m_logger->info("[Solo GET_ROUND] Requesting template immediately (prevent timeout)");
+                auto work_payload = get_work();
+                if (work_payload && !work_payload->empty()) {
+                    connection->transmit(work_payload);
+                    requested_template = true;
+                    m_logger->debug("[Solo GET_ROUND] ✓ GET_BLOCK sent (<100ms after NEW_ROUND)");
+                } else {
+                    m_logger->error("[Solo GET_ROUND] Failed to build GET_BLOCK packet");
+                }
+            } else {
+                m_logger->error("[Solo GET_ROUND] Cannot request template - connection is null");
+            }
         }
         
         // Update intelligent polling state
@@ -1542,10 +1603,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
     }
     // Handle OLD_ROUND response (LLL-TAO PR #151 - 12-byte format, legacy 16-byte compatibility)
-    else if (packet.m_header == Packet::OLD_ROUND)
+    else if (matches_opcode(Packet::OLD_ROUND))
     {
         m_logger->info("[Solo GET_ROUND] OLD_ROUND response received");
         
+        bool requested_template = false;
         bool legacy_lane = (m_protocol_lane == ProtocolLane::LEGACY);
         bool valid_length = (packet.m_length == 12) || (legacy_lane && packet.m_length == 16);
         
@@ -1659,6 +1721,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
+                        requested_template = true;
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                     } else {
                         m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
@@ -1686,22 +1749,39 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
+                    requested_template = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 }
+            }
+        }
+        
+        if (!requested_template) {
+            if (connection) {
+                m_logger->info("[Solo GET_ROUND] Requesting template immediately (prevent timeout)");
+                auto work_payload = get_work();
+                if (work_payload && !work_payload->empty()) {
+                    connection->transmit(work_payload);
+                    requested_template = true;
+                    m_logger->debug("[Solo GET_ROUND] ✓ GET_BLOCK sent (<100ms after OLD_ROUND)");
+                } else {
+                    m_logger->error("[Solo GET_ROUND] Failed to build GET_BLOCK packet");
+                }
+            } else {
+                m_logger->error("[Solo GET_ROUND] Cannot request template - connection is null");
             }
         }
         
         // Update intelligent polling state
         on_old_round_received();
     }
-    else if (packet.m_header == Packet::MINER_AUTH_CHALLENGE)
+    else if (matches_opcode(Packet::MINER_AUTH_CHALLENGE))
     {
         // Phase 2 Challenge-Response Protocol:
         // Handle MINER_AUTH_CHALLENGE from node and respond with signed nonce
         m_logger->info("[Solo Auth] Received MINER_AUTH_CHALLENGE from node");
         handle_miner_auth_challenge(packet);
     }
-    else if (packet.m_header == Packet::MINER_AUTH_RESULT)
+    else if (matches_opcode(Packet::MINER_AUTH_RESULT))
     {
         // Phase 2: Handle MINER_AUTH_RESULT (auth result from node)
         // The node sends: [status(1)][session_id(4, optional, LE)]
@@ -1943,7 +2023,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Connection will fail - no fallback available
         }
     }
-    else if (packet.m_header == Packet::CHANNEL_ACK)
+    else if (matches_opcode(Packet::CHANNEL_ACK))
     {
         // Phase 2: Handle CHANNEL_ACK response with dynamic port detection
         m_logger->info("[Solo Phase 2] Received CHANNEL_ACK from node");
@@ -2097,7 +2177,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
     }
-    else if (packet.m_header == Packet::SESSION_START)
+    else if (matches_opcode(Packet::SESSION_START))
     {
         // LLL-TAO PR #22: Handle SESSION_START for session management
         m_logger->info("[Solo Session] Received SESSION_START from node");
@@ -2119,7 +2199,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
     }
-    else if (packet.m_header == Packet::SESSION_START)
+    else if (matches_opcode(Packet::SESSION_START))
     {
         // LLL-TAO PR #22: Handle SESSION_START (session parameters from node)
         // Format: [timeout(4, LE)][optional: session_key][optional: genesis_hash(32)]
@@ -2172,7 +2252,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->warn("[Solo Session] SESSION_START packet has invalid or insufficient data");
         }
     }
-    else if (packet.m_header == Packet::SESSION_KEEPALIVE)
+    else if (matches_opcode(Packet::SESSION_KEEPALIVE))
     {
         // LLL-TAO PR #22: Handle SESSION_KEEPALIVE response
         m_logger->debug("[Solo Session] Received SESSION_KEEPALIVE response");
@@ -2192,12 +2272,12 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
     }
-    else if (packet.m_header == Packet::MINER_REWARD_RESULT)
+    else if (matches_opcode(Packet::MINER_REWARD_RESULT))
     {
         // Phase 2: Handle MINER_REWARD_RESULT (reward binding result from node)
         handle_reward_result(packet);
     }
-    else if (packet.m_header == Packet::PRIME_BLOCK_AVAILABLE)
+    else if (matches_opcode(Packet::PRIME_BLOCK_AVAILABLE))
     {
         m_logger->info("[Solo Push] ✉️  PRIME_BLOCK_AVAILABLE received");
         
@@ -2270,7 +2350,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
     }
-    else if (packet.m_header == Packet::HASH_BLOCK_AVAILABLE)
+    else if (matches_opcode(Packet::HASH_BLOCK_AVAILABLE))
     {
         m_logger->info("[Solo Push] ✉️  HASH_BLOCK_AVAILABLE received");
         
@@ -2341,7 +2421,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     // ═══════════════════════════════════════════════════════════════════════
     // NEW STATELESS MINING PROTOCOL HANDLERS (uint16_t opcodes, 0xD000+)
     // ═══════════════════════════════════════════════════════════════════════
-    else if (packet.m_header == Packet::STATELESS_GET_BLOCK)
+    else if (matches_opcode(Packet::GET_BLOCK))
     {
         // ═══════════════════════════════════════════════════════════════════
         // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!
@@ -2562,6 +2642,11 @@ void Solo::set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_
     }
 }
 
+void Solo::set_protocol_lane(ProtocolLane lane)
+{
+    m_protocol_lane = lane;
+}
+
 network::Shared_payload Solo::send_session_keepalive()
 {
     // LLL-TAO PR #22: Send SESSION_KEEPALIVE to maintain session
@@ -2571,7 +2656,11 @@ network::Shared_payload Solo::send_session_keepalive()
     std::vector<uint8_t> keepalive_data;
     append_uint32_le(keepalive_data, m_session_id);
     
-    Packet packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE), std::make_shared<network::Payload>(keepalive_data) };
+    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
+    Packet packet = use_stateless_opcode
+        ? Packet{ static_cast<uint16_t>(LLP::MirrorOpcode(static_cast<uint8_t>(Packet::SESSION_KEEPALIVE))),
+                  std::make_shared<network::Payload>(keepalive_data) }
+        : Packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE), std::make_shared<network::Payload>(keepalive_data) };
     return packet.get_bytes();
 }
 
@@ -2581,7 +2670,10 @@ void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
     m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
     
     std::vector<uint8_t> channel_data(1, m_channel);
-    Packet set_channel_packet{ static_cast<uint8_t>(Packet::SET_CHANNEL), std::make_shared<network::Payload>(channel_data) };
+    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
+    Packet set_channel_packet = use_stateless_opcode
+        ? Packet{ static_cast<uint16_t>(Packet::STATELESS_SET_CHANNEL), std::make_shared<network::Payload>(channel_data) }
+        : Packet{ static_cast<uint8_t>(Packet::SET_CHANNEL), std::make_shared<network::Payload>(channel_data) };
     connection->transmit(set_channel_packet.get_bytes());
 }
 
@@ -2733,7 +2825,10 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     }
     
     // Build MINER_AUTH_RESPONSE packet
-    Packet response_packet(static_cast<uint8_t>(Packet::MINER_AUTH_RESPONSE));  // 209 - m_is_valid = true automatically
+    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
+    Packet response_packet = use_stateless_opcode
+        ? Packet{ static_cast<uint16_t>(LLP::MirrorOpcode(static_cast<uint8_t>(Packet::MINER_AUTH_RESPONSE))) }
+        : Packet{ static_cast<uint8_t>(Packet::MINER_AUTH_RESPONSE) };  // 209 - m_is_valid = true automatically
     response_packet.m_data = std::make_shared<network::Payload>();
     
     // NOTE: MINER_AUTH_RESPONSE uses little-endian encoding per protocol specification
@@ -2897,7 +2992,10 @@ network::Shared_payload Solo::send_set_reward()
     }
     
     // Build the MINER_SET_REWARD packet
-    Packet packet(static_cast<uint8_t>(Packet::MINER_SET_REWARD));
+    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
+    Packet packet = use_stateless_opcode
+        ? Packet{ static_cast<uint16_t>(Packet::STATELESS_MINER_SET_REWARD) }
+        : Packet{ static_cast<uint8_t>(Packet::MINER_SET_REWARD) };
     packet.m_data = std::make_shared<network::Payload>(payload_data);
     packet.m_length = static_cast<uint32_t>(payload_data.size());
     

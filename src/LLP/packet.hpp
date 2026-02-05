@@ -11,6 +11,7 @@
 #include "miner_opcodes.hpp"
 #include "llp_logging.hpp"
 #include "protocol_lane.hpp"
+#include <spdlog/spdlog.h>
 
 namespace nexusminer
 {
@@ -533,14 +534,34 @@ namespace nexusminer
 				return network::Shared_payload{};
 			}
 
+			constexpr std::uint32_t MAX_PACKET_LENGTH = 100000;
+			auto logger = spdlog::get("logger");
+			if (m_length > MAX_PACKET_LENGTH)
+			{
+				if (logger)
+				{
+					logger->error("[Packet] INVALID LENGTH: {} bytes (max: {} bytes)", m_length, MAX_PACKET_LENGTH);
+					logger->error("[Packet]   This indicates buffer corruption");
+				}
+				return network::Shared_payload{};
+			}
+
 			network::Payload BYTES;
 			
 			if (m_is_uint16_opcode)
 			{
 				// NEW uint16_t opcode format: [header(2)][length(4)][data]
 				// Header (2 bytes, big-endian)
-				BYTES.push_back((m_header >> 8) & 0xFF);
-				BYTES.push_back(m_header & 0xFF);
+				uint8_t header_msb = static_cast<uint8_t>((m_header >> 8) & 0xFF);
+				uint8_t header_lsb = static_cast<uint8_t>(m_header & 0xFF);
+				BYTES.push_back(header_msb);
+				BYTES.push_back(header_lsb);
+				
+				if (logger)
+				{
+					logger->debug("[Packet] Encoded 16-bit opcode: 0x{:04x} → [{:02x}][{:02x}]",
+						m_header, header_msb, header_lsb);
+				}
 				
 				// Length (4 bytes, big-endian) - if payload exists
 				if (m_length > 0 && m_data)
@@ -580,7 +601,28 @@ namespace nexusminer
 				}
 			}
 
-			return std::make_shared<network::Payload>(BYTES);
+			auto payload = std::make_shared<network::Payload>(BYTES);
+			
+			if (m_is_uint16_opcode && payload->size() >= 2)
+			{
+				uint16_t wire_opcode = (static_cast<uint16_t>((*payload)[0]) << 8) |
+					static_cast<uint16_t>((*payload)[1]);
+				
+				if (!PacketConstants::is_stateless_opcode(wire_opcode) || wire_opcode == 0xcf00 || wire_opcode == 0xd400)
+				{
+					if (logger)
+					{
+						logger->error("[Packet] CORRUPTED OPCODE DETECTED: 0x{:04x}", wire_opcode);
+						logger->error("[Packet]   Expected range: 0x{:04x}-0x{:04x} (stateless opcodes)",
+							PacketConstants::STATELESS_OPCODE_MIN, PacketConstants::STATELESS_OPCODE_MAX);
+						logger->error("[Packet]   This packet will be REJECTED by node");
+						logger->error("[Packet]   Original header: 0x{:04x}", m_header);
+					}
+					return network::Shared_payload{};
+				}
+			}
+			
+			return payload;
 		}
 
 		inline Packet get_packet(std::uint8_t header) const
