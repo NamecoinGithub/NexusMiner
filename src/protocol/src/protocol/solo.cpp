@@ -1773,7 +1773,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     m_session_manager->start_session(m_session_id);
                     m_session_manager->start_keepalive_timer();
                     m_logger->info("[Solo Session] Session started in session manager");
-                    m_logger->info("[Solo Session] Keepalive timer started (10s early, 30s regular)");
+                    m_logger->info("[Solo Session] Keepalive timer started (early ping + regular cadence)");
                 }
                 
                 // Update template interface with authenticated session ID (FALCON tunnel established)

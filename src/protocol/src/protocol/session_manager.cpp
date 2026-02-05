@@ -13,7 +13,7 @@ constexpr auto KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);
 constexpr auto KEEPALIVE_REGULAR_INTERVAL = std::chrono::seconds(30);
 
 static void append_uint32_le(std::vector<uint8_t>& dest, uint32_t value) {
-    for (int i = 0; i < 4; ++i) {
+    for (uint32_t i = 0; i < 4; ++i) {
         dest.push_back((value >> (i * 8)) & 0xFF);
     }
 }
