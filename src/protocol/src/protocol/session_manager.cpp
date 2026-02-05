@@ -24,7 +24,7 @@ SessionManager::SessionManager(uint16_t keepalive_interval_hours,
     : m_session{}
     , m_keepalive_interval_hours(keepalive_interval_hours)
     , m_preserve_genesis_on_disconnect(true)  // Enable genesis preservation for reconnection support
-    , m_io_context(std::move(io_context))
+    , m_io_context(io_context)
     , m_keepalive_timer(nullptr)
     , m_keepalive_active(false)
     , m_logger(spdlog::get("logger"))
@@ -120,6 +120,10 @@ void SessionManager::start_keepalive_timer()
     m_keepalive_active = true;
 
     auto self = weak_from_this();
+    if (self.expired()) {
+        m_logger->warn("[SessionManager] Keepalive timer requires shared ownership");
+        return;
+    }
     m_keepalive_timer->expires_after(KEEPALIVE_EARLY_INTERVAL);
     m_keepalive_timer->async_wait([self](const asio::error_code& error) {
         auto shared_self = self.lock();
@@ -150,6 +154,9 @@ void SessionManager::schedule_regular_keepalives()
     }
 
     auto self = weak_from_this();
+    if (self.expired()) {
+        return;
+    }
     m_keepalive_timer->expires_after(KEEPALIVE_REGULAR_INTERVAL);
     m_keepalive_timer->async_wait([self](const asio::error_code& error) {
         auto shared_self = self.lock();

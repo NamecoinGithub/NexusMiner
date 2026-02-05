@@ -137,7 +137,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     // This avoids unnecessary resource allocation when ChaCha20 is not needed
     
     // Initialize session manager with default keepalive interval (24 hours)
-    m_session_manager = std::make_shared<SessionManager>(24, std::move(io_context));
+    m_session_manager = std::make_shared<SessionManager>(24, io_context);
     m_logger->info("[Solo] Session manager initialized for adaptive cache management");
     
     // Initialize client-side channel managers (mirrors NODE's PR #136)
