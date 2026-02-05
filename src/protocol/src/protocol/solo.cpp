@@ -1051,6 +1051,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         return packet.m_header == legacy_opcode;
     };
+    auto matches_stateless_opcode = [&packet](uint16_t legacy_opcode) {
+        return packet.m_is_uint16_opcode &&
+            packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
+    };
     
     if (matches_opcode(Packet::BLOCK_HEIGHT))
     {
@@ -1410,7 +1414,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
         
-        bool has_sent_get_block = false;  // Track whether GET_BLOCK was already requested in this handler
+        bool get_block_sent_in_handler = false;  // Track whether GET_BLOCK was already requested in this handler
         
         bool legacy_lane = (m_protocol_lane == ProtocolLane::LEGACY);
         bool valid_length = (packet.m_length == 12) || (legacy_lane && packet.m_length == 16);
@@ -1531,7 +1535,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
-                        has_sent_get_block = true;
+                        get_block_sent_in_handler = true;
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                     } else {
                         m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
@@ -1568,7 +1572,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
-                    has_sent_get_block = true;
+                    get_block_sent_in_handler = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 } else {
                     m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
@@ -1578,7 +1582,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->debug("[Solo GET_ROUND] ✓ Template valid, continuing to mine");
         }
 
-        if (!has_sent_get_block) {
+        if (!get_block_sent_in_handler) {
             if (connection) {
                 m_logger->info("[Solo GET_ROUND] Requesting template immediately (prevent timeout)");
                 auto work_payload = get_work();
@@ -1606,7 +1610,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     {
         m_logger->info("[Solo GET_ROUND] OLD_ROUND response received");
         
-        bool has_sent_get_block = false;  // Track whether GET_BLOCK was already requested in this handler
+        bool get_block_sent_in_handler = false;  // Track whether GET_BLOCK was already requested in this handler
         bool legacy_lane = (m_protocol_lane == ProtocolLane::LEGACY);
         bool valid_length = (packet.m_length == 12) || (legacy_lane && packet.m_length == 16);
         
@@ -1720,7 +1724,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
-                        has_sent_get_block = true;
+                        get_block_sent_in_handler = true;
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                     } else {
                         m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
@@ -1748,13 +1752,13 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
-                    has_sent_get_block = true;
+                    get_block_sent_in_handler = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 }
             }
         }
         
-        if (!has_sent_get_block) {
+        if (!get_block_sent_in_handler) {
             if (connection) {
                 m_logger->info("[Solo GET_ROUND] Requesting template immediately (prevent timeout)");
                 auto work_payload = get_work();
@@ -2397,7 +2401,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     // ═══════════════════════════════════════════════════════════════════════
     // NEW STATELESS MINING PROTOCOL HANDLERS (uint16_t opcodes, 0xD000+)
     // ═══════════════════════════════════════════════════════════════════════
-    else if (packet.m_is_uint16_opcode && matches_opcode(Packet::GET_BLOCK))
+    else if (matches_stateless_opcode(Packet::GET_BLOCK))
     {
         // ═══════════════════════════════════════════════════════════════════
         // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!
