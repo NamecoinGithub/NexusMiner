@@ -12,6 +12,7 @@ constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
 constexpr auto KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);
 constexpr auto KEEPALIVE_REGULAR_INTERVAL = std::chrono::seconds(30);
 
+// SESSION_KEEPALIVE requests encode session_id as little-endian (wire format requirement).
 static void append_uint32_le(std::vector<uint8_t>& dest, uint32_t value) {
     for (uint32_t i = 0; i < 4; ++i) {
         dest.push_back((value >> (i * 8)) & 0xFF);
@@ -118,15 +119,16 @@ void SessionManager::start_keepalive_timer()
 
     m_keepalive_active = true;
 
-    auto self = shared_from_this();
+    auto self = weak_from_this();
     m_keepalive_timer->expires_after(KEEPALIVE_EARLY_INTERVAL);
     m_keepalive_timer->async_wait([self](const asio::error_code& error) {
-        if (error || !self->m_keepalive_active || !self->is_active()) {
+        auto shared_self = self.lock();
+        if (!shared_self || error || !shared_self->m_keepalive_active || !shared_self->is_active()) {
             return;
         }
 
-        self->send_keepalive("early");
-        self->schedule_regular_keepalives();
+        shared_self->send_keepalive("early");
+        shared_self->schedule_regular_keepalives();
     });
 
     m_logger->info("[SessionManager] Keepalive timer started (early: {}s, interval: {}s)",
@@ -147,15 +149,16 @@ void SessionManager::schedule_regular_keepalives()
         return;
     }
 
-    auto self = shared_from_this();
+    auto self = weak_from_this();
     m_keepalive_timer->expires_after(KEEPALIVE_REGULAR_INTERVAL);
     m_keepalive_timer->async_wait([self](const asio::error_code& error) {
-        if (error || !self->m_keepalive_active || !self->is_active()) {
+        auto shared_self = self.lock();
+        if (!shared_self || error || !shared_self->m_keepalive_active || !shared_self->is_active()) {
             return;
         }
 
-        self->send_keepalive("regular");
-        self->schedule_regular_keepalives();
+        shared_self->send_keepalive("regular");
+        shared_self->schedule_regular_keepalives();
     });
 }
 
@@ -164,6 +167,7 @@ void SessionManager::send_keepalive(const char* cadence)
     auto connection = m_connection.lock();
     if (!connection) {
         m_logger->warn("[SessionManager] Keepalive skipped - no active connection");
+        stop_keepalive_timer();
         return;
     }
 
