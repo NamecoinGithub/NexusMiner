@@ -1410,7 +1410,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
         
-        bool requested_template = false;  // Track whether GET_BLOCK was already requested in this handler
+        bool get_block_sent = false;  // Track whether GET_BLOCK was already requested in this handler
         
         bool legacy_lane = (m_protocol_lane == ProtocolLane::LEGACY);
         bool valid_length = (packet.m_length == 12) || (legacy_lane && packet.m_length == 16);
@@ -1531,7 +1531,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
-                        requested_template = true;
+                        get_block_sent = true;
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                     } else {
                         m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
@@ -1568,7 +1568,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
-                    requested_template = true;
+                    get_block_sent = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 } else {
                     m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
@@ -1578,7 +1578,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->debug("[Solo GET_ROUND] ✓ Template valid, continuing to mine");
         }
 
-        if (!requested_template) {
+        if (!get_block_sent) {
             if (connection) {
                 m_logger->info("[Solo GET_ROUND] Requesting template immediately (prevent timeout)");
                 auto work_payload = get_work();
@@ -1606,7 +1606,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     {
         m_logger->info("[Solo GET_ROUND] OLD_ROUND response received");
         
-        bool requested_template = false;  // Track whether GET_BLOCK was already requested in this handler
+        bool get_block_sent = false;  // Track whether GET_BLOCK was already requested in this handler
         bool legacy_lane = (m_protocol_lane == ProtocolLane::LEGACY);
         bool valid_length = (packet.m_length == 12) || (legacy_lane && packet.m_length == 16);
         
@@ -1720,7 +1720,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
-                        requested_template = true;
+                        get_block_sent = true;
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                     } else {
                         m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
@@ -1748,13 +1748,13 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
-                    requested_template = true;
+                    get_block_sent = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 }
             }
         }
         
-        if (!requested_template) {
+        if (!get_block_sent) {
             if (connection) {
                 m_logger->info("[Solo GET_ROUND] Requesting template immediately (prevent timeout)");
                 auto work_payload = get_work();

@@ -557,6 +557,7 @@ namespace nexusminer
 			{
 				// NEW uint16_t opcode format: [header(2)][length(4)][data]
 				// Header (2 bytes, big-endian)
+				// Keep explicit bytes for debug logging of opcode encoding.
 				uint8_t header_msb = (m_header >> 8) & 0xFF;
 				uint8_t header_lsb = m_header & 0xFF;
 				BYTES.push_back(header_msb);
