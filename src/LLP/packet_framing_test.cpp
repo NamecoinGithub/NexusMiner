@@ -440,6 +440,109 @@ void test_zero_length_payload() {
 }
 
 // ============================================================================
+// Test Case 11: Push notification packets (PRIME_BLOCK_AVAILABLE / HASH_BLOCK_AVAILABLE)
+// These carry 12-byte payloads on the legacy lane and must be parsed correctly
+// ============================================================================
+void test_push_notification_legacy_lane() {
+    std::cout << "\nTest 11: Push notification packets on legacy lane (12-byte payload)" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // PRIME_BLOCK_AVAILABLE (217 = 0xD9) with 12-byte payload
+    // Payload: unified_height(4) + prime_height(4) + difficulty(4)
+    std::vector<uint8_t> prime_notification = {
+        217,                                // header = PRIME_BLOCK_AVAILABLE
+        0x00, 0x00, 0x00, 0x0C,            // length = 12
+        0x00, 0x01, 0x00, 0x00,            // unified_height = 65536
+        0x00, 0x00, 0xFF, 0x00,            // prime_height = 65280
+        0x00, 0x00, 0x00, 0x1E             // difficulty = 30
+    };
+    
+    acc.feed(prime_notification);
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    
+    bool test1 = parsed1 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 217) &&
+                 (packet.m_length == 12) &&
+                 (packet.m_data && packet.m_data->size() == 12) &&
+                 acc.empty();
+    print_test_result("PRIME_BLOCK_AVAILABLE (217) with 12-byte payload", test1);
+    
+    // Verify is_auth_packet() returns true for PRIME_BLOCK_AVAILABLE
+    Packet prime_pkt(static_cast<uint8_t>(217));
+    bool test1b = prime_pkt.is_auth_packet();
+    print_test_result("is_auth_packet() returns true for PRIME_BLOCK_AVAILABLE (217)", test1b);
+    
+    // HASH_BLOCK_AVAILABLE (218 = 0xDA) with 12-byte payload
+    std::vector<uint8_t> hash_notification = {
+        218,                                // header = HASH_BLOCK_AVAILABLE
+        0x00, 0x00, 0x00, 0x0C,            // length = 12
+        0x00, 0x02, 0x00, 0x00,            // unified_height = 131072
+        0x00, 0x01, 0x00, 0x00,            // hash_height = 65536
+        0x00, 0x00, 0x00, 0x20             // difficulty = 32
+    };
+    
+    acc.feed(hash_notification);
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    
+    bool test2 = parsed2 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 218) &&
+                 (packet.m_length == 12) &&
+                 (packet.m_data && packet.m_data->size() == 12) &&
+                 acc.empty();
+    print_test_result("HASH_BLOCK_AVAILABLE (218) with 12-byte payload", test2);
+    
+    // Verify is_auth_packet() returns true for HASH_BLOCK_AVAILABLE
+    Packet hash_pkt(static_cast<uint8_t>(218));
+    bool test2b = hash_pkt.is_auth_packet();
+    print_test_result("is_auth_packet() returns true for HASH_BLOCK_AVAILABLE (218)", test2b);
+}
+
+// ============================================================================
+// Test Case 12: is_auth_packet() covers full 206-218 range
+// ============================================================================
+void test_is_auth_packet_full_range() {
+    std::cout << "\nTest 12: is_auth_packet() covers full 206-218 range" << std::endl;
+    
+    // All opcodes 206-218 should return true
+    for (uint16_t opcode = 206; opcode <= 218; ++opcode) {
+        Packet pkt(static_cast<uint8_t>(opcode));
+        bool in_range = pkt.is_auth_packet();
+        std::string name = "is_auth_packet() returns true for opcode " + std::to_string(opcode);
+        print_test_result(name.c_str(), in_range);
+    }
+    
+    // Opcodes just outside the range should return false
+    Packet below(static_cast<uint8_t>(205));
+    print_test_result("is_auth_packet() returns false for opcode 205", !below.is_auth_packet());
+    
+    Packet above(static_cast<uint8_t>(219));
+    print_test_result("is_auth_packet() returns false for opcode 219", !above.is_auth_packet());
+}
+
+// ============================================================================
+// Test Case 13: MINER_READY (216) is header-only and validates correctly
+// ============================================================================
+void test_miner_ready_header_only() {
+    std::cout << "\nTest 13: MINER_READY (216) is header-only and validates correctly" << std::endl;
+    
+    // MINER_READY is header-only (no payload)
+    Packet ready_pkt(static_cast<uint8_t>(216));
+    
+    // Should be in is_auth_packet() range
+    bool test1 = ready_pkt.is_auth_packet();
+    print_test_result("MINER_READY (216) is in is_auth_packet() range", test1);
+    
+    // Should still validate as valid (header-only request)
+    bool test2 = ready_pkt.is_valid();
+    print_test_result("MINER_READY (216) with m_length=0 validates as valid", test2);
+}
+
+// ============================================================================
 // Main test runner
 // ============================================================================
 int main() {
@@ -458,6 +561,9 @@ int main() {
     test_complex_mixed_scenario();
     test_byte_by_byte_feeding();
     test_zero_length_payload();
+    test_push_notification_legacy_lane();
+    test_is_auth_packet_full_range();
+    test_miner_ready_header_only();
     
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Summary" << std::endl;
