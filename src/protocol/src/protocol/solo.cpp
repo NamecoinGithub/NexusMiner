@@ -1,6 +1,7 @@
 #include "protocol/solo.hpp"
 #include "protocol/protocol.hpp"
 #include "protocol/falcon_constants.hpp"
+#include "protocol/push_notification_handler.hpp"
 #include "packet.hpp"
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
@@ -143,6 +144,9 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             static_cast<int>(m_channel));
         m_channel = 2;
     }
+    
+    // Initialize unified push notification handler
+    m_push_handler = std::make_unique<PushNotificationHandler>(m_logger, m_channel);
     
     // Note: ChaCha20 wrapper is lazily initialized when enable_chacha20_wrapping() is called
     // This avoids unnecessary resource allocation when ChaCha20 is not needed
@@ -2270,144 +2274,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     }
     else if (matches_opcode(Packet::PRIME_BLOCK_AVAILABLE))
     {
-        m_logger->info("[Solo Push] ✉️  PRIME_BLOCK_AVAILABLE received");
-        
-        /* Validate channel (should only receive if mining Prime) */
-        if (m_channel != mining::CHANNEL_PRIME)
-        {
-            m_logger->error("[Solo Push] ❌ Received PRIME_BLOCK_AVAILABLE but mining {} channel!",
-                          m_channel == mining::CHANNEL_HASH ? "Hash" : "Unknown");
-            m_logger->error("[Solo Push]    This should never happen (node filters by channel)");
-            return;  // Protocol error
-        }
-        
-        /* Validate packet length */
-        if (!packet.m_data || packet.m_length != PUSH_NOTIFICATION_PAYLOAD_SIZE)
-        {
-            m_logger->error("[Solo Push] Invalid packet length: {} (expected {})", 
-                          packet.m_length, PUSH_NOTIFICATION_PAYLOAD_SIZE);
-            return;
-        }
-        
-        /* Parse notification (big-endian) */
-        uint32_t unified_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_UNIFIED_HEIGHT_OFFSET);
-        uint32_t prime_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_CHANNEL_HEIGHT_OFFSET);
-        uint32_t difficulty = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_DIFFICULTY_OFFSET);
-        
-        m_logger->info("[Solo Push]   Unified height: {}", unified_height);
-        m_logger->info("[Solo Push]   Prime height:   {}", prime_height);
-        m_logger->info("[Solo Push]   Difficulty:     0x{:08x}", difficulty);
-        
-        /* Check if current template is stale */
-        if (m_template_interface && m_template_interface->has_valid_template())
-        {
-            auto const* tmpl = m_template_interface->get_current_template();
-            if (tmpl)
-            {
-                uint32_t current_prime_height = tmpl->nChannelHeight;
-                uint32_t current_unified_height = tmpl->block.nHeight;
-                
-                m_logger->debug("[Solo Push] Current template: unified={}, prime={}", 
-                              current_unified_height, current_prime_height);
-                
-                if (prime_height > current_prime_height)
-                {
-                    m_logger->info("[Solo Push] ✗ Template stale (was mining {}, new block {})", 
-                                 current_prime_height, prime_height);
-                    m_logger->info("[Solo Push] Requesting fresh Prime template...");
-                    
-                    if (connection) {
-                        connection->transmit(get_work());
-                    }
-                }
-                else if (prime_height == current_prime_height && unified_height > current_unified_height)
-                {
-                    m_logger->info("[Solo Push] ✓ Prime unchanged, unified advanced ({} → {})", 
-                                 current_unified_height, unified_height);
-                    // Continue mining current template
-                }
-                else
-                {
-                    m_logger->debug("[Solo Push] ✓ Template still valid");
-                }
-            }
-        }
-        else
-        {
-            /* No template yet - request one */
-            m_logger->info("[Solo Push] No template - requesting initial Prime template");
-            if (connection) {
-                connection->transmit(get_work());
-            }
-        }
+        m_push_handler->handle_push_notification(
+            packet, mining::CHANNEL_PRIME, ProtocolLane::LEGACY,
+            m_template_interface.get(),
+            [&connection, this]() { if (connection) connection->transmit(get_work()); });
     }
     else if (matches_opcode(Packet::HASH_BLOCK_AVAILABLE))
     {
-        m_logger->info("[Solo Push] ✉️  HASH_BLOCK_AVAILABLE received");
-        
-        /* Validate channel */
-        if (m_channel != mining::CHANNEL_HASH)
-        {
-            m_logger->error("[Solo Push] ❌ Received HASH_BLOCK_AVAILABLE but mining {} channel!",
-                          m_channel == mining::CHANNEL_PRIME ? "Prime" : "Unknown");
-            return;
-        }
-        
-        /* Validate packet */
-        if (!packet.m_data || packet.m_length != PUSH_NOTIFICATION_PAYLOAD_SIZE)
-        {
-            m_logger->error("[Solo Push] Invalid packet length: {} (expected {})", 
-                          packet.m_length, PUSH_NOTIFICATION_PAYLOAD_SIZE);
-            return;
-        }
-        
-        /* Parse notification (big-endian) */
-        uint32_t unified_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_UNIFIED_HEIGHT_OFFSET);
-        uint32_t hash_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_CHANNEL_HEIGHT_OFFSET);
-        uint32_t difficulty = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_DIFFICULTY_OFFSET);
-        
-        m_logger->info("[Solo Push]   Unified height: {}", unified_height);
-        m_logger->info("[Solo Push]   Hash height:    {}", hash_height);
-        m_logger->info("[Solo Push]   Difficulty:     0x{:08x}", difficulty);
-        
-        /* Check template staleness */
-        if (m_template_interface && m_template_interface->has_valid_template())
-        {
-            auto const* tmpl = m_template_interface->get_current_template();
-            if (tmpl)
-            {
-                uint32_t current_hash_height = tmpl->nChannelHeight;
-                uint32_t current_unified_height = tmpl->block.nHeight;
-                
-                m_logger->debug("[Solo Push] Current template: unified={}, hash={}", 
-                              current_unified_height, current_hash_height);
-                
-                if (hash_height > current_hash_height)
-                {
-                    m_logger->info("[Solo Push] ✗ Template stale - requesting fresh Hash template");
-                    if (connection) {
-                        connection->transmit(get_work());
-                    }
-                }
-                else if (hash_height == current_hash_height && unified_height > current_unified_height)
-                {
-                    m_logger->info("[Solo Push] ✓ Hash unchanged, unified advanced ({} → {})", 
-                                 current_unified_height, unified_height);
-                    // Continue mining current template
-                }
-                else
-                {
-                    m_logger->debug("[Solo Push] ✓ Template still valid");
-                }
-            }
-        }
-        else
-        {
-            m_logger->info("[Solo Push] Requesting initial Hash template");
-            if (connection) {
-                connection->transmit(get_work());
-            }
-        }
+        m_push_handler->handle_push_notification(
+            packet, mining::CHANNEL_HASH, ProtocolLane::LEGACY,
+            m_template_interface.get(),
+            [&connection, this]() { if (connection) connection->transmit(get_work()); });
     }
     // ═══════════════════════════════════════════════════════════════════════
     // NEW STATELESS MINING PROTOCOL HANDLERS (uint16_t opcodes, 0xD000+)
@@ -2598,135 +2475,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     }
     else if (matches_stateless_opcode(Packet::PRIME_BLOCK_AVAILABLE))
     {
-        m_logger->info("[Solo Push] ✉️  STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9) received");
-        
-        /* Validate channel (must be Prime) */
-        if (m_channel != mining::CHANNEL_PRIME)
-        {
-            m_logger->error("[Solo Push] Channel mismatch - expected Prime, got {}",
-                          m_channel == mining::CHANNEL_HASH ? "Hash" : "Unknown");
-            return;
-        }
-        
-        /* Validate payload (must be 12 bytes) */
-        if (!packet.m_data || packet.m_length != PUSH_NOTIFICATION_PAYLOAD_SIZE)
-        {
-            m_logger->error("[Solo Push] Invalid payload: {} bytes (expected {})", 
-                          packet.m_length, PUSH_NOTIFICATION_PAYLOAD_SIZE);
-            return;
-        }
-        
-        /* Parse notification (big-endian) */
-        uint32_t unified_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_UNIFIED_HEIGHT_OFFSET);
-        uint32_t prime_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_CHANNEL_HEIGHT_OFFSET);
-        uint32_t difficulty = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_DIFFICULTY_OFFSET);
-        
-        m_logger->info("[Solo Push]   Unified: {}, Prime: {}, Diff: 0x{:08x}",
-                      unified_height, prime_height, difficulty);
-        
-        /* Check if current template is stale */
-        if (m_template_interface && m_template_interface->has_valid_template())
-        {
-            auto const* tmpl = m_template_interface->get_current_template();
-            if (tmpl)
-            {
-                uint32_t current_prime_height = tmpl->nChannelHeight;
-                uint32_t current_unified_height = tmpl->block.nHeight;
-                
-                if (prime_height > current_prime_height)
-                {
-                    m_logger->info("[Solo Push] ✗ Stale (was {}, now {})", current_prime_height, prime_height);
-                    m_logger->info("[Solo Push] Requesting fresh Prime template...");
-                    if (connection) {
-                        connection->transmit(get_work());
-                    }
-                }
-                else if (prime_height == current_prime_height && unified_height > current_unified_height)
-                {
-                    m_logger->info("[Solo Push] ✓ Prime unchanged, unified advanced ({} → {})", 
-                                 current_unified_height, unified_height);
-                    // Continue mining current template
-                }
-                else
-                {
-                    m_logger->debug("[Solo Push] ✓ Template still valid");
-                }
-            }
-        }
-        else
-        {
-            /* No template yet - request one */
-            m_logger->info("[Solo Push] No template - requesting initial Prime template");
-            if (connection) {
-                connection->transmit(get_work());
-            }
-        }
+        m_push_handler->handle_push_notification(
+            packet, mining::CHANNEL_PRIME, ProtocolLane::STATELESS,
+            m_template_interface.get(),
+            [&connection, this]() { if (connection) connection->transmit(get_work()); });
     }
     else if (matches_stateless_opcode(Packet::HASH_BLOCK_AVAILABLE))
     {
-        m_logger->info("[Solo Push] ✉️  STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA) received");
-        
-        /* Validate channel (must be Hash) */
-        if (m_channel != mining::CHANNEL_HASH)
-        {
-            m_logger->error("[Solo Push] Channel mismatch - expected Hash, got {}",
-                          m_channel == mining::CHANNEL_PRIME ? "Prime" : "Unknown");
-            return;
-        }
-        
-        /* Validate payload (must be 12 bytes) */
-        if (!packet.m_data || packet.m_length != PUSH_NOTIFICATION_PAYLOAD_SIZE)
-        {
-            m_logger->error("[Solo Push] Invalid payload: {} bytes (expected {})", 
-                          packet.m_length, PUSH_NOTIFICATION_PAYLOAD_SIZE);
-            return;
-        }
-        
-        /* Parse notification (big-endian) */
-        uint32_t unified_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_UNIFIED_HEIGHT_OFFSET);
-        uint32_t hash_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_CHANNEL_HEIGHT_OFFSET);
-        uint32_t difficulty = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_DIFFICULTY_OFFSET);
-        
-        m_logger->info("[Solo Push]   Unified: {}, Hash: {}, Diff: 0x{:08x}",
-                      unified_height, hash_height, difficulty);
-        
-        /* Check if current template is stale */
-        if (m_template_interface && m_template_interface->has_valid_template())
-        {
-            auto const* tmpl = m_template_interface->get_current_template();
-            if (tmpl)
-            {
-                uint32_t current_hash_height = tmpl->nChannelHeight;
-                uint32_t current_unified_height = tmpl->block.nHeight;
-                
-                if (hash_height > current_hash_height)
-                {
-                    m_logger->info("[Solo Push] ✗ Stale (was {}, now {})", current_hash_height, hash_height);
-                    m_logger->info("[Solo Push] Requesting fresh Hash template...");
-                    if (connection) {
-                        connection->transmit(get_work());
-                    }
-                }
-                else if (hash_height == current_hash_height && unified_height > current_unified_height)
-                {
-                    m_logger->info("[Solo Push] ✓ Hash unchanged, unified advanced ({} → {})", 
-                                 current_unified_height, unified_height);
-                    // Continue mining current template
-                }
-                else
-                {
-                    m_logger->debug("[Solo Push] ✓ Template still valid");
-                }
-            }
-        }
-        else
-        {
-            /* No template yet - request one */
-            m_logger->info("[Solo Push] No template - requesting initial Hash template");
-            if (connection) {
-                connection->transmit(get_work());
-            }
-        }
+        m_push_handler->handle_push_notification(
+            packet, mining::CHANNEL_HASH, ProtocolLane::STATELESS,
+            m_template_interface.get(),
+            [&connection, this]() { if (connection) connection->transmit(get_work()); });
     }
     else
     {

@@ -6,6 +6,7 @@
 #include "protocol/chacha20_wrapper.hpp"
 #include "protocol/session_manager.hpp"
 #include "protocol/mining_template_interface.hpp"
+#include "protocol/push_notification_handler.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "spdlog/spdlog.h"
@@ -301,6 +302,9 @@ private:
     
     // Protocol lane (determined once from connection port, never changes)
     ProtocolLane m_protocol_lane;
+    
+    // Unified push notification handler (consolidates 4 duplicate handlers)
+    std::unique_ptr<PushNotificationHandler> m_push_handler;
     
     // Helper method to determine and log lane from connection
     void initialize_protocol_lane(std::shared_ptr<network::Connection> connection);
