@@ -28,7 +28,7 @@ class PushNotificationHandler {
 public:
     PushNotificationHandler(
         std::shared_ptr<spdlog::logger> logger,
-        std::uint8_t& current_channel
+        const std::uint8_t& current_channel
     );
 
     /**
@@ -41,7 +41,7 @@ public:
      * @param request_work_fn   Callback to request a fresh mining template
      */
     void handle_push_notification(
-        Packet packet,
+        const Packet& packet,
         std::uint32_t expected_channel,
         ProtocolLane lane,
         MiningTemplateInterface* template_interface,
@@ -50,7 +50,7 @@ public:
 
 private:
     std::shared_ptr<spdlog::logger> m_logger;
-    std::uint8_t& m_current_channel;
+    const std::uint8_t& m_current_channel;
 
     static constexpr std::size_t PAYLOAD_SIZE = 12;
     static constexpr std::size_t UNIFIED_HEIGHT_OFFSET = 0;

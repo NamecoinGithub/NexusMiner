@@ -7,7 +7,7 @@ namespace protocol {
 
 PushNotificationHandler::PushNotificationHandler(
     std::shared_ptr<spdlog::logger> logger,
-    std::uint8_t& current_channel)
+    const std::uint8_t& current_channel)
 : m_logger{std::move(logger)}
 , m_current_channel{current_channel}
 {
@@ -19,7 +19,7 @@ const char* PushNotificationHandler::channel_name(std::uint32_t channel)
 }
 
 void PushNotificationHandler::handle_push_notification(
-    Packet packet,
+    const Packet& packet,
     std::uint32_t expected_channel,
     ProtocolLane lane,
     MiningTemplateInterface* template_interface,
@@ -65,8 +65,8 @@ void PushNotificationHandler::handle_push_notification(
                        unified_height, ch_name, channel_height, difficulty);
     } else {
         m_logger->info("[Solo Push]   Unified height: {}", unified_height);
-        m_logger->info("[Solo Push]   {} height:    {}", ch_name, channel_height);
-        m_logger->info("[Solo Push]   Difficulty:     0x{:08x}", difficulty);
+        m_logger->info("[Solo Push]   {} height: {}", ch_name, channel_height);
+        m_logger->info("[Solo Push]   Difficulty: 0x{:08x}", difficulty);
     }
 
     /* Check if current template is stale */
