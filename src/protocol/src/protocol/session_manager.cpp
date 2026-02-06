@@ -187,6 +187,12 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
     if (m_session.session_id == 0) {
         return network::Shared_payload{};
     }
+    
+    // Validate protocol lane is set
+    if (m_protocol_lane == ProtocolLane::UNKNOWN) {
+        m_logger->error("[SessionManager] build_keepalive_packet() called with UNKNOWN protocol lane - defaulting to LEGACY");
+        // Fall through to LEGACY as safe default
+    }
 
     std::vector<uint8_t> payload;
     append_uint32_le(payload, m_session.session_id);

@@ -412,7 +412,10 @@ namespace nexusminer
 		/**
 		 * @brief Check if packet header is part of stateless mining protocol with payloads
 		 * 
-		 * These packets carry payloads despite having headers >= 128:
+		 * Stateless mining protocol packets carry payloads despite having headers >= 128.
+		 * This includes:
+		 * 
+		 * Core auth/session packets (206-214):
 		 * - CHANNEL_ACK (206): 1-byte channel confirmation payload
 		 * - MINER_AUTH_INIT (207): pubkey data
 		 * - MINER_AUTH_CHALLENGE (208): nonce data
@@ -420,21 +423,34 @@ namespace nexusminer
 		 * - MINER_AUTH_RESULT (210): status + optional session_id
 		 * - SESSION_START (211), SESSION_KEEPALIVE (212): session data
 		 * - MINER_SET_REWARD (213), MINER_REWARD_RESULT (214): encrypted reward data
+		 * 
+		 * Push notification packets with payloads (217-218):
 		 * - PRIME_BLOCK_AVAILABLE (217): 12-byte push notification payload
 		 * - HASH_BLOCK_AVAILABLE (218): 12-byte push notification payload
 		 * 
-		 * NOTE: MINER_READY (216) is NOT included - it's header-only (no payload)
+		 * EXCLUDED:
+		 * - MINER_READY (216) is header-only (no payload) and deliberately NOT included
+		 * - Opcode 215 is unused/reserved
 		 * 
-		 * See src/LLP/miner_opcodes.hpp for the authoritative packet type definitions.
+		 * @return true if packet is a stateless mining protocol packet with payload
+		 * 
+		 * @note This method identifies packets that require length field parsing.
+		 *       If future opcodes are added in this range, update accordingly.
 		 */
 		inline bool is_auth_packet() const
 		{
-			// Stateless mining protocol packets (206-214) all carry payloads despite header >= 128
-			// PLUS push notifications with payloads (217-218)
-			// IMPORTANT: MINER_READY (216) is header-only and NOT included
-			return (m_header >= CHANNEL_ACK && m_header <= MINER_REWARD_RESULT) ||
-			       m_header == PRIME_BLOCK_AVAILABLE || 
-			       m_header == HASH_BLOCK_AVAILABLE;
+			// Core stateless mining protocol (206-214) - all have payloads
+			if (m_header >= CHANNEL_ACK && m_header <= MINER_REWARD_RESULT) {
+				return true;
+			}
+			
+			// Push notifications with payloads (217-218)
+			// NOTE: MINER_READY (216) is deliberately excluded as it's header-only
+			if (m_header == PRIME_BLOCK_AVAILABLE || m_header == HASH_BLOCK_AVAILABLE) {
+				return true;
+			}
+			
+			return false;
 		}
 
 		/**
@@ -1113,7 +1129,8 @@ namespace nexusminer
 			// Accept properly mirrored stateless opcodes (0xD0xx) OR
 			// Accept un-mirrored push notification opcodes (217, 218) due to node bug
 			bool is_valid_stateless = PacketConstants::is_stateless_opcode(header16);
-			bool is_unmirrored_push_notification = (header16 == 217 || header16 == 218);  // PRIME/HASH_BLOCK_AVAILABLE
+			bool is_unmirrored_push_notification = (header16 == LLP::PRIME_BLOCK_AVAILABLE || 
+			                                        header16 == LLP::HASH_BLOCK_AVAILABLE);
 			
 			if (!is_valid_stateless && !is_unmirrored_push_notification)
 			{
