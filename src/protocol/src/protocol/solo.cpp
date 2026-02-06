@@ -2596,6 +2596,138 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->error("[Solo Stateless] No template interface available!");
         }
     }
+    else if (matches_stateless_opcode(Packet::PRIME_BLOCK_AVAILABLE))
+    {
+        m_logger->info("[Solo Push] ✉️  STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9) received");
+        
+        /* Validate channel (must be Prime) */
+        if (m_channel != mining::CHANNEL_PRIME)
+        {
+            m_logger->error("[Solo Push] Channel mismatch - expected Prime, got {}",
+                          m_channel == mining::CHANNEL_HASH ? "Hash" : "Unknown");
+            return;
+        }
+        
+        /* Validate payload (must be 12 bytes) */
+        if (!packet.m_data || packet.m_length != PUSH_NOTIFICATION_PAYLOAD_SIZE)
+        {
+            m_logger->error("[Solo Push] Invalid payload: {} bytes (expected {})", 
+                          packet.m_length, PUSH_NOTIFICATION_PAYLOAD_SIZE);
+            return;
+        }
+        
+        /* Parse notification (big-endian) */
+        uint32_t unified_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_UNIFIED_HEIGHT_OFFSET);
+        uint32_t prime_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_CHANNEL_HEIGHT_OFFSET);
+        uint32_t difficulty = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_DIFFICULTY_OFFSET);
+        
+        m_logger->info("[Solo Push]   Unified: {}, Prime: {}, Diff: 0x{:08x}",
+                      unified_height, prime_height, difficulty);
+        
+        /* Check if current template is stale */
+        if (m_template_interface && m_template_interface->has_valid_template())
+        {
+            auto const* tmpl = m_template_interface->get_current_template();
+            if (tmpl)
+            {
+                uint32_t current_prime_height = tmpl->nChannelHeight;
+                uint32_t current_unified_height = tmpl->block.nHeight;
+                
+                if (prime_height > current_prime_height)
+                {
+                    m_logger->info("[Solo Push] ✗ Stale (was {}, now {})", current_prime_height, prime_height);
+                    m_logger->info("[Solo Push] Requesting fresh Prime template...");
+                    if (connection) {
+                        connection->transmit(get_work());
+                    }
+                }
+                else if (prime_height == current_prime_height && unified_height > current_unified_height)
+                {
+                    m_logger->info("[Solo Push] ✓ Prime unchanged, unified advanced ({} → {})", 
+                                 current_unified_height, unified_height);
+                    // Continue mining current template
+                }
+                else
+                {
+                    m_logger->debug("[Solo Push] ✓ Template still valid");
+                }
+            }
+        }
+        else
+        {
+            /* No template yet - request one */
+            m_logger->info("[Solo Push] No template - requesting initial Prime template");
+            if (connection) {
+                connection->transmit(get_work());
+            }
+        }
+    }
+    else if (matches_stateless_opcode(Packet::HASH_BLOCK_AVAILABLE))
+    {
+        m_logger->info("[Solo Push] ✉️  STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA) received");
+        
+        /* Validate channel (must be Hash) */
+        if (m_channel != mining::CHANNEL_HASH)
+        {
+            m_logger->error("[Solo Push] Channel mismatch - expected Hash, got {}",
+                          m_channel == mining::CHANNEL_PRIME ? "Prime" : "Unknown");
+            return;
+        }
+        
+        /* Validate payload (must be 12 bytes) */
+        if (!packet.m_data || packet.m_length != PUSH_NOTIFICATION_PAYLOAD_SIZE)
+        {
+            m_logger->error("[Solo Push] Invalid payload: {} bytes (expected {})", 
+                          packet.m_length, PUSH_NOTIFICATION_PAYLOAD_SIZE);
+            return;
+        }
+        
+        /* Parse notification (big-endian) */
+        uint32_t unified_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_UNIFIED_HEIGHT_OFFSET);
+        uint32_t hash_height = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_CHANNEL_HEIGHT_OFFSET);
+        uint32_t difficulty = bytes2uint(*packet.m_data, PUSH_NOTIFICATION_DIFFICULTY_OFFSET);
+        
+        m_logger->info("[Solo Push]   Unified: {}, Hash: {}, Diff: 0x{:08x}",
+                      unified_height, hash_height, difficulty);
+        
+        /* Check if current template is stale */
+        if (m_template_interface && m_template_interface->has_valid_template())
+        {
+            auto const* tmpl = m_template_interface->get_current_template();
+            if (tmpl)
+            {
+                uint32_t current_hash_height = tmpl->nChannelHeight;
+                uint32_t current_unified_height = tmpl->block.nHeight;
+                
+                if (hash_height > current_hash_height)
+                {
+                    m_logger->info("[Solo Push] ✗ Stale (was {}, now {})", current_hash_height, hash_height);
+                    m_logger->info("[Solo Push] Requesting fresh Hash template...");
+                    if (connection) {
+                        connection->transmit(get_work());
+                    }
+                }
+                else if (hash_height == current_hash_height && unified_height > current_unified_height)
+                {
+                    m_logger->info("[Solo Push] ✓ Hash unchanged, unified advanced ({} → {})", 
+                                 current_unified_height, unified_height);
+                    // Continue mining current template
+                }
+                else
+                {
+                    m_logger->debug("[Solo Push] ✓ Template still valid");
+                }
+            }
+        }
+        else
+        {
+            /* No template yet - request one */
+            m_logger->info("[Solo Push] No template - requesting initial Hash template");
+            if (connection) {
+                connection->transmit(get_work());
+            }
+        }
+    }
     else
     {
         m_logger->debug("Invalid header received: 0x{:04x}", packet.m_header);
