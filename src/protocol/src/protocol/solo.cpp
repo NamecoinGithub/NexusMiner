@@ -2628,17 +2628,29 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         if (m_template_interface && m_template_interface->has_valid_template())
         {
             auto const* tmpl = m_template_interface->get_current_template();
-            if (tmpl && prime_height > tmpl->nChannelHeight)
+            if (tmpl)
             {
-                m_logger->info("[Solo Push] ✗ Stale (was {}, now {})", tmpl->nChannelHeight, prime_height);
-                m_logger->info("[Solo Push] Requesting fresh Prime template...");
-                if (connection) {
-                    connection->transmit(get_work());
+                uint32_t current_prime_height = tmpl->nChannelHeight;
+                uint32_t current_unified_height = tmpl->block.nHeight;
+                
+                if (prime_height > current_prime_height)
+                {
+                    m_logger->info("[Solo Push] ✗ Stale (was {}, now {})", current_prime_height, prime_height);
+                    m_logger->info("[Solo Push] Requesting fresh Prime template...");
+                    if (connection) {
+                        connection->transmit(get_work());
+                    }
                 }
-            }
-            else
-            {
-                m_logger->debug("[Solo Push] ✓ Template still valid");
+                else if (prime_height == current_prime_height && unified_height > current_unified_height)
+                {
+                    m_logger->info("[Solo Push] ✓ Prime unchanged, unified advanced ({} → {})", 
+                                 current_unified_height, unified_height);
+                    // Continue mining current template
+                }
+                else
+                {
+                    m_logger->debug("[Solo Push] ✓ Template still valid");
+                }
             }
         }
         else
@@ -2682,17 +2694,29 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         if (m_template_interface && m_template_interface->has_valid_template())
         {
             auto const* tmpl = m_template_interface->get_current_template();
-            if (tmpl && hash_height > tmpl->nChannelHeight)
+            if (tmpl)
             {
-                m_logger->info("[Solo Push] ✗ Stale (was {}, now {})", tmpl->nChannelHeight, hash_height);
-                m_logger->info("[Solo Push] Requesting fresh Hash template...");
-                if (connection) {
-                    connection->transmit(get_work());
+                uint32_t current_hash_height = tmpl->nChannelHeight;
+                uint32_t current_unified_height = tmpl->block.nHeight;
+                
+                if (hash_height > current_hash_height)
+                {
+                    m_logger->info("[Solo Push] ✗ Stale (was {}, now {})", current_hash_height, hash_height);
+                    m_logger->info("[Solo Push] Requesting fresh Hash template...");
+                    if (connection) {
+                        connection->transmit(get_work());
+                    }
                 }
-            }
-            else
-            {
-                m_logger->debug("[Solo Push] ✓ Template still valid");
+                else if (hash_height == current_hash_height && unified_height > current_unified_height)
+                {
+                    m_logger->info("[Solo Push] ✓ Hash unchanged, unified advanced ({} → {})", 
+                                 current_unified_height, unified_height);
+                    // Continue mining current template
+                }
+                else
+                {
+                    m_logger->debug("[Solo Push] ✓ Template still valid");
+                }
             }
         }
         else
