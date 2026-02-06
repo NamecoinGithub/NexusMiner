@@ -43,6 +43,9 @@ Our default configuration achieves **51% blockchain savings** over 100 years:
 - **[Configuration Reference](docs/reference/nexus.conf.md)** - Complete guide to all config options
 - **[Quick Start Examples](docs/reference/config-examples/)** - Ready-to-use config templates
 - **[Stateless Mining Protocol](docs/current/mining-protocols/stateless-mining.md)** - Modern push protocol
+- **[Push Notification System](docs/current/mining-protocols/push-notifications.md)** - Event-driven block notifications
+- **[Architecture Diagrams](docs/diagrams/)** - Mermaid diagrams of protocol architecture
+- **[Protocol Reference](docs/reference/opcodes-reference.md)** - LLP protocol opcodes
 - **[Troubleshooting Guide](docs/current/troubleshooting.md)** - Common issues and solutions
 
 ### By Topic
