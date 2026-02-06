@@ -1,6 +1,7 @@
 #include "protocol/session_manager.hpp"
 #include "network/connection.hpp"
 #include "packet.hpp"
+#include "miner_opcodes.hpp"
 #include <algorithm>
 
 namespace nexusminer {
@@ -25,6 +26,7 @@ SessionManager::SessionManager(uint16_t keepalive_interval_hours,
     : m_session{}
     , m_keepalive_interval_hours(keepalive_interval_hours)
     , m_preserve_genesis_on_disconnect(true)  // Enable genesis preservation for reconnection support
+    , m_protocol_lane(ProtocolLane::UNKNOWN)  // Initialize to UNKNOWN, must be set before use
     , m_io_context(io_context)
     , m_keepalive_timer(nullptr)
     , m_keepalive_active(false)
@@ -189,8 +191,15 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
     std::vector<uint8_t> payload;
     append_uint32_le(payload, m_session.session_id);
 
-    Packet packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE),
-                   std::make_shared<network::Payload>(payload) };
+    // Build lane-aware packet based on protocol lane
+    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
+    
+    Packet packet = use_stateless_opcode
+        ? Packet{ static_cast<uint16_t>(LLP::MirrorOpcode(static_cast<uint8_t>(Packet::SESSION_KEEPALIVE))),
+                  std::make_shared<network::Payload>(payload) }
+        : Packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE),
+                  std::make_shared<network::Payload>(payload) };
+    
     return packet.get_bytes();
 }
 
@@ -292,6 +301,19 @@ void SessionManager::set_keepalive_interval(uint16_t hours)
         m_logger->info("[SessionManager] Keepalive interval changed: {} -> {} hours",
                       m_keepalive_interval_hours, hours);
         m_keepalive_interval_hours = hours;
+    }
+}
+
+void SessionManager::set_protocol_lane(ProtocolLane lane)
+{
+    if (m_protocol_lane != lane) {
+        const char* old_lane = (m_protocol_lane == ProtocolLane::LEGACY) ? "Legacy (8-bit)" :
+                               (m_protocol_lane == ProtocolLane::STATELESS) ? "Stateless (16-bit)" : "Unknown";
+        const char* new_lane = (lane == ProtocolLane::LEGACY) ? "Legacy (8-bit)" :
+                               (lane == ProtocolLane::STATELESS) ? "Stateless (16-bit)" : "Unknown";
+        
+        m_logger->info("[SessionManager] Protocol lane changed: {} -> {}", old_lane, new_lane);
+        m_protocol_lane = lane;
     }
 }
 

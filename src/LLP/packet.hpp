@@ -410,7 +410,7 @@ namespace nexusminer
 		bool m_is_uint16_opcode;  // True if this packet uses uint16_t opcode (>= 0xD000)
 
 		/**
-		 * @brief Check if packet header is part of stateless mining protocol (206-214)
+		 * @brief Check if packet header is part of stateless mining protocol with payloads
 		 * 
 		 * These packets carry payloads despite having headers >= 128:
 		 * - CHANNEL_ACK (206): 1-byte channel confirmation payload
@@ -420,17 +420,21 @@ namespace nexusminer
 		 * - MINER_AUTH_RESULT (210): status + optional session_id
 		 * - SESSION_START (211), SESSION_KEEPALIVE (212): session data
 		 * - MINER_SET_REWARD (213), MINER_REWARD_RESULT (214): encrypted reward data
+		 * - PRIME_BLOCK_AVAILABLE (217): 12-byte push notification payload
+		 * - HASH_BLOCK_AVAILABLE (218): 12-byte push notification payload
 		 * 
-		 * NOTE: This function assumes CHANNEL_ACK (206) through MINER_REWARD_RESULT (214)
-		 * form a contiguous range. If new packet types are added in this range, they must
-		 * also follow the same payload convention. See src/LLP/miner_opcodes.hpp for the
-		 * authoritative packet type definitions.
+		 * NOTE: MINER_READY (216) is NOT included - it's header-only (no payload)
+		 * 
+		 * See src/LLP/miner_opcodes.hpp for the authoritative packet type definitions.
 		 */
 		inline bool is_auth_packet() const
 		{
 			// Stateless mining protocol packets (206-214) all carry payloads despite header >= 128
-			// IMPORTANT: This range must remain contiguous - see miner_opcodes.hpp
-			return (m_header >= CHANNEL_ACK && m_header <= MINER_REWARD_RESULT);
+			// PLUS push notifications with payloads (217-218)
+			// IMPORTANT: MINER_READY (216) is header-only and NOT included
+			return (m_header >= CHANNEL_ACK && m_header <= MINER_REWARD_RESULT) ||
+			       m_header == PRIME_BLOCK_AVAILABLE || 
+			       m_header == HASH_BLOCK_AVAILABLE;
 		}
 
 		/**
@@ -1105,8 +1109,13 @@ namespace nexusminer
 			                    static_cast<uint16_t>((*buffer)[start_index + 1]);
 			packet.m_header = header16;
 			
-			// Validate that this is actually a stateless opcode for this lane
-			if (!PacketConstants::is_stateless_opcode(header16))
+			// Validate that this is a valid opcode for stateless lane
+			// Accept properly mirrored stateless opcodes (0xD0xx) OR
+			// Accept un-mirrored push notification opcodes (217, 218) due to node bug
+			bool is_valid_stateless = PacketConstants::is_stateless_opcode(header16);
+			bool is_unmirrored_push_notification = (header16 == 217 || header16 == 218);  // PRIME/HASH_BLOCK_AVAILABLE
+			
+			if (!is_valid_stateless && !is_unmirrored_push_notification)
 			{
 				// Invalid opcode for stateless lane - malformed
 				result = ParseResult::MALFORMED;
