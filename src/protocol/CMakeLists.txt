@@ -5,7 +5,8 @@ add_library(protocol STATIC src/protocol/solo.cpp
                             src/protocol/falcon_wrapper.cpp
                             src/protocol/chacha20_wrapper.cpp
                             src/protocol/session_manager.cpp
-                            src/protocol/mining_template_interface.cpp)
+                            src/protocol/mining_template_interface.cpp
+                            src/protocol/push_notification_handler.cpp)
                     
 target_include_directories(protocol
     PUBLIC 
