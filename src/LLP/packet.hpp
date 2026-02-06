@@ -433,7 +433,8 @@ namespace nexusminer
 		 * - PRIME_BLOCK_AVAILABLE (217): 12-byte push notification payload
 		 * - HASH_BLOCK_AVAILABLE (218): 12-byte push notification payload
 		 * 
-		 * @return true if packet is in the stateless mining protocol range (206-218)
+		 * @return true if packet header is in the stateless mining protocol range (206-218),
+		 *         including header-only packets like MINER_READY (216)
 		 * 
 		 * @note This method identifies packets that may require length field parsing.
 		 *       Header-only packets (e.g. MINER_READY) in this range are handled
