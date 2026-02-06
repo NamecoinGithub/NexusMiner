@@ -10,6 +10,7 @@
 #include "asio/io_context.hpp"
 #include "asio/steady_timer.hpp"
 #include "network/types.hpp"
+#include "protocol_lane.hpp"
 #include "spdlog/spdlog.h"
 
 namespace nexusminer {
@@ -197,6 +198,13 @@ public:
     void set_keepalive_interval(uint16_t hours);
     
     /**
+     * @brief Set protocol lane for keepalive packet generation
+     * 
+     * @param lane Protocol lane (LEGACY for 8-bit, STATELESS for 16-bit)
+     */
+    void set_protocol_lane(ProtocolLane lane);
+    
+    /**
      * @brief Get keepalive interval
      * 
      * @return Interval in hours
@@ -214,6 +222,7 @@ private:
     // Configuration
     uint16_t m_keepalive_interval_hours;
     bool m_preserve_genesis_on_disconnect;  // Preserve genesis across sessions for reconnection
+    ProtocolLane m_protocol_lane;  // Protocol lane for packet generation
 
     std::shared_ptr<asio::io_context> m_io_context;
     std::shared_ptr<asio::steady_timer> m_keepalive_timer;

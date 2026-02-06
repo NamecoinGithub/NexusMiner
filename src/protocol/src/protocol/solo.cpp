@@ -2636,6 +2636,11 @@ void Solo::set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_
 void Solo::set_protocol_lane(ProtocolLane lane)
 {
     m_protocol_lane = lane;
+    
+    // Also set protocol lane in SessionManager for keepalive packet generation
+    if (m_session_manager) {
+        m_session_manager->set_protocol_lane(lane);
+    }
 }
 
 network::Shared_payload Solo::send_session_keepalive()
