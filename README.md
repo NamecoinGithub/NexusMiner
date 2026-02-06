@@ -48,6 +48,7 @@ Our default configuration achieves **51% blockchain savings** over 100 years:
 - **[Mining Loop Diagrams](docs/diagrams/mining-loops/)** - Prime, hash, template, and recovery flows
 - **[Protocol Diagrams](docs/diagrams/protocols/)** - Packet assembly, opcodes, and payload parsing
 - **[Performance Diagrams](docs/diagrams/performance/)** - Pipeline, memory, and thread architecture
+- **[Security Diagrams](docs/diagrams/security/)** - Falcon handshake and ChaCha20 encryption flows
 - **[AI Collaboration Guide](docs/diagrams/ai-collaboration/miner-dev-guide.md)** - AI-Human development framework
 - **[Protocol Quick Reference](docs/cheat-sheets/protocol-quick-ref.md)** - Opcode cheat sheet and AI prompts
 - **[Protocol Reference](docs/reference/opcodes-reference.md)** - LLP protocol opcodes
@@ -103,6 +104,8 @@ Our default configuration achieves **51% blockchain savings** over 100 years:
 - [Mining Pipeline](docs/diagrams/performance/mining-pipeline.md) - CPU→GPU→Validation flow
 - [Memory Management](docs/diagrams/performance/memory-management.md) - Template caching
 - [Thread Architecture](docs/diagrams/performance/thread-architecture.md) - Worker coordination
+- [Falcon Handshake Detail](docs/diagrams/security/falcon-handshake-detail.md) - Falcon-512/1024 authentication flow
+- [ChaCha20 Flow](docs/diagrams/security/chacha20-flow.md) - ChaCha20-Poly1305 encryption lifecycle
 
 **AI-Human Collaboration:**
 - [Miner Dev Guide](docs/diagrams/ai-collaboration/miner-dev-guide.md) - AI-Human collaboration framework
