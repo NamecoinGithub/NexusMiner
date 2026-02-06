@@ -88,26 +88,42 @@ Miner                                    Node
 
 ## Opcodes
 
-### Stateless Mining Opcodes (uint16_t)
+### Stateless Tritium Protocol Opcodes (uint16_t, port 9323)
 
 | Opcode | Value | Direction | Description |
 |--------|-------|-----------|-------------|
 | `MINER_AUTH` | 0xD000 | Miner → Node | Genesis-first authentication |
 | `MINER_AUTH_RESPONSE` | 0xD001 | Node → Miner | Authentication result + session |
-| `MINER_READY` | 0xD007 | Miner → Node | Signal stateless protocol support |
-| `GET_BLOCK` | 0xD008 | Node → Miner | Initial template (push) |
-| `NEW_BLOCK` | 0xD009 | Node → Miner | Updated template (push on chain advance) |
+| `STATELESS_MINER_READY` | 0xD0D8 | Miner → Node | Signal stateless protocol support |
+| `STATELESS_PRIME_BLOCK_AVAILABLE` | 0xD0D9 | Node → Miner | Push notification (Prime channel) |
+| `STATELESS_HASH_BLOCK_AVAILABLE` | 0xD0DA | Node → Miner | Push notification (Hash channel) |
+| `STATELESS_GET_BLOCK` | 0xD081 | Miner → Node | Request mining template |
 | `SUBMIT_BLOCK` | 0x0005 | Miner → Node | Submit found block |
 | `ACCEPT` / `REJECT` | 0x01 / 0x00 | Node → Miner | Block submission result |
 
-### Legacy Opcodes (uint8_t)
+### Legacy Tritium Protocol Opcodes (uint8_t, port 8323)
 
 | Opcode | Value | Direction | Description |
 |--------|-------|-----------|-------------|
+| `PRIME_BLOCK_AVAILABLE` | 0xD9 | Node → Miner | Push notification (Prime channel) |
+| `HASH_BLOCK_AVAILABLE` | 0xDA | Node → Miner | Push notification (Hash channel) |
 | `GET_ROUND` | 0x05 | Miner → Node | Poll for template (legacy) |
 | `BLOCK_DATA` | 0x06 | Node → Miner | Template response (legacy) |
 
-**See:** [docs/reference/opcodes-reference.md](../reference/opcodes-reference.md) for complete opcode reference.
+**See:** [docs/reference/opcodes-reference.md](../../reference/opcodes-reference.md) for complete opcode reference.
+
+---
+
+## Push Notification Flow (Post-PR #122)
+
+After authentication and channel selection:
+
+1. Miner sends: `STATELESS_MINER_READY (0xD0D8)`
+2. Node immediately sends: `STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9)` or `STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)`
+3. Payload: 12 bytes [unified_height, channel_height, difficulty]
+4. Miner requests template: `STATELESS_GET_BLOCK (0xD081)`
+5. Node sends: 228-byte template [12 metadata + 216 block]
+6. On new block: Node pushes step 2 again (event-driven, no polling)
 
 ---
 
@@ -135,7 +151,7 @@ Offset | Size | Field          | Description
 - ChaCha20 wrapping auto-enabled for remote mining
 - Session key = SHA256("nexus-mining-chacha20-v1" || genesis)
 
-**See:** [docs/current/authentication/genesis-first-protocol.md](../current/authentication/genesis-first-protocol.md)
+**See:** [docs/current/authentication/genesis-first-protocol.md](../authentication/genesis-first-protocol.md)
 
 ---
 
@@ -300,7 +316,7 @@ timer.schedule_periodic(keepalive_interval, []() {
 });
 ```
 
-**See:** [docs/current/authentication/falcon-handshake-cache.md](../current/authentication/falcon-handshake-cache.md)
+**See:** [docs/current/authentication/falcon-handshake-cache.md](../authentication/falcon-handshake-cache.md)
 
 ---
 
@@ -431,7 +447,7 @@ pubkey = "your_falcon_pubkey"
 privkey = "your_falcon_privkey"
 ```
 
-**See:** [docs/reference/nexus.conf.md](../reference/nexus.conf.md) for complete configuration reference.
+**See:** [docs/reference/nexus.conf.md](../../reference/nexus.conf.md) for complete configuration reference.
 
 ---
 
@@ -501,7 +517,7 @@ miningport=8323
 - ChaCha20 encryption protects public key in transit
 - Falcon signatures provide quantum-resistant authentication
 
-**See:** [docs/current/security/security-overview.md](../current/security/security-overview.md)
+**See:** [docs/current/security/security-overview.md](../security/security-overview.md)
 
 ---
 
@@ -530,7 +546,7 @@ miningport=8323
 3. Use `miningport=8323` (default)
 4. Miners will auto-detect and use stateless protocol
 
-**See:** [docs/upgrade-guides/legacy-to-stateless.md](../upgrade-guides/legacy-to-stateless.md)
+**See:** [docs/upgrade-guides/legacy-to-stateless.md](../../upgrade-guides/legacy-to-stateless.md)
 
 ---
 
@@ -538,9 +554,9 @@ miningport=8323
 
 - **Implementation PR:** LLL-TAO PR #170
 - **Miner PR:** NexusMiner PR #91
-- **Opcode Reference:** [docs/reference/opcodes-reference.md](../reference/opcodes-reference.md)
-- **Genesis-First Protocol:** [docs/current/authentication/genesis-first-protocol.md](../current/authentication/genesis-first-protocol.md)
-- **Configuration Reference:** [docs/reference/nexus.conf.md](../reference/nexus.conf.md)
+- **Opcode Reference:** [docs/reference/opcodes-reference.md](../../reference/opcodes-reference.md)
+- **Genesis-First Protocol:** [docs/current/authentication/genesis-first-protocol.md](../authentication/genesis-first-protocol.md)
+- **Configuration Reference:** [docs/reference/nexus.conf.md](../../reference/nexus.conf.md)
 
 ---
 

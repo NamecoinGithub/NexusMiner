@@ -90,34 +90,20 @@ On notification (PRIME/HASH_BLOCK_AVAILABLE):
 No polling needed!
 ```
 
-## Implementation Files
+## Implementation (Post-PR #123)
 
-### Modified Files
-1. **src/LLP/miner_opcodes.hpp**
-   - Added MINER_READY (216)
-   - Added PRIME_BLOCK_AVAILABLE (217)
-   - Added HASH_BLOCK_AVAILABLE (218)
-   - Full documentation for each opcode
+### Unified Handler
+- **File:** `src/protocol/src/protocol/push_notification_handler.cpp`
+- **Purpose:** Single handler for all 4 opcodes (0xD9, 0xDA, 0xD0D9, 0xD0DA)
+- **Benefits:** DRY principle, 54% code reduction (296 → 137 lines)
 
-2. **src/LLP/packet.hpp**
-   - Added new opcodes to Packet enum
-   - Enables packet creation and validation
+### Integration Points
+1. `solo.cpp:2277` - Legacy Prime handler (5 lines)
+2. `solo.cpp:2283` - Legacy Hash handler (5 lines)
+3. `solo.cpp:2478` - Stateless Prime handler (5 lines)
+4. `solo.cpp:2484` - Stateless Hash handler (5 lines)
 
-3. **src/LLP/llp_logging.hpp**
-   - Added opcodes to LLP_Headers enum
-   - Added opcodes to get_llp_header_name()
-   - Enables proper logging of new packets
-
-4. **src/protocol/inc/protocol/solo.hpp**
-   - Added send_miner_ready() declaration
-   - Public method for subscribing to notifications
-
-5. **src/protocol/src/protocol/solo.cpp**
-   - Constants for payload parsing
-   - send_miner_ready() implementation
-   - PRIME_BLOCK_AVAILABLE handler
-   - HASH_BLOCK_AVAILABLE handler
-   - Integration with CHANNEL_ACK flow
+Each calls: `m_push_handler->handle_push_notification(packet, channel, lane, template_iface, request_fn)`
 
 ## Code Quality Features
 
