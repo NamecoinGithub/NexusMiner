@@ -101,6 +101,7 @@ Our default configuration achieves **51% blockchain savings** over 100 years:
 - [Packet Assembly](docs/diagrams/protocols/packet-assembly.md) - LLP packet construction
 - [Opcode Decision Tree](docs/diagrams/protocols/opcode-decision-tree.md) - Which opcode when?
 - [Payload Parsing](docs/diagrams/protocols/payload-parsing.md) - Big-endian parsing
+- [Full Connection Flow](docs/diagrams/protocols/full-connection-flow.md) - Connect→auth→mine→disconnect sequence
 - [Mining Pipeline](docs/diagrams/performance/mining-pipeline.md) - CPU→GPU→Validation flow
 - [Memory Management](docs/diagrams/performance/memory-management.md) - Template caching
 - [Thread Architecture](docs/diagrams/performance/thread-architecture.md) - Worker coordination
