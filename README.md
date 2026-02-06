@@ -45,6 +45,12 @@ Our default configuration achieves **51% blockchain savings** over 100 years:
 - **[Stateless Mining Protocol](docs/current/mining-protocols/stateless-mining.md)** - Modern push protocol
 - **[Push Notification System](docs/current/mining-protocols/push-notifications.md)** - Event-driven block notifications
 - **[Architecture Diagrams](docs/diagrams/)** - Mermaid diagrams of protocol architecture
+- **[Mining Loop Diagrams](docs/diagrams/mining-loops/)** - Prime, hash, template, and recovery flows
+- **[Protocol Diagrams](docs/diagrams/protocols/)** - Packet assembly, opcodes, and payload parsing
+- **[Performance Diagrams](docs/diagrams/performance/)** - Pipeline, memory, and thread architecture
+- **[Security Diagrams](docs/diagrams/security/)** - Falcon handshake and ChaCha20 encryption flows
+- **[AI Collaboration Guide](docs/diagrams/ai-collaboration/miner-dev-guide.md)** - AI-Human development framework
+- **[Protocol Quick Reference](docs/cheat-sheets/protocol-quick-ref.md)** - Opcode cheat sheet and AI prompts
 - **[Protocol Reference](docs/reference/opcodes-reference.md)** - LLP protocol opcodes
 - **[Troubleshooting Guide](docs/current/troubleshooting.md)** - Common issues and solutions
 
@@ -86,6 +92,29 @@ Our default configuration achieves **51% blockchain savings** over 100 years:
 **Upgrade Guides:**
 - [Legacy to Stateless Migration](docs/upgrade-guides/legacy-to-stateless.md) - Upgrading to modern protocol
 - [Legacy Features Removed](docs/upgrade-guides/legacy-features-removed.md) - Deprecated features
+
+**Diagrams & Visual Guides:**
+- [Prime Mining Flow](docs/diagrams/mining-loops/prime-mining-flow.md) - Prime channel state machine
+- [Hash Mining Flow](docs/diagrams/mining-loops/hash-mining-flow.md) - Hash channel state machine
+- [Template Lifecycle](docs/diagrams/mining-loops/template-lifecycle.md) - GET_BLOCK to submission
+- [Connection Recovery](docs/diagrams/mining-loops/connection-recovery.md) - Reconnection and resume logic
+- [Packet Assembly](docs/diagrams/protocols/packet-assembly.md) - LLP packet construction
+- [Opcode Decision Tree](docs/diagrams/protocols/opcode-decision-tree.md) - Which opcode when?
+- [Payload Parsing](docs/diagrams/protocols/payload-parsing.md) - Big-endian parsing
+- [Full Connection Flow](docs/diagrams/protocols/full-connection-flow.md) - Connect→auth→mine→disconnect sequence
+- [Mining Pipeline](docs/diagrams/performance/mining-pipeline.md) - CPU→GPU→Validation flow
+- [Memory Management](docs/diagrams/performance/memory-management.md) - Template caching
+- [Thread Architecture](docs/diagrams/performance/thread-architecture.md) - Worker coordination
+- [Falcon Handshake Detail](docs/diagrams/security/falcon-handshake-detail.md) - Falcon-512/1024 authentication flow
+- [ChaCha20 Flow](docs/diagrams/security/chacha20-flow.md) - ChaCha20-Poly1305 encryption lifecycle
+
+**AI-Human Collaboration:**
+- [Miner Dev Guide](docs/diagrams/ai-collaboration/miner-dev-guide.md) - AI-Human collaboration framework
+- [Learning Pathways](docs/diagrams/ai-collaboration/learning-pathways.md) - New contributor guide with AI
+- [Protocol Cheat Sheet](docs/cheat-sheets/protocol-quick-ref.md) - Opcodes and AI prompt templates
+- [Debugging Guide](docs/cheat-sheets/debugging-guide.md) - Common errors and AI diagnostics
+- [Testing Guide](docs/cheat-sheets/testing-guide.md) - AI-assisted test generation
+- [Why AI-Human Wins](docs/philosophy/why-ai-human-wins.md) - Collaboration philosophy
 
 ---
 
