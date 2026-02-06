@@ -413,7 +413,7 @@ namespace nexusminer
 		 * @brief Check if packet header is part of stateless mining protocol with payloads
 		 * 
 		 * Stateless mining protocol packets carry payloads despite having headers >= 128.
-		 * This includes:
+		 * Covers the full consolidated opcode range 206-218:
 		 * 
 		 * Core auth/session packets (206-214):
 		 * - CHANNEL_ACK (206): 1-byte channel confirmation payload
@@ -424,33 +424,25 @@ namespace nexusminer
 		 * - SESSION_START (211), SESSION_KEEPALIVE (212): session data
 		 * - MINER_SET_REWARD (213), MINER_REWARD_RESULT (214): encrypted reward data
 		 * 
+		 * Reserved/header-only (215-216):
+		 * - 215: unused/reserved
+		 * - MINER_READY (216): header-only (no payload), but included in range for
+		 *   completeness; header-only validation handles m_length==0 correctly
+		 * 
 		 * Push notification packets with payloads (217-218):
 		 * - PRIME_BLOCK_AVAILABLE (217): 12-byte push notification payload
 		 * - HASH_BLOCK_AVAILABLE (218): 12-byte push notification payload
 		 * 
-		 * EXCLUDED:
-		 * - MINER_READY (216) is header-only (no payload) and deliberately NOT included
-		 * - Opcode 215 is unused/reserved
+		 * @return true if packet header is in the stateless mining protocol range (206-218),
+		 *         including header-only packets like MINER_READY (216)
 		 * 
-		 * @return true if packet is a stateless mining protocol packet with payload
-		 * 
-		 * @note This method identifies packets that require length field parsing.
-		 *       If future opcodes are added in this range, update accordingly.
+		 * @note This method identifies packets that may require length field parsing.
+		 *       Header-only packets (e.g. MINER_READY) in this range are handled
+		 *       correctly by the generic request validation (m_length==0 path).
 		 */
 		inline bool is_auth_packet() const
 		{
-			// Core stateless mining protocol (206-214) - all have payloads
-			if (m_header >= CHANNEL_ACK && m_header <= MINER_REWARD_RESULT) {
-				return true;
-			}
-			
-			// Push notifications with payloads (217-218)
-			// NOTE: MINER_READY (216) is deliberately excluded as it's header-only
-			if (m_header == PRIME_BLOCK_AVAILABLE || m_header == HASH_BLOCK_AVAILABLE) {
-				return true;
-			}
-			
-			return false;
+			return (m_header >= CHANNEL_ACK && m_header <= HASH_BLOCK_AVAILABLE);
 		}
 
 		/**
@@ -475,10 +467,11 @@ namespace nexusminer
 			// Known header-only request packets
 			bool is_header_only_request = (m_header == GET_HEIGHT || 
 			                               m_header == GET_BLOCK || 
+			                               m_header == MINER_READY ||
 			                               m_header == PING);
 			
 			if (is_header_only_request && m_length == 0)
-				return "VALID: Header-only request packet (GET_HEIGHT/GET_BLOCK/PING)";
+				return "VALID: Header-only request packet (GET_HEIGHT/GET_BLOCK/MINER_READY/PING)";
 			
 			if (is_header_only_request && m_length > 0)
 				return "INVALID: Header-only request packet has unexpected payload";
@@ -490,12 +483,12 @@ namespace nexusminer
 			if (m_header < 128 && m_length == 0)
 				return "INVALID: Data packet (header < 128) requires payload but length is 0";
 			
-			// Stateless mining protocol packets (206-214): carry payloads with length field
+			// Stateless mining protocol packets (206-218): carry payloads with length field
 			if (is_auth_packet() && m_length > 0)
 				return "VALID: Stateless mining protocol packet with payload";
 			
 			if (is_auth_packet() && m_length == 0)
-				return "INVALID: Stateless mining protocol packet (206-214) requires payload but length is 0";
+				return "INVALID: Stateless mining protocol packet (206-218) requires payload but length is 0";
 			
 			// Generic request packets (>= 128, < 255): no payload
 			if (m_header >= 128 && m_header < 255 && m_length == 0)
@@ -529,10 +522,11 @@ namespace nexusminer
 				return true;
 
 			// Known header-only request packets (even if opcode < 128 for legacy compatibility)
-			// Current opcodes: GET_HEIGHT=130, GET_BLOCK=129, PING=253 (all >= 128)
-			// This check provides defensive compatibility if legacy implementations used < 128 values
+			// Current opcodes: GET_HEIGHT=130, GET_BLOCK=129, MINER_READY=216, PING=253 (all >= 128)
+			// MINER_READY is header-only (no payload) but falls within is_auth_packet() range
 			bool is_header_only_request = (m_header == GET_HEIGHT || 
 			                                 m_header == GET_BLOCK || 
+			                                 m_header == MINER_READY ||
 			                                 m_header == PING);
 
 			// Header-only requests: no payload allowed
@@ -543,7 +537,7 @@ namespace nexusminer
 			if (m_header < 128 && m_length > 0)
 				return true;
 
-			// Stateless mining protocol packets (206-214): carry payloads with length field
+			// Stateless mining protocol packets (206-218): carry payloads with length field
 			if (is_auth_packet() && m_length > 0)
 				return true;
 
