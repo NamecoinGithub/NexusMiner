@@ -613,16 +613,13 @@ void test_legacy_header_only_single_byte() {
                  acc.empty();
     print_test_result("GET_BLOCK (129) header-only packet parsed immediately", test1);
     
-    // NEW_ROUND (204) is header-only
+    // NEW_ROUND (204) has payload (12 bytes) - NOT header-only
     acc.feed({204});
     
     bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
-    bool test2 = parsed2 && 
-                 (result == ParseResult::SUCCESS) &&
-                 (packet.m_header == 204) &&
-                 (packet.m_length == 0) &&
-                 acc.empty();
-    print_test_result("NEW_ROUND (204) header-only packet parsed immediately", test2);
+    bool test2 = !parsed2 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
+    print_test_result("NEW_ROUND (204) single byte triggers NEED_MORE_DATA (has payload)", test2);
+    acc.clear();
     
     // PING (253) is header-only
     acc.feed({253});
@@ -745,6 +742,178 @@ void test_stateless_header_only_two_byte() {
 }
 
 // ============================================================================
+// Test Case 19: NEW_ROUND (204) with 12-byte payload
+// NEW_ROUND carries payload: [unified_height][channel_height][difficulty]
+// ============================================================================
+void test_new_round_with_payload() {
+    std::cout << "\nTest 19: NEW_ROUND (204) with 12-byte payload" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // NEW_ROUND (204) with 12-byte payload: height=6500000, channel=6499900, difficulty=0x1E00FFFF
+    std::vector<uint8_t> new_round_packet = {
+        204,                                // header (NEW_ROUND)
+        0x00, 0x00, 0x00, 0x0C,           // length = 12
+        0x00, 0x63, 0x32, 0x20,           // unified_height = 6500000 (big-endian)
+        0x00, 0x63, 0x31, 0xBC,           // channel_height = 6499900 (big-endian)
+        0x1E, 0x00, 0xFF, 0xFF            // difficulty = 0x1E00FFFF (big-endian)
+    };
+    
+    acc.feed(new_round_packet);
+    
+    bool parsed = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = parsed && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 204) &&
+                 (packet.m_length == 12) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == 12) &&
+                 acc.empty();
+    print_test_result("NEW_ROUND 12-byte payload parsed correctly", test1);
+    
+    // NEW_ROUND single byte should trigger NEED_MORE_DATA (not treated as header-only)
+    acc.feed({204});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = !parsed2 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
+    print_test_result("NEW_ROUND single byte triggers NEED_MORE_DATA", test2);
+    acc.clear();
+}
+
+// ============================================================================
+// Test Case 20: OLD_ROUND (205) with 12-byte payload
+// OLD_ROUND carries payload: [unified_height][channel_height][difficulty]
+// ============================================================================
+void test_old_round_with_payload() {
+    std::cout << "\nTest 20: OLD_ROUND (205) with 12-byte payload" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // OLD_ROUND (205) with 12-byte payload
+    std::vector<uint8_t> old_round_packet = {
+        205,                                // header (OLD_ROUND)
+        0x00, 0x00, 0x00, 0x0C,           // length = 12
+        0x00, 0x63, 0x32, 0x20,           // unified_height = 6500000 (big-endian)
+        0x00, 0x63, 0x31, 0xBC,           // channel_height = 6499900 (big-endian)
+        0x1E, 0x00, 0xFF, 0xFF            // difficulty = 0x1E00FFFF (big-endian)
+    };
+    
+    acc.feed(old_round_packet);
+    
+    bool parsed = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = parsed && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 205) &&
+                 (packet.m_length == 12) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == 12) &&
+                 acc.empty();
+    print_test_result("OLD_ROUND 12-byte payload parsed correctly", test1);
+    
+    // OLD_ROUND single byte should trigger NEED_MORE_DATA
+    acc.feed({205});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = !parsed2 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
+    print_test_result("OLD_ROUND single byte triggers NEED_MORE_DATA", test2);
+    acc.clear();
+}
+
+// ============================================================================
+// Test Case 21: NEW_ROUND/OLD_ROUND with legacy 16-byte payload
+// Legacy lane accepts 16-byte format: [unified][prime][hash][stake]
+// ============================================================================
+void test_round_legacy_16byte_payload() {
+    std::cout << "\nTest 21: NEW_ROUND/OLD_ROUND with legacy 16-byte payload" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // NEW_ROUND with 16-byte legacy payload
+    std::vector<uint8_t> new_round_16 = {
+        204,                                // header (NEW_ROUND)
+        0x00, 0x00, 0x00, 0x10,           // length = 16
+        0x00, 0x63, 0x32, 0x20,           // unified_height (big-endian)
+        0x00, 0x63, 0x31, 0x00,           // prime_height (big-endian)
+        0x00, 0x63, 0x31, 0x50,           // hash_height (big-endian)
+        0x00, 0x63, 0x30, 0xA0            // stake_height (big-endian)
+    };
+    
+    acc.feed(new_round_16);
+    
+    bool parsed = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = parsed && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 204) &&
+                 (packet.m_length == 16) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == 16) &&
+                 acc.empty();
+    print_test_result("NEW_ROUND 16-byte legacy payload parsed correctly", test1);
+}
+
+// ============================================================================
+// Test Case 22: ACCEPT/REJECT still header-only (regression check)
+// Ensure the fix doesn't break ACCEPT (200) and REJECT (201) classification
+// ============================================================================
+void test_accept_reject_still_header_only() {
+    std::cout << "\nTest 22: ACCEPT/REJECT still header-only (regression check)" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // ACCEPT (200) should still be header-only
+    acc.feed({200});
+    
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = parsed1 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 200) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("ACCEPT (200) still header-only", test1);
+    
+    // REJECT (201) should still be header-only
+    acc.feed({201});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = parsed2 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 201) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("REJECT (201) still header-only", test2);
+    
+    // COINBASE_SET (202) should still be header-only
+    acc.feed({202});
+    
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test3 = parsed3 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 202) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("COINBASE_SET (202) still header-only", test3);
+    
+    // COINBASE_FAIL (203) should still be header-only
+    acc.feed({203});
+    
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test4 = parsed4 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 203) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("COINBASE_FAIL (203) still header-only", test4);
+}
+
+// ============================================================================
 // Main test runner
 // ============================================================================
 int main() {
@@ -771,6 +940,10 @@ int main() {
     test_legacy_auth_packet_single_byte();
     test_stateless_data_packet_two_byte();
     test_stateless_header_only_two_byte();
+    test_new_round_with_payload();
+    test_old_round_with_payload();
+    test_round_legacy_16byte_payload();
+    test_accept_reject_still_header_only();
     
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Summary" << std::endl;
