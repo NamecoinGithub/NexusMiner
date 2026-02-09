@@ -75,11 +75,11 @@ namespace nexusminer
 			if (opcode >= 128 && opcode <= 199) return true;
 			// Response/control (200-205): header-only (ACCEPT, REJECT, COINBASE_SET/FAIL, NEW_ROUND, OLD_ROUND)
 			if (opcode >= 200 && opcode <= 205) return true;
-			// Auth/session range (206-218): have length + payload, EXCEPT MINER_READY (216)
-			if (opcode == 216) return true;  // MINER_READY is header-only
-			if (opcode >= 206 && opcode <= 218) return false;  // All other auth packets have payload
-			// PING (253) and CLOSE (254): header-only
-			if (opcode >= 253) return true;
+			// Auth/session range (206-218): have length + payload, EXCEPT MINER_READY
+			if (opcode == LLP::MINER_READY) return true;  // MINER_READY is header-only
+			if (opcode >= LEGACY_AUTH_OPCODE_MIN && opcode <= LLP::HASH_BLOCK_AVAILABLE) return false;
+			// PING and CLOSE: header-only
+			if (opcode >= LLP::PING) return true;
 			// Everything else in 219-252 range: header-only (generic request/response)
 			return true;
 		}
