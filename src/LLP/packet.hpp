@@ -63,6 +63,34 @@ namespace nexusminer
 		inline bool is_legacy_auth_opcode(uint8_t opcode) {
 			return (opcode >= LEGACY_AUTH_OPCODE_MIN);
 		}
+		
+		// Helper to determine if a legacy opcode is header-only (no length field follows)
+		// Header-only opcodes: requests (128-199), non-auth responses (200-205),
+		// MINER_READY (216), PING (253), CLOSE (254)
+		// Data opcodes (0-127) and auth opcodes (206-218, except MINER_READY) always have length+payload
+		inline bool is_legacy_header_only_opcode(uint8_t opcode) {
+			// Data packets (0-127): always have length + payload
+			if (opcode < 128) return false;
+			// Request packets (128-199): always header-only
+			if (opcode >= 128 && opcode <= 199) return true;
+			// Response/control (200-205): header-only (ACCEPT, REJECT, COINBASE_SET/FAIL, NEW_ROUND, OLD_ROUND)
+			if (opcode >= 200 && opcode <= 205) return true;
+			// Auth/session range (206-218): have length + payload, EXCEPT MINER_READY (216)
+			if (opcode == 216) return true;  // MINER_READY is header-only
+			if (opcode >= 206 && opcode <= 218) return false;  // All other auth packets have payload
+			// PING (253) and CLOSE (254): header-only
+			if (opcode >= 253) return true;
+			// Everything else in 219-252 range: header-only (generic request/response)
+			return true;
+		}
+		
+		// Helper to determine if a stateless (mirror-mapped) opcode is header-only
+		// Uses the same logic as legacy, applied to the unmirrored opcode
+		inline bool is_stateless_header_only_opcode(uint16_t opcode) {
+			if (!is_stateless_opcode(opcode)) return false;
+			uint8_t legacy = LLP::UnmirrorOpcode(opcode);
+			return is_legacy_header_only_opcode(legacy);
+		}
 	}
 	
 	/** Class to handle sending and receiving of LLP Packets. **/
@@ -655,192 +683,6 @@ namespace nexusminer
 		}
 	};
 
-	inline Packet extract_packet_from_buffer(network::Shared_payload buffer, std::size_t& remaining_size, std::size_t start_index)
-	{
-		Packet packet;
-		remaining_size = 0;		// buffer invalid
-		if (!buffer)
-		{
-			return packet;
-		}
-		else if (buffer->empty())
-		{
-			return packet;
-		}
-
-		if (start_index >= buffer->size())	// invalid start_index given
-		{
-			return packet;
-		}
-
-		auto const buffer_start = buffer->begin() + start_index;
-		auto const buffer_size = std::distance(buffer_start, buffer->end());
-		
-		// Detect opcode format with disambiguation logic (same as Packet constructor):
-		// 1. Legacy auth/session opcodes (206-255) are ALWAYS single-byte format
-		// 2. Stateless opcodes (0xD000-0xD00C) are ALWAYS two-byte format  
-		// 3. For ambiguous cases, prioritize known legacy opcodes
-		uint8_t first_byte = (*buffer)[start_index];
-		
-		// PRIORITY 1: Known legacy auth/session opcodes (206-255) - always single-byte
-		if (PacketConstants::is_legacy_auth_opcode(first_byte))
-		{
-			// LEGACY uint8_t opcode format (includes MINER_AUTH_CHALLENGE = 208)
-			packet.m_is_uint16_opcode = false;
-			packet.m_header = first_byte;
-			
-			if (buffer_size == 1)
-			{
-				packet.m_is_valid = true;
-				packet.m_length = 0;
-				remaining_size = 0;
-				return packet;
-			}
-			else if (buffer_size > 1 && buffer_size < 5)
-			{
-				// data packet but not even correct length field was transmitted
-				return packet;
-			}
-			else
-			{
-				std::uint32_t const length = ((*buffer)[start_index + 1] << 24) + 
-				                              ((*buffer)[start_index + 2] << 16) + 
-				                              ((*buffer)[start_index + 3] << 8) + 
-				                              ((*buffer)[start_index + 4]);
-
-				if (length > std::distance(buffer_start + 5, buffer->end()))
-				{
-					return packet;
-				}
-
-				packet.m_is_valid = true;
-				packet.m_length = length;
-				packet.m_data = std::make_shared<network::Payload>(buffer_start + 5, buffer_start + 5 + length);
-				remaining_size = buffer_size - (5 + packet.m_data->size());		// header (1 byte) + 4 byte length 
-			}
-		}
-		// PRIORITY 2: Check for stateless opcodes (requires 2 bytes)
-		else if (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD && buffer_size >= 2)
-		{
-			// Parse potential 2-byte header to check if it's a known stateless opcode
-			uint16_t potential_header = (static_cast<uint16_t>(first_byte) << 8) | 
-			                            static_cast<uint16_t>((*buffer)[start_index + 1]);
-			
-			if (PacketConstants::is_stateless_opcode(potential_header))
-			{
-				// NEW uint16_t opcode format (2-byte header, big-endian, 0xD000-0xD00C)
-				packet.m_is_uint16_opcode = true;
-				packet.m_header = potential_header;
-				packet.m_is_valid = true;
-				
-				if (buffer_size == 2)
-				{
-					// Header-only packet
-					packet.m_length = 0;
-					remaining_size = 0;
-					return packet;
-				}
-				else if (buffer_size < 6)
-				{
-					// Not enough data for length field
-					packet.m_is_valid = false;
-					return packet;
-				}
-				else
-				{
-					// Parse length (4 bytes, big-endian, starts at offset 2)
-					std::uint32_t const length = ((*buffer)[start_index + 2] << 24) + 
-					                              ((*buffer)[start_index + 3] << 16) + 
-					                              ((*buffer)[start_index + 4] << 8) + 
-					                              (*buffer)[start_index + 5];
-					
-					if (length > std::distance(buffer_start + 6, buffer->end()))
-					{
-						// Not enough data for payload
-						packet.m_is_valid = false;
-						return packet;
-					}
-					
-					packet.m_length = length;
-					packet.m_data = std::make_shared<network::Payload>(buffer_start + 6, buffer_start + 6 + length);
-					remaining_size = buffer_size - (6 + packet.m_data->size());		// header (2 bytes) + 4 byte length
-				}
-			}
-			else
-			{
-				// First byte >= 0xD0 but not a known stateless opcode
-				// Treat as legacy single-byte opcode
-				packet.m_is_uint16_opcode = false;
-				packet.m_header = first_byte;
-				
-				if (buffer_size == 1)
-				{
-					packet.m_is_valid = true;
-					packet.m_length = 0;
-					remaining_size = 0;
-					return packet;
-				}
-				else if (buffer_size > 1 && buffer_size < 5)
-				{
-					// data packet but not even correct length field was transmitted
-					return packet;
-				}
-				else
-				{
-					std::uint32_t const length = ((*buffer)[start_index + 1] << 24) + 
-					                              ((*buffer)[start_index + 2] << 16) + 
-					                              ((*buffer)[start_index + 3] << 8) + 
-					                              ((*buffer)[start_index + 4]);
-
-					if (length > std::distance(buffer_start + 5, buffer->end()))
-					{
-						return packet;
-					}
-
-					packet.m_is_valid = true;
-					packet.m_length = length;
-					packet.m_data = std::make_shared<network::Payload>(buffer_start + 5, buffer_start + 5 + length);
-					remaining_size = buffer_size - (5 + packet.m_data->size());		// header (1 byte) + 4 byte length 
-				}
-			}
-		}
-		else
-		{
-			// LEGACY uint8_t opcode format (1-byte header)
-			// Includes: first_byte < 0xD0 OR buffer has only 1 byte
-			packet.m_is_uint16_opcode = false;
-			
-			if (buffer_size == 1)
-			{
-				packet.m_header = first_byte;
-				packet.m_is_valid = true;
-				remaining_size = 0;		// buffer has only 1 byte size left -> header
-				return packet;
-			}
-			else if (buffer_size > 1 && buffer_size < 5)	// data packet but not even correct length field was transmitted
-			{
-				return packet;
-			}
-			else
-			{
-				std::uint32_t const length = ((*buffer)[start_index + 1] << 24) + ((*buffer)[start_index + 2] << 16) + ((*buffer)[start_index + 3] << 8) + ((*buffer)[start_index + 4]);
-
-				if (length > std::distance(buffer_start + 5, buffer->end()))
-				{
-					return packet;
-				}
-
-				packet.m_is_valid = true;
-				packet.m_header = first_byte;
-				packet.m_length = length;
-				packet.m_data = std::make_shared<network::Payload>(buffer_start + 5, buffer_start + 5 + length);
-
-				remaining_size = buffer_size - (5 + packet.m_data->size());		// header (1 byte) + 4 byte length 
-			}
-		}
-
-		return packet;
-	}
 
 	/**
 	 * Lane-aware packet extraction with strict protocol enforcement
@@ -875,19 +717,29 @@ namespace nexusminer
 		if (lane == ProtocolLane::LEGACY)
 		{
 			// LEGACY LANE: Always 8-bit header
-			// Format: [header:1B][length:4B][data]
+			// Format: [header:1B][length:4B][data] or [header:1B] for header-only
 			packet.m_is_uint16_opcode = false;
+			
+			if (buffer_size < 1)
+			{
+				packet.m_is_valid = false;
+				return packet;
+			}
+			
 			uint8_t header_byte = (*buffer)[start_index];
 			packet.m_header = header_byte;
 			
-			if (buffer_size == 1)
+			// Header-only opcodes: complete with just 1 byte
+			if (PacketConstants::is_legacy_header_only_opcode(header_byte))
 			{
 				packet.m_is_valid = true;
 				packet.m_length = 0;
-				remaining_size = 0;
+				remaining_size = buffer_size - 1;
 				return packet;
 			}
-			else if (buffer_size < 5)
+			
+			// Data/auth packet: need header + 4-byte length field
+			if (buffer_size < 5)
 			{
 				// Not enough data for length field
 				packet.m_is_valid = false;
@@ -920,7 +772,7 @@ namespace nexusminer
 		else if (lane == ProtocolLane::STATELESS)
 		{
 			// STATELESS LANE: Always 16-bit header
-			// Format: [header:2B][length:4B][data]
+			// Format: [header:2B][length:4B][data] or [header:2B] for header-only
 			packet.m_is_uint16_opcode = true;
 			
 			if (buffer_size < 2)
@@ -935,15 +787,18 @@ namespace nexusminer
 			                    static_cast<uint16_t>((*buffer)[start_index + 1]);
 			packet.m_header = header16;
 			
-			if (buffer_size == 2)
+			// Header-only opcodes: complete with just 2 bytes
+			if (PacketConstants::is_stateless_opcode(header16) && 
+			    PacketConstants::is_stateless_header_only_opcode(header16))
 			{
-				// Header-only packet
 				packet.m_is_valid = true;
 				packet.m_length = 0;
-				remaining_size = 0;
+				remaining_size = buffer_size - 2;
 				return packet;
 			}
-			else if (buffer_size < 6)
+			
+			// Data/auth packet: need header + 4-byte length field
+			if (buffer_size < 6)
 			{
 				// Not enough data for length field
 				packet.m_is_valid = false;
@@ -1048,9 +903,12 @@ namespace nexusminer
 			uint8_t header_byte = (*buffer)[start_index];
 			packet.m_header = header_byte;
 			
-			// Header-only packet (valid for some opcodes)
-			if (buffer_size == 1)
+			// Check if this opcode is header-only (no length field follows on the wire)
+			// Data packets (< 128) and most auth packets (206-218) have length + payload
+			// Request/response packets and MINER_READY/PING are header-only
+			if (PacketConstants::is_legacy_header_only_opcode(header_byte))
 			{
+				// Header-only packet: complete with just the 1-byte header
 				packet.m_is_valid = true;
 				packet.m_length = 0;
 				bytes_consumed = 1;
@@ -1058,7 +916,7 @@ namespace nexusminer
 				return packet;
 			}
 			
-			// Need at least 5 bytes for header + length field
+			// Data or auth packet: need header + 4-byte length field minimum
 			if (buffer_size < MIN_PACKET_SIZE)
 			{
 				result = ParseResult::NEED_MORE_DATA;
@@ -1133,9 +991,10 @@ namespace nexusminer
 				return packet;
 			}
 			
-			// Header-only packet (valid for some opcodes)
-			if (buffer_size == 2)
+			// Check if this opcode is header-only (no length field follows)
+			if (is_valid_stateless && PacketConstants::is_stateless_header_only_opcode(header16))
 			{
+				// Header-only stateless packet: complete with just 2-byte header
 				packet.m_is_valid = true;
 				packet.m_length = 0;
 				bytes_consumed = 2;
@@ -1143,7 +1002,7 @@ namespace nexusminer
 				return packet;
 			}
 			
-			// Need at least 6 bytes for header + length field
+			// Data or auth packet: need header + 4-byte length field minimum
 			if (buffer_size < MIN_PACKET_SIZE)
 			{
 				result = ParseResult::NEED_MORE_DATA;
@@ -1189,6 +1048,22 @@ namespace nexusminer
 		}
 		
 		return packet;
+	}
+
+	/**
+	 * @deprecated Use extract_packet_from_buffer_with_result() or extract_packet_from_buffer_with_lane() instead.
+	 * 
+	 * This heuristic-based function does NOT use protocol lane information and attempts
+	 * to guess the header format from byte patterns, which causes stream corruption
+	 * when stateless (2-byte) and legacy (1-byte) headers are ambiguous.
+	 * 
+	 * All callers should use the lane-aware variants that take a ProtocolLane parameter.
+	 */
+	[[deprecated("Use extract_packet_from_buffer_with_result() with ProtocolLane parameter")]]
+	inline Packet extract_packet_from_buffer(network::Shared_payload buffer, std::size_t& remaining_size, std::size_t start_index)
+	{
+		// Delegate to legacy lane parsing for backward compatibility
+		return extract_packet_from_buffer_with_lane(buffer, remaining_size, start_index, ProtocolLane::LEGACY);
 	}
 
 	/** Wrapper for backward compatibility - delegates to llp_logging.hpp **/

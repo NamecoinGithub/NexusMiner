@@ -543,6 +543,208 @@ void test_miner_ready_header_only() {
 }
 
 // ============================================================================
+// Test Case 14: Legacy data packet single-byte fragmentation
+// When only 1 byte of a data packet (opcode < 128) arrives, it should NOT
+// be treated as a header-only packet - NEED_MORE_DATA should be returned
+// ============================================================================
+void test_legacy_data_packet_single_byte() {
+    std::cout << "\nTest 14: Legacy data packet single-byte fragmentation" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // Feed only 1 byte of a BLOCK_DATA (opcode 0) packet
+    acc.feed({0x00});
+    
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
+    print_test_result("Single byte of BLOCK_DATA triggers NEED_MORE_DATA", test1);
+    
+    // Feed remaining bytes (length + payload)
+    acc.feed({0x00, 0x00, 0x00, 0x05, 'h', 'e', 'l', 'l', 'o'});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = parsed2 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0x00) &&
+                 (packet.m_length == 5) &&
+                 acc.empty();
+    print_test_result("Complete BLOCK_DATA after fragmented single byte", test2);
+    
+    // Test with SUBMIT_BLOCK (opcode 1) - also a data packet
+    acc.feed({0x01});
+    
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test3 = !parsed3 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
+    print_test_result("Single byte of SUBMIT_BLOCK triggers NEED_MORE_DATA", test3);
+    
+    acc.feed({0x00, 0x00, 0x00, 0x03, 'a', 'b', 'c'});
+    
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test4 = parsed4 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0x01) &&
+                 (packet.m_length == 3) &&
+                 acc.empty();
+    print_test_result("Complete SUBMIT_BLOCK after fragmented single byte", test4);
+}
+
+// ============================================================================
+// Test Case 15: Legacy header-only opcode single-byte
+// When a header-only opcode (>= 128, not auth) arrives as 1 byte,
+// it should be treated as a complete packet
+// ============================================================================
+void test_legacy_header_only_single_byte() {
+    std::cout << "\nTest 15: Legacy header-only opcode single-byte" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // GET_BLOCK (129) is header-only
+    acc.feed({129});
+    
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = parsed1 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 129) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("GET_BLOCK (129) header-only packet parsed immediately", test1);
+    
+    // NEW_ROUND (204) is header-only
+    acc.feed({204});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = parsed2 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 204) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("NEW_ROUND (204) header-only packet parsed immediately", test2);
+    
+    // PING (253) is header-only
+    acc.feed({253});
+    
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test3 = parsed3 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 253) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("PING (253) header-only packet parsed immediately", test3);
+    
+    // MINER_READY (216) is header-only even though it's in auth range
+    acc.feed({216});
+    
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test4 = parsed4 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 216) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("MINER_READY (216) header-only packet parsed immediately", test4);
+}
+
+// ============================================================================
+// Test Case 16: Legacy auth packet single-byte fragmentation
+// Auth packets (206-218, except MINER_READY) always have payload,
+// so a single byte should trigger NEED_MORE_DATA
+// ============================================================================
+void test_legacy_auth_packet_single_byte() {
+    std::cout << "\nTest 16: Legacy auth packet single-byte fragmentation" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // MINER_AUTH_CHALLENGE (208) - has payload
+    acc.feed({208});
+    
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
+    print_test_result("Single byte of MINER_AUTH_CHALLENGE triggers NEED_MORE_DATA", test1);
+    
+    // Complete the packet
+    acc.feed({0x00, 0x00, 0x00, 0x04, 0xAA, 0xBB, 0xCC, 0xDD});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = parsed2 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 208) &&
+                 (packet.m_length == 4) &&
+                 acc.empty();
+    print_test_result("Complete MINER_AUTH_CHALLENGE after single byte", test2);
+}
+
+// ============================================================================
+// Test Case 17: Stateless data packet two-byte fragmentation
+// When only 2 bytes of a stateless data packet arrive, NEED_MORE_DATA
+// should be returned (not treated as header-only)
+// ============================================================================
+void test_stateless_data_packet_two_byte() {
+    std::cout << "\nTest 17: Stateless data packet two-byte fragmentation" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // STATELESS_SUBMIT_BLOCK (0xD001) - has payload, only 2 bytes arrive
+    acc.feed({0xD0, 0x01});
+    
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 2);
+    print_test_result("Two bytes of STATELESS_SUBMIT_BLOCK triggers NEED_MORE_DATA", test1);
+    
+    // Complete the packet
+    acc.feed({0x00, 0x00, 0x00, 0x03, 'x', 'y', 'z'});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test2 = parsed2 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD001) &&
+                 (packet.m_length == 3) &&
+                 acc.empty();
+    print_test_result("Complete STATELESS_SUBMIT_BLOCK after fragmentation", test2);
+}
+
+// ============================================================================
+// Test Case 18: Stateless header-only opcode two-byte
+// When a stateless header-only opcode arrives as 2 bytes, it should be
+// treated as a complete packet
+// ============================================================================
+void test_stateless_header_only_two_byte() {
+    std::cout << "\nTest 18: Stateless header-only opcode two-byte" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // STATELESS_GET_BLOCK (0xD081) is header-only
+    acc.feed({0xD0, 0x81});
+    
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed1 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD081) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("STATELESS_GET_BLOCK (0xD081) header-only parsed immediately", test1);
+    
+    // STATELESS MINER_READY (0xD0D8) is header-only
+    acc.feed({0xD0, 0xD8});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test2 = parsed2 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0D8) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("STATELESS_MINER_READY (0xD0D8) header-only parsed immediately", test2);
+}
+
+// ============================================================================
 // Main test runner
 // ============================================================================
 int main() {
@@ -564,6 +766,11 @@ int main() {
     test_push_notification_legacy_lane();
     test_is_auth_packet_full_range();
     test_miner_ready_header_only();
+    test_legacy_data_packet_single_byte();
+    test_legacy_header_only_single_byte();
+    test_legacy_auth_packet_single_byte();
+    test_stateless_data_packet_two_byte();
+    test_stateless_header_only_two_byte();
     
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Summary" << std::endl;
