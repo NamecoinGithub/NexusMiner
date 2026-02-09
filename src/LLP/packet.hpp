@@ -65,16 +65,19 @@ namespace nexusminer
 		}
 		
 		// Helper to determine if a legacy opcode is header-only (no length field follows)
-		// Header-only opcodes: requests (128-199), non-auth responses (200-205),
+		// Header-only opcodes: requests (128-199), simple responses (200-203),
 		// MINER_READY (216), PING (253), CLOSE (254)
-		// Data opcodes (0-127) and auth opcodes (206-218, except MINER_READY) always have length+payload
+		// Data opcodes (0-127), NEW_ROUND (204), OLD_ROUND (205), and auth opcodes (206-218, except MINER_READY)
+		// always have length+payload
 		inline bool is_legacy_header_only_opcode(uint8_t opcode) {
 			// Data packets (0-127): always have length + payload
 			if (opcode < 128) return false;
 			// Request packets (128-199): always header-only
 			if (opcode >= 128 && opcode <= 199) return true;
-			// Response/control (200-205): header-only (ACCEPT, REJECT, COINBASE_SET/FAIL, NEW_ROUND, OLD_ROUND)
-			if (opcode >= 200 && opcode <= 205) return true;
+			// Simple responses (200-203): header-only (ACCEPT, REJECT, COINBASE_SET, COINBASE_FAIL)
+			if (opcode >= 200 && opcode <= 203) return true;
+			// NEW_ROUND (204) and OLD_ROUND (205): have length + payload (12 bytes preferred, legacy 16 bytes)
+			if (opcode == LLP::NEW_ROUND || opcode == LLP::OLD_ROUND) return false;
 			// Auth/session range (206-218): have length + payload, EXCEPT MINER_READY
 			if (opcode == LLP::MINER_READY) return true;  // MINER_READY is header-only
 			if (opcode >= LEGACY_AUTH_OPCODE_MIN && opcode <= LLP::HASH_BLOCK_AVAILABLE) return false;
