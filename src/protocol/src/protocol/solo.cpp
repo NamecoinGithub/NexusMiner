@@ -2275,14 +2275,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     else if (matches_opcode(Packet::PRIME_BLOCK_AVAILABLE))
     {
         m_push_handler->handle_push_notification(
-            packet, mining::CHANNEL_PRIME, ProtocolLane::LEGACY,
+            packet, mining::CHANNEL_PRIME, m_protocol_lane,
             m_template_interface.get(),
             [&connection, this]() { if (connection) connection->transmit(get_work()); });
     }
     else if (matches_opcode(Packet::HASH_BLOCK_AVAILABLE))
     {
         m_push_handler->handle_push_notification(
-            packet, mining::CHANNEL_HASH, ProtocolLane::LEGACY,
+            packet, mining::CHANNEL_HASH, m_protocol_lane,
             m_template_interface.get(),
             [&connection, this]() { if (connection) connection->transmit(get_work()); });
     }
@@ -2472,20 +2472,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         else {
             m_logger->error("[Solo Stateless] No template interface available!");
         }
-    }
-    else if (matches_stateless_opcode(Packet::PRIME_BLOCK_AVAILABLE))
-    {
-        m_push_handler->handle_push_notification(
-            packet, mining::CHANNEL_PRIME, ProtocolLane::STATELESS,
-            m_template_interface.get(),
-            [&connection, this]() { if (connection) connection->transmit(get_work()); });
-    }
-    else if (matches_stateless_opcode(Packet::HASH_BLOCK_AVAILABLE))
-    {
-        m_push_handler->handle_push_notification(
-            packet, mining::CHANNEL_HASH, ProtocolLane::STATELESS,
-            m_template_interface.get(),
-            [&connection, this]() { if (connection) connection->transmit(get_work()); });
     }
     else
     {
