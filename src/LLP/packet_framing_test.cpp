@@ -661,7 +661,7 @@ void test_legacy_auth_challenge_rejected() {
     
     bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
-    print_test_result("Single byte 0xD0 triggers NEED_MORE_DATA (need second byte)", test1);
+    print_test_result("Single byte 0xD0 triggers NEED_MORE_DATA (Need second byte)", test1);
     
     // After second byte arrives, cross-lane detection triggers MALFORMED
     acc.feed({0x00, 0x00, 0x00, 0x04, 0xAA, 0xBB, 0xCC, 0xDD});

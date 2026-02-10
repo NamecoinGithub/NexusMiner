@@ -584,7 +584,7 @@ namespace nexusminer
 		 * 
 		 * Enforces that packets match the expected lane format:
 		 * - LEGACY: Only uint8 opcodes allowed
-		 * - STATELESS: Only uint16 opcodes allowed  
+		 * - STATELESS: Only uint16 opcodes allowed
 		 * - UNKNOWN: Fatal, never transmit
 		 * 
 		 * @param lane Protocol lane to enforce
@@ -771,11 +771,14 @@ namespace nexusminer
 			uint8_t header_byte = (*buffer)[start_index];
 			packet.m_header = header_byte;
 			
-			// Cross-lane detection: reject stateless framing (0xD0xx) on legacy lane
+			// Cross-lane detection: reject stateless framing (0xD0xx) on legacy lane.
+			// This function uses m_is_valid (not ParseResult) for all error conditions,
+			// consistent with its existing behavior for incomplete/malformed data.
 			if (header_byte == PacketConstants::STATELESS_OPCODE_THRESHOLD)
 			{
 				if (buffer_size < 2)
 				{
+					// Need second byte to confirm; m_is_valid=false signals incomplete
 					packet.m_is_valid = false;
 					return packet;
 				}
