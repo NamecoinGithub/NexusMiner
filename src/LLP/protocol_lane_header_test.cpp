@@ -194,9 +194,9 @@ int main()
     // ====================================================================
     std::cout << "\nTest 6: Header-only vs data-bearing per lane" << std::endl;
     {
-        // Legacy header-only opcodes
-        print_test_result("Legacy GET_BLOCK (129): header-only",
-            PacketConstants::is_legacy_header_only_opcode(MinerLLP::GET_BLOCK));
+        // Legacy data-bearing opcodes (GET_BLOCK has length field on RX)
+        print_test_result("Legacy GET_BLOCK (129): has payload (RX framing)",
+            !PacketConstants::is_legacy_header_only_opcode(MinerLLP::GET_BLOCK));
         print_test_result("Legacy GET_ROUND (133): header-only",
             PacketConstants::is_legacy_header_only_opcode(MinerLLP::GET_ROUND));
         print_test_result("Legacy ACCEPT (200): header-only",
@@ -214,9 +214,9 @@ int main()
         print_test_result("Legacy PRIME_BLOCK_AVAILABLE (217): has payload",
             !PacketConstants::is_legacy_header_only_opcode(MinerLLP::PRIME_BLOCK_AVAILABLE));
         
-        // Stateless header-only opcodes (mirror-mapped, same classification)
-        print_test_result("Stateless GET_BLOCK (0xD081): header-only",
-            PacketConstants::is_stateless_header_only_opcode(MinerLLP::StatelessMining::GET_BLOCK));
+        // Stateless data-bearing opcodes (GET_BLOCK has length field on RX)
+        print_test_result("Stateless GET_BLOCK (0xD081): has payload (RX framing)",
+            !PacketConstants::is_stateless_header_only_opcode(MinerLLP::StatelessMining::GET_BLOCK));
         print_test_result("Stateless MINER_READY (0xD0D8): header-only",
             PacketConstants::is_stateless_header_only_opcode(MinerLLP::StatelessMining::MINER_READY));
         

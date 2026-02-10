@@ -64,15 +64,22 @@ namespace nexusminer
 			return (opcode >= LEGACY_AUTH_OPCODE_MIN);
 		}
 		
-		// Helper to determine if a legacy opcode is header-only (no length field follows)
-		// Header-only opcodes: requests (128-199), simple responses (200-203),
+		// Helper to determine if a legacy opcode is header-only (no length field follows on RX)
+		// Header-only opcodes: requests (128-199 EXCEPT GET_BLOCK), simple responses (200-203),
 		// MINER_READY (216), PING (253), CLOSE (254)
-		// Data opcodes (0-127), NEW_ROUND (204), OLD_ROUND (205), and auth opcodes (206-218, except MINER_READY)
-		// always have length+payload
+		// Data opcodes (0-127), GET_BLOCK (129), NEW_ROUND (204), OLD_ROUND (205), and auth opcodes
+		// (206-218, except MINER_READY) always have length+payload
+		//
+		// NOTE: GET_BLOCK (129) is excluded from header-only because in stateless push mode
+		// the node sends GET_BLOCK with a 4-byte length field + 228-byte payload.
+		// Treating it as header-only on RX leaves the length+payload in the accumulator,
+		// causing stream misalignment (RX framing desync).
 		inline bool is_legacy_header_only_opcode(uint8_t opcode) {
 			// Data packets (0-127): always have length + payload
 			if (opcode < 128) return false;
-			// Request packets (128-199): always header-only
+			// GET_BLOCK (129): NOT header-only on RX — node may send with length+payload
+			if (opcode == LLP::GET_BLOCK) return false;
+			// Request packets (128-199): header-only (except GET_BLOCK handled above)
 			if (opcode >= 128 && opcode <= 199) return true;
 			// Simple responses (200-203): header-only (ACCEPT, REJECT, COINBASE_SET, COINBASE_FAIL)
 			if (opcode >= 200 && opcode <= 203) return true;

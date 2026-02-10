@@ -602,16 +602,14 @@ void test_legacy_header_only_single_byte() {
     Packet packet;
     ParseResult result;
     
-    // GET_BLOCK (129) is header-only
+    // GET_BLOCK (129) is NOT header-only on RX (node sends with length+payload)
+    // Single byte should trigger NEED_MORE_DATA since we need the 4-byte length field
     acc.feed({129});
     
     bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
-    bool test1 = parsed1 && 
-                 (result == ParseResult::SUCCESS) &&
-                 (packet.m_header == 129) &&
-                 (packet.m_length == 0) &&
-                 acc.empty();
-    print_test_result("GET_BLOCK (129) header-only packet parsed immediately", test1);
+    bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
+    print_test_result("GET_BLOCK (129) single byte triggers NEED_MORE_DATA (has length field)", test1);
+    acc.clear();
     
     // NEW_ROUND (204) has payload (12 bytes) - NOT header-only
     acc.feed({204});
@@ -718,16 +716,14 @@ void test_stateless_header_only_two_byte() {
     Packet packet;
     ParseResult result;
     
-    // STATELESS_GET_BLOCK (0xD081) is header-only
+    // STATELESS_GET_BLOCK (0xD081) is NOT header-only on RX (node sends with length+payload)
+    // Two bytes should trigger NEED_MORE_DATA since we need the 4-byte length field
     acc.feed({0xD0, 0x81});
     
     bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
-    bool test1 = parsed1 && 
-                 (result == ParseResult::SUCCESS) &&
-                 (packet.m_header == 0xD081) &&
-                 (packet.m_length == 0) &&
-                 acc.empty();
-    print_test_result("STATELESS_GET_BLOCK (0xD081) header-only parsed immediately", test1);
+    bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 2);
+    print_test_result("STATELESS_GET_BLOCK (0xD081) triggers NEED_MORE_DATA (has length field)", test1);
+    acc.clear();
     
     // STATELESS MINER_READY (0xD0D8) is header-only
     acc.feed({0xD0, 0xD8});
@@ -914,6 +910,157 @@ void test_accept_reject_still_header_only() {
 }
 
 // ============================================================================
+// Test Case 23: Stateless GET_BLOCK with 228-byte payload (RX framing regression)
+// Node sends STATELESS_GET_BLOCK (0xD081) with length=228 and 228-byte payload
+// This is the core regression test for the RX framing desync fix
+// ============================================================================
+void test_stateless_get_block_with_payload() {
+    std::cout << "\nTest 23: Stateless GET_BLOCK (0xD081) with 228-byte payload" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // Build: [header:0xD0,0x81][length:0,0,0,228][payload:228 bytes]
+    std::vector<uint8_t> wire;
+    wire.push_back(0xD0);  // header MSB
+    wire.push_back(0x81);  // header LSB
+    wire.push_back(0x00);  // length byte 3
+    wire.push_back(0x00);  // length byte 2
+    wire.push_back(0x00);  // length byte 1
+    wire.push_back(0xE4);  // length byte 0 (228 = 0xE4)
+    for (int i = 0; i < 228; ++i) {
+        wire.push_back(static_cast<uint8_t>(i & 0xFF));
+    }
+    
+    acc.feed(wire);
+    
+    bool parsed = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD081) &&
+                 (packet.m_length == 228) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == 228) &&
+                 acc.empty();
+    print_test_result("STATELESS_GET_BLOCK 228-byte payload parsed correctly", test1);
+    
+    // Verify no bytes remain in accumulator (the core desync fix)
+    print_test_result("No leftover bytes in accumulator (no framing desync)", acc.empty());
+}
+
+// ============================================================================
+// Test Case 24: Stateless GET_BLOCK with length=0 (header+length, no payload)
+// Node sends STATELESS_GET_BLOCK (0xD081) with length=0
+// ============================================================================
+void test_stateless_get_block_zero_length() {
+    std::cout << "\nTest 24: Stateless GET_BLOCK (0xD081) with length=0" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // Build: [header:0xD0,0x81][length:0,0,0,0]
+    acc.feed({0xD0, 0x81, 0x00, 0x00, 0x00, 0x00});
+    
+    bool parsed = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD081) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("STATELESS_GET_BLOCK length=0 parsed (consumes header+len)", test1);
+}
+
+// ============================================================================
+// Test Case 25: Legacy GET_BLOCK with length field present (RX framing regression)
+// If a peer sends GET_BLOCK (129) with a length field on legacy lane
+// ============================================================================
+void test_legacy_get_block_with_length() {
+    std::cout << "\nTest 25: Legacy GET_BLOCK (129) with length field (RX framing)" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // Build: [header:0x81][length:0,0,0,0] (length=0)
+    acc.feed({0x81, 0x00, 0x00, 0x00, 0x00});
+    
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = parsed1 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 129) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("Legacy GET_BLOCK with length=0 parsed correctly", test1);
+    
+    // Build: [header:0x81][length:0,0,0,228][payload:228 bytes]
+    std::vector<uint8_t> wire;
+    wire.push_back(0x81);  // header
+    wire.push_back(0x00);  // length byte 3
+    wire.push_back(0x00);  // length byte 2
+    wire.push_back(0x00);  // length byte 1
+    wire.push_back(0xE4);  // length byte 0 (228)
+    for (int i = 0; i < 228; ++i) {
+        wire.push_back(static_cast<uint8_t>(i & 0xFF));
+    }
+    
+    acc.feed(wire);
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = parsed2 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 129) &&
+                 (packet.m_length == 228) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == 228) &&
+                 acc.empty();
+    print_test_result("Legacy GET_BLOCK with 228-byte payload parsed correctly", test2);
+}
+
+// ============================================================================
+// Test Case 26: Stateless GET_BLOCK followed by another packet (desync regression)
+// Simulates the real-world scenario: GET_BLOCK template pushed, then another packet
+// Before the fix, the GET_BLOCK payload would remain in the accumulator, corrupting
+// the next packet parse
+// ============================================================================
+void test_stateless_get_block_followed_by_packet() {
+    std::cout << "\nTest 26: Stateless GET_BLOCK + follow-up packet (desync regression)" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // Build GET_BLOCK with 228-byte payload
+    std::vector<uint8_t> wire;
+    wire.push_back(0xD0); wire.push_back(0x81);  // GET_BLOCK header
+    wire.push_back(0x00); wire.push_back(0x00); wire.push_back(0x00); wire.push_back(0xE4);  // length=228
+    for (int i = 0; i < 228; ++i) wire.push_back(static_cast<uint8_t>(i & 0xFF));
+    
+    // Append MINER_READY (0xD0D8) header-only packet
+    wire.push_back(0xD0); wire.push_back(0xD8);
+    
+    acc.feed(wire);
+    
+    // Parse first packet: GET_BLOCK with payload
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed1 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD081) &&
+                 (packet.m_length == 228);
+    print_test_result("First packet: GET_BLOCK 228-byte parsed", test1);
+    
+    // Parse second packet: MINER_READY header-only
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test2 = parsed2 && 
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0D8) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("Second packet: MINER_READY parsed (no desync)", test2);
+}
+
+// ============================================================================
 // Main test runner
 // ============================================================================
 int main() {
@@ -944,6 +1091,10 @@ int main() {
     test_old_round_with_payload();
     test_round_legacy_16byte_payload();
     test_accept_reject_still_header_only();
+    test_stateless_get_block_with_payload();
+    test_stateless_get_block_zero_length();
+    test_legacy_get_block_with_length();
+    test_stateless_get_block_followed_by_packet();
     
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Summary" << std::endl;
