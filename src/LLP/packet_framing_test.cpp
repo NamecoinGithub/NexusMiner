@@ -645,34 +645,30 @@ void test_legacy_header_only_single_byte() {
 }
 
 // ============================================================================
-// Test Case 16: Legacy auth packet single-byte fragmentation
-// Auth packets (206-218, except MINER_READY) always have payload,
-// so a single byte should trigger NEED_MORE_DATA
+// Test Case 16: MINER_AUTH_CHALLENGE (208 = 0xD0) rejected on legacy lane
+// Byte 0xD0 on legacy lane is treated as cross-lane stateless framing.
+// Auth opcodes that start with 0xD0 are only valid on stateless lane.
 // ============================================================================
-void test_legacy_auth_packet_single_byte() {
-    std::cout << "\nTest 16: Legacy auth packet single-byte fragmentation" << std::endl;
+void test_legacy_auth_challenge_rejected() {
+    std::cout << "\nTest 16: MINER_AUTH_CHALLENGE (0xD0) rejected on legacy lane" << std::endl;
     
     TestAccumulator acc;
     Packet packet;
     ParseResult result;
     
-    // MINER_AUTH_CHALLENGE (208) - has payload
+    // MINER_AUTH_CHALLENGE (208 = 0xD0) single byte - need more data to confirm
     acc.feed({208});
     
     bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
-    print_test_result("Single byte of MINER_AUTH_CHALLENGE triggers NEED_MORE_DATA", test1);
+    print_test_result("Single byte 0xD0 triggers NEED_MORE_DATA (need second byte)", test1);
     
-    // Complete the packet
+    // After second byte arrives, cross-lane detection triggers MALFORMED
     acc.feed({0x00, 0x00, 0x00, 0x04, 0xAA, 0xBB, 0xCC, 0xDD});
     
     bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
-    bool test2 = parsed2 && 
-                 (result == ParseResult::SUCCESS) &&
-                 (packet.m_header == 208) &&
-                 (packet.m_length == 4) &&
-                 acc.empty();
-    print_test_result("Complete MINER_AUTH_CHALLENGE after single byte", test2);
+    bool test2 = !parsed2 && (result == ParseResult::MALFORMED) && acc.empty();
+    print_test_result("0xD0xx on legacy lane detected as MALFORMED (cross-lane)", test2);
 }
 
 // ============================================================================
@@ -914,6 +910,196 @@ void test_accept_reject_still_header_only() {
 }
 
 // ============================================================================
+// Test Case 23: Cross-lane detection - stateless bytes on legacy lane
+// Sending stateless framing (0xD0xx 2-byte headers) to a legacy port
+// should cause MALFORMED disconnect, not desync
+// ============================================================================
+void test_cross_lane_stateless_on_legacy() {
+    std::cout << "\nTest 23: Cross-lane detection - stateless bytes on legacy lane" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // Stateless GET_BLOCK (0xD081) sent to legacy port
+    acc.feed({0xD0, 0x81});
+    
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = !parsed1 && (result == ParseResult::MALFORMED) && acc.empty();
+    print_test_result("Stateless GET_BLOCK (0xD081) on legacy lane → MALFORMED", test1);
+    
+    // Stateless SUBMIT_BLOCK (0xD001) with payload sent to legacy port
+    acc.feed({0xD0, 0x01, 0x00, 0x00, 0x00, 0x04, 't', 'e', 's', 't'});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = !parsed2 && (result == ParseResult::MALFORMED) && acc.empty();
+    print_test_result("Stateless SUBMIT_BLOCK (0xD001) on legacy lane → MALFORMED", test2);
+    
+    // Stateless MINER_READY (0xD0D8) sent to legacy port
+    acc.feed({0xD0, 0xD8});
+    
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test3 = !parsed3 && (result == ParseResult::MALFORMED) && acc.empty();
+    print_test_result("Stateless MINER_READY (0xD0D8) on legacy lane → MALFORMED", test3);
+    
+    // Confirm: 0xD0 single byte triggers NEED_MORE_DATA (not immediate MALFORMED)
+    acc.feed({0xD0});
+    
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test4 = !parsed4 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
+    print_test_result("Single 0xD0 byte on legacy lane → NEED_MORE_DATA", test4);
+    acc.clear();
+}
+
+// ============================================================================
+// Test Case 24: Cross-lane detection - legacy bytes on stateless lane
+// Sending legacy framing (1-byte headers) to a stateless port
+// should cause MALFORMED disconnect
+// ============================================================================
+void test_cross_lane_legacy_on_stateless() {
+    std::cout << "\nTest 24: Cross-lane detection - legacy bytes on stateless lane" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // Legacy GET_BLOCK (0x81) sent to stateless port
+    // As a 2-byte stateless header, 0x8100 is NOT in 0xD000-0xD0FF range → MALFORMED
+    acc.feed({0x81, 0x00});
+    
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = !parsed1 && (result == ParseResult::MALFORMED) && acc.empty();
+    print_test_result("Legacy GET_BLOCK (0x81) on stateless lane → MALFORMED", test1);
+    
+    // Legacy SUBMIT_BLOCK data packet on stateless port
+    acc.feed({0x01, 0x00, 0x00, 0x00, 0x03, 'a', 'b', 'c'});
+    
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test2 = !parsed2 && (result == ParseResult::MALFORMED) && acc.empty();
+    print_test_result("Legacy SUBMIT_BLOCK (0x01) on stateless lane → MALFORMED", test2);
+    
+    // Legacy ACCEPT (0xC8) on stateless port
+    acc.feed({0xC8, 0x00});
+    
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test3 = !parsed3 && (result == ParseResult::MALFORMED) && acc.empty();
+    print_test_result("Legacy ACCEPT (0xC8) on stateless lane → MALFORMED", test3);
+}
+
+// ============================================================================
+// Test Case 25: TX lane enforcement - get_bytes(ProtocolLane)
+// Ensures packets are only serialized when they match the lane format
+// ============================================================================
+void test_tx_lane_enforcement() {
+    std::cout << "\nTest 25: TX lane enforcement - get_bytes(ProtocolLane)" << std::endl;
+    
+    // Legacy packet (uint8 opcode)
+    Packet legacy_pkt(static_cast<uint8_t>(Packet::GET_BLOCK));
+    
+    // Legacy packet on LEGACY lane → OK
+    auto bytes1 = legacy_pkt.get_bytes(ProtocolLane::LEGACY);
+    print_test_result("Legacy packet on LEGACY lane → bytes returned",
+        bytes1 && bytes1->size() > 0);
+    
+    // Legacy packet on STATELESS lane → rejected
+    auto bytes2 = legacy_pkt.get_bytes(ProtocolLane::STATELESS);
+    print_test_result("Legacy packet on STATELESS lane → rejected (empty)",
+        !bytes2 || bytes2->empty());
+    
+    // Legacy packet on UNKNOWN lane → rejected
+    auto bytes3 = legacy_pkt.get_bytes(ProtocolLane::UNKNOWN);
+    print_test_result("Legacy packet on UNKNOWN lane → rejected (empty)",
+        !bytes3 || bytes3->empty());
+    
+    // Stateless packet (uint16 opcode)
+    Packet stateless_pkt(static_cast<uint16_t>(Packet::STATELESS_GET_BLOCK));
+    
+    // Stateless packet on STATELESS lane → OK
+    auto bytes4 = stateless_pkt.get_bytes(ProtocolLane::STATELESS);
+    print_test_result("Stateless packet on STATELESS lane → bytes returned",
+        bytes4 && bytes4->size() > 0);
+    
+    // Stateless packet on LEGACY lane → rejected
+    auto bytes5 = stateless_pkt.get_bytes(ProtocolLane::LEGACY);
+    print_test_result("Stateless packet on LEGACY lane → rejected (empty)",
+        !bytes5 || bytes5->empty());
+    
+    // Stateless packet on UNKNOWN lane → rejected
+    auto bytes6 = stateless_pkt.get_bytes(ProtocolLane::UNKNOWN);
+    print_test_result("Stateless packet on UNKNOWN lane → rejected (empty)",
+        !bytes6 || bytes6->empty());
+    
+    // Data packet TX enforcement
+    network::Payload payload_data(12, 0xAB);
+    
+    Packet legacy_data(static_cast<uint8_t>(Packet::SUBMIT_BLOCK), payload_data);
+    auto bytes7 = legacy_data.get_bytes(ProtocolLane::LEGACY);
+    print_test_result("Legacy data packet on LEGACY lane → bytes returned",
+        bytes7 && bytes7->size() == 17);  // 1 + 4 + 12
+    
+    auto bytes8 = legacy_data.get_bytes(ProtocolLane::STATELESS);
+    print_test_result("Legacy data packet on STATELESS lane → rejected",
+        !bytes8 || bytes8->empty());
+    
+    Packet stateless_data(static_cast<uint16_t>(Packet::STATELESS_SUBMIT_BLOCK), payload_data);
+    auto bytes9 = stateless_data.get_bytes(ProtocolLane::STATELESS);
+    print_test_result("Stateless data packet on STATELESS lane → bytes returned",
+        bytes9 && bytes9->size() == 18);  // 2 + 4 + 12
+    
+    auto bytes10 = stateless_data.get_bytes(ProtocolLane::LEGACY);
+    print_test_result("Stateless data packet on LEGACY lane → rejected",
+        !bytes10 || bytes10->empty());
+}
+
+// ============================================================================
+// Test Case 26: Correct-lane parsing OK (regression check)
+// Ensure normal packets on their correct lane still parse successfully
+// ============================================================================
+void test_correct_lane_parses_ok() {
+    std::cout << "\nTest 26: Correct-lane parsing OK (regression check)" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // Legacy ACCEPT (200) on legacy lane → OK
+    acc.feed({200});
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    print_test_result("Legacy ACCEPT on legacy lane → SUCCESS",
+        parsed1 && result == ParseResult::SUCCESS && packet.m_header == 200);
+    
+    // Legacy CHANNEL_ACK (206 = 0xCE) on legacy lane → OK (not 0xD0)
+    acc.feed({206, 0x00, 0x00, 0x00, 0x01, 0xFF});
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    print_test_result("Legacy CHANNEL_ACK (206) on legacy lane → SUCCESS",
+        parsed2 && result == ParseResult::SUCCESS && packet.m_header == 206);
+    
+    // Legacy MINER_AUTH_INIT (207 = 0xCF) on legacy lane → OK (not 0xD0)
+    acc.feed({207, 0x00, 0x00, 0x00, 0x02, 0xAA, 0xBB});
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    print_test_result("Legacy MINER_AUTH_INIT (207) on legacy lane → SUCCESS",
+        parsed3 && result == ParseResult::SUCCESS && packet.m_header == 207);
+    
+    // Legacy MINER_AUTH_RESPONSE (209 = 0xD1) on legacy lane → OK (not 0xD0)
+    acc.feed({209, 0x00, 0x00, 0x00, 0x02, 0xCC, 0xDD});
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    print_test_result("Legacy MINER_AUTH_RESPONSE (209) on legacy lane → SUCCESS",
+        parsed4 && result == ParseResult::SUCCESS && packet.m_header == 209);
+    
+    // Stateless GET_BLOCK (0xD081) on stateless lane → OK
+    acc.feed({0xD0, 0x81});
+    bool parsed5 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    print_test_result("Stateless GET_BLOCK (0xD081) on stateless lane → SUCCESS",
+        parsed5 && result == ParseResult::SUCCESS && packet.m_header == 0xD081);
+    
+    // Stateless SUBMIT_BLOCK (0xD001) with payload on stateless lane → OK
+    acc.feed({0xD0, 0x01, 0x00, 0x00, 0x00, 0x03, 'x', 'y', 'z'});
+    bool parsed6 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    print_test_result("Stateless SUBMIT_BLOCK (0xD001) on stateless lane → SUCCESS",
+        parsed6 && result == ParseResult::SUCCESS && packet.m_header == 0xD001);
+}
+
+// ============================================================================
 // Main test runner
 // ============================================================================
 int main() {
@@ -937,13 +1123,17 @@ int main() {
     test_miner_ready_header_only();
     test_legacy_data_packet_single_byte();
     test_legacy_header_only_single_byte();
-    test_legacy_auth_packet_single_byte();
+    test_legacy_auth_challenge_rejected();
     test_stateless_data_packet_two_byte();
     test_stateless_header_only_two_byte();
     test_new_round_with_payload();
     test_old_round_with_payload();
     test_round_legacy_16byte_payload();
     test_accept_reject_still_header_only();
+    test_cross_lane_stateless_on_legacy();
+    test_cross_lane_legacy_on_stateless();
+    test_tx_lane_enforcement();
+    test_correct_lane_parses_ok();
     
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Summary" << std::endl;

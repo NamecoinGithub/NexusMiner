@@ -579,6 +579,45 @@ namespace nexusminer
 			return false;
 		}
 
+		/**
+		 * @brief Lane-aware serialization with strict TX enforcement
+		 * 
+		 * Enforces that packets match the expected lane format:
+		 * - LEGACY: Only uint8 opcodes allowed
+		 * - STATELESS: Only uint16 opcodes allowed  
+		 * - UNKNOWN: Fatal, never transmit
+		 * 
+		 * @param lane Protocol lane to enforce
+		 * @return Serialized bytes, or empty if lane mismatch
+		 */
+		network::Shared_payload get_bytes(ProtocolLane lane)
+		{
+			auto logger = spdlog::get("logger");
+			
+			if (lane == ProtocolLane::UNKNOWN)
+			{
+				if (logger)
+					logger->error("[Packet] TX REJECTED: lane is UNKNOWN (fatal, refusing to transmit)");
+				return network::Shared_payload{};
+			}
+			
+			if (lane == ProtocolLane::LEGACY && m_is_uint16_opcode)
+			{
+				if (logger)
+					logger->error("[Packet] TX REJECTED: uint16 opcode 0x{:04x} on LEGACY lane", m_header);
+				return network::Shared_payload{};
+			}
+			
+			if (lane == ProtocolLane::STATELESS && !m_is_uint16_opcode)
+			{
+				if (logger)
+					logger->error("[Packet] TX REJECTED: uint8 opcode 0x{:02x} on STATELESS lane", m_header);
+				return network::Shared_payload{};
+			}
+			
+			return get_bytes();
+		}
+
 		network::Shared_payload get_bytes()
 		{
 			if (!is_valid())
@@ -731,6 +770,19 @@ namespace nexusminer
 			
 			uint8_t header_byte = (*buffer)[start_index];
 			packet.m_header = header_byte;
+			
+			// Cross-lane detection: reject stateless framing (0xD0xx) on legacy lane
+			if (header_byte == PacketConstants::STATELESS_OPCODE_THRESHOLD)
+			{
+				if (buffer_size < 2)
+				{
+					packet.m_is_valid = false;
+					return packet;
+				}
+				// Any 0xD0xx pair forms a valid stateless opcode - reject as cross-lane
+				packet.m_is_valid = false;
+				return packet;
+			}
 			
 			// Header-only opcodes: complete with just 1 byte
 			if (PacketConstants::is_legacy_header_only_opcode(header_byte))
@@ -906,6 +958,23 @@ namespace nexusminer
 			uint8_t header_byte = (*buffer)[start_index];
 			packet.m_header = header_byte;
 			
+			// Cross-lane detection: byte 0xD0 is ambiguous between legacy
+			// MINER_AUTH_CHALLENGE (208) and stateless 2-byte header (0xD0xx).
+			// On legacy lane (port 8323), stateless framing must never appear.
+			// Reject 0xD0 as the start of cross-lane stateless framing.
+			if (header_byte == PacketConstants::STATELESS_OPCODE_THRESHOLD)
+			{
+				if (buffer_size < 2)
+				{
+					// Need second byte to confirm cross-lane detection
+					result = ParseResult::NEED_MORE_DATA;
+					return packet;
+				}
+				// Any 0xD0xx pair forms a valid stateless opcode (0xD000-0xD0FF)
+				result = ParseResult::MALFORMED;
+				return packet;
+			}
+			
 			// Check if this opcode is header-only (no length field follows on the wire)
 			// Data packets (< 128) and most auth packets (206-218) have length + payload
 			// Request/response packets and MINER_READY/PING are header-only
@@ -981,13 +1050,8 @@ namespace nexusminer
 			packet.m_header = header16;
 			
 			// Validate that this is a valid opcode for stateless lane
-			// Accept properly mirrored stateless opcodes (0xD0xx) OR
-			// Accept un-mirrored push notification opcodes (217, 218) due to node bug
-			bool is_valid_stateless = PacketConstants::is_stateless_opcode(header16);
-			bool is_unmirrored_push_notification = (header16 == LLP::PRIME_BLOCK_AVAILABLE || 
-			                                        header16 == LLP::HASH_BLOCK_AVAILABLE);
-			
-			if (!is_valid_stateless && !is_unmirrored_push_notification)
+			// Only accept properly mirrored stateless opcodes (0xD0xx)
+			if (!PacketConstants::is_stateless_opcode(header16))
 			{
 				// Invalid opcode for stateless lane - malformed
 				result = ParseResult::MALFORMED;
@@ -995,7 +1059,7 @@ namespace nexusminer
 			}
 			
 			// Check if this opcode is header-only (no length field follows)
-			if (is_valid_stateless && PacketConstants::is_stateless_header_only_opcode(header16))
+			if (PacketConstants::is_stateless_header_only_opcode(header16))
 			{
 				// Header-only stateless packet: complete with just 2-byte header
 				packet.m_is_valid = true;
