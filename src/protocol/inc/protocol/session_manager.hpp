@@ -205,6 +205,18 @@ public:
     void set_protocol_lane(ProtocolLane lane);
     
     /**
+     * @brief Map a legacy auth opcode to the lane-appropriate opcode
+     * 
+     * On STATELESS lane, auth opcodes are mirror-mapped (0xD000 | legacy_opcode)
+     * to avoid the 0xD0 (208) ambiguity with the stateless prefix byte.
+     * On LEGACY lane, opcodes are returned unchanged.
+     * 
+     * @param legacy_opcode Legacy uint8_t opcode (e.g., 207 for MINER_AUTH_INIT)
+     * @return Lane-appropriate opcode (uint16_t to hold both formats)
+     */
+    uint16_t map_auth_opcode(uint8_t legacy_opcode) const;
+    
+    /**
      * @brief Get keepalive interval
      * 
      * @return Interval in hours

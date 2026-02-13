@@ -323,5 +323,13 @@ void SessionManager::set_protocol_lane(ProtocolLane lane)
     }
 }
 
+uint16_t SessionManager::map_auth_opcode(uint8_t legacy_opcode) const
+{
+    if (m_protocol_lane == ProtocolLane::STATELESS) {
+        return static_cast<uint16_t>(0xD000 | legacy_opcode);  // Mirror-map
+    }
+    return static_cast<uint16_t>(legacy_opcode);  // Legacy as-is
+}
+
 } // namespace protocol
 } // namespace nexusminer

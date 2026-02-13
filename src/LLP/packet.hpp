@@ -88,9 +88,14 @@ namespace nexusminer
 		}
 		
 		// Helper to determine if a stateless (mirror-mapped) opcode is header-only
-		// Uses the same logic as legacy, applied to the unmirrored opcode
+		// Uses the same logic as legacy, applied to the unmirrored opcode,
+		// EXCEPT for GET_BLOCK (0xD081) which is data-bearing on stateless
+		// (node pushes 228-byte template via this opcode)
 		inline bool is_stateless_header_only_opcode(uint16_t opcode) {
 			if (!is_stateless_opcode(opcode)) return false;
+			// GET_BLOCK (0xD081) is ALWAYS data-bearing on stateless lane (228-byte template push)
+			// Legacy GET_BLOCK (129) is header-only request, but stateless repurposes it for push
+			if (opcode == LLP::StatelessMining::GET_BLOCK) return false;
 			uint8_t legacy = LLP::UnmirrorOpcode(opcode);
 			return is_legacy_header_only_opcode(legacy);
 		}
@@ -190,6 +195,13 @@ namespace nexusminer
 			STATELESS_GET_BLOCK = LLP::StatelessMining::GET_BLOCK,                    // 0xD081
 			STATELESS_BLOCK_ACCEPTED = LLP::StatelessMining::BLOCK_ACCEPTED,          // 0xD0C8
 			STATELESS_BLOCK_REJECTED = LLP::StatelessMining::BLOCK_REJECTED,          // 0xD0C9
+			STATELESS_CHANNEL_ACK = LLP::StatelessMining::CHANNEL_ACK,                // 0xD0CE
+			STATELESS_MINER_AUTH_INIT = LLP::StatelessMining::MINER_AUTH_INIT,        // 0xD0CF
+			STATELESS_MINER_AUTH_CHALLENGE = LLP::StatelessMining::MINER_AUTH_CHALLENGE, // 0xD0D0
+			STATELESS_MINER_AUTH_RESPONSE = LLP::StatelessMining::MINER_AUTH_RESPONSE, // 0xD0D1
+			STATELESS_MINER_AUTH_RESULT = LLP::StatelessMining::MINER_AUTH_RESULT,    // 0xD0D2
+			STATELESS_SESSION_START = LLP::StatelessMining::SESSION_START,            // 0xD0D3
+			STATELESS_SESSION_KEEPALIVE = LLP::StatelessMining::SESSION_KEEPALIVE,    // 0xD0D4
 			STATELESS_MINER_SET_REWARD = LLP::StatelessMining::MINER_SET_REWARD,      // 0xD0D5
 			STATELESS_MINER_REWARD_RESULT = LLP::StatelessMining::MINER_REWARD_RESULT,// 0xD0D6
 			STATELESS_MINER_READY = LLP::StatelessMining::MINER_READY,                // 0xD0D8
