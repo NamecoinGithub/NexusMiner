@@ -205,7 +205,7 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
     bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
     
     Packet packet = use_stateless_opcode
-        ? Packet{ static_cast<uint16_t>(LLP::StatelessMining::SESSION_KEEPALIVE),
+        ? Packet{ LLP::StatelessMining::SESSION_KEEPALIVE,  // already uint16_t
                   std::make_shared<network::Payload>(payload) }
         : Packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE),
                   std::make_shared<network::Payload>(payload) };

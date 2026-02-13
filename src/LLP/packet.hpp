@@ -741,6 +741,7 @@ namespace nexusminer
 			{
 				if (logger)
 				{
+					// Safe cast: !m_is_uint16_opcode guarantees m_header <= 0xFF
 					logger->error("[Packet] TX LANE ERROR: uint8 opcode 0x{:02x} on STATELESS lane", 
 						static_cast<uint8_t>(m_header));
 					logger->error("[Packet]   Legacy opcodes cannot be sent on stateless lane");
