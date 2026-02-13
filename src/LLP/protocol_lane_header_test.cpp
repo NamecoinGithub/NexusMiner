@@ -215,12 +215,12 @@ int main()
             !PacketConstants::is_legacy_header_only_opcode(MinerLLP::PRIME_BLOCK_AVAILABLE));
         
         // Stateless header-only opcodes (mirror-mapped, same classification)
-        print_test_result("Stateless GET_BLOCK (0xD081): header-only",
-            PacketConstants::is_stateless_header_only_opcode(MinerLLP::StatelessMining::GET_BLOCK));
         print_test_result("Stateless MINER_READY (0xD0D8): header-only",
             PacketConstants::is_stateless_header_only_opcode(MinerLLP::StatelessMining::MINER_READY));
         
         // Stateless data-bearing opcodes
+        print_test_result("Stateless GET_BLOCK (0xD081): has payload (228-byte template push)",
+            !PacketConstants::is_stateless_header_only_opcode(MinerLLP::StatelessMining::GET_BLOCK));
         print_test_result("Stateless SUBMIT_BLOCK (0xD001): has payload",
             !PacketConstants::is_stateless_header_only_opcode(MinerLLP::StatelessMining::SUBMIT_BLOCK));
         print_test_result("Stateless PRIME_BLOCK_AVAILABLE (0xD0D9): has payload",

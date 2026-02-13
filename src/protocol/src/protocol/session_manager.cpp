@@ -188,20 +188,24 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
         return network::Shared_payload{};
     }
     
-    // Validate protocol lane is set
+    // Validate protocol lane is set - UNKNOWN lane is not allowed
     if (m_protocol_lane == ProtocolLane::UNKNOWN) {
-        m_logger->error("[SessionManager] build_keepalive_packet() called with UNKNOWN protocol lane - defaulting to LEGACY");
-        // Fall through to LEGACY as safe default
+        m_logger->error("[SessionManager] build_keepalive_packet() called with UNKNOWN protocol lane");
+        m_logger->error("[SessionManager]   Cannot send SESSION_KEEPALIVE without knowing the protocol lane");
+        m_logger->error("[SessionManager]   This indicates a configuration or initialization error");
+        return network::Shared_payload{};
     }
 
     std::vector<uint8_t> payload;
     append_uint32_le(payload, m_session.session_id);
 
     // Build lane-aware packet based on protocol lane
+    // On stateless lane, use mirror-mapped SESSION_KEEPALIVE (0xD0D4)
+    // On legacy lane, use legacy SESSION_KEEPALIVE (212)
     bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
     
     Packet packet = use_stateless_opcode
-        ? Packet{ static_cast<uint16_t>(LLP::MirrorOpcode(static_cast<uint8_t>(Packet::SESSION_KEEPALIVE))),
+        ? Packet{ static_cast<uint16_t>(LLP::StatelessMining::SESSION_KEEPALIVE),
                   std::make_shared<network::Payload>(payload) }
         : Packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE),
                   std::make_shared<network::Payload>(payload) };
