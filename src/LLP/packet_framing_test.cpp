@@ -936,7 +936,7 @@ void test_stateless_get_block_with_payload() {
     get_block_packet.push_back(0xE4);  // length LSB = 228
     // 228 bytes of payload (simulated template data)
     for (int i = 0; i < 228; ++i) {
-        get_block_packet.push_back(static_cast<uint8_t>(i & 0xFF));
+        get_block_packet.push_back(static_cast<uint8_t>(i));
     }
     
     acc.feed(get_block_packet);
