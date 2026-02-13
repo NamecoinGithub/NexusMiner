@@ -709,7 +709,8 @@ void test_stateless_data_packet_two_byte() {
 // ============================================================================
 // Test Case 18: Stateless header-only opcode two-byte
 // When a stateless header-only opcode arrives as 2 bytes, it should be
-// treated as a complete packet
+// treated as a complete packet.
+// NOTE: GET_BLOCK (0xD081) is NOT header-only on stateless (template push).
 // ============================================================================
 void test_stateless_header_only_two_byte() {
     std::cout << "\nTest 18: Stateless header-only opcode two-byte" << std::endl;
@@ -718,16 +719,16 @@ void test_stateless_header_only_two_byte() {
     Packet packet;
     ParseResult result;
     
-    // STATELESS_GET_BLOCK (0xD081) is header-only
+    // STATELESS_GET_BLOCK (0xD081) is NOT header-only on stateless lane
+    // (node sends 228-byte template push via this opcode)
     acc.feed({0xD0, 0x81});
     
     bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
-    bool test1 = parsed1 && 
-                 (result == ParseResult::SUCCESS) &&
-                 (packet.m_header == 0xD081) &&
-                 (packet.m_length == 0) &&
-                 acc.empty();
-    print_test_result("STATELESS_GET_BLOCK (0xD081) header-only parsed immediately", test1);
+    bool test1 = !parsed1 && 
+                 (result == ParseResult::NEED_MORE_DATA) &&
+                 (acc.size() == 2);
+    print_test_result("STATELESS_GET_BLOCK (0xD081) is NOT header-only (needs payload)", test1);
+    acc.clear();
     
     // STATELESS MINER_READY (0xD0D8) is header-only
     acc.feed({0xD0, 0xD8});
@@ -914,6 +915,192 @@ void test_accept_reject_still_header_only() {
 }
 
 // ============================================================================
+// Test Case 23: Stateless GET_BLOCK (0xD081) with 228-byte payload
+// On stateless lane, GET_BLOCK is a template push with 228-byte payload
+// ============================================================================
+void test_stateless_get_block_with_payload() {
+    std::cout << "\nTest 23: Stateless GET_BLOCK (0xD081) with 228-byte payload" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // Build a complete STATELESS_GET_BLOCK (0xD081) with 228-byte payload
+    // Wire format: [0xD0][0x81][00 00 00 E4][228 bytes]
+    std::vector<uint8_t> get_block_packet;
+    get_block_packet.push_back(0xD0);  // header MSB
+    get_block_packet.push_back(0x81);  // header LSB
+    get_block_packet.push_back(0x00);  // length MSB
+    get_block_packet.push_back(0x00);
+    get_block_packet.push_back(0x00);
+    get_block_packet.push_back(0xE4);  // length LSB = 228
+    // 228 bytes of payload (simulated template data)
+    for (int i = 0; i < 228; ++i) {
+        get_block_packet.push_back(static_cast<uint8_t>(i));
+    }
+    
+    acc.feed(get_block_packet);
+    
+    bool parsed = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD081) &&
+                 (packet.m_length == 228) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == 228) &&
+                 acc.empty();
+    print_test_result("STATELESS_GET_BLOCK (0xD081) with 228-byte payload parsed correctly", test1);
+    
+    // Verify first few bytes of payload
+    if (packet.m_data && packet.m_data->size() >= 4) {
+        bool data_correct = ((*packet.m_data)[0] == 0x00) &&
+                           ((*packet.m_data)[1] == 0x01) &&
+                           ((*packet.m_data)[2] == 0x02) &&
+                           ((*packet.m_data)[3] == 0x03);
+        print_test_result("STATELESS_GET_BLOCK payload data verified", data_correct);
+    } else {
+        print_test_result("STATELESS_GET_BLOCK payload data verified", false);
+    }
+}
+
+// ============================================================================
+// Test Case 24: Stateless auth opcodes (mirror-mapped) with payload
+// Auth opcodes 0xD0CE, 0xD0D0, 0xD0D2 should parse as 2-byte headers with payload
+// ============================================================================
+void test_stateless_auth_opcodes_with_payload() {
+    std::cout << "\nTest 24: Stateless auth opcodes (mirror-mapped) with payload" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // CHANNEL_ACK (0xD0CE = mirror of 206) with 1-byte payload
+    std::vector<uint8_t> channel_ack = {
+        0xD0, 0xCE,                    // header = 0xD0CE
+        0x00, 0x00, 0x00, 0x01,        // length = 1
+        0x02                           // channel = 2 (Hash)
+    };
+    
+    acc.feed(channel_ack);
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed1 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0CE) &&
+                 (packet.m_length == 1) &&
+                 (packet.m_data != nullptr) &&
+                 acc.empty();
+    print_test_result("CHANNEL_ACK (0xD0CE) parsed with payload", test1);
+    
+    // MINER_AUTH_CHALLENGE (0xD0D0 = mirror of 208) with 34-byte nonce payload
+    std::vector<uint8_t> auth_challenge;
+    auth_challenge.push_back(0xD0);  // header MSB
+    auth_challenge.push_back(0xD0);  // header LSB (mirror of 208)
+    auth_challenge.push_back(0x00);  // length
+    auth_challenge.push_back(0x00);
+    auth_challenge.push_back(0x00);
+    auth_challenge.push_back(0x22);  // length = 34
+    // 34 bytes of nonce data
+    for (int i = 0; i < 34; ++i) {
+        auth_challenge.push_back(static_cast<uint8_t>(0xAA + i));
+    }
+    
+    acc.feed(auth_challenge);
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test2 = parsed2 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0D0) &&
+                 (packet.m_length == 34) &&
+                 (packet.m_data != nullptr) &&
+                 acc.empty();
+    print_test_result("MINER_AUTH_CHALLENGE (0xD0D0) parsed with payload", test2);
+    
+    // MINER_AUTH_RESULT (0xD0D2 = mirror of 210) with 5-byte payload
+    std::vector<uint8_t> auth_result = {
+        0xD0, 0xD2,                    // header = 0xD0D2
+        0x00, 0x00, 0x00, 0x05,        // length = 5
+        0x01,                          // status = success
+        0x12, 0x34, 0x56, 0x78         // session_id (LE)
+    };
+    
+    acc.feed(auth_result);
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test3 = parsed3 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0D2) &&
+                 (packet.m_length == 5) &&
+                 (packet.m_data != nullptr) &&
+                 acc.empty();
+    print_test_result("MINER_AUTH_RESULT (0xD0D2) parsed with payload", test3);
+}
+
+// ============================================================================
+// Test Case 25: Legacy auth opcode 208 (0xD0) parses correctly (NOT rejected)
+// Byte 0xD0 on legacy lane is MINER_AUTH_CHALLENGE and must NOT be rejected
+// ============================================================================
+void test_legacy_auth_opcode_208_not_rejected() {
+    std::cout << "\nTest 25: Legacy auth opcode 208 (0xD0) not rejected" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // MINER_AUTH_CHALLENGE (208 = 0xD0) with 34-byte nonce payload on legacy lane
+    std::vector<uint8_t> auth_challenge;
+    auth_challenge.push_back(208);     // header = 0xD0 (MINER_AUTH_CHALLENGE)
+    auth_challenge.push_back(0x00);    // length
+    auth_challenge.push_back(0x00);
+    auth_challenge.push_back(0x00);
+    auth_challenge.push_back(0x22);    // length = 34
+    for (int i = 0; i < 34; ++i) {
+        auth_challenge.push_back(static_cast<uint8_t>(0xBB + i));
+    }
+    
+    acc.feed(auth_challenge);
+    bool parsed = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = parsed &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 208) &&
+                 (packet.m_length == 34) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == 34) &&
+                 acc.empty();
+    print_test_result("Legacy MINER_AUTH_CHALLENGE (208/0xD0) parsed correctly (NOT rejected)", test1);
+    
+    // Also verify MINER_AUTH_INIT (207) on legacy lane
+    std::vector<uint8_t> auth_init = {
+        207,                           // header = MINER_AUTH_INIT
+        0x00, 0x00, 0x00, 0x04,       // length = 4
+        0x01, 0x02, 0x03, 0x04        // payload
+    };
+    
+    acc.feed(auth_init);
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = parsed2 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 207) &&
+                 (packet.m_length == 4) &&
+                 acc.empty();
+    print_test_result("Legacy MINER_AUTH_INIT (207) parsed correctly", test2);
+    
+    // Also verify MINER_AUTH_RESULT (210) on legacy lane
+    std::vector<uint8_t> auth_result = {
+        210,                           // header = MINER_AUTH_RESULT
+        0x00, 0x00, 0x00, 0x05,       // length = 5
+        0x01,                          // status = success
+        0x12, 0x34, 0x56, 0x78        // session_id
+    };
+    
+    acc.feed(auth_result);
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test3 = parsed3 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 210) &&
+                 (packet.m_length == 5) &&
+                 acc.empty();
+    print_test_result("Legacy MINER_AUTH_RESULT (210) parsed correctly", test3);
+}
+
+// ============================================================================
 // Main test runner
 // ============================================================================
 int main() {
@@ -944,6 +1131,9 @@ int main() {
     test_old_round_with_payload();
     test_round_legacy_16byte_payload();
     test_accept_reject_still_header_only();
+    test_stateless_get_block_with_payload();
+    test_stateless_auth_opcodes_with_payload();
+    test_legacy_auth_opcode_208_not_rejected();
     
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Summary" << std::endl;

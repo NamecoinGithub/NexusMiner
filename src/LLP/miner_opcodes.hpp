@@ -500,6 +500,35 @@ namespace StatelessMining {
      */
     constexpr uint16_t HASH_BLOCK_AVAILABLE = MirrorOpcode(LLP::HASH_BLOCK_AVAILABLE);  // 0xD0DA
     
+    // ========================================================================
+    // MIRROR-MAPPED AUTH/SESSION OPCODES (using 0xD000 | legacyOpcode)
+    // ========================================================================
+    // These opcodes avoid the 0xD0 (208) ambiguity on stateless port:
+    // legacy single-byte 208 = MINER_AUTH_CHALLENGE, but 0xD0 is also the
+    // stateless prefix byte.  Mirror-mapping gives each auth opcode a unique
+    // two-byte value in the 0xD0CE-0xD0D6 range.
+    
+    /** CHANNEL_ACK: Mirror-mapped from legacy 206 → 0xD0CE */
+    constexpr uint16_t CHANNEL_ACK = MirrorOpcode(LLP::CHANNEL_ACK);  // 0xD0CE
+    
+    /** MINER_AUTH_INIT: Mirror-mapped from legacy 207 → 0xD0CF */
+    constexpr uint16_t MINER_AUTH_INIT = MirrorOpcode(LLP::MINER_AUTH_INIT);  // 0xD0CF
+    
+    /** MINER_AUTH_CHALLENGE: Mirror-mapped from legacy 208 → 0xD0D0 */
+    constexpr uint16_t MINER_AUTH_CHALLENGE = MirrorOpcode(LLP::MINER_AUTH_CHALLENGE);  // 0xD0D0
+    
+    /** MINER_AUTH_RESPONSE: Mirror-mapped from legacy 209 → 0xD0D1 */
+    constexpr uint16_t MINER_AUTH_RESPONSE = MirrorOpcode(LLP::MINER_AUTH_RESPONSE);  // 0xD0D1
+    
+    /** MINER_AUTH_RESULT: Mirror-mapped from legacy 210 → 0xD0D2 */
+    constexpr uint16_t MINER_AUTH_RESULT = MirrorOpcode(LLP::MINER_AUTH_RESULT);  // 0xD0D2
+    
+    /** SESSION_START: Mirror-mapped from legacy 211 → 0xD0D3 */
+    constexpr uint16_t SESSION_START = MirrorOpcode(LLP::SESSION_START);  // 0xD0D3
+    
+    /** SESSION_KEEPALIVE: Mirror-mapped from legacy 212 → 0xD0D4 */
+    constexpr uint16_t SESSION_KEEPALIVE = MirrorOpcode(LLP::SESSION_KEEPALIVE);  // 0xD0D4
+    
     // NOTE: NEW_BLOCK has been removed - the node now reuses GET_BLOCK for both
     // initial template delivery and push notifications when blockchain advances.
     
