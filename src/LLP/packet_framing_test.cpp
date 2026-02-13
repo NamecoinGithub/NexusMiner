@@ -964,6 +964,35 @@ void test_stateless_get_block_with_payload() {
 }
 
 // ============================================================================
+// Test Case 23b: Stateless GET_BLOCK (0xD081) with zero-length payload
+// Node can send GET_BLOCK with length=0 (no template available yet)
+// ============================================================================
+void test_stateless_get_block_zero_length() {
+    std::cout << "\nTest 23b: Stateless GET_BLOCK (0xD081) with zero-length payload" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // Build STATELESS_GET_BLOCK (0xD081) with length=0
+    // Wire format: [0xD0][0x81][00 00 00 00]
+    std::vector<uint8_t> get_block_packet = {
+        0xD0, 0x81,                    // header = 0xD081
+        0x00, 0x00, 0x00, 0x00         // length = 0
+    };
+    
+    acc.feed(get_block_packet);
+    
+    bool parsed = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD081) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("STATELESS_GET_BLOCK (0xD081) with length=0 parsed correctly", test1);
+}
+
+// ============================================================================
 // Test Case 24: Stateless auth opcodes (mirror-mapped) with payload
 // Auth opcodes 0xD0CE, 0xD0D0, 0xD0D2 should parse as 2-byte headers with payload
 // ============================================================================
@@ -1132,6 +1161,7 @@ int main() {
     test_round_legacy_16byte_payload();
     test_accept_reject_still_header_only();
     test_stateless_get_block_with_payload();
+    test_stateless_get_block_zero_length();
     test_stateless_auth_opcodes_with_payload();
     test_legacy_auth_opcode_208_not_rejected();
     
