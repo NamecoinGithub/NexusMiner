@@ -40,6 +40,8 @@ Our default configuration achieves **51% blockchain savings** over 100 years:
 ## 📚 Documentation
 
 **Quick Links:**
+- **[Building NexusMiner](BUILD.md)** - Complete build guide for all platforms
+- **[Protocol Lane Architecture](docs/PROTOCOL_LANES.md)** - Dual-lane protocol (legacy 8-bit vs stateless 16-bit)
 - **[Configuration Reference](docs/reference/nexus.conf.md)** - Complete guide to all config options
 - **[Quick Start Examples](docs/reference/config-examples/)** - Ready-to-use config templates
 - **[Stateless Mining Protocol](docs/current/mining-protocols/stateless-mining.md)** - Modern push protocol
