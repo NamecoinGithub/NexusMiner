@@ -58,7 +58,10 @@ The parser uses the connection lane (determined from port) to decide header widt
 | 128-199 | Request packets | GET_BLOCK (0x81/129) | Header-only (no length/payload) |
 | 200-203 | Response packets | ACCEPT (200), REJECT (201), COINBASE_SET (202), COINBASE_FAIL (203) | Header-only |
 | 204-205 | Round notifications | NEW_ROUND (204), OLD_ROUND (205) | Data-bearing (12 bytes preferred, 16 bytes legacy) |
-| 206-218 | Auth/session | CHANNEL_ACK (206) through SESSION_KEEPALIVE (212), MINER_READY (216) | Data-bearing except MINER_READY (216) which is header-only |
+| 206-212 | Auth/session | CHANNEL_ACK (206), MINER_AUTH_INIT (207), MINER_AUTH_CHALLENGE (208), MINER_AUTH_RESPONSE (209), MINER_AUTH_RESULT (210), SESSION_START (211), SESSION_KEEPALIVE (212) | Data-bearing |
+| 213-214 | Reward management | MINER_SET_REWARD (213), MINER_REWARD_RESULT (214) | Data-bearing |
+| 216 | Push notifications | MINER_READY (216) | Header-only (miner subscribes to push events) |
+| 217-218 | Block availability | PRIME_BLOCK_AVAILABLE (217), HASH_BLOCK_AVAILABLE (218) | Data-bearing |
 | 253-254 | Control | PING (253), CLOSE (254) | Header-only |
 
 ### Stateless Lane (16-bit opcodes: 0xD000-0xD0FF)
@@ -69,7 +72,10 @@ The parser uses the connection lane (determined from port) to decide header widt
 | 0xD080-0xD0C7 | Request packets | GET_BLOCK (0xD081) | **Data-bearing** (special case, 228-byte template push) |
 | 0xD0C8-0xD0CB | Response packets | ACCEPT (0xD0C8), REJECT (0xD0C9), COINBASE_SET (0xD0CA), COINBASE_FAIL (0xD0CB) | Header-only |
 | 0xD0CC-0xD0CD | Round notifications | NEW_ROUND (0xD0CC), OLD_ROUND (0xD0CD) | Data-bearing (12 bytes preferred) |
-| 0xD0CE-0xD0DA | Auth/session | CHANNEL_ACK (0xD0CE), MINER_AUTH_INIT (0xD0CF), MINER_AUTH_CHALLENGE (0xD0D0), MINER_AUTH_RESPONSE (0xD0D1), MINER_AUTH_RESULT (0xD0D2), SESSION_START (0xD0D3), SESSION_KEEPALIVE (0xD0D4) | Data-bearing except certain opcodes |
+| 0xD0CE-0xD0D4 | Auth/session | CHANNEL_ACK (0xD0CE), MINER_AUTH_INIT (0xD0CF), MINER_AUTH_CHALLENGE (0xD0D0), MINER_AUTH_RESPONSE (0xD0D1), MINER_AUTH_RESULT (0xD0D2), SESSION_START (0xD0D3), SESSION_KEEPALIVE (0xD0D4) | Data-bearing |
+| 0xD0D5-0xD0D6 | Reward management | MINER_SET_REWARD (0xD0D5), MINER_REWARD_RESULT (0xD0D6) | Data-bearing |
+| 0xD0D8 | Push notifications | MINER_READY (0xD0D8) | Header-only (miner subscribes to push events) |
+| 0xD0D9-0xD0DA | Block availability | PRIME_BLOCK_AVAILABLE (0xD0D9), HASH_BLOCK_AVAILABLE (0xD0DA) | Data-bearing |
 | 0xD0FD-0xD0FE | Control | PING (0xD0FD), CLOSE (0xD0FE) | Header-only |
 
 ## Key Design Decisions

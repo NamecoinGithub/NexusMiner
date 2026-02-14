@@ -36,6 +36,8 @@ git checkout STATELESS-MINER-HEAD
 mkdir build && cd build
 ```
 
+**Note:** `STATELESS-MINER-HEAD` is the development branch with the latest stateless mining protocol features. For stable releases, check the [releases page](https://github.com/NamecoinGithub/NexusMiner/releases) and checkout a specific version tag instead (e.g., `git checkout v1.5.0`).
+
 ## Build Options
 
 The following CMake options control which features are built:
