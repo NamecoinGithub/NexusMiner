@@ -789,20 +789,27 @@ void Worker_manager::check_template_health()
     
     uint64_t template_age = template_interface->get_template_age();
     
-    // Height-based staleness detection (primary check)
-    // Compare template height with last known blockchain height from GET_ROUND/NEW_ROUND.
-    // Any height advance (even +1) means a new block was found and the template is stale.
+    // Channel height-based staleness detection (primary check)
+    // Compare template's CHANNEL height with node's CHANNEL height from GET_ROUND/NEW_ROUND.
+    // Template targets block at nChannelHeight; node should be at nChannelHeight - 1.
+    // If node's channel height >= nChannelHeight, another miner found the block first.
     {
         auto round_status = solo_protocol->get_last_round_status();
-        uint32_t template_height = template_interface->get_template_height();
-        uint32_t current_height = round_status.height;
+        uint8_t channel = template_interface->get_channel();
+        uint32_t current_channel_height = round_status.get_channel_height(channel);
         
-        if (current_height > 0 && template_height > 0 && current_height > template_height) {
-            m_logger->warn("[Worker_manager] ⚠️  Blockchain advanced: height {} > template height {}",
-                current_height, template_height);
-            m_logger->info("[Worker_manager]    Requesting fresh template (height-based staleness)");
+        const auto* tmpl = template_interface->get_current_template();
+        uint32_t template_channel_height = (tmpl != nullptr) ? tmpl->nChannelHeight : 0;
+        
+        // Only compare when both heights are available (channel height may be pending finalization)
+        if (current_channel_height > 0 && template_channel_height > 0 &&
+            current_channel_height >= template_channel_height) {
+            std::string channel_name = (channel == 1) ? "Prime" : "Hash";
+            m_logger->warn("[Worker_manager] ⚠️  {} channel advanced: Channel Height {} >= template Channel Height {}",
+                channel_name, current_channel_height, template_channel_height);
+            m_logger->info("[Worker_manager]    Requesting fresh template (channel height-based staleness)");
             
-            template_interface->discard_template("Height-based staleness (blockchain advanced)");
+            template_interface->discard_template("Channel height-based staleness (channel advanced)");
             stop_all_workers();
             retry_template_request();
             return;

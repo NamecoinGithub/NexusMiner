@@ -339,9 +339,9 @@ int main()
     }
 
     // ====================================================================
-    // Test 10: Height-based staleness detection
+    // Test 10: Unified height-based staleness detection (update_height)
     // ====================================================================
-    std::cout << "\nTest 10: Height-based staleness detection" << std::endl;
+    std::cout << "\nTest 10: Unified height-based staleness detection (update_height)" << std::endl;
     {
         MiningTemplateInterface tmpl_interface(2, 0);
         
@@ -410,6 +410,54 @@ int main()
         // Template should NOT be stale at this age (was previously timing out at 120s)
         bool is_stale = tmpl_interface.is_template_stale();
         print_test_result("Fresh template is not stale", !is_stale);
+    }
+
+    // ====================================================================
+    // Test 13: Channel height staleness via update_channel_height
+    // ====================================================================
+    std::cout << "\nTest 13: Channel height staleness via update_channel_height" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0); // Hash channel
+        
+        // Load a template
+        auto data1 = create_mock_template(6594320);
+        tmpl_interface.read_template(data1, "test_node");
+        
+        // Finalize template with channel height (simulates GET_ROUND finalization)
+        // set_channel_height sets nChannelHeight = node_height + 1 internally... 
+        // Actually: set_channel_height just stores the value directly.
+        // Template targets block at nChannelHeight; node is at nChannelHeight - 1.
+        tmpl_interface.set_channel_height(4165001); // Template mines block 4165001
+        
+        // Node at expected height (4165000 = 4165001 - 1) → not stale
+        bool discarded = tmpl_interface.update_channel_height(2, 4165000);
+        print_test_result("Node at expected channel height: template valid", !discarded);
+        print_test_result("Template still valid", tmpl_interface.has_valid_template());
+        
+        // Node channel advanced (4165001 >= 4165001) → stale!
+        discarded = tmpl_interface.update_channel_height(2, 4165001);
+        print_test_result("Node channel advanced: template stale", discarded);
+        print_test_result("Template invalid after channel advance",
+            !tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 14: Wrong channel update does not affect template
+    // ====================================================================
+    std::cout << "\nTest 14: Wrong channel update does not affect template" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0); // Hash channel
+        
+        // Load a template
+        auto data1 = create_mock_template(6594320);
+        tmpl_interface.read_template(data1, "test_node");
+        tmpl_interface.set_channel_height(4165001);
+        
+        // Update Prime channel (channel 1) — should NOT affect Hash template
+        bool discarded = tmpl_interface.update_channel_height(1, 9999999);
+        print_test_result("Prime channel update ignored for Hash template", !discarded);
+        print_test_result("Template still valid after wrong-channel update",
+            tmpl_interface.has_valid_template());
     }
 
     // ====================================================================
