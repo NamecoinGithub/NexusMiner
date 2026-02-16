@@ -140,6 +140,13 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     if (worker) {
                         worker->set_block(block, nBits, [this](auto id, auto block_data)
                         {
+                            m_logger->info("════════════════════════════════════════════════════════");
+                            m_logger->info("💎 BLOCK FOUND CALLBACK INVOKED!");
+                            m_logger->info("   Worker ID:  {}", id);
+                            m_logger->info("   Height:     {}", block_data->nHeight);
+                            m_logger->info("   Nonce:      0x{:016x}", block_data->nNonce);
+                            m_logger->info("════════════════════════════════════════════════════════");
+                            
                             if (!m_connection)
                             {
                                 m_logger->error("[Worker_manager] No connection. Can't submit block.");
@@ -458,6 +465,9 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
                     
                     // ====== LANE-GATED GET_ROUND TIMER (Legacy Lane Only) ======
+                    // NOTE: GET_ROUND polling has been disabled. Both legacy and stateless lanes
+                    // use push notifications exclusively. This check is kept for compatibility
+                    // but will never trigger polling.
                     // GET_ROUND/NEW_ROUND polling is ONLY for legacy lane (port 8323)
                     // Stateless lane (port 9323+) uses push notifications instead
                     ProtocolLane lane = self->m_connection->get_protocol_lane();
