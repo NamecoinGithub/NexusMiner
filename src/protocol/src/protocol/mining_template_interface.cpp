@@ -174,10 +174,12 @@ MiningTemplateInterface::read_template(const network::Payload& data,
             std::lock_guard<std::mutex> lock(m_template_mutex);
             m_current_template = tmpl;
             m_current_height = tmpl.block.nHeight;
-            m_last_unified_height = tmpl.block.nHeight;  // Track for sanity checks
             m_template_channel_height_snapshot = 0;
             m_has_snapshot = false;
         }
+        
+        // Update last unified height AFTER successful validation
+        m_last_unified_height = tmpl.block.nHeight;
         
         m_templates_validated.fetch_add(1, std::memory_order_relaxed);
         
@@ -504,7 +506,7 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
         
         m_logger->debug("[TemplateInterface] ✓ Unified height sanity check passed (delta: {} blocks)", delta);
     } else {
-        m_logger->info("[TemplateInterface] ℹ️  First template - skipping unified height sanity check");
+        m_logger->info("[TemplateInterface] INFO: First template - skipping unified height sanity check");
     }
     
     // ═══════════════════════════════════════════════════════════════════════
