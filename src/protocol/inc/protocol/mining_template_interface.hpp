@@ -436,6 +436,8 @@ private:
     uint32_t m_current_channel_height;
     uint32_t m_template_channel_height_snapshot;
     bool m_has_snapshot;
+    uint32_t m_last_unified_height;  // Track last unified height for sanity checking
+    std::chrono::steady_clock::time_point m_template_received_time;  // Track template age
     
     MiningTemplate m_current_template;
     TemplateFeedHandler m_feed_handler;

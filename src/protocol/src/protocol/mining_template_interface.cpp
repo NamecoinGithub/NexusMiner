@@ -15,6 +15,8 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     , m_current_channel_height(0)
     , m_template_channel_height_snapshot(0)
     , m_has_snapshot(false)
+    , m_last_unified_height(0)
+    , m_template_received_time(std::chrono::steady_clock::now())
     , m_feed_handler(nullptr)
     , m_logger(spdlog::get("logger"))
     , m_templates_received(0)
@@ -175,6 +177,12 @@ MiningTemplateInterface::read_template(const network::Payload& data,
             m_current_height = tmpl.block.nHeight;
             m_template_channel_height_snapshot = 0;
             m_has_snapshot = false;
+            
+            // Update height tracking for sanity checks
+            m_last_unified_height = tmpl.block.nHeight;
+            
+            // Update template received time for age monitoring
+            m_template_received_time = std::chrono::steady_clock::now();
         }
         
         m_templates_validated.fetch_add(1, std::memory_order_relaxed);
@@ -502,6 +510,37 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     m_logger->info("[TemplateInterface] ✓ nChannel validation passed: {} ({})", 
         tmpl.block.nChannel,
         (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // VALIDATE UNIFIED HEIGHT (Sanity Check for Corrupted Height)
+    // ═══════════════════════════════════════════════════════════════════════
+    
+    // Check for unreasonable height jumps (e.g., 6.5M → 1.9B)
+    // Normal height advances should be ≤ 100 blocks
+    if (m_last_unified_height > 0 && tmpl.block.nHeight > m_last_unified_height) {
+        uint32_t height_delta = tmpl.block.nHeight - m_last_unified_height;
+        if (height_delta > 100) {
+            result.height_valid = false;
+            result.is_valid = false;
+            result.error_message = "Unified height jump exceeds sanity threshold: " + 
+                std::to_string(m_last_unified_height) + " → " + 
+                std::to_string(tmpl.block.nHeight) + " (delta: " + 
+                std::to_string(height_delta) + " blocks, max: 100)";
+            
+            m_logger->error("[TemplateInterface] ❌ CORRUPTED HEIGHT DETECTED");
+            m_logger->error("[TemplateInterface]   Previous height: {}", m_last_unified_height);
+            m_logger->error("[TemplateInterface]   New height: {}", tmpl.block.nHeight);
+            m_logger->error("[TemplateInterface]   Delta: {} blocks (max allowed: 100)", height_delta);
+            m_logger->error("[TemplateInterface]   This indicates the node sent corrupted template data");
+            m_logger->error("[TemplateInterface]   Mining will be stopped to prevent wasted hashrate");
+            return result;  // Reject template immediately
+        }
+        
+        m_logger->debug("[TemplateInterface] ✓ Unified height sanity check passed (delta: {} blocks)", 
+                       height_delta);
+    } else if (m_last_unified_height == 0) {
+        m_logger->debug("[TemplateInterface] ℹ️  First template - skipping height sanity check");
+    }
     
     // Validate channel height if available (only mark stale when THIS channel advanced)
     // Use channel height from GET_ROUND - this is the CRITICAL staleness check
