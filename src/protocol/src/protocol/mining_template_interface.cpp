@@ -526,30 +526,44 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     // VALIDATE UNIFIED HEIGHT (Sanity Check for Corrupted Height)
     // ═══════════════════════════════════════════════════════════════════════
     
-    // Check for unreasonable height jumps (e.g., 6.5M → 1.9B)
-    // Normal height advances should be ≤ 100 blocks
-    if (m_last_unified_height > 0 && tmpl.block.nHeight > m_last_unified_height) {
-        uint32_t height_delta = tmpl.block.nHeight - m_last_unified_height;
-        if (height_delta > 100) {
+    // Check for unreasonable height jumps (e.g., 6.5M → 1.9B) or deep reorgs
+    // Normal height changes should be within ±100 blocks
+    // - Forward jumps >100: likely corrupted height
+    // - Backward jumps >100: likely corrupted height (normal reorgs are shallow)
+    if (m_last_unified_height > 0) {
+        // Calculate absolute height difference to handle both directions
+        int64_t height_diff = static_cast<int64_t>(tmpl.block.nHeight) - static_cast<int64_t>(m_last_unified_height);
+        uint32_t abs_height_delta = static_cast<uint32_t>(std::abs(height_diff));
+        
+        if (abs_height_delta > 100) {
             result.height_valid = false;
             result.is_valid = false;
-            result.error_message = "Unified height jump exceeds sanity threshold: " + 
+            
+            std::string direction = (height_diff > 0) ? "forward" : "backward";
+            result.error_message = "Unified height " + direction + " jump exceeds sanity threshold: " + 
                 std::to_string(m_last_unified_height) + " → " + 
                 std::to_string(tmpl.block.nHeight) + " (delta: " + 
-                std::to_string(height_delta) + " blocks, max: 100)";
+                std::to_string(abs_height_delta) + " blocks, max: 100)";
             
             m_logger->error("[TemplateInterface] ❌ CORRUPTED HEIGHT DETECTED");
             m_logger->error("[TemplateInterface]   Previous height: {}", m_last_unified_height);
             m_logger->error("[TemplateInterface]   New height: {}", tmpl.block.nHeight);
-            m_logger->error("[TemplateInterface]   Delta: {} blocks (max allowed: 100)", height_delta);
-            m_logger->error("[TemplateInterface]   This indicates the node sent corrupted template data");
+            m_logger->error("[TemplateInterface]   Delta: {} blocks {} (max allowed: 100)", 
+                           abs_height_delta, direction);
+            m_logger->error("[TemplateInterface]   This indicates corrupted template data or deep reorg");
             m_logger->error("[TemplateInterface]   Mining will be stopped to prevent wasted hashrate");
             return result;  // Reject template immediately
         }
         
-        m_logger->debug("[TemplateInterface] ✓ Unified height sanity check passed (delta: {} blocks)", 
-                       height_delta);
-    } else if (m_last_unified_height == 0) {
+        // Log direction of height change for diagnostics
+        if (height_diff > 0) {
+            m_logger->debug("[TemplateInterface] ✓ Height advanced {} blocks (forward)", abs_height_delta);
+        } else if (height_diff < 0) {
+            m_logger->info("[TemplateInterface] ℹ️  Height decreased {} blocks (reorg detected)", abs_height_delta);
+        } else {
+            m_logger->debug("[TemplateInterface] ℹ️  Height unchanged (duplicate template)");
+        }
+    } else {
         m_logger->debug("[TemplateInterface] ℹ️  First template - skipping height sanity check");
     }
     
