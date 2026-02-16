@@ -214,6 +214,11 @@ MiningTemplateInterface::read_template(const network::Payload& data,
         if (result.is_stale) {
             m_templates_stale.fetch_add(1, std::memory_order_relaxed);
         }
+        
+        // Notify validation failure handler (if registered)
+        if (m_validation_failure_handler) {
+            m_validation_failure_handler(result);
+        }
     }
     
     result.validation_time = read_time;
@@ -266,6 +271,12 @@ void MiningTemplateInterface::set_template_feed_handler(TemplateFeedHandler hand
 {
     m_feed_handler = std::move(handler);
     m_logger->debug("[TemplateInterface] Feed handler registered");
+}
+
+void MiningTemplateInterface::set_validation_failure_handler(ValidationFailureHandler handler)
+{
+    m_validation_failure_handler = std::move(handler);
+    m_logger->debug("[TemplateInterface] Validation failure handler registered");
 }
 
 bool MiningTemplateInterface::feed_current_template()
