@@ -17,3 +17,12 @@ target_include_directories(protocol
 )
 
 target_link_libraries(protocol PRIVATE network LLP stats config spdlog nlohmann_json::nlohmann_json ${OPENSSL_LIBRARIES})
+
+# Mining Template Validation Unit Test
+add_executable(mining_template_validation_test mining_template_validation_test.cpp)
+target_link_libraries(mining_template_validation_test PRIVATE protocol LLP TAO spdlog)
+target_include_directories(mining_template_validation_test PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/TAO/inc
+)
