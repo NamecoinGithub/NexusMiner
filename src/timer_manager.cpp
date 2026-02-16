@@ -19,6 +19,7 @@ Timer_manager::Timer_manager(chrono::Timer_factory::Sptr timer_factory)
     m_stats_collector_timer = m_timer_factory->create_timer();
     m_stats_printer_timer = m_timer_factory->create_timer();
     m_get_round_timer = m_timer_factory->create_timer();  // Template Staleness Prevention
+    m_template_health_timer = m_timer_factory->create_timer();  // Template Health Monitoring
 }
 
 void Timer_manager::start_connection_retry_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager, 
@@ -195,6 +196,36 @@ chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_
             // Timer wakes up frequently (1s) but protocol controls actual sending
             m_get_round_timer->start(chrono::Seconds(get_round_interval), 
                 get_round_handler(get_round_interval, connection, solo_protocol));
+        }
+    }; 
+}
+
+void Timer_manager::start_template_health_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager)
+{
+    m_template_health_timer->start(chrono::Seconds(timer_interval), 
+        template_health_handler(timer_interval, std::move(worker_manager)));
+}
+
+chrono::Timer::Handler Timer_manager::template_health_handler(std::uint16_t health_check_interval, 
+    std::weak_ptr<Worker_manager> worker_manager)
+{
+    return [this, health_check_interval, worker_manager](bool canceled)
+    {
+        if (canceled)  // don't do anything if the timer has been canceled
+        {
+            return;
+        }
+
+        auto worker_manager_shared = worker_manager.lock();
+        
+        if (worker_manager_shared)
+        {
+            // Check template health
+            worker_manager_shared->check_template_health();
+
+            // Restart timer
+            m_template_health_timer->start(chrono::Seconds(health_check_interval), 
+                template_health_handler(health_check_interval, worker_manager));
         }
     }; 
 }

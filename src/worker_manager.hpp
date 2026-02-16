@@ -34,6 +34,9 @@ public:
 
     // stop the component and destroy all workers
     void stop();
+    
+    // Worker control methods for degraded mode (public for timer access)
+    void check_template_health();
 
 private:
 
@@ -45,7 +48,6 @@ private:
     // Worker control methods for degraded mode
     void stop_all_workers();
     void retry_template_request();
-    void check_template_health();
 
     void retry_connect(network::Endpoint const& wallet_endpoint);
 

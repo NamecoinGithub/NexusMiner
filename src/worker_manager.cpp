@@ -305,10 +305,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
     
     /* ========== START TEMPLATE HEALTH MONITOR ========== */
     /* Periodic check for template age timeout (every 30 seconds) */
-    m_timer_manager.create_timer(std::chrono::seconds(30), 
-        [this](auto& timer) {
-            check_template_health();
-        });
+    m_timer_manager.start_template_health_timer(30, weak_from_this());
     m_logger->info("[Worker_manager] Template health monitor started (30s interval)");
 }
 
