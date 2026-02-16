@@ -129,9 +129,11 @@ void Worker_hash::handle_read(const asio::error_code& error_code, std::size_t by
 					std::scoped_lock<std::mutex> lck(m_mtx);
 					if (m_found_nonce_callback)
 					{
-						::asio::post([self = shared_from_this()]()
+						m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
+						::asio::post(*m_io_context, [self = shared_from_this()]()
 						{
-							self->m_found_nonce_callback(self->m_config.m_internal_id, std::make_unique<Block_data>(self->m_block));
+							self->m_found_nonce_callback(self->m_config.m_internal_id, 
+								std::make_unique<Block_data>(self->m_block));
 						});
 					}
 					else

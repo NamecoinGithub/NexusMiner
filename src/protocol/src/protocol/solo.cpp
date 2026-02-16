@@ -2499,13 +2499,16 @@ void Solo::set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_
     try {
         m_falcon_wrapper = std::make_unique<FalconSignatureWrapper>(pubkey, privkey);
         if (m_falcon_wrapper->is_valid()) {
-            m_logger->info("[Solo] Falcon Signature Wrapper initialized successfully");
+            m_logger->info("[Solo] ✓ Falcon wrapper initialized and valid");
+            m_logger->info("[Solo]   Signature size: {} bytes", m_falcon_wrapper->get_signature_size());
         } else {
-            m_logger->error("[Solo] Falcon Signature Wrapper initialization failed - invalid keys");
+            m_logger->error("[Solo] ✗ Falcon wrapper NOT valid - block submission will fail!");
+            m_logger->error("[Solo]   Check miner.conf for valid falcon_public_key and falcon_private_key");
             m_falcon_wrapper.reset();
         }
     } catch (const std::exception& e) {
-        m_logger->error("[Solo] Failed to initialize Falcon Signature Wrapper: {}", e.what());
+        m_logger->error("[Solo] ✗ Failed to initialize Falcon Signature Wrapper: {}", e.what());
+        m_logger->error("[Solo]   Check miner.conf for valid falcon_public_key and falcon_private_key");
         m_falcon_wrapper.reset();
     }
 }
@@ -3190,43 +3193,14 @@ void Solo::handle_initial_template_response(const char* opcode_name)
 
 bool Solo::should_poll_get_round()
 {
-    // CRITICAL: Do not send GET_ROUND before authentication completes
-    // The node will reject unauthenticated GET_ROUND requests
-    if (!m_authenticated) {
-        // Log only occasionally to avoid spam (every 10 seconds)
-        static auto last_auth_warning = std::chrono::steady_clock::now();
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_auth_warning).count();
-        
-        if (elapsed >= 10) {
-            m_logger->debug("[Solo Poll] Waiting for authentication before sending GET_ROUND (state: {})",
-                static_cast<int>(m_auth_state));
-            last_auth_warning = now;
-        }
-        return false;
-    }
-    
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - m_last_get_round_time).count();
-    
-    // Case 1: Need initial round check after new template (wait 100ms)
-    if (m_needs_initial_round_check && elapsed_ms >= POST_TEMPLATE_POLL_DELAY_MS) {
-        m_logger->debug("[Solo Poll] Initial round check after new template");
-        m_last_get_round_time = now;
-        m_needs_initial_round_check = false;
-        return true;
-    }
-    
-    // Case 2: Current interval elapsed (exponential backoff)
-    if (elapsed_ms >= m_current_poll_interval_ms) {
-        m_logger->debug("[Solo Poll] Interval elapsed ({}ms), polling GET_ROUND", 
-            m_current_poll_interval_ms);
-        m_last_get_round_time = now;
-        return true;
-    }
-    
-    return false;  // Not time to poll yet
+    // GET_ROUND polling is DISABLED for all lanes.
+    // Both Legacy (8323) and Stateless (9323) use PUSH notifications:
+    // - Legacy: PRIME_BLOCK_AVAILABLE (0xD9) / HASH_BLOCK_AVAILABLE (0xDA)
+    // - Stateless: STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9) / STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)
+    // 
+    // There is NO fallback scenario where GET_ROUND polling is needed.
+    // Polling logic kept for reference but permanently disabled.
+    return false;
 }
 
 void Solo::on_new_round_received(uint32_t new_unified_height)
