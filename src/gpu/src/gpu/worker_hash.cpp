@@ -138,9 +138,12 @@ void Worker_hash::run()
 
             if (m_found_nonce_callback)
             {
-                m_logger->info(m_log_leader + "💎 Block found! Invoking submission callback...");
-                m_found_nonce_callback(m_config.m_internal_id, 
-                    std::make_unique<Block_data>(m_block));
+                m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
+                ::asio::post(*m_io_context, [self = shared_from_this()]()
+                {
+                    self->m_found_nonce_callback(self->m_config.m_internal_id, 
+                        std::make_unique<Block_data>(self->m_block));
+                });
             }
             else
             {
