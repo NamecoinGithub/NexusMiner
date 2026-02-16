@@ -35,6 +35,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 , m_logger{spdlog::get("logger")}
 , m_stats_collector{std::make_shared<stats::Collector>(m_config)}
 , m_timer_manager{std::move(timer_factory)}
+, m_degraded_mode{false}
 {
     // Solo mining requires Falcon authentication - no legacy fallback
     auto solo_protocol = std::make_shared<protocol::Solo>(m_config.get_mining_mode() == config::Mining_mode::PRIME ? 1U : 2U,
@@ -124,6 +125,21 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 m_logger->info("[Worker_manager]   Merkle:     {}", 
                               block.hashMerkleRoot.ToString().substr(0, 16) + "...");
                 m_logger->info("[Worker_manager] ═══════════════════════════════════════");
+                
+                // ═══════════════════════════════════════════════════════════════
+                // AUTO-RECOVERY: Clear degraded mode on valid template arrival
+                // ═══════════════════════════════════════════════════════════════
+                if (m_degraded_mode) {
+                    m_logger->info("[Worker_manager] ✅ RECOVERY: Valid template received!");
+                    m_logger->info("[Worker_manager]    Clearing degraded mode");
+                    m_logger->info("[Worker_manager]    Resuming normal mining operations");
+                    m_degraded_mode = false;
+                    
+                    // Update stats to reflect recovery
+                    auto global_stats = m_stats_collector->get_global_stats();
+                    global_stats.m_degraded_mode = false;
+                    m_stats_collector->update_global_stats(global_stats);
+                }
                 
                 /* Safety check - workers should be created by now */
                 if (m_workers.empty()) {
@@ -257,6 +273,30 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         );
         
         m_logger->info("[Worker_manager] Template distribution handler registered");
+        
+        /* ========== REGISTER VALIDATION FAILURE HANDLER ========== */
+        /* This handler is called when template validation fails */
+        /* It stops workers and requests a fresh template */
+        auto* template_interface = solo_protocol->get_template_interface();
+        if (template_interface) {
+            template_interface->set_validation_failure_handler(
+                [this](const protocol::MiningTemplateInterface::ValidationResult& result) {
+                    m_logger->error("[Worker_manager] ════════════════════════════════════════");
+                    m_logger->error("[Worker_manager] ⚠️  TEMPLATE VALIDATION FAILED");
+                    m_logger->error("[Worker_manager]    Reason: {}", result.error_message);
+                    m_logger->error("[Worker_manager] ════════════════════════════════════════");
+                    
+                    // Stop all workers
+                    stop_all_workers();
+                    
+                    // Request fresh template
+                    retry_template_request();
+                }
+            );
+            m_logger->info("[Worker_manager] Validation failure handler registered");
+        } else {
+            m_logger->warn("[Worker_manager] Template interface not available - validation failure handler not registered");
+        }
         
         m_miner_protocol = solo_protocol;
   
@@ -499,6 +539,12 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                         self->m_logger->error("[Solo Poll] ✗ Unknown protocol lane - GET_ROUND timer not started");
                     }
                     
+                    // ====== START TEMPLATE HEALTH MONITOR ======
+                    // Periodic check for template age timeout (every 30 seconds)
+                    constexpr uint16_t TEMPLATE_HEALTH_INTERVAL = 30;
+                    self->m_timer_manager.start_template_health_timer(TEMPLATE_HEALTH_INTERVAL, self);
+                    self->m_logger->info("[Worker_manager] Template health monitor started (30s interval)");
+                    
                     // Note: Block handler already registered in Worker_manager constructor
                 }));
             }
@@ -659,6 +705,104 @@ void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
     {
         m_logger->trace("[RX] Total consumed {} bytes, {} bytes remaining in accumulator", 
                        total_consumed, m_rx_accumulator.size());
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Worker Control Methods (Degraded Mode Support)
+// ═══════════════════════════════════════════════════════════════════════
+
+void Worker_manager::stop_all_workers()
+{
+    m_logger->warn("[Worker_manager] ════════════════════════════════════════");
+    m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
+    m_logger->warn("[Worker_manager] ════════════════════════════════════════");
+    
+    // Set degraded mode flag
+    m_degraded_mode = true;
+    
+    // Update stats to reflect degraded mode
+    auto global_stats = m_stats_collector->get_global_stats();
+    global_stats.m_degraded_mode = true;
+    m_stats_collector->update_global_stats(global_stats);
+    
+    // Note: We don't actually need to stop the worker threads here.
+    // Workers will naturally stop when they finish their current work
+    // because we won't feed them any new templates until recovery.
+    // The degraded mode flag is what matters for the UI display.
+    
+    m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
+    m_logger->warn("[Worker_manager] Workers will idle until recovery");
+}
+
+void Worker_manager::retry_template_request()
+{
+    m_logger->info("[Worker_manager] Requesting fresh template...");
+    
+    if (!m_connection) {
+        m_logger->error("[Worker_manager] No connection available to request template");
+        return;
+    }
+    
+    // Get protocol lane from connection
+    ProtocolLane lane = m_connection->get_protocol_lane();
+    uint16_t remote_port = m_connection->remote_endpoint().port();
+    
+    m_logger->info("[Worker_manager] Requesting template on {} lane (port {})", 
+                  get_lane_name(lane), remote_port);
+    
+    auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
+    if (!solo_protocol) {
+        m_logger->error("[Worker_manager] Failed to cast protocol to Solo protocol");
+        return;
+    }
+    
+    if (lane == ProtocolLane::LEGACY) {
+        // Legacy lane: Request via GET_BLOCK
+        m_logger->info("[Worker_manager] → Sending GET_BLOCK request (legacy polling)");
+        auto work_payload = solo_protocol->get_work();
+        if (work_payload && !work_payload->empty()) {
+            m_connection->transmit(work_payload);
+        }
+    } else if (lane == ProtocolLane::STATELESS) {
+        // Stateless lane: Re-send STATELESS_MINER_READY
+        m_logger->info("[Worker_manager] → Re-sending STATELESS_MINER_READY");
+        auto miner_ready_payload = solo_protocol->send_miner_ready();
+        if (miner_ready_payload && !miner_ready_payload->empty()) {
+            m_connection->transmit(miner_ready_payload);
+        }
+    } else {
+        m_logger->error("[Worker_manager] → Unknown protocol lane - cannot request template");
+    }
+}
+
+void Worker_manager::check_template_health()
+{
+    auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
+    if (!solo_protocol) {
+        return;
+    }
+    
+    auto* template_interface = solo_protocol->get_template_interface();
+    if (!template_interface) {
+        return;
+    }
+    
+    // Check if template is too old (> 120 seconds)
+    uint64_t template_age = template_interface->get_template_age();
+    if (template_interface->has_valid_template() && template_age > 120) {
+        m_logger->error("[Worker_manager] ❌ Template age exceeds timeout!");
+        m_logger->error("[Worker_manager]    Age: {}s (max: 120s)", template_age);
+        m_logger->error("[Worker_manager]    Stopping workers and requesting fresh template");
+        
+        // Discard stale template
+        template_interface->discard_template("Age timeout (>120s)");
+        
+        // Stop workers
+        stop_all_workers();
+        
+        // Request fresh template
+        retry_template_request();
     }
 }
 

@@ -34,6 +34,9 @@ public:
 
     // stop the component and destroy all workers
     void stop();
+    
+    // Worker control methods for degraded mode (public for timer access)
+    void check_template_health();
 
 private:
 
@@ -41,6 +44,10 @@ private:
 
     void create_stats_printers();
     void create_workers();
+    
+    // Worker control methods for degraded mode
+    void stop_all_workers();
+    void retry_template_request();
 
     void retry_connect(network::Endpoint const& wallet_endpoint);
 
@@ -52,6 +59,9 @@ private:
     std::shared_ptr<stats::Collector> m_stats_collector;
     Timer_manager m_timer_manager;
     std::shared_ptr<protocol::Protocol> m_miner_protocol;
+    
+    // Degraded mode flag - set when mining is stopped due to invalid template
+    bool m_degraded_mode;
     
     // Persistent receive accumulator for TCP stream reassembly
     // Using deque for O(1) front removal when consuming packets

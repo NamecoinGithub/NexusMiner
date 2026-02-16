@@ -93,6 +93,11 @@ public:
     using TemplateFeedHandler = std::function<void(const MiningTemplate& tmpl, uint32_t nBits)>;
     
     /**
+     * @brief Template validation failure callback type
+     */
+    using ValidationFailureHandler = std::function<void(const ValidationResult& result)>;
+    
+    /**
      * @brief Constructor
      * @param channel Mining channel (1 = Prime, 2 = Hash)
      * @param session_id Falcon authentication session ID
@@ -159,6 +164,16 @@ public:
      * @param handler Callback function to receive templates
      */
     void set_template_feed_handler(TemplateFeedHandler handler);
+    
+    /**
+     * @brief Register a handler to receive validation failure notifications
+     * 
+     * The handler will be called whenever template validation fails.
+     * This allows the worker manager to stop mining and request fresh templates.
+     * 
+     * @param handler Callback function to receive validation failures
+     */
+    void set_validation_failure_handler(ValidationFailureHandler handler);
     
     /**
      * @brief Feed the current template to registered handlers
@@ -436,9 +451,12 @@ private:
     uint32_t m_current_channel_height;
     uint32_t m_template_channel_height_snapshot;
     bool m_has_snapshot;
+    uint32_t m_last_unified_height;  // Track last unified height for sanity checking
+    std::chrono::steady_clock::time_point m_template_received_time;  // Track template age
     
     MiningTemplate m_current_template;
     TemplateFeedHandler m_feed_handler;
+    ValidationFailureHandler m_validation_failure_handler;
     mutable std::mutex m_template_mutex;  // Protects m_current_template access
     
     std::shared_ptr<spdlog::logger> m_logger;

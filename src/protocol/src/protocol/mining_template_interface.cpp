@@ -15,6 +15,8 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     , m_current_channel_height(0)
     , m_template_channel_height_snapshot(0)
     , m_has_snapshot(false)
+    , m_last_unified_height(0)
+    , m_template_received_time(std::chrono::steady_clock::now())
     , m_feed_handler(nullptr)
     , m_logger(spdlog::get("logger"))
     , m_templates_received(0)
@@ -175,6 +177,12 @@ MiningTemplateInterface::read_template(const network::Payload& data,
             m_current_height = tmpl.block.nHeight;
             m_template_channel_height_snapshot = 0;
             m_has_snapshot = false;
+            
+            // Update height tracking for sanity checks
+            m_last_unified_height = tmpl.block.nHeight;
+            
+            // Update template received time for age monitoring
+            m_template_received_time = std::chrono::steady_clock::now();
         }
         
         m_templates_validated.fetch_add(1, std::memory_order_relaxed);
@@ -205,6 +213,11 @@ MiningTemplateInterface::read_template(const network::Payload& data,
         
         if (result.is_stale) {
             m_templates_stale.fetch_add(1, std::memory_order_relaxed);
+        }
+        
+        // Notify validation failure handler (if registered)
+        if (m_validation_failure_handler) {
+            m_validation_failure_handler(result);
         }
     }
     
@@ -258,6 +271,12 @@ void MiningTemplateInterface::set_template_feed_handler(TemplateFeedHandler hand
 {
     m_feed_handler = std::move(handler);
     m_logger->debug("[TemplateInterface] Feed handler registered");
+}
+
+void MiningTemplateInterface::set_validation_failure_handler(ValidationFailureHandler handler)
+{
+    m_validation_failure_handler = std::move(handler);
+    m_logger->debug("[TemplateInterface] Validation failure handler registered");
 }
 
 bool MiningTemplateInterface::feed_current_template()
@@ -502,6 +521,51 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     m_logger->info("[TemplateInterface] ✓ nChannel validation passed: {} ({})", 
         tmpl.block.nChannel,
         (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // VALIDATE UNIFIED HEIGHT (Sanity Check for Corrupted Height)
+    // ═══════════════════════════════════════════════════════════════════════
+    
+    // Check for unreasonable height jumps (e.g., 6.5M → 1.9B) or deep reorgs
+    // Normal height changes should be within ±100 blocks
+    // - Forward jumps >100: likely corrupted height
+    // - Backward jumps >100: likely corrupted height (normal reorgs are shallow)
+    if (m_last_unified_height > 0) {
+        // Calculate absolute height difference to handle both directions
+        int64_t height_diff = static_cast<int64_t>(tmpl.block.nHeight) - static_cast<int64_t>(m_last_unified_height);
+        uint32_t abs_height_delta = static_cast<uint32_t>(std::abs(height_diff));
+        
+        if (abs_height_delta > 100) {
+            result.height_valid = false;
+            result.is_valid = false;
+            
+            std::string direction = (height_diff > 0) ? "forward" : "backward";
+            result.error_message = "Unified height " + direction + " jump exceeds sanity threshold: " + 
+                std::to_string(m_last_unified_height) + " → " + 
+                std::to_string(tmpl.block.nHeight) + " (delta: " + 
+                std::to_string(abs_height_delta) + " blocks, max: 100)";
+            
+            m_logger->error("[TemplateInterface] ❌ CORRUPTED HEIGHT DETECTED");
+            m_logger->error("[TemplateInterface]   Previous height: {}", m_last_unified_height);
+            m_logger->error("[TemplateInterface]   New height: {}", tmpl.block.nHeight);
+            m_logger->error("[TemplateInterface]   Delta: {} blocks {} (max allowed: 100)", 
+                           abs_height_delta, direction);
+            m_logger->error("[TemplateInterface]   This indicates corrupted template data or deep reorg");
+            m_logger->error("[TemplateInterface]   Mining will be stopped to prevent wasted hashrate");
+            return result;  // Reject template immediately
+        }
+        
+        // Log direction of height change for diagnostics
+        if (height_diff > 0) {
+            m_logger->debug("[TemplateInterface] ✓ Height advanced {} blocks (forward)", abs_height_delta);
+        } else if (height_diff < 0) {
+            m_logger->info("[TemplateInterface] ℹ️  Height decreased {} blocks (reorg detected)", abs_height_delta);
+        } else {
+            m_logger->debug("[TemplateInterface] ℹ️  Height unchanged (duplicate template)");
+        }
+    } else {
+        m_logger->debug("[TemplateInterface] ℹ️  First template - skipping height sanity check");
+    }
     
     // Validate channel height if available (only mark stale when THIS channel advanced)
     // Use channel height from GET_ROUND - this is the CRITICAL staleness check
