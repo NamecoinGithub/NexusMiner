@@ -339,6 +339,80 @@ int main()
     }
 
     // ====================================================================
+    // Test 10: Height-based staleness detection
+    // ====================================================================
+    std::cout << "\nTest 10: Height-based staleness detection" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+        
+        // Load a template at height 6594320
+        auto data1 = create_mock_template(6594320);
+        auto result1 = tmpl_interface.read_template(data1, "test_node");
+        print_test_result("Template loaded at height 6594320", result1.is_valid);
+        
+        // Template height should be queryable
+        uint32_t tmpl_height = tmpl_interface.get_template_height();
+        print_test_result("get_template_height() returns expected height",
+            tmpl_height == 6594320);
+        
+        // update_height with SAME height should NOT discard template
+        bool discarded = tmpl_interface.update_height(6594320);
+        print_test_result("Same height does not discard template", !discarded);
+        print_test_result("Template still valid after same height update",
+            tmpl_interface.has_valid_template());
+        
+        // update_height with HIGHER height SHOULD discard template
+        discarded = tmpl_interface.update_height(6594321);
+        print_test_result("Higher height discards template", discarded);
+        print_test_result("Template invalid after height advance",
+            !tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 11: Channel height delta staleness
+    // ====================================================================
+    std::cout << "\nTest 11: Channel height delta staleness" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+        
+        // Load a template
+        auto data1 = create_mock_template(6594320);
+        tmpl_interface.read_template(data1, "test_node");
+        
+        // Set channel height snapshot (simulates what happens on template receipt)
+        tmpl_interface.set_template_channel_height_snapshot(4165000);
+        
+        // Same channel height → not stale
+        bool is_stale = tmpl_interface.check_staleness_by_channel_delta(4165000);
+        print_test_result("Same channel height is not stale", !is_stale);
+        
+        // Higher channel height → stale
+        is_stale = tmpl_interface.check_staleness_by_channel_delta(4165001);
+        print_test_result("Advanced channel height is stale", is_stale);
+    }
+
+    // ====================================================================
+    // Test 12: Template age does not cause premature timeout
+    // ====================================================================
+    std::cout << "\nTest 12: Template validity with age < 300s" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+        
+        // Load a template
+        auto data1 = create_mock_template(6594320);
+        tmpl_interface.read_template(data1, "test_node");
+        
+        // Template should be valid immediately (age ~0s, well under 300s)
+        uint64_t age = tmpl_interface.get_template_age();
+        print_test_result("Fresh template age is small", age < 5);
+        print_test_result("Fresh template is valid", tmpl_interface.has_valid_template());
+        
+        // Template should NOT be stale at this age (was previously timing out at 120s)
+        bool is_stale = tmpl_interface.is_template_stale();
+        print_test_result("Fresh template is not stale", !is_stale);
+    }
+
+    // ====================================================================
     // Summary
     // ====================================================================
     std::cout << "\n========================================" << std::endl;

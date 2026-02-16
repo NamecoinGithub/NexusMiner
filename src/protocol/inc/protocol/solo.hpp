@@ -279,7 +279,7 @@ private:
     uint32_t m_current_poll_interval_ms;  // Current interval (adaptive)
     
     // Configuration constants
-    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 10000;    // 10 seconds minimum
+    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 30000;    // 30 seconds (fallback polling interval)
     static constexpr uint32_t POLL_INTERVAL_MAX_MS = 60000;    // 60 seconds maximum
     static constexpr uint32_t UNIFIED_HEIGHT_DELTA_TRIGGER = 5; // Trigger fresh template if unified moves 5+ blocks
     static constexpr uint32_t POST_TEMPLATE_POLL_DELAY_MS = 100; // Wait 100ms after template before polling
