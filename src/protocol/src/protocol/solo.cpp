@@ -3193,14 +3193,14 @@ void Solo::handle_initial_template_response(const char* opcode_name)
 
 bool Solo::should_poll_get_round()
 {
-	// GET_ROUND polling is DISABLED for all lanes.
-	// Both Legacy (8323) and Stateless (9323) use PUSH notifications:
-	// - Legacy: PRIME_BLOCK_AVAILABLE (0xD9) / HASH_BLOCK_AVAILABLE (0xDA)
-	// - Stateless: STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9) / STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)
-	// 
-	// There is NO fallback scenario where GET_ROUND polling is needed.
-	// Polling logic kept for reference but permanently disabled.
-	return false;
+    // GET_ROUND polling is DISABLED for all lanes.
+    // Both Legacy (8323) and Stateless (9323) use PUSH notifications:
+    // - Legacy: PRIME_BLOCK_AVAILABLE (0xD9) / HASH_BLOCK_AVAILABLE (0xDA)
+    // - Stateless: STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9) / STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)
+    // 
+    // There is NO fallback scenario where GET_ROUND polling is needed.
+    // Polling logic kept for reference but permanently disabled.
+    return false;
 }
 
 void Solo::on_new_round_received(uint32_t new_unified_height)
