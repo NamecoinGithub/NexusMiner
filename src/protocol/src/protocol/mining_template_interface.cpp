@@ -15,6 +15,7 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     , m_current_channel_height(0)
     , m_template_channel_height_snapshot(0)
     , m_has_snapshot(false)
+    , m_last_unified_height(0)
     , m_feed_handler(nullptr)
     , m_logger(spdlog::get("logger"))
     , m_templates_received(0)
@@ -173,6 +174,7 @@ MiningTemplateInterface::read_template(const network::Payload& data,
             std::lock_guard<std::mutex> lock(m_template_mutex);
             m_current_template = tmpl;
             m_current_height = tmpl.block.nHeight;
+            m_last_unified_height = tmpl.block.nHeight;  // Track for sanity checks
             m_template_channel_height_snapshot = 0;
             m_has_snapshot = false;
         }
@@ -468,9 +470,42 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     m_logger->info("[TemplateInterface]   - nBits: 0x{:08x}", tmpl.block.nBits);
     m_logger->info("[TemplateInterface]   - nVersion: {}", tmpl.block.nVersion);
     m_logger->info("[TemplateInterface]   - Unified height: {}", m_current_height);
+    m_logger->info("[TemplateInterface]   - Last unified height: {}", m_last_unified_height);
     m_logger->info("[TemplateInterface]   - Node channel height: {}", m_current_channel_height);
     m_logger->info("[TemplateInterface]   - Channel height: {}",
         (tmpl.nChannelHeight != 0) ? std::to_string(tmpl.nChannelHeight) : "pending");
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // UNIFIED HEIGHT SANITY CHECK (Critical security check)
+    // ═══════════════════════════════════════════════════════════════════════
+    
+    // Check for unified height corruption/attack (jump > 100 blocks)
+    if (m_last_unified_height > 0) {
+        uint32_t delta = (tmpl.block.nHeight > m_last_unified_height)
+            ? (tmpl.block.nHeight - m_last_unified_height)
+            : (m_last_unified_height - tmpl.block.nHeight);
+        
+        if (delta > MAX_UNIFIED_HEIGHT_DELTA) {
+            result.height_valid = false;
+            result.is_valid = false;
+            result.error_message = "Unified height corruption detected";
+            
+            m_logger->error("════════════════════════════════════════════════════");
+            m_logger->error("❌ TEMPLATE VALIDATION FAILED");
+            m_logger->error("   Unified height corruption detected");
+            m_logger->error("   Previous: {}", m_last_unified_height);
+            m_logger->error("   Received: {}", tmpl.block.nHeight);
+            m_logger->error("   Delta:    {} blocks (max allowed: {})", delta, MAX_UNIFIED_HEIGHT_DELTA);
+            m_logger->error("   This indicates node bug, attack, or network issue");
+            m_logger->error("════════════════════════════════════════════════════");
+            
+            return result;  // Reject template immediately
+        }
+        
+        m_logger->debug("[TemplateInterface] ✓ Unified height sanity check passed (delta: {} blocks)", delta);
+    } else {
+        m_logger->info("[TemplateInterface] ℹ️  First template - skipping unified height sanity check");
+    }
     
     // ═══════════════════════════════════════════════════════════════════════
     // VALIDATE nChannel (CRITICAL - Do NOT overwrite, only validate)

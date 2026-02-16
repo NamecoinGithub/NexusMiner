@@ -436,6 +436,7 @@ private:
     uint32_t m_current_channel_height;
     uint32_t m_template_channel_height_snapshot;
     bool m_has_snapshot;
+    uint32_t m_last_unified_height;  // Track last accepted unified height for sanity checks
     
     MiningTemplate m_current_template;
     TemplateFeedHandler m_feed_handler;
@@ -446,6 +447,7 @@ private:
     // Template staleness prevention constants (synchronized with LLL-TAO PR #131)
     static constexpr uint64_t MAX_TEMPLATE_AGE = 60;       // Match LLL-TAO node-side constant
     static constexpr uint64_t WARNING_TEMPLATE_AGE = 50;   // Proactive warning threshold
+    static constexpr uint32_t MAX_UNIFIED_HEIGHT_DELTA = 100;  // Max blocks per template jump (generous for reorgs)
     
     // Thread-safe statistics (atomic for multi-worker safety)
     std::atomic<uint64_t> m_templates_received;
