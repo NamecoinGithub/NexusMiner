@@ -3202,10 +3202,11 @@ bool Solo::should_poll_get_round()
     // push notifications fail (Layer 2 of staleness detection).
 
     auto now = std::chrono::steady_clock::now();
-    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - m_last_get_round_time).count();
+    auto elapsed_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - m_last_get_round_time).count());
 
-    if (elapsed_ms < static_cast<int64_t>(m_current_poll_interval_ms)) {
+    if (elapsed_ms < static_cast<uint64_t>(m_current_poll_interval_ms)) {
         return false;
     }
 

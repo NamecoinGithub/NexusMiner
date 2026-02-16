@@ -769,6 +769,10 @@ void Worker_manager::retry_template_request()
 
 void Worker_manager::check_template_health()
 {
+    // Emergency safety net thresholds (seconds)
+    static constexpr uint64_t TEMPLATE_AGE_WARNING_SECONDS = 240;
+    static constexpr uint64_t TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 300;
+    
     auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
     if (!solo_protocol) {
         return;
@@ -786,7 +790,8 @@ void Worker_manager::check_template_health()
     uint64_t template_age = template_interface->get_template_age();
     
     // Height-based staleness detection (primary check)
-    // Compare template height with last known blockchain height from GET_ROUND/NEW_ROUND
+    // Compare template height with last known blockchain height from GET_ROUND/NEW_ROUND.
+    // Any height advance (even +1) means a new block was found and the template is stale.
     {
         auto round_status = solo_protocol->get_last_round_status();
         uint32_t template_height = template_interface->get_template_height();
@@ -804,17 +809,18 @@ void Worker_manager::check_template_health()
         }
     }
     
-    // Age-based warning at 240s (approaching emergency timeout)
-    if (template_age > 240 && template_age <= 300) {
-        m_logger->warn("[Worker_manager] ⚠️  Template age {}s approaching safety timeout (300s)", template_age);
+    // Age-based warning (approaching emergency timeout)
+    if (template_age > TEMPLATE_AGE_WARNING_SECONDS && template_age <= TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
+        m_logger->warn("[Worker_manager] ⚠️  Template age {}s approaching safety timeout ({}s)",
+            template_age, TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
         m_logger->warn("[Worker_manager]    Push notifications or GET_ROUND polling may have failed");
     }
     
-    // Age-based emergency safety net (300s) - last resort only
+    // Age-based emergency safety net - last resort only
     // This catches catastrophic failures (node disconnection, total push failure)
-    if (template_age > 300) {
+    if (template_age > TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
         m_logger->error("[Worker_manager] ❌ Template age exceeds emergency timeout!");
-        m_logger->error("[Worker_manager]    Age: {}s (max: 300s)", template_age);
+        m_logger->error("[Worker_manager]    Age: {}s (max: {}s)", template_age, TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
         m_logger->error("[Worker_manager]    This is a safety net - height detection may have failed");
         
         template_interface->discard_template("Emergency age timeout (>300s)");
