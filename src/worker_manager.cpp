@@ -504,12 +504,10 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
                     self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
                     
-                    // ====== LANE-GATED GET_ROUND TIMER (Legacy Lane Only) ======
-                    // NOTE: GET_ROUND polling has been disabled. Both legacy and stateless lanes
-                    // use push notifications exclusively. This check is kept for compatibility
-                    // but will never trigger polling.
-                    // GET_ROUND/NEW_ROUND polling is ONLY for legacy lane (port 8323)
-                    // Stateless lane (port 9323+) uses push notifications instead
+                    // ====== GET_ROUND FALLBACK POLLING (All Lanes) ======
+                    // Primary height detection is via push notifications (both lanes).
+                    // GET_ROUND polling runs as a FALLBACK to catch push notification failures.
+                    // Timer wakes up every 1 second, but protocol controls actual send frequency (~30s).
                     ProtocolLane lane = self->m_connection->get_protocol_lane();
                     uint16_t remote_port = self->m_connection->remote_endpoint().port();
                     
@@ -517,26 +515,19 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     self->m_logger->info("[Worker_manager Lane]   Lane: {} (port {})", get_lane_name(lane), remote_port);
                     self->m_logger->info("[Worker_manager Lane]   Verifying lane agreement with Solo protocol layer");
                     
-                    if (lane == ProtocolLane::LEGACY) {
-                        // Legacy lane: Start GET_ROUND intelligent polling timer
-                        // Timer wakes up every 1 second, but protocol decides if GET_ROUND should actually be sent
-                        // This implements exponential backoff (5s → 60s) and event-driven polling
+                    {
+                        // Start GET_ROUND fallback polling timer for ALL lanes
+                        // Push notifications are primary, GET_ROUND is the safety net
                         constexpr uint16_t GET_ROUND_TIMER_INTERVAL = 1;  // Wake up every 1 second to check
                         auto solo_protocol_ptr = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol);
                         if (solo_protocol_ptr) {
                             self->m_timer_manager.start_get_round_timer(GET_ROUND_TIMER_INTERVAL, self->m_connection, solo_protocol_ptr);
-                            self->m_logger->info("[Solo Poll] ✓ GET_ROUND timer started on LEGACY lane (port {})", remote_port);
-                            self->m_logger->info("[Solo Poll]   Check interval: {}s, adaptive: 5s-60s", GET_ROUND_TIMER_INTERVAL);
-                            self->m_logger->info("[Solo Poll]   Uses exponential backoff + event-driven polling");
+                            self->m_logger->info("[Solo Poll] ✓ GET_ROUND fallback timer started on {} lane (port {})",
+                                get_lane_name(lane), remote_port);
+                            self->m_logger->info("[Solo Poll]   Fallback interval: ~30s (push notifications are primary)");
                         } else {
                             self->m_logger->error("[Solo Poll] Failed to cast protocol to Solo - polling timer not started");
                         }
-                    } else if (lane == ProtocolLane::STATELESS) {
-                        // Stateless lane: NO polling timer - uses push notifications
-                        self->m_logger->info("[Solo Poll] ✓ GET_ROUND timer SKIPPED on STATELESS lane (port {})", remote_port);
-                        self->m_logger->info("[Solo Poll]   Stateless mining uses push notifications (no polling)");
-                    } else {
-                        self->m_logger->error("[Solo Poll] ✗ Unknown protocol lane - GET_ROUND timer not started");
                     }
                     
                     // ====== START TEMPLATE HEALTH MONITOR ======
@@ -778,6 +769,10 @@ void Worker_manager::retry_template_request()
 
 void Worker_manager::check_template_health()
 {
+    // Emergency safety net thresholds (seconds)
+    static constexpr uint64_t TEMPLATE_AGE_WARNING_SECONDS = 240;
+    static constexpr uint64_t TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 300;
+    
     auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
     if (!solo_protocol) {
         return;
@@ -788,20 +783,55 @@ void Worker_manager::check_template_health()
         return;
     }
     
-    // Check if template is too old (> 120 seconds)
+    if (!template_interface->has_valid_template()) {
+        return;
+    }
+    
     uint64_t template_age = template_interface->get_template_age();
-    if (template_interface->has_valid_template() && template_age > 120) {
-        m_logger->error("[Worker_manager] ❌ Template age exceeds timeout!");
-        m_logger->error("[Worker_manager]    Age: {}s (max: 120s)", template_age);
-        m_logger->error("[Worker_manager]    Stopping workers and requesting fresh template");
+    
+    // Channel height-based staleness detection (primary check)
+    // Compare template's CHANNEL height with node's CHANNEL height from GET_ROUND/NEW_ROUND.
+    // Template targets block at nChannelHeight; node should be at nChannelHeight - 1.
+    // If node's channel height >= nChannelHeight, another miner found the block first.
+    {
+        auto round_status = solo_protocol->get_last_round_status();
+        uint8_t channel = template_interface->get_channel();
+        uint32_t current_channel_height = round_status.get_channel_height(channel);
         
-        // Discard stale template
-        template_interface->discard_template("Age timeout (>120s)");
+        const auto* tmpl = template_interface->get_current_template();
+        uint32_t template_channel_height = (tmpl != nullptr) ? tmpl->nChannelHeight : 0;
         
-        // Stop workers
+        // Only compare when both heights are available (channel height may be pending finalization)
+        if (current_channel_height > 0 && template_channel_height > 0 &&
+            current_channel_height >= template_channel_height) {
+            std::string channel_name = (channel == 1) ? "Prime" : "Hash";
+            m_logger->warn("[Worker_manager] ⚠️  {} channel advanced: Channel Height {} >= template Channel Height {}",
+                channel_name, current_channel_height, template_channel_height);
+            m_logger->info("[Worker_manager]    Requesting fresh template (channel height-based staleness)");
+            
+            template_interface->discard_template("Channel height-based staleness (channel advanced)");
+            stop_all_workers();
+            retry_template_request();
+            return;
+        }
+    }
+    
+    // Age-based warning (approaching emergency timeout)
+    if (template_age > TEMPLATE_AGE_WARNING_SECONDS && template_age <= TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
+        m_logger->warn("[Worker_manager] ⚠️  Template age {}s approaching safety timeout ({}s)",
+            template_age, TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
+        m_logger->warn("[Worker_manager]    Push notifications or GET_ROUND polling may have failed");
+    }
+    
+    // Age-based emergency safety net - last resort only
+    // This catches catastrophic failures (node disconnection, total push failure)
+    if (template_age > TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
+        m_logger->error("[Worker_manager] ❌ Template age exceeds emergency timeout!");
+        m_logger->error("[Worker_manager]    Age: {}s (max: {}s)", template_age, TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
+        m_logger->error("[Worker_manager]    This is a safety net - height detection may have failed");
+        
+        template_interface->discard_template("Emergency age timeout (>300s)");
         stop_all_workers();
-        
-        // Request fresh template
         retry_template_request();
     }
 }

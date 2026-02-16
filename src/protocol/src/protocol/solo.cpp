@@ -3193,14 +3193,26 @@ void Solo::handle_initial_template_response(const char* opcode_name)
 
 bool Solo::should_poll_get_round()
 {
-    // GET_ROUND polling is DISABLED for all lanes.
-    // Both Legacy (8323) and Stateless (9323) use PUSH notifications:
+    // GET_ROUND polling is enabled as a FALLBACK for push notification failures.
+    // Primary height detection is via push notifications:
     // - Legacy: PRIME_BLOCK_AVAILABLE (0xD9) / HASH_BLOCK_AVAILABLE (0xDA)
     // - Stateless: STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9) / STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)
-    // 
-    // There is NO fallback scenario where GET_ROUND polling is needed.
-    // Polling logic kept for reference but permanently disabled.
-    return false;
+    //
+    // This fallback polls every 30 seconds to detect height changes even if
+    // push notifications fail (Layer 2 of staleness detection).
+
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - m_last_get_round_time).count());
+
+    if (elapsed_ms < static_cast<uint64_t>(m_current_poll_interval_ms)) {
+        return false;
+    }
+
+    m_last_get_round_time = now;
+    m_logger->debug("[Solo Poll] GET_ROUND fallback poll (interval {}ms)", m_current_poll_interval_ms);
+    return true;
 }
 
 void Solo::on_new_round_received(uint32_t new_unified_height)
