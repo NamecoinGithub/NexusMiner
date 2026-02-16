@@ -347,10 +347,9 @@ void Worker_prime::run()
 				{
 					if (m_found_nonce_callback)
 					{
-						::asio::post([self = shared_from_this()]()
-						{
-							self->m_found_nonce_callback(self->m_config.m_internal_id, std::make_unique<Block_data>(self->m_block));
-						});
+						m_logger->info(m_log_leader + "💎 Block found! Invoking submission callback...");
+						m_found_nonce_callback(m_config.m_internal_id, 
+							std::make_unique<Block_data>(m_block));
 					}
 					else
 					{
