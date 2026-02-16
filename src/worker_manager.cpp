@@ -134,6 +134,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     m_logger->info("[Worker_manager]    Clearing degraded mode");
                     m_logger->info("[Worker_manager]    Resuming normal mining operations");
                     m_degraded_mode = false;
+                    
+                    // Update stats to reflect recovery
+                    auto global_stats = m_stats_collector->get_global_stats();
+                    global_stats.m_degraded_mode = false;
+                    m_stats_collector->update_global_stats(global_stats);
                 }
                 
                 /* Safety check - workers should be created by now */
@@ -717,6 +722,11 @@ void Worker_manager::stop_all_workers()
     
     // Set degraded mode flag
     m_degraded_mode = true;
+    
+    // Update stats to reflect degraded mode
+    auto global_stats = m_stats_collector->get_global_stats();
+    global_stats.m_degraded_mode = true;
+    m_stats_collector->update_global_stats(global_stats);
     
     // Note: We don't actually need to stop the worker threads here.
     // Workers will naturally stop when they finish their current work
