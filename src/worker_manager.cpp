@@ -504,10 +504,10 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
                     self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
                     
-                    // ====== GET_ROUND FALLBACK POLLING (All Lanes) ======
-                    // Primary height detection is via push notifications (both lanes).
-                    // GET_ROUND polling runs as a FALLBACK to catch push notification failures.
-                    // Timer wakes up every 1 second, but protocol controls actual send frequency (~30s).
+                    // ====== GET_ROUND POLLING (All Lanes) ======
+                    // GET_ROUND polling is DISABLED by default.
+                    // Push notifications are primary, template health monitor (300s) is safety net.
+                    // Timer still runs to support optional sanity-check polling if enabled.
                     ProtocolLane lane = self->m_connection->get_protocol_lane();
                     uint16_t remote_port = self->m_connection->remote_endpoint().port();
                     
@@ -516,15 +516,16 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     self->m_logger->info("[Worker_manager Lane]   Verifying lane agreement with Solo protocol layer");
                     
                     {
-                        // Start GET_ROUND fallback polling timer for ALL lanes
-                        // Push notifications are primary, GET_ROUND is the safety net
+                        // Start GET_ROUND timer for ALL lanes
+                        // Polling is disabled by default (push notifications are primary).
+                        // Timer still runs but should_send_get_round() returns false when disabled.
                         constexpr uint16_t GET_ROUND_TIMER_INTERVAL = 1;  // Wake up every 1 second to check
                         auto solo_protocol_ptr = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol);
                         if (solo_protocol_ptr) {
                             self->m_timer_manager.start_get_round_timer(GET_ROUND_TIMER_INTERVAL, self->m_connection, solo_protocol_ptr);
-                            self->m_logger->info("[Solo Poll] ✓ GET_ROUND fallback timer started on {} lane (port {})",
+                            self->m_logger->info("[Solo Poll] ✓ GET_ROUND timer started on {} lane (port {})",
                                 get_lane_name(lane), remote_port);
-                            self->m_logger->info("[Solo Poll]   Fallback interval: ~30s (push notifications are primary)");
+                            self->m_logger->info("[Solo Poll]   Polling: disabled (push notifications are primary, health monitor is safety net)");
                         } else {
                             self->m_logger->error("[Solo Poll] Failed to cast protocol to Solo - polling timer not started");
                         }
