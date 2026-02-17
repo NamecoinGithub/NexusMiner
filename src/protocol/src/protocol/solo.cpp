@@ -1240,20 +1240,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 }
             }
             
-            // Trigger intelligent polling: template received, will poll once after 100ms
+            // Track template reception for polling state
             on_template_received(tmpl->block.nHeight);
             
-            // Multi-channel height tracking: Request GET_ROUND immediately to finalize template
-            // Template needs channel height before it can be used for mining
+            // Channel height finalization: push notifications and template health monitor
+            // handle this - no need to trigger GET_ROUND here (avoids feedback loop:
+            // template → GET_ROUND → NEW_ROUND → GET_BLOCK → template → repeat)
             if (m_template_interface->needs_channel_height_finalization()) {
-                m_logger->info("[Solo] Template pending channel height finalization - requesting GET_ROUND");
-                auto round_payload = send_get_round();
-                if (round_payload && !round_payload->empty() && connection) {
-                    connection->transmit(round_payload);
-                    m_logger->debug("[Solo] GET_ROUND request sent for channel height finalization");
-                }
-                // Note: Template will be finalized when OLD_ROUND/NEW_ROUND response arrives
-                // Workers will receive template after finalization
+                m_logger->debug("[Solo] Template pending channel height finalization");
+                m_logger->debug("[Solo]   Push notifications or health monitor will provide height updates");
             }
             
             // FEED: Dispatch to block handler
@@ -1611,19 +1606,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->debug("[Solo GET_ROUND] ✓ Template valid, continuing to mine");
         }
 
+        // Event-driven: only request GET_BLOCK when template is actually stale (handled above).
+        // No unconditional GET_BLOCK here - avoids feedback loop with template reception.
         if (!get_block_sent_in_handler) {
-            if (connection) {
-                m_logger->info("[Solo GET_ROUND] Requesting template immediately (prevent timeout)");
-                auto work_payload = get_work();
-                if (work_payload && !work_payload->empty()) {
-                    connection->transmit(work_payload);
-                    m_logger->debug("[Solo GET_ROUND] ✓ GET_BLOCK sent (<100ms after NEW_ROUND)");
-                } else {
-                    m_logger->error("[Solo GET_ROUND] Failed to build GET_BLOCK packet");
-                }
-            } else {
-                m_logger->error("[Solo GET_ROUND] Cannot request template - connection is null");
-            }
+            m_logger->debug("[Solo GET_ROUND] ✓ Template valid after NEW_ROUND, no GET_BLOCK needed");
         }
         
         // Update intelligent polling state
@@ -1787,19 +1773,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
         
+        // Event-driven: only request GET_BLOCK when template is actually stale (handled above).
+        // OLD_ROUND means nothing changed - no need to request a new template.
         if (!get_block_sent_in_handler) {
-            if (connection) {
-                m_logger->info("[Solo GET_ROUND] Requesting template immediately (prevent timeout)");
-                auto work_payload = get_work();
-                if (work_payload && !work_payload->empty()) {
-                    connection->transmit(work_payload);
-                    m_logger->debug("[Solo GET_ROUND] ✓ GET_BLOCK sent (<100ms after OLD_ROUND)");
-                } else {
-                    m_logger->error("[Solo GET_ROUND] Failed to build GET_BLOCK packet");
-                }
-            } else {
-                m_logger->error("[Solo GET_ROUND] Cannot request template - connection is null");
-            }
+            m_logger->debug("[Solo GET_ROUND] ✓ OLD_ROUND: no change, no GET_BLOCK needed");
         }
         
         // Update intelligent polling state
@@ -3206,13 +3183,15 @@ void Solo::handle_initial_template_response(const char* opcode_name)
 
 bool Solo::should_poll_get_round()
 {
-    // GET_ROUND polling is enabled as a FALLBACK for push notification failures.
-    // Primary height detection is via push notifications:
+    // GET_ROUND polling is DISABLED by default.
+    // Push notifications are the primary mechanism for height detection:
     // - Legacy: PRIME_BLOCK_AVAILABLE (0xD9) / HASH_BLOCK_AVAILABLE (0xDA)
     // - Stateless: STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9) / STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)
-    //
-    // This fallback polls every 30 seconds to detect height changes even if
-    // push notifications fail (Layer 2 of staleness detection).
+    // Event-driven GET_BLOCK handles template requests on demand.
+    // Template health monitor (300s timeout) provides emergency safety net.
+    if (!POLLING_ENABLED) {
+        return false;
+    }
 
     auto now = std::chrono::steady_clock::now();
     auto elapsed_ms = static_cast<uint64_t>(
@@ -3224,7 +3203,7 @@ bool Solo::should_poll_get_round()
     }
 
     m_last_get_round_time = now;
-    m_logger->debug("[Solo Poll] GET_ROUND fallback poll (interval {}ms)", m_current_poll_interval_ms);
+    m_logger->debug("[Solo Poll] GET_ROUND sanity-check poll (interval {}ms)", m_current_poll_interval_ms);
     return true;
 }
 
@@ -3260,12 +3239,11 @@ void Solo::on_old_round_received()
 
 void Solo::on_template_received(uint32_t template_height)
 {
-    // New template received, need to poll GET_ROUND once to finalize channel height
+    // Track template reception for height delta detection
     m_needs_initial_round_check = true;
     m_template_unified_height = template_height;
     m_last_get_round_time = std::chrono::steady_clock::now();  // Reset timer
-    m_logger->debug("[Solo Poll] Template received (height {}), will poll GET_ROUND in {}ms",
-        template_height, POST_TEMPLATE_POLL_DELAY_MS);
+    m_logger->debug("[Solo Poll] Template received (height {})", template_height);
 }
 
 void Solo::check_unified_height_delta(uint32_t current_unified_height)
