@@ -241,6 +241,9 @@ private:
     std::string m_reward_address;  // NXS account address for mining rewards
     bool m_reward_bound;  // True after successful MINER_REWARD_RESULT
     
+    // Push notification subscription state (MINER_READY sent after auth)
+    std::atomic<bool> m_subscribed_to_notifications{false};
+    
     // GET_ROUND status tracking (Template Staleness Prevention - LLL-TAO PR #131)
     RoundStatus m_last_round_status;  // Last received round status
     

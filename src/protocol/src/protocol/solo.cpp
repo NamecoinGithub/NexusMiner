@@ -297,6 +297,7 @@ void Solo::reset()
     m_auth_timestamp = 0;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_reward_bound = false;  // Reset reward binding for new session
+    m_subscribed_to_notifications = false;  // Reset push notification subscription
     
     // Reset session manager
     if (m_session_manager) {
@@ -2156,15 +2157,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 return;
             }
         } else if (m_protocol_lane == ProtocolLane::LEGACY) {
-            // LEGACY LANE: Start polling with GET_ROUND
+            // LEGACY LANE: Send MINER_READY to subscribe to push notifications
             m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-            m_logger->info("[Solo Protocol] LEGACY LANE: Using polling protocol");
+            m_logger->info("[Solo Protocol] LEGACY LANE: Using push protocol");
             m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-            m_logger->info("[Solo Protocol] Starting GET_ROUND polling");
+            m_logger->info("[Solo Protocol] Sending MINER_READY (0xD8)");
             
-            auto get_round_payload = send_get_round();
-            if (!get_round_payload || get_round_payload->empty()) {
-                m_logger->error("[Solo Protocol] Failed to encode GET_ROUND");
+            auto miner_ready_payload = send_miner_ready();
+            if (!miner_ready_payload || miner_ready_payload->empty()) {
+                m_logger->error("[Solo Protocol] Failed to encode MINER_READY");
                 if (connection) {
                     connection->close();
                 }
@@ -2172,9 +2173,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
             
             if (connection) {
-                connection->transmit(get_round_payload);
-                m_logger->info("[Solo Protocol] ✓ GET_ROUND (0x85) transmitted");
-                m_logger->info("[Solo Protocol] Waiting for NEW_ROUND/OLD_ROUND response...");
+                connection->transmit(miner_ready_payload);
+                m_logger->info("[Solo Protocol] ✓ MINER_READY transmitted");
+                m_logger->info("[Solo Protocol] Waiting for PRIME_BLOCK_AVAILABLE/HASH_BLOCK_AVAILABLE pushes...");
             } else {
                 m_logger->error("[Solo Protocol] No connection available");
                 return;
@@ -2880,32 +2881,49 @@ network::Shared_payload Solo::send_set_reward()
 
 network::Shared_payload Solo::send_miner_ready()
 {
-    m_logger->info("[Solo Push] Sending STATELESS_MINER_READY (subscribe to push notifications)");
-    m_logger->info("[Solo Push]   Opcode: 0xD0D8 (mirror-mapped from legacy MINER_READY 216)");
+    bool use_stateless = (m_protocol_lane == ProtocolLane::STATELESS);
+    
+    if (use_stateless) {
+        m_logger->info("[Solo Push] Sending STATELESS_MINER_READY (subscribe to push notifications)");
+        m_logger->info("[Solo Push]   Opcode: 0xD0D8 (mirror-mapped from legacy MINER_READY 216)");
+    } else {
+        m_logger->info("[Solo Push] Sending MINER_READY (subscribe to push notifications)");
+        m_logger->info("[Solo Push]   Opcode: 0xD8 (legacy MINER_READY 216)");
+    }
     m_logger->info("[Solo Push]   Channel: {} ({})", 
                    m_channel, 
                    m_channel == mining::CHANNEL_PRIME ? "Prime" : "Hash");
     
-    // STATELESS_MINER_READY is a header-only packet (no payload)
-    // Using mirror-mapped opcode 0xD0D8 (from legacy MINER_READY 216)
-    Packet packet{ static_cast<uint16_t>(Packet::STATELESS_MINER_READY) };
+    // MINER_READY is a header-only packet (no payload)
+    Packet packet = use_stateless
+        ? Packet{ static_cast<uint16_t>(Packet::STATELESS_MINER_READY) }
+        : Packet{ static_cast<uint8_t>(Packet::MINER_READY) };
     
-    m_logger->debug("[Solo Push] STATELESS_MINER_READY packet: header=0x{:04x} length={} is_valid={}", 
-                   packet.m_header,
-                   packet.m_length, 
-                   packet.is_valid());
+    if (use_stateless) {
+        m_logger->debug("[Solo Push] MINER_READY packet: header=0x{:04x} length={} is_valid={}", 
+                       packet.m_header, packet.m_length, packet.is_valid());
+    } else {
+        m_logger->debug("[Solo Push] MINER_READY packet: header=0x{:02x} length={} is_valid={}", 
+                       static_cast<int>(packet.m_header), packet.m_length, packet.is_valid());
+    }
     
     auto payload = packet.get_bytes();
     if (payload && !payload->empty()) {
-        m_logger->info("[Solo Push] ✓ Subscribed to push notifications (stateless protocol)");
-        m_logger->info("[Solo Push]   Node will send immediate STATELESS_GET_BLOCK (0xD081)");
-        m_logger->info("[Solo Push]   Then push STATELESS_GET_BLOCK on every block validation");
+        m_subscribed_to_notifications = true;
+        if (use_stateless) {
+            m_logger->info("[Solo Push] ✓ Subscribed to push notifications (stateless protocol)");
+            m_logger->info("[Solo Push]   Node will send immediate STATELESS_GET_BLOCK (0xD081)");
+            m_logger->info("[Solo Push]   Then push STATELESS_GET_BLOCK on every block validation");
+        } else {
+            m_logger->info("[Solo Push] ✓ MINER_READY sent - subscribed to channel {}", m_channel);
+            m_logger->info("[Solo Push]   Node will send PRIME_BLOCK_AVAILABLE (0xD9) or HASH_BLOCK_AVAILABLE (0xDA)");
+            m_logger->info("[Solo Push]   Then push notifications on every block validation");
+        }
         
-        // TRAINING WHEELS: Show STATELESS_MINER_READY packet (should be 2-byte header)
-        m_logger->info("[Solo Push] STATELESS_MINER_READY packet hex dump:");
+        m_logger->info("[Solo Push] MINER_READY packet hex dump:");
         m_logger->info("\n{}", format_llp_payload_hexdump(payload, 16));
     } else {
-        m_logger->error("[Solo Push] Failed to encode STATELESS_MINER_READY packet");
+        m_logger->error("[Solo Push] Failed to encode MINER_READY packet");
     }
     
     return payload;
