@@ -468,7 +468,7 @@ int main()
     std::cout << "\nTest 15: Stateless opcode compatibility aliases" << std::endl;
     {
         print_test_result("BLOCK_DATA mirror is 0xD000",
-            MinerLLP::StatelessMining::GET_BLOCK == 0xD081 &&
+            MinerLLP::StatelessMining::BLOCK_DATA == 0xD000 &&
             MinerLLP::MirrorOpcode(MinerLLP::BLOCK_DATA) == 0xD000);
         print_test_result("BLOCK_ACCEPTED compat opcode is 0xD002",
             MinerLLP::StatelessMining::BLOCK_ACCEPTED_COMPAT == 0xD002);

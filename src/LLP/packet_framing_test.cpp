@@ -993,6 +993,60 @@ void test_stateless_get_block_zero_length() {
 }
 
 // ============================================================================
+// Test Case 23c: Stateless BLOCK_DATA (0xD000) with 216-byte payload
+// Node responds to GET_BLOCK with BLOCK_DATA containing 216-byte block template
+// ============================================================================
+void test_stateless_block_data_with_payload() {
+    std::cout << "\nTest 23c: Stateless BLOCK_DATA (0xD000) with 216-byte payload" << std::endl;
+    
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+    
+    // Build a complete STATELESS_BLOCK_DATA (0xD000) with 216-byte payload
+    // Wire format: [0xD0][0x00][00 00 00 D8][216 bytes]
+    std::vector<uint8_t> block_data_packet;
+    block_data_packet.push_back(0xD0);  // header MSB
+    block_data_packet.push_back(0x00);  // header LSB
+    block_data_packet.push_back(0x00);  // length MSB
+    block_data_packet.push_back(0x00);
+    block_data_packet.push_back(0x00);
+    block_data_packet.push_back(0xD8);  // length LSB = 216
+    // 216 bytes of payload (simulated block template)
+    for (int i = 0; i < 216; ++i) {
+        block_data_packet.push_back(static_cast<uint8_t>(i));
+    }
+    
+    acc.feed(block_data_packet);
+    
+    bool parsed = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD000) &&
+                 (packet.m_is_uint16_opcode) &&
+                 (packet.m_length == 216) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == 216) &&
+                 acc.empty();
+    print_test_result("STATELESS_BLOCK_DATA (0xD000) with 216-byte payload parsed correctly", test1);
+    
+    // Verify first few bytes of payload
+    if (packet.m_data && packet.m_data->size() >= 4) {
+        bool data_correct = ((*packet.m_data)[0] == 0x00) &&
+                           ((*packet.m_data)[1] == 0x01) &&
+                           ((*packet.m_data)[2] == 0x02) &&
+                           ((*packet.m_data)[3] == 0x03);
+        print_test_result("STATELESS_BLOCK_DATA payload data verified", data_correct);
+    } else {
+        print_test_result("STATELESS_BLOCK_DATA payload data verified", false);
+    }
+    
+    // Verify opcode matches the StatelessMining::BLOCK_DATA constant
+    bool opcode_test = (packet.m_header == nexusminer::LLP::StatelessMining::BLOCK_DATA);
+    print_test_result("STATELESS_BLOCK_DATA header matches StatelessMining::BLOCK_DATA", opcode_test);
+}
+
+// ============================================================================
 // Test Case 24: Stateless auth opcodes (mirror-mapped) with payload
 // Auth opcodes 0xD0CE, 0xD0D0, 0xD0D2 should parse as 2-byte headers with payload
 // ============================================================================
@@ -1162,6 +1216,7 @@ int main() {
     test_accept_reject_still_header_only();
     test_stateless_get_block_with_payload();
     test_stateless_get_block_zero_length();
+    test_stateless_block_data_with_payload();
     test_stateless_auth_opcodes_with_payload();
     test_legacy_auth_opcode_208_not_rejected();
     

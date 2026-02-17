@@ -190,6 +190,7 @@ namespace nexusminer
 			/** These require Packet(uint16_t) constructor **/
 			
 			// Core mining operations (mirror-mapped from legacy)
+			STATELESS_BLOCK_DATA = LLP::StatelessMining::BLOCK_DATA,                  // 0xD000
 			STATELESS_SUBMIT_BLOCK = LLP::StatelessMining::SUBMIT_BLOCK,              // 0xD001
 			STATELESS_SET_CHANNEL = LLP::StatelessMining::SET_CHANNEL,                // 0xD003
 			STATELESS_GET_BLOCK = LLP::StatelessMining::GET_BLOCK,                    // 0xD081

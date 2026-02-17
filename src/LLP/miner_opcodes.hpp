@@ -393,6 +393,19 @@ namespace StatelessMining {
     // HASH_BLOCK_AVAILABLE (218) → 0xD0DA
     
     /**
+     * BLOCK_DATA: Node sends block template to miner
+     * Direction: Node → Miner
+     * Payload: 216 bytes (serialized Tritium block template)
+     * Mirror-mapped from legacy BLOCK_DATA (0) → 0xD000
+     * 
+     * Triggered:
+     * - As response to GET_BLOCK (0xD081)
+     * - After MINER_READY subscription (push notification)
+     * - When blockchain advances (new block available)
+     */
+    constexpr uint16_t BLOCK_DATA = MirrorOpcode(LLP::BLOCK_DATA);  // 0xD000
+    
+    /**
      * SUBMIT_BLOCK: Miner submits solved block
      * Direction: Miner → Node
      * Payload: 216 bytes (solved block)
