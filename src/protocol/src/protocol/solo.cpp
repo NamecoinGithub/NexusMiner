@@ -1075,11 +1075,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         packet.m_is_uint16_opcode &&
         packet.m_header == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT &&
         packet.m_length == 0;
+    // Some nodes include a 1-byte rejection reason with 0xD003.
     const bool is_block_rejected_compat =
         packet.m_is_uint16_opcode &&
-        packet.m_header == LLP::StatelessMining::BLOCK_REJECTED_COMPAT;
+        packet.m_header == LLP::StatelessMining::BLOCK_REJECTED_COMPAT &&
+        packet.m_length <= 1;
     
-    if (matches_opcode(Packet::BLOCK_HEIGHT) && !is_block_accepted_compat)
+    // 0xD002/0xD003 may be used as stateless response aliases by some nodes.
+    // Exclude those compatibility responses from normal BLOCK_HEIGHT parsing.
+    if (matches_opcode(Packet::BLOCK_HEIGHT) &&
+        !is_block_accepted_compat &&
+        !is_block_rejected_compat)
     {
         // Validate packet data before processing
         if (!packet.m_data || packet.m_length < 4) {
