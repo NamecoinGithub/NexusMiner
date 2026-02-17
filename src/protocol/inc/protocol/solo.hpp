@@ -283,7 +283,7 @@ private:
     static constexpr uint32_t POLL_INTERVAL_MIN_MS = 90000;    // 90 seconds (sanity-check interval if enabled)
     static constexpr uint32_t POLL_INTERVAL_MAX_MS = 120000;   // 120 seconds maximum
     static constexpr uint32_t UNIFIED_HEIGHT_DELTA_TRIGGER = 5; // Trigger fresh template if unified moves 5+ blocks
-    // Note: Backoff multiplier is 1.5x, implemented via integer arithmetic: interval + (interval >> 1)
+    // Note: When POLLING_ENABLED is true, backoff multiplier is 1.5x via integer arithmetic: interval + (interval >> 1)
     
     // State flags
     bool m_needs_initial_round_check;  // Set true when new template received
