@@ -1071,8 +1071,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         return packet.m_is_uint16_opcode &&
             packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
     };
+    const bool is_block_accepted_compat =
+        packet.m_is_uint16_opcode &&
+        packet.m_header == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT &&
+        packet.m_length == 0;
+    const bool is_block_rejected_compat =
+        packet.m_is_uint16_opcode &&
+        packet.m_header == LLP::StatelessMining::BLOCK_REJECTED_COMPAT;
     
-    if (matches_opcode(Packet::BLOCK_HEIGHT))
+    if (matches_opcode(Packet::BLOCK_HEIGHT) && !is_block_accepted_compat)
     {
         // Validate packet data before processing
         if (!packet.m_data || packet.m_length < 4) {
@@ -1347,7 +1354,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
     }
-    else if(matches_opcode(Packet::ACCEPT))
+    else if(matches_opcode(Packet::ACCEPT) || is_block_accepted_compat)
     {
         stats::Global global_stats{};
         global_stats.m_accepted_blocks = 1;
@@ -1379,7 +1386,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             connection->transmit(work_payload);
         }
     }
-    else if(matches_opcode(Packet::REJECT))
+    else if(matches_opcode(Packet::REJECT) || is_block_rejected_compat)
     {
         stats::Global global_stats{};
         global_stats.m_rejected_blocks = 1;

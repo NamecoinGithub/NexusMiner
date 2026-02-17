@@ -436,6 +436,8 @@ namespace StatelessMining {
      * Mirror-mapped from legacy BLOCK_ACCEPTED (200) → 0xD0C8
      */
     constexpr uint16_t BLOCK_ACCEPTED = MirrorOpcode(LLP::BLOCK_ACCEPTED);  // 0xD0C8
+    // Legacy-compatible stateless acceptance opcode used by some node builds.
+    constexpr uint16_t BLOCK_ACCEPTED_COMPAT = 0xD002;
     
     /**
      * BLOCK_REJECTED: Node rejects submitted block
@@ -444,6 +446,8 @@ namespace StatelessMining {
      * Mirror-mapped from legacy BLOCK_REJECTED (201) → 0xD0C9
      */
     constexpr uint16_t BLOCK_REJECTED = MirrorOpcode(LLP::BLOCK_REJECTED);  // 0xD0C9
+    // Legacy-compatible stateless rejection opcode used by some node builds.
+    constexpr uint16_t BLOCK_REJECTED_COMPAT = 0xD003;
     
     /**
      * MINER_SET_REWARD: Miner sends encrypted reward address

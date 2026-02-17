@@ -13,6 +13,7 @@
 
 #include "protocol/mining_template_interface.hpp"
 #include "LLP/block.hpp"
+#include "LLP/miner_opcodes.hpp"
 #include <iostream>
 #include <cassert>
 #include <cstdint>
@@ -25,6 +26,7 @@
 #include "spdlog/sinks/null_sink.h"
 
 using namespace nexusminer::protocol;
+namespace MinerLLP = nexusminer::LLP;
 
 // Test statistics
 static int tests_run = 0;
@@ -458,6 +460,20 @@ int main()
         print_test_result("Prime channel update ignored for Hash template", !discarded);
         print_test_result("Template still valid after wrong-channel update",
             tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 15: Stateless opcode compatibility aliases
+    // ====================================================================
+    std::cout << "\nTest 15: Stateless opcode compatibility aliases" << std::endl;
+    {
+        print_test_result("BLOCK_DATA mirror is 0xD000",
+            MinerLLP::StatelessMining::GET_BLOCK == 0xD081 &&
+            MinerLLP::MirrorOpcode(MinerLLP::BLOCK_DATA) == 0xD000);
+        print_test_result("BLOCK_ACCEPTED compat opcode is 0xD002",
+            MinerLLP::StatelessMining::BLOCK_ACCEPTED_COMPAT == 0xD002);
+        print_test_result("BLOCK_REJECTED compat opcode is 0xD003",
+            MinerLLP::StatelessMining::BLOCK_REJECTED_COMPAT == 0xD003);
     }
 
     // ====================================================================
