@@ -14,7 +14,7 @@ Copy the config that matches your hardware and channel, fill in your `genesis` h
 | `cpu-prime-performance.config` | Prime (1) | CPU | High-core-count / performance |
 | `cpu-hash-solo.config` | Hash (2) | CPU | CPU hash mining (testing) |
 | `gpu-hash-solo.config` | Hash (2) | GPU | Single GPU hash mining |
-| `gpu-hash-performance.config` | Hash (2) | GPU | Multi-GPU hash mining |
+| `gpu-hash-performance.config` | Hash (2) | GPU | Performance-tuned single GPU |
 | `gpu-prime-solo.config` | Prime (1) | GPU | GPU-accelerated prime (if supported) |
 | `cpu-gpu-prime-hybrid.config` | Prime (1) | CPU+GPU | Hybrid mining rig |
 | `cpu-gpu-hash-hybrid.config` | Hash (2) | CPU+GPU | Hybrid hash rig |
@@ -31,5 +31,5 @@ Copy the config that matches your hardware and channel, fill in your `genesis` h
 
 | Port | Lane | Use |
 |------|------|-----|
-| 8323 | Stateless (16-bit opcodes) | Default SOLO mining port |
-| 9325 | Legacy (8-bit opcodes) | Legacy fallback |
+| 8323 | Stateless (16-bit opcodes) | Default Prime channel port |
+| 8325 | Stateless (16-bit opcodes) | Default Hash channel port |
