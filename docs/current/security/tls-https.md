@@ -295,20 +295,20 @@ Automatic security optimization based on connection type:
 ```json
 {
     "wallet_ip": "127.0.0.1",
-    "enable_tls": false,
-    "enable_chacha20_wrapping": false
+    "enable_tls": false
 }
 ```
+> **Note:** ChaCha20 encryption is always active (core security) — no configuration needed.
 
 **Remote Mining:**
 ```json
 {
     "wallet_ip": "my-node.example.com",
     "enable_tls": true,
-    "tls_verify_peer": true,
-    "enable_chacha20_wrapping": true
+    "tls_verify_peer": true
 }
 ```
+> **Note:** ChaCha20 encryption is always active (core security) — no configuration needed.
 
 ### For Pool Miners
 

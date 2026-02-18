@@ -49,11 +49,11 @@ Protects Falcon Public Keys during transmission:
 **Configuration:**
 ```json
 {
-    "enable_chacha20_wrapping": false
+    "enable_disposable_falcon": true
 }
 ```
 
-Note: Set to `true` to force enable for localhost, or leave `false` for auto-detection.
+Note: Disposable Falcon signing defaults to true and is required for block signing. The configuration field can be used to explicitly confirm this setting.
 
 ### 3. Session Management
 
@@ -132,8 +132,7 @@ Format: 64 hexadecimal characters (32 bytes)
     
     "tritium_genesis": "<your_32_byte_tritium_genesis_hash_hex>",
     "keepalive_interval": 24,
-    "enable_chacha20_wrapping": false,
-    "enable_block_signing": false,
+    "enable_disposable_falcon": true,
     
     "connection_retry_interval": 5,
     "get_height_interval": 2,
@@ -170,8 +169,7 @@ Format: 64 hexadecimal characters (32 bytes)
 |-------|------|---------|-------------|
 | `tritium_genesis` | string | "" | Tritium account genesis hash (64 hex chars = 32 bytes) |
 | `keepalive_interval` | number | 24 | Hours between SESSION_KEEPALIVE pings (1-168) |
-| `enable_chacha20_wrapping` | boolean | false | Force enable ChaCha20 wrapping (auto for remote) |
-| `enable_block_signing` | boolean | false | Enable optional block signing |
+| `enable_disposable_falcon` | boolean | true | Enable disposable Falcon block signing (required) |
 
 ## Usage Scenarios
 
@@ -184,13 +182,14 @@ Format: 64 hexadecimal characters (32 bytes)
     "port": 8323,
     "tritium_genesis": "<your_genesis>",
     "keepalive_interval": 24,
-    "enable_chacha20_wrapping": false
+    "enable_disposable_falcon": true
 }
 ```
 
 **Characteristics:**
 - Direct IPC communication
-- ChaCha20 disabled (optional security)
+- ChaCha20 encryption active (core security)
+- Disposable Falcon signatures enabled (required for block signing)
 - Standard keepalive (24 hours)
 - Optimized for local trust environment
 
@@ -203,13 +202,14 @@ Format: 64 hexadecimal characters (32 bytes)
     "port": 8323,
     "tritium_genesis": "<your_genesis>",
     "keepalive_interval": 12,
-    "enable_chacha20_wrapping": true
+    "enable_disposable_falcon": true
 }
 ```
 
 **Characteristics:**
 - HTTPS/TLS connection
-- ChaCha20 auto-enabled (mandatory security)
+- ChaCha20 encryption active (core security)
+- Disposable Falcon signatures enabled (required for block signing)
 - Frequent keepalive (12 hours for reliability)
 - Enhanced security for untrusted networks
 

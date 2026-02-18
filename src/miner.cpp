@@ -178,6 +178,13 @@ namespace nexusminer
 
 		if (local_ip == "auto")
 		{
+			// Short-circuit for localhost mining — no DNS lookup needed
+			if (m_config.is_localhost_mining())
+			{
+				m_logger->info("Local IP: localhost mining detected — binding to 127.0.0.1 (no DNS lookup needed)");
+				return network::Endpoint{ network::Transport_protocol::tcp, "127.0.0.1", 0 };
+			}
+
 			try 
 			{
 				asio::error_code error;

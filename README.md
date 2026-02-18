@@ -327,10 +327,10 @@ Configuration example:
 ```json
 {
     "tritium_genesis": "<your_32_byte_genesis_hash_hex>",
-    "keepalive_interval": 24,
-    "enable_chacha20_wrapping": false
+    "keepalive_interval": 24
 }
 ```
+> **Note:** ChaCha20 encryption is always active (core security) — no configuration needed.
 
 See [docs/current/authentication/falcon-handshake-cache.md](docs/current/authentication/falcon-handshake-cache.md) for complete documentation.
 
