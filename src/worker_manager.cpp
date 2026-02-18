@@ -770,10 +770,6 @@ void Worker_manager::retry_template_request()
 
 void Worker_manager::check_template_health()
 {
-    // Emergency safety net thresholds (seconds)
-    static constexpr uint64_t TEMPLATE_AGE_WARNING_SECONDS = 240;
-    static constexpr uint64_t TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 300;
-    
     auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
     if (!solo_protocol) {
         return;
@@ -790,13 +786,21 @@ void Worker_manager::check_template_health()
     
     uint64_t template_age = template_interface->get_template_age();
     
+    // Channel-aware timeouts: Prime blocks take much longer than Hash blocks
+    // Prime: avg ~5-10 min between blocks, use 600s emergency / 480s warning
+    // Hash:  avg ~18s between blocks, 300s emergency / 240s warning is generous
+    uint8_t channel = template_interface->get_channel();
+    const uint64_t TEMPLATE_AGE_WARNING_SECONDS =
+        (channel == 1) ? 480u : 240u;   // Prime=8min, Hash=4min
+    const uint64_t TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS =
+        (channel == 1) ? 600u : 300u;   // Prime=10min, Hash=5min
+    
     // Channel height-based staleness detection (primary check)
     // Compare template's CHANNEL height with node's CHANNEL height from GET_ROUND/NEW_ROUND.
     // Template targets block at nChannelHeight; node should be at nChannelHeight - 1.
     // If node's channel height >= nChannelHeight, another miner found the block first.
     {
         auto round_status = solo_protocol->get_last_round_status();
-        uint8_t channel = template_interface->get_channel();
         uint32_t current_channel_height = round_status.get_channel_height(channel);
         
         const auto* tmpl = template_interface->get_current_template();
@@ -831,7 +835,7 @@ void Worker_manager::check_template_health()
         m_logger->error("[Worker_manager]    Age: {}s (max: {}s)", template_age, TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
         m_logger->error("[Worker_manager]    This is a safety net - height detection may have failed");
         
-        template_interface->discard_template("Emergency age timeout (>300s)");
+        template_interface->discard_template("Emergency age timeout (>" + std::to_string(TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) + "s)");
         stop_all_workers();
         retry_template_request();
     }
