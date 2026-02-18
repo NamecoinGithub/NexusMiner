@@ -202,6 +202,8 @@ port = 8323
 
 [network]
 local_ip = "0.0.0.0"      # Bind to all interfaces
+                          # For localhost: use 127.0.0.1
+                          # Do NOT use "auto" for localhost/VPN (requires internet DNS)
 ```
 
 ### Multi-threaded Workers

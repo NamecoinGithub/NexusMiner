@@ -69,7 +69,7 @@ Add the following to your `miner.conf` (using the keys generated above):
 {
     "version": 1,
     "wallet_ip": "127.0.0.1",
-    "port": 8325,
+    "port": 8323,
     "mining_mode": "PRIME",
     "miner_falcon_pubkey": "<your_public_key_hex>",
     "miner_falcon_privkey": "<your_private_key_hex>",
@@ -229,7 +229,7 @@ Here's a complete miner.conf example with Falcon authentication:
 {
     "version": 1,
     "wallet_ip": "127.0.0.1",
-    "port": 8325,
+    "port": 8323,
     "local_ip": "127.0.0.1",
     "mining_mode": "PRIME",
     "miner_falcon_pubkey": "e8c7cd6100709a1c5692640273d3f1d1f7b0b6f25e209174b3d31d01f90413e5...",

@@ -493,18 +493,26 @@ efficiency_cores = true
 
 ### `local_ip` / `[network] local_ip`
 **Type:** String  
-**Default:** `"0.0.0.0"`  
-**Description:** Local IP address to bind to.
+**Default:** `"auto"` (attempts DNS auto-detection)  
+**Description:** Local IP address to bind the miner's outbound socket to.
 
 **Values:**
-- `"0.0.0.0"`: Bind to all interfaces (recommended)
-- `"127.0.0.1"`: Bind to localhost only
-- Specific IP: Bind to specific interface
+- `"127.0.0.1"`: Bind to localhost only — **use this for same-machine node**
+- `"0.0.0.0"`: Bind to all interfaces — **use this for remote or VPN nodes**
+- `"auto"`: Auto-detect outbound IP via DNS lookup to `google.com` — ⚠️ **NOT recommended for localhost or VPN setups**: requires working internet DNS. Will fall back to `127.0.0.1` on failure.
 
-**Example:**
+> **⚠️ Localhost / VPN Warning:** If your node is on the same machine (`wallet_ip = "127.0.0.1"`) or on a VPN without internet DNS, set `local_ip = "127.0.0.1"` explicitly. Using `"auto"` will attempt to resolve `google.com` and fail with a DNS error.
+
+**Example (localhost mining):**
 ```toml
 [network]
-local_ip = "0.0.0.0"
+local_ip = "127.0.0.1"   # Same machine as node
+```
+
+**Example (remote/VPN mining):**
+```toml
+[network]
+local_ip = "0.0.0.0"     # Bind to all interfaces
 ```
 
 ---
