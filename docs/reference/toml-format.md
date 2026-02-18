@@ -63,6 +63,24 @@ CPU mining settings (for Prime channel):
 [cpu]
 threads = 1                    # Threads per worker (default: 1)
 efficiency_cores = true        # Use E-cores on hybrid CPUs (default: true)
+priority = 2                   # Thread priority: 0=low, 1=below_normal, 2=normal, 3=above_normal, 4=high
+power_limit_percent = 100      # Power limit: 50-100% (default: 100)
+hyperthreading = true          # Use hyperthreading/SMT (default: true)
+target_hashrate = 0            # Target hashrate: 0=max (default: 0)
+```
+
+#### [gpu]
+GPU mining settings (for Hash channel):
+```toml
+[gpu]
+device = 0                     # GPU device index (default: 0)
+```
+
+#### [stats]
+Statistics output configuration:
+```toml
+[stats]
+mode = "console"               # Output mode: "console" or "file"
 ```
 
 #### [logging]
@@ -92,6 +110,13 @@ count = 8
 [cpu]
 threads = 1
 efficiency_cores = true
+priority = 2
+power_limit_percent = 100
+hyperthreading = true
+target_hashrate = 0
+
+[stats]
+mode = "console"
 
 [logging]
 level = 2
@@ -111,6 +136,12 @@ reward_address = "YOUR_NXS_ADDRESS_HERE"
 
 [workers]
 count = 1
+
+[gpu]
+device = 0
+
+[stats]
+mode = "console"
 
 [logging]
 level = 2
@@ -230,7 +261,9 @@ The TOML parser currently supports a subset of TOML features focused on mining c
 - Strings (quoted), integers, and booleans
 - Comments with `#`
 
-For advanced worker configurations (affinity masks, power controls, etc.), use JSON `.conf` files.
+Most common mining configurations are supported including CPU power controls, GPU workers, and stats output.
+
+**GPU Configuration**: The TOML `[gpu]` section supports single GPU configuration only. For advanced worker configurations (multiple GPUs with individual settings, custom affinity masks), use JSON `.conf` files.
 
 ## Reference Files
 

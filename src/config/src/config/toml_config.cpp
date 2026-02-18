@@ -2,6 +2,7 @@
 #include "config/config.hpp"
 #include "config/types.hpp"
 #include "config/worker_config.hpp"
+#include "config/stats_printer_config.hpp"
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <sstream>
@@ -38,6 +39,13 @@ namespace config
         int worker_count = 0;
         int cpu_threads = 1;  // Default threads per worker
         bool efficiency_cores = true;  // Default
+        int cpu_priority = 2;  // Default: normal (0=low, 1=below_normal, 2=normal, 3=above_normal, 4=high)
+        int cpu_power_limit = 100;  // Default: 100%
+        bool cpu_hyperthreading = true;
+        int cpu_target_hashrate = 0;  // Default: 0 = max
+        std::string worker_hardware = "cpu";  // Default hardware type
+        int gpu_device = 0;  // Default GPU device
+        bool stats_console = false;  // Default: no stats printer
 
         try
         {
@@ -124,6 +132,10 @@ namespace config
                     {
                         worker_count = parse_int_value(value);
                     }
+                    else if (key == "hardware")
+                    {
+                        worker_hardware = parse_string_value(value);
+                    }
                 }
                 else if (current_section == "cpu")
                 {
@@ -134,6 +146,66 @@ namespace config
                     else if (key == "efficiency_cores")
                     {
                         efficiency_cores = parse_bool_value(value);
+                    }
+                    else if (key == "priority")
+                    {
+                        cpu_priority = parse_int_value(value);
+                        if (cpu_priority < 0 || cpu_priority > 4)
+                        {
+                            m_logger->warn("Invalid priority {} out of range [0-4], using default 2", cpu_priority);
+                            cpu_priority = 2;
+                        }
+                    }
+                    else if (key == "power_limit_percent")
+                    {
+                        cpu_power_limit = parse_int_value(value);
+                        if (cpu_power_limit < 50 || cpu_power_limit > 100)
+                        {
+                            m_logger->warn("Invalid power_limit_percent {} out of range [50-100], using default 100", cpu_power_limit);
+                            cpu_power_limit = 100;
+                        }
+                    }
+                    else if (key == "hyperthreading")
+                    {
+                        cpu_hyperthreading = parse_bool_value(value);
+                    }
+                    else if (key == "target_hashrate")
+                    {
+                        cpu_target_hashrate = parse_int_value(value);
+                    }
+                }
+                else if (current_section == "gpu")
+                {
+                    if (key == "device")
+                    {
+                        gpu_device = parse_int_value(value);
+                        if (gpu_device < 0 || gpu_device > 255)
+                        {
+                            m_logger->warn("Invalid GPU device {} out of range [0-255], using default 0", gpu_device);
+                            gpu_device = 0;
+                        }
+                        // [gpu] section sets hardware to GPU (last parsed section takes precedence)
+                        worker_hardware = "gpu";
+                    }
+                }
+                else if (current_section == "stats")
+                {
+                    if (key == "mode")
+                    {
+                        std::string mode = parse_string_value(value);
+                        if (mode == "console")
+                        {
+                            stats_console = true;
+                        }
+                        else if (mode == "file")
+                        {
+                            // File mode not yet implemented in TOML parser
+                            m_logger->warn("Stats mode 'file' is not yet implemented in TOML config, ignoring");
+                        }
+                        else
+                        {
+                            m_logger->warn("Invalid stats mode '{}', expected 'console' or 'file'", mode);
+                        }
                     }
                 }
                 else if (current_section == "network")
@@ -244,21 +316,54 @@ namespace config
                 // Clear existing workers
                 config.m_worker_config.clear();
                 
-                // Create CPU workers with configured settings
-                for (int i = 0; i < worker_count; ++i)
+                // Create workers based on hardware type
+                if (worker_hardware == "gpu")
                 {
-                    Worker_config worker_config;
-                    worker_config.m_id = "cpu" + std::to_string(i);
-                    worker_config.m_mode = Worker_mode::CPU;
-                    
-                    Worker_config_cpu cpu_config{};
-                    cpu_config.m_threads = static_cast<std::uint16_t>(cpu_threads);
-                    cpu_config.m_affinity_mask = 0;  // No affinity by default
-                    cpu_config.m_enable_efficiency_cores = efficiency_cores;
-                    
-                    worker_config.m_worker_mode = cpu_config;
-                    config.m_worker_config.push_back(worker_config);
+                    // Create GPU workers
+                    for (int i = 0; i < worker_count; ++i)
+                    {
+                        Worker_config worker_config;
+                        worker_config.m_id = "gpu" + std::to_string(i);
+                        worker_config.m_mode = Worker_mode::GPU;
+                        
+                        Worker_config_gpu gpu_config{};
+                        gpu_config.m_device = static_cast<std::uint8_t>(gpu_device);
+                        
+                        worker_config.m_worker_mode = gpu_config;
+                        config.m_worker_config.push_back(worker_config);
+                    }
                 }
+                else
+                {
+                    // Create CPU workers with all configured settings
+                    for (int i = 0; i < worker_count; ++i)
+                    {
+                        Worker_config worker_config;
+                        worker_config.m_id = "cpu" + std::to_string(i);
+                        worker_config.m_mode = Worker_mode::CPU;
+                        
+                        Worker_config_cpu cpu_config{};
+                        cpu_config.m_threads = static_cast<std::uint16_t>(cpu_threads);
+                        cpu_config.m_affinity_mask = 0;  // No affinity by default
+                        cpu_config.m_enable_efficiency_cores = efficiency_cores;
+                        cpu_config.m_priority_level = static_cast<std::uint8_t>(cpu_priority);
+                        cpu_config.m_power_limit_percent = static_cast<std::uint8_t>(cpu_power_limit);
+                        cpu_config.m_enable_hyperthreading = cpu_hyperthreading;
+                        cpu_config.m_target_hashrate = static_cast<std::uint32_t>(cpu_target_hashrate);
+                        
+                        worker_config.m_worker_mode = cpu_config;
+                        config.m_worker_config.push_back(worker_config);
+                    }
+                }
+            }
+            
+            // Add stats printer configuration if console mode is enabled
+            if (stats_console)
+            {
+                Stats_printer_config stats_config;
+                stats_config.m_mode = Stats_printer_mode::CONSOLE;
+                stats_config.m_printer_mode = Stats_printer_config_console{};
+                config.m_stats_printer_config.push_back(stats_config);
             }
 
             return true;
