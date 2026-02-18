@@ -270,6 +270,59 @@ system/get/info
 
 ---
 
+### "Template age exceeds emergency timeout"
+
+**Symptoms:**
+```
+[Worker_manager] ❌ Template age exceeds emergency timeout!
+[Worker_manager]    Age: 315s (max: 300s)
+[Worker_manager]    This is a safety net - height detection may have failed
+```
+
+**Explanation:**
+
+The miner monitors template age to detect when mining work has become stale. Timeout values are **channel-aware** to account for different block times:
+
+- **Prime channel (channel 1):** 600s emergency timeout, 480s warning
+  - Prime blocks naturally take 5-10+ minutes between blocks
+  - Longer timeouts prevent false positives during normal mining
+  
+- **Hash channel (channel 2):** 300s emergency timeout, 240s warning
+  - Hash blocks average ~18 seconds
+  - 300s is generous for normal conditions
+
+**Solutions:**
+
+1. **Normal for Prime mining:**
+   - If mining Prime channel, this is expected behavior during long block intervals
+   - The channel-aware timeout (600s for Prime) prevents unnecessary restarts
+   
+2. **Check push notifications:**
+   - Verify node supports stateless protocol (LLL-TAO 5.1.0+)
+   - Check node logs for push notification delivery
+   - Push notifications are primary update mechanism
+   
+3. **Verify GET_ROUND polling (legacy fallback):**
+   - If using legacy protocol, ensure polling is working
+   - Check network connectivity to node
+   - Review node logs for GET_ROUND requests
+   
+4. **Check for actual node issues:**
+   - Node may be disconnected or crashed
+   - Network connectivity problems
+   - Node overloaded or syncing
+
+**When to investigate:**
+- Hash channel timing out frequently (indicates real problem)
+- Prime channel timing out above 600s (very unusual)
+- Consistent timeouts on either channel
+
+**See also:**
+- [Channel Management](../mining-protocols/channel-management.md)
+- [Connection Recovery](./cross-validation-recovery.md)
+
+---
+
 ### "Low hash rate"
 
 **Symptoms:**
