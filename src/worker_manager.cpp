@@ -15,6 +15,7 @@
 #include "config/config.hpp"
 #include "config/types.hpp"
 #include "LLP/block.hpp"
+#include "mining/client_block.h"
 #include "stats/stats_printer_console.hpp"
 #include "stats/stats_printer_file.hpp"
 #include "stats/stats_collector.hpp"
@@ -27,6 +28,17 @@
 
 namespace nexusminer
 {
+
+// Template age timeout constants (seconds) - channel-aware values
+// Prime channel: avg ~5-10 min between blocks, need longer timeouts
+// Hash channel: avg ~18s between blocks, shorter timeouts are sufficient
+namespace {
+    constexpr uint64_t PRIME_TEMPLATE_AGE_WARNING_SECONDS = 480;      // 8 minutes
+    constexpr uint64_t PRIME_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 600;  // 10 minutes
+    constexpr uint64_t HASH_TEMPLATE_AGE_WARNING_SECONDS = 240;       // 4 minutes
+    constexpr uint64_t HASH_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 300;   // 5 minutes
+}
+
 Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Config& config, 
     chrono::Timer_factory::Sptr timer_factory, network::Socket::Sptr socket)
 : m_io_context{std::move(io_context)}
@@ -770,10 +782,6 @@ void Worker_manager::retry_template_request()
 
 void Worker_manager::check_template_health()
 {
-    // Emergency safety net thresholds (seconds)
-    static constexpr uint64_t TEMPLATE_AGE_WARNING_SECONDS = 240;
-    static constexpr uint64_t TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 300;
-    
     auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
     if (!solo_protocol) {
         return;
@@ -790,13 +798,21 @@ void Worker_manager::check_template_health()
     
     uint64_t template_age = template_interface->get_template_age();
     
+    // Channel-aware timeouts: Prime blocks take much longer than Hash blocks
+    // Prime: avg ~5-10 min between blocks, use 600s emergency / 480s warning
+    // Hash:  avg ~18s between blocks, 300s emergency / 240s warning is generous
+    uint8_t channel = template_interface->get_channel();
+    const uint64_t template_age_warning_seconds =
+        (channel == mining::CHANNEL_PRIME) ? PRIME_TEMPLATE_AGE_WARNING_SECONDS : HASH_TEMPLATE_AGE_WARNING_SECONDS;
+    const uint64_t template_age_emergency_timeout_seconds =
+        (channel == mining::CHANNEL_PRIME) ? PRIME_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS : HASH_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS;
+    
     // Channel height-based staleness detection (primary check)
     // Compare template's CHANNEL height with node's CHANNEL height from GET_ROUND/NEW_ROUND.
     // Template targets block at nChannelHeight; node should be at nChannelHeight - 1.
     // If node's channel height >= nChannelHeight, another miner found the block first.
     {
         auto round_status = solo_protocol->get_last_round_status();
-        uint8_t channel = template_interface->get_channel();
         uint32_t current_channel_height = round_status.get_channel_height(channel);
         
         const auto* tmpl = template_interface->get_current_template();
@@ -818,20 +834,20 @@ void Worker_manager::check_template_health()
     }
     
     // Age-based warning (approaching emergency timeout)
-    if (template_age > TEMPLATE_AGE_WARNING_SECONDS && template_age <= TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
+    if (template_age > template_age_warning_seconds && template_age <= template_age_emergency_timeout_seconds) {
         m_logger->warn("[Worker_manager] ⚠️  Template age {}s approaching safety timeout ({}s)",
-            template_age, TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
+            template_age, template_age_emergency_timeout_seconds);
         m_logger->warn("[Worker_manager]    Push notifications or GET_ROUND polling may have failed");
     }
     
     // Age-based emergency safety net - last resort only
     // This catches catastrophic failures (node disconnection, total push failure)
-    if (template_age > TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
+    if (template_age > template_age_emergency_timeout_seconds) {
         m_logger->error("[Worker_manager] ❌ Template age exceeds emergency timeout!");
-        m_logger->error("[Worker_manager]    Age: {}s (max: {}s)", template_age, TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
+        m_logger->error("[Worker_manager]    Age: {}s (max: {}s)", template_age, template_age_emergency_timeout_seconds);
         m_logger->error("[Worker_manager]    This is a safety net - height detection may have failed");
         
-        template_interface->discard_template("Emergency age timeout (>300s)");
+        template_interface->discard_template("Emergency age timeout (>" + std::to_string(template_age_emergency_timeout_seconds) + "s)");
         stop_all_workers();
         retry_template_request();
     }
