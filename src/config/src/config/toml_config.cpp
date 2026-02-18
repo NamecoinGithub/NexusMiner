@@ -150,12 +150,20 @@ namespace config
                     else if (key == "priority")
                     {
                         cpu_priority = parse_int_value(value);
-                        if (cpu_priority < 0 || cpu_priority > 4) cpu_priority = 2;
+                        if (cpu_priority < 0 || cpu_priority > 4)
+                        {
+                            m_logger->warn("Invalid priority {} out of range [0-4], using default 2", cpu_priority);
+                            cpu_priority = 2;
+                        }
                     }
                     else if (key == "power_limit_percent")
                     {
                         cpu_power_limit = parse_int_value(value);
-                        if (cpu_power_limit < 50 || cpu_power_limit > 100) cpu_power_limit = 100;
+                        if (cpu_power_limit < 50 || cpu_power_limit > 100)
+                        {
+                            m_logger->warn("Invalid power_limit_percent {} out of range [50-100], using default 100", cpu_power_limit);
+                            cpu_power_limit = 100;
+                        }
                     }
                     else if (key == "hyperthreading")
                     {
@@ -171,6 +179,12 @@ namespace config
                     if (key == "device")
                     {
                         gpu_device = parse_int_value(value);
+                        if (gpu_device < 0 || gpu_device > 255)
+                        {
+                            m_logger->warn("Invalid GPU device {} out of range [0-255], using default 0", gpu_device);
+                            gpu_device = 0;
+                        }
+                        // Note: [gpu] section presence sets hardware to GPU only if not explicitly set via [workers] hardware
                         worker_hardware = "gpu";
                     }
                 }
