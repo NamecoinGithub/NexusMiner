@@ -53,7 +53,7 @@ Protects Falcon Public Keys during transmission:
 }
 ```
 
-Note: Disposable Falcon signing is enabled by default (required for block signing).
+Note: Disposable Falcon signing defaults to true and is required for block signing. The configuration field can be used to explicitly confirm this setting.
 
 ### 3. Session Management
 
