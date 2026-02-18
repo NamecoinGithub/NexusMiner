@@ -263,7 +263,7 @@ The TOML parser currently supports a subset of TOML features focused on mining c
 
 Most common mining configurations are supported including CPU power controls, GPU workers, and stats output.
 
-For advanced worker configurations (custom affinity masks, multiple GPU configurations), use JSON `.conf` files.
+**GPU Configuration**: The TOML `[gpu]` section supports single GPU configuration only. For advanced worker configurations (multiple GPUs with individual settings, custom affinity masks), use JSON `.conf` files.
 
 ## Reference Files
 

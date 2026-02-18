@@ -200,7 +200,7 @@ namespace config
                         else if (mode == "file")
                         {
                             // File mode not yet implemented in TOML parser
-                            m_logger->warn("Stats mode 'file' is not supported in TOML config, ignoring");
+                            m_logger->warn("Stats mode 'file' is not yet implemented in TOML config, ignoring");
                         }
                         else
                         {
