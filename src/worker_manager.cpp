@@ -15,6 +15,7 @@
 #include "config/config.hpp"
 #include "config/types.hpp"
 #include "LLP/block.hpp"
+#include "mining/client_block.h"
 #include "stats/stats_printer_console.hpp"
 #include "stats/stats_printer_file.hpp"
 #include "stats/stats_collector.hpp"
@@ -27,6 +28,17 @@
 
 namespace nexusminer
 {
+
+// Template age timeout constants (seconds) - channel-aware values
+// Prime channel: avg ~5-10 min between blocks, need longer timeouts
+// Hash channel: avg ~18s between blocks, shorter timeouts are sufficient
+namespace {
+    constexpr uint64_t PRIME_TEMPLATE_AGE_WARNING_SECONDS = 480;      // 8 minutes
+    constexpr uint64_t PRIME_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 600;  // 10 minutes
+    constexpr uint64_t HASH_TEMPLATE_AGE_WARNING_SECONDS = 240;       // 4 minutes
+    constexpr uint64_t HASH_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 300;   // 5 minutes
+}
+
 Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Config& config, 
     chrono::Timer_factory::Sptr timer_factory, network::Socket::Sptr socket)
 : m_io_context{std::move(io_context)}
@@ -791,9 +803,9 @@ void Worker_manager::check_template_health()
     // Hash:  avg ~18s between blocks, 300s emergency / 240s warning is generous
     uint8_t channel = template_interface->get_channel();
     const uint64_t TEMPLATE_AGE_WARNING_SECONDS =
-        (channel == 1) ? 480u : 240u;   // Prime=8min, Hash=4min
+        (channel == mining::CHANNEL_PRIME) ? PRIME_TEMPLATE_AGE_WARNING_SECONDS : HASH_TEMPLATE_AGE_WARNING_SECONDS;
     const uint64_t TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS =
-        (channel == 1) ? 600u : 300u;   // Prime=10min, Hash=5min
+        (channel == mining::CHANNEL_PRIME) ? PRIME_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS : HASH_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS;
     
     // Channel height-based staleness detection (primary check)
     // Compare template's CHANNEL height with node's CHANNEL height from GET_ROUND/NEW_ROUND.
