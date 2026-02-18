@@ -188,6 +188,8 @@ Format: 64 hexadecimal characters (32 bytes)
 
 **Characteristics:**
 - Direct IPC communication
+- ChaCha20 encryption active (core security)
+- Disposable Falcon signatures enabled (required for block signing)
 - Standard keepalive (24 hours)
 - Optimized for local trust environment
 
@@ -206,6 +208,8 @@ Format: 64 hexadecimal characters (32 bytes)
 
 **Characteristics:**
 - HTTPS/TLS connection
+- ChaCha20 encryption active (core security)
+- Disposable Falcon signatures enabled (required for block signing)
 - Frequent keepalive (12 hours for reliability)
 - Enhanced security for untrusted networks
 
