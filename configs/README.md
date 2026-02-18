@@ -24,8 +24,11 @@ Copy the config that matches your hardware and channel, fill in your `genesis` h
 
 1. Get your genesis hash: in your Nexus wallet run `system/get/info`, copy the `genesis` field (64 hex chars)
 2. Get your reward address: run `finance/list/accounts`, copy the `address` field
-3. Replace `YOUR_GENESIS_HASH_HERE` and `YOUR_NXS_REWARD_ADDRESS_HERE` in your chosen config
-4. Run: `./NexusMiner configs/your-config.config`
+3. Generate Falcon keys: `./NexusMiner --create-keys`
+   - Copy the pubkey and privkey hex output into the `[falcon]` section of your config
+4. Replace `YOUR_GENESIS_HASH_HERE` and `YOUR_NXS_REWARD_ADDRESS_HERE` in your chosen config
+5. Secure the file: `chmod 600 configs/your-config.config` (protects your private key)
+6. Run: `./NexusMiner configs/your-config.config`
 
 ## Port Reference
 
