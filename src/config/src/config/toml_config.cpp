@@ -184,7 +184,7 @@ namespace config
                             m_logger->warn("Invalid GPU device {} out of range [0-255], using default 0", gpu_device);
                             gpu_device = 0;
                         }
-                        // Note: [gpu] section presence sets hardware to GPU only if not explicitly set via [workers] hardware
+                        // [gpu] section sets hardware to GPU (last parsed section takes precedence)
                         worker_hardware = "gpu";
                     }
                 }
@@ -193,7 +193,19 @@ namespace config
                     if (key == "mode")
                     {
                         std::string mode = parse_string_value(value);
-                        stats_console = (mode == "console");
+                        if (mode == "console")
+                        {
+                            stats_console = true;
+                        }
+                        else if (mode == "file")
+                        {
+                            // File mode not yet implemented in TOML parser
+                            m_logger->warn("Stats mode 'file' is not supported in TOML config, ignoring");
+                        }
+                        else
+                        {
+                            m_logger->warn("Invalid stats mode '{}', expected 'console' or 'file'", mode);
+                        }
                     }
                 }
                 else if (current_section == "network")
