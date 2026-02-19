@@ -93,7 +93,8 @@ public:
     /**
      * @brief Start keepalive timer (early + regular interval)
      *
-     * Uses aggressive 10s/30s cadence regardless of keepalive_interval_hours.
+     * Sends an initial 10-second early keepalive after session establishment,
+     * then schedules regular keepalives based on keepalive_interval_hours.
      * Requires SessionManager to be managed by std::shared_ptr.
      */
     void start_keepalive_timer();
@@ -110,6 +111,10 @@ public:
     
     /**
      * @brief Check if keepalive ping is due
+     * 
+     * NOTE: This function is currently UNUSED. The timer-driven keepalive system
+     * in schedule_regular_keepalives() directly controls when keepalives are sent.
+     * This function is retained for potential future manual keepalive checks.
      * 
      * @return true if it's time to send SESSION_KEEPALIVE
      */
