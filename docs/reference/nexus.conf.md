@@ -523,17 +523,23 @@ local_ip = "0.0.0.0"     # Bind to all interfaces
 **Type:** Integer  
 **Default:** 24 hours  
 **Valid Range:** 1-168 hours  
-**Description:** Session keepalive ping interval.
+**Description:** Session keepalive ping interval in hours. Controls how often SESSION_KEEPALIVE packets are sent to prevent session cache eviction on the node.
+
+**Behavior:**
+- A 10-second early keepalive is always sent immediately after session establishment (not configurable)
+- After the early keepalive, regular keepalives are sent at the configured interval
+- The interval can be overridden dynamically by the node's SESSION_START packet (node sends its preferred timeout)
 
 **Recommendations:**
-- 24 hours: Default (good for always-on miners)
-- 12 hours: Summer/unstable connections
-- 1 hour: Testing/development
+- **1 hour**: Recommended for production miners (ensures session stays active)
+- **12 hours**: Intermittent or part-time mining
+- **24 hours**: Always-on dedicated miners with stable connections (default)
+- **168 hours**: Maximum (7 days) for highly stable connections only
 
 **Example:**
 ```toml
 [network]
-keepalive_interval = 24
+keepalive_interval = 1
 ```
 
 **See:** [docs/current/authentication/falcon-handshake-cache.md](../current/authentication/falcon-handshake-cache.md)

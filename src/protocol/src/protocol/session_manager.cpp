@@ -11,8 +11,7 @@ namespace protocol {
 constexpr uint16_t MIN_KEEPALIVE_HOURS = 1;
 constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
 constexpr auto KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);
-constexpr auto KEEPALIVE_REGULAR_INTERVAL = std::chrono::seconds(30);
-// Aggressive keepalive cadence prevents node timeout; separate from long-term cache interval settings.
+constexpr uint16_t KEEPALIVE_REGULAR_INTERVAL_DEFAULT = 24;  // Default hours when interval is 0
 
 // SESSION_KEEPALIVE requests encode session_id as little-endian (wire format requirement).
 static void append_uint32_le(std::vector<uint8_t>& dest, uint32_t value) {
@@ -133,8 +132,8 @@ void SessionManager::start_keepalive_timer()
         self->schedule_regular_keepalives(self);
     });
 
-    m_logger->info("[SessionManager] Keepalive timer started (early: {}s, interval: {}s)",
-                  KEEPALIVE_EARLY_INTERVAL.count(), KEEPALIVE_REGULAR_INTERVAL.count());
+    m_logger->info("[SessionManager] Keepalive timer started (early: {}s, regular: {}h)",
+                  KEEPALIVE_EARLY_INTERVAL.count(), m_keepalive_interval_hours);
 }
 
 void SessionManager::stop_keepalive_timer()
@@ -151,7 +150,16 @@ void SessionManager::schedule_regular_keepalives(const std::shared_ptr<SessionMa
         return;
     }
 
-    m_keepalive_timer->expires_after(KEEPALIVE_REGULAR_INTERVAL);
+    // Use configured interval (from keepalive_interval config setting)
+    // Defensive check: should never be 0 due to constructor clamping
+    if (m_keepalive_interval_hours == 0) {
+        m_logger->warn("[SessionManager] Keepalive interval is 0 (misconfiguration?), using default: {} hours",
+                      KEEPALIVE_REGULAR_INTERVAL_DEFAULT);
+    }
+    auto interval_hours = (m_keepalive_interval_hours > 0) ? m_keepalive_interval_hours : KEEPALIVE_REGULAR_INTERVAL_DEFAULT;
+    auto interval = std::chrono::hours(interval_hours);
+
+    m_keepalive_timer->expires_after(interval);
     m_keepalive_timer->async_wait([self](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) {
             return;
@@ -311,6 +319,15 @@ void SessionManager::set_keepalive_interval(uint16_t hours)
         m_logger->info("[SessionManager] Keepalive interval changed: {} -> {} hours",
                       m_keepalive_interval_hours, hours);
         m_keepalive_interval_hours = hours;
+
+        // If timer is running, reschedule it with the new interval immediately
+        // Note: cancel() is safe - it triggers pending async_wait with operation_aborted error,
+        // which is handled by the error check in schedule_regular_keepalives callback
+        if (m_keepalive_active && m_keepalive_timer) {
+            auto self = shared_from_this();
+            m_keepalive_timer->cancel();
+            schedule_regular_keepalives(self);
+        }
     }
 }
 
