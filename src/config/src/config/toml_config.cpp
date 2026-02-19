@@ -470,21 +470,21 @@ namespace config
     {
         std::string cleaned = trim(value);
         
-        // Remove quotes if present
-        if (cleaned.size() >= 2 &&
-            ((cleaned.front() == '"' && cleaned.back() == '"') ||
-             (cleaned.front() == '\'' && cleaned.back() == '\'')))
-        {
-            cleaned = cleaned.substr(1, cleaned.size() - 2);
-        }
-        
-        // Strip inline comment (everything from first '#' onwards)
+        // Strip inline comment first (before removing quotes)
         size_t comment_pos = cleaned.find('#');
         if (comment_pos != std::string::npos)
         {
             m_logger->debug("[TOML] Stripped inline comment from value on this line. "
                             "Move comments to their own line to avoid confusion.");
             cleaned = trim(cleaned.substr(0, comment_pos));
+        }
+        
+        // Remove quotes if present
+        if (cleaned.size() >= 2 &&
+            ((cleaned.front() == '"' && cleaned.back() == '"') ||
+             (cleaned.front() == '\'' && cleaned.back() == '\'')))
+        {
+            cleaned = cleaned.substr(1, cleaned.size() - 2);
         }
         
         try
@@ -500,6 +500,15 @@ namespace config
         std::string cleaned = trim(value);
         std::transform(cleaned.begin(), cleaned.end(), cleaned.begin(), ::tolower);
         
+        // Strip inline comment first (before removing quotes)
+        size_t comment_pos = cleaned.find('#');
+        if (comment_pos != std::string::npos)
+        {
+            m_logger->debug("[TOML] Stripped inline comment from value on this line. "
+                            "Move comments to their own line to avoid confusion.");
+            cleaned = trim(cleaned.substr(0, comment_pos));
+        }
+        
         // Remove quotes if present
         if (cleaned.size() >= 2 &&
             ((cleaned.front() == '"' && cleaned.back() == '"') ||
@@ -507,15 +516,6 @@ namespace config
         {
             cleaned = cleaned.substr(1, cleaned.size() - 2);
             std::transform(cleaned.begin(), cleaned.end(), cleaned.begin(), ::tolower);
-        }
-        
-        // Strip inline comment
-        size_t comment_pos = cleaned.find('#');
-        if (comment_pos != std::string::npos)
-        {
-            m_logger->debug("[TOML] Stripped inline comment from value on this line. "
-                            "Move comments to their own line to avoid confusion.");
-            cleaned = trim(cleaned.substr(0, comment_pos));
         }
         
         return cleaned == "true" || cleaned == "1" || cleaned == "yes";
