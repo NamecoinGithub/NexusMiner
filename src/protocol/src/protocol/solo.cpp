@@ -444,15 +444,15 @@ network::Shared_payload Solo::login(Login_handler handler)
     // ═══════════════════════════════════════════════════════════
     // Debug: Verify packet is valid before transmission
     // ═══════════════════════════════════════════════════════════
-    m_logger->debug("[Solo Auth] Packet built: header={}, length={}, data_size={}", 
-                    packet.m_header, packet.m_length, 
+    m_logger->debug("[Solo Auth] Packet built: header=0x{:04X} ({}), length={}, data_size={}", 
+                    packet.m_header, get_llp_header_name(packet.m_header), packet.m_length, 
                     packet.m_data ? packet.m_data->size() : 0);
     
     if (!packet.is_valid())
     {
         m_logger->error("[Solo Auth] CRITICAL: Packet is_valid() returned false!");
-        m_logger->error("[Solo Auth]   header={}, m_length={}, is_auth_packet={}", 
-                        packet.m_header, packet.m_length, packet.is_auth_packet());
+        m_logger->error("[Solo Auth]   header=0x{:04X} ({}), m_length={}, is_auth_packet={}", 
+                        packet.m_header, get_llp_header_name(packet.m_header), packet.m_length, packet.is_auth_packet());
         m_logger->error("[Solo Auth]   Validation state: {}", packet.get_validation_state());
     }
     
@@ -1013,8 +1013,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     
     // Reject invalid packets at the start
     if (!packet.m_is_valid) {
-        m_logger->warn("Solo::process_messages: Received invalid packet - header={}, length={}", 
-            static_cast<int>(packet.m_header), packet.m_length);
+        m_logger->warn("Solo::process_messages: Received invalid packet - header=0x{:04X} ({}), length={}", 
+            packet.m_header, get_llp_header_name(packet.m_header), packet.m_length);
         return;
     }
     
@@ -2720,15 +2720,16 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     response_packet.m_length = static_cast<uint32_t>(response_packet.m_data->size());
     
     // Debug: Verify packet is valid before transmission
-    m_logger->debug("[Solo Auth] MINER_AUTH_RESPONSE packet built: header={}, length={}, data_size={}", 
-                    response_packet.m_header, response_packet.m_length, 
+    m_logger->debug("[Solo Auth] MINER_AUTH_RESPONSE packet built: header=0x{:04X} ({}), length={}, data_size={}", 
+                    response_packet.m_header, get_llp_header_name(response_packet.m_header), response_packet.m_length, 
                     response_packet.m_data ? response_packet.m_data->size() : 0);
     
     if (!response_packet.is_valid())
     {
         m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_RESPONSE is_valid() returned false!");
-        m_logger->error("[Solo Auth]   header={}, m_length={}, is_auth_packet={}", 
-                        response_packet.m_header, response_packet.m_length, 
+        m_logger->error("[Solo Auth]   header=0x{:04X} ({}), m_length={}, is_auth_packet={}", 
+                        response_packet.m_header, get_llp_header_name(response_packet.m_header), 
+                        response_packet.m_length, 
                         response_packet.is_auth_packet());
         m_logger->error("[Solo Auth]   Validation state: {}", response_packet.get_validation_state());
         reset_auth_state();
