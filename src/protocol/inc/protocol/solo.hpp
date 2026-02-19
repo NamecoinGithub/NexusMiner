@@ -300,6 +300,13 @@ private:
     void check_unified_height_delta(uint32_t current_unified_height);
     
     // ═══════════════════════════════════════════════════════════════════════
+    // GET_BLOCK RATE LIMITER
+    // ═══════════════════════════════════════════════════════════════════════
+    
+    // Timestamp of last GET_BLOCK request (rate limiter to prevent node 300s ban)
+    std::chrono::steady_clock::time_point m_last_get_block_time{};
+    
+    // ═══════════════════════════════════════════════════════════════════════
     // PORT-LANE SEPARATION STATE (STRICT - NO FALLBACK)
     // ═══════════════════════════════════════════════════════════════════════
     
