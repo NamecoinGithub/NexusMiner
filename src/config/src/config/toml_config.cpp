@@ -424,6 +424,8 @@ namespace config
             return result;
         
         // Handle quoted strings: find closing quote, discard trailing comment
+        // Note: This does not handle escaped quotes (e.g., "value with \" inside")
+        // as they are not currently used in this codebase's config files.
         if (result.front() == '"' || result.front() == '\'')
         {
             char quote_char = result.front();
@@ -498,9 +500,8 @@ namespace config
     bool TomlConfig::parse_bool_value(const std::string& value)
     {
         std::string cleaned = trim(value);
-        std::transform(cleaned.begin(), cleaned.end(), cleaned.begin(), ::tolower);
         
-        // Strip inline comment first (before removing quotes)
+        // Strip inline comment first (before any transformations)
         size_t comment_pos = cleaned.find('#');
         if (comment_pos != std::string::npos)
         {
@@ -509,13 +510,15 @@ namespace config
             cleaned = trim(cleaned.substr(0, comment_pos));
         }
         
+        // Convert to lowercase for comparison
+        std::transform(cleaned.begin(), cleaned.end(), cleaned.begin(), ::tolower);
+        
         // Remove quotes if present
         if (cleaned.size() >= 2 &&
             ((cleaned.front() == '"' && cleaned.back() == '"') ||
              (cleaned.front() == '\'' && cleaned.back() == '\'')))
         {
             cleaned = cleaned.substr(1, cleaned.size() - 2);
-            std::transform(cleaned.begin(), cleaned.end(), cleaned.begin(), ::tolower);
         }
         
         return cleaned == "true" || cleaned == "1" || cleaned == "yes";
