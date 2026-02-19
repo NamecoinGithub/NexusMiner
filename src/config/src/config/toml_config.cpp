@@ -510,9 +510,6 @@ namespace config
             cleaned = trim(cleaned.substr(0, comment_pos));
         }
         
-        // Convert to lowercase for comparison
-        std::transform(cleaned.begin(), cleaned.end(), cleaned.begin(), ::tolower);
-        
         // Remove quotes if present
         if (cleaned.size() >= 2 &&
             ((cleaned.front() == '"' && cleaned.back() == '"') ||
@@ -520,6 +517,9 @@ namespace config
         {
             cleaned = cleaned.substr(1, cleaned.size() - 2);
         }
+        
+        // Convert to lowercase for comparison
+        std::transform(cleaned.begin(), cleaned.end(), cleaned.begin(), ::tolower);
         
         return cleaned == "true" || cleaned == "1" || cleaned == "yes";
     }
