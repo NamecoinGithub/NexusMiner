@@ -133,7 +133,7 @@ void SessionManager::start_keepalive_timer()
         self->schedule_regular_keepalives(self);
     });
 
-    m_logger->info("[SessionManager] Keepalive timer started (early: {}s, TCP ping: {}s, session cache: {}h)",
+    m_logger->info("[SessionManager] Keepalive timer started (early: {}s, TCP ping: {}s, config interval: {}h)",
                   KEEPALIVE_EARLY_INTERVAL.count(), KEEPALIVE_TCP_INTERVAL.count(), m_keepalive_interval_hours);
 }
 
@@ -154,8 +154,9 @@ void SessionManager::schedule_regular_keepalives(const std::shared_ptr<SessionMa
     // Use 45s TCP keepalive interval to prevent node dropping the connection.
     // The node's block cache times out after 90 seconds — 45s gives us 2 pings
     // per 90s window with comfortable margin.
-    // Note: m_keepalive_interval_hours is retained for session cache management
-    // via is_keepalive_due() but does NOT control the TCP ping cadence.
+    // Note: m_keepalive_interval_hours is a config-driven session cache concept
+    // retained for potential future use (e.g., session expiry checks), but it
+    // does NOT control the TCP ping cadence which must be fixed at 45s.
     m_keepalive_timer->expires_after(KEEPALIVE_TCP_INTERVAL);
     m_keepalive_timer->async_wait([self](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) {
