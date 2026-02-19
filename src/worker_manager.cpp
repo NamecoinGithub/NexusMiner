@@ -476,6 +476,25 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
             }
             else if (result == network::Result::connection_ok)
             {
+                // BUGFIX: The socket API documents that the handler may fire synchronously
+                // inside connect() before m_connection = std::move(connection) is reached
+                // at the bottom of Worker_manager::connect(). This occurs when
+                // local_ip = "0.0.0.0" causes an immediate loopback connect completion.
+                // Guard against null m_connection and defer via io_context post.
+                if (!self->m_connection)
+                {
+                    self->m_logger->warn("[Solo] Synchronous connect callback detected - "
+                                         "m_connection not yet assigned, deferring to io_context");
+                    ::asio::post(*self->m_io_context, [self, wallet_endpoint]()
+                    {
+                        // By the time this runs, m_connection has been assigned by the
+                        // return path of Worker_manager::connect(). Retry the connect
+                        // sequence to trigger the full connection_ok flow properly.
+                        self->retry_connect(wallet_endpoint);
+                    });
+                    return;
+                }
+
                 // Log successful connection with actual port information
                 auto const& remote_ep = self->m_connection->remote_endpoint();
                 auto const& local_ep = self->m_connection->local_endpoint();
