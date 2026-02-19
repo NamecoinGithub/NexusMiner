@@ -786,6 +786,9 @@ void Worker_manager::retry_template_request()
         auto work_payload = solo_protocol->get_work();
         if (work_payload && !work_payload->empty()) {
             m_connection->transmit(work_payload);
+        } else {
+            // Could be rate limited — not an error
+            m_logger->debug("[Worker_manager] GET_BLOCK skipped (rate limited or not ready)");
         }
     } else if (lane == ProtocolLane::STATELESS) {
         // Stateless lane: Re-send STATELESS_MINER_READY

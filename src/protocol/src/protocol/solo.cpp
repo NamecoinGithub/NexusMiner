@@ -498,6 +498,24 @@ network::Shared_payload Solo::login(Login_handler handler)
 
 network::Shared_payload Solo::get_work()
 {
+    // GET_BLOCK rate limiter — node enforces 6000ms minimum between requests.
+    // Using 6500ms (500ms safety margin) to prevent rate limit violations
+    // that trigger node's 300-second cooldown ban.
+    constexpr auto GET_BLOCK_MIN_INTERVAL = std::chrono::milliseconds(6500);
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_last_get_block_time);
+
+    if (m_last_get_block_time != std::chrono::steady_clock::time_point{} &&
+        elapsed < GET_BLOCK_MIN_INTERVAL)
+    {
+        m_logger->info("[Solo] GET_BLOCK rate limited — {}ms since last request (min: {}ms), skipping",
+                      elapsed.count(), GET_BLOCK_MIN_INTERVAL.count());
+        return network::Shared_payload{};  // Return empty — caller checks for null/empty
+    }
+
+    m_last_get_block_time = now;  // Update timestamp before sending
+
     /* Validate prerequisites */
     if (!m_authenticated) {
         m_logger->error("[Solo] Cannot request work - not authenticated");
