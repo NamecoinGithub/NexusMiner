@@ -94,7 +94,9 @@ public:
      * @brief Start keepalive timer (early + regular interval)
      *
      * Sends an initial 10-second early keepalive after session establishment,
-     * then schedules regular keepalives based on keepalive_interval_hours.
+     * then schedules regular 45-second TCP keepalives to prevent node timeout.
+     * The node's block cache times out after 90 seconds, so 45s provides
+     * 2 pings per 90s window with comfortable margin.
      * Requires SessionManager to be managed by std::shared_ptr.
      */
     void start_keepalive_timer();
