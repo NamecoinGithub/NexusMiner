@@ -200,12 +200,12 @@ public:
     // =========================================================================
     
     /**
-     * @brief Check if template is stale (age > 60s)
+     * @brief Check if template is stale (age > 600s)
      * 
-     * Matches LLL-TAO MAX_TEMPLATE_AGE_SECONDS constant for coordinated
-     * template lifecycle management.
+     * Extended to 600s to match Prime channel block times (5-10+ minutes avg)
+     * and the emergency timeout in check_template_health().
      * 
-     * @return true if template age exceeds 60 seconds
+     * @return true if template age exceeds 600 seconds
      */
     bool is_template_stale() const;
     
@@ -399,7 +399,7 @@ public:
         uint64_t blocks_submitted;
         uint64_t total_read_time_us;
         uint64_t total_validation_time_us;
-        uint64_t templates_expired_age;       // Templates expired due to age (>60s)
+        uint64_t templates_expired_age;       // Templates expired due to age (>600s)
         uint64_t templates_expired_height;    // Templates expired due to height change
     };
     
@@ -461,8 +461,8 @@ private:
     
     std::shared_ptr<spdlog::logger> m_logger;
     
-    // Template staleness prevention constants (synchronized with LLL-TAO PR #131)
-    static constexpr uint64_t MAX_TEMPLATE_AGE = 60;       // Match LLL-TAO node-side constant
+    // Template staleness prevention constants
+    static constexpr uint64_t MAX_TEMPLATE_AGE = 600;      // Extended to match Prime block times and emergency timeout
     static constexpr uint64_t WARNING_TEMPLATE_AGE = 50;   // Proactive warning threshold
     
     // Thread-safe statistics (atomic for multi-worker safety)

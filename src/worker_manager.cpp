@@ -198,12 +198,36 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             
                             // ✅ NEW: Final staleness check before submission (Template Staleness Prevention)
                             uint64_t template_age = template_interface->get_template_age();
-                            if (template_interface->is_template_stale())
+
+                            // Check 1 — Channel Height (PRIMARY: has another miner found this block?)
+                            uint8_t channel = template_interface->get_channel();
+                            auto round_status = solo_protocol->get_last_round_status();
+                            uint32_t current_channel_height = round_status.get_channel_height(channel);
+                            const auto* tmpl = template_interface->get_current_template();
+                            uint32_t template_channel_height = (tmpl != nullptr) ? tmpl->nChannelHeight : 0;
+                            bool channel_stale = (current_channel_height > 0 &&
+                                                  template_channel_height > 0 &&
+                                                  current_channel_height >= template_channel_height);
+
+                            // Check 2 — Age (SECONDARY: safety net for missed push notifications)
+                            // 600s matches the emergency timeout in check_template_health()
+                            constexpr uint64_t SUBMISSION_MAX_AGE_SECONDS = 600;
+                            bool age_stale = (template_age > SUBMISSION_MAX_AGE_SECONDS);
+
+                            if (channel_stale || age_stale)
                             {
-                                m_logger->error("[Worker_manager] ❌ Solution found but template is STALE!");
-                                m_logger->error("[Worker_manager]    Age: {}s (max: 60s)", template_age);
-                                m_logger->error("[Worker_manager]    Solution will likely be rejected - discarding");
-                                template_interface->discard_template("Stale before submission");
+                                if (channel_stale) {
+                                    m_logger->error("[Worker_manager] ❌ Solution found but channel height ADVANCED!");
+                                    m_logger->error("[Worker_manager]    Node channel height {} >= template target {}",
+                                                   current_channel_height, template_channel_height);
+                                    m_logger->error("[Worker_manager]    Another miner found this block first - discarding");
+                                } else {
+                                    m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: {}s)",
+                                                   template_age, SUBMISSION_MAX_AGE_SECONDS);
+                                    m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
+                                }
+                                template_interface->discard_template(channel_stale ? "Channel height advanced before submission"
+                                                                                   : "Age exceeded 600s before submission");
                                 
                                 // ====== LANE-GATED STALE TEMPLATE REFRESH ======
                                 // Lane-aware recovery: only use legacy polling on legacy lane
@@ -240,7 +264,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                 return;
                             }
                             
-                            m_logger->info("[Worker_manager] 💎 Solution found! Template age: {}s (valid)", template_age);
+                            m_logger->info("[Worker_manager] 💎 Solution found! Age: {}s, Channel height valid ✅ - SUBMITTING", template_age);
                             
                             // Prepare full block submission (216 or 220 bytes depending on format)
                             // This reconstructs the full block from the current template with the

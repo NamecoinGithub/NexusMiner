@@ -15,8 +15,8 @@ constexpr uint32_t CHANNEL_PRIME = 1;
 constexpr uint32_t CHANNEL_HASH = 2;
 constexpr uint32_t CHANNEL_STAKE = 3;
 
-// Template age timeout (seconds) - matches NODE's MAX_TEMPLATE_AGE_SECONDS
-constexpr uint64_t MAX_TEMPLATE_AGE_SECONDS = 60;
+// Template age timeout (seconds) - extended to match Prime block time and emergency timeout
+constexpr uint64_t MAX_TEMPLATE_AGE_SECONDS = 600;
 
 /**
  * @brief ClientBlock - CLIENT-SIDE equivalent of NODE's Block class
