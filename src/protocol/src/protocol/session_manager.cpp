@@ -151,7 +151,13 @@ void SessionManager::schedule_regular_keepalives(const std::shared_ptr<SessionMa
     }
 
     // Use configured interval (from keepalive_interval config setting)
-    auto interval_hours = m_keepalive_interval_hours > 0 ? m_keepalive_interval_hours : KEEPALIVE_REGULAR_INTERVAL_DEFAULT;
+    auto interval_hours = m_keepalive_interval_hours;
+    if (interval_hours == 0) {
+        // Defensive fallback - should never happen due to constructor clamping
+        interval_hours = KEEPALIVE_REGULAR_INTERVAL_DEFAULT;
+        m_logger->warn("[SessionManager] Keepalive interval is 0 (misconfiguration?), using default: {} hours",
+                      KEEPALIVE_REGULAR_INTERVAL_DEFAULT);
+    }
     auto interval = std::chrono::hours(interval_hours);
 
     m_keepalive_timer->expires_after(interval);
@@ -314,7 +320,7 @@ void SessionManager::set_keepalive_interval(uint16_t hours)
         m_logger->info("[SessionManager] Keepalive interval changed: {} -> {} hours",
                       m_keepalive_interval_hours, hours);
         m_keepalive_interval_hours = hours;
-        
+
         // If timer is running, reschedule it with the new interval immediately
         if (m_keepalive_active && m_keepalive_timer) {
             auto self = shared_from_this();
