@@ -509,8 +509,8 @@ network::Shared_payload Solo::get_work()
     if (m_last_get_block_time != std::chrono::steady_clock::time_point{} &&
         elapsed < GET_BLOCK_MIN_INTERVAL)
     {
-        m_logger->info("[Solo] GET_BLOCK rate limited — {}ms since last request (min: {}ms), skipping",
-                      elapsed.count(), GET_BLOCK_MIN_INTERVAL.count());
+        m_logger->debug("[Solo] GET_BLOCK rate limited — {}ms since last request (min: {}ms), skipping",
+                       elapsed.count(), GET_BLOCK_MIN_INTERVAL.count());
         return network::Shared_payload{};  // Return empty — caller checks for null/empty
     }
 
