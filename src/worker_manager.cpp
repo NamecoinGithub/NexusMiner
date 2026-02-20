@@ -881,21 +881,58 @@ void Worker_manager::check_template_health()
     
     // Age-based warning (approaching emergency timeout)
     if (template_age > template_age_warning_seconds && template_age <= template_age_emergency_timeout_seconds) {
-        m_logger->warn("[Worker_manager] ⚠️  Template age {}s approaching safety timeout ({}s)",
-            template_age, template_age_emergency_timeout_seconds);
-        m_logger->warn("[Worker_manager]    Push notifications or GET_ROUND polling may have failed");
+        if (channel == mining::CHANNEL_PRIME) {
+            m_logger->info("[Worker_manager] ℹ️  Template age {}s (Prime blocks avg 5-15 min — normal)",
+                template_age);
+        } else {
+            m_logger->warn("[Worker_manager] ⚠️  Template age {}s approaching safety timeout ({}s)",
+                template_age, template_age_emergency_timeout_seconds);
+            m_logger->warn("[Worker_manager]    Push notifications or GET_ROUND polling may have failed");
+        }
     }
     
-    // Age-based emergency safety net - last resort only
-    // This catches catastrophic failures (node disconnection, total push failure)
+    // Age-based safety net — last resort for missed push notifications
+    // IMPORTANT: Check whether the chain has actually advanced before treating this as a real emergency.
+    // For Prime mining, blocks take 5-15+ minutes, so templates will routinely exceed 600s
+    // while still being perfectly valid (no new block found yet).
     if (template_age > template_age_emergency_timeout_seconds) {
-        m_logger->error("[Worker_manager] ❌ Template age exceeds emergency timeout!");
-        m_logger->error("[Worker_manager]    Age: {}s (max: {}s)", template_age, template_age_emergency_timeout_seconds);
-        m_logger->error("[Worker_manager]    This is a safety net - height detection may have failed");
         
-        template_interface->discard_template("Emergency age timeout (>" + std::to_string(template_age_emergency_timeout_seconds) + "s)");
-        stop_all_workers();
-        retry_template_request();
+        // Re-read channel height comparison (same logic as primary check above)
+        auto round_status = solo_protocol->get_last_round_status();
+        uint32_t current_channel_height = round_status.get_channel_height(channel);
+        const auto* tmpl_ptr = template_interface->get_current_template();
+        uint32_t template_channel_height = (tmpl_ptr != nullptr) ? tmpl_ptr->nChannelHeight : 0;
+        
+        bool chain_advanced = (current_channel_height > 0 &&
+                               template_channel_height > 0 &&
+                               current_channel_height >= template_channel_height);
+
+        if (chain_advanced) {
+            // GENUINE EMERGENCY: chain moved but we're still on the old template
+            // Push notifications definitely failed — hard recovery
+            m_logger->error("[Worker_manager] ❌ GENUINE EMERGENCY: Template old AND chain advanced!");
+            m_logger->error("[Worker_manager]    Age: {}s, Node channel height {} >= template target {}",
+                            template_age, current_channel_height, template_channel_height);
+            m_logger->error("[Worker_manager]    Push notification missed — forcing hard recovery");
+            
+            template_interface->discard_template("Emergency: chain advanced + age timeout (>" + 
+                                                 std::to_string(template_age_emergency_timeout_seconds) + "s)");
+            stop_all_workers();
+            retry_template_request();
+        } else {
+            // HEALTHY LONG BLOCK: template is old but chain hasn't moved
+            // Prime blocks routinely take 10+ minutes — this is normal, not an emergency
+            // Just re-subscribe silently to refresh the push subscription
+            m_logger->info("[Worker_manager] ⏱️  Template age {}s — chain at same height, re-subscribing silently",
+                           template_age);
+            m_logger->info("[Worker_manager]    Prime blocks take 5-15+ min — this is normal, continuing to mine");
+            m_logger->info("[Worker_manager]    Re-sending STATELESS_MINER_READY to refresh push subscription...");
+            
+            // Re-subscribe WITHOUT discarding template or stopping workers
+            // Workers keep mining — we just refresh the push subscription
+            retry_template_request();
+            // NOTE: Do NOT call discard_template() or stop_all_workers() here
+        }
     }
 }
 
