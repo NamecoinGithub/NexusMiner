@@ -26,3 +26,10 @@ target_include_directories(mining_template_validation_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/LLP/inc
     ${CMAKE_SOURCE_DIR}/src/TAO/inc
 )
+
+# ChaCha20-Poly1305 AEAD Unit Test
+add_executable(chacha20_test chacha20_test.cpp)
+target_link_libraries(chacha20_test PRIVATE protocol spdlog ${OPENSSL_LIBRARIES})
+target_include_directories(chacha20_test PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+)

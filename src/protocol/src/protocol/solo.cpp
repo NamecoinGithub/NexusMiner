@@ -60,8 +60,12 @@ static const std::vector<uint8_t> AAD_REWARD_RESULT{
 };
 
 /** AAD for encrypting SUBMIT_BLOCK payload
- *  Node expects: empty AAD (no domain separation for block submissions) */
-static const std::vector<uint8_t> AAD_BLOCK_SUBMISSION{};
+ *  Node expects: "BLOCK_SUBMISSION" (16 bytes) for domain separation
+ *  See: LLL-TAO stateless miner decryption expects matching AAD */
+static const std::vector<uint8_t> AAD_BLOCK_SUBMISSION{
+    'B','L','O','C','K','_',
+    'S','U','B','M','I','S','S','I','O','N'
+};
 
 // Helper function to serialize uint64 to little-endian bytes
 static void append_uint64_le(std::vector<uint8_t>& dest, uint64_t value) {
