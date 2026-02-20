@@ -1,0 +1,511 @@
+/**
+ * @file chacha20_test.cpp
+ * @brief Unit tests for ChaCha20-Poly1305 AEAD wrapper and AAD domain separation
+ *
+ * Validates the implementation of:
+ *   - Basic encrypt/decrypt round-trip
+ *   - AAD (Additional Authenticated Data) domain separation
+ *   - AAD mismatch detection (Poly1305 tag failure)
+ *   - Empty vs non-empty AAD behavior
+ *   - Input validation (key size, nonce size, empty plaintext)
+ *   - Falcon public key wrap/unwrap
+ *   - Nonce uniqueness
+ *   - SUBMIT_BLOCK AAD constant correctness ("BLOCK_SUBMISSION")
+ *   - KDF domain separator consistency
+ */
+
+#include "protocol/chacha20_wrapper.hpp"
+#include <iostream>
+#include <cassert>
+#include <cstdint>
+#include <vector>
+#include <string>
+#include <cstring>
+#include <openssl/sha.h>
+
+// Mock logger for testing
+#include "spdlog/spdlog.h"
+#include "spdlog/sinks/null_sink.h"
+
+using namespace nexusminer::protocol;
+
+// Test statistics
+static int tests_run = 0;
+static int tests_passed = 0;
+static int tests_failed = 0;
+
+void print_test_result(const char* name, bool passed) {
+    tests_run++;
+    if (passed) {
+        tests_passed++;
+        std::cout << "  [PASS] " << name << std::endl;
+    } else {
+        tests_failed++;
+        std::cout << "  [FAIL] " << name << std::endl;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Helper: generate deterministic test key (32 bytes)
+// ═══════════════════════════════════════════════════════════════════════════
+static std::vector<uint8_t> make_test_key() {
+    std::vector<uint8_t> key(32, 0);
+    for (size_t i = 0; i < 32; ++i)
+        key[i] = static_cast<uint8_t>(i + 1);
+    return key;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Helper: generate deterministic test nonce (12 bytes)
+// ═══════════════════════════════════════════════════════════════════════════
+static std::vector<uint8_t> make_test_nonce() {
+    std::vector<uint8_t> nonce(12, 0);
+    for (size_t i = 0; i < 12; ++i)
+        nonce[i] = static_cast<uint8_t>(0xA0 + i);
+    return nonce;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Helper: generate test plaintext of given size
+// ═══════════════════════════════════════════════════════════════════════════
+static std::vector<uint8_t> make_test_plaintext(size_t size) {
+    std::vector<uint8_t> pt(size);
+    for (size_t i = 0; i < size; ++i)
+        pt[i] = static_cast<uint8_t>(i & 0xFF);
+    return pt;
+}
+
+// AAD constants matching solo.cpp (these MUST stay in sync)
+static const std::vector<uint8_t> AAD_FALCON_PUBKEY{
+    'F','A','L','C','O','N','_','P','U','B','K','E','Y'
+};
+
+static const std::vector<uint8_t> AAD_REWARD_ADDRESS{
+    'R','E','W','A','R','D','_',
+    'A','D','D','R','E','S','S'
+};
+
+static const std::vector<uint8_t> AAD_REWARD_RESULT{
+    'R','E','W','A','R','D','_',
+    'R','E','S','U','L','T'
+};
+
+static const std::vector<uint8_t> AAD_BLOCK_SUBMISSION{
+    'B','L','O','C','K','_',
+    'S','U','B','M','I','S','S','I','O','N'
+};
+
+static const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
+
+
+int main()
+{
+    // Setup null logger to avoid spam during tests
+    auto null_sink = std::make_shared<spdlog::sinks::null_sink_mt>();
+    auto logger = std::make_shared<spdlog::logger>("logger", null_sink);
+    spdlog::set_default_logger(logger);
+
+    std::cout << "========================================" << std::endl;
+    std::cout << "ChaCha20-Poly1305 AEAD Unit Tests" << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    ChaCha20Wrapper wrapper;
+
+    // ====================================================================
+    // Test 1: Basic encrypt/decrypt round-trip (no AAD)
+    // ====================================================================
+    std::cout << "\nTest 1: Basic encrypt/decrypt round-trip (no AAD)" << std::endl;
+    {
+        auto key = make_test_key();
+        auto nonce = make_test_nonce();
+        auto plaintext = make_test_plaintext(128);
+
+        auto enc = wrapper.encrypt(plaintext, key, nonce);
+        print_test_result("Encryption succeeds", enc.success);
+        print_test_result("Ciphertext non-empty", !enc.data.empty());
+        print_test_result("Ciphertext = plaintext + 16-byte tag",
+                          enc.data.size() == plaintext.size() + 16);
+
+        auto dec = wrapper.decrypt(enc.data, key, nonce);
+        print_test_result("Decryption succeeds", dec.success);
+        print_test_result("Round-trip plaintext matches",
+                          dec.data == plaintext);
+    }
+
+    // ====================================================================
+    // Test 2: Encrypt/decrypt with AAD (BLOCK_SUBMISSION)
+    // ====================================================================
+    std::cout << "\nTest 2: Encrypt/decrypt with AAD (BLOCK_SUBMISSION)" << std::endl;
+    {
+        auto key = make_test_key();
+        auto nonce = make_test_nonce();
+        auto plaintext = make_test_plaintext(256);
+
+        auto enc = wrapper.encrypt(plaintext, key, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("Encryption with AAD succeeds", enc.success);
+
+        auto dec = wrapper.decrypt(enc.data, key, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("Decryption with matching AAD succeeds", dec.success);
+        print_test_result("Round-trip plaintext matches", dec.data == plaintext);
+    }
+
+    // ====================================================================
+    // Test 3: AAD mismatch causes decryption failure (THE CORE BUG)
+    // ====================================================================
+    std::cout << "\nTest 3: AAD mismatch causes decryption failure" << std::endl;
+    {
+        auto key = make_test_key();
+        auto nonce = make_test_nonce();
+        auto plaintext = make_test_plaintext(216);  // Tritium block size
+
+        // Encrypt with BLOCK_SUBMISSION AAD
+        auto enc = wrapper.encrypt(plaintext, key, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("Encryption with BLOCK_SUBMISSION AAD succeeds", enc.success);
+
+        // Try to decrypt with EMPTY AAD → must fail (Poly1305 tag mismatch)
+        auto dec_empty = wrapper.decrypt(enc.data, key, nonce, {});
+        print_test_result("Decrypt with empty AAD FAILS (tag mismatch)", !dec_empty.success);
+
+        // Try to decrypt with WRONG AAD → must fail
+        std::vector<uint8_t> wrong_aad{'W','R','O','N','G'};
+        auto dec_wrong = wrapper.decrypt(enc.data, key, nonce, wrong_aad);
+        print_test_result("Decrypt with wrong AAD FAILS", !dec_wrong.success);
+
+        // Decrypt with CORRECT AAD → must succeed
+        auto dec_correct = wrapper.decrypt(enc.data, key, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("Decrypt with correct AAD succeeds", dec_correct.success);
+        print_test_result("Plaintext matches after correct AAD decrypt",
+                          dec_correct.data == plaintext);
+    }
+
+    // ====================================================================
+    // Test 4: Empty AAD vs non-empty AAD are NOT interchangeable
+    // ====================================================================
+    std::cout << "\nTest 4: Empty AAD vs non-empty AAD are NOT interchangeable" << std::endl;
+    {
+        auto key = make_test_key();
+        auto nonce = make_test_nonce();
+        auto plaintext = make_test_plaintext(100);
+
+        // Encrypt with empty AAD
+        auto enc_empty = wrapper.encrypt(plaintext, key, nonce, {});
+        print_test_result("Encrypt with empty AAD succeeds", enc_empty.success);
+
+        // Try decrypt with BLOCK_SUBMISSION AAD → must fail
+        auto dec_with_aad = wrapper.decrypt(enc_empty.data, key, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("Decrypt empty-AAD ciphertext with BLOCK_SUBMISSION FAILS",
+                          !dec_with_aad.success);
+
+        // Decrypt with empty AAD → must succeed
+        auto dec_empty = wrapper.decrypt(enc_empty.data, key, nonce, {});
+        print_test_result("Decrypt empty-AAD ciphertext with empty AAD succeeds",
+                          dec_empty.success);
+    }
+
+    // ====================================================================
+    // Test 5: Each AAD domain is independent
+    // ====================================================================
+    std::cout << "\nTest 5: AAD domain separation - each domain is independent" << std::endl;
+    {
+        auto key = make_test_key();
+        auto nonce = make_test_nonce();
+        auto plaintext = make_test_plaintext(64);
+
+        // Encrypt with REWARD_ADDRESS AAD
+        auto enc = wrapper.encrypt(plaintext, key, nonce, AAD_REWARD_ADDRESS);
+        print_test_result("Encrypt with REWARD_ADDRESS succeeds", enc.success);
+
+        // Try decrypt with BLOCK_SUBMISSION → fails
+        auto dec_block = wrapper.decrypt(enc.data, key, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("Cross-domain: REWARD_ADDRESS→BLOCK_SUBMISSION FAILS",
+                          !dec_block.success);
+
+        // Try decrypt with REWARD_RESULT → fails
+        auto dec_result = wrapper.decrypt(enc.data, key, nonce, AAD_REWARD_RESULT);
+        print_test_result("Cross-domain: REWARD_ADDRESS→REWARD_RESULT FAILS",
+                          !dec_result.success);
+
+        // Try decrypt with FALCON_PUBKEY → fails
+        auto dec_falcon = wrapper.decrypt(enc.data, key, nonce, AAD_FALCON_PUBKEY);
+        print_test_result("Cross-domain: REWARD_ADDRESS→FALCON_PUBKEY FAILS",
+                          !dec_falcon.success);
+
+        // Decrypt with same domain → succeeds
+        auto dec_correct = wrapper.decrypt(enc.data, key, nonce, AAD_REWARD_ADDRESS);
+        print_test_result("Same domain: REWARD_ADDRESS→REWARD_ADDRESS succeeds",
+                          dec_correct.success && dec_correct.data == plaintext);
+    }
+
+    // ====================================================================
+    // Test 6: BLOCK_SUBMISSION AAD constant is exactly "BLOCK_SUBMISSION"
+    // ====================================================================
+    std::cout << "\nTest 6: BLOCK_SUBMISSION AAD constant verification" << std::endl;
+    {
+        std::string expected = "BLOCK_SUBMISSION";
+        std::vector<uint8_t> expected_vec(expected.begin(), expected.end());
+
+        print_test_result("AAD_BLOCK_SUBMISSION == \"BLOCK_SUBMISSION\"",
+                          AAD_BLOCK_SUBMISSION == expected_vec);
+        print_test_result("AAD_BLOCK_SUBMISSION length is 16",
+                          AAD_BLOCK_SUBMISSION.size() == 16);
+        print_test_result("AAD_BLOCK_SUBMISSION is NOT empty",
+                          !AAD_BLOCK_SUBMISSION.empty());
+    }
+
+    // ====================================================================
+    // Test 7: Other AAD constants verification
+    // ====================================================================
+    std::cout << "\nTest 7: AAD constants byte-exact verification" << std::endl;
+    {
+        std::string exp_reward = "REWARD_ADDRESS";
+        std::vector<uint8_t> exp_reward_vec(exp_reward.begin(), exp_reward.end());
+        print_test_result("AAD_REWARD_ADDRESS == \"REWARD_ADDRESS\" (14 bytes)",
+                          AAD_REWARD_ADDRESS == exp_reward_vec && AAD_REWARD_ADDRESS.size() == 14);
+
+        std::string exp_result = "REWARD_RESULT";
+        std::vector<uint8_t> exp_result_vec(exp_result.begin(), exp_result.end());
+        print_test_result("AAD_REWARD_RESULT == \"REWARD_RESULT\" (13 bytes)",
+                          AAD_REWARD_RESULT == exp_result_vec && AAD_REWARD_RESULT.size() == 13);
+
+        std::string exp_falcon = "FALCON_PUBKEY";
+        std::vector<uint8_t> exp_falcon_vec(exp_falcon.begin(), exp_falcon.end());
+        print_test_result("AAD_FALCON_PUBKEY == \"FALCON_PUBKEY\" (13 bytes)",
+                          AAD_FALCON_PUBKEY == exp_falcon_vec && AAD_FALCON_PUBKEY.size() == 13);
+    }
+
+    // ====================================================================
+    // Test 8: Input validation - invalid key size
+    // ====================================================================
+    std::cout << "\nTest 8: Input validation" << std::endl;
+    {
+        auto nonce = make_test_nonce();
+        auto plaintext = make_test_plaintext(64);
+
+        // Wrong key size (16 bytes instead of 32)
+        std::vector<uint8_t> short_key(16, 0x42);
+        auto enc_short = wrapper.encrypt(plaintext, short_key, nonce);
+        print_test_result("Encrypt with 16-byte key FAILS", !enc_short.success);
+
+        // Wrong nonce size (8 bytes instead of 12)
+        auto key = make_test_key();
+        std::vector<uint8_t> short_nonce(8, 0xAA);
+        auto enc_nonce = wrapper.encrypt(plaintext, key, short_nonce);
+        print_test_result("Encrypt with 8-byte nonce FAILS", !enc_nonce.success);
+
+        // Empty plaintext
+        auto enc_empty = wrapper.encrypt({}, key, nonce);
+        print_test_result("Encrypt with empty plaintext FAILS", !enc_empty.success);
+
+        // Ciphertext too short for decrypt (less than 16-byte tag)
+        std::vector<uint8_t> short_ct(10, 0x00);
+        auto dec_short = wrapper.decrypt(short_ct, key, nonce);
+        print_test_result("Decrypt with too-short ciphertext FAILS", !dec_short.success);
+    }
+
+    // ====================================================================
+    // Test 9: Nonce uniqueness (random generation)
+    // ====================================================================
+    std::cout << "\nTest 9: Nonce uniqueness" << std::endl;
+    {
+        auto n1 = ChaCha20Wrapper::generate_nonce();
+        auto n2 = ChaCha20Wrapper::generate_nonce();
+        auto n3 = ChaCha20Wrapper::generate_nonce();
+
+        print_test_result("Generated nonce is 12 bytes", n1.size() == 12);
+        print_test_result("Two nonces are different", n1 != n2);
+        print_test_result("Three nonces are all different", n1 != n2 && n2 != n3 && n1 != n3);
+    }
+
+    // ====================================================================
+    // Test 10: Key generation
+    // ====================================================================
+    std::cout << "\nTest 10: Key generation" << std::endl;
+    {
+        auto k1 = ChaCha20Wrapper::generate_key();
+        auto k2 = ChaCha20Wrapper::generate_key();
+
+        print_test_result("Generated key is 32 bytes", k1.size() == 32);
+        print_test_result("Two keys are different", k1 != k2);
+    }
+
+    // ====================================================================
+    // Test 11: Falcon public key wrap/unwrap round-trip
+    // ====================================================================
+    std::cout << "\nTest 11: Falcon public key wrap/unwrap" << std::endl;
+    {
+        auto key = make_test_key();
+        auto nonce = make_test_nonce();
+        // Falcon-512 pubkey is 897 bytes
+        auto fake_pubkey = make_test_plaintext(897);
+
+        auto wrapped = wrapper.wrap_falcon_pubkey(fake_pubkey, key, nonce);
+        print_test_result("Wrap Falcon pubkey succeeds", wrapped.success);
+        print_test_result("Wrapped size = 897 + 16 tag",
+                          wrapped.data.size() == 897 + 16);
+
+        auto unwrapped = wrapper.unwrap_falcon_pubkey(wrapped.data, key, nonce);
+        print_test_result("Unwrap Falcon pubkey succeeds", unwrapped.success);
+        print_test_result("Unwrapped key matches original", unwrapped.data == fake_pubkey);
+    }
+
+    // ====================================================================
+    // Test 12: Wrong key causes decryption failure
+    // ====================================================================
+    std::cout << "\nTest 12: Wrong key causes decryption failure" << std::endl;
+    {
+        auto key1 = make_test_key();
+        auto nonce = make_test_nonce();
+        auto plaintext = make_test_plaintext(216);
+
+        auto enc = wrapper.encrypt(plaintext, key1, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("Encryption succeeds", enc.success);
+
+        // Different key
+        std::vector<uint8_t> key2(32, 0xFF);
+        auto dec = wrapper.decrypt(enc.data, key2, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("Decrypt with wrong key FAILS", !dec.success);
+    }
+
+    // ====================================================================
+    // Test 13: Wrong nonce causes decryption failure
+    // ====================================================================
+    std::cout << "\nTest 13: Wrong nonce causes decryption failure" << std::endl;
+    {
+        auto key = make_test_key();
+        auto nonce1 = make_test_nonce();
+        auto plaintext = make_test_plaintext(216);
+
+        auto enc = wrapper.encrypt(plaintext, key, nonce1, AAD_BLOCK_SUBMISSION);
+        print_test_result("Encryption succeeds", enc.success);
+
+        // Different nonce
+        std::vector<uint8_t> nonce2(12, 0xFF);
+        auto dec = wrapper.decrypt(enc.data, key, nonce2, AAD_BLOCK_SUBMISSION);
+        print_test_result("Decrypt with wrong nonce FAILS", !dec.success);
+    }
+
+    // ====================================================================
+    // Test 14: KDF domain separator consistency
+    // ====================================================================
+    std::cout << "\nTest 14: KDF domain separator and key derivation" << std::endl;
+    {
+        // Verify KDF: SHA256(KDF_DOMAIN + genesis) produces 32-byte key
+        std::string domain = "nexus-mining-chacha20-v1";
+        std::vector<uint8_t> genesis(32, 0x42);  // test genesis hash
+
+        std::vector<uint8_t> preimage;
+        preimage.insert(preimage.end(), domain.begin(), domain.end());
+        preimage.insert(preimage.end(), genesis.begin(), genesis.end());
+
+        std::vector<uint8_t> derived_key(SHA256_DIGEST_LENGTH);
+        SHA256(preimage.data(), preimage.size(), derived_key.data());
+
+        print_test_result("KDF produces 32-byte key", derived_key.size() == 32);
+        print_test_result("KDF_DOMAIN matches expected string",
+                          KDF_DOMAIN == "nexus-mining-chacha20-v1");
+
+        // Verify key is not all zeros (basic sanity)
+        bool all_zero = true;
+        for (auto b : derived_key)
+            if (b != 0) { all_zero = false; break; }
+        print_test_result("Derived key is not all zeros", !all_zero);
+
+        // Verify same inputs produce same key (deterministic)
+        std::vector<uint8_t> derived_key2(SHA256_DIGEST_LENGTH);
+        SHA256(preimage.data(), preimage.size(), derived_key2.data());
+        print_test_result("KDF is deterministic (same input → same key)",
+                          derived_key == derived_key2);
+
+        // Verify different genesis produces different key
+        std::vector<uint8_t> genesis2(32, 0x43);  // different genesis
+        std::vector<uint8_t> preimage2;
+        preimage2.insert(preimage2.end(), domain.begin(), domain.end());
+        preimage2.insert(preimage2.end(), genesis2.begin(), genesis2.end());
+
+        std::vector<uint8_t> derived_key3(SHA256_DIGEST_LENGTH);
+        SHA256(preimage2.data(), preimage2.size(), derived_key3.data());
+        print_test_result("Different genesis → different key",
+                          derived_key != derived_key3);
+    }
+
+    // ====================================================================
+    // Test 15: Simulate SUBMIT_BLOCK encrypt→decrypt (end-to-end)
+    // ====================================================================
+    std::cout << "\nTest 15: SUBMIT_BLOCK end-to-end simulation" << std::endl;
+    {
+        // Simulate: miner encrypts with AAD, node decrypts with same AAD
+        // This is the exact scenario that was failing
+
+        // Step 1: Derive session key from genesis (same as both miner and node do)
+        std::vector<uint8_t> genesis(32, 0xAB);
+        std::vector<uint8_t> preimage;
+        preimage.insert(preimage.end(), KDF_DOMAIN.begin(), KDF_DOMAIN.end());
+        preimage.insert(preimage.end(), genesis.begin(), genesis.end());
+        std::vector<uint8_t> session_key(SHA256_DIGEST_LENGTH);
+        SHA256(preimage.data(), preimage.size(), session_key.data());
+
+        // Step 2: Create mock block payload (216 bytes block + 8 bytes timestamp)
+        auto block_data = make_test_plaintext(216);
+        std::vector<uint8_t> payload;
+        payload.insert(payload.end(), block_data.begin(), block_data.end());
+        // Append 8-byte LE timestamp
+        uint64_t timestamp = 1700000000ULL;
+        for (int i = 0; i < 8; ++i)
+            payload.push_back(static_cast<uint8_t>((timestamp >> (i * 8)) & 0xFF));
+
+        // Step 3: Miner encrypts with BLOCK_SUBMISSION AAD
+        auto nonce = ChaCha20Wrapper::generate_nonce();
+        auto enc = wrapper.encrypt(payload, session_key, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("Miner: Encrypt SUBMIT_BLOCK payload succeeds", enc.success);
+
+        // Step 4: Node decrypts with BLOCK_SUBMISSION AAD
+        auto dec = wrapper.decrypt(enc.data, session_key, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("Node: Decrypt SUBMIT_BLOCK payload succeeds", dec.success);
+        print_test_result("Decrypted payload matches original", dec.data == payload);
+
+        // Step 5: Demonstrate the bug scenario - if miner used empty AAD but node expects BLOCK_SUBMISSION
+        auto enc_empty = wrapper.encrypt(payload, session_key, nonce, {});
+        auto dec_mismatch = wrapper.decrypt(enc_empty.data, session_key, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("BUG SCENARIO: empty-AAD encrypt + BLOCK_SUBMISSION decrypt FAILS",
+                          !dec_mismatch.success);
+    }
+
+    // ====================================================================
+    // Test 16: Large payload handling (realistic block submission size)
+    // ====================================================================
+    std::cout << "\nTest 16: Large payload handling" << std::endl;
+    {
+        auto key = make_test_key();
+        auto nonce = make_test_nonce();
+        // Realistic payload: 216 (block) + 8 (timestamp) + 2 (siglen) + 1577 (Falcon-1024 sig) + 2 (physiglen)
+        size_t payload_size = 216 + 8 + 2 + 1577 + 2;
+        auto plaintext = make_test_plaintext(payload_size);
+
+        auto enc = wrapper.encrypt(plaintext, key, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("Encrypt large payload (1805 bytes) succeeds", enc.success);
+
+        auto dec = wrapper.decrypt(enc.data, key, nonce, AAD_BLOCK_SUBMISSION);
+        print_test_result("Decrypt large payload succeeds", dec.success);
+        print_test_result("Large payload round-trip matches", dec.data == plaintext);
+    }
+
+    // ====================================================================
+    // Test 17: ChaCha20 availability check
+    // ====================================================================
+    std::cout << "\nTest 17: ChaCha20 availability" << std::endl;
+    {
+        print_test_result("ChaCha20-Poly1305 is available", ChaCha20Wrapper::is_available());
+    }
+
+    // ====================================================================
+    // Summary
+    // ====================================================================
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "Test Summary: " << tests_passed << "/" << tests_run << " passed";
+    if (tests_failed > 0)
+        std::cout << " (" << tests_failed << " FAILED)";
+    std::cout << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    return tests_failed > 0 ? 1 : 0;
+}
