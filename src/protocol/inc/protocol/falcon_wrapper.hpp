@@ -60,8 +60,8 @@ public:
     
     /**
      * @brief Constructor
-     * @param pubkey Falcon-512 public key (897 bytes)
-     * @param privkey Falcon-512 private key (1281 bytes)
+     * @param pubkey Falcon public key (897 bytes for Falcon-512, 1793 bytes for Falcon-1024)
+     * @param privkey Falcon private key (1281 bytes for Falcon-512, 2305 bytes for Falcon-1024)
      */
     FalconSignatureWrapper(const std::vector<uint8_t>& pubkey,
                           const std::vector<uint8_t>& privkey);
