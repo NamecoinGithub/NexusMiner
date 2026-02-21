@@ -389,13 +389,16 @@ int main()
     // ====================================================================
     std::cout << "\nTest 14: KDF domain separator and key derivation" << std::endl;
     {
-        // Verify KDF: SHA256(KDF_DOMAIN + genesis) produces 32-byte key
+        // Verify KDF: SHA256(KDF_DOMAIN + reverse(genesis)) produces 32-byte key
+        // NOTE: genesis bytes are reversed before KDF to match node's GetHex()+ParseHex()
+        // byte order (uint256_t stored little-endian, GetHex() reverses for display)
         std::string domain = "nexus-mining-chacha20-v1";
         std::vector<uint8_t> genesis(32, 0x42);  // test genesis hash
+        std::vector<uint8_t> genesis_reversed(genesis.rbegin(), genesis.rend());
 
         std::vector<uint8_t> preimage;
         preimage.insert(preimage.end(), domain.begin(), domain.end());
-        preimage.insert(preimage.end(), genesis.begin(), genesis.end());
+        preimage.insert(preimage.end(), genesis_reversed.begin(), genesis_reversed.end());
 
         std::vector<uint8_t> derived_key(SHA256_DIGEST_LENGTH);
         SHA256(preimage.data(), preimage.size(), derived_key.data());
@@ -418,9 +421,10 @@ int main()
 
         // Verify different genesis produces different key
         std::vector<uint8_t> genesis2(32, 0x43);  // different genesis
+        std::vector<uint8_t> genesis2_reversed(genesis2.rbegin(), genesis2.rend());
         std::vector<uint8_t> preimage2;
         preimage2.insert(preimage2.end(), domain.begin(), domain.end());
-        preimage2.insert(preimage2.end(), genesis2.begin(), genesis2.end());
+        preimage2.insert(preimage2.end(), genesis2_reversed.begin(), genesis2_reversed.end());
 
         std::vector<uint8_t> derived_key3(SHA256_DIGEST_LENGTH);
         SHA256(preimage2.data(), preimage2.size(), derived_key3.data());
@@ -437,10 +441,12 @@ int main()
         // This is the exact scenario that was failing
 
         // Step 1: Derive session key from genesis (same as both miner and node do)
+        // CRITICAL: genesis bytes are reversed to match node's uint256_t GetHex()+ParseHex() order
         std::vector<uint8_t> genesis(32, 0xAB);
+        std::vector<uint8_t> genesis_reversed(genesis.rbegin(), genesis.rend());
         std::vector<uint8_t> preimage;
         preimage.insert(preimage.end(), KDF_DOMAIN.begin(), KDF_DOMAIN.end());
-        preimage.insert(preimage.end(), genesis.begin(), genesis.end());
+        preimage.insert(preimage.end(), genesis_reversed.begin(), genesis_reversed.end());
         std::vector<uint8_t> session_key(SHA256_DIGEST_LENGTH);
         SHA256(preimage.data(), preimage.size(), session_key.data());
 

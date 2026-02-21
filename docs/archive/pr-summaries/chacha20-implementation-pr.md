@@ -126,25 +126,25 @@ Created visual test (`/tmp/test_improved_visual_logging.cpp`):
 
 The ChaCha20 session key is derived using a deterministic key derivation function (KDF):
 
-**Formula**: `session_key = SHA256(domain || genesis_bytes)`
+**Formula**: `session_key = SHA256(domain || reverse(genesis_bytes))`
 
 Where:
 - `domain` = "nexus-mining-chacha20-v1" (domain separator to prevent cross-protocol attacks)
-- `genesis_bytes` = Tritium account genesis hash (32 bytes)
+- `genesis_bytes` = Tritium account genesis hash (32 bytes, as stored by miner from config hex string)
+- `reverse()` = byte order reversal to match node's `uint256_t::GetHex()+ParseHex()` representation
 - `||` = concatenation operator
 - Output: 32-byte session key suitable for ChaCha20
 
 **Critical Requirements**:
-1. **Byte Order Consistency**: The `genesis_bytes` must match LLL-TAO's `hashGenesis.GetBytes()` byte order exactly
+1. **Byte Order**: Genesis bytes MUST be reversed before KDF input. The node stores `uint256_t` little-endian internally and uses `GetHex()+ParseHex()` which produces reversed bytes relative to the natural hex string interpretation. The miner reverses genesis bytes to match.
 2. **Verification**: Compare the "Derived Key (hex)" log from the miner with the node's "Derived Key (32 bytes):" log
 3. **Genesis Source**: Use the same genesis hash that the node has for your Tritium account
-4. **Diagnostic Logging**: The miner now logs detailed key derivation information for debugging
+4. **Diagnostic Logging**: The miner logs both forward and reversed genesis bytes for debugging
 
 **Troubleshooting Key Mismatches**:
 - If authentication fails with "ChaCha20-Poly1305 authentication failed - tag mismatch", the derived keys don't match
 - Check that `tritium_genesis` in miner.conf matches the node's `hashGenesis.GetHex()` output
-- Verify byte ordering - genesis should be in the same format as LLL-TAO's GetBytes() returns
-- Compare diagnostic logs between miner and node to identify where they diverge
+- The miner log shows "Genesis (as-stored, forward)" and "Genesis (reversed for KDF)" for comparison with node logs
 
 ### ChaCha20-Poly1305 Encryption
 - **Algorithm**: AEAD (Authenticated Encryption with Associated Data)

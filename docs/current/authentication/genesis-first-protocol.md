@@ -47,10 +47,20 @@ falcon_miner_privkey=<1281-byte-hex>
 ### How It Works
 
 1. **Miner sends hashGenesis FIRST** (32 bytes)
-2. **Both sides derive same key**: `SHA256("nexus-mining-chacha20-v1" || genesis)`
+2. **Both sides derive same key**: `SHA256("nexus-mining-chacha20-v1" || reverse(genesis_bytes))`
 3. **Miner encrypts pubkey** with derived key + random nonce
 4. **Node decrypts pubkey** using same derived key
 5. **Authentication proceeds** with challenge-response as before
+
+**IMPORTANT: Genesis Byte Order**
+
+The genesis bytes must be reversed before KDF input to match the node's
+`uint256_t::GetHex() + ParseHex()` representation. This is because Nexus
+`uint256_t` stores values in little-endian byte order internally, and
+`GetHex()` reverses them for display/export. The miner must match this
+representation exactly for both sides to derive the same session key.
+
+Formula: `session_key = SHA256(domain || reverse(genesis_bytes))`
 
 ### Getting Your Genesis Hash
 
@@ -151,12 +161,15 @@ When enabled, you'll see:
 ```cpp
 std::vector<uint8_t> derive_chacha20_session_key(const std::vector<uint8_t>& genesis)
 {
+    // CRITICAL: Reverse genesis bytes to match node's uint256_t GetHex()+ParseHex() byte order
+    std::vector<uint8_t> genesis_reversed(genesis.rbegin(), genesis.rend());
+
     // Domain separation for security
     static const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
     
     std::vector<uint8_t> preimage;
     preimage.insert(preimage.end(), KDF_DOMAIN.begin(), KDF_DOMAIN.end());
-    preimage.insert(preimage.end(), genesis.begin(), genesis.end());
+    preimage.insert(preimage.end(), genesis_reversed.begin(), genesis_reversed.end());
     
     // SHA256 for deterministic 32-byte key
     std::vector<uint8_t> key(SHA256_DIGEST_LENGTH);
@@ -171,6 +184,7 @@ std::vector<uint8_t> derive_chacha20_session_key(const std::vector<uint8_t>& gen
 **Security Properties:**
 - **Deterministic**: Same genesis always produces same session key
 - **Domain Separation**: "nexus-mining-chacha20-v1" prevents cross-protocol attacks
+- **Byte Order Consistency**: Genesis bytes reversed to match node's `uint256_t::GetHex()+ParseHex()` representation
 - **Collision Resistant**: SHA256 provides 256-bit security level
 - **Error Handling**: Throws exception on cryptographic failure (no silent errors)
 

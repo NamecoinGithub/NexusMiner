@@ -211,9 +211,15 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 
 std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t>& genesis)
 {
+    // CRITICAL: Node stores uint256_t little-endian internally and uses GetHex()+ParseHex()
+    // which reverses the byte order relative to natural hex string interpretation.
+    // We must reverse the genesis bytes here to match the node's KDF output exactly.
+    // See: src/LLC/include/mining_session_keys.h DeriveChaCha20Key()
+    std::vector<uint8_t> genesis_reversed(genesis.rbegin(), genesis.rend());
+
     std::vector<uint8_t> preimage;
     preimage.insert(preimage.end(), KDF_DOMAIN.begin(), KDF_DOMAIN.end());
-    preimage.insert(preimage.end(), genesis.begin(), genesis.end());
+    preimage.insert(preimage.end(), genesis_reversed.begin(), genesis_reversed.end());
     
     // Use OpenSSL SHA256 - output is always SHA256_DIGEST_LENGTH (32) bytes
     std::vector<uint8_t> key(SHA256_DIGEST_LENGTH);
@@ -229,17 +235,8 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
     m_logger->info("║  ChaCha20 KEY DERIVATION DIAGNOSTIC (Miner Side)          ║");
     m_logger->info("╠═══════════════════════════════════════════════════════════╣");
     m_logger->info("║ Domain: {}", KDF_DOMAIN);
-    m_logger->info("║ Genesis size: {} bytes", genesis.size());
-    
-    // Log genesis bytes for comparison (sanity check: only if we have a reasonable amount)
-    if (genesis.size() >= MIN_GENESIS_LOG_SIZE) {
-        // Use existing keys::to_hex with truncated vector to limit log output
-        size_t log_length = std::min(genesis.size(), MAX_GENESIS_LOG_BYTES);
-        std::vector<uint8_t> genesis_truncated(genesis.begin(), genesis.begin() + log_length);
-        m_logger->info("║ Genesis (hex): {}", nexusminer::keys::to_hex(genesis_truncated));
-    }
-    
-    // Log derived key for comparison with node's "Derived Key (32 bytes):" log
+    m_logger->info("║ Genesis (as-stored, forward): {}", nexusminer::keys::to_hex(genesis));
+    m_logger->info("║ Genesis (reversed for KDF):   {}", nexusminer::keys::to_hex(genesis_reversed));
     m_logger->info("║ Derived Key (hex): {}", nexusminer::keys::to_hex(key));
     m_logger->info("╚═══════════════════════════════════════════════════════════╝");
     
