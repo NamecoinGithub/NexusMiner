@@ -10,7 +10,7 @@
  *   - Input validation (key size, nonce size, empty plaintext)
  *   - Falcon public key wrap/unwrap
  *   - Nonce uniqueness
- *   - SUBMIT_BLOCK AAD constant correctness ("BLOCK_SUBMISSION")
+ *   - SUBMIT_BLOCK AAD is empty {} (no domain separation, matches node behavior)
  *   - KDF domain separator consistency
  */
 
@@ -90,10 +90,10 @@ static const std::vector<uint8_t> AAD_REWARD_RESULT{
     'R','E','S','U','L','T'
 };
 
-static const std::vector<uint8_t> AAD_BLOCK_SUBMISSION{
-    'B','L','O','C','K','_',
-    'S','U','B','M','I','S','S','I','O','N'
-};
+// AAD_BLOCK_SUBMISSION is intentionally empty: the node decrypts SUBMIT_BLOCK
+// with no AAD (default empty vector), so the miner must also encrypt with {}.
+// See: LLL-TAO stateless_miner_connection.cpp ~L1186 (no AAD argument).
+static const std::vector<uint8_t> AAD_BLOCK_SUBMISSION{};
 
 static const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
 
@@ -150,32 +150,37 @@ int main()
     }
 
     // ====================================================================
-    // Test 3: AAD mismatch causes decryption failure (THE CORE BUG)
+    // Test 3: SUBMIT_BLOCK uses empty AAD — miner and node both use {}
     // ====================================================================
-    std::cout << "\nTest 3: AAD mismatch causes decryption failure" << std::endl;
+    std::cout << "\nTest 3: SUBMIT_BLOCK uses empty AAD (no domain separation)" << std::endl;
     {
         auto key = make_test_key();
         auto nonce = make_test_nonce();
         auto plaintext = make_test_plaintext(216);  // Tritium block size
 
-        // Encrypt with BLOCK_SUBMISSION AAD
+        // Miner encrypts with empty AAD (AAD_BLOCK_SUBMISSION == {})
         auto enc = wrapper.encrypt(plaintext, key, nonce, AAD_BLOCK_SUBMISSION);
-        print_test_result("Encryption with BLOCK_SUBMISSION AAD succeeds", enc.success);
+        print_test_result("Miner: Encrypt SUBMIT_BLOCK with empty AAD succeeds", enc.success);
 
-        // Try to decrypt with EMPTY AAD → must fail (Poly1305 tag mismatch)
+        // Node decrypts with empty AAD → must succeed (matching empty AADs)
         auto dec_empty = wrapper.decrypt(enc.data, key, nonce, {});
-        print_test_result("Decrypt with empty AAD FAILS (tag mismatch)", !dec_empty.success);
+        print_test_result("Node: Decrypt SUBMIT_BLOCK with empty AAD succeeds", dec_empty.success);
+        print_test_result("Decrypted payload matches original", dec_empty.data == plaintext);
 
-        // Try to decrypt with WRONG AAD → must fail
+        // Try to decrypt with a non-empty AAD → must fail (tag mismatch)
         std::vector<uint8_t> wrong_aad{'W','R','O','N','G'};
         auto dec_wrong = wrapper.decrypt(enc.data, key, nonce, wrong_aad);
-        print_test_result("Decrypt with wrong AAD FAILS", !dec_wrong.success);
+        print_test_result("Decrypt empty-AAD ciphertext with non-empty AAD FAILS", !dec_wrong.success);
 
-        // Decrypt with CORRECT AAD → must succeed
-        auto dec_correct = wrapper.decrypt(enc.data, key, nonce, AAD_BLOCK_SUBMISSION);
-        print_test_result("Decrypt with correct AAD succeeds", dec_correct.success);
-        print_test_result("Plaintext matches after correct AAD decrypt",
-                          dec_correct.data == plaintext);
+        // Old PR #156 bug: if miner had used "BLOCK_SUBMISSION" (non-empty) AAD but
+        // node decrypts with empty AAD → decryption fails (PR #156 was the bug)
+        std::vector<uint8_t> old_buggy_aad{
+            'B','L','O','C','K','_','S','U','B','M','I','S','S','I','O','N'
+        };
+        auto enc_buggy = wrapper.encrypt(plaintext, key, nonce, old_buggy_aad);
+        auto dec_buggy = wrapper.decrypt(enc_buggy.data, key, nonce, {});
+        print_test_result("PR#156 BUG: 'BLOCK_SUBMISSION' encrypt + empty decrypt FAILS",
+                          !dec_buggy.success);
     }
 
     // ====================================================================
@@ -191,9 +196,10 @@ int main()
         auto enc_empty = wrapper.encrypt(plaintext, key, nonce, {});
         print_test_result("Encrypt with empty AAD succeeds", enc_empty.success);
 
-        // Try decrypt with BLOCK_SUBMISSION AAD → must fail
-        auto dec_with_aad = wrapper.decrypt(enc_empty.data, key, nonce, AAD_BLOCK_SUBMISSION);
-        print_test_result("Decrypt empty-AAD ciphertext with BLOCK_SUBMISSION FAILS",
+        // Try decrypt with a non-empty AAD → must fail
+        std::vector<uint8_t> nonempty_aad{'N','O','N','E','M','P','T','Y'};
+        auto dec_with_aad = wrapper.decrypt(enc_empty.data, key, nonce, nonempty_aad);
+        print_test_result("Decrypt empty-AAD ciphertext with non-empty AAD FAILS",
                           !dec_with_aad.success);
 
         // Decrypt with empty AAD → must succeed
@@ -237,19 +243,16 @@ int main()
     }
 
     // ====================================================================
-    // Test 6: BLOCK_SUBMISSION AAD constant is exactly "BLOCK_SUBMISSION"
+    // Test 6: BLOCK_SUBMISSION AAD constant is empty {} (no domain separation)
     // ====================================================================
     std::cout << "\nTest 6: BLOCK_SUBMISSION AAD constant verification" << std::endl;
     {
-        std::string expected = "BLOCK_SUBMISSION";
-        std::vector<uint8_t> expected_vec(expected.begin(), expected.end());
-
-        print_test_result("AAD_BLOCK_SUBMISSION == \"BLOCK_SUBMISSION\"",
-                          AAD_BLOCK_SUBMISSION == expected_vec);
-        print_test_result("AAD_BLOCK_SUBMISSION length is 16",
-                          AAD_BLOCK_SUBMISSION.size() == 16);
-        print_test_result("AAD_BLOCK_SUBMISSION is NOT empty",
-                          !AAD_BLOCK_SUBMISSION.empty());
+        print_test_result("AAD_BLOCK_SUBMISSION is empty ({})",
+                          AAD_BLOCK_SUBMISSION.empty());
+        print_test_result("AAD_BLOCK_SUBMISSION length is 0",
+                          AAD_BLOCK_SUBMISSION.size() == 0);
+        print_test_result("AAD_BLOCK_SUBMISSION == std::vector<uint8_t>{}",
+                          AAD_BLOCK_SUBMISSION == std::vector<uint8_t>{});
     }
 
     // ====================================================================
@@ -433,8 +436,8 @@ int main()
     // ====================================================================
     std::cout << "\nTest 15: SUBMIT_BLOCK end-to-end simulation" << std::endl;
     {
-        // Simulate: miner encrypts with AAD, node decrypts with same AAD
-        // This is the exact scenario that was failing
+        // Simulate: miner encrypts with empty AAD, node decrypts with empty AAD.
+        // The node calls LLC::DecryptPayloadChaCha20 with NO AAD argument (empty by default).
 
         // Step 1: Derive session key from genesis (same as both miner and node do)
         std::vector<uint8_t> genesis(32, 0xAB);
@@ -453,20 +456,25 @@ int main()
         for (int i = 0; i < 8; ++i)
             payload.push_back(static_cast<uint8_t>((timestamp >> (i * 8)) & 0xFF));
 
-        // Step 3: Miner encrypts with BLOCK_SUBMISSION AAD
+        // Step 3: Miner encrypts with empty AAD (AAD_BLOCK_SUBMISSION == {})
         auto nonce = ChaCha20Wrapper::generate_nonce();
         auto enc = wrapper.encrypt(payload, session_key, nonce, AAD_BLOCK_SUBMISSION);
-        print_test_result("Miner: Encrypt SUBMIT_BLOCK payload succeeds", enc.success);
+        print_test_result("Miner: Encrypt SUBMIT_BLOCK with empty AAD succeeds", enc.success);
 
-        // Step 4: Node decrypts with BLOCK_SUBMISSION AAD
+        // Step 4: Node decrypts with empty AAD → succeeds (matching empty AADs)
         auto dec = wrapper.decrypt(enc.data, session_key, nonce, AAD_BLOCK_SUBMISSION);
-        print_test_result("Node: Decrypt SUBMIT_BLOCK payload succeeds", dec.success);
+        print_test_result("Node: Decrypt SUBMIT_BLOCK with empty AAD succeeds", dec.success);
         print_test_result("Decrypted payload matches original", dec.data == payload);
 
-        // Step 5: Demonstrate the bug scenario - if miner used empty AAD but node expects BLOCK_SUBMISSION
-        auto enc_empty = wrapper.encrypt(payload, session_key, nonce, {});
-        auto dec_mismatch = wrapper.decrypt(enc_empty.data, session_key, nonce, AAD_BLOCK_SUBMISSION);
-        print_test_result("BUG SCENARIO: empty-AAD encrypt + BLOCK_SUBMISSION decrypt FAILS",
+        // Step 5: Old PR #156 bug scenario — if miner used "BLOCK_SUBMISSION" (non-empty)
+        // AAD but node decrypts with empty AAD, decryption fails. The "BLOCK_SUBMISSION"
+        // string AAD was itself the bug introduced by PR #156.
+        std::vector<uint8_t> old_pr156_aad{
+            'B','L','O','C','K','_','S','U','B','M','I','S','S','I','O','N'
+        };
+        auto enc_pr156 = wrapper.encrypt(payload, session_key, nonce, old_pr156_aad);
+        auto dec_mismatch = wrapper.decrypt(enc_pr156.data, session_key, nonce, {});
+        print_test_result("PR#156 BUG: 'BLOCK_SUBMISSION' encrypt + empty decrypt FAILS",
                           !dec_mismatch.success);
     }
 

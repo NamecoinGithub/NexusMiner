@@ -266,8 +266,8 @@ struct SignatureResult {
 **Symptom**: `Falcon Signature Wrapper initialization failed - invalid keys`
 
 **Solutions**:
-- Verify public key is exactly 897 bytes (Falcon-512)
-- Verify private key is exactly 1281 bytes (Falcon-512)
+- Verify public key is exactly 897 bytes (Falcon-512) or 1793 bytes (Falcon-1024)
+- Verify private key is exactly 1281 bytes (Falcon-512) or 2305 bytes (Falcon-1024)
 - Regenerate keys: `./NexusMiner --create-keys`
 
 ### Signature Generation Failed

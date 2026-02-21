@@ -381,19 +381,20 @@ namespace FalconConstants {
     // Validation Helpers
     //==========================================================================
     
-    /** Check if signature size is within valid Falcon-512 range */
+    /** Check if signature size is within valid Falcon-512 or Falcon-1024 range */
     constexpr bool is_valid_signature_size(size_t size) {
-        return size >= FALCON512_SIG_MIN && size <= FALCON512_SIG_ABSOLUTE_MAX;
+        return (size >= FALCON512_SIG_MIN && size <= FALCON512_SIG_ABSOLUTE_MAX) ||
+               (size >= FALCON1024_SIG_MIN && size <= FALCON1024_SIG_ABSOLUTE_MAX);
     }
     
-    /** Check if public key size matches Falcon-512 */
+    /** Check if public key size matches Falcon-512 or Falcon-1024 */
     constexpr bool is_valid_pubkey_size(size_t size) {
-        return size == FALCON512_PUBKEY_SIZE;
+        return size == FALCON512_PUBKEY_SIZE || size == FALCON1024_PUBKEY_SIZE;
     }
     
-    /** Check if private key size matches Falcon-512 */
+    /** Check if private key size matches Falcon-512 or Falcon-1024 */
     constexpr bool is_valid_privkey_size(size_t size) {
-        return size == FALCON512_PRIVKEY_SIZE;
+        return size == FALCON512_PRIVKEY_SIZE || size == FALCON1024_PRIVKEY_SIZE;
     }
 
 } // namespace FalconConstants
