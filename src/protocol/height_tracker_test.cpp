@@ -177,6 +177,68 @@ void test_zero_heights_safe() {
 }
 
 // ============================================================================
+// Test 7: Unified height advancing alone does NOT make template stale
+// (Phase 1B: unified-delta must NOT trigger stale/template refresh)
+// ============================================================================
+void test_unified_advance_does_not_make_stale() {
+    std::cout << "\nTest 7: Unified height advancing alone → NOT stale\n";
+    HeightTracker tracker;
+
+    // Initial state: channel at 100, template for 101
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 101);
+
+    // Unified height advances many blocks (other channels found blocks)
+    // while channel height stays at 100 (Prime mining takes minutes)
+    tracker.OnPushNotification(5010, 100, 0x1d00ffff);
+
+    auto snap = tracker.GetSnapshot();
+
+    // Template should still be valid: channel_height (100) < channel_target (101)
+    print_test_result("is_template_stale() == false after unified-only advance",
+                      !snap.is_template_stale());
+
+    // Channel target unchanged
+    print_test_result("channel_target still == 101", snap.channel_target == 101);
+
+    // Channel height unchanged
+    print_test_result("channel_height still == 100", snap.channel_height == 100);
+
+    // Unified height updated
+    print_test_result("unified_height updated to 5010", snap.unified_height == 5010);
+
+    // ExplainMismatch should be empty (heights are still consistent)
+    std::string msg = tracker.ExplainMismatch();
+    print_test_result("ExplainMismatch() is empty (template still valid)", msg.empty());
+}
+
+// ============================================================================
+// Test 8: Channel height advancing DOES make template stale
+// ============================================================================
+void test_channel_advance_makes_stale() {
+    std::cout << "\nTest 8: Channel height advancing → stale\n";
+    HeightTracker tracker;
+
+    // Initial state: channel at 100, template for 101
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 101);
+
+    // Channel height advances to 101 (another miner found the block)
+    tracker.OnPushNotification(5001, 101, 0x1d00ffff);
+
+    auto snap = tracker.GetSnapshot();
+
+    // Template is stale: channel_height (101) >= channel_target (101)
+    print_test_result("is_template_stale() == true after channel advance",
+                      snap.is_template_stale());
+
+    // ExplainMismatch should mention STALE
+    std::string msg = tracker.ExplainMismatch();
+    print_test_result("ExplainMismatch() mentions STALE after channel advance",
+                      msg.find("STALE") != std::string::npos);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -190,6 +252,8 @@ int main() {
     test_get_round_source();
     test_drift_explain();
     test_zero_heights_safe();
+    test_unified_advance_does_not_make_stale();
+    test_channel_advance_makes_stale();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
