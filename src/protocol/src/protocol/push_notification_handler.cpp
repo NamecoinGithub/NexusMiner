@@ -23,6 +23,7 @@ void PushNotificationHandler::handle_push_notification(
     std::uint32_t expected_channel,
     ProtocolLane lane,
     MiningTemplateInterface* template_interface,
+    HeightTracker* height_tracker,
     std::function<void()> request_work_fn)
 {
     const char* ch_name = channel_name(expected_channel);
@@ -67,6 +68,15 @@ void PushNotificationHandler::handle_push_notification(
         m_logger->info("[Solo Push]   Unified height: {}", unified_height);
         m_logger->info("[Solo Push]   {} height: {}", ch_name, channel_height);
         m_logger->info("[Solo Push]   Difficulty: 0x{:08x}", difficulty);
+    }
+
+    /* Update centralized height tracker */
+    if (height_tracker) {
+        height_tracker->OnPushNotification(unified_height, channel_height, difficulty);
+        std::string drift_msg = height_tracker->ExplainMismatch();
+        if (!drift_msg.empty()) {
+            m_logger->info("{}", drift_msg);
+        }
     }
 
     /* Check if current template is stale */

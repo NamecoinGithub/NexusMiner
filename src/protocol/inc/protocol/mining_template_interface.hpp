@@ -11,6 +11,7 @@
 #include <mutex>
 #include "LLP/block.hpp"
 #include "network/types.hpp"
+#include "protocol/height_tracker.hpp"
 #include "spdlog/spdlog.h"
 
 namespace nexusminer {
@@ -420,6 +421,16 @@ public:
      */
     static const char* state_to_string(TemplateState state);
 
+    /**
+     * @brief Attach a HeightTracker for centralized height tracking (non-owning)
+     *
+     * When set, read_template() will call HeightTracker::OnTemplateReceived()
+     * after successfully parsing a template, providing drift diagnostics.
+     *
+     * @param tracker Non-owning pointer to the HeightTracker (may be nullptr)
+     */
+    void set_height_tracker(HeightTracker* tracker);
+
 private:
     
     /**
@@ -458,6 +469,8 @@ private:
     TemplateFeedHandler m_feed_handler;
     ValidationFailureHandler m_validation_failure_handler;
     mutable std::mutex m_template_mutex;  // Protects m_current_template access
+    
+    HeightTracker* m_height_tracker{nullptr};  // Non-owning; for centralized height tracking
     
     std::shared_ptr<spdlog::logger> m_logger;
     

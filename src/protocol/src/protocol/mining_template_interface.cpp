@@ -195,7 +195,18 @@ MiningTemplateInterface::read_template(const network::Payload& data,
         m_logger->info("[TemplateInterface]   nBits: 0x{:08x}", tmpl.nBits);
         m_logger->info("[TemplateInterface]   Validation time: {} μs", read_time.count());
         m_logger->info("[TemplateInterface] ═══════════════════════════════════════");
-        
+
+        // Notify centralized height tracker (parallel, non-blocking)
+        if (m_height_tracker) {
+            m_height_tracker->OnTemplateReceived(
+                tmpl.block.nChannel,
+                tmpl.block.nHeight);
+            std::string drift_msg = m_height_tracker->ExplainMismatch();
+            if (!drift_msg.empty()) {
+                m_logger->info("{}", drift_msg);
+            }
+        }
+
         // Auto-feed to registered handlers
         feed_current_template();
     } else {
@@ -945,6 +956,11 @@ uint32_t MiningTemplateInterface::get_template_height() const
         return 0;
     }
     return m_current_template.block.nHeight;
+}
+
+void MiningTemplateInterface::set_height_tracker(HeightTracker* tracker)
+{
+    m_height_tracker = tracker;
 }
 
 } // namespace protocol

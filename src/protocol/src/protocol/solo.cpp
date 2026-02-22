@@ -170,6 +170,10 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     m_template_interface = std::make_unique<MiningTemplateInterface>(m_channel, 0);
     m_logger->info("[Solo] Mining Template Interface initialized for unified READ/FEED system");
     
+    // Wire centralized HeightTracker into MiningTemplateInterface (non-owning pointer)
+    m_template_interface->set_height_tracker(&m_height_tracker);
+    m_logger->info("[Solo] HeightTracker wired into MiningTemplateInterface");
+    
     // Setup template feed handler - called automatically when templates are validated
     m_template_interface->set_template_feed_handler(
         [this](const MiningTemplateInterface::MiningTemplate& tmpl, uint32_t nBits) {
@@ -573,39 +577,6 @@ network::Shared_payload Solo::get_work()
     }
     
     return payload;     
-}
-
-network::Shared_payload Solo::get_height()
-{
-    m_logger->info("[Solo] Requesting blockchain height via GET_HEIGHT");
-    
-    // GET_HEIGHT is a header-only request packet (opcode 130, >= 128)
-    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
-    Packet packet = use_stateless_opcode
-        ? Packet{ static_cast<uint16_t>(LLP::MirrorOpcode(static_cast<uint8_t>(Packet::GET_HEIGHT))) }
-        : Packet{ static_cast<uint8_t>(Packet::GET_HEIGHT) };
-    
-    // Debug logging to verify packet encoding
-    if (packet.m_is_uint16_opcode) {
-        m_logger->debug("[Solo] GET_HEIGHT packet: header=0x{:04x} length={} is_valid={}", 
-                       packet.m_header,
-                       packet.m_length, 
-                       packet.is_valid());
-    } else {
-        m_logger->debug("[Solo] GET_HEIGHT packet: header=0x{:02x} length={} is_valid={}", 
-                       static_cast<int>(packet.m_header),
-                       packet.m_length, 
-                       packet.is_valid());
-    }
-    
-    auto payload = packet.get_bytes();
-    if (payload && !payload->empty()) {
-        m_logger->debug("[Solo] GET_HEIGHT encoded payload size: {} bytes (header-only)", payload->size());
-    } else {
-        m_logger->error("[Solo] GET_HEIGHT get_bytes() returned null or empty payload!");
-    }
-    
-    return payload;
 }
 
 network::Shared_payload Solo::send_get_round()
@@ -1544,6 +1515,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         m_last_round_status.has_channel_heights = true;
         
+        // Update centralized height tracker from GET_ROUND response
+        m_height_tracker.OnGetRound(unified_height, channel_height,
+                                    has_difficulty ? difficulty : m_last_round_status.difficulty);
+        
         // Set channel-specific height based on miner's channel
         // Reset all channels first, then set only the active channel
         if (is_legacy_multichannel) {
@@ -2290,6 +2265,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_push_handler->handle_push_notification(
             packet, mining::CHANNEL_PRIME, m_protocol_lane,
             m_template_interface.get(),
+            &m_height_tracker,
             [&connection, this]() { if (connection) connection->transmit(get_work()); });
     }
     else if (matches_opcode(Packet::HASH_BLOCK_AVAILABLE))
@@ -2297,6 +2273,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_push_handler->handle_push_notification(
             packet, mining::CHANNEL_HASH, m_protocol_lane,
             m_template_interface.get(),
+            &m_height_tracker,
             [&connection, this]() { if (connection) connection->transmit(get_work()); });
     }
     // ═══════════════════════════════════════════════════════════════════════

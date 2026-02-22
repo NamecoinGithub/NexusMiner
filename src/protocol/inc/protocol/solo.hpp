@@ -7,6 +7,7 @@
 #include "protocol/session_manager.hpp"
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/push_notification_handler.hpp"
+#include "protocol/height_tracker.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "spdlog/spdlog.h"
@@ -36,7 +37,6 @@ public:
     void reset() override;
     network::Shared_payload login(Login_handler handler) override;
     network::Shared_payload get_work() override;
-    network::Shared_payload get_height();
     network::Shared_payload submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce) override;
     void set_block_handler(Set_block_handler handler) override { m_set_block_handler = std::move(handler); }
 
@@ -230,6 +230,9 @@ private:
     
     // Mining Template Interface for unified READ/FEED operations
     std::unique_ptr<MiningTemplateInterface> m_template_interface;
+    
+    // Centralized height tracker (single source of truth for heights)
+    HeightTracker m_height_tracker;
     
     // Connection for multi-packet authentication flow
     std::shared_ptr<network::Connection> m_connection;
