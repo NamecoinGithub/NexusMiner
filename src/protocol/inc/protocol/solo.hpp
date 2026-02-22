@@ -125,6 +125,9 @@ public:
     
     // Push notification subscription (LLL-TAO PR #156)
     network::Shared_payload send_miner_ready();
+    
+    // HeightTracker snapshot (single source of truth for height/staleness decisions)
+    HeightTracker::Snapshot get_height_tracker_snapshot() const { return m_height_tracker.GetSnapshot(); }
 
 private:
     

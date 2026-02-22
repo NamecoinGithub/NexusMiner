@@ -2,6 +2,7 @@
 #include "protocol/protocol.hpp"
 #include "protocol/falcon_constants.hpp"
 #include "protocol/push_notification_handler.hpp"
+#include "protocol/packet_builder.hpp"
 #include "packet.hpp"
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
@@ -361,11 +362,9 @@ network::Shared_payload Solo::login(Login_handler handler)
     if (m_protocol_lane == ProtocolLane::UNKNOWN) {
         m_logger->warn("[Solo Auth] Protocol lane unknown - defaulting to legacy auth opcode");
     }
-    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
-    Packet packet = use_stateless_opcode
-        ? Packet{ static_cast<uint16_t>(LLP::MirrorOpcode(static_cast<uint8_t>(Packet::MINER_AUTH_INIT))) }
-        : Packet{ static_cast<uint8_t>(Packet::MINER_AUTH_INIT) };
-    packet.m_data = std::make_shared<network::Payload>();
+    
+    // Build MINER_AUTH_INIT payload
+    network::Payload auth_payload;
     
     // ═══════════════════════════════════════════════════════════
     // STEP 1: hashGenesis FIRST (32 bytes) - enables key derivation
@@ -373,7 +372,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
     
     // Genesis goes FIRST in the packet
-    packet.m_data->insert(packet.m_data->end(), tritium_genesis.begin(), tritium_genesis.end());
+    auth_payload.insert(auth_payload.end(), tritium_genesis.begin(), tritium_genesis.end());
     
     // ═══════════════════════════════════════════════════════════
     // STEP 2: Prepare pubkey (optionally ChaCha20 wrapped)
@@ -434,40 +433,25 @@ network::Shared_payload Solo::login(Login_handler handler)
     // STEP 3: pubkey_len + pubkey
     // ═══════════════════════════════════════════════════════════
     uint16_t pubkey_len = static_cast<uint16_t>(pubkey_to_send.size());
-    packet.m_data->push_back(static_cast<uint8_t>((pubkey_len >> 8) & 0xFF));
-    packet.m_data->push_back(static_cast<uint8_t>(pubkey_len & 0xFF));
-    packet.m_data->insert(packet.m_data->end(), pubkey_to_send.begin(), pubkey_to_send.end());
+    auth_payload.push_back(static_cast<uint8_t>((pubkey_len >> 8) & 0xFF));
+    auth_payload.push_back(static_cast<uint8_t>(pubkey_len & 0xFF));
+    auth_payload.insert(auth_payload.end(), pubkey_to_send.begin(), pubkey_to_send.end());
     
     // ═══════════════════════════════════════════════════════════
     // STEP 4: miner_id_len + miner_id
     // ═══════════════════════════════════════════════════════════
     std::string miner_id = m_miner_id.empty() ? "NexusMiner" : m_miner_id;
     uint16_t miner_id_len = static_cast<uint16_t>(miner_id.size());
-    packet.m_data->push_back(static_cast<uint8_t>((miner_id_len >> 8) & 0xFF));
-    packet.m_data->push_back(static_cast<uint8_t>(miner_id_len & 0xFF));
-    packet.m_data->insert(packet.m_data->end(), miner_id.begin(), miner_id.end());
+    auth_payload.push_back(static_cast<uint8_t>((miner_id_len >> 8) & 0xFF));
+    auth_payload.push_back(static_cast<uint8_t>(miner_id_len & 0xFF));
+    auth_payload.insert(auth_payload.end(), miner_id.begin(), miner_id.end());
     
-    packet.m_length = static_cast<uint32_t>(packet.m_data->size());
+    m_logger->debug("[Solo Auth] Packet built: length={}", auth_payload.size());
     
-    // ═══════════════════════════════════════════════════════════
-    // Debug: Verify packet is valid before transmission
-    // ═══════════════════════════════════════════════════════════
-    m_logger->debug("[Solo Auth] Packet built: header=0x{:04X} ({}), length={}, data_size={}", 
-                    packet.m_header, get_llp_header_name(packet.m_header), packet.m_length, 
-                    packet.m_data ? packet.m_data->size() : 0);
-    
-    if (!packet.is_valid())
-    {
-        m_logger->error("[Solo Auth] CRITICAL: Packet is_valid() returned false!");
-        m_logger->error("[Solo Auth]   header=0x{:04X} ({}), m_length={}, is_auth_packet={}", 
-                        packet.m_header, get_llp_header_name(packet.m_header), packet.m_length, packet.is_auth_packet());
-        m_logger->error("[Solo Auth]   Validation state: {}", packet.get_validation_state());
-    }
-    
-    auto bytes = packet.get_bytes();
+    auto bytes = PacketBuilder::build(m_protocol_lane, LLP::MINER_AUTH_INIT, auth_payload);
     if (!bytes || bytes->empty())
     {
-        m_logger->error("[Solo Auth] CRITICAL: get_bytes() returned null/empty!");
+        m_logger->error("[Solo Auth] CRITICAL: PacketBuilder::build returned null/empty!");
         m_logger->error("[Solo Auth] Cannot transmit - payload is null or empty");
         return network::Shared_payload{};
     }
@@ -490,7 +474,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_logger->info("  Public Key:  {} bytes {}", pubkey_len,
                    wrapped ? "(ChaCha20 wrapped)" : "(unwrapped)");
     m_logger->info("  Miner ID:    '{}'", miner_id);
-    m_logger->info("  Total Size:  {} bytes", packet.m_length);
+    m_logger->info("  Total Size:  {} bytes", auth_payload.size());
     m_logger->info("═══════════════════════════════════════════════════════════");
     m_logger->info("");
     
@@ -548,32 +532,16 @@ network::Shared_payload Solo::get_work()
     m_logger->info("[Solo]   Authenticated: {}", m_authenticated ? "YES" : "NO");
     m_logger->info("[Solo]   Reward bound: {}", m_reward_bound ? "YES" : "NO");
 
-    /* Build GET_BLOCK packet (header-only, no payload) */
-    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
-    Packet packet = use_stateless_opcode
-        ? Packet{ static_cast<uint16_t>(Packet::STATELESS_GET_BLOCK) }
-        : Packet{ static_cast<uint8_t>(Packet::GET_BLOCK) };  // Header = 129 (0x81)
-    packet.m_length = 0;  // No payload for GET_BLOCK
+    /* Build GET_BLOCK packet via PacketBuilder (header-only, no payload) */
+    auto payload = PacketBuilder::build(m_protocol_lane, LLP::GET_BLOCK);
     
-    // Debug logging to diagnose packet encoding
-    if (packet.m_is_uint16_opcode) {
-        m_logger->debug("[Solo] GET_BLOCK packet: header=0x{:04x} length={} is_valid={}", 
-                       packet.m_header, packet.m_length, packet.is_valid());
-    } else {
-        m_logger->debug("[Solo] GET_BLOCK packet: header=0x{:02x} length={} is_valid={}", 
-                       static_cast<int>(packet.m_header),
-                       packet.m_length, 
-                       packet.is_valid());
-    }
-    
-    auto payload = packet.get_bytes();
     if (payload && !payload->empty()) {
         m_logger->debug("[Solo] GET_BLOCK encoded payload size: {} bytes", payload->size());
         // TRAINING WHEELS: Show GET_BLOCK packet (should be just header byte)
         m_logger->info("[Solo] GET_BLOCK packet hex dump:");
         m_logger->info("\n{}", format_llp_payload_hexdump(payload, 16));
     } else {
-        m_logger->error("[Solo] GET_BLOCK get_bytes() returned null or empty payload!");
+        m_logger->error("[Solo] GET_BLOCK PacketBuilder::build returned null or empty payload!");
     }
     
     return payload;     
@@ -595,30 +563,12 @@ network::Shared_payload Solo::send_get_round()
     
     m_logger->debug("[Solo GET_ROUND] Requesting round status via GET_ROUND");
     
-    // GET_ROUND is a header-only request packet (opcode 133, >= 128)
-    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
-    Packet packet = use_stateless_opcode
-        ? Packet{ static_cast<uint16_t>(LLP::MirrorOpcode(static_cast<uint8_t>(Packet::GET_ROUND))) }
-        : Packet{ static_cast<uint8_t>(Packet::GET_ROUND) };
-    
-    // Debug logging to verify packet encoding
-    if (packet.m_is_uint16_opcode) {
-        m_logger->debug("[Solo GET_ROUND] Packet: header=0x{:04x} length={} is_valid={}", 
-                       packet.m_header,
-                       packet.m_length, 
-                       packet.is_valid());
-    } else {
-        m_logger->debug("[Solo GET_ROUND] Packet: header=0x{:02x} length={} is_valid={}", 
-                       static_cast<int>(packet.m_header),
-                       packet.m_length, 
-                       packet.is_valid());
-    }
-    
-    auto payload = packet.get_bytes();
+    // GET_ROUND is a header-only request packet; use PacketBuilder for lane-aware framing
+    auto payload = PacketBuilder::build(m_protocol_lane, LLP::GET_ROUND);
     if (payload && !payload->empty()) {
         m_logger->debug("[Solo GET_ROUND] Encoded payload size: {} bytes (header-only)", payload->size());
     } else {
-        m_logger->error("[Solo GET_ROUND] get_bytes() returned null or empty payload!");
+        m_logger->error("[Solo GET_ROUND] PacketBuilder::build returned null or empty payload!");
     }
     
     return payload;
@@ -913,28 +863,16 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         m_logger->info("════════════════════════════════════════════════════════");
         
         // ═══════════════════════════════════════════════════════════════════
-        // LANE-BASED OPCODE SELECTION: Use correct opcode based on protocol lane
-        // ═══════════════════════════════════════════════════════════════════
-        bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
-        const char* lane_name = use_stateless_opcode ? "STATELESS" : "LEGACY";
-        const char* packet_name = use_stateless_opcode ? "STATELESS_SUBMIT_BLOCK" : "SUBMIT_BLOCK";
+        // LANE-BASED OPCODE SELECTION: Use PacketBuilder for correct framing
         // Mirror-mapped: SUBMIT_BLOCK (1) -> 0xD001 (not 0xD00A!)
-        uint16_t opcode = use_stateless_opcode ? 
-            static_cast<uint16_t>(Packet::STATELESS_SUBMIT_BLOCK) :  // 0xD001 (mirror-mapped)
-            static_cast<uint16_t>(Packet::SUBMIT_BLOCK);             // 1 (legacy)
-        
-        // Create packet with appropriate opcode (consistent constructor usage)
-        Packet packet = use_stateless_opcode 
-            ? Packet{ static_cast<uint16_t>(Packet::STATELESS_SUBMIT_BLOCK) }  // 0xD001 for stateless protocol
-            : Packet{ static_cast<uint8_t>(Packet::SUBMIT_BLOCK) };  // legacy opcode
-        
-        packet.m_data = std::make_shared<network::Payload>(encryptedPayload);
-        packet.m_length = static_cast<uint32_t>(encryptedPayload.size());
+        // ═══════════════════════════════════════════════════════════════════
+        const char* lane_name = (m_protocol_lane == ProtocolLane::STATELESS) ? "STATELESS" : "LEGACY";
+        const char* packet_name = (m_protocol_lane == ProtocolLane::STATELESS) ? "STATELESS_SUBMIT_BLOCK" : "SUBMIT_BLOCK";
         
         m_logger->info("📤 Submitting block via {} lane", lane_name);
-        m_logger->info("📤 Sending encrypted {} packet (opcode: 0x{:04x}) to node...", packet_name, opcode);
+        m_logger->info("📤 Sending encrypted {} packet to node...", packet_name);
         
-        auto result = packet.get_bytes();
+        auto result = PacketBuilder::build(m_protocol_lane, LLP::SUBMIT_BLOCK, encryptedPayload);
         
         if (!result || result->empty()) {
             m_logger->error("❌ {} packet encoding failed!", packet_name);
@@ -2522,12 +2460,7 @@ network::Shared_payload Solo::send_session_keepalive()
     std::vector<uint8_t> keepalive_data;
     append_uint32_le(keepalive_data, m_session_id);
     
-    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
-    Packet packet = use_stateless_opcode
-        ? Packet{ static_cast<uint16_t>(LLP::MirrorOpcode(static_cast<uint8_t>(Packet::SESSION_KEEPALIVE))),
-                  std::make_shared<network::Payload>(keepalive_data) }
-        : Packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE), std::make_shared<network::Payload>(keepalive_data) };
-    return packet.get_bytes();
+    return PacketBuilder::build(m_protocol_lane, LLP::SESSION_KEEPALIVE, keepalive_data);
 }
 
 void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
@@ -2536,11 +2469,7 @@ void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
     m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
     
     std::vector<uint8_t> channel_data(1, m_channel);
-    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
-    Packet set_channel_packet = use_stateless_opcode
-        ? Packet{ static_cast<uint16_t>(Packet::STATELESS_SET_CHANNEL), std::make_shared<network::Payload>(channel_data) }
-        : Packet{ static_cast<uint8_t>(Packet::SET_CHANNEL), std::make_shared<network::Payload>(channel_data) };
-    connection->transmit(set_channel_packet.get_bytes());
+    connection->transmit(PacketBuilder::build(m_protocol_lane, LLP::SET_CHANNEL, channel_data));
 }
 
 void Solo::set_tritium_genesis(std::vector<uint8_t> const& genesis)
@@ -2698,50 +2627,30 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
         return;
     }
     
-    // Build MINER_AUTH_RESPONSE packet
-    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
-    Packet response_packet = use_stateless_opcode
-        ? Packet{ static_cast<uint16_t>(LLP::MirrorOpcode(static_cast<uint8_t>(Packet::MINER_AUTH_RESPONSE))) }
-        : Packet{ static_cast<uint8_t>(Packet::MINER_AUTH_RESPONSE) };  // 209 - m_is_valid = true automatically
-    response_packet.m_data = std::make_shared<network::Payload>();
+    // Build MINER_AUTH_RESPONSE packet using PacketBuilder
+    network::Payload response_payload;
     
     // NOTE: MINER_AUTH_RESPONSE uses little-endian encoding per protocol specification
     // sig_len (2 bytes, little-endian)
     uint16_t sig_len = static_cast<uint16_t>(sign_result.signature.size());
-    response_packet.m_data->push_back(static_cast<uint8_t>(sig_len & 0xFF));
-    response_packet.m_data->push_back(static_cast<uint8_t>((sig_len >> 8) & 0xFF));
+    response_payload.push_back(static_cast<uint8_t>(sig_len & 0xFF));
+    response_payload.push_back(static_cast<uint8_t>((sig_len >> 8) & 0xFF));
     
     // signature
-    response_packet.m_data->insert(response_packet.m_data->end(), 
-                                   sign_result.signature.begin(), 
-                                   sign_result.signature.end());
+    response_payload.insert(response_payload.end(), 
+                             sign_result.signature.begin(), 
+                             sign_result.signature.end());
     
-    response_packet.m_length = static_cast<uint32_t>(response_packet.m_data->size());
-    
-    // Debug: Verify packet is valid before transmission
-    m_logger->debug("[Solo Auth] MINER_AUTH_RESPONSE packet built: header=0x{:04X} ({}), length={}, data_size={}", 
-                    response_packet.m_header, get_llp_header_name(response_packet.m_header), response_packet.m_length, 
-                    response_packet.m_data ? response_packet.m_data->size() : 0);
-    
-    if (!response_packet.is_valid())
-    {
-        m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_RESPONSE is_valid() returned false!");
-        m_logger->error("[Solo Auth]   header=0x{:04X} ({}), m_length={}, is_auth_packet={}", 
-                        response_packet.m_header, get_llp_header_name(response_packet.m_header), 
-                        response_packet.m_length, 
-                        response_packet.is_auth_packet());
-        m_logger->error("[Solo Auth]   Validation state: {}", response_packet.get_validation_state());
-        reset_auth_state();
-        return;
-    }
+    // Debug: Verify payload size before transmission
+    m_logger->debug("[Solo Auth] MINER_AUTH_RESPONSE payload: length={}", response_payload.size());
     
     m_logger->info("[Solo Phase 2] Sending MINER_AUTH_RESPONSE: sig_len={}, total_size={}", 
-                   sig_len, response_packet.m_length);
+                   sig_len, response_payload.size());
     
-    // Validate packet serialization
-    auto bytes = response_packet.get_bytes();
+    // Build and validate the response packet
+    auto bytes = PacketBuilder::build(m_protocol_lane, LLP::MINER_AUTH_RESPONSE, response_payload);
     if (!bytes || bytes->empty()) {
-        m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_RESPONSE get_bytes() returned null/empty!");
+        m_logger->error("[Solo Auth] CRITICAL: MINER_AUTH_RESPONSE PacketBuilder::build returned null/empty!");
         m_logger->error("[Solo Phase 2] Failed to serialize MINER_AUTH_RESPONSE packet");
         reset_auth_state();
         return;
@@ -2866,17 +2775,10 @@ network::Shared_payload Solo::send_set_reward()
         payload_data = vHash;
     }
     
-    // Build the MINER_SET_REWARD packet
-    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
-    Packet packet = use_stateless_opcode
-        ? Packet{ static_cast<uint16_t>(Packet::STATELESS_MINER_SET_REWARD) }
-        : Packet{ static_cast<uint8_t>(Packet::MINER_SET_REWARD) };
-    packet.m_data = std::make_shared<network::Payload>(payload_data);
-    packet.m_length = static_cast<uint32_t>(payload_data.size());
+    // Build the MINER_SET_REWARD packet via PacketBuilder
+    m_logger->info("[Solo Reward] MINER_SET_REWARD packet built: {} bytes", payload_data.size());
     
-    m_logger->info("[Solo Reward] MINER_SET_REWARD packet built: {} bytes", packet.m_length);
-    
-    return packet.get_bytes();
+    return PacketBuilder::build(m_protocol_lane, LLP::MINER_SET_REWARD, payload_data);
 }
 
 network::Shared_payload Solo::send_miner_ready()
@@ -2894,20 +2796,8 @@ network::Shared_payload Solo::send_miner_ready()
                    m_channel, 
                    m_channel == mining::CHANNEL_PRIME ? "Prime" : "Hash");
     
-    // MINER_READY is a header-only packet (no payload)
-    Packet packet = use_stateless
-        ? Packet{ static_cast<uint16_t>(Packet::STATELESS_MINER_READY) }
-        : Packet{ static_cast<uint8_t>(Packet::MINER_READY) };
-    
-    if (use_stateless) {
-        m_logger->debug("[Solo Push] MINER_READY packet: header=0x{:04x} length={} is_valid={}", 
-                       packet.m_header, packet.m_length, packet.is_valid());
-    } else {
-        m_logger->debug("[Solo Push] MINER_READY packet: header=0x{:02x} length={} is_valid={}", 
-                       static_cast<int>(packet.m_header), packet.m_length, packet.is_valid());
-    }
-    
-    auto payload = packet.get_bytes();
+    // MINER_READY is a header-only packet (no payload); use PacketBuilder for lane-aware framing
+    auto payload = PacketBuilder::build(m_protocol_lane, LLP::MINER_READY);
     if (payload && !payload->empty()) {
         m_subscribed_to_notifications = true;
         if (use_stateless) {
