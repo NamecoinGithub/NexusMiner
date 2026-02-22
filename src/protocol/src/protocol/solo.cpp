@@ -3270,25 +3270,20 @@ void Solo::check_unified_height_delta(uint32_t current_unified_height)
         return;  // No template yet
     }
     
-    // Check if unified height moved significantly (other channel found blocks)
+    // Informational only: log when unified height moves while channel height stays constant.
+    // Unified height advancing (other channels finding blocks) does NOT make the current
+    // channel template stale. Only channel height advancing is authoritative for staleness.
+    // Channel-height staleness is handled by check_staleness_by_channel_delta() and
+    // HeightTracker::is_template_stale().
     if (current_unified_height > m_template_unified_height) {
         uint32_t delta = current_unified_height - m_template_unified_height;
         
         if (delta >= UNIFIED_HEIGHT_DELTA_TRIGGER) {
-            m_logger->warn("[Solo Poll] ⚠️ Unified height moved {} blocks ({} → {})",
+            m_logger->info("[Solo Poll] ℹ️  Unified height moved {} blocks ({} → {}) - other channel(s) found blocks",
                 delta, m_template_unified_height, current_unified_height);
-            m_logger->warn("[Solo Poll]    Other channel(s) found blocks - requesting fresh template");
-            
-            // Request fresh template
-            if (m_template_interface) {
-                m_template_interface->discard_template("Unified height delta exceeded");
-            }
-            
-            // Reset template height to prevent repeated triggers
-            m_template_unified_height = 0;
-            
-            // Trigger GET_BLOCK request
-            // (The main loop will see no valid template and request one)
+            m_logger->info("[Solo Poll]    Channel height is authoritative for staleness - continuing to mine");
+            // Update to avoid repeated log spam
+            m_template_unified_height = current_unified_height;
         }
     }
 }

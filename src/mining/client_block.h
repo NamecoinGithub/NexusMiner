@@ -39,7 +39,8 @@ public:
     uint1024_t hashPrevBlock;       // Previous block hash (128 bytes)
     uint512_t hashMerkleRoot;       // Merkle root (64 bytes)
     uint32_t nChannel;              // Mining channel (1=Prime, 2=Hash, 3=Stake)
-    uint32_t nHeight;               // Unified blockchain height
+    uint32_t nHeight;               // Template height field: represents channel_target in stateless templates
+                                    // (the channel-specific height being mined, not the unified blockchain height)
     uint32_t nBits;                 // Difficulty bits
     uint64_t nNonce;                // Mining nonce
     uint32_t nTime;                 // Block timestamp

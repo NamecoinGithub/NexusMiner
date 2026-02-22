@@ -158,9 +158,12 @@ chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_
             // Intelligent polling: only send if protocol says it's time
             if (protocol_shared->should_send_get_round())
             {
-                // Send GET_ROUND request (opcode 133)
-                Packet packet_get_round{ static_cast<uint8_t>(Packet::GET_ROUND) };
-                connection_shared->transmit(packet_get_round.get_bytes());
+                // Lane-aware GET_ROUND: use send_get_round() which selects the correct
+                // opcode framing (16-bit 0xD085 for stateless lane, 8-bit for legacy lane).
+                auto payload = protocol_shared->send_get_round();
+                if (payload && !payload->empty()) {
+                    connection_shared->transmit(payload);
+                }
             }
 
             // Restart timer - use weak_ptr to avoid move invalidation
