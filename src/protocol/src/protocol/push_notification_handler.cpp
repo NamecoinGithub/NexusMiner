@@ -88,18 +88,20 @@ void PushNotificationHandler::handle_push_notification(
     /* Check if current template is stale using HeightTracker snapshot */
     if (template_interface && template_interface->has_valid_template())
     {
+        // Take one snapshot for all decisions in this block.
+        auto snap = height_tracker ? height_tracker->GetSnapshot() : HeightTracker::Snapshot{};
+
         // Use HeightTracker as single source of truth for staleness decision.
         // is_template_stale() returns true when channel_height >= channel_target (both non-zero).
-        bool stale = height_tracker && height_tracker->GetSnapshot().is_template_stale();
+        bool stale = height_tracker && snap.is_template_stale();
 
         if (stale)
         {
-            auto snap = height_tracker->GetSnapshot();
             if (lane == ProtocolLane::STATELESS) {
-                m_logger->info("[Solo Push] ✗ Stale (channel_height {} >= channel_target {})",
+                m_logger->info("[Solo Push] ✗ Stale (channel_height {} >= channel_target {}) [reason: channel_advanced]",
                               snap.channel_height, snap.channel_target);
             } else {
-                m_logger->info("[Solo Push] ✗ Template stale (channel_height {} >= channel_target {})",
+                m_logger->info("[Solo Push] ✗ Template stale (channel_height {} >= channel_target {}) [reason: channel_advanced]",
                               snap.channel_height, snap.channel_target);
             }
             m_logger->info("[Solo Push] Requesting fresh {} template...", ch_name);
@@ -107,22 +109,37 @@ void PushNotificationHandler::handle_push_notification(
         }
         else
         {
-            // Log informational context (unified height may have advanced — that's OK)
-            auto const* tmpl = template_interface->get_current_template();
-            if (tmpl)
+            // Template is not channel-stale. Check if the unified tip has moved
+            // (another channel found a block after this template was issued).
+            // hashPrevBlock in the template is now stale even though the channel
+            // height hasn't changed, so we need a fresh template.
+            bool tip_moved = height_tracker && snap.is_tip_moved();
+
+            if (tip_moved)
             {
-                // Use HeightTracker snapshot for unified height (not template header nHeight,
-                // which represents channel_target in stateless templates).
-                if (channel_height == tmpl->nChannelHeight)
+                m_logger->info("[Solo Push] ↑ Tip moved (unified {} → {}) — requesting fresh {} template [reason: tip_moved]",
+                              snap.template_unified_height, snap.unified_height, ch_name);
+                request_work_fn();
+            }
+            else
+            {
+                // Log informational context (unified height may have advanced — that's OK)
+                auto const* tmpl = template_interface->get_current_template();
+                if (tmpl)
                 {
-                    uint32_t snap_unified = height_tracker ? height_tracker->GetSnapshot().unified_height : unified_height;
-                    m_logger->info("[Solo Push] ✓ {} channel_target={} unchanged, unified_height={}",
-                                  ch_name, tmpl->nChannelHeight, snap_unified);
-                    // Continue mining current template
-                }
-                else
-                {
-                    m_logger->debug("[Solo Push] ✓ Template still valid");
+                    // Use HeightTracker snapshot for unified height (not template header nHeight,
+                    // which represents channel_target in stateless templates).
+                    if (channel_height == tmpl->nChannelHeight)
+                    {
+                        uint32_t snap_unified = height_tracker ? snap.unified_height : unified_height;
+                        m_logger->info("[Solo Push] ✓ {} channel_target={} unchanged, unified_height={}",
+                                      ch_name, tmpl->nChannelHeight, snap_unified);
+                        // Continue mining current template
+                    }
+                    else
+                    {
+                        m_logger->debug("[Solo Push] ✓ Template still valid");
+                    }
                 }
             }
         }

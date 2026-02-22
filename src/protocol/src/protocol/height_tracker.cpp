@@ -43,6 +43,7 @@ void HeightTracker::OnTemplateReceived(uint32_t channel,
     std::lock_guard<std::mutex> lock(m_mutex);
     m_state.channel = channel;
     m_state.channel_target = template_channel_target;
+    m_state.template_unified_height = m_state.unified_height;  // capture tip at template receipt
     m_state.last_update_source = UpdateSource::TEMPLATE;
     m_state.last_template_update = std::chrono::steady_clock::now();
 }

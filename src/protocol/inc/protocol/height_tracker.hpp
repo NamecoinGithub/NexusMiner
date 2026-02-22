@@ -41,6 +41,7 @@ public:
         uint32_t difficulty_nbits{0};         ///< Compact nBits difficulty
         uint32_t channel_target{0};           ///< Template channel target (0 = unset)
         uint32_t channel{0};                  ///< Mining channel (1=Prime, 2=Hash)
+        uint32_t template_unified_height{0}; ///< Unified height at time of last template receipt
         UpdateSource last_update_source{UpdateSource::NONE};
 
         /// Time of last push/GET_ROUND update
@@ -67,6 +68,19 @@ public:
         bool is_template_stale() const {
             return (channel_height > 0 && channel_target > 0 &&
                     channel_height >= channel_target);
+        }
+
+        /**
+         * @brief True when the unified tip has moved beyond the height at which
+         *        the current template was issued (hashPrevBlock is stale).
+         *
+         * Returns true when unified_height has advanced past template_unified_height,
+         * i.e. another channel found a block after this template was received.
+         * This does NOT imply channel staleness — the channel may still be valid.
+         * Both values must be non-zero to avoid false positives at startup.
+         */
+        bool is_tip_moved() const {
+            return (template_unified_height > 0 && unified_height > template_unified_height);
         }
 
         /**

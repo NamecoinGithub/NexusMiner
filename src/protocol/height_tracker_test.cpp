@@ -10,6 +10,9 @@
  *  5. ExplainMismatch reports drift when template target differs from expected
  *  6. ExplainMismatch reports staleness when channel height >= template target
  *  7. GET_ROUND update sets source correctly
+ *  8. Channel height advancing DOES make template stale
+ *  9. is_tip_moved() detects unified tip advance (Phase 3A: tip_moved refresh reason)
+ * 10. is_tip_moved() resets to false after new template received
  */
 
 #include "protocol/height_tracker.hpp"
@@ -239,6 +242,78 @@ void test_channel_advance_makes_stale() {
 }
 
 // ============================================================================
+// Test 9: is_tip_moved() detects when unified tip advances beyond template tip
+//         (Phase 3A: hashPrevBlock staleness via unified height delta)
+// ============================================================================
+void test_is_tip_moved_detected() {
+    std::cout << "\nTest 9: is_tip_moved() — unified tip advance triggers refresh\n";
+    HeightTracker tracker;
+
+    // Initial state: channel at 100, template for 101, unified at 5000
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 101);
+
+    auto snap_initial = tracker.GetSnapshot();
+
+    // template_unified_height should be captured as 5000
+    print_test_result("template_unified_height == 5000 after template received",
+                      snap_initial.template_unified_height == 5000);
+
+    // No tip movement yet: unified == template_unified
+    print_test_result("is_tip_moved() == false before unified advance",
+                      !snap_initial.is_tip_moved());
+
+    // Another channel finds a block: unified advances to 5005, channel stays at 100
+    tracker.OnPushNotification(5005, 100, 0x1d00ffff);
+    auto snap = tracker.GetSnapshot();
+
+    // Tip has moved: unified (5005) > template_unified (5000)
+    print_test_result("is_tip_moved() == true after unified advance",
+                      snap.is_tip_moved());
+
+    // But template is NOT channel-stale: channel_height (100) < channel_target (101)
+    print_test_result("is_template_stale() == false (channel height unchanged)",
+                      !snap.is_template_stale());
+
+    // template_unified_height unchanged (only updates on OnTemplateReceived)
+    print_test_result("template_unified_height still == 5000 (template not refreshed)",
+                      snap.template_unified_height == 5000);
+
+    // unified_height updated to new value
+    print_test_result("unified_height updated to 5005",
+                      snap.unified_height == 5005);
+}
+
+// ============================================================================
+// Test 10: is_tip_moved() resets to false after new template received
+// ============================================================================
+void test_is_tip_moved_resets_on_new_template() {
+    std::cout << "\nTest 10: is_tip_moved() resets when new template received\n";
+    HeightTracker tracker;
+
+    // Template at unified=5000, channel=100
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 101);
+
+    // Unified tip moves to 5005
+    tracker.OnPushNotification(5005, 100, 0x1d00ffff);
+    print_test_result("is_tip_moved() == true before fresh template",
+                      tracker.GetSnapshot().is_tip_moved());
+
+    // Fresh template received (now template_unified_height == 5005)
+    tracker.OnTemplateReceived(1, 101);
+    auto snap = tracker.GetSnapshot();
+
+    // After new template, tip is no longer "moved"
+    print_test_result("is_tip_moved() == false after fresh template received",
+                      !snap.is_tip_moved());
+
+    // template_unified_height updated to current unified height
+    print_test_result("template_unified_height == 5005 (new template at new tip)",
+                      snap.template_unified_height == 5005);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -254,6 +329,8 @@ int main() {
     test_zero_heights_safe();
     test_unified_advance_does_not_make_stale();
     test_channel_advance_makes_stale();
+    test_is_tip_moved_detected();
+    test_is_tip_moved_resets_on_new_template();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
