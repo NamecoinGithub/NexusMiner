@@ -52,3 +52,13 @@ target_include_directories(packet_builder_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/LLP
     ${CMAKE_SOURCE_DIR}/src
 )
+
+# Phase 2B: unified height-state update regression tests
+add_executable(phase2b_update_height_test phase2b_update_height_test.cpp)
+target_link_libraries(phase2b_update_height_test PRIVATE protocol LLP spdlog)
+target_include_directories(phase2b_update_height_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src
+)

@@ -201,6 +201,22 @@ private:
      */
     void handle_fork_detected(mining::ClientChannelManager* pManager, uint32_t current_height);
 
+    /**
+     * @brief Unified height-state updater (single source of truth for both HeightTracker and ClientChannelManager)
+     *
+     * Called from push notification handlers and GET_ROUND handlers to ensure
+     * HeightTracker and the active ClientChannelManager are always updated from
+     * the same parsed data.  Fork detection is run immediately after the manager
+     * update so that template invalidation is consistent across both sources.
+     *
+     * @param unified_height  Unified blockchain height from the parsed packet
+     * @param channel_height  Channel-specific height from the parsed packet
+     * @param difficulty_nbits Compact nBits difficulty from the parsed packet
+     * @param source          Update origin (PUSH or GET_ROUND)
+     */
+    void update_height_state(uint32_t unified_height, uint32_t channel_height,
+                             uint32_t difficulty_nbits, HeightTracker::UpdateSource source);
+
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;
     std::uint32_t m_current_height;

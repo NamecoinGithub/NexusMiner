@@ -24,6 +24,7 @@ void PushNotificationHandler::handle_push_notification(
     ProtocolLane lane,
     MiningTemplateInterface* template_interface,
     HeightTracker* height_tracker,
+    std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
     std::function<void()> request_work_fn)
 {
     const char* ch_name = channel_name(expected_channel);
@@ -70,9 +71,14 @@ void PushNotificationHandler::handle_push_notification(
         m_logger->info("[Solo Push]   Difficulty: 0x{:08x}", difficulty);
     }
 
-    /* Update centralized height tracker */
+    /* Update heights via unified callback (updates HeightTracker + ClientChannelManager) */
+    if (update_height_fn) {
+        update_height_fn(unified_height, channel_height, difficulty);
+    }
+    // height_tracker is used only for reads (ExplainMismatch, GetSnapshot for staleness).
+    // Both update_height_fn and height_tracker* are expected to be non-null in production
+    // (Solo always provides both); drift detection is advisory and safe to skip if null.
     if (height_tracker) {
-        height_tracker->OnPushNotification(unified_height, channel_height, difficulty);
         std::string drift_msg = height_tracker->ExplainMismatch();
         if (!drift_msg.empty()) {
             m_logger->info("{}", drift_msg);
@@ -105,11 +111,13 @@ void PushNotificationHandler::handle_push_notification(
             auto const* tmpl = template_interface->get_current_template();
             if (tmpl)
             {
-                uint32_t current_unified_height = tmpl->block.nHeight;
-                if (channel_height == tmpl->nChannelHeight && unified_height > current_unified_height)
+                // Use HeightTracker snapshot for unified height (not template header nHeight,
+                // which represents channel_target in stateless templates).
+                if (channel_height == tmpl->nChannelHeight)
                 {
-                    m_logger->info("[Solo Push] ✓ {} unchanged, unified advanced ({} → {})",
-                                  ch_name, current_unified_height, unified_height);
+                    uint32_t snap_unified = height_tracker ? height_tracker->GetSnapshot().unified_height : unified_height;
+                    m_logger->info("[Solo Push] ✓ {} channel_target={} unchanged, unified_height={}",
+                                  ch_name, tmpl->nChannelHeight, snap_unified);
                     // Continue mining current template
                 }
                 else
