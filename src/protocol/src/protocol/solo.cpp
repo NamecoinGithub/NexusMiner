@@ -1030,10 +1030,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Log the received height information
         m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
         
-        if (height > m_current_height)
+        // Use HeightTracker snapshot for comparison (single source of truth).
+        // Fall back to m_current_height only during startup before any GET_ROUND/push
+        // notification has been received (unified_height == 0 in that case).
+        // m_current_height is kept as a diagnostic-only reference.
+        auto snap = m_height_tracker.GetSnapshot();
+        uint32_t known_height = snap.unified_height > 0 ? snap.unified_height : m_current_height;
+        
+        if (height > known_height)
         {
-            m_logger->info("Nexus Network: New height {} (old height: {})", height, m_current_height);
-            m_current_height = height;
+            m_logger->info("Nexus Network: New height {} (old height: {})", height, known_height);
+            m_current_height = height;  // diagnostic only
             
             // After receiving height, request actual work via GET_BLOCK
             m_logger->info("[Solo] Height updated, requesting work via GET_BLOCK");
@@ -1042,10 +1049,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         else
         {
             // Height is unchanged or older than current
-            if (height == m_current_height) {
+            if (height == known_height) {
                 m_logger->debug("[Solo] Height unchanged ({}), no action needed", height);
             } else {
-                m_logger->warn("[Solo] Received older height {} (current: {})", height, m_current_height);
+                m_logger->warn("[Solo] Received older height {} (current: {})", height, known_height);
             }
         }
     }
@@ -1159,8 +1166,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 return;
             }
             
-            // Update height tracking
-            m_current_height = tmpl->block.nHeight;
+            // Update diagnostic height tracker (m_current_height is reference only;
+            // tmpl->block.nHeight is channel_target in stateless templates, not unified height).
+            // Use HeightTracker snapshot for the actual unified height.
+            m_current_height = m_height_tracker.GetSnapshot().unified_height;
 
             // Snapshot current channel height for legacy GET_ROUND delta staleness
             if (m_last_round_status.has_channel_heights) {
@@ -1232,7 +1241,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     if (m_authenticated && block.nHeight != m_current_height) {
                         m_logger->debug("[Solo Phase 2] Stateless mining - accepting block at height {}", block.nHeight);
                     }
-                    m_current_height = block.nHeight;
+                    m_current_height = block.nHeight;  // diagnostic only
                     
                     // Verify block handler is set
                     if (!m_set_block_handler)
@@ -1453,9 +1462,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         m_last_round_status.has_channel_heights = true;
         
-        // Update centralized height tracker from GET_ROUND response
-        m_height_tracker.OnGetRound(unified_height, channel_height,
-                                    has_difficulty ? difficulty : m_last_round_status.difficulty);
+        // Update HeightTracker and ClientChannelManager from GET_ROUND response (single call)
+        update_height_state(unified_height, channel_height,
+                            has_difficulty ? difficulty : m_last_round_status.difficulty,
+                            HeightTracker::UpdateSource::GET_ROUND);
         
         // Set channel-specific height based on miner's channel
         // Reset all channels first, then set only the active channel
@@ -1636,6 +1646,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_last_round_status.difficulty = difficulty;
         }
         m_last_round_status.has_channel_heights = true;
+        
+        // Update HeightTracker and ClientChannelManager from OLD_ROUND response
+        update_height_state(unified_height, channel_height,
+                            has_difficulty ? difficulty : m_last_round_status.difficulty,
+                            HeightTracker::UpdateSource::GET_ROUND);
         
         // Set channel-specific height based on miner's channel
         // Reset all channels first, then set only the active channel
@@ -2204,6 +2219,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             packet, mining::CHANNEL_PRIME, m_protocol_lane,
             m_template_interface.get(),
             &m_height_tracker,
+            [this](uint32_t u, uint32_t c, uint32_t d) {
+                update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
+            },
             [&connection, this]() { if (connection) connection->transmit(get_work()); });
     }
     else if (matches_opcode(Packet::HASH_BLOCK_AVAILABLE))
@@ -2212,6 +2230,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             packet, mining::CHANNEL_HASH, m_protocol_lane,
             m_template_interface.get(),
             &m_height_tracker,
+            [this](uint32_t u, uint32_t c, uint32_t d) {
+                update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
+            },
             [&connection, this]() { if (connection) connection->transmit(get_work()); });
     }
     // ═══════════════════════════════════════════════════════════════════════
@@ -2386,8 +2407,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                           validation_result.validation_time.count());
             m_logger->info("[Solo Stateless] ✅ read_template successfully parsed 216-byte Tritium block");
             
-            // Update height tracking
-            m_current_height = unified_height;
+            // Update diagnostic height reference (unified_height from packet metadata)
+            m_current_height = unified_height;  // diagnostic only
             
             // Set channel height on the template
             m_template_interface->set_channel_height(channel_height);
@@ -2869,16 +2890,16 @@ bool Solo::sync_template_state(uint32_t unified_height, uint32_t channel_height)
     m_logger->debug("[Solo Sync]   Node unified height: {}", unified_height);
     m_logger->debug("[Solo Sync]   Node channel height: {}", channel_height);
     
-    // Step 1: Update channel manager with new heights from GET_ROUND
-    pManager->UpdateFromGetRound(unified_height, channel_height);
+    // Note: Heights are updated in update_height_state() before this is called.
+    // Fork detection flag is set there too; check and handle it here.
     
-    // Step 2: Check for fork detection (height regression)
+    // Step 1: Check for fork detection (height regression detected by update_height_state)
     if (pManager->IsForkDetected()) {
         handle_fork_detected(pManager, unified_height);
         return false;  // Template was invalidated
     }
     
-    // Step 3: Finalize template channel height if needed
+    // Step 2: Finalize template channel height if needed
     if (m_template_interface && m_template_interface->needs_channel_height_finalization()) {
         uint32_t template_channel_height = channel_height + 1;
         m_template_interface->set_channel_height(template_channel_height);
@@ -2886,30 +2907,27 @@ bool Solo::sync_template_state(uint32_t unified_height, uint32_t channel_height)
             template_channel_height);
     }
     
-    // Step 4: Validate current template
+    // Step 3: Validate current template using HeightTracker (single source of truth)
     return validate_current_template();
 }
 
 bool Solo::validate_current_template()
 {
-    auto* pManager = get_channel_manager();
-    if (!pManager) {
-        return false;
-    }
-    
     if (!m_template_interface || !m_template_interface->has_valid_template()) {
         return true;  // No template to validate - that's OK
     }
-    
-    // Get expected channel height from channel manager
-    auto expectedHeights = pManager->GetExpectedHeights();
-    uint32_t expectedChannel = expectedHeights.second;
     
     // Get current template
     auto const* tmpl = m_template_interface->get_current_template();
     if (!tmpl) {
         return true;
     }
+    
+    // Use HeightTracker snapshot for staleness decision (single source of truth).
+    // ClientChannelManager heights are kept in sync by update_height_state() but
+    // are NOT used for staleness decisions; only HeightTracker is authoritative here.
+    auto snap = m_height_tracker.GetSnapshot();
+    uint32_t expectedChannel = snap.expected_template_target();
     
     // Validation: Channel height only (unified height may advance due to other channels)
     if (expectedChannel != 0 && tmpl->nChannelHeight != 0 && tmpl->nChannelHeight != expectedChannel) {
@@ -2923,8 +2941,8 @@ bool Solo::validate_current_template()
     // Note: Age timeout validation (60s safety net) is handled internally by
     // MiningTemplateInterface. No additional validation needed here.
     
-    m_logger->debug("[Solo Validate] ✓ Template valid (channel={}, unified={})", 
-        pManager->GetChannelName(), tmpl->block.nHeight);
+    m_logger->debug("[Solo Validate] ✓ Template valid (channel_target={}, unified_height={})", 
+        tmpl->nChannelHeight, snap.unified_height);
     return true;
 }
 
@@ -2949,6 +2967,31 @@ void Solo::handle_fork_detected(mining::ClientChannelManager* pManager, uint32_t
     
     // Clear fork flag
     pManager->ClearForkFlag();
+}
+
+void Solo::update_height_state(uint32_t unified_height, uint32_t channel_height,
+                                uint32_t difficulty_nbits, HeightTracker::UpdateSource source)
+{
+    // Update HeightTracker (single source of truth for staleness decisions)
+    if (source == HeightTracker::UpdateSource::PUSH) {
+        m_height_tracker.OnPushNotification(unified_height, channel_height, difficulty_nbits);
+    } else if (source == HeightTracker::UpdateSource::GET_ROUND) {
+        m_height_tracker.OnGetRound(unified_height, channel_height, difficulty_nbits);
+    } else {
+        m_logger->warn("[Solo] update_height_state: unexpected source {}, defaulting to GET_ROUND",
+                       static_cast<int>(source));
+        m_height_tracker.OnGetRound(unified_height, channel_height, difficulty_nbits);
+    }
+
+    // Update active ClientChannelManager with the same parsed values so that
+    // fork detection reflects both GET_ROUND and push-notification events.
+    auto* pManager = get_channel_manager();
+    if (pManager) {
+        pManager->UpdateFromGetRound(unified_height, channel_height);
+        if (pManager->IsForkDetected()) {
+            handle_fork_detected(pManager, unified_height);
+        }
+    }
 }
 
 void Solo::handle_reward_result(const Packet& packet)

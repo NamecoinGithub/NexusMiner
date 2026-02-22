@@ -39,7 +39,10 @@ public:
      * @param expected_channel  mining::CHANNEL_PRIME or mining::CHANNEL_HASH
      * @param lane              ProtocolLane::LEGACY or ProtocolLane::STATELESS
      * @param template_interface  Pointer to the active MiningTemplateInterface (may be nullptr)
-     * @param height_tracker    Pointer to the active HeightTracker (may be nullptr)
+     * @param height_tracker    Pointer to the active HeightTracker (may be nullptr; used for reads only)
+     * @param update_height_fn  Callback invoked with (unified_height, channel_height, difficulty_nbits)
+     *                          to update both HeightTracker and ClientChannelManager atomically.
+     *                          If null, the update is skipped.
      * @param request_work_fn   Callback to request a fresh mining template
      */
     void handle_push_notification(
@@ -48,6 +51,7 @@ public:
         ProtocolLane lane,
         MiningTemplateInterface* template_interface,
         HeightTracker* height_tracker,
+        std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
         std::function<void()> request_work_fn
     );
 
