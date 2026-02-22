@@ -200,14 +200,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             uint64_t template_age = template_interface->get_template_age();
 
                             // Check 1 — Channel Height (PRIMARY: has another miner found this block?)
-                            uint8_t channel = template_interface->get_channel();
-                            auto round_status = solo_protocol->get_last_round_status();
-                            uint32_t current_channel_height = round_status.get_channel_height(channel);
-                            const auto* tmpl = template_interface->get_current_template();
-                            uint32_t template_channel_height = (tmpl != nullptr) ? tmpl->nChannelHeight : 0;
-                            bool channel_stale = (current_channel_height > 0 &&
-                                                  template_channel_height > 0 &&
-                                                  current_channel_height >= template_channel_height);
+                            // Use HeightTracker snapshot as single source of truth for staleness
+                            auto ht_snap = solo_protocol->get_height_tracker_snapshot();
+                            bool channel_stale = ht_snap.is_template_stale();
 
                             // Check 2 — Age (SECONDARY: safety net for missed push notifications)
                             // 600s matches the emergency timeout in check_template_health()
@@ -218,8 +213,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             {
                                 if (channel_stale) {
                                     m_logger->error("[Worker_manager] ❌ Solution found but channel height ADVANCED!");
-                                    m_logger->error("[Worker_manager]    Node channel height {} >= template target {}",
-                                                   current_channel_height, template_channel_height);
+                                    m_logger->error("[Worker_manager]    channel_height {} >= channel_target {}",
+                                                   ht_snap.channel_height, ht_snap.channel_target);
                                     m_logger->error("[Worker_manager]    Another miner found this block first - discarding");
                                 } else {
                                     m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: {}s)",
@@ -854,22 +849,15 @@ void Worker_manager::check_template_health()
         (channel == mining::CHANNEL_PRIME) ? PRIME_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS : HASH_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS;
     
     // Channel height-based staleness detection (primary check)
-    // Compare template's CHANNEL height with node's CHANNEL height from GET_ROUND/NEW_ROUND.
-    // Template targets block at nChannelHeight; node should be at nChannelHeight - 1.
-    // If node's channel height >= nChannelHeight, another miner found the block first.
+    // Use HeightTracker snapshot as single source of truth for staleness decisions.
+    // Template is stale when channel_height >= channel_target (both non-zero).
     {
-        auto round_status = solo_protocol->get_last_round_status();
-        uint32_t current_channel_height = round_status.get_channel_height(channel);
+        auto ht_snap = solo_protocol->get_height_tracker_snapshot();
         
-        const auto* tmpl = template_interface->get_current_template();
-        uint32_t template_channel_height = (tmpl != nullptr) ? tmpl->nChannelHeight : 0;
-        
-        // Only compare when both heights are available (channel height may be pending finalization)
-        if (current_channel_height > 0 && template_channel_height > 0 &&
-            current_channel_height >= template_channel_height) {
+        if (ht_snap.is_template_stale()) {
             std::string channel_name = (channel == 1) ? "Prime" : "Hash";
-            m_logger->warn("[Worker_manager] ⚠️  {} channel advanced: Channel Height {} >= template Channel Height {}",
-                channel_name, current_channel_height, template_channel_height);
+            m_logger->warn("[Worker_manager] ⚠️  {} channel advanced: channel_height {} >= channel_target {}",
+                channel_name, ht_snap.channel_height, ht_snap.channel_target);
             m_logger->info("[Worker_manager]    Requesting fresh template (channel height-based staleness)");
             
             template_interface->discard_template("Channel height-based staleness (channel advanced)");
@@ -897,22 +885,16 @@ void Worker_manager::check_template_health()
     // while still being perfectly valid (no new block found yet).
     if (template_age > template_age_emergency_timeout_seconds) {
         
-        // Re-read channel height comparison (same logic as primary check above)
-        auto round_status = solo_protocol->get_last_round_status();
-        uint32_t current_channel_height = round_status.get_channel_height(channel);
-        const auto* tmpl_ptr = template_interface->get_current_template();
-        uint32_t template_channel_height = (tmpl_ptr != nullptr) ? tmpl_ptr->nChannelHeight : 0;
-        
-        bool chain_advanced = (current_channel_height > 0 &&
-                               template_channel_height > 0 &&
-                               current_channel_height >= template_channel_height);
+        // Re-check channel height staleness using HeightTracker snapshot (same logic as primary check above)
+        auto ht_snap = solo_protocol->get_height_tracker_snapshot();
+        bool chain_advanced = ht_snap.is_template_stale();
 
         if (chain_advanced) {
             // GENUINE EMERGENCY: chain moved but we're still on the old template
             // Push notifications definitely failed — hard recovery
             m_logger->error("[Worker_manager] ❌ GENUINE EMERGENCY: Template old AND chain advanced!");
-            m_logger->error("[Worker_manager]    Age: {}s, Node channel height {} >= template target {}",
-                            template_age, current_channel_height, template_channel_height);
+            m_logger->error("[Worker_manager]    Age: {}s, channel_height {} >= channel_target {}",
+                            template_age, ht_snap.channel_height, ht_snap.channel_target);
             m_logger->error("[Worker_manager]    Push notification missed — forcing hard recovery");
             
             template_interface->discard_template("Emergency: chain advanced + age timeout (>" + 

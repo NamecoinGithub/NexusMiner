@@ -79,39 +79,43 @@ void PushNotificationHandler::handle_push_notification(
         }
     }
 
-    /* Check if current template is stale */
+    /* Check if current template is stale using HeightTracker snapshot */
     if (template_interface && template_interface->has_valid_template())
     {
-        auto const* tmpl = template_interface->get_current_template();
-        if (tmpl)
+        // Use HeightTracker as single source of truth for staleness decision.
+        // is_template_stale() returns true when channel_height >= channel_target (both non-zero).
+        bool stale = height_tracker && height_tracker->GetSnapshot().is_template_stale();
+
+        if (stale)
         {
-            uint32_t current_channel_height = tmpl->nChannelHeight;
-            uint32_t current_unified_height = tmpl->block.nHeight;
-
-            m_logger->debug("[Solo Push] Current template: unified={}, {}={}",
-                           current_unified_height, ch_name, current_channel_height);
-
-            if (channel_height > current_channel_height)
+            auto snap = height_tracker->GetSnapshot();
+            if (lane == ProtocolLane::STATELESS) {
+                m_logger->info("[Solo Push] ✗ Stale (channel_height {} >= channel_target {})",
+                              snap.channel_height, snap.channel_target);
+            } else {
+                m_logger->info("[Solo Push] ✗ Template stale (channel_height {} >= channel_target {})",
+                              snap.channel_height, snap.channel_target);
+            }
+            m_logger->info("[Solo Push] Requesting fresh {} template...", ch_name);
+            request_work_fn();
+        }
+        else
+        {
+            // Log informational context (unified height may have advanced — that's OK)
+            auto const* tmpl = template_interface->get_current_template();
+            if (tmpl)
             {
-                if (lane == ProtocolLane::STATELESS) {
-                    m_logger->info("[Solo Push] ✗ Stale (was {}, now {})",
-                                  current_channel_height, channel_height);
-                } else {
-                    m_logger->info("[Solo Push] ✗ Template stale (was mining {}, new block {})",
-                                  current_channel_height, channel_height);
+                uint32_t current_unified_height = tmpl->block.nHeight;
+                if (channel_height == tmpl->nChannelHeight && unified_height > current_unified_height)
+                {
+                    m_logger->info("[Solo Push] ✓ {} unchanged, unified advanced ({} → {})",
+                                  ch_name, current_unified_height, unified_height);
+                    // Continue mining current template
                 }
-                m_logger->info("[Solo Push] Requesting fresh {} template...", ch_name);
-                request_work_fn();
-            }
-            else if (channel_height == current_channel_height && unified_height > current_unified_height)
-            {
-                m_logger->info("[Solo Push] ✓ {} unchanged, unified advanced ({} → {})",
-                              ch_name, current_unified_height, unified_height);
-                // Continue mining current template
-            }
-            else
-            {
-                m_logger->debug("[Solo Push] ✓ Template still valid");
+                else
+                {
+                    m_logger->debug("[Solo Push] ✓ Template still valid");
+                }
             }
         }
     }

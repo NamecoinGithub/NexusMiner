@@ -7,7 +7,8 @@ add_library(protocol STATIC src/protocol/solo.cpp
                             src/protocol/session_manager.cpp
                             src/protocol/mining_template_interface.cpp
                             src/protocol/push_notification_handler.cpp
-                            src/protocol/height_tracker.cpp)
+                            src/protocol/height_tracker.cpp
+                            src/protocol/packet_builder.cpp)
                     
 target_include_directories(protocol
     PUBLIC 
@@ -40,4 +41,14 @@ add_executable(height_tracker_test height_tracker_test.cpp)
 target_link_libraries(height_tracker_test PRIVATE protocol)
 target_include_directories(height_tracker_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
+)
+
+# PacketBuilder Unit Test
+add_executable(packet_builder_test packet_builder_test.cpp)
+target_link_libraries(packet_builder_test PRIVATE protocol LLP spdlog)
+target_include_directories(packet_builder_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src
 )
