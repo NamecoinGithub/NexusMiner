@@ -219,8 +219,7 @@ private:
 
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;
-    std::uint32_t m_current_height;
-    std::uint32_t m_current_difficulty;
+    std::uint32_t m_current_height; ///< Diagnostic-only: used for BLOCK_DATA legacy fallback; NOT authoritative for staleness
     std::uint64_t m_current_reward;
     Set_block_handler m_set_block_handler;
     std::shared_ptr<stats::Collector> m_stats_collector;
@@ -312,7 +311,8 @@ private:
     
     // State flags
     bool m_needs_initial_round_check;  // Set true when new template received
-    uint32_t m_template_unified_height;    // Unified height when template was created
+    uint32_t m_template_unified_height;    // Informational only: unified height at last template receipt (logging unified drift).
+                                           // NOT used for staleness decisions (channel height is authoritative).
     
     // Helper methods for intelligent polling
     bool should_poll_get_round();
