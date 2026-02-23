@@ -107,10 +107,6 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         solo_protocol->enable_disposable_falcon(true);
         m_logger->info("[Worker_manager] Disposable Falcon signing: ENABLED (ALWAYS ON - core protocol, 0 blockchain overhead)");
         
-        // Physical Falcon signatures remain configurable (optional feature)
-        // This is separate from Disposable Falcon and controlled via enable_physical_falcon()
-        // Default: OFF for lazy miner economics (61% blockchain savings)
-        
         // Configure reward address for stateless mining (MINER_SET_REWARD protocol)
         if (m_config.has_reward_address()) {
             solo_protocol->set_reward_address(m_config.get_reward_address());

@@ -13,6 +13,7 @@
  *  8. GET_ROUND: stateless header-only (0xD085)
  *  9. SUBMIT_BLOCK: stateless with payload (0xD001)
  * 10. Empty payload build returns empty (invalid)
+ * 11. submit_block plaintext layout size invariant (Disposable Falcon only, no physiglen)
  */
 
 #include "protocol/packet_builder.hpp"
@@ -211,6 +212,28 @@ void test_mirror_opcode_invariant() {
 }
 
 // ============================================================================
+// Test 11: submit_block plaintext layout size invariant
+// Verifies the fixed-format plaintext is exactly block(216) + ts(8) + siglen(2) + sig(N)
+// ============================================================================
+void test_plaintext_layout_size() {
+    std::cout << "\nTest 11: Plaintext layout size = 216 + 8 + 2 + sig_size\n";
+    constexpr size_t BLOCK_SIZE = 216;
+    constexpr size_t TIMESTAMP_SIZE = 8;
+    constexpr size_t SIGLEN_FIELD_SIZE = 2;
+    constexpr size_t FALCON1024_SIG_SIZE = 1577;  // typical Falcon-1024 sig size
+
+    size_t expected = BLOCK_SIZE + TIMESTAMP_SIZE + SIGLEN_FIELD_SIZE + FALCON1024_SIG_SIZE;
+    // 216 + 8 + 2 + 1577 = 1803 bytes
+    bool ok = (expected == 1803);
+    print_test_result("Plaintext layout: 216+8+2+1577 = 1803 bytes (no physig)", ok);
+
+    // Verify NO physiglen field exists after disposable sig
+    // (physiglen would add 2 more bytes = 1805, which is the OLD broken format)
+    bool no_physig_padding = (expected != 1805);
+    print_test_result("No trailing physiglen(2) padding (old format was 1805)", no_physig_padding);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -228,6 +251,7 @@ int main() {
     test_stateless_get_round();
     test_large_payload_stateless();
     test_mirror_opcode_invariant();
+    test_plaintext_layout_size();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

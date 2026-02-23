@@ -485,12 +485,12 @@ int main()
     {
         auto key = make_test_key();
         auto nonce = make_test_nonce();
-        // Realistic payload: 216 (block) + 8 (timestamp) + 2 (siglen) + 1577 (Falcon-1024 sig) + 2 (physiglen)
-        size_t payload_size = 216 + 8 + 2 + 1577 + 2;
+        // Realistic payload: 216 (block) + 8 (timestamp) + 2 (siglen) + 1577 (Falcon-1024 sig) = 1803 bytes
+        size_t payload_size = 216 + 8 + 2 + 1577;
         auto plaintext = make_test_plaintext(payload_size);
 
         auto enc = wrapper.encrypt(plaintext, key, nonce, AAD_BLOCK_SUBMISSION);
-        print_test_result("Encrypt large payload (1805 bytes) succeeds", enc.success);
+        print_test_result("Encrypt large payload (1803 bytes) succeeds", enc.success);
 
         auto dec = wrapper.decrypt(enc.data, key, nonce, AAD_BLOCK_SUBMISSION);
         print_test_result("Decrypt large payload succeeds", dec.success);

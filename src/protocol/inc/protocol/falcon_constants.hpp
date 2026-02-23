@@ -28,8 +28,7 @@ namespace protocol {
  * 
  * Optional Physical Block Signature:
  * - Signs full block data + nonce for permanent proof of authorship
- * - STORED on blockchain if enabled via "enable_physical_falcon": true (Physical Falcon)
- * - Also uses the auth key (same key as authentication and block submission)
+ * - REMOVED: Physical Falcon has been permanently removed (overly complex, not workable)
  * - Note: Disposable Falcon signatures (for session auth) are ALWAYS ON and NOT stored on blockchain
  * 
  * References:
@@ -288,8 +287,8 @@ namespace FalconConstants {
     //==========================================================================
     
     /** Physical block signature - signs full block data + nonce
-     *  This signature IS stored on the blockchain for permanent proof of authorship.
-     *  Enabled via config: "enable_physical_falcon": true (Physical Falcon signatures)
+     *  NOTE: Physical Falcon has been permanently removed (overly complex, not workable).
+     *  These constants are retained for reference only.
      *  
      *  NOTE: This is different from Disposable Falcon signatures which are ALWAYS ON
      *  for session authentication but NOT stored on blockchain (0 bytes overhead).
