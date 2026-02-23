@@ -13,6 +13,7 @@
  *  8. Channel height advancing DOES make template stale
  *  9. is_tip_moved() detects unified tip advance (Phase 3A: tip_moved refresh reason)
  * 10. is_tip_moved() resets to false after new template received
+ * 11. Difficulty from push updates is reflected in HeightTracker snapshot
  */
 
 #include "protocol/height_tracker.hpp"
@@ -311,11 +312,14 @@ void test_is_tip_moved_resets_on_new_template() {
     // template_unified_height updated to current unified height
     print_test_result("template_unified_height == 5005 (new template at new tip)",
                       snap.template_unified_height == 5005);
-// Test 9: Difficulty from push updates is reflected in HeightTracker and
+}
+
+// ============================================================================
+// Test 11: Difficulty from push updates is reflected in HeightTracker and
 //         consistent across snapshot reads (Phase 2C regression test)
 // ============================================================================
 void test_difficulty_from_push_reflected_in_snapshot() {
-    std::cout << "\nTest 9: Difficulty from push updates reflected in HeightTracker\n";
+    std::cout << "\nTest 11: Difficulty from push updates reflected in HeightTracker\n";
     HeightTracker tracker;
 
     // First push: difficulty_nbits = 0x1d00ffff
