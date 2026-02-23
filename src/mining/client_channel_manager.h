@@ -145,14 +145,14 @@ public:
         uint32_t nNodeChannel = m_nNodeChannelHeight.load();
         
         // Validate unified height (Block::Accept logic)
-        // Template builds NEXT block, so height should be nodeHeight + 1
+        // Template builds NEXT block; nHeight = unified tip + 1 (per node fix — nHeight is unified height)
         if (pTemplate->nHeight != nNodeUnified + 1)
-            return false;  // Stale or fork
+            return false;  // Stale template or fork
         
-        // Validate channel height (Block::Accept logic)
+        // Validate channel height (secondary staleness guard — defensive layer)
         // Template's channel height should be nodeChannelHeight + 1
         if (pTemplate->nChannelHeight != nNodeChannel + 1)
-            return false;  // Channel advanced
+            return false;  // Channel advanced since template was issued
         
         // Age timeout (MAX_TEMPLATE_AGE_SECONDS safety net)
         if (pTemplate->GetAge() > MAX_TEMPLATE_AGE_SECONDS)
