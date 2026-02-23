@@ -13,7 +13,7 @@
  *  8. GET_ROUND: stateless header-only (0xD085)
  *  9. SUBMIT_BLOCK: stateless with payload (0xD001)
  * 10. Empty payload build returns empty (invalid)
- * 11. submit_block plaintext layout size invariant (Disposable Falcon only, no physiglen)
+ * 11. submit_block plaintext layout size invariant (Disposable Falcon only)
  */
 
 #include "protocol/packet_builder.hpp"
@@ -225,12 +225,11 @@ void test_plaintext_layout_size() {
     size_t expected = BLOCK_SIZE + TIMESTAMP_SIZE + SIGLEN_FIELD_SIZE + FALCON1024_SIG_SIZE;
     // 216 + 8 + 2 + 1577 = 1803 bytes
     bool ok = (expected == 1803);
-    print_test_result("Plaintext layout: 216+8+2+1577 = 1803 bytes (no physig)", ok);
+    print_test_result("Plaintext layout: 216+8+2+1577 = 1803 bytes", ok);
 
-    // Verify NO physiglen field exists after disposable sig
-    // (physiglen would add 2 more bytes = 1805, which is the OLD broken format)
-    bool no_physig_padding = (expected != 1805);
-    print_test_result("No trailing physiglen(2) padding (old format was 1805)", no_physig_padding);
+    // Verify the total is exactly 1803 (no extra fields)
+    bool exact_size = (expected == 1803);
+    print_test_result("Total plaintext size is exactly 1803 bytes", exact_size);
 }
 
 // ============================================================================

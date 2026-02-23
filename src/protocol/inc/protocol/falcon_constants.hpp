@@ -26,10 +26,8 @@ namespace protocol {
  * The auth key is session-specific (generated fresh for each mining session) but is 
  * used consistently throughout that session for both authentication and block signatures.
  * 
- * Optional Physical Block Signature:
- * - Signs full block data + nonce for permanent proof of authorship
- * - REMOVED: Physical Falcon has been permanently removed (overly complex, not workable)
- * - Note: Disposable Falcon signatures (for session auth) are ALWAYS ON and NOT stored on blockchain
+ * Disposable Falcon signatures are ALWAYS ON and NOT stored on blockchain (0 bytes overhead).
+ * Block signing does not store signatures on-chain.
  * 
  * References:
  * - LLL-TAO: src/LLC/falcon/falcon.h (FALCON_SIG_VARTIME_MAXSIZE)
@@ -281,100 +279,6 @@ namespace FalconConstants {
     
     /** Maximum contracts per transaction */
     constexpr uint32_t MAX_TRANSACTION_CONTRACTS = 100;
-
-    //==========================================================================
-    // Physical Block Signature (Stored on Blockchain - Optional Enhanced Validation)
-    //==========================================================================
-    
-    /** Physical block signature - signs full block data + nonce
-     *  NOTE: Physical Falcon has been permanently removed (overly complex, not workable).
-     *  These constants are retained for reference only.
-     *  
-     *  NOTE: This is different from Disposable Falcon signatures which are ALWAYS ON
-     *  for session authentication but NOT stored on blockchain (0 bytes overhead).
-     *  
-     *  Uses the SAME auth key as block submission signatures (not a separate key).
-     *  The Physical Block Signature signs the FULL block data which can be up to
-     *  MAX_BLOCK_SIZE (2MB), whereas the block submission signature signs a fixed
-     *  80-byte message (merkle + nonce + timestamp).
-     *  
-     *  Message format: [block_data (variable, up to MAX_BLOCK_SIZE)] + [nonce (8 bytes LE)]
-     *  Signature: Falcon-512 (~600-809 bytes)
-     *  
-     *  This provides enhanced validation for proving block authorship with the same
-     *  auth key used throughout the mining session.
-     */
-    
-    /** Minimum physical block signature size */
-    constexpr size_t PHYSICAL_BLOCK_SIG_MIN = FALCON512_SIG_MIN;  // 600 bytes
-    
-    /** Maximum physical block signature size */
-    constexpr size_t PHYSICAL_BLOCK_SIG_MAX = FALCON512_SIG_ABSOLUTE_MAX;  // 809 bytes
-    
-    /** Maximum message size for physical block signature
-     *  block_data (up to 2,097,152 bytes) + nonce (8 bytes) = 2,097,160 bytes total */
-    constexpr size_t PHYSICAL_BLOCK_SIG_MESSAGE_MAX = MAX_BLOCK_SIZE + NONCE_SIZE;
-    
-    /** Physical block signature overhead added to block transmission
-     *  sig_len(2) + signature(809) = 811 bytes max */
-    constexpr size_t PHYSICAL_BLOCK_SIG_OVERHEAD = LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 811 bytes
-    
-    /** Minimum block submission size with physical signature
-     *  Smallest valid block header + sig overhead */
-    constexpr size_t BLOCK_WITH_PHYSICAL_SIG_MIN_OVERHEAD = PHYSICAL_BLOCK_SIG_OVERHEAD;  // 811 bytes
-    
-    /** Check if physical block signature size is valid */
-    constexpr bool is_valid_physical_block_sig_size(size_t size) {
-        return size >= PHYSICAL_BLOCK_SIG_MIN && size <= PHYSICAL_BLOCK_SIG_MAX;
-    }
-
-    //==========================================================================
-    // Dual-Signature Submit Block (Block Submission + Physical Combined)
-    //==========================================================================
-    
-    /** Submit Block with BOTH signatures - Tritium LOCALHOST (no encryption)
-     *  UPDATED: Now supports 2MB blocks with transactions
-     *  Combines block submission signature + physical signature overhead
-     *  Used when both session authentication AND permanent proof are required.
-     *  Both signatures use the SAME auth key (not separate keys).
-     *  Calculation: wrapper(2,097,971) + physical_sig_overhead(811) = 2,098,782 bytes
-     *  Previous: 1,846 bytes (216-byte empty block)
-     */
-    constexpr size_t SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX = 
-        SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX + PHYSICAL_BLOCK_SIG_OVERHEAD;  // 2,098,782 bytes (was: 1,846)
-    static_assert(SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX == 2098782, "SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX size calculation mismatch");
-    
-    /** Submit Block with BOTH signatures - Tritium PUBLIC MINER (with ChaCha20 encryption)
-     *  UPDATED: Now supports 2MB blocks with transactions
-     *  Dual-signature submission with encryption overhead
-     *  Calculation: dual_sig(2,098,782) + chacha20_overhead(28) = 2,098,810 bytes
-     *  Previous: 1,874 bytes
-     */
-    constexpr size_t SUBMIT_BLOCK_DUAL_SIG_TRITIUM_ENCRYPTED_MAX = 
-        SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX + CHACHA20_OVERHEAD;  // 2,098,810 bytes (was: 1,874)
-    static_assert(SUBMIT_BLOCK_DUAL_SIG_TRITIUM_ENCRYPTED_MAX == 2098810, "SUBMIT_BLOCK_DUAL_SIG_TRITIUM_ENCRYPTED_MAX size calculation mismatch");
-    
-    /** Submit Block with BOTH signatures - Legacy LOCALHOST (no encryption)
-     *  UPDATED: Now supports 2MB blocks with transactions
-     *  Calculation: wrapper(2,097,971) + physical_sig_overhead(811) = 2,098,782 bytes
-     *  Previous: 1,850 bytes (220-byte empty block)
-     */
-    constexpr size_t SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX = 
-        SUBMIT_BLOCK_WRAPPER_LEGACY_MAX + PHYSICAL_BLOCK_SIG_OVERHEAD;  // 2,098,782 bytes (was: 1,850)
-    static_assert(SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX == 2098782, "SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX size calculation mismatch");
-    
-    /** Submit Block with BOTH signatures - Legacy PUBLIC MINER (with ChaCha20 encryption)
-     *  UPDATED: Now supports 2MB blocks with transactions
-     *  Calculation: dual_sig(2,098,782) + chacha20_overhead(28) = 2,098,810 bytes
-     *  Previous: 1,878 bytes
-     */
-    constexpr size_t SUBMIT_BLOCK_DUAL_SIG_LEGACY_ENCRYPTED_MAX = 
-        SUBMIT_BLOCK_DUAL_SIG_LEGACY_MAX + CHACHA20_OVERHEAD;  // 2,098,810 bytes (was: 1,878)
-    static_assert(SUBMIT_BLOCK_DUAL_SIG_LEGACY_ENCRYPTED_MAX == 2098810, "SUBMIT_BLOCK_DUAL_SIG_LEGACY_ENCRYPTED_MAX size calculation mismatch");
-    
-    /** Legacy aliases for backward compatibility (point to Tritium values) */
-    constexpr size_t SUBMIT_BLOCK_DUAL_SIG_MAX = SUBMIT_BLOCK_DUAL_SIG_TRITIUM_MAX;
-    constexpr size_t SUBMIT_BLOCK_DUAL_SIG_ENCRYPTED_MAX = SUBMIT_BLOCK_DUAL_SIG_TRITIUM_ENCRYPTED_MAX;
 
     //==========================================================================
     // Validation Helpers
