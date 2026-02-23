@@ -48,7 +48,7 @@ This document describes the implementation of the push notification protocol (LL
 
 **Triggered:**
 - Immediately after MINER_READY
-- On every Prime block validation
+- On every block accepted on **any** channel (universal PoW tip push)
 
 ### HASH_BLOCK_AVAILABLE (218 / 0xDA)
 **Direction:** Node → Miner (Hash channel only)  
@@ -61,7 +61,7 @@ This document describes the implementation of the push notification protocol (LL
 
 **Triggered:**
 - Immediately after MINER_READY
-- On every Hash block validation
+- On every block accepted on **any** channel (universal PoW tip push)
 
 ## Protocol Flow
 
@@ -80,14 +80,18 @@ This document describes the implementation of the push notification protocol (LL
 ```
 Mining Loop:
   - Mine current template
-  
+
 On notification (PRIME/HASH_BLOCK_AVAILABLE):
   - Parse unified_height, channel_height, difficulty
-  - Check if template stale (compare channel_height)
-  - If stale: Request new template via GET_BLOCK
-  - If valid: Continue mining
-  
-No polling needed!
+  - Update HeightTracker with new heights
+  - Take HeightTracker snapshot
+  - If channel_advanced (channel_height >= channel_target):
+      Request new template via GET_BLOCK  [reason: channel_advanced]
+  - Elif tip_moved (unified_height > template_unified_height):
+      Request new template via GET_BLOCK  [reason: tip_moved]
+  - Else: Continue mining current template
+
+No polling needed! (GET_ROUND is backup only)
 ```
 
 ## Implementation (Post-PR #123)
@@ -131,22 +135,42 @@ constexpr size_t PUSH_NOTIFICATION_PAYLOAD_SIZE = 12;
 
 ## Template Staleness Logic
 
-The handlers check if the current template is stale by comparing heights:
+Two distinct conditions trigger a template refresh (see
+[unified-tip-vs-channel-height.md](../mining/unified-tip-vs-channel-height.md)
+for full definitions):
 
+**Reason: `channel_advanced`** — the node's channel height reached the template's
+channel target, meaning another miner already found this block:
+```
+channel_height >= channel_target  →  request new template
+```
+
+**Reason: `tip_moved`** — the unified tip advanced (a different channel found a
+block) while the miner's channel height is unchanged.  The template's
+`hashPrevBlock` now points to a stale ancestor, so submitting it would result in
+a fork/orphan rejection:
+```
+unified_height > template_unified_height  →  request new template
+```
+
+Both checks use `HeightTracker::Snapshot` as the single source of truth:
 ```cpp
-if (notification_channel_height > current_template_channel_height) {
-    // Template is stale - request new work
-    connection->transmit(get_work());
-}
-else if (notification_channel_height == current_template_channel_height &&
-         notification_unified_height > current_template_unified_height) {
-    // Prime/Hash unchanged, unified advanced (other channel found blocks)
-    // Continue mining current template
-}
-else {
-    // Template still valid
+auto snap = height_tracker->GetSnapshot();
+if (snap.is_template_stale()) {
+    // [reason: channel_advanced] — own channel found block
+    request_work_fn();
+} else if (snap.is_tip_moved()) {
+    // [reason: tip_moved] — another channel found block; hashPrevBlock stale
+    request_work_fn();
+} else {
+    // Neither condition: template still anchored to best tip, continue mining
 }
 ```
+
+> **Important**: When another channel (e.g. Hash) finds a block while a Prime
+> miner is working, the Prime miner's `channel_height` is unchanged but the
+> unified tip moved.  The miner **must** refresh its template to anchor to the
+> new `hashBestChain` even though no `channel_advanced` condition fired.
 
 ## Performance Benefits
 
@@ -160,8 +184,8 @@ else {
 
 ### Network Traffic Reduction
 - **Before:** Poll every 5s regardless of block activity
-- **After:** Receive notifications only when blocks are found
-- **Result:** ~50% reduction (channel-specific notifications only)
+- **After:** Receive notifications only when any channel finds a block (universal PoW tip push)
+- **Result:** Significant reduction in polling overhead; push events are still lightweight (12 bytes)
 
 ## Backward Compatibility
 
@@ -216,11 +240,16 @@ If MINER_READY fails, the miner falls back to:
 [Solo] ✓ Template valid (Prime height 2302710)
 [Solo] Mining...
 
+# A Prime block is found — channel advanced:
 [Solo Push] ✉️  PRIME_BLOCK_AVAILABLE received
-[Solo Push]   Unified height: 6541701
-[Solo Push]   Prime height:   2302710
-[Solo Push]   Difficulty:     0x0422e6fc
-[Solo Push] ✗ Template stale (was mining 2302710, new block 2302710)
+[Solo Push]   Unified: 6541701, Prime: 2302710, Diff: 0x0422e6fc
+[Solo Push] ✗ Stale (channel_height 2302710 >= channel_target 2302710) [reason: channel_advanced]
+[Solo Push] Requesting fresh Prime template...
+
+# A Hash block is found — unified tip moved, Prime channel unchanged:
+[Solo Push] ✉️  PRIME_BLOCK_AVAILABLE received
+[Solo Push]   Unified: 6541702, Prime: 2302710, Diff: 0x0422e6fc
+[Solo Push] ↑ Tip moved (unified 6541701 → 6541702) — requesting fresh Prime template [reason: tip_moved]
 [Solo Push] Requesting fresh Prime template...
 ```
 

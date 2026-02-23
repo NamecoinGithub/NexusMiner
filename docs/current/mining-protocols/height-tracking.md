@@ -119,33 +119,34 @@ packet.m_data == nullptr  // Null data
    - Node reports: Channel height = N
    - Template uses: Channel height = N + 1
 
-2. **Freshness Check** (every 5 seconds via GET_ROUND):
-   - Get current channel height from node
-   - Compare: `node_height == (template_height - 1)?`
-   - If YES → Template is FRESH, continue mining
-   - If NO → Template is STALE, request new work
+2. **Freshness Check** (every 5 seconds via GET_ROUND, or immediately on push):
+   - Get current `unified_height` and `channel_height` from node
+   - **`channel_advanced`**: `channel_height >= channel_target` → STALE, request new work
+   - **`tip_moved`**: `unified_height > template_unified_height` → STALE anchor, request new work
+   - Otherwise → Template is FRESH, continue mining
 
-3. **Channel-Specific**: Only cares about miner's channel
-   - Prime miner: Only tracks Prime channel height
-   - Hash miner: Only tracks Hash channel height
-   - Other channels don't affect staleness
+3. **Both Heights Matter**
+   - `channel_height` tracks staleness of the block target (`channel_advanced`)
+   - `unified_height` tracks staleness of `hashPrevBlock` anchor (`tip_moved`)
+   - See [unified-tip-vs-channel-height.md](../mining/unified-tip-vs-channel-height.md)
 
 ### Example Scenarios
 
-**Scenario 1: Template Stays Fresh (Other Channel Mines)**
+**Scenario 1: Tip Moved — Other Channel Mines (tip_moved refresh)**
 ```
-T0: Template for Prime height 2301207 (node: 2301206)
-T1: Hash block mined (unified advances, Prime unchanged)
-    Node reports: Prime=2301206, Hash=2166191
-    Check: 2301206 == (2301207 - 1)? YES ✅
-    Action: Continue mining (template still fresh)
+T0: Template for Prime height 2301207 (node: unified=6533548, prime=2301206)
+T1: Hash block mined → unified advances, Prime unchanged
+    Push received:  unified=6533549, prime=2301206
+    Snapshot:       is_template_stale()=false, is_tip_moved()=true
+    Action: Request fresh Prime template [reason: tip_moved]
+    (hashPrevBlock in old template now points to a stale ancestor)
 ```
 
-**Scenario 2: Template Becomes Stale (Our Channel Mines)**
+**Scenario 2: Template Becomes Stale — Own Channel Mines (channel_advanced)**
 ```
-T0: Template for Prime height 2301207 (node: 2301206)
-T1: Prime block mined (our channel advanced!)
-    Node reports: Prime=2301207, Hash=2166190
-    Check: 2301207 == (2301207 - 1)? NO ❌
-    Action: Discard template, request fresh work
+T0: Template for Prime height 2301207 (node: unified=6533548, prime=2301206)
+T1: Prime block mined → channel advances
+    Push received:  unified=6533549, prime=2301207
+    Snapshot:       is_template_stale()=true  (channel_height 2301207 >= channel_target 2301207)
+    Action: Discard template, request fresh work [reason: channel_advanced]
 ```

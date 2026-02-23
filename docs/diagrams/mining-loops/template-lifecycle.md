@@ -9,13 +9,15 @@ sequenceDiagram
     participant Worker
 
     Miner->>Node: MINER_READY (216)
-    Note over Node: Node queues miner for push notifications
+    Note over Node: Node queues miner for push notifications<br/>(push sent on ANY channel block — universal PoW tip push)
 
     Node->>Miner: PRIME_BLOCK_AVAILABLE (217)<br/>or HASH_BLOCK_AVAILABLE (218)
     Miner->>Node: GET_BLOCK (129 / 0xD081)
     Node->>Miner: BLOCK_DATA (0) — 228 bytes
 
     Note over Miner: Parse template:<br/>[0-3] nUnifiedHeight (uint32 BE)<br/>[4-7] nChannelHeight (uint32 BE)<br/>[8-11] nBits (uint32 BE)<br/>[12-227] Serialized block (216B)
+
+    Note over Miner: Two reasons to request new template:<br/>1. channel_advanced: channel_height ≥ channel_target<br/>2. tip_moved: unified_height > template_unified_height<br/>(another channel found a block — hashPrevBlock stale)
 
     Miner->>Worker: Distribute template to worker threads
 

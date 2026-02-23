@@ -1,5 +1,16 @@
 # Stateless Mining Protocol (LLL-TAO PR #170)
 
+> ⚠️ **Historical note**: Some opcode values and protocol flow descriptions in
+> this document reflect an earlier design iteration (e.g. opcodes 0xD007,
+> 0xD008, 0xD009 for `MINER_READY` / `GET_BLOCK` / `NEW_BLOCK`).  The current
+> implementation uses the values documented in
+> [PROTOCOL_LANES.md](../../PROTOCOL_LANES.md) and
+> [push-notifications.md](push-notifications.md).  Push notifications are now
+> sent on **any** channel block (universal PoW tip push) and the miner refreshes
+> for two distinct reasons (`channel_advanced` and `tip_moved`).  Refer to
+> [unified-tip-vs-channel-height.md](../mining/unified-tip-vs-channel-height.md)
+> for the authoritative description.
+
 ## Overview
 
 The stateless mining protocol is a modern push-notification based protocol that eliminates polling overhead and provides instant block updates. It represents a significant improvement over the legacy GET_ROUND polling protocol.

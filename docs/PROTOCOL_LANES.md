@@ -144,3 +144,15 @@ The dual-lane architecture provides:
 * **No fallback**: Connections stay on their assigned lane for their entire lifecycle
 * **Mirror mapping**: Consistent opcode translation between lanes
 * **TX/RX enforcement**: Compile-time and runtime checks prevent lane violations
+
+## Related: Mining Tip Anchoring
+
+Push notifications (`PRIME_BLOCK_AVAILABLE` / `HASH_BLOCK_AVAILABLE`) are sent on
+**both** legacy and stateless lanes and carry identical 12-byte payloads.  The
+miner uses these events to detect two distinct staleness conditions:
+`channel_advanced` and `tip_moved`.  See the canonical mining architecture doc
+for details:
+
+* **[docs/current/mining/unified-tip-vs-channel-height.md](current/mining/unified-tip-vs-channel-height.md)**
+  — unified best tip, channel height, channel target, and two refresh reasons
+

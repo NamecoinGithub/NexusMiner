@@ -1,5 +1,13 @@
 # Client-Side Fork-Aware Channel State Management - Implementation Summary
 
+> ⚠️ **Historical note**: This document describes the initial PR implementation of
+> `ClientChannelManager`.  The template-staleness model has since been updated:
+> staleness decisions now use `HeightTracker::Snapshot` (single source of truth)
+> rather than `ClientChannelManager::ValidateTemplate()`.  The dual-height
+> `ValidateTemplate()` described here is no longer the authoritative staleness
+> check.  See the canonical reference for the current model:
+> [unified-tip-vs-channel-height.md](../mining/unified-tip-vs-channel-height.md)
+
 ## 🎯 Overview
 
 This PR successfully implements the **CLIENT-SIDE** component that mirrors NODE's PR #136 (fork-aware channel state management), achieving perfect architectural alignment between CLIENT and NODE.
