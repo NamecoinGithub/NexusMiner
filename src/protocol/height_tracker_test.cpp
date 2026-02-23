@@ -311,6 +311,44 @@ void test_is_tip_moved_resets_on_new_template() {
     // template_unified_height updated to current unified height
     print_test_result("template_unified_height == 5005 (new template at new tip)",
                       snap.template_unified_height == 5005);
+// Test 9: Difficulty from push updates is reflected in HeightTracker and
+//         consistent across snapshot reads (Phase 2C regression test)
+// ============================================================================
+void test_difficulty_from_push_reflected_in_snapshot() {
+    std::cout << "\nTest 9: Difficulty from push updates reflected in HeightTracker\n";
+    HeightTracker tracker;
+
+    // First push: difficulty_nbits = 0x1d00ffff
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    auto snap = tracker.GetSnapshot();
+    print_test_result("difficulty_nbits set from push (0x1d00ffff)",
+                      snap.difficulty_nbits == 0x1d00ffff);
+    print_test_result("Source is PUSH after OnPushNotification",
+                      snap.last_update_source == HeightTracker::UpdateSource::PUSH);
+
+    // Second push with updated difficulty: difficulty_nbits = 0x1c0e9f34
+    tracker.OnPushNotification(5001, 101, 0x1c0e9f34);
+    snap = tracker.GetSnapshot();
+    print_test_result("difficulty_nbits updated from second push (0x1c0e9f34)",
+                      snap.difficulty_nbits == 0x1c0e9f34);
+    print_test_result("unified_height updated from second push (5001)",
+                      snap.unified_height == 5001);
+    print_test_result("channel_height updated from second push (101)",
+                      snap.channel_height == 101);
+
+    // GET_ROUND backup also carries difficulty; verify it is stored
+    tracker.OnGetRound(5002, 102, 0x1b0afe34);
+    snap = tracker.GetSnapshot();
+    print_test_result("difficulty_nbits from GET_ROUND backup (0x1b0afe34)",
+                      snap.difficulty_nbits == 0x1b0afe34);
+    print_test_result("Source is GET_ROUND after OnGetRound",
+                      snap.last_update_source == HeightTracker::UpdateSource::GET_ROUND);
+
+    // OnTemplateReceived must NOT overwrite difficulty (it doesn't carry nbits)
+    tracker.OnTemplateReceived(1, 103);
+    snap = tracker.GetSnapshot();
+    print_test_result("difficulty_nbits unchanged after OnTemplateReceived",
+                      snap.difficulty_nbits == 0x1b0afe34);
 }
 
 // ============================================================================
@@ -331,6 +369,7 @@ int main() {
     test_channel_advance_makes_stale();
     test_is_tip_moved_detected();
     test_is_tip_moved_resets_on_new_template();
+    test_difficulty_from_push_reflected_in_snapshot();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
