@@ -78,9 +78,6 @@ bool GenerateKeys(LLC::FalconVersion version, const std::string& outputFile)
     file << "# Falcon Version (DEFAULT: 1024 for maximum quantum security)\n";
     file << "falcon1024=" << (version == LLC::FalconVersion::FALCON_1024 ? "1" : "0") << "\n\n";
     
-    file << "# Physical Falcon Signature (DEFAULT: OFF for zero blockchain bloat)\n";
-    file << "physicalsigner=0\n\n";
-    
     file << "# Falcon Keys\n";
     file << "[falcon]\n";
     file << "version = " << versionStr << "\n";
@@ -100,7 +97,7 @@ bool GenerateKeys(LLC::FalconVersion version, const std::string& outputFile)
     if (version == LLC::FalconVersion::FALCON_1024)
     {
         std::cout << "║ Security:     256-bit quantum resistance            ║\n";
-        std::cout << "║ Blockchain:   0 bytes (Physical OFF by default)     ║\n";
+        std::cout << "║ Blockchain:   0 bytes (Disposable, not stored)      ║\n";
         std::cout << "║                                                      ║\n";
         std::cout << "║ Why Falcon-1024 Default?                             ║\n";
         std::cout << "║   - Maximum quantum protection (2^64× more secure)   ║\n";
@@ -110,7 +107,7 @@ bool GenerateKeys(LLC::FalconVersion version, const std::string& outputFile)
     else
     {
         std::cout << "║ Security:     128-bit quantum resistance            ║\n";
-        std::cout << "║ Blockchain:   0 bytes (Physical OFF by default)     ║\n";
+        std::cout << "║ Blockchain:   0 bytes (Disposable, not stored)      ║\n";
         std::cout << "║                                                      ║\n";
         std::cout << "║ Note: Falcon-512 is secure but Falcon-1024 is       ║\n";
         std::cout << "║ recommended for maximum quantum protection.          ║\n";
@@ -148,7 +145,7 @@ void PrintHelp()
     std::cout << "  -h, --help      Show this help message\n\n";
     std::cout << "Default Behavior:\n";
     std::cout << "  - Generates Falcon-1024 keys (maximum security)\n";
-    std::cout << "  - Sets physicalsigner=0 (zero blockchain bloat)\n";
+    std::cout << "  - Disposable signatures only (zero blockchain bloat)\n";
     std::cout << "  - Outputs to miner.conf\n\n";
     std::cout << "Examples:\n";
     std::cout << "  falcon-keygen                        # Falcon-1024 (default)\n";

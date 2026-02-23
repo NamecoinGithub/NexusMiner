@@ -650,7 +650,6 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
      * Wire format (Disposable Falcon only):
      *   [block_data (N bytes)] [timestamp (8 bytes LE)] [sig_len (2 bytes LE)] [disposable_sig (sig_len bytes)]
      *
-     * NOTE: Physical Falcon has been permanently removed (overly complex, not workable).
      * The node's SignedWorkSubmission::Deserialize() expects exactly this format with no trailing fields.
      */
     std::vector<uint8_t> plaintextPayload;

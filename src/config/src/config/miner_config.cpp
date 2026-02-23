@@ -75,21 +75,14 @@ bool MinerConfig::Load(const std::string& filename)
             m_bFalcon1024 = parse_bool(value);
             spdlog::info("Config: falcon1024 = {}", m_bFalcon1024);
         }
-        else if (key == "physicalsigner")
-        {
-            m_bPhysicalSigner = parse_bool(value);
-            spdlog::info("Config: physicalsigner = {}", m_bPhysicalSigner);
-        }
     }
     
     file.close();
     
     spdlog::info("Loaded miner config from: {}", filename);
     spdlog::info("  Falcon version: {}", m_bFalcon1024 ? "1024 (default)" : "512");
-    spdlog::info("  Physical signer: {}", m_bPhysicalSigner ? "ENABLED" : "DISABLED (default)");
     spdlog::info("  Signature size: {} bytes (CT)", GetSignatureSize());
     spdlog::info("  Public key size: {} bytes", GetPublicKeySize());
-    spdlog::info("  Blockchain overhead: {} bytes/block", GetBlockchainOverhead());
     
     return true;
 }
@@ -109,12 +102,7 @@ bool MinerConfig::Save(const std::string& filename) const
     file << "#==============================================================================\n";
     file << "#\n";
     file << "# This file configures Falcon signature settings for stateless mining.\n";
-    file << "#\n";
-    file << "# KEY DESIGN: \"Lazy Miner Economics\"\n";
-    file << "# - Default to Falcon-1024 (256-bit quantum security, maximum protection)\n";
-    file << "# - Default to Physical Falcon OFF (zero blockchain overhead)\n";
-    file << "# - 70% of miners use defaults → 0 blockchain bytes, maximum security\n";
-    file << "# - Net result: 51% blockchain savings vs all-Falcon-512 approach\n";
+    file << "# Disposable Falcon signatures are ALWAYS ON (not stored on blockchain).\n";
     file << "#\n";
     file << "#==============================================================================\n\n";
     
@@ -132,43 +120,13 @@ bool MinerConfig::Save(const std::string& filename) const
     file << "#\n";
     file << "falcon1024=" << (m_bFalcon1024 ? "1" : "0") << "\n\n";
     
-    file << "# Physical Falcon Signature Setting\n";
-    file << "#\n";
-    file << "# physicalsigner = 0  →  Physical Falcon OFF (DEFAULT)\n";
-    file << "#   - Disposable signature only (not stored on blockchain)\n";
-    file << "#   - Zero blockchain overhead\n";
-    file << "#   - Recommended for most miners (\"lazy miner\" economics)\n";
-    file << "#\n";
-    file << "# physicalsigner = 1  →  Physical Falcon ON\n";
-    file << "#   - Both disposable AND physical signatures\n";
-    file << "#   - Physical signature stored on blockchain permanently\n";
-    file << "#   - Adds 809 bytes (F-512) or 1577 bytes (F-1024) per block\n";
-    file << "#   - Use if you want permanent proof of block authorship\n";
-    file << "#\n";
-    file << "physicalsigner=" << (m_bPhysicalSigner ? "1" : "0") << "\n\n";
-    
     file << "# Current Configuration Summary\n";
     file << "# -----------------------------\n";
     file << "# Falcon Version: " << (m_bFalcon1024 ? "1024" : "512") << "\n";
     file << "# Quantum Security: " << (m_bFalcon1024 ? "256-bit" : "128-bit") << "\n";
     file << "# Signature Size: " << GetSignatureSize() << " bytes (CT)\n";
     file << "# Public Key Size: " << GetPublicKeySize() << " bytes\n";
-    file << "# Physical Signer: " << (m_bPhysicalSigner ? "ENABLED" : "DISABLED") << "\n";
-    file << "# Blockchain Overhead: " << GetBlockchainOverhead() << " bytes/block\n";
-    file << "#\n";
-    file << "# Economics (100-year projection):\n";
-    if (!m_bPhysicalSigner)
-    {
-        file << "#   - Your miner: 0 bytes/block → 0 GB total (Disposable not stored)\n";
-        file << "#   - Contributing to 51% blockchain savings! ✅\n";
-    }
-    else
-    {
-        file << "#   - Your miner: " << GetSignatureSize() << " bytes/block → ";
-        // 100 years: 630,720 blocks/year × 100 = 63,072,000 blocks
-        file << "~" << (GetSignatureSize() * 63072000ULL / 1024 / 1024 / 1024) << " GB total (Physical stored)\n";
-        file << "#   - Providing permanent proof of block authorship\n";
-    }
+    file << "# Blockchain Overhead: 0 bytes/block (Disposable only, not stored)\n";
     file << "\n";
     
     file << "#==============================================================================\n";
