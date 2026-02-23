@@ -42,7 +42,11 @@ flowchart TD
 ## Key Details
 
 - **Channel:** Hash (channel 2)
-- **Push notification:** `HASH_BLOCK_AVAILABLE` (218)
+- **Push notification:** `HASH_BLOCK_AVAILABLE` (218) — sent on **any** channel block (universal PoW tip push)
 - **Hashing algorithm:** SK-1024
 - **GPU acceleration:** Supported via CUDA/OpenCL workers
 - **Template format:** Same 228-byte structure as prime channel
+- **Stale detection:** Two reasons trigger a template refresh:
+  - `channel_advanced`: `channel_height >= channel_target` (own channel found block)
+  - `tip_moved`: `unified_height > template_unified_height` (other channel found block — `hashPrevBlock` stale)
+  - See [unified-tip-vs-channel-height.md](../../current/mining/unified-tip-vs-channel-height.md)

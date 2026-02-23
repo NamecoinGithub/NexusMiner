@@ -47,5 +47,8 @@ flowchart TD
 - **Channel:** Prime (channel 1)
 - **Template size:** 228 bytes (12-byte metadata + 216-byte Tritium block)
 - **Opcodes:** `GET_BLOCK` (129 / 0xD081), `SUBMIT_BLOCK` (1 / 0xD001)
-- **Push notifications:** `PRIME_BLOCK_AVAILABLE` (217) signals new work
-- **Stale detection:** Based on channel height comparison
+- **Push notifications:** `PRIME_BLOCK_AVAILABLE` (217) — sent on **any** channel block (universal PoW tip push)
+- **Stale detection:** Two reasons trigger a template refresh:
+  - `channel_advanced`: `channel_height >= channel_target` (own channel found block)
+  - `tip_moved`: `unified_height > template_unified_height` (other channel found block — `hashPrevBlock` stale)
+  - See [unified-tip-vs-channel-height.md](../../current/mining/unified-tip-vs-channel-height.md)
