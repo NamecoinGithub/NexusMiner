@@ -113,7 +113,6 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 : m_channel{channel}
 , m_logger{spdlog::get("logger")}
 , m_current_height{0}
-, m_current_difficulty{0}
 , m_current_reward{0}
 , m_set_block_handler{}
 , m_stats_collector{std::move(stats_collector)}
@@ -299,7 +298,6 @@ static bool is_valid_genesis(const std::vector<uint8_t>& genesis) {
 void Solo::reset()
 {
     m_current_height = 0;
-    m_current_difficulty = 0;
     m_current_reward = 0;
     m_authenticated = false;
     m_session_id = 0;
@@ -549,6 +547,13 @@ network::Shared_payload Solo::get_work()
 
 network::Shared_payload Solo::send_get_round()
 {
+    // GET_ROUND is a BACKUP / sanity-check mechanism, not the primary height source.
+    // Primary height updates come from push notifications (BLOCK_AVAILABLE opcodes).
+    // GET_ROUND is used only when: push delivery may have been missed, for fork detection,
+    // or as a periodic sanity check (POLLING_ENABLED, 90s interval by default).
+    // Unified height movement reported by GET_ROUND does NOT trigger template discard;
+    // only channel height advancing (is_template_stale()) is authoritative for staleness.
+
     // CRITICAL: Validate authentication before sending GET_ROUND
     // Node will reject unauthenticated GET_ROUND requests
     if (!m_authenticated) {
