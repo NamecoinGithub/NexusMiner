@@ -3208,20 +3208,27 @@ void Solo::check_unified_height_delta(uint32_t current_unified_height)
         return;  // No template yet
     }
     
-    // Informational only: log when unified height moves while channel height stays constant.
-    // Unified height advancing (other channels finding blocks) does NOT make the current
-    // channel template stale. Only channel height advancing is authoritative for staleness.
-    // Channel-height staleness is handled by check_staleness_by_channel_delta() and
-    // HeightTracker::is_template_stale().
+    // When the unified tip moves, hashPrevBlock in the current template becomes
+    // stale even if the channel height hasn't changed. Request a fresh template
+    // so mining doesn't waste work on an orphan-prone block.
+    // Rate limiting in get_work() (6500ms) prevents spamming the node.
     if (current_unified_height > m_template_unified_height) {
         uint32_t delta = current_unified_height - m_template_unified_height;
         
-        if (delta >= UNIFIED_HEIGHT_DELTA_TRIGGER) {
-            m_logger->info("[Solo Poll] ℹ️  Unified height moved {} blocks ({} → {}) - other channel(s) found blocks",
-                delta, m_template_unified_height, current_unified_height);
-            m_logger->info("[Solo Poll]    Channel height is authoritative for staleness - continuing to mine");
-            // Update to avoid repeated log spam
-            m_template_unified_height = current_unified_height;
+        m_logger->info("[Solo Poll] ↑ Unified tip moved {} blocks ({} → {}) [reason: tip_moved] — requesting fresh template",
+            delta, m_template_unified_height, current_unified_height);
+        // Update to avoid repeated log spam
+        m_template_unified_height = current_unified_height;
+
+        // Request fresh template via GET_BLOCK (rate-limited)
+        if (m_connection) {
+            auto work = get_work();
+            if (work && !work->empty()) {
+                m_connection->transmit(work);
+                m_logger->info("[Solo Poll] ✓ GET_BLOCK sent for tip refresh");
+            } else {
+                m_logger->debug("[Solo Poll] GET_BLOCK rate-limited — tip refresh deferred");
+            }
         }
     }
 }
