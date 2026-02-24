@@ -392,6 +392,24 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     // Update with the found nonce
     solved_block.nNonce = nonce;
     
+    // CRITICAL HEIGHT AUDIT: block.nHeight must be unified height, NOT channel height.
+    // The node's ProofHash() hashes nVersion→nBits which includes nHeight.
+    // If nHeight != unified_height, ProofHash() will mismatch → Prime rejected.
+    m_logger->info("[SUBMIT AUDIT] solved_block.nHeight = {} (must be unified height ~{})",
+        solved_block.nHeight, m_last_unified_height);
+    m_logger->info("[SUBMIT AUDIT] nChannelHeight (metadata) = {} (NOT in block bytes)",
+        m_current_template.nChannelHeight);
+    
+    // Defensive guard: abort if nHeight looks like channel height (much smaller than unified).
+    // This is a heuristic: channel heights are typically far below unified heights on Nexus
+    // (e.g., unified ~4M, prime channel ~2M, hash channel ~5M). The threshold of /2 errs
+    // conservatively to avoid blocking valid blocks near genesis while catching obvious corruption.
+    if (m_last_unified_height > 0 && solved_block.nHeight < m_last_unified_height / 2) {
+        m_logger->error("[SUBMIT AUDIT] ❌ ABORT: block.nHeight {} appears to be channel height, not unified height {}",
+            solved_block.nHeight, m_last_unified_height);
+        return {};
+    }
+    
     // Determine serialization format from template
     bool is_tritium = (m_current_template.format == BlockFormat::TRITIUM);
     
@@ -959,11 +977,26 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
         return;
     }
     
+    // DEFENSIVE: Verify block.nHeight was NOT corrupted (must remain unified height).
+    // set_channel_height() must ONLY update metadata — never block.nHeight.
+    // Note: m_last_unified_height is set to tmpl.block.nHeight in read_template(),
+    // which is already the unified blockchain height (tStateBest.nHeight + 1).
+    // So both should be identical; any difference indicates in-flight corruption.
+    if (m_last_unified_height > 0 && m_current_template.block.nHeight != m_last_unified_height) {
+        m_logger->error("[TemplateInterface] ❌ CRITICAL: block.nHeight ({}) != last_unified_height ({})!",
+            m_current_template.block.nHeight, m_last_unified_height);
+        m_logger->error("[TemplateInterface]   block.nHeight was corrupted — discarding template");
+        discard_template_unsafe("block.nHeight corruption detected");
+        return;
+    }
+    
+    // Only update metadata field, NEVER block.nHeight
     m_current_template.nChannelHeight = channel_height;
     m_current_channel_height = (channel_height > 0) ? (channel_height - 1) : 0;
     m_template_channel_height_snapshot = 0;
     m_has_snapshot = false;
-    m_logger->info("[TemplateInterface] ✓ Template channel height set to {}", channel_height);
+    m_logger->info("[TemplateInterface] ✓ Template channel height (metadata) set to {} (block.nHeight={} unchanged)",
+        channel_height, m_current_template.block.nHeight);
 }
 
 void MiningTemplateInterface::discard_template(const std::string& reason)

@@ -182,9 +182,9 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             m_logger->info("[Solo]   Channel:         {} ({})", tmpl.block.nChannel, 
                 get_channel_name(tmpl.block.nChannel));
             
-            // FIX: After LLL-TAO PR#212, block.nHeight contains CHANNEL height, not unified height
-            // Template height = channel height (what block we're mining for)
-            m_logger->info("[Solo]   Template height: {} (channel-specific)", tmpl.block.nHeight);
+            // block.nHeight is the UNIFIED blockchain height (tStateBest.nHeight + 1).
+            // After the node fix, this is correct — do NOT treat it as channel-specific height.
+            m_logger->info("[Solo]   Template height: {} (unified blockchain height)", tmpl.block.nHeight);
             
             // Show unified height from last GET_ROUND (reference only - other channels may differ)
             if (m_last_round_status.height > 0) {
@@ -2455,7 +2455,28 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Update diagnostic height reference (unified_height from packet metadata)
             m_current_height = unified_height;  // diagnostic only
             
-            // Set channel height on the template
+            // Verify that block.nHeight (from 216-byte block bytes) matches the metadata unified_height.
+            // After the node fix, these should agree: block.nHeight == unified_height + 1.
+            // (metadata unified_height is tStateBest.nHeight; block.nHeight is the NEXT block height)
+            // We warn-and-continue (not abort) here because: the 216-byte block bytes contain the
+            // canonical ProofHash() inputs, so block.nHeight is always used as-is for submission.
+            // A mismatch simply indicates the node is running old firmware — the block is still valid
+            // for mining; ProofHash() correctness depends only on what's in block bytes, not metadata.
+            auto* tmpl = m_template_interface->get_current_template();
+            if (tmpl && unified_height > 0) {
+                uint32_t expected_block_height = unified_height + 1;
+                if (tmpl->block.nHeight != expected_block_height) {
+                    m_logger->warn("[Solo Stateless] ⚠️  Height mismatch: metadata unified_height+1={} but block.nHeight={}",
+                        expected_block_height, tmpl->block.nHeight);
+                    m_logger->warn("[Solo Stateless]   If node fix is applied, these should match.");
+                    m_logger->warn("[Solo Stateless]   Node may be running old firmware — continuing with block.nHeight as-is");
+                } else {
+                    m_logger->info("[Solo Stateless] ✅ Height verified: block.nHeight={} == metadata unified+1={} ✓",
+                        tmpl->block.nHeight, expected_block_height);
+                }
+            }
+            
+            // Set channel height as defensive secondary metadata (does NOT touch block.nHeight)
             m_template_interface->set_channel_height(channel_height);
             
             // Template is now ready for mining!

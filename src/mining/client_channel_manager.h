@@ -148,7 +148,9 @@ public:
         uint32_t nNodeChannel = m_nNodeChannelHeight.load();
         
         // Validate unified height (Block::Accept logic)
+
         // Template builds NEXT block; nHeight = unified tip + 1 (nHeight is unified height)
+
         if (pTemplate->nHeight != nNodeUnified + 1)
             return false;  // Stale template or fork
         
