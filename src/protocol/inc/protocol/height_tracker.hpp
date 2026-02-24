@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <optional>
+#include "LLC/types/uint1024.h"
 
 namespace nexusminer {
 namespace protocol {
@@ -42,6 +43,7 @@ public:
         uint32_t channel_target{0};           ///< Template channel target (0 = unset)
         uint32_t channel{0};                  ///< Mining channel (1=Prime, 2=Hash)
         uint32_t template_unified_height{0}; ///< Unified height at time of last template receipt
+        uint1024_t hash_prev_block{};         ///< hashPrevBlock captured at template parse time (tip anchor)
         UpdateSource last_update_source{UpdateSource::NONE};
 
         /// Time of last push/GET_ROUND update
@@ -137,6 +139,16 @@ public:
      *                               is targeting, i.e. next block to mine)
      */
     void OnTemplateReceived(uint32_t channel, uint32_t template_channel_target);
+
+    /**
+     * @brief Record the hashPrevBlock from the most recently received template
+     *
+     * Call this after parsing a new template to capture the chain tip anchor.
+     * Used to detect tip changes between successive templates (StakeMinter pattern).
+     *
+     * @param h  hashPrevBlock from the template's block header
+     */
+    void UpdateWithHashPrevBlock(const uint1024_t& h);
 
     // =========================================================================
     // Read methods

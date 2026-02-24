@@ -48,6 +48,12 @@ void HeightTracker::OnTemplateReceived(uint32_t channel,
     m_state.last_template_update = std::chrono::steady_clock::now();
 }
 
+void HeightTracker::UpdateWithHashPrevBlock(const uint1024_t& h)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_state.hash_prev_block = h;
+}
+
 HeightTracker::Snapshot HeightTracker::GetSnapshot() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_state;

@@ -41,6 +41,7 @@ add_executable(height_tracker_test height_tracker_test.cpp)
 target_link_libraries(height_tracker_test PRIVATE protocol)
 target_include_directories(height_tracker_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLC/inc
 )
 
 # PacketBuilder Unit Test
