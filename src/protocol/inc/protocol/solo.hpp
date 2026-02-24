@@ -125,6 +125,10 @@ public:
     // HeightTracker snapshot (single source of truth for height/staleness decisions)
     HeightTracker::Snapshot get_height_tracker_snapshot() const { return m_height_tracker.GetSnapshot(); }
 
+    // Block-result counters (Gap 3)
+    uint32_t get_blocks_accepted() const { return m_blocks_accepted.load(); }
+    uint32_t get_blocks_rejected() const { return m_blocks_rejected.load(); }
+
 private:
     
     // Derive ChaCha20 session key from genesis hash
@@ -219,6 +223,15 @@ private:
     std::uint64_t m_current_reward;
     Set_block_handler m_set_block_handler;
     std::shared_ptr<stats::Collector> m_stats_collector;
+
+    // hashPrevBlock snapshot (Gap 1): tip anchor captured at template parse time.
+    // Equivalent to StakeMinter::hashLastBlock — a new template with a different
+    // hashPrevBlock signals that the chain tip has moved.
+    uint1024_t m_last_known_hash_prev_block;
+
+    // Block-result counters (Gap 3): incremented by BLOCK_ACCEPTED / BLOCK_REJECTED handlers.
+    std::atomic<uint32_t> m_blocks_accepted{0};
+    std::atomic<uint32_t> m_blocks_rejected{0};
     
     // Falcon miner authentication state (Phase 2)
     std::vector<uint8_t> m_miner_pubkey;

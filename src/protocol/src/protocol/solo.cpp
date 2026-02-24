@@ -1177,6 +1177,21 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Use HeightTracker snapshot for the actual unified height.
             m_current_height = m_height_tracker.GetSnapshot().unified_height;
 
+            // Gap 1: Snapshot hashPrevBlock at template parse time (StakeMinter::hashLastBlock pattern).
+            // A new template with a different hashPrevBlock signals that the chain tip has moved.
+            m_last_known_hash_prev_block = tmpl->block.hashPrevBlock;
+            {
+                auto prev_bytes = m_last_known_hash_prev_block.GetBytes();
+                std::string prev_hex;
+                for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i) {
+                    char buf[3];
+                    snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
+                    prev_hex += buf;
+                }
+                m_logger->info("[TEMPLATE ANCHOR] hashPrevBlock = {}... (tip anchor at template creation)", prev_hex);
+                m_logger->info("[TEMPLATE ANCHOR] block.nHeight = {} (unified blockchain height)", tmpl->block.nHeight);
+            }
+
             // Snapshot current channel height for legacy GET_ROUND delta staleness
             if (m_last_round_status.has_channel_heights) {
                 uint32_t snapshot_height = m_last_round_status.get_channel_height(m_channel);
@@ -1307,6 +1322,19 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         stats::Global global_stats{};
         global_stats.m_accepted_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
+        ++m_blocks_accepted;
+
+        // Retrieve height and channel from last template for the diagnostic log.
+        uint32_t accepted_height = 0;
+        uint32_t accepted_channel = m_channel;
+        if (m_template_interface) {
+            auto const* tmpl = m_template_interface->get_current_template();
+            if (tmpl) {
+                accepted_height = tmpl->block.nHeight;
+                accepted_channel = tmpl->block.nChannel;
+            }
+        }
+        m_logger->info("✅ BLOCK ACCEPTED by node — height={} channel={}", accepted_height, accepted_channel);
         m_logger->info("Block Accepted By Nexus Network.");
         
         // Enhanced diagnostics: Log connection info for accepted block
@@ -1339,6 +1367,33 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         stats::Global global_stats{};
         global_stats.m_rejected_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
+        ++m_blocks_rejected;
+
+        // Retrieve height and channel from last template for the diagnostic log.
+        uint32_t rejected_height = 0;
+        uint32_t rejected_channel = m_channel;
+        if (m_template_interface) {
+            auto const* tmpl = m_template_interface->get_current_template();
+            if (tmpl) {
+                rejected_height = tmpl->block.nHeight;
+                rejected_channel = tmpl->block.nChannel;
+            }
+        }
+
+        // Parse rejection reason byte if present (stateless lane sends it in payload).
+        std::string reason_str = "NONE";
+        if (packet.m_data && !packet.m_data->empty()) {
+            uint8_t reason_byte = (*packet.m_data)[0];
+            switch (reason_byte) {
+                case static_cast<uint8_t>(LLP::StatelessMining::RejectionReason::STALE):       reason_str = "STALE"; break;
+                case static_cast<uint8_t>(LLP::StatelessMining::RejectionReason::INVALID_POW): reason_str = "INVALID_POW"; break;
+                case static_cast<uint8_t>(LLP::StatelessMining::RejectionReason::INVALID_SIG): reason_str = "INVALID_SIG"; break;
+                case static_cast<uint8_t>(LLP::StatelessMining::RejectionReason::DUPLICATE):   reason_str = "DUPLICATE"; break;
+                case static_cast<uint8_t>(LLP::StatelessMining::RejectionReason::FORK):        reason_str = "FORK"; break;
+                default: { char buf[16]; snprintf(buf, sizeof(buf), "0x%02x", reason_byte); reason_str = buf; break; }
+            }
+        }
+        m_logger->warn("❌ BLOCK REJECTED by node — height={} channel={} reason={}", rejected_height, rejected_channel, reason_str);
         m_logger->warn("Block Rejected by Nexus Network.");
         
         // Enhanced diagnostics: Log connection info and possible reasons
@@ -2927,6 +2982,18 @@ bool Solo::finalize_template_with_channel_height(uint32_t node_channel_height, c
         {
             m_logger->debug("[Solo GET_ROUND]   block.nHeight = {} (unified, unchanged)", tmpl->block.nHeight);
             m_logger->debug("[Solo GET_ROUND]   nChannelHeight = {} (metadata only, NOT in block bytes)", template_channel_height);
+
+            // Gap 1 (legacy lane): snapshot hashPrevBlock for parity with stateless lane.
+            m_last_known_hash_prev_block = tmpl->block.hashPrevBlock;
+            auto prev_bytes = m_last_known_hash_prev_block.GetBytes();
+            std::string prev_hex;
+            for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i) {
+                char buf[3];
+                snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
+                prev_hex += buf;
+            }
+            m_logger->info("[TEMPLATE ANCHOR] hashPrevBlock = {}... (tip anchor at template creation)", prev_hex);
+            m_logger->info("[TEMPLATE ANCHOR] block.nHeight = {} (unified blockchain height)", tmpl->block.nHeight);
         }
         return true;
     }

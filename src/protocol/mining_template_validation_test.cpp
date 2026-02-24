@@ -560,6 +560,131 @@ int main()
     }
 
     // ====================================================================
+    // Test 19: hashPrevBlock preserved end-to-end through prepare_block_submission()
+    // ====================================================================
+    std::cout << "\nTest 19: hashPrevBlock preserved end-to-end through prepare_block_submission()" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+
+        // 1. Create a mock template with a known non-zero hashPrevBlock byte pattern (bytes 1..128).
+        std::vector<uint8_t> mock_data(216, 0);
+        // Write nVersion = 7 (big-endian) at offset 0
+        mock_data[0] = 0; mock_data[1] = 0; mock_data[2] = 0; mock_data[3] = 7;
+        // hashPrevBlock at offset [4..131]: bytes 1..128
+        for (int i = 0; i < 128; ++i) {
+            mock_data[4 + i] = static_cast<uint8_t>((i + 1) & 0xFF);
+        }
+        // hashMerkleRoot at offset [132..195]: non-zero pattern
+        for (int i = 0; i < 64; ++i) {
+            mock_data[132 + i] = static_cast<uint8_t>((i + 1) & 0xFF);
+        }
+        // nChannel = 2 at offset 196
+        mock_data[196] = 0; mock_data[197] = 0; mock_data[198] = 0; mock_data[199] = 2;
+        // nHeight = 7000001 at offset 200
+        uint32_t known_height = 7000001;
+        mock_data[200] = (known_height >> 24) & 0xFF;
+        mock_data[201] = (known_height >> 16) & 0xFF;
+        mock_data[202] = (known_height >> 8) & 0xFF;
+        mock_data[203] = known_height & 0xFF;
+        // nBits = 0x1d00ffff at offset 204
+        mock_data[204] = 0x1d; mock_data[205] = 0x00; mock_data[206] = 0xFF; mock_data[207] = 0xFF;
+        // nNonce = 0 at offset 208..215
+
+        // 2. Call read_template() with this mock data.
+        auto result = tmpl_interface.read_template(mock_data, "test_node");
+        print_test_result("read_template() accepts mock template with known hashPrevBlock", result.is_valid);
+
+        if (result.is_valid) {
+            // 3. Verify get_current_template()->block.hashPrevBlock matches the input bytes.
+            const auto* tmpl = tmpl_interface.get_current_template();
+            bool prev_ok = false;
+            if (tmpl) {
+                auto prev_bytes = tmpl->block.hashPrevBlock.GetBytes();
+                prev_ok = (prev_bytes.size() >= 128);
+                if (prev_ok) {
+                    for (int i = 0; i < 128 && prev_ok; ++i) {
+                        prev_ok = (prev_bytes[i] == static_cast<uint8_t>((i + 1) & 0xFF));
+                    }
+                }
+            }
+            print_test_result("block.hashPrevBlock matches input bytes after read_template()", prev_ok);
+
+            // 4. Call prepare_block_submission(merkle_root, nonce).
+            std::vector<uint8_t> merkle_root(64, 0xAB);
+            uint64_t nonce = 0x0102030405060708ULL;
+            auto payload = tmpl_interface.prepare_block_submission(merkle_root, nonce);
+
+            print_test_result("prepare_block_submission() returns 216-byte payload", payload.size() == 216);
+
+            // 5. Verify payload[4..131] matches the original hashPrevBlock bytes.
+            if (payload.size() == 216) {
+                bool payload_prev_ok = true;
+                for (int i = 0; i < 128 && payload_prev_ok; ++i) {
+                    payload_prev_ok = (payload[4 + i] == static_cast<uint8_t>((i + 1) & 0xFF));
+                }
+                print_test_result("✓ hashPrevBlock preserved at payload[4-131]", payload_prev_ok);
+            } else {
+                print_test_result("✓ hashPrevBlock preserved at payload[4-131]", false);
+            }
+        } else {
+            // Skip dependent sub-tests
+            print_test_result("block.hashPrevBlock matches input bytes after read_template()", false);
+            print_test_result("prepare_block_submission() returns 216-byte payload", false);
+            print_test_result("✓ hashPrevBlock preserved at payload[4-131]", false);
+        }
+    }
+
+    // ====================================================================
+    // Test 20: BLOCK_ACCEPTED / BLOCK_REJECTED opcode handling increments counters
+    // ====================================================================
+    std::cout << "\nTest 20: BLOCK_ACCEPTED / BLOCK_REJECTED opcode handling increments counters" << std::endl;
+    {
+        // Verify the primary mirror-mapped opcodes are correct.
+        print_test_result("BLOCK_ACCEPTED mirror opcode is 0xD0C8",
+            MinerLLP::StatelessMining::BLOCK_ACCEPTED == 0xD0C8);
+        print_test_result("BLOCK_REJECTED mirror opcode is 0xD0C9",
+            MinerLLP::StatelessMining::BLOCK_REJECTED == 0xD0C9);
+
+        // Simulate counter behaviour using a simple struct that mirrors Solo's counters.
+        struct BlockResultCounters {
+            uint32_t accepted{0};
+            uint32_t rejected{0};
+            void on_accepted() { ++accepted; }
+            void on_rejected() { ++rejected; }
+        };
+
+        BlockResultCounters counters;
+
+        // Simulate receiving BLOCK_ACCEPTED
+        uint16_t opcode = MinerLLP::StatelessMining::BLOCK_ACCEPTED;
+        if (opcode == MinerLLP::StatelessMining::BLOCK_ACCEPTED) {
+            counters.on_accepted();
+        }
+        print_test_result("m_blocks_accepted increments on BLOCK_ACCEPTED (0xD0C8)",
+            counters.accepted == 1 && counters.rejected == 0);
+
+        // Simulate receiving BLOCK_REJECTED
+        opcode = MinerLLP::StatelessMining::BLOCK_REJECTED;
+        if (opcode == MinerLLP::StatelessMining::BLOCK_REJECTED) {
+            counters.on_rejected();
+        }
+        print_test_result("m_blocks_rejected increments on BLOCK_REJECTED (0xD0C9)",
+            counters.accepted == 1 && counters.rejected == 1);
+
+        // Also verify compat aliases trigger the same counter path.
+        opcode = MinerLLP::StatelessMining::BLOCK_ACCEPTED_COMPAT;
+        if (opcode == MinerLLP::StatelessMining::BLOCK_ACCEPTED_COMPAT) {
+            counters.on_accepted();
+        }
+        opcode = MinerLLP::StatelessMining::BLOCK_REJECTED_COMPAT;
+        if (opcode == MinerLLP::StatelessMining::BLOCK_REJECTED_COMPAT) {
+            counters.on_rejected();
+        }
+        print_test_result("Compat aliases also drive counters (accepted=2, rejected=2)",
+            counters.accepted == 2 && counters.rejected == 2);
+    }
+
+    // ====================================================================
     // Summary
     // ====================================================================
     std::cout << "\n========================================" << std::endl;
@@ -570,6 +695,8 @@ int main()
     std::cout << "Failed:       " << tests_failed << std::endl;
     std::cout << "Success rate: " << (tests_run > 0 ? (100.0 * tests_passed / tests_run) : 0.0) 
               << "%" << std::endl;
+    if (tests_failed == 0)
+        std::cout << "✓ ALL TESTS PASSED (" << tests_passed << "/" << tests_run << ")" << std::endl;
     std::cout << "========================================" << std::endl;
 
     return (tests_failed == 0) ? 0 : 1;

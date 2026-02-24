@@ -257,6 +257,23 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             
                             m_logger->info("[Worker_manager] 💎 Solution found! Age: {}s, Channel height valid ✅ - SUBMITTING", template_age);
                             
+                            // Gap 2: Log hashPrevBlock before submission (SUBMIT AUDIT).
+                            // Cross-reference: node Guard 2 checks pBlock->hashPrevBlock == hashBestChain.
+                            // If node rejects "stale block", compare this log against node's hashBestChain.
+                            {
+                                auto const* submit_tmpl = template_interface->get_current_template();
+                                if (submit_tmpl) {
+                                    auto prev_bytes = submit_tmpl->block.hashPrevBlock.GetBytes();
+                                    std::string prev_hex;
+                                    for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i) {
+                                        char buf[3];
+                                        snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
+                                        prev_hex += buf;
+                                    }
+                                    m_logger->info("[SUBMIT AUDIT]   block.hashPrevBlock = {}... (tip anchor — node Guard 2 will verify this == hashBestChain)", prev_hex);
+                                }
+                            }
+
                             // Prepare full block submission (216 or 220 bytes depending on format)
                             // This reconstructs the full block from the current template with the
                             // mined merkle root and nonce
