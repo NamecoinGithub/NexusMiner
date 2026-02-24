@@ -36,11 +36,21 @@ class ClientBlock
 public:
     // Block header fields (serializable)
     uint32_t nVersion;              // Block version
-    uint1024_t hashPrevBlock;       // Previous block hash (128 bytes)
+    uint1024_t hashPrevBlock;       // Hash of the best chain tip at template creation time.
+                                    // MUST equal ChainState::hashBestChain at block acceptance.
+                                    // This is the primary staleness anchor (StakeMinter pattern).
+                                    // On any tip_moved notification, request a fresh template;
+                                    // the new template's hashPrevBlock will reflect the new tip.
     uint512_t hashMerkleRoot;       // Merkle root (64 bytes)
     uint32_t nChannel;              // Mining channel (1=Prime, 2=Hash, 3=Stake)
-    uint32_t nHeight;               // Template height field: represents channel_target in stateless templates
-                                    // (the channel-specific height being mined, not the unified blockchain height)
+    uint32_t nHeight;               // Channel target height: stateChannel.nChannelHeight + 1
+                                    // Set by the node in CreateBlockForStatelessMining() / AddBlockData()
+                                    // MUST be treated as READ-ONLY after deserialization from the 216-byte template.
+                                    // This is the value Block::Accept() validates as the next channel sequence number.
+                                    // It is NOT the unified blockchain height (which is tStateBest.nHeight).
+                                    // It is NOT something the miner computes independently.
+                                    // ProofHash() for Prime hashes nVersion..nBits (which includes nHeight),
+                                    // so any mutation of this field after deserialization will break Prime mining.
     uint32_t nBits;                 // Difficulty bits
     uint64_t nNonce;                // Mining nonce
     uint32_t nTime;                 // Block timestamp

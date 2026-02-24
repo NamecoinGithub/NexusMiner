@@ -99,6 +99,16 @@ public:
     }
     
     /**
+     * @brief Defensive check: verify nHeight was not overwritten after deserialization
+     * @param expected_channel_target The expected channel target (stateChannel.nChannelHeight + 1)
+     * @return true if nHeight still equals expected_channel_target
+     */
+    bool IsHeightIntact(uint32_t expected_channel_target) const
+    {
+        return nHeight == expected_channel_target;
+    }
+    
+    /**
      * @brief Convert block state to string for logging
      * @return Human-readable description
      */

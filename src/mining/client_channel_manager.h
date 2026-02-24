@@ -129,9 +129,11 @@ public:
      * @brief Validate template using dual height check (mirrors NODE's Block::Accept logic)
      * 
      * Checks:
-     * 1. Unified height match (template.nHeight == nodeHeight + 1)
+     * 1. Channel target height match (template.nHeight == nodeChannelHeight + 1)
      * 2. Channel height match (template.nChannelHeight == nodeChannelHeight + 1)
-     * 3. Age timeout (< 60 seconds)
+     * 3. Age timeout (< MAX_TEMPLATE_AGE_SECONDS)
+     * 
+     * Note: template.nHeight is channel_target (stateChannel.nChannelHeight + 1), NOT unified height.
      * 
      * @param pTemplate Template to validate
      * @return true if template is valid for mining
@@ -144,10 +146,11 @@ public:
         uint32_t nNodeUnified = m_nNodeUnifiedHeight.load();
         uint32_t nNodeChannel = m_nNodeChannelHeight.load();
         
-        // Validate unified height (Block::Accept logic)
-        // Template builds NEXT block, so height should be nodeHeight + 1
-        if (pTemplate->nHeight != nNodeUnified + 1)
-            return false;  // Stale or fork
+        // Validate channel target height (Block::Accept logic)
+        // pTemplate->nHeight IS channel_target (stateChannel.nChannelHeight + 1)
+        // Compare against node channel height + 1, NOT unified + 1
+        if (pTemplate->nHeight != nNodeChannel + 1)
+            return false;  // channel_advanced: another block mined in this channel
         
         // Validate channel height (Block::Accept logic)
         // Template's channel height should be nodeChannelHeight + 1

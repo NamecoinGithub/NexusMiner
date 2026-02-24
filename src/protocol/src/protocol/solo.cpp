@@ -2413,6 +2413,39 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                           validation_result.validation_time.count());
             m_logger->info("[Solo Stateless] ✅ read_template successfully parsed 216-byte Tritium block");
             
+            // Defensive assertion: block.nHeight (channel_target) must equal metadata.channel_height + 1
+            // channel_height from metadata = channel_current; block.nHeight = channel_target = channel_current + 1
+            {
+                auto const* tmpl = m_template_interface->get_current_template();
+                if (tmpl)
+                {
+                    if (tmpl->block.nHeight != channel_height + 1)
+                    {
+                        m_logger->error("[Solo Stateless] ❌ CRITICAL HEIGHT MISMATCH:");
+                        m_logger->error("[Solo Stateless]   template.block.nHeight = {} (should be channel_target)", tmpl->block.nHeight);
+                        m_logger->error("[Solo Stateless]   metadata.channel_height = {} (channel_current)", channel_height);
+                        m_logger->error("[Solo Stateless]   expected channel_target = {}", channel_height + 1);
+                        m_logger->error("[Solo Stateless]   This will cause ProofHash() mismatch. Discarding template.");
+                        m_template_interface->discard_template("channel_target vs metadata mismatch");
+                        return;
+                    }
+                    m_logger->info("[Solo Stateless] ✅ Height consistency verified: block.nHeight={} == channel_height+1={}",
+                        tmpl->block.nHeight, channel_height + 1);
+                    
+                    // Log hashPrevBlock (primary staleness anchor per StakeMinter pattern)
+                    auto prev_bytes = tmpl->block.hashPrevBlock.GetBytes();
+                    std::string prev_hex;
+                    for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i)
+                    {
+                        char buf[3];
+                        snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
+                        prev_hex += buf;
+                    }
+                    m_logger->info("[Solo Stateless] hashPrevBlock = {}... (tip anchor; request new template on tip_moved)",
+                        prev_hex);
+                }
+            }
+            
             // Update diagnostic height reference (unified_height from packet metadata)
             m_current_height = unified_height;  // diagnostic only
             
@@ -2859,6 +2892,17 @@ bool Solo::finalize_template_with_channel_height(uint32_t node_channel_height, c
         m_template_interface->set_channel_height(template_channel_height);
         m_logger->info("[Solo GET_ROUND] ✓ Template finalized with channel height {} ({})", 
             template_channel_height, context);
+        
+        // Defensive: verify computed channel_target matches block.nHeight from node
+        auto const* tmpl = m_template_interface->get_current_template();
+        if (tmpl && tmpl->block.nHeight != template_channel_height)
+        {
+            m_logger->error("[Solo GET_ROUND] ❌ CRITICAL: channel_height finalization mismatch!");
+            m_logger->error("[Solo GET_ROUND]   Computed channel_target = {} (channel_height + 1)", template_channel_height);
+            m_logger->error("[Solo GET_ROUND]   block.nHeight from node = {} (deserialized)", tmpl->block.nHeight);
+            m_logger->error("[Solo GET_ROUND]   These must match for ProofHash() to be correct.");
+            m_logger->error("[Solo GET_ROUND]   The node's value takes precedence. Do NOT overwrite block.nHeight.");
+        }
         return true;
     }
     
@@ -2911,6 +2955,17 @@ bool Solo::sync_template_state(uint32_t unified_height, uint32_t channel_height)
         m_template_interface->set_channel_height(template_channel_height);
         m_logger->info("[Solo Sync] ✓ Template finalized: mining for channel height {}", 
             template_channel_height);
+        
+        // Defensive: verify computed channel_target matches block.nHeight from node
+        auto const* tmpl_ptr = m_template_interface->get_current_template();
+        if (tmpl_ptr && tmpl_ptr->block.nHeight != template_channel_height)
+        {
+            m_logger->error("[Solo Sync] ❌ CRITICAL: channel_height finalization mismatch!");
+            m_logger->error("[Solo Sync]   Computed channel_target = {} (channel_height + 1)", template_channel_height);
+            m_logger->error("[Solo Sync]   block.nHeight from node = {} (deserialized)", tmpl_ptr->block.nHeight);
+            m_logger->error("[Solo Sync]   These must match for ProofHash() to be correct.");
+            m_logger->error("[Solo Sync]   The node's value takes precedence. Do NOT overwrite block.nHeight.");
+        }
     }
     
     // Step 3: Validate current template using HeightTracker (single source of truth)

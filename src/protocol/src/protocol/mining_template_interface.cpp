@@ -398,6 +398,44 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     // Serialize the full block
     auto payload = llp_utils::serialize_full_block(solved_block, is_tritium);
     
+    // SUBMISSION AUDIT: Log solved block fields for ProofHash cross-reference with node.
+    // The node calls pBlock->ProofHash() on nVersion..nBits. These must match for
+    // GetPrime() / prime validation to succeed.
+    {
+        m_logger->info("[SUBMISSION AUDIT]");
+        m_logger->info("[SUBMISSION AUDIT]   block.nVersion     = {}", solved_block.nVersion);
+        auto prev_bytes = solved_block.hashPrevBlock.GetBytes();
+        std::string prev_hex;
+        for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i)
+        {
+            char buf[3];
+            snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
+            prev_hex += buf;
+        }
+        m_logger->info("[SUBMISSION AUDIT]   block.hashPrevBlock = {}... (tip anchor)", prev_hex);
+        m_logger->info("[SUBMISSION AUDIT]   block.nChannel     = {}", solved_block.nChannel);
+        m_logger->info("[SUBMISSION AUDIT]   block.nHeight      = {} (channel_target)", solved_block.nHeight);
+        m_logger->info("[SUBMISSION AUDIT]   block.nBits        = 0x{:08x}", solved_block.nBits);
+        m_logger->info("[SUBMISSION AUDIT]   block.nNonce       = 0x{:016x}", solved_block.nNonce);
+        m_logger->info("[SUBMISSION AUDIT]   serialized size    = {} bytes (expected 216 for Tritium)", payload.size());
+        
+        // Verify nHeight survives serialization at offset 200 (Tritium: big-endian uint32 at [200-203])
+        if (is_tritium && payload.size() >= 204)
+        {
+            uint32_t nHeightSerialized =
+                (static_cast<uint32_t>(payload[200]) << 24) |
+                (static_cast<uint32_t>(payload[201]) << 16) |
+                (static_cast<uint32_t>(payload[202]) << 8) |
+                static_cast<uint32_t>(payload[203]);
+            if (nHeightSerialized != solved_block.nHeight)
+                m_logger->error("[SUBMISSION AUDIT]   ❌ CRITICAL: nHeight serialization mismatch! "
+                    "block.nHeight={} but serialized[200-203]={}",
+                    solved_block.nHeight, nHeightSerialized);
+            else
+                m_logger->info("[SUBMISSION AUDIT]   ✅ nHeight verified in serialized payload: {}", nHeightSerialized);
+        }
+    }
+    
     m_blocks_verified.fetch_add(1, std::memory_order_relaxed);
     
     m_logger->info("[TemplateInterface] Block submission prepared: {} bytes ({} format)",
