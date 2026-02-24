@@ -135,14 +135,14 @@ void test_template_age_timeout()
     
     ClientBlockState state(block, 2301904);
     
-    // Modify creation time to exceed MAX_TEMPLATE_AGE_SECONDS (600s)
-    state.nCreationTime = std::time(nullptr) - 601;
+    // Modify creation time to exceed MAX_TEMPLATE_AGE_SECONDS (200s)
+    state.nCreationTime = std::time(nullptr) - 201;
     
     PrimeClientManager mgr;
     mgr.UpdateFromGetRound(6535680, 2301903);
     
     bool isValid = mgr.ValidateTemplate(&state);
-    assert(isValid == false);  // Age timeout
+    assert(isValid == false);  // Age timeout (age>200s)
     
     std::cout << "  ✓ Old template (age>" << MAX_TEMPLATE_AGE_SECONDS << "s) rejected (age=" << state.GetAge() << "s)" << std::endl;
     std::cout << "  ✓ Test 5 PASSED\n" << std::endl;
