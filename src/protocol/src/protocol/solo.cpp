@@ -1061,7 +1061,12 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             
             // After receiving height, request actual work via GET_BLOCK
             m_logger->info("[Solo] Height updated, requesting work via GET_BLOCK");
-            connection->transmit(get_work());          
+            auto work_payload = get_work();
+            if (work_payload && !work_payload->empty()) {
+                connection->transmit(work_payload);
+            } else {
+                m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
+            }
         }
         else
         {
@@ -2365,7 +2370,16 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             [this](uint32_t u, uint32_t c, uint32_t d) {
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
-            [&connection, this]() { if (connection) connection->transmit(get_work()); });
+            [&connection, this]() {
+                if (connection) {
+                    auto work_payload = get_work();
+                    if (work_payload && !work_payload->empty()) {
+                        connection->transmit(work_payload);
+                    } else {
+                        m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
+                    }
+                }
+            });
     }
     else if (matches_opcode(Packet::HASH_BLOCK_AVAILABLE))
     {
@@ -2376,7 +2390,16 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             [this](uint32_t u, uint32_t c, uint32_t d) {
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
-            [&connection, this]() { if (connection) connection->transmit(get_work()); });
+            [&connection, this]() {
+                if (connection) {
+                    auto work_payload = get_work();
+                    if (work_payload && !work_payload->empty()) {
+                        connection->transmit(work_payload);
+                    } else {
+                        m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
+                    }
+                }
+            });
     }
     // ═══════════════════════════════════════════════════════════════════════
     // NEW STATELESS MINING PROTOCOL HANDLERS (uint16_t opcodes, 0xD000+)
