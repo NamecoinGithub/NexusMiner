@@ -135,8 +135,8 @@ void test_template_age_timeout()
     
     ClientBlockState state(block, 2301904);
     
-    // Modify creation time to 61 seconds ago
-    state.nCreationTime = std::time(nullptr) - 61;
+    // Modify creation time to exceed MAX_TEMPLATE_AGE_SECONDS (600s)
+    state.nCreationTime = std::time(nullptr) - 601;
     
     PrimeClientManager mgr;
     mgr.UpdateFromGetRound(6535680, 2301903);
@@ -144,7 +144,7 @@ void test_template_age_timeout()
     bool isValid = mgr.ValidateTemplate(&state);
     assert(isValid == false);  // Age timeout
     
-    std::cout << "  ✓ Old template (>60s) rejected (age=" << state.GetAge() << "s)" << std::endl;
+    std::cout << "  ✓ Old template (age>" << MAX_TEMPLATE_AGE_SECONDS << "s) rejected (age=" << state.GetAge() << "s)" << std::endl;
     std::cout << "  ✓ Test 5 PASSED\n" << std::endl;
 }
 
@@ -204,6 +204,99 @@ void test_template_lifecycle()
     std::cout << "  ✓ Test 7 PASSED\n" << std::endl;
 }
 
+void test_is_height_intact()
+{
+    std::cout << "Test 8: IsHeightIntact() — nHeight read-only invariant..." << std::endl;
+
+    ClientBlock block;
+    block.nHeight = 6535681;  // unified height set by node
+    block.nChannel = CHANNEL_PRIME;
+
+    ClientBlockState state(block, 2301904);
+
+    // Matches the deserialized height
+    assert(state.IsHeightIntact(6535681) == true);
+    std::cout << "  ✓ IsHeightIntact(6535681) == true (height unchanged)" << std::endl;
+
+    // Mismatch: channel height value accidentally used
+    assert(state.IsHeightIntact(2301904) == false);
+    std::cout << "  ✓ IsHeightIntact(2301904) == false (channel height != unified height)" << std::endl;
+
+    // After a simulated mutation, the check catches the corruption
+    state.nHeight = 2301904;  // simulate wrong overwrite with channel height
+    assert(state.IsHeightIntact(6535681) == false);
+    std::cout << "  ✓ IsHeightIntact(6535681) == false after simulated corruption" << std::endl;
+
+    std::cout << "  ✓ Test 8 PASSED\n" << std::endl;
+}
+
+void test_hash_prev_block_preserved()
+{
+    std::cout << "Test 9: hashPrevBlock preserved as primary staleness anchor..." << std::endl;
+
+    ClientBlock block;
+    block.nHeight = 6535681;
+    block.nChannel = CHANNEL_HASH;
+    // Set a non-zero hashPrevBlock (primary staleness anchor per StakeMinter pattern)
+    std::vector<uint8_t> prev_data(128);
+    for (int i = 0; i < 128; ++i)
+        prev_data[i] = static_cast<uint8_t>(i + 1);
+    block.hashPrevBlock.SetBytes(prev_data);
+
+    ClientBlockState state(block, 4165002);
+
+    // hashPrevBlock must survive construction — it is read-only from node
+    auto prev = state.hashPrevBlock.GetBytes();
+    bool all_match = true;
+    for (int i = 0; i < 128; ++i)
+        if (prev[i] != static_cast<uint8_t>(i + 1)) { all_match = false; break; }
+    assert(all_match);
+    std::cout << "  ✓ hashPrevBlock byte pattern preserved through ClientBlockState construction" << std::endl;
+
+    // GetPlaceholderHash() returns hashPrevBlock (used as template identity)
+    uint1024_t placeholder = state.GetPlaceholderHash();
+    auto placeholder_bytes = placeholder.GetBytes();
+    bool placeholder_matches = true;
+    for (int i = 0; i < 128; ++i)
+        if (placeholder_bytes[i] != static_cast<uint8_t>(i + 1)) { placeholder_matches = false; break; }
+    assert(placeholder_matches);
+    std::cout << "  ✓ GetPlaceholderHash() returns hashPrevBlock correctly" << std::endl;
+
+    std::cout << "  ✓ Test 9 PASSED\n" << std::endl;
+}
+
+void test_expected_heights()
+{
+    std::cout << "Test 10: GetExpectedHeights() returns (unified+1, channel+1)..." << std::endl;
+
+    PrimeClientManager mgr;
+    mgr.UpdateFromGetRound(6535680, 2301903);
+
+    auto expected = mgr.GetExpectedHeights();
+    assert(expected.first == 6535681);   // unified + 1 — must equal block.nHeight for valid template
+    assert(expected.second == 2301904);  // channel + 1 — must equal nChannelHeight for valid template
+    std::cout << "  ✓ Expected unified = " << expected.first
+              << ", expected channel = " << expected.second << std::endl;
+
+    // After tip advances, expected heights update accordingly
+    mgr.UpdateFromGetRound(6535681, 2301903);  // unified moved, channel unchanged
+    auto expected2 = mgr.GetExpectedHeights();
+    assert(expected2.first == 6535682);  // unified advanced
+    assert(expected2.second == 2301904); // channel unchanged
+    std::cout << "  ✓ After unified tip move: expected unified = " << expected2.first
+              << ", channel = " << expected2.second << std::endl;
+
+    // After channel advances, expected channel height updates
+    mgr.UpdateFromGetRound(6535682, 2301904);  // both advanced
+    auto expected3 = mgr.GetExpectedHeights();
+    assert(expected3.first == 6535683);
+    assert(expected3.second == 2301905);
+    std::cout << "  ✓ After both advance: expected unified = " << expected3.first
+              << ", channel = " << expected3.second << std::endl;
+
+    std::cout << "  ✓ Test 10 PASSED\n" << std::endl;
+}
+
 int main()
 {
     std::cout << "\n========================================" << std::endl;
@@ -218,9 +311,12 @@ int main()
         test_template_age_timeout();
         test_channel_independence();
         test_template_lifecycle();
+        test_is_height_intact();
+        test_hash_prev_block_preserved();
+        test_expected_heights();
         
         std::cout << "========================================" << std::endl;
-        std::cout << "✓ ALL TESTS PASSED (7/7)" << std::endl;
+        std::cout << "✓ ALL TESTS PASSED (10/10)" << std::endl;
         std::cout << "========================================\n" << std::endl;
         
         return 0;

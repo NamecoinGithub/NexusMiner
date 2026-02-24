@@ -463,9 +463,92 @@ int main()
     }
 
     // ====================================================================
-    // Test 15: Stateless opcode compatibility aliases
+    // Test 16: set_channel_height() does NOT mutate block.nHeight (unified)
     // ====================================================================
-    std::cout << "\nTest 15: Stateless opcode compatibility aliases" << std::endl;
+    std::cout << "\nTest 16: set_channel_height() does NOT mutate block.nHeight" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+
+        // Load a template at unified height 6594320
+        uint32_t unified_height = 6594320;
+        auto data1 = create_mock_template(unified_height);
+        auto result1 = tmpl_interface.read_template(data1, "test_node");
+        print_test_result("Template loaded at unified height 6594320", result1.is_valid);
+
+        // Confirm block.nHeight == unified height immediately after deserialization
+        const auto* tmpl = tmpl_interface.get_current_template();
+        print_test_result("block.nHeight == unified_height after read_template",
+            tmpl != nullptr && tmpl->block.nHeight == unified_height);
+
+        // set_channel_height() updates nChannelHeight metadata — must NOT touch block.nHeight
+        uint32_t channel_target = 4165001;
+        tmpl_interface.set_channel_height(channel_target);
+
+        // Refresh pointer after potential template update
+        tmpl = tmpl_interface.get_current_template();
+        print_test_result("block.nHeight still == unified_height after set_channel_height()",
+            tmpl != nullptr && tmpl->block.nHeight == unified_height);
+
+        // nChannelHeight should be updated to channel_target
+        print_test_result("nChannelHeight == channel_target after set_channel_height()",
+            tmpl != nullptr && tmpl->nChannelHeight == channel_target);
+
+        // The two values must differ (they represent different things)
+        print_test_result("block.nHeight != nChannelHeight (unified vs channel)",
+            tmpl != nullptr && tmpl->block.nHeight != tmpl->nChannelHeight);
+    }
+
+    // ====================================================================
+    // Test 17: block.nHeight (unified) survives serialization in prepare_block_submission()
+    // ====================================================================
+    std::cout << "\nTest 17: block.nHeight preserved in serialized submission at offset [200-203]" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+
+        uint32_t unified_height = 6594321;
+        auto data1 = create_mock_template(unified_height);
+        auto result1 = tmpl_interface.read_template(data1, "test_node");
+        print_test_result("Template loaded for submission test", result1.is_valid);
+
+        if (result1.is_valid) {
+            // Prepare a fake 64-byte merkle root (non-zero)
+            std::vector<uint8_t> merkle_root(64, 0xAB);
+
+            // prepare_block_submission() serializes the solved block (Tritium 216-byte format)
+            // Tritium layout: nVersion(4) + hashPrevBlock(128) + hashMerkleRoot(64) +
+            //                 nChannel(4) + nHeight(4) + nBits(4) + nNonce(8) = 216 bytes
+            // nHeight is at offset 200 (big-endian uint32)
+            uint64_t nonce = 0xDEADBEEFCAFEBABEULL;
+            auto payload = tmpl_interface.prepare_block_submission(merkle_root, nonce);
+
+            print_test_result("prepare_block_submission() returns 216-byte payload",
+                payload.size() == 216);
+
+            if (payload.size() >= 204) {
+                // Read nHeight from serialized payload at offset 200 (big-endian)
+                uint32_t serialized_height =
+                    (static_cast<uint32_t>(payload[200]) << 24) |
+                    (static_cast<uint32_t>(payload[201]) << 16) |
+                    (static_cast<uint32_t>(payload[202]) << 8)  |
+                     static_cast<uint32_t>(payload[203]);
+
+                print_test_result("block.nHeight (unified) preserved in payload[200-203]",
+                    serialized_height == unified_height);
+
+                // Also verify nNonce at offset 208 (big-endian uint64)
+                uint64_t serialized_nonce = 0;
+                for (int i = 0; i < 8; ++i)
+                    serialized_nonce = (serialized_nonce << 8) | payload[208 + i];
+                print_test_result("nNonce preserved in payload[208-215]",
+                    serialized_nonce == nonce);
+            }
+        }
+    }
+
+    // ====================================================================
+    // Test 18: Stateless opcode compatibility aliases
+    // ====================================================================
+    std::cout << "\nTest 18: Stateless opcode compatibility aliases" << std::endl;
     {
         print_test_result("BLOCK_DATA mirror is 0xD000",
             MinerLLP::StatelessMining::BLOCK_DATA == 0xD000 &&
