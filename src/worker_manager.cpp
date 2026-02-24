@@ -201,8 +201,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             bool channel_stale = ht_snap.is_template_stale();
 
                             // Check 2 — Age (SECONDARY: safety net for missed push notifications)
-                            // 600s matches the emergency timeout in check_template_health()
-                            constexpr uint64_t SUBMISSION_MAX_AGE_SECONDS = 600;
+                            // 200s matches the push-driven era MAX_TEMPLATE_AGE
+                            constexpr uint64_t SUBMISSION_MAX_AGE_SECONDS = 200;
                             bool age_stale = (template_age > SUBMISSION_MAX_AGE_SECONDS);
 
                             if (channel_stale || age_stale)
@@ -799,18 +799,26 @@ void Worker_manager::retry_template_request()
         return;
     }
     
+    auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
+    if (!solo_protocol) {
+        m_logger->error("[Worker_manager] Failed to cast protocol to Solo protocol");
+        return;
+    }
+
+    // Push-cooldown guard (push-driven era): if the node pushed a template within the last
+    // 200 s the node is operating normally — skip GET_BLOCK to avoid unnecessary polling.
+    // Only if no push has arrived for 200 s (dead-connection indicator) do we fall back.
+    if (solo_protocol->was_push_received_recently()) {
+        m_logger->debug("[TemplateHealth] Push received recently — no GET_BLOCK needed; node is pushing normally");
+        return;
+    }
+
     // Get protocol lane from connection
     ProtocolLane lane = m_connection->get_protocol_lane();
     uint16_t remote_port = m_connection->remote_endpoint().port();
     
     m_logger->info("[Worker_manager] Requesting template on {} lane (port {})", 
                   get_lane_name(lane), remote_port);
-    
-    auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
-    if (!solo_protocol) {
-        m_logger->error("[Worker_manager] Failed to cast protocol to Solo protocol");
-        return;
-    }
     
     if (lane == ProtocolLane::LEGACY) {
         // Legacy lane: Request via GET_BLOCK

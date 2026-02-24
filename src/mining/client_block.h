@@ -15,8 +15,12 @@ constexpr uint32_t CHANNEL_PRIME = 1;
 constexpr uint32_t CHANNEL_HASH = 2;
 constexpr uint32_t CHANNEL_STAKE = 3;
 
-// Template age timeout (seconds) - extended to match Prime block time and emergency timeout
-constexpr uint64_t MAX_TEMPLATE_AGE_SECONDS = 600;
+// Template age timeout (seconds) — push-driven era last-resort dead-connection detector.
+// Node pushes a fresh template within ~2 s of every tip advance; 200 s is the correct
+// last-resort timeout: above Hash block time (~120 s avg) and below Prime block time
+// (~5-10 min, where the node will push before 200 s elapses in normal operation).
+// Aligns with node-side AutoCoolDown(200 s) from LLL-TAO PR companion.
+constexpr uint64_t MAX_TEMPLATE_AGE_SECONDS = 200;
 
 /**
  * @brief ClientBlock - CLIENT-SIDE equivalent of NODE's Block class

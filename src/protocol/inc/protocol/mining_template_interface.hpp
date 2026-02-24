@@ -201,22 +201,23 @@ public:
     // =========================================================================
     
     /**
-     * @brief Check if template is stale (age > 600s)
+     * @brief Check if template is stale (age > 200s)
      * 
-     * Extended to 600s to match Prime channel block times (5-10+ minutes avg)
-     * and the emergency timeout in check_template_health().
+     * Push-driven era last-resort timeout: node delivers a fresh template within
+     * ~2 s of every tip advance, so 200 s only fires as a dead-connection detector.
+     * Above Hash block time (~120 s avg) but below Prime block time (~5-10 min)
+     * where the node will push before 200 s elapses in normal operation.
      * 
-     * @return true if template age exceeds 600 seconds
+     * @return true if template age exceeds 200 seconds
      */
     bool is_template_stale() const;
     
     /**
-     * @brief Check if template is old (age > 50s, warning threshold)
+     * @brief Check if template is old (age > 30s, warning threshold)
      * 
-     * Proactive warning threshold to request fresh template before
-     * hard expiration at 60s, reducing wasted mining work.
+     * Warn earlier so the operator has more time to diagnose a stalled push.
      * 
-     * @return true if template age exceeds 50 seconds
+     * @return true if template age exceeds 30 seconds
      */
     bool is_template_old() const;
     
@@ -400,7 +401,7 @@ public:
         uint64_t blocks_submitted;
         uint64_t total_read_time_us;
         uint64_t total_validation_time_us;
-        uint64_t templates_expired_age;       // Templates expired due to age (>600s)
+        uint64_t templates_expired_age;       // Templates expired due to age (>200s)
         uint64_t templates_expired_height;    // Templates expired due to height change
     };
     
@@ -474,9 +475,9 @@ private:
     
     std::shared_ptr<spdlog::logger> m_logger;
     
-    // Template staleness prevention constants
-    static constexpr uint64_t MAX_TEMPLATE_AGE = 600;      // Extended to match Prime block times and emergency timeout
-    static constexpr uint64_t WARNING_TEMPLATE_AGE = 50;   // Proactive warning threshold
+    // Template staleness prevention constants (push-driven era)
+    static constexpr uint64_t MAX_TEMPLATE_AGE = 200;      // Dead-connection detector: node pushes within ~2 s of tip advance
+    static constexpr uint64_t WARNING_TEMPLATE_AGE = 30;   // Warn early so operator can diagnose stalled push
     
     // Thread-safe statistics (atomic for multi-worker safety)
     std::atomic<uint64_t> m_templates_received;

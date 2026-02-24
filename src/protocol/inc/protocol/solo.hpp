@@ -12,6 +12,7 @@
 #include "protocol_lane.hpp"
 #include "spdlog/spdlog.h"
 #include <atomic>
+#include <chrono>
 #include <memory>
 
 namespace nexusminer {
@@ -112,6 +113,16 @@ public:
     // Mining Template Interface access (unified READ/FEED system)
     MiningTemplateInterface* get_template_interface() { return m_template_interface.get(); }
     const MiningTemplateInterface* get_template_interface() const { return m_template_interface.get(); }
+    
+    // Push-cooldown guard: returns true if a push was received within TEMPLATE_PUSH_COOLDOWN.
+    // Used by Worker_manager::retry_template_request() to skip GET_BLOCK polling when the
+    // node is pushing normally (push-driven era: fresh template arrives within ~2 s of each tip advance).
+    bool was_push_received_recently() const
+    {
+        if (m_last_push_received_time == std::chrono::steady_clock::time_point{})
+            return false;
+        return (std::chrono::steady_clock::now() - m_last_push_received_time) < TEMPLATE_PUSH_COOLDOWN;
+    }
     
     // Stateless mining reward address binding (MINER_SET_REWARD protocol)
     void set_reward_address(std::string const& address) { m_reward_address = address; }
@@ -228,6 +239,12 @@ private:
     // Equivalent to StakeMinter::hashLastBlock — a new template with a different
     // hashPrevBlock signals that the chain tip has moved.
     uint1024_t m_last_known_hash_prev_block;
+
+    // Push-driven era: timestamp of the last successfully received template push.
+    // Used by was_push_received_recently() to avoid unnecessary GET_BLOCK polling
+    // when the node is delivering templates normally (within TEMPLATE_PUSH_COOLDOWN).
+    static constexpr std::chrono::seconds TEMPLATE_PUSH_COOLDOWN{200};
+    std::chrono::steady_clock::time_point m_last_push_received_time{};
 
     // Block-result counters (Gap 3): incremented by BLOCK_ACCEPTED / BLOCK_REJECTED handlers.
     std::atomic<uint32_t> m_blocks_accepted{0};

@@ -2609,6 +2609,30 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     }
                     m_logger->info("[Solo Stateless] hashPrevBlock = {}... (tip anchor; request new template on tip_moved)",
                         prev_hex);
+
+                    // hashPrevBlock change detector (push-driven era):
+                    // Compare new template's hashPrevBlock against the stored value to confirm
+                    // each push reflects an actual tip advance (or same tip for non-tip-advance pushes).
+                    if (m_last_known_hash_prev_block != uint1024_t(0) &&
+                        tmpl->block.hashPrevBlock != m_last_known_hash_prev_block)
+                    {
+                        auto old_bytes = m_last_known_hash_prev_block.GetBytes();
+                        std::string old_hex;
+                        for (size_t i = 0; i < std::min(old_bytes.size(), size_t(8)); ++i)
+                        {
+                            char buf2[3];
+                            snprintf(buf2, sizeof(buf2), "%02x", old_bytes[i]);
+                            old_hex += buf2;
+                        }
+                        m_logger->info("[TEMPLATE DELTA] Tip moved: hashPrevBlock changed \u2192 new tip anchored");
+                        m_logger->info("[TEMPLATE DELTA] Old: {}...", old_hex);
+                        m_logger->info("[TEMPLATE DELTA] New: {}...", prev_hex);
+                    }
+                    else if (m_last_known_hash_prev_block == tmpl->block.hashPrevBlock)
+                    {
+                        m_logger->debug("[TEMPLATE DELTA] Tip unchanged \u2014 same hashPrevBlock (height still valid)");
+                    }
+                    m_last_known_hash_prev_block = tmpl->block.hashPrevBlock;
                 }
             }
             
@@ -2638,6 +2662,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             
             // Set channel height as defensive secondary metadata (does NOT touch block.nHeight)
             m_template_interface->set_channel_height(channel_height);
+            
+            // Stamp last-push-received time for push-cooldown guard in retry_template_request().
+            // Allows the worker manager to skip GET_BLOCK polling while the node is pushing normally.
+            m_last_push_received_time = std::chrono::steady_clock::now();
             
             // Template is now ready for mining!
             m_logger->info("[Solo Stateless] 🎯 Template ready for mining!");
