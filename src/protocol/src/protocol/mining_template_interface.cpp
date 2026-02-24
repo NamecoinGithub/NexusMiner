@@ -401,9 +401,10 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     // SUBMISSION AUDIT: Log solved block fields for ProofHash cross-reference with node.
     // The node calls pBlock->ProofHash() on nVersion..nBits. These must match for
     // GetPrime() / prime validation to succeed.
+    // CRITICAL: block.nHeight must be unified blockchain height, NOT channel height.
     {
-        m_logger->info("[SUBMISSION AUDIT]");
-        m_logger->info("[SUBMISSION AUDIT]   block.nVersion     = {}", solved_block.nVersion);
+        m_logger->info("[SUBMIT AUDIT]");
+        m_logger->info("[SUBMIT AUDIT]   block.nVersion     = {}", solved_block.nVersion);
         auto prev_bytes = solved_block.hashPrevBlock.GetBytes();
         std::string prev_hex;
         for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i)
@@ -412,12 +413,24 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
             snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
             prev_hex += buf;
         }
-        m_logger->info("[SUBMISSION AUDIT]   block.hashPrevBlock = {}... (tip anchor)", prev_hex);
-        m_logger->info("[SUBMISSION AUDIT]   block.nChannel     = {}", solved_block.nChannel);
-        m_logger->info("[SUBMISSION AUDIT]   block.nHeight      = {} (channel_target)", solved_block.nHeight);
-        m_logger->info("[SUBMISSION AUDIT]   block.nBits        = 0x{:08x}", solved_block.nBits);
-        m_logger->info("[SUBMISSION AUDIT]   block.nNonce       = 0x{:016x}", solved_block.nNonce);
-        m_logger->info("[SUBMISSION AUDIT]   serialized size    = {} bytes (expected 216 for Tritium)", payload.size());
+        m_logger->info("[SUBMIT AUDIT]   block.hashPrevBlock = {}... (tip anchor)", prev_hex);
+        m_logger->info("[SUBMIT AUDIT]   block.nChannel     = {}", solved_block.nChannel);
+        m_logger->info("[SUBMIT AUDIT]   block.nHeight      = {} (unified blockchain height)", solved_block.nHeight);
+        m_logger->info("[SUBMIT AUDIT]   nChannelHeight     = {} (metadata only, NOT in block bytes)", m_current_template.nChannelHeight);
+        m_logger->info("[SUBMIT AUDIT]   block.nBits        = 0x{:08x}", solved_block.nBits);
+        m_logger->info("[SUBMIT AUDIT]   block.nNonce       = 0x{:016x}", solved_block.nNonce);
+        m_logger->info("[SUBMIT AUDIT]   serialized size    = {} bytes (expected 216 for Tritium)", payload.size());
+        
+        // Heuristic abort: if block.nHeight looks like channel height (far below unified),
+        // it has been wrongly overwritten — abort to prevent submitting a corrupt block.
+        if (m_last_unified_height > 0 && solved_block.nHeight < m_last_unified_height / 2)
+        {
+            m_logger->error("[SUBMIT AUDIT]   ❌ ABORT: block.nHeight {} appears to be channel height, not unified height ~{}",
+                solved_block.nHeight, m_last_unified_height + 1);
+            m_logger->error("[SUBMIT AUDIT]   ProofHash() would mismatch — block.nHeight must not be overwritten.");
+            m_blocks_verified.fetch_add(1, std::memory_order_relaxed);
+            return {};
+        }
         
         // Verify nHeight survives serialization at offset 200 (Tritium: big-endian uint32 at [200-203])
         if (is_tritium && payload.size() >= 204)
@@ -428,11 +441,11 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
                 (static_cast<uint32_t>(payload[202]) << 8) |
                 static_cast<uint32_t>(payload[203]);
             if (nHeightSerialized != solved_block.nHeight)
-                m_logger->error("[SUBMISSION AUDIT]   ❌ CRITICAL: nHeight serialization mismatch! "
+                m_logger->error("[SUBMIT AUDIT]   ❌ CRITICAL: nHeight serialization mismatch! "
                     "block.nHeight={} but serialized[200-203]={}",
                     solved_block.nHeight, nHeightSerialized);
             else
-                m_logger->info("[SUBMISSION AUDIT]   ✅ nHeight verified in serialized payload: {}", nHeightSerialized);
+                m_logger->info("[SUBMIT AUDIT]   ✅ nHeight verified in serialized payload: {}", nHeightSerialized);
         }
     }
     

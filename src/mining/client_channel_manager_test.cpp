@@ -49,7 +49,7 @@ void test_client_block_state()
     
     ClientBlockState state(block, 2301904);
     
-    assert(state.nHeight == 6535681);  // channel_target (from block, set by node)
+    assert(state.nHeight == 6535681);  // unified height (from block, set by node)
     assert(state.nChannelHeight == 2301904);  // Channel height (from GET_ROUND)
     assert(state.GetAge() >= 0);  // Should be valid
     
@@ -88,31 +88,39 @@ void test_template_validation()
     PrimeClientManager mgr;
     mgr.UpdateFromGetRound(6535680, 2301903);
     
-    // Valid template: nHeight = channel_target = nNodeChannel + 1 (NOT unified + 1)
+    // Valid template: nHeight = unified height + 1 (NOT channel height + 1)
     ClientBlock block;
-    block.nHeight = 2301904;  // channel_target = nNodeChannel + 1
+    block.nHeight = 6535681;  // Unified + 1 (nHeight is unified blockchain height)
     block.nChannel = CHANNEL_PRIME;
     ClientBlockState validState(block, 2301904);  // Channel + 1
     
     bool isValid = mgr.ValidateTemplate(&validState);
     assert(isValid == true);
-    std::cout << "  ✓ Valid template accepted (channel_target=" << block.nHeight 
-              << ", nChannelHeight=" << validState.nChannelHeight << ")" << std::endl;
+    std::cout << "  ✓ Valid template accepted (unified=" << block.nHeight 
+              << ", channel=" << validState.nChannelHeight << ")" << std::endl;
     
-    // Invalid channel target (nHeight is wrong - should be nNodeChannel + 1)
-    ClientBlockState staleTarget(block, 2301904);
-    staleTarget.nHeight = 2301903;  // Wrong channel_target (should be 2301904)
-    isValid = mgr.ValidateTemplate(&staleTarget);
-    assert(isValid == false);
-    std::cout << "  ✓ Wrong channel_target rejected (nHeight=" << staleTarget.nHeight 
-              << " != expected " << (2301903 + 1) << ")" << std::endl;
+    // Invalid unified height (stale or fork — nHeight must equal nNodeUnified + 1)
+    {
+        ClientBlock staleBlock;
+        staleBlock.nHeight = 6535680;  // Wrong (should be nNodeUnified + 1 = 6535681)
+        staleBlock.nChannel = CHANNEL_PRIME;
+        ClientBlockState staleUnified(staleBlock, 2301904);
+        isValid = mgr.ValidateTemplate(&staleUnified);
+        assert(isValid == false);
+        std::cout << "  ✓ Stale unified height rejected (nHeight=" << staleUnified.nHeight 
+                  << " != expected " << (6535680 + 1) << ")" << std::endl;
+    }
     
-    // Invalid channel height (nChannelHeight stale)
-    ClientBlockState staleChannel(block, 2301903);  // Wrong (should be +1)
-    staleChannel.nHeight = 2301904;  // Correct channel_target
-    isValid = mgr.ValidateTemplate(&staleChannel);
-    assert(isValid == false);
-    std::cout << "  ✓ Stale channel height rejected" << std::endl;
+    // Invalid channel height (secondary guard — channel advanced since template was issued)
+    {
+        ClientBlock freshBlock;
+        freshBlock.nHeight = 6535681;  // Correct unified height
+        freshBlock.nChannel = CHANNEL_PRIME;
+        ClientBlockState staleChannel(freshBlock, 2301903);  // Wrong nChannelHeight (should be nNodeChannel + 1)
+        isValid = mgr.ValidateTemplate(&staleChannel);
+        assert(isValid == false);
+        std::cout << "  ✓ Stale channel height rejected" << std::endl;
+    }
     
     std::cout << "  ✓ Test 4 PASSED\n" << std::endl;
 }

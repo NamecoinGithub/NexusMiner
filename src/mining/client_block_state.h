@@ -100,12 +100,13 @@ public:
     
     /**
      * @brief Defensive check: verify nHeight was not overwritten after deserialization
-     * @param expected_channel_target The expected channel target (stateChannel.nChannelHeight + 1)
-     * @return true if nHeight still equals expected_channel_target
+     * @param expected_unified_height The expected unified blockchain height (tStateBest.nHeight + 1)
+     * @return true if nHeight still equals expected_unified_height
+     * @note block.nHeight must NEVER be overwritten with channel-specific height (that corrupts ProofHash())
      */
-    bool IsHeightIntact(uint32_t expected_channel_target) const
+    bool IsHeightIntact(uint32_t expected_unified_height) const
     {
-        return nHeight == expected_channel_target;
+        return nHeight == expected_unified_height;
     }
     
     /**
