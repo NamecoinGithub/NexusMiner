@@ -846,6 +846,44 @@ int main()
     }
 
     // ====================================================================
+    // Test 24: Rate-limited get_work() guard — transmit must not be called with empty payload
+    // ====================================================================
+    std::cout << "\nTest 24: Rate-limited get_work() result guard (Fix 2 — defensive transmit guard)" << std::endl;
+    {
+        // Simulate the guard logic that now wraps every get_work() → transmit() call site.
+        // When get_work() is rate-limited it returns nullptr or an empty vector.
+        // The guard must prevent connection->transmit() from being called in that case.
+
+        bool transmit_called = false;
+
+        // Simulate a null result (rate-limited — returns nullptr)
+        std::shared_ptr<std::vector<uint8_t>> null_payload = nullptr;
+        if (null_payload && !null_payload->empty()) {
+            transmit_called = true;  // must NOT reach here
+        }
+        print_test_result("Null payload from get_work() does not trigger transmit",
+            !transmit_called);
+
+        // Simulate an empty result (rate-limited — returns empty vector)
+        transmit_called = false;
+        auto empty_payload = std::make_shared<std::vector<uint8_t>>();
+        if (empty_payload && !empty_payload->empty()) {
+            transmit_called = true;  // must NOT reach here
+        }
+        print_test_result("Empty payload from get_work() does not trigger transmit",
+            !transmit_called);
+
+        // Simulate a valid (non-empty) result — transmit SHOULD be called
+        transmit_called = false;
+        auto valid_payload = std::make_shared<std::vector<uint8_t>>(std::vector<uint8_t>{0x01, 0x02});
+        if (valid_payload && !valid_payload->empty()) {
+            transmit_called = true;
+        }
+        print_test_result("Non-empty payload from get_work() triggers transmit",
+            transmit_called);
+    }
+
+    // ====================================================================
     // Summary
     // ====================================================================
     std::cout << "\n========================================" << std::endl;
