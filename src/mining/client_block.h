@@ -36,7 +36,11 @@ class ClientBlock
 public:
     // Block header fields (serializable)
     uint32_t nVersion;              // Block version
-    uint1024_t hashPrevBlock;       // Previous block hash (128 bytes)
+    uint1024_t hashPrevBlock;       // Hash of the best chain tip at template creation time.
+                                    // MUST equal ChainState::hashBestChain at block acceptance.
+                                    // This is the primary staleness anchor (StakeMinter pattern).
+                                    // On any tip_moved notification, request a fresh template;
+                                    // the new template's hashPrevBlock will reflect the new tip.
     uint512_t hashMerkleRoot;       // Merkle root (64 bytes)
     uint32_t nChannel;              // Mining channel (1=Prime, 2=Hash, 3=Stake)
     uint32_t nHeight;               // UNIFIED blockchain height for this template (tStateBest.nHeight + 1).

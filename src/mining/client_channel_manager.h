@@ -129,9 +129,12 @@ public:
      * @brief Validate template using dual height check (mirrors NODE's Block::Accept logic)
      * 
      * Checks:
-     * 1. Unified height match (template.nHeight == nodeHeight + 1)
+     * 1. Unified height match (template.nHeight == nodeUnifiedHeight + 1)
      * 2. Channel height match (template.nChannelHeight == nodeChannelHeight + 1)
-     * 3. Age timeout (< 60 seconds)
+     * 3. Age timeout (< MAX_TEMPLATE_AGE_SECONDS)
+     * 
+     * Note: template.nHeight is the UNIFIED blockchain height (tStateBest.nHeight + 1).
+     * Channel-specific height is tracked in template.nChannelHeight (metadata only, defensive guard).
      * 
      * @param pTemplate Template to validate
      * @return true if template is valid for mining
@@ -145,7 +148,9 @@ public:
         uint32_t nNodeChannel = m_nNodeChannelHeight.load();
         
         // Validate unified height (Block::Accept logic)
-        // Template builds NEXT block; nHeight = unified tip + 1 (per node fix — nHeight is unified height)
+
+        // Template builds NEXT block; nHeight = unified tip + 1 (nHeight is unified height)
+
         if (pTemplate->nHeight != nNodeUnified + 1)
             return false;  // Stale template or fork
         

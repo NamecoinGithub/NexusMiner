@@ -101,6 +101,17 @@ public:
     }
     
     /**
+     * @brief Defensive check: verify nHeight was not overwritten after deserialization
+     * @param expected_unified_height The expected unified blockchain height (tStateBest.nHeight + 1)
+     * @return true if nHeight still equals expected_unified_height
+     * @note block.nHeight must NEVER be overwritten with channel-specific height (that corrupts ProofHash())
+     */
+    bool IsHeightIntact(uint32_t expected_unified_height) const
+    {
+        return nHeight == expected_unified_height;
+    }
+    
+    /**
      * @brief Convert block state to string for logging
      * @return Human-readable description
      */

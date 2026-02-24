@@ -2413,6 +2413,45 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                           validation_result.validation_time.count());
             m_logger->info("[Solo Stateless] ✅ read_template successfully parsed 216-byte Tritium block");
             
+            // Verify that block.nHeight (from 216-byte block bytes) matches the metadata unified_height.
+            // After the node fix, these should agree: block.nHeight == unified_height + 1.
+            // (metadata unified_height is tStateBest.nHeight; block.nHeight is the NEXT block height)
+            // We warn-and-continue (not abort) here because: the 216-byte block bytes contain the
+            // canonical ProofHash() inputs, so block.nHeight is always used as-is for submission.
+            // A mismatch indicates the node is running old firmware — the block is still valid
+            // for mining; ProofHash() correctness depends only on what's in block bytes, not metadata.
+            {
+                auto const* tmpl = m_template_interface->get_current_template();
+                if (tmpl && unified_height > 0)
+                {
+                    uint32_t expected_block_height = unified_height + 1;
+                    if (tmpl->block.nHeight != expected_block_height)
+                    {
+                        m_logger->warn("[Solo Stateless] ⚠️  Height mismatch: metadata unified_height+1={} but block.nHeight={}",
+                            expected_block_height, tmpl->block.nHeight);
+                        m_logger->warn("[Solo Stateless]   If node fix is applied, these should match.");
+                        m_logger->warn("[Solo Stateless]   Node may be running old firmware — continuing with block.nHeight as-is");
+                    }
+                    else
+                    {
+                        m_logger->info("[Solo Stateless] ✅ Height verified: block.nHeight={} == metadata unified+1={} ✓",
+                            tmpl->block.nHeight, expected_block_height);
+                    }
+                    
+                    // Log hashPrevBlock (primary staleness anchor per StakeMinter pattern)
+                    auto prev_bytes = tmpl->block.hashPrevBlock.GetBytes();
+                    std::string prev_hex;
+                    for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i)
+                    {
+                        char buf[3];
+                        snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
+                        prev_hex += buf;
+                    }
+                    m_logger->info("[Solo Stateless] hashPrevBlock = {}... (tip anchor; request new template on tip_moved)",
+                        prev_hex);
+                }
+            }
+            
             // Update diagnostic height reference (unified_height from packet metadata)
             m_current_height = unified_height;  // diagnostic only
             
@@ -2881,6 +2920,14 @@ bool Solo::finalize_template_with_channel_height(uint32_t node_channel_height, c
         m_template_interface->set_channel_height(template_channel_height);
         m_logger->info("[Solo GET_ROUND] ✓ Template channel metadata set to {} ({})", 
             template_channel_height, context);
+        
+        // Diagnostic: confirm block.nHeight (unified) was NOT overwritten by set_channel_height()
+        auto const* tmpl = m_template_interface->get_current_template();
+        if (tmpl)
+        {
+            m_logger->debug("[Solo GET_ROUND]   block.nHeight = {} (unified, unchanged)", tmpl->block.nHeight);
+            m_logger->debug("[Solo GET_ROUND]   nChannelHeight = {} (metadata only, NOT in block bytes)", template_channel_height);
+        }
         return true;
     }
     
@@ -2931,8 +2978,16 @@ bool Solo::sync_template_state(uint32_t unified_height, uint32_t channel_height)
     if (m_template_interface && m_template_interface->needs_channel_height_finalization()) {
         uint32_t template_channel_height = channel_height + 1;
         m_template_interface->set_channel_height(template_channel_height);
-        m_logger->info("[Solo Sync] ✓ Template finalized: mining for channel height {}", 
+        m_logger->info("[Solo Sync] ✓ Template finalized: channel metadata set to {} (NOT written to block.nHeight)", 
             template_channel_height);
+        
+        // Diagnostic: confirm block.nHeight (unified) was NOT overwritten
+        auto const* tmpl_ptr = m_template_interface->get_current_template();
+        if (tmpl_ptr)
+        {
+            m_logger->debug("[Solo Sync]   block.nHeight = {} (unified, unchanged)", tmpl_ptr->block.nHeight);
+            m_logger->debug("[Solo Sync]   nChannelHeight = {} (metadata only, NOT in block bytes)", template_channel_height);
+        }
     }
     
     // Step 3: Validate current template using HeightTracker (single source of truth)
