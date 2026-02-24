@@ -213,11 +213,12 @@ public:
     bool is_template_stale() const;
     
     /**
-     * @brief Check if template is old (age > 30s, warning threshold)
+     * @brief Check if template is old (age > 50s, warning threshold)
      * 
-     * Warn earlier so the operator has more time to diagnose a stalled push.
+     * Proactive warning threshold to request fresh template before
+     * hard expiration at MAX_TEMPLATE_AGE, reducing wasted mining work.
      * 
-     * @return true if template age exceeds 30 seconds
+     * @return true if template age exceeds 50 seconds
      */
     bool is_template_old() const;
     
@@ -477,7 +478,7 @@ private:
     
     // Template staleness prevention constants (push-driven era)
     static constexpr uint64_t MAX_TEMPLATE_AGE = 200;      // Dead-connection detector: node pushes within ~2 s of tip advance
-    static constexpr uint64_t WARNING_TEMPLATE_AGE = 30;   // Warn early so operator can diagnose stalled push
+    static constexpr uint64_t WARNING_TEMPLATE_AGE = 50;   // Proactive warning threshold
     
     // Thread-safe statistics (atomic for multi-worker safety)
     std::atomic<uint64_t> m_templates_received;

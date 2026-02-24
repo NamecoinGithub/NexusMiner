@@ -29,13 +29,12 @@ dead-connection detector when no push has been delivered for an unusually long t
 ```
 Template age check
        │
-       ├─ age < 30 s  → mining normally, no action needed
-       ├─ 30 ≤ age < 200 s → WARNING logged; push expected imminently
+       ├─ age < 50 s  → mining normally, no action needed
+       ├─ 50 ≤ age < 200 s → WARNING logged; push expected imminently
        └─ age ≥ 200 s → STALE; GET_BLOCK fallback fired (only if 6500ms rate-limit clears)
 ```
 
-`WARNING_TEMPLATE_AGE = 30 s` gives the operator more diagnosis time than the old 50 s
-threshold before the 200 s hard timeout arrives.
+`WARNING_TEMPLATE_AGE = 50 s` provides a proactive warning well before the 200 s hard timeout.
 
 ---
 
@@ -89,7 +88,7 @@ Transmit GET_BLOCK → node responds with fresh template
                 BEFORE (polling era)   AFTER (push-driven era)
                 ─────────────────────  ─────────────────────────
 MAX_TEMPLATE_AGE        600 s               200 s
-WARNING_TEMPLATE_AGE     50 s                30 s
+WARNING_TEMPLATE_AGE     50 s                50 s (unchanged)
 GET_BLOCK rate limit   6500 ms            6500 ms (unchanged)
 Push cooldown fallback  N/A               200 s (new)
 Node push throttle      N/A               2000 ms (node PR)
