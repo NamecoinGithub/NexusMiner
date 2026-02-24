@@ -20,10 +20,11 @@ namespace protocol {
  *   Legacy:    PRIME_BLOCK_AVAILABLE (0xD9), HASH_BLOCK_AVAILABLE (0xDA)
  *   Stateless: STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9), STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)
  *
- * Each notification carries a 12-byte big-endian payload:
- *   [0..3]  Unified blockchain height
- *   [4..7]  Channel-specific height (Prime or Hash)
- *   [8..11] Mining difficulty (nBits)
+ * Each notification carries either a 12-byte (compact/legacy) or 140-byte (extended/stateless) payload:
+ *   [0..3]   Unified blockchain height
+ *   [4..7]   Channel-specific height (Prime or Hash)
+ *   [8..11]  Mining difficulty (nBits)
+ *   [12..139] hashPrevBlock (uint1024_t, little-endian) — extended/stateless format only
  */
 class PushNotificationHandler {
 public:
@@ -35,7 +36,7 @@ public:
     /**
      * @brief Handle a block-available push notification
      *
-     * @param packet            Received LLP packet (must have 12-byte payload)
+     * @param packet            Received LLP packet (must have 12-byte or 140-byte payload)
      * @param expected_channel  mining::CHANNEL_PRIME or mining::CHANNEL_HASH
      * @param lane              ProtocolLane::LEGACY or ProtocolLane::STATELESS
      * @param template_interface  Pointer to the active MiningTemplateInterface (may be nullptr)
@@ -59,7 +60,9 @@ private:
     std::shared_ptr<spdlog::logger> m_logger;
     const std::uint8_t& m_current_channel;
 
-    static constexpr std::size_t PAYLOAD_SIZE = 12;
+    static constexpr std::size_t PAYLOAD_SIZE_COMPACT  = 12;   // legacy push (12 bytes)
+    static constexpr std::size_t PAYLOAD_SIZE_EXTENDED = 140;  // stateless push (12 metadata + 128 hashPrevBlock)
+    static constexpr std::size_t PAYLOAD_SIZE = PAYLOAD_SIZE_COMPACT; // backward-compat alias
     static constexpr std::size_t UNIFIED_HEIGHT_OFFSET = 0;
     static constexpr std::size_t CHANNEL_HEIGHT_OFFSET = 4;
     static constexpr std::size_t DIFFICULTY_OFFSET = 8;
