@@ -29,14 +29,14 @@
 namespace nexusminer
 {
 
-// Template age timeout constants (seconds) - channel-aware values
-// Prime channel: avg ~5-10 min between blocks, need longer timeouts
-// Hash channel: avg ~18s between blocks, shorter timeouts are sufficient
+// Template age timeout constants (seconds) - unified for both Prime and Hash channels.
+// In the push-driven protocol the node pushes a fresh template on every unified tip advance
+// (including hash blocks every ~18s).  If 200s elapse with no push, the connection is
+// likely dead regardless of channel — hence a single emergency threshold for both.
+// WARNING at 150s gives operators a 50s window to notice the approaching emergency.
 namespace {
-    constexpr uint64_t PRIME_TEMPLATE_AGE_WARNING_SECONDS = 480;      // 8 minutes
-    constexpr uint64_t PRIME_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 600;  // 10 minutes
-    constexpr uint64_t HASH_TEMPLATE_AGE_WARNING_SECONDS = 240;       // 4 minutes
-    constexpr uint64_t HASH_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 300;   // 5 minutes
+    constexpr uint64_t TEMPLATE_AGE_WARNING_SECONDS = 150;          // warn 50s before emergency
+    constexpr uint64_t TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 200; // matches MiningTemplateInterface::MAX_TEMPLATE_AGE
 }
 
 Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Config& config, 
@@ -859,83 +859,76 @@ void Worker_manager::check_template_health()
     }
     
     uint64_t template_age = template_interface->get_template_age();
-    
-    // Channel-aware timeouts: Prime blocks take much longer than Hash blocks
-    // Prime: avg ~5-10 min between blocks, use 600s emergency / 480s warning
-    // Hash:  avg ~18s between blocks, 300s emergency / 240s warning is generous
     uint8_t channel = template_interface->get_channel();
-    const uint64_t template_age_warning_seconds =
-        (channel == mining::CHANNEL_PRIME) ? PRIME_TEMPLATE_AGE_WARNING_SECONDS : HASH_TEMPLATE_AGE_WARNING_SECONDS;
-    const uint64_t template_age_emergency_timeout_seconds =
-        (channel == mining::CHANNEL_PRIME) ? PRIME_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS : HASH_TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS;
-    
-    // Channel height-based staleness detection (primary check)
-    // Use HeightTracker snapshot as single source of truth for staleness decisions.
-    // Template is stale when channel_height >= channel_target (both non-zero).
+    std::string channel_name = (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
+
+    // Channel height-based staleness detection (primary check — HeightTracker is the single
+    // source of truth).  Template is stale when channel_height >= channel_target (both non-zero).
     {
         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
-        
+
         if (ht_snap.is_template_stale()) {
-            std::string channel_name = (channel == 1) ? "Prime" : "Hash";
-            m_logger->warn("[Worker_manager] ⚠️  {} channel advanced: channel_height {} >= channel_target {}",
-                channel_name, ht_snap.channel_height, ht_snap.channel_target);
+            m_logger->warn("[Worker_manager] ⚠️  {} channel advanced: channel_height {} >= channel_target {} — age {}s",
+                channel_name, ht_snap.channel_height, ht_snap.channel_target, template_age);
             m_logger->info("[Worker_manager]    Requesting fresh template (channel height-based staleness)");
-            
+
             template_interface->discard_template("Channel height-based staleness (channel advanced)");
             stop_all_workers();
             retry_template_request();
             return;
         }
     }
-    
-    // Age-based warning (approaching emergency timeout)
-    if (template_age > template_age_warning_seconds && template_age <= template_age_emergency_timeout_seconds) {
-        if (channel == mining::CHANNEL_PRIME) {
-            m_logger->info("[Worker_manager] ℹ️  Template age {}s (Prime blocks avg 5-15 min — normal)",
-                template_age);
-        } else {
-            m_logger->warn("[Worker_manager] ⚠️  Template age {}s approaching safety timeout ({}s)",
-                template_age, template_age_emergency_timeout_seconds);
-            m_logger->warn("[Worker_manager]    Push notifications or GET_ROUND polling may have failed");
-        }
+
+    // Age-based warning: 150s gives a 50s window before the 200s emergency fires.
+    // Both channels use the same threshold — in the push-driven protocol the node pushes
+    // on every unified tip advance (~18s apart via hash blocks), so 150s without a push
+    // is unusual for either channel.
+    if (template_age > TEMPLATE_AGE_WARNING_SECONDS && template_age <= TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
+        m_logger->warn("[Worker_manager] ⚠️  {} template age {}s (warning threshold {}s, emergency {}s)",
+            channel_name, template_age, TEMPLATE_AGE_WARNING_SECONDS, TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
+        m_logger->warn("[Worker_manager]    No push received for {}s — connection may be degrading", template_age);
     }
-    
-    // Age-based safety net — last resort for missed push notifications
-    // IMPORTANT: Check whether the chain has actually advanced before treating this as a real emergency.
-    // For Prime mining, blocks take 5-15+ minutes, so templates will routinely exceed 600s
-    // while still being perfectly valid (no new block found yet).
-    if (template_age > template_age_emergency_timeout_seconds) {
-        
-        // Re-check channel height staleness using HeightTracker snapshot (same logic as primary check above)
+
+    // Age-based emergency (200s) — dead-connection detector for both channels.
+    //
+    // In the push-driven era the node pushes a fresh template within ~2s of every unified
+    // tip advance.  Even during long Prime blocks, hash blocks keep advancing the unified
+    // chain every ~18s, so a push should arrive well within 200s.
+    //
+    // If template_age > 200s the connection is almost certainly dead (missed push).
+    // We then check HeightTracker to distinguish the two sub-cases for logging:
+    //   • chain advanced  → push missed while chain moved  (clear emergency)
+    //   • chain unchanged → push missed, chain stuck or truly no advance yet
+    //     Either way the connection needs recovery — do NOT silently loop forever.
+    if (template_age > TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
+
         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
         bool chain_advanced = ht_snap.is_template_stale();
 
         if (chain_advanced) {
-            // GENUINE EMERGENCY: chain moved but we're still on the old template
-            // Push notifications definitely failed — hard recovery
-            m_logger->error("[Worker_manager] ❌ GENUINE EMERGENCY: Template old AND chain advanced!");
-            m_logger->error("[Worker_manager]    Age: {}s, channel_height {} >= channel_target {}",
-                            template_age, ht_snap.channel_height, ht_snap.channel_target);
-            m_logger->error("[Worker_manager]    Push notification missed — forcing hard recovery");
-            
-            template_interface->discard_template("Emergency: chain advanced + age timeout (>" + 
-                                                 std::to_string(template_age_emergency_timeout_seconds) + "s)");
-            stop_all_workers();
-            retry_template_request();
+            m_logger->error("[Worker_manager] ❌ EMERGENCY ({} channel): template {}s old AND chain advanced!",
+                            channel_name, template_age);
+            m_logger->error("[Worker_manager]    channel_height {} >= channel_target {} — push notification missed",
+                            ht_snap.channel_height, ht_snap.channel_target);
+            m_logger->error("[Worker_manager]    Forcing hard recovery (discard + stop + retry)");
         } else {
-            // HEALTHY LONG BLOCK: template is old but chain hasn't moved
-            // Prime blocks routinely take 10+ minutes — this is normal, not an emergency
-            // Just re-subscribe silently to refresh the push subscription
-            m_logger->info("[Worker_manager] ⏱️  Template age {}s — chain at same height, re-subscribing silently",
-                           template_age);
-            m_logger->info("[Worker_manager]    Prime blocks take 5-15+ min — this is normal, continuing to mine");
-            m_logger->info("[Worker_manager]    Re-sending STATELESS_MINER_READY to refresh push subscription...");
-            
-            // Re-subscribe WITHOUT discarding template or stopping workers
-            // Workers keep mining — we just refresh the push subscription
-            retry_template_request();
-            // NOTE: Do NOT call discard_template() or stop_all_workers() here
+            // Chain has not advanced in HeightTracker, but 200s without a push means the
+            // connection is likely dead.  For Prime this could also be a genuinely long block,
+            // but 200s without any hash-block push is still a dead-connection signal.
+            m_logger->error("[Worker_manager] ❌ EMERGENCY ({} channel): template {}s old — no push received",
+                            channel_name, template_age);
+            m_logger->error("[Worker_manager]    channel_height {} / channel_target {} (chain not yet advanced in tracker)",
+                            ht_snap.channel_height, ht_snap.channel_target);
+            if (channel == mining::CHANNEL_PRIME) {
+                m_logger->error("[Worker_manager]    Prime blocks are long, but 200s without ANY push (hash or prime) indicates a dead connection");
+            }
+            m_logger->error("[Worker_manager]    Forcing hard recovery (discard + stop + retry)");
         }
+
+        template_interface->discard_template("Emergency: age " + std::to_string(template_age) +
+                                             "s exceeded " + std::to_string(TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) + "s limit");
+        stop_all_workers();
+        retry_template_request();
     }
 }
 
