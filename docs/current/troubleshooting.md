@@ -274,52 +274,64 @@ system/get/info
 
 **Symptoms:**
 ```
-[Worker_manager] ❌ Template age exceeds emergency timeout!
-[Worker_manager]    Age: 315s (max: 300s)
-[Worker_manager]    This is a safety net - height detection may have failed
+[Worker_manager] ❌ EMERGENCY (Hash channel): template 205s old — no push received
+[Worker_manager]    channel_height 0 / channel_target 0 (chain not yet advanced in tracker)
+[Worker_manager]    Forcing hard recovery (discard + stop + retry)
 ```
 
 **Explanation:**
 
-The miner monitors template age to detect when mining work has become stale. Timeout values are **channel-aware** to account for different block times:
+The miner monitors template age to detect when the push-notification connection has gone dead.
+Both Prime and Hash channels share a single **200-second emergency timeout**, aligned with
+`MiningTemplateInterface::MAX_TEMPLATE_AGE`.
 
-- **Prime channel (channel 1):** 600s emergency timeout, 480s warning
-  - Prime blocks naturally take 5-10+ minutes between blocks
-  - Longer timeouts prevent false positives during normal mining
-  
-- **Hash channel (channel 2):** 300s emergency timeout, 240s warning
-  - Hash blocks average ~18 seconds
-  - 300s is generous for normal conditions
+In the push-driven protocol the node pushes a fresh template within ~2 seconds of every
+unified chain tip advance.  Hash blocks advance the unified chain every ~18 seconds, so
+even during long Prime blocks the miner should receive pushes well within 200 seconds.
+
+If 200 seconds pass without any push the connection is almost certainly dead, regardless
+of channel.  The miner will then:
+1. Discard the stale template
+2. Stop all workers
+3. Re-request a fresh template (retry / re-subscribe)
+
+A warning is logged at **150 seconds** (50 seconds before the emergency threshold) to give
+operators an early signal.
+
+**Logging distinguishes two sub-cases:**
+
+- **Chain advanced** — `channel_height >= channel_target`: both a missed push *and* a
+  chain advance were detected; clear emergency.
+- **Chain unchanged** — tracker shows no advance: push was missed while the chain was
+  (apparently) still at the same height.  For Prime this *could* be a genuinely long
+  block, but 200 s without any hash-block push still indicates a dead connection.
 
 **Solutions:**
 
-1. **Normal for Prime mining:**
-   - If mining Prime channel, this is expected behavior during long block intervals
-   - The channel-aware timeout (600s for Prime) prevents unnecessary restarts
-   
-2. **Check push notifications:**
+1. **Check push notifications:**
    - Verify node supports stateless protocol (LLL-TAO 5.1.0+)
    - Check node logs for push notification delivery
-   - Push notifications are primary update mechanism
-   
-3. **Verify GET_ROUND polling (legacy fallback):**
-   - If using legacy protocol, ensure polling is working
-   - Check network connectivity to node
-   - Review node logs for GET_ROUND requests
-   
-4. **Check for actual node issues:**
+   - Push notifications are the primary update mechanism
+
+2. **Check for actual node issues:**
    - Node may be disconnected or crashed
    - Network connectivity problems
    - Node overloaded or syncing
 
+3. **Verify GET_ROUND polling (legacy fallback):**
+   - If using legacy protocol, ensure polling is working
+   - Check network connectivity to node
+   - Review node logs for GET_ROUND requests
+
 **When to investigate:**
-- Hash channel timing out frequently (indicates real problem)
-- Prime channel timing out above 600s (very unusual)
-- Consistent timeouts on either channel
+- Repeated emergency triggers on either channel
+- Emergency fires without subsequent recovery (no new template received)
+- Consistent emergencies paired with low hash-rate or zero shares submitted
 
 **See also:**
 - [Channel Management](../mining-protocols/channel-management.md)
 - [Connection Recovery](./cross-validation-recovery.md)
+- [Template Age Policy](../diagrams/protocols/template-age-policy.md)
 
 ---
 
