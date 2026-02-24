@@ -49,13 +49,20 @@ void PushNotificationHandler::handle_push_notification(
         return;
     }
 
-    /* Validate payload (must be 12 bytes) */
-    if (!packet.m_data || packet.m_length != PAYLOAD_SIZE)
+    /* Validate payload (must be 12 or 140 bytes) */
+    const bool is_compact  = (packet.m_length == PAYLOAD_SIZE_COMPACT);
+    const bool is_extended = (packet.m_length == PAYLOAD_SIZE_EXTENDED);
+
+    if (!packet.m_data || (!is_compact && !is_extended))
     {
-        m_logger->error("[Solo Push] Invalid payload: {} bytes (expected {})",
-                       packet.m_length, PAYLOAD_SIZE);
+        m_logger->error("[Solo Push] Invalid payload: {} bytes (expected {} or {})",
+                       packet.m_length, PAYLOAD_SIZE_COMPACT, PAYLOAD_SIZE_EXTENDED);
         return;
     }
+
+    m_logger->info("[Solo Push] {} payload received ({} bytes)",
+                   is_extended ? "Extended stateless" : "Compact legacy",
+                   packet.m_length);
 
     /* Parse notification (big-endian) */
     uint32_t unified_height  = bytes2uint(*packet.m_data, UNIFIED_HEIGHT_OFFSET);
@@ -69,6 +76,20 @@ void PushNotificationHandler::handle_push_notification(
         m_logger->info("[Solo Push]   Unified height: {}", unified_height);
         m_logger->info("[Solo Push]   {} height: {}", ch_name, channel_height);
         m_logger->info("[Solo Push]   Difficulty: 0x{:08x}", difficulty);
+    }
+
+    if (is_extended)
+    {
+        // bytes [12-139]: hashPrevBlock (128 bytes, little-endian uint1024_t)
+        // Log first 8 bytes as hex for cross-reference with node Guard 2 logs
+        std::string prev_hash_hex;
+        for (std::size_t i = 12; i < std::min(packet.m_data->size(), std::size_t(20)); ++i) {
+            char buf[3];
+            snprintf(buf, sizeof(buf), "%02x", (*packet.m_data)[i]);
+            prev_hash_hex += buf;
+        }
+        m_logger->info("[Solo Push]   hashPrevBlock (first 8 bytes): {}... (128 bytes, can pre-validate staleness)",
+                       prev_hash_hex);
     }
 
     /* Update heights via unified callback (updates HeightTracker + ClientChannelManager) */
