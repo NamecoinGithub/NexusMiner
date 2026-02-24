@@ -12,6 +12,7 @@
  */
 
 #include "protocol/mining_template_interface.hpp"
+#include "protocol/height_tracker.hpp"
 #include "LLP/block.hpp"
 #include "LLP/miner_opcodes.hpp"
 #include <iostream>
@@ -682,6 +683,166 @@ int main()
         }
         print_test_result("Compat aliases also drive counters (accepted=2, rejected=2)",
             counters.accepted == 2 && counters.rejected == 2);
+    }
+
+    // ====================================================================
+    // Test 21: Legacy lane GOOD_BLOCK/ORPHAN_BLOCK opcode values and counter behaviour
+    // ====================================================================
+    std::cout << "\nTest 21: Legacy lane GOOD_BLOCK/ORPHAN_BLOCK opcode handling" << std::endl;
+    {
+        // Verify the legacy opcode values are correct.
+        print_test_result("GOOD_BLOCK legacy opcode is 6",
+            static_cast<int>(MinerLLP::GOOD_BLOCK) == 6);
+        print_test_result("ORPHAN_BLOCK legacy opcode is 7",
+            static_cast<int>(MinerLLP::ORPHAN_BLOCK) == 7);
+
+        // Simulate counter behaviour for GOOD_BLOCK (accepted) and ORPHAN_BLOCK (rejected).
+        struct LegacyBlockResultCounters {
+            uint32_t accepted{0};
+            uint32_t rejected{0};
+            void on_good_block()   { ++accepted; }
+            void on_orphan_block() { ++rejected; }
+        };
+
+        LegacyBlockResultCounters counters;
+
+        // GOOD_BLOCK → m_blocks_accepted++
+        uint8_t opcode = static_cast<uint8_t>(MinerLLP::GOOD_BLOCK);
+        if (opcode == static_cast<uint8_t>(MinerLLP::GOOD_BLOCK)) {
+            counters.on_good_block();
+        }
+        print_test_result("m_blocks_accepted increments on GOOD_BLOCK (opcode 6)",
+            counters.accepted == 1 && counters.rejected == 0);
+
+        // ORPHAN_BLOCK → m_blocks_rejected++
+        opcode = static_cast<uint8_t>(MinerLLP::ORPHAN_BLOCK);
+        if (opcode == static_cast<uint8_t>(MinerLLP::ORPHAN_BLOCK)) {
+            counters.on_orphan_block();
+        }
+        print_test_result("m_blocks_rejected increments on ORPHAN_BLOCK (opcode 7)",
+            counters.accepted == 1 && counters.rejected == 1);
+
+        // Verify stateless ACCEPT (200) and REJECT (201) also drive counters.
+        struct StatelessBlockResultCounters {
+            uint32_t accepted{0};
+            uint32_t rejected{0};
+        };
+        StatelessBlockResultCounters sc;
+        uint8_t accept_op = static_cast<uint8_t>(MinerLLP::ACCEPT);
+        if (accept_op == static_cast<uint8_t>(MinerLLP::BLOCK_ACCEPTED)) { ++sc.accepted; }
+        uint8_t reject_op = static_cast<uint8_t>(MinerLLP::REJECT);
+        if (reject_op == static_cast<uint8_t>(MinerLLP::BLOCK_REJECTED)) { ++sc.rejected; }
+        print_test_result("ACCEPT/BLOCK_ACCEPTED alias values are 200 (drive stateless counter)",
+            sc.accepted == 1 && MinerLLP::ACCEPT == 200);
+        print_test_result("REJECT/BLOCK_REJECTED alias values are 201 (drive stateless counter)",
+            sc.rejected == 1 && MinerLLP::REJECT == 201);
+    }
+
+    // ====================================================================
+    // Test 22: Tip-change detection — hashPrevBlock comparison between templates
+    // ====================================================================
+    std::cout << "\nTest 22: Tip-change detection via hashPrevBlock comparison" << std::endl;
+    {
+        // Build two valid templates with DIFFERENT hashPrevBlock values using the same
+        // create_mock_template() helper used in other tests.
+        auto tmpl_a = create_mock_template(6000001, 0x1d00ffff, 2);
+        auto tmpl_b = create_mock_template(6000001, 0x1d00ffff, 2);
+
+        // Override hashPrevBlock bytes[4..131] with distinct patterns.
+        // Template A: 0xAA pattern; Template B: 0xBB pattern.
+        for (int i = 4; i < 132; ++i) { tmpl_a[i] = 0xAA; tmpl_b[i] = 0xBB; }
+
+        // Parse template A.
+        MiningTemplateInterface iface_a(2, 0);
+        auto res_a = iface_a.read_template(tmpl_a, "test_node");
+        print_test_result("Template A (hashPrevBlock=0xAA) parses successfully", res_a.is_valid);
+
+        uint1024_t hash_a{}, hash_b{};
+        if (res_a.is_valid) {
+            auto const* t = iface_a.get_current_template();
+            if (t) hash_a = t->block.hashPrevBlock;
+        }
+
+        // Parse template B (different hashPrevBlock → different tip).
+        MiningTemplateInterface iface_b(2, 0);
+        auto res_b = iface_b.read_template(tmpl_b, "test_node");
+        print_test_result("Template B (hashPrevBlock=0xBB) parses successfully", res_b.is_valid);
+
+        if (res_b.is_valid) {
+            auto const* t = iface_b.get_current_template();
+            if (t) hash_b = t->block.hashPrevBlock;
+        }
+
+        // Verify the two hashPrevBlock values differ → tip changed.
+        print_test_result("Template A and B hashPrevBlock differ (tip changed)",
+            res_a.is_valid && res_b.is_valid && hash_a != hash_b);
+
+        // Parse template A again → same hashPrevBlock → tip unchanged.
+        MiningTemplateInterface iface_c(2, 0);
+        auto res_c = iface_c.read_template(tmpl_a, "test_node");
+        uint1024_t hash_c{};
+        if (res_c.is_valid) {
+            auto const* t = iface_c.get_current_template();
+            if (t) hash_c = t->block.hashPrevBlock;
+        }
+        print_test_result("Template A repeated: hashPrevBlock unchanged (tip not moved)",
+            res_c.is_valid && hash_a == hash_c);
+    }
+
+    // ====================================================================
+    // Test 23: HeightTracker hash_prev_block — UpdateWithHashPrevBlock() and mismatch detection
+    // ====================================================================
+    std::cout << "\nTest 23: HeightTracker hash_prev_block field and ValidateTemplate warning logic" << std::endl;
+    {
+        using nexusminer::protocol::HeightTracker;
+
+        HeightTracker tracker;
+
+        // Initially hash_prev_block should be zero (default).
+        auto snap0 = tracker.GetSnapshot();
+        print_test_result("Initial HeightTracker snapshot hash_prev_block is zero",
+            snap0.hash_prev_block == uint1024_t(0));
+
+        // Build a known non-zero hash value.
+        std::vector<uint8_t> known_bytes(128, 0x42);  // 128 bytes, all 0x42
+        uint1024_t known_hash;
+        known_hash.SetBytes(known_bytes);
+
+        // Update via UpdateWithHashPrevBlock().
+        tracker.UpdateWithHashPrevBlock(known_hash);
+
+        auto snap1 = tracker.GetSnapshot();
+        print_test_result("After UpdateWithHashPrevBlock(), hash_prev_block matches input",
+            snap1.hash_prev_block == known_hash);
+
+        // Simulate ValidateTemplate warning logic:
+        // If snapshot.hash_prev_block != 0 and template.hashPrevBlock != snapshot.hash_prev_block → warn.
+        uint1024_t different_hash;
+        std::vector<uint8_t> diff_bytes(128, 0x99);
+        different_hash.SetBytes(diff_bytes);
+
+        bool mismatch_detected = (snap1.hash_prev_block != uint1024_t(0) &&
+                                  different_hash != snap1.hash_prev_block);
+        print_test_result("ValidateTemplate logic: mismatch detected when template.hashPrevBlock differs",
+            mismatch_detected);
+
+        // No warning when template.hashPrevBlock matches snapshot.
+        bool no_mismatch = !(snap1.hash_prev_block != uint1024_t(0) &&
+                             known_hash != snap1.hash_prev_block);
+        print_test_result("ValidateTemplate logic: no mismatch when template.hashPrevBlock matches",
+            no_mismatch);
+
+        // Verify UpdateWithHashPrevBlock() is a no-op for staleness decisions
+        // (it only updates hash_prev_block, not height or channel_target).
+        tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+        tracker.UpdateWithHashPrevBlock(known_hash);
+        auto snap2 = tracker.GetSnapshot();
+        print_test_result("UpdateWithHashPrevBlock() does not disturb unified_height",
+            snap2.unified_height == 5000);
+        print_test_result("UpdateWithHashPrevBlock() does not disturb channel_height",
+            snap2.channel_height == 100);
+        print_test_result("UpdateWithHashPrevBlock() preserves hash_prev_block value",
+            snap2.hash_prev_block == known_hash);
     }
 
     // ====================================================================

@@ -608,6 +608,17 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     m_logger->info("📦 BLOCK DATA:");
     m_logger->info("   Serialized size: {} bytes (expected: 216)", block_data.size());
     m_logger->info("   Nonce: 0x{:016x}", nonce);
+
+    // [SUBMIT AUDIT] log hashPrevBlock from bytes[4-11] of block_data (primary staleness anchor).
+    // Node Guard 2 will verify this equals hashBestChain at submission time.
+    if (block_data.size() >= 12) {
+        std::string prev_hex;
+        for (size_t i = 4; i < 12; ++i) {
+            char buf[3]; snprintf(buf, sizeof(buf), "%02x", block_data[i]); prev_hex += buf;
+        }
+        m_logger->info("[SUBMIT AUDIT] block.hashPrevBlock = {}... (node Guard 2 will verify == hashBestChain)",
+            prev_hex);
+    }
     
     // Build the complete submission payload: full_block + timestamp
     std::vector<uint8_t> message_to_sign;
@@ -1179,7 +1190,26 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
 
             // Gap 1: Snapshot hashPrevBlock at template parse time (StakeMinter::hashLastBlock pattern).
             // A new template with a different hashPrevBlock signals that the chain tip has moved.
+            // Detect tip-change BEFORE updating m_last_known_hash_prev_block (Change 1a).
+            if (m_last_known_hash_prev_block != uint1024_t(0)) {
+                if (tmpl->block.hashPrevBlock != m_last_known_hash_prev_block) {
+                    auto format_hex8 = [](const uint1024_t& h) -> std::string {
+                        auto bytes = h.GetBytes();
+                        std::string s;
+                        for (size_t i = 0; i < std::min(bytes.size(), size_t(8)); ++i) {
+                            char buf[3]; snprintf(buf, sizeof(buf), "%02x", bytes[i]); s += buf;
+                        }
+                        return s;
+                    };
+                    m_logger->warn("[TEMPLATE ANCHOR] ⚡ CHAIN TIP CHANGED: old={} new={}",
+                        format_hex8(m_last_known_hash_prev_block), format_hex8(tmpl->block.hashPrevBlock));
+                    m_logger->warn("[TEMPLATE ANCHOR]   Node Guard 1 triggered re-push (StakeMinter pattern)");
+                } else {
+                    m_logger->info("[TEMPLATE ANCHOR] ✅ Chain tip unchanged (channel advanced, same tip)");
+                }
+            }
             m_last_known_hash_prev_block = tmpl->block.hashPrevBlock;
+            m_height_tracker.UpdateWithHashPrevBlock(tmpl->block.hashPrevBlock);
             {
                 auto prev_bytes = m_last_known_hash_prev_block.GetBytes();
                 std::string prev_hex;
@@ -1423,6 +1453,58 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 connection->transmit(work_payload);
             }
         } else {
+            connection->transmit(work_payload);
+        }
+    }
+    // Handle legacy GOOD_BLOCK (opcode 6): some legacy nodes send this for valid-but-not-best blocks.
+    // Treat as accepted for counter purposes.
+    else if (matches_opcode(LLP::GOOD_BLOCK))
+    {
+        stats::Global global_stats{};
+        global_stats.m_accepted_blocks = 1;
+        m_stats_collector->update_global_stats(global_stats);
+        ++m_blocks_accepted;
+
+        uint32_t accepted_height = 0;
+        uint32_t accepted_channel = m_channel;
+        if (m_template_interface) {
+            auto const* tmpl = m_template_interface->get_current_template();
+            if (tmpl) {
+                accepted_height = tmpl->block.nHeight;
+                accepted_channel = tmpl->block.nChannel;
+            }
+        }
+        m_logger->info("✅ BLOCK ACCEPTED by node (Legacy Lane, GOOD_BLOCK) — height={} channel={}",
+            accepted_height, accepted_channel);
+
+        auto work_payload = get_work();
+        if (work_payload && !work_payload->empty()) {
+            connection->transmit(work_payload);
+        }
+    }
+    // Handle legacy ORPHAN_BLOCK (opcode 7): some legacy nodes send this for orphaned blocks.
+    // Treat as rejected for counter purposes.
+    else if (matches_opcode(LLP::ORPHAN_BLOCK))
+    {
+        stats::Global global_stats{};
+        global_stats.m_rejected_blocks = 1;
+        m_stats_collector->update_global_stats(global_stats);
+        ++m_blocks_rejected;
+
+        uint32_t rejected_height = 0;
+        uint32_t rejected_channel = m_channel;
+        if (m_template_interface) {
+            auto const* tmpl = m_template_interface->get_current_template();
+            if (tmpl) {
+                rejected_height = tmpl->block.nHeight;
+                rejected_channel = tmpl->block.nChannel;
+            }
+        }
+        m_logger->warn("❌ BLOCK REJECTED by node (Legacy Lane, ORPHAN_BLOCK) — height={} channel={}",
+            rejected_height, rejected_channel);
+
+        auto work_payload = get_work();
+        if (work_payload && !work_payload->empty()) {
             connection->transmit(work_payload);
         }
     }
@@ -2985,6 +3067,7 @@ bool Solo::finalize_template_with_channel_height(uint32_t node_channel_height, c
 
             // Gap 1 (legacy lane): snapshot hashPrevBlock for parity with stateless lane.
             m_last_known_hash_prev_block = tmpl->block.hashPrevBlock;
+            m_height_tracker.UpdateWithHashPrevBlock(tmpl->block.hashPrevBlock);
             auto prev_bytes = m_last_known_hash_prev_block.GetBytes();
             std::string prev_hex;
             for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i) {
@@ -3086,6 +3169,14 @@ bool Solo::validate_current_template()
         m_logger->warn("[Solo Validate] Unified height mismatch is expected when other channels advance");
         m_template_interface->discard_template("Channel height stale");
         return false;
+    }
+
+    // Optional: hashPrevBlock staleness check (primary anchor, StakeMinter pattern).
+    // Only active when HeightTracker has a known hashPrevBlock (non-zero).
+    // Warn-and-continue (compat mode) — node Guard 2 is the final arbiter.
+    if (snap.hash_prev_block != uint1024_t(0) &&
+        tmpl->block.hashPrevBlock != snap.hash_prev_block) {
+        m_logger->warn("[ValidateTemplate] hashPrevBlock mismatch — template may be stale (tip moved)");
     }
     
     // Note: Age timeout validation (60s safety net) is handled internally by
