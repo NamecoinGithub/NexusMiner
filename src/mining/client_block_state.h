@@ -26,8 +26,10 @@ namespace mining {
 class ClientBlockState : public ClientBlock
 {
 public:
-    // Channel state (NOT in serialized block, from GET_ROUND)
-    uint32_t nChannelHeight;        // Per-channel height from GET_ROUND response
+    // Channel state (NOT in serialized block, from GET_ROUND/push metadata — defensive staleness only)
+    uint32_t nChannelHeight;        // Per-channel height for secondary staleness detection.
+                                    // NEVER written into block header bytes.
+                                    // Primary stale guard: template.block.hashPrevBlock != hashBestChain.
     
     // Timestamp tracking
     uint64_t nCreationTime;         // Template creation timestamp (set by node or client)
