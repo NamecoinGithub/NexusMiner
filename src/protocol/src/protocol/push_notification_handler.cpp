@@ -140,7 +140,12 @@ void PushNotificationHandler::handle_push_notification(
             {
                 m_logger->info("[Solo Push] ↑ Tip moved (unified {} → {}) — requesting fresh {} template [reason: tip_moved]",
                               snap.template_unified_height, snap.unified_height, ch_name);
-                request_work_fn();
+                // tip_moved is a SOFT refresh — channel is still valid, workers mine on.
+                // The current template remains valid; only the unified tip has advanced (another
+                // channel found a block).  Request a fresh template opportunistically, but do NOT
+                // stop workers — they continue mining the current template until the new one arrives.
+                request_work_fn();  // rate-limited GET_BLOCK — OK if it doesn't fire
+                m_logger->info("[Solo Push] ✓ Workers continue mining current template (channel not stale)");
             }
             else
             {

@@ -2371,6 +2371,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     }
     else if (matches_opcode(Packet::PRIME_BLOCK_AVAILABLE))
     {
+        // Stamp push-received time immediately on every push, regardless of whether
+        // GET_BLOCK is sent.  This keeps was_push_received_recently() accurate when
+        // the rate-limiter suppresses GET_BLOCK (e.g. tip_moved during a rate-limit window).
+        m_last_push_received_time = std::chrono::steady_clock::now();
         m_push_handler->handle_push_notification(
             packet, mining::CHANNEL_PRIME, m_protocol_lane,
             m_template_interface.get(),
@@ -2391,6 +2395,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     }
     else if (matches_opcode(Packet::HASH_BLOCK_AVAILABLE))
     {
+        // Stamp push-received time immediately on every push, regardless of whether
+        // GET_BLOCK is sent.  This keeps was_push_received_recently() accurate when
+        // the rate-limiter suppresses GET_BLOCK (e.g. tip_moved during a rate-limit window).
+        m_last_push_received_time = std::chrono::steady_clock::now();
         m_push_handler->handle_push_notification(
             packet, mining::CHANNEL_HASH, m_protocol_lane,
             m_template_interface.get(),
