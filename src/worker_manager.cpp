@@ -535,6 +535,11 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     if (self->m_sim_link.consume_bypass(surviving_lane)) {
                         auto* sec_solo = dynamic_cast<protocol::Solo*>(self->m_secondary_protocol.get());
                         if (sec_solo && self->m_secondary_connection) {
+                            // Node-side 6-second limit (LLL-TAO):
+                            // The node enforces roughly 6000ms minimum between GET_BLOCK
+                            // requests per session after the first recovery bypass.  We
+                            // explicitly bypass miner-side once here, then normal flow
+                            // resumes and node-side 6s remains authoritative.
                             sec_solo->bypass_get_block_rate_limit_once();
                             auto work_payload = sec_solo->send_recovery_work_request();
                             if (work_payload && !work_payload->empty()) {
@@ -608,6 +613,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     auto const print_statistics_interval = self->m_config.get_print_statistics_interval();
                     self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
                     self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
+                    self->m_timer_manager.start_ping_timer(self->m_config.get_ping_interval(), self->m_connection);
 
                     // Solo mining uses stateless protocol with mandatory Falcon authentication (no GET_HEIGHT)
                     self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
@@ -645,6 +651,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     constexpr uint16_t TEMPLATE_HEALTH_INTERVAL = 30;
                     self->m_timer_manager.start_template_health_timer(TEMPLATE_HEALTH_INTERVAL, self);
                     self->m_logger->info("[Worker_manager] Template health monitor started (30s interval)");
+                    self->m_logger->info("[SIM Link] Primary lane ping timer started ({}s)", self->m_config.get_ping_interval());
 
                     // ====== SIM LINK: mark primary lane alive + start health check ======
                     {
@@ -809,6 +816,11 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                             // request work immediately on the secondary lane.
                             if (self->m_sim_link.consume_bypass(sec_lane)) {
                                 if (auto sec_solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_secondary_protocol)) {
+                                    // Node-side 6-second limit (LLL-TAO):
+                                    // First recovery GET_BLOCK may bypass once; afterward
+                                    // node resumes enforcing ~6000ms spacing.  This one-shot
+                                    // bypass keeps template recovery immediate without creating
+                                    // a tight retry loop.
                                     sec_solo->bypass_get_block_rate_limit_once();
                                     auto work_payload = sec_solo->send_recovery_work_request();
                                     if (work_payload && !work_payload->empty()) {
@@ -819,6 +831,8 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                             }
 
                             self->m_logger->info("[SIM Link] ✓ Secondary lane authenticated and ready — both lanes ALIVE");
+                            self->m_timer_manager.start_secondary_ping_timer(self->m_config.get_ping_interval(), self->m_secondary_connection);
+                            self->m_logger->info("[SIM Link] Secondary lane ping timer started ({}s)", self->m_config.get_ping_interval());
                         }));
             }
             else

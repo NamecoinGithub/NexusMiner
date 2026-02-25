@@ -79,9 +79,12 @@ public:
             m_legacy_alive = true;
     }
 
-    // ── Miner-side GET_BLOCK rate-limit interval ─────────────────────────────
-    // Node enforces 6000ms; miner polls at 2500ms so recovery always lands
-    // under the node's 6s guard after a lane failure.
+    // ── GET_BLOCK timing model (SIM Link recovery) ───────────────────────────
+    // Node-side limit (LLL-TAO): ~6000ms minimum between regular GET_BLOCK
+    // requests per session after any one-shot recovery bypass is consumed.
+    // Miner-side interval: 2500ms guard to avoid tight loops while still
+    // allowing rapid failover.  Recovery path can arm a one-shot bypass so the
+    // first post-failure request is immediate, then normal limits resume.
     static constexpr uint32_t GET_BLOCK_MINER_INTERVAL_MS = 2500;
     static constexpr uint32_t GET_BLOCK_NODE_INTERVAL_MS  = 6000;
 
