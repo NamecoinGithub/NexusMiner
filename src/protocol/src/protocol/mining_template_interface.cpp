@@ -470,6 +470,20 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
             else
                 m_logger->info("[SUBMIT AUDIT]   ✅ nHeight verified in serialized payload: {}", nHeightSerialized);
         }
+        
+        // Verify nNonce survives serialization at offset 208 (Tritium: little-endian uint64 at [208-215])
+        if (is_tritium && payload.size() >= 216)
+        {
+            uint64_t nNonceSerialized = 0;
+            for (int i = 0; i < 8; ++i)
+                nNonceSerialized |= static_cast<uint64_t>(payload[208 + i]) << (i * 8);
+            if (nNonceSerialized != nonce)
+                m_logger->error("[SUBMIT AUDIT]   ❌ CRITICAL: nNonce serialization mismatch! "
+                    "expected=0x{:016x} but serialized[208-215]=0x{:016x}",
+                    nonce, nNonceSerialized);
+            else
+                m_logger->info("[SUBMIT AUDIT]   ✅ nNonce verified in serialized payload[208-215]: 0x{:016x}", nNonceSerialized);
+        }
     }
     
     m_blocks_verified.fetch_add(1, std::memory_order_relaxed);

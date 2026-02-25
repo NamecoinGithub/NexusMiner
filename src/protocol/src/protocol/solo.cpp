@@ -1454,6 +1454,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             work_payload = get_work();
             if (!work_payload || work_payload->empty()) {
                 m_logger->error("[Solo] CRITICAL: GET_BLOCK retry also failed - mining may stall");
+                // On stateless lane: re-send MINER_READY to prompt node to push a fresh template.
+                // This avoids a stall when GET_BLOCK is rate-limited after rejection.
+                if (m_protocol_lane == ProtocolLane::STATELESS) {
+                    m_logger->warn("[Solo] Stateless lane: sending MINER_READY to request template push");
+                    auto ready_payload = send_miner_ready();
+                    if (ready_payload && !ready_payload->empty())
+                        connection->transmit(ready_payload);
+                }
             } else {
                 connection->transmit(work_payload);
             }

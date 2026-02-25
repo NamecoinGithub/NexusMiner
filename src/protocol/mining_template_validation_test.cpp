@@ -98,8 +98,17 @@ std::vector<uint8_t> create_mock_template(uint32_t height, uint32_t nBits = 0x1d
     // 6. nBits (4 bytes) - big-endian
     write_u32_be(nBits);
     
-    // 7. nNonce (8 bytes) - big-endian, set to zero for template
-    write_u64_be(0);
+    // 7. nNonce (8 bytes) - little-endian (Nexus node writes nNonce as LE)
+    // Template nNonce is zero; use little-endian to match the node wire format.
+    uint64_t nonce_val = 0;
+    data[offset++] = nonce_val & 0xFF;
+    data[offset++] = (nonce_val >> 8) & 0xFF;
+    data[offset++] = (nonce_val >> 16) & 0xFF;
+    data[offset++] = (nonce_val >> 24) & 0xFF;
+    data[offset++] = (nonce_val >> 32) & 0xFF;
+    data[offset++] = (nonce_val >> 40) & 0xFF;
+    data[offset++] = (nonce_val >> 48) & 0xFF;
+    data[offset++] = (nonce_val >> 56) & 0xFF;
     
     return data;
 }
@@ -536,11 +545,11 @@ int main()
                 print_test_result("block.nHeight (unified) preserved in payload[200-203]",
                     serialized_height == unified_height);
 
-                // Also verify nNonce at offset 208 (big-endian uint64)
+                // Also verify nNonce at offset 208 (little-endian uint64 — Nexus node reads nNonce as LE)
                 uint64_t serialized_nonce = 0;
                 for (int i = 0; i < 8; ++i)
-                    serialized_nonce = (serialized_nonce << 8) | payload[208 + i];
-                print_test_result("nNonce preserved in payload[208-215]",
+                    serialized_nonce |= static_cast<uint64_t>(payload[208 + i]) << (i * 8);
+                print_test_result("nNonce preserved in payload[208-215] (little-endian)",
                     serialized_nonce == nonce);
             }
         }
