@@ -158,10 +158,10 @@ chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_
             // Intelligent polling: only send if protocol says it's time
             if (protocol_shared->should_send_get_round())
             {
-                // send_get_round() is lane-aware: on stateless lane it aliases to GET_BLOCK,
-                // on legacy lane it sends GET_ROUND. Both use get_work()'s rate limiter on
-                // stateless. This makes the periodic sanity-check timer a universal recovery
-                // trigger regardless of lane.
+                // send_get_round() sends GET_ROUND on all lanes (legacy: 0x85,
+                // stateless: 0xD085) as a pure height/difficulty sanity probe.
+                // Template recovery is handled separately by Worker_manager via
+                // send_recovery_work_request() (GET_BLOCK).
                 auto payload = protocol_shared->send_get_round();
                 if (payload && !payload->empty()) {
                     connection_shared->transmit(payload);
