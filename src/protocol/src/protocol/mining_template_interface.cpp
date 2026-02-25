@@ -201,16 +201,10 @@ MiningTemplateInterface::read_template(const network::Payload& data,
         m_logger->info("[TemplateInterface]   Validation time: {} μs", read_time.count());
         m_logger->info("[TemplateInterface] ═══════════════════════════════════════");
 
-        // Notify centralized height tracker (parallel, non-blocking)
-        if (m_height_tracker) {
-            m_height_tracker->OnTemplateReceived(
-                tmpl.block.nChannel,
-                tmpl.block.nHeight);
-            std::string drift_msg = m_height_tracker->ExplainMismatch();
-            if (!drift_msg.empty()) {
-                m_logger->info("{}", drift_msg);
-            }
-        }
+        // NOTE: HeightTracker::OnTemplateReceived() is intentionally NOT called here.
+        // block.nHeight is the UNIFIED blockchain height — not the channel target.
+        // The channel target height is only known after set_channel_height() is called.
+        // HeightTracker will be notified from set_channel_height() with the correct value.
 
         // Auto-feed to registered handlers
         feed_current_template();
@@ -1016,6 +1010,17 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
     m_has_snapshot = false;
     m_logger->info("[TemplateInterface] ✓ Template channel height (metadata) set to {} (block.nHeight={} unchanged)",
         channel_height, m_current_template.block.nHeight);
+
+    // Notify HeightTracker with the correct channel target height (channel_height is node tip + 1).
+    // This must be called here (not in read_template()) because block.nHeight is the UNIFIED
+    // blockchain height and would cause HeightTracker::channel_target to be set incorrectly.
+    if (m_height_tracker && channel_height > 0) {
+        m_height_tracker->OnTemplateReceived(m_current_template.block.nChannel, channel_height);
+        std::string drift_msg = m_height_tracker->ExplainMismatch();
+        if (!drift_msg.empty()) {
+            m_logger->info("{}", drift_msg);
+        }
+    }
 }
 
 void MiningTemplateInterface::discard_template(const std::string& reason)
