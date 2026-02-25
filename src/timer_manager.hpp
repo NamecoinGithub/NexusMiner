@@ -47,6 +47,15 @@ public:
     // Template Health Monitoring (Template Validation & Worker Protection)
     void start_template_health_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager);
 
+    // SIM Link: secondary connection retry timer (independent from primary retry)
+    void start_secondary_connection_retry_timer(std::uint16_t timer_interval,
+        std::weak_ptr<Worker_manager> worker_manager,
+        network::Endpoint const& secondary_endpoint);
+
+    // SIM Link: periodic lane health-check (logs both lane states every N seconds)
+    void start_lane_health_check_timer(std::uint16_t timer_interval,
+        std::weak_ptr<Worker_manager> worker_manager);
+
     void stop();
 
 private:
@@ -62,6 +71,13 @@ private:
     chrono::Timer::Handler template_health_handler(std::uint16_t health_check_interval, 
         std::weak_ptr<Worker_manager> worker_manager);
 
+    chrono::Timer::Handler secondary_connection_retry_handler(
+        std::weak_ptr<Worker_manager> worker_manager,
+        network::Endpoint const& secondary_endpoint);
+
+    chrono::Timer::Handler lane_health_check_handler(std::uint16_t health_check_interval,
+        std::weak_ptr<Worker_manager> worker_manager);
+
     chrono::Timer_factory::Sptr m_timer_factory;
     chrono::Timer::Uptr m_connection_retry_timer;
     chrono::Timer::Uptr m_ping_timer;
@@ -69,6 +85,8 @@ private:
     chrono::Timer::Uptr m_stats_printer_timer;
     chrono::Timer::Uptr m_get_round_timer;  // Template Staleness Prevention
     chrono::Timer::Uptr m_template_health_timer;  // Template Health Monitoring
+    chrono::Timer::Uptr m_secondary_connection_retry_timer;  // SIM Link: secondary lane retry
+    chrono::Timer::Uptr m_lane_health_check_timer;  // SIM Link: periodic lane health log
 };
 }
 

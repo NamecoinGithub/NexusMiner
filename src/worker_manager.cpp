@@ -173,9 +173,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             m_logger->info("   Nonce:      0x{:016x}", block_data->nNonce);
                             m_logger->info("════════════════════════════════════════════════════════");
                             
-                            if (!m_connection)
+                            if (!m_connection && !m_secondary_connection)
                             {
-                                m_logger->error("[Worker_manager] No connection. Can't submit block.");
+                                m_logger->error("[Worker_manager] No connection on any lane. Can't submit block.");
                                 return;
                             }
                             
@@ -297,9 +297,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             m_logger->info("[Worker_manager] Full block serialized: {} bytes", full_block_bytes.size());
                             m_logger->info("[Worker_manager] Submitting block to protocol layer...");
                             
-                            // Submit the full block (not just merkle root)
-                            m_connection->transmit(m_miner_protocol->submit_block(
-                                full_block_bytes, block_data->nNonce));
+                            // Submit the full block with SIM Link dual-lane fallback
+                            submit_solution(full_block_bytes, block_data->nNonce);
                         });
                         workers_fed++;
                         m_logger->debug("[Worker_manager] Template sent to worker {}/{}", 
@@ -461,6 +460,7 @@ void Worker_manager::stop()
 
     // close connection
     m_connection.reset();
+    m_secondary_connection.reset();
 
     // destroy workers
     for(auto& worker : m_workers)
@@ -520,6 +520,32 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
             {
                 self->m_logger->error("[Solo] Connection to wallet {} not successful. Result: {} - This may indicate wallet lock, sync issues, or network problems", 
                     wallet_endpoint.to_string(), network::Result::code_to_string(result));
+
+                // SIM Link: mark primary lane dead; if secondary is alive it keeps workers running
+                ProtocolLane primary_lane = self->m_connection
+                    ? self->m_connection->get_protocol_lane()
+                    : ProtocolLane::STATELESS;
+                self->m_sim_link.on_lane_failed(primary_lane);
+
+                if (self->m_sim_link.is_legacy_alive() || self->m_sim_link.is_stateless_alive()) {
+                    self->m_logger->info("[SIM Link] Primary lane DEAD — secondary lane alive, workers continue mining");
+                    // Bypass rate limiter on secondary for immediate template refresh
+                    ProtocolLane surviving_lane = self->m_sim_link.is_stateless_alive()
+                        ? ProtocolLane::STATELESS : ProtocolLane::LEGACY;
+                    if (self->m_sim_link.consume_bypass(surviving_lane)) {
+                        auto* sec_solo = dynamic_cast<protocol::Solo*>(self->m_secondary_protocol.get());
+                        if (sec_solo && self->m_secondary_connection) {
+                            sec_solo->bypass_get_block_rate_limit_once();
+                            auto work_payload = sec_solo->send_recovery_work_request();
+                            if (work_payload && !work_payload->empty()) {
+                                self->m_logger->info("[SIM Link] One-shot bypass — GET_BLOCK sent on surviving {} lane",
+                                    get_lane_name(surviving_lane));
+                                self->m_secondary_connection->transmit(work_payload);
+                            }
+                        }
+                    }
+                }
+
                 self->retry_connect(wallet_endpoint);
             }
             else if (result == network::Result::connection_ok)
@@ -619,7 +645,16 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     constexpr uint16_t TEMPLATE_HEALTH_INTERVAL = 30;
                     self->m_timer_manager.start_template_health_timer(TEMPLATE_HEALTH_INTERVAL, self);
                     self->m_logger->info("[Worker_manager] Template health monitor started (30s interval)");
-                    
+
+                    // ====== SIM LINK: mark primary lane alive + start health check ======
+                    {
+                        ProtocolLane primary_lane = self->m_connection->get_protocol_lane();
+                        self->m_sim_link.on_lane_recovered(primary_lane);
+
+                        constexpr uint16_t LANE_HEALTH_INTERVAL = 30;  // log every 30s
+                        self->m_timer_manager.start_lane_health_check_timer(LANE_HEALTH_INTERVAL, self);
+                    }
+
                     // Note: Block handler already registered in Worker_manager constructor
                 }));
             }
@@ -643,6 +678,233 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 
     m_connection = std::move(connection);
     return true;
+}
+
+bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoint)
+{
+    std::string secondary_addr;
+    secondary_endpoint.address(secondary_addr);
+    uint16_t secondary_port = secondary_endpoint.port();
+
+    m_logger->info("[SIM Link] Connecting secondary lane to {}:{}", secondary_addr, secondary_port);
+
+    // Build a secondary Solo protocol instance with the same keys/config as primary.
+    // Independent auth/session state; same Falcon keys.
+    auto secondary_solo = std::make_shared<protocol::Solo>(
+        m_config.get_mining_mode() == config::Mining_mode::PRIME ? 1U : 2U,
+        m_stats_collector, m_io_context);
+
+    // Copy keys and config from primary
+    {
+        std::vector<uint8_t> pubkey, privkey;
+        keys::from_hex(m_config.get_miner_falcon_pubkey(), pubkey);
+        keys::from_hex(m_config.get_miner_falcon_privkey(), privkey);
+        secondary_solo->set_miner_keys(pubkey, privkey);
+        secondary_solo->set_address(m_config.get_local_ip());
+        if (m_config.has_tritium_genesis()) {
+            std::vector<uint8_t> genesis;
+            if (keys::from_hex(m_config.get_tritium_genesis(), genesis))
+                secondary_solo->set_tritium_genesis(genesis);
+        }
+        secondary_solo->set_keepalive_interval(m_config.get_keepalive_interval());
+        secondary_solo->enable_chacha20_wrapping(true);
+        secondary_solo->enable_disposable_falcon(true);
+        if (m_config.has_reward_address())
+            secondary_solo->set_reward_address(m_config.get_reward_address());
+    }
+
+    // Register template handler on the secondary protocol.
+    // Templates from either lane are distributed to workers (same data, idempotent).
+    // Block-found callback uses submit_solution() which selects the live lane.
+    secondary_solo->set_block_handler(
+        [this](const ::LLP::CBlock& block, std::uint32_t nBits) {
+            m_logger->info("[SIM Link] Template received on secondary lane — distributing to {} workers",
+                m_workers.size());
+            // Distribute to workers. Workers mine on whichever template arrived last
+            // (primary and secondary push the same template from the same node).
+            for (auto& worker : m_workers) {
+                if (!worker) continue;
+                worker->set_block(block, nBits, [this](auto /*id*/, auto block_data) {
+                    if (!block_data) return;
+                    // Prefer secondary protocol's template interface for submission
+                    // (it has the template from the secondary lane).
+                    protocol::MiningTemplateInterface* tmpl_iface = nullptr;
+                    if (auto* sec = dynamic_cast<protocol::Solo*>(m_secondary_protocol.get()))
+                        tmpl_iface = sec->get_template_interface();
+                    // Fallback to primary if secondary interface not available
+                    if (!tmpl_iface) {
+                        if (auto* pri = dynamic_cast<protocol::Solo*>(m_miner_protocol.get()))
+                            tmpl_iface = pri->get_template_interface();
+                    }
+                    if (!tmpl_iface) return;
+                    auto full_bytes = tmpl_iface->prepare_block_submission(
+                        block_data->merkle_root.GetBytes(), block_data->nNonce);
+                    if (!full_bytes.empty())
+                        submit_solution(full_bytes, block_data->nNonce);
+                });
+            }
+        });
+
+    m_secondary_protocol = secondary_solo;
+
+    std::weak_ptr<Worker_manager> weak_self = shared_from_this();
+    auto connection = m_socket->connect(secondary_endpoint,
+        [weak_self, secondary_endpoint](auto result, auto receive_buffer)
+        {
+            auto self = weak_self.lock();
+            if (!self) return;
+
+            if (result == network::Result::connection_declined ||
+                result == network::Result::connection_aborted ||
+                result == network::Result::connection_closed ||
+                result == network::Result::connection_error)
+            {
+                self->m_logger->warn("[SIM Link] Secondary lane connection dropped ({}). Scheduling retry.",
+                    network::Result::code_to_string(result));
+                self->m_sim_link.on_lane_failed(
+                    secondary_endpoint.port() == 9323 ? ProtocolLane::STATELESS : ProtocolLane::LEGACY);
+                self->retry_secondary_connect(secondary_endpoint);
+            }
+            else if (result == network::Result::connection_ok)
+            {
+                if (!self->m_secondary_connection)
+                {
+                    // Synchronous connect callback guard — defer
+                    ::asio::post(*self->m_io_context, [self, secondary_endpoint]()
+                    {
+                        self->retry_secondary_connect(secondary_endpoint);
+                    });
+                    return;
+                }
+
+                ProtocolLane sec_lane = self->m_secondary_connection->get_protocol_lane();
+                std::string sec_addr;
+                self->m_secondary_connection->remote_endpoint().address(sec_addr);
+                uint16_t sec_port = self->m_secondary_connection->remote_endpoint().port();
+
+                self->m_logger->info("[SIM Link] Secondary lane connected: {} lane {}:{}",
+                    get_lane_name(sec_lane), sec_addr, sec_port);
+
+                self->m_secondary_retry_count = 0;
+                self->m_secondary_retry_delay_seconds = 0;
+
+                if (auto sec_solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_secondary_protocol))
+                {
+                    sec_solo->set_protocol_lane(sec_lane);
+                }
+
+                self->m_secondary_connection->transmit(
+                    self->m_secondary_protocol->login(
+                        [self, secondary_endpoint](bool login_result) {
+                            if (!login_result) {
+                                self->m_logger->warn("[SIM Link] Secondary lane login failed — retrying");
+                                self->retry_secondary_connect(secondary_endpoint);
+                                return;
+                            }
+
+                            ProtocolLane sec_lane = self->m_secondary_connection->get_protocol_lane();
+                            self->m_sim_link.on_lane_recovered(sec_lane);
+
+                            // If a bypass was armed (primary failed before secondary connected),
+                            // request work immediately on the secondary lane.
+                            if (self->m_sim_link.consume_bypass(sec_lane)) {
+                                if (auto sec_solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_secondary_protocol)) {
+                                    sec_solo->bypass_get_block_rate_limit_once();
+                                    auto work_payload = sec_solo->send_recovery_work_request();
+                                    if (work_payload && !work_payload->empty()) {
+                                        self->m_logger->info("[SIM Link] One-shot bypass — GET_BLOCK sent on secondary lane");
+                                        self->m_secondary_connection->transmit(work_payload);
+                                    }
+                                }
+                            }
+
+                            self->m_logger->info("[SIM Link] ✓ Secondary lane authenticated and ready — both lanes ALIVE");
+                        }));
+            }
+            else
+            {
+                if (!self->m_secondary_connection)
+                {
+                    self->m_logger->error("[SIM Link] No secondary connection.");
+                    self->retry_secondary_connect(secondary_endpoint);
+                }
+                self->process_secondary_data(std::move(receive_buffer));
+            }
+        });
+
+    if (!connection)
+    {
+        m_logger->warn("[SIM Link] Failed to initiate secondary connection socket");
+        return false;
+    }
+
+    m_secondary_connection = std::move(connection);
+    return true;
+}
+
+void Worker_manager::retry_secondary_connect(network::Endpoint const& secondary_endpoint)
+{
+    m_secondary_connection = nullptr;
+    if (m_secondary_protocol) m_secondary_protocol->reset();
+
+    ++m_secondary_retry_count;
+
+    constexpr uint32_t MAX_SECONDARY_RETRY_DELAY_SECONDS = 60;
+    auto const base_delay = static_cast<uint32_t>(m_config.get_connection_retry_interval());
+    if (m_secondary_retry_delay_seconds == 0)
+        m_secondary_retry_delay_seconds = base_delay;
+    else
+        m_secondary_retry_delay_seconds = std::min(m_secondary_retry_delay_seconds * 2,
+                                                   MAX_SECONDARY_RETRY_DELAY_SECONDS);
+
+    m_logger->info("[SIM Link] Secondary lane retry in {}s (attempt #{})",
+        m_secondary_retry_delay_seconds, m_secondary_retry_count);
+
+    m_timer_manager.start_secondary_connection_retry_timer(
+        static_cast<uint16_t>(m_secondary_retry_delay_seconds), shared_from_this(), secondary_endpoint);
+}
+
+void Worker_manager::submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce)
+{
+    // SIM Link block submission: try primary lane first, fall back to secondary.
+    //
+    // The packet format (stateless vs. legacy opcodes) differs per lane, so we
+    // must use the protocol instance that matches the connection we transmit on.
+
+    // ── Try primary lane ────────────────────────────────────────────────────
+    if (m_connection && m_miner_protocol)
+    {
+        auto packet = m_miner_protocol->submit_block(full_block_bytes, nNonce);
+        if (packet && !packet->empty())
+        {
+            m_connection->transmit(packet);
+            return;
+        }
+    }
+
+    // ── Fallback to secondary lane ──────────────────────────────────────────
+    if (m_secondary_connection && m_secondary_protocol)
+    {
+        m_logger->warn("[SIM Link] Block submitted via SECONDARY (primary down)");
+        auto packet = m_secondary_protocol->submit_block(full_block_bytes, nNonce);
+        if (packet && !packet->empty())
+        {
+            m_secondary_connection->transmit(packet);
+            return;
+        }
+    }
+
+    m_logger->error("[SIM Link] Block submission failed — no live lane available!");
+}
+
+void Worker_manager::log_lane_health()
+{
+    bool primary_alive = static_cast<bool>(m_connection);
+    bool secondary_alive = static_cast<bool>(m_secondary_connection);
+
+    m_logger->info("[SIM Link] Lane health — Primary: {} | Secondary: {}",
+        primary_alive   ? "ALIVE" : "DEAD",
+        secondary_alive ? "ALIVE" : "DEAD");
 }
 
 void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
@@ -818,6 +1080,70 @@ void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
                        total_consumed, m_rx_accumulator.size());
     }
 }
+
+void Worker_manager::process_secondary_data(network::Shared_payload&& receive_buffer)
+{
+    // Secondary-lane RX path: mirrors primary process_data() but uses the secondary
+    // accumulator, secondary connection, and secondary protocol instance.
+    if (receive_buffer && !receive_buffer->empty())
+    {
+        m_secondary_rx_accumulator.insert(m_secondary_rx_accumulator.end(),
+                                          receive_buffer->begin(), receive_buffer->end());
+    }
+
+    ProtocolLane lane = m_secondary_connection
+        ? m_secondary_connection->get_protocol_lane()
+        : ProtocolLane::UNKNOWN;
+
+    if (lane == ProtocolLane::UNKNOWN)
+    {
+        m_logger->error("[SIM Link RX] Secondary lane UNKNOWN — clearing accumulator");
+        m_secondary_rx_accumulator.clear();
+        return;
+    }
+
+    while (!m_secondary_rx_accumulator.empty())
+    {
+        std::vector<uint8_t> buffer_view(m_secondary_rx_accumulator.begin(),
+                                         m_secondary_rx_accumulator.end());
+        auto buffer_shared = std::make_shared<network::Payload>(std::move(buffer_view));
+
+        ParseResult parse_result;
+        std::size_t bytes_consumed = 0;
+        auto packet = extract_packet_from_buffer_with_result(
+            buffer_shared, bytes_consumed, 0, lane, parse_result);
+
+        if (parse_result == ParseResult::NEED_MORE_DATA)
+        {
+            break;
+        }
+        else if (parse_result == ParseResult::MALFORMED)
+        {
+            m_logger->error("[SIM Link RX] MALFORMED packet on secondary lane — disconnecting secondary");
+            m_secondary_rx_accumulator.clear();
+            // Notify SIM link bookkeeper and schedule reconnect
+            m_sim_link.on_lane_failed(lane);
+            if (m_secondary_connection)
+                m_secondary_connection->close();
+            return;
+        }
+        else
+        {
+            m_secondary_rx_accumulator.erase(m_secondary_rx_accumulator.begin(),
+                                              m_secondary_rx_accumulator.begin() + bytes_consumed);
+            if (packet.m_header == Packet::PING)
+            {
+                m_logger->trace("[SIM Link RX] PING on secondary lane");
+            }
+            else
+            {
+                m_secondary_protocol->process_messages(std::move(packet), m_secondary_connection);
+            }
+        }
+    }
+}
+
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // Worker Control Methods (Degraded Mode Support)

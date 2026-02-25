@@ -8,6 +8,7 @@
 #include "chrono/timer_factory.hpp"
 #include "timer_manager.hpp"
 #include "stats/stats_printer.hpp"
+#include "dual_connection_manager.hpp"
 
 #include <memory>
 #include <deque>
@@ -18,7 +19,7 @@ namespace nexusminer
 {
 namespace config { class Config; }
 namespace stats { class Collector; }
-namespace protocol { class Protocol; }
+namespace protocol { class Protocol; class Solo; }
 class Worker;
 
 class Worker_manager : public std::enable_shared_from_this<Worker_manager>
@@ -32,15 +33,23 @@ public:
 
     bool connect(network::Endpoint const& wallet_endpoint);
 
+    /// Open the secondary SIM Link connection in the background.
+    /// Should be called after the primary connect() succeeds and SIM Link is enabled.
+    bool connect_secondary(network::Endpoint const& secondary_endpoint);
+
     // stop the component and destroy all workers
     void stop();
     
     // Worker control methods for degraded mode (public for timer access)
     void check_template_health();
 
+    // SIM Link: log the current state of both lanes (called by lane health-check timer)
+    void log_lane_health();
+
 private:
 
     void process_data(network::Shared_payload&& receive_buffer);
+    void process_secondary_data(network::Shared_payload&& receive_buffer);
 
     void create_stats_printers();
     void create_workers();
@@ -50,6 +59,10 @@ private:
     void retry_template_request();
 
     void retry_connect(network::Endpoint const& wallet_endpoint);
+    void retry_secondary_connect(network::Endpoint const& secondary_endpoint);
+
+    /// Submit a found block: try primary lane first, fallback to secondary within 100 ms.
+    void submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce);
 
 	std::shared_ptr<::asio::io_context> m_io_context;
     Config& m_config;
@@ -73,6 +86,14 @@ private:
 
     std::vector<std::shared_ptr<stats::Printer>> m_stats_printers;
     std::vector<std::shared_ptr<Worker>> m_workers;
+
+    // ── SIM Link: secondary lane (port derived from primary) ─────────────────
+    network::Connection::Sptr m_secondary_connection;
+    std::shared_ptr<protocol::Protocol> m_secondary_protocol;
+    std::deque<uint8_t> m_secondary_rx_accumulator;
+    uint32_t m_secondary_retry_count{0};
+    uint32_t m_secondary_retry_delay_seconds{0};
+    DualConnectionManager m_sim_link;  // Lane state bookkeeper
 };
 }
 

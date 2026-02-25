@@ -562,6 +562,15 @@ network::Shared_payload Solo::get_work_immediate()
     return get_work();
 }
 
+void Solo::bypass_get_block_rate_limit_once()
+{
+    // One-shot rate-limit bypass for SIM Link lane-failure recovery.
+    // Resets the miner-side rate-limit clock so the very next get_work() call fires immediately
+    // (matching the node-side one-shot bypass from LLL-TAO PR #283).
+    m_last_get_block_time = std::chrono::steady_clock::time_point{};
+    m_logger->info("[Solo] GET_BLOCK rate-limit one-shot bypass armed (SIM Link lane recovery)");
+}
+
 network::Shared_payload Solo::send_get_round()
 {
     // GET_ROUND — pure informational/sanity probe.

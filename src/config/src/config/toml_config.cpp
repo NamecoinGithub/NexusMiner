@@ -222,6 +222,10 @@ namespace config
                         if (interval > MAX_KEEPALIVE_HOURS) interval = MAX_KEEPALIVE_HOURS;
                         config.set_keepalive_interval(static_cast<std::uint16_t>(interval));
                     }
+                    else if (key == "sim_link")
+                    {
+                        config.set_enable_sim_link(parse_bool_value(value));
+                    }
                 }
                 else if (current_section == "logging")
                 {

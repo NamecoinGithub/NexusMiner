@@ -43,6 +43,7 @@ namespace config
 		, m_tls_client_cert_path{""}  // Default: no client certificate
 		, m_tls_client_key_path{""}  // Default: no client key
 		, m_tls_client_key_password{""}  // Default: no password
+		, m_enable_sim_link{true}  // Default: SIM Link enabled (dual stateless+legacy connection)
 	{
 	}
 
