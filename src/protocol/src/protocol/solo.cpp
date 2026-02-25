@@ -2441,10 +2441,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             snap.nBits           = read_uint32_be(d, 20);
             snap.hashBestChain_prefix = { d[24], d[25], d[26], d[27] };
             snap.valid = true;
+            snap.received_at = std::chrono::steady_clock::now();
 
             m_keepalive_telemetry.update(snap);
 
-            m_logger->info("[Solo Keepalive v2] Telemetry received:"
+            m_logger->debug("[Solo Keepalive v2] Telemetry received:"
                            " session=0x{:08x}"
                            " unified={} prime={} hash={} stake={}"
                            " nBits=0x{:08x}"
@@ -2459,7 +2460,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             if (m_session_manager) {
                 m_session_manager->record_keepalive();
             }
-        } else if (packet.m_data && packet.m_length >= 4) {
+        } else if (packet.m_data && packet.m_length == 4) {
             // ── KEEPALIVE v1: remaining timeout (4 bytes LE) ─────────────────────
             uint32_t remaining_timeout = read_uint32_le(*packet.m_data);
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
@@ -2467,6 +2468,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             if (m_session_manager) {
                 m_session_manager->record_keepalive();
             }
+        } else if (packet.m_length != 0) {
+            // Unexpected payload length — ignore gracefully
+            m_logger->debug("[Solo Session] Unexpected KEEPALIVE payload length {} — ignored", packet.m_length);
         }
     }
     else if (matches_opcode(Packet::MINER_REWARD_RESULT))
