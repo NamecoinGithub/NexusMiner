@@ -564,35 +564,43 @@ network::Shared_payload Solo::get_work_immediate()
 
 network::Shared_payload Solo::send_get_round()
 {
-    // GET_ROUND is a BACKUP / sanity-check mechanism, not the primary height source.
-    // Primary height updates come from push notifications (BLOCK_AVAILABLE opcodes).
-    // GET_ROUND is used only when: push delivery may have been missed, for fork detection,
-    // or as a periodic sanity check (POLLING_ENABLED, 90s interval by default).
-    // Unified height movement reported by GET_ROUND does NOT trigger template discard;
-    // only channel height advancing (is_template_stale()) is authoritative for staleness.
+    // GET_ROUND wrapper / stateless alias.
+    //
+    // On the STATELESS lane (port 9323+), GET_ROUND (0xD085) only returns
+    // NEW_ROUND/OLD_ROUND height info — it does NOT push a block template.
+    // To unlock a fresh template the miner must send GET_BLOCK (0xD081).
+    // So on stateless lane we alias send_get_round() → get_work() (GET_BLOCK).
+    //
+    // On the LEGACY lane (port 8323), GET_ROUND (opcode 133) triggers the node's
+    // handle_get_round_stateless() which CAN auto-push a BLOCK_DATA when the
+    // channel has advanced — keep the original behaviour there.
 
-    // CRITICAL: Validate authentication before sending GET_ROUND
-    // Node will reject unauthenticated GET_ROUND requests
     if (!m_authenticated) {
         m_logger->warn("[Solo GET_ROUND] Cannot send GET_ROUND - not authenticated yet");
-        m_logger->debug("[Solo GET_ROUND]   Current auth state: {}", 
+        m_logger->debug("[Solo GET_ROUND]   Current auth state: {}",
             m_auth_state == AuthState::NOT_AUTHENTICATED ? "NOT_AUTHENTICATED" :
             m_auth_state == AuthState::WAITING_FOR_CHALLENGE ? "WAITING_FOR_CHALLENGE" :
             m_auth_state == AuthState::WAITING_FOR_RESULT ? "WAITING_FOR_RESULT" :
             "AUTHENTICATED");
         return nullptr;
     }
-    
-    m_logger->debug("[Solo GET_ROUND] Requesting round status via GET_ROUND");
-    
-    // GET_ROUND is a header-only request packet; use PacketBuilder for lane-aware framing
+
+    if (m_protocol_lane == ProtocolLane::STATELESS) {
+        // Stateless alias: GET_ROUND → GET_BLOCK
+        // Node enforces its own rate limit (6000ms prod / 2000ms debug).
+        // Miner's 1000ms floor in get_work() allows rapid retry after recovery.
+        m_logger->debug("[Solo GET_ROUND] Stateless lane — aliasing GET_ROUND → GET_BLOCK (0xD081)");
+        return get_work();  // uses get_work()'s rate limiter + auth guard
+    }
+
+    // Legacy lane: send GET_ROUND (opcode 133 / 0x85) as before.
+    m_logger->debug("[Solo GET_ROUND] Requesting round status via GET_ROUND (legacy lane)");
     auto payload = PacketBuilder::build(m_protocol_lane, LLP::GET_ROUND);
     if (payload && !payload->empty()) {
         m_logger->debug("[Solo GET_ROUND] Encoded payload size: {} bytes (header-only)", payload->size());
     } else {
         m_logger->error("[Solo GET_ROUND] PacketBuilder::build returned null or empty payload!");
     }
-    
     return payload;
 }
 
