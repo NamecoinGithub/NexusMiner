@@ -487,10 +487,19 @@ network::Shared_payload Solo::login(Login_handler handler)
 
 network::Shared_payload Solo::get_work()
 {
-    // GET_BLOCK rate limiter — node enforces 6000ms minimum between requests.
-    // Using 6500ms (500ms safety margin) to prevent rate limit violations
-    // that trigger node's 300-second cooldown ban.
-    constexpr auto GET_BLOCK_MIN_INTERVAL = std::chrono::milliseconds(6500);
+    // GET_BLOCK rate limiter — miner-side 1s guard, node-side 6s is authoritative.
+    //
+    // Architecture (with LLL-TAO PR #283 one-shot bypass):
+    //   - Node: 6s minimum, 10-strike → 300s ban (production)
+    //   - Node PR #283: first GET_BLOCK after push is served immediately (one-shot bypass)
+    //   - Miner: 1s guard prevents rapid-fire loops within a single push cycle
+    //
+    // Flow per Hash block (~18s):
+    //   1. Push arrives → tip_moved → get_work_immediate() resets timer → get_work() fires
+    //      → Node PR #283 one-shot bypass serves it → template received ✓
+    //   2. If template race/empty → retry after 1s → node's 6s guard handles it
+    //   3. Next push ~18s later → repeat from step 1
+    constexpr auto GET_BLOCK_MIN_INTERVAL = std::chrono::milliseconds(1000);
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - m_last_get_block_time);
@@ -498,7 +507,7 @@ network::Shared_payload Solo::get_work()
     if (m_last_get_block_time != std::chrono::steady_clock::time_point{} &&
         elapsed < GET_BLOCK_MIN_INTERVAL)
     {
-        m_logger->debug("[Solo] GET_BLOCK rate limited — {}ms since last request (min: {}ms), skipping",
+        m_logger->info("[Solo] GET_BLOCK rate-limited ({}ms < {}ms) — node's 6s guard is authoritative; will retry on next push",
                        elapsed.count(), GET_BLOCK_MIN_INTERVAL.count());
         return network::Shared_payload{};  // Return empty — caller checks for null/empty
     }
@@ -542,6 +551,15 @@ network::Shared_payload Solo::get_work()
     }
     
     return payload;     
+}
+
+network::Shared_payload Solo::get_work_immediate()
+{
+    // Bypass miner-side rate limiter — node PR #283 one-shot bypass serves this immediately.
+    // Reset the rate-limit clock so the next get_work() call also goes through normally.
+    m_last_get_block_time = std::chrono::steady_clock::time_point{};
+    m_logger->info("[Solo] GET_BLOCK immediate (tip_moved bypass) — relying on node PR #283 one-shot");
+    return get_work();
 }
 
 network::Shared_payload Solo::send_get_round()
@@ -2384,7 +2402,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             },
             [&connection, this]() {
                 if (connection) {
-                    auto work_payload = get_work();
+                    auto work_payload = get_work_immediate();
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
                     } else {
@@ -2408,7 +2426,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             },
             [&connection, this]() {
                 if (connection) {
-                    auto work_payload = get_work();
+                    auto work_payload = get_work_immediate();
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
                     } else {
