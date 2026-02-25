@@ -470,6 +470,21 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
             else
                 m_logger->info("[SUBMIT AUDIT]   ✅ nHeight verified in serialized payload: {}", nHeightSerialized);
         }
+
+        // CRITICAL: Verify nNonce is at correct offset [208-215] in serialized payload.
+        // The node extracts nonce from the decrypted payload at this fixed offset.
+        // nNonce must not be confused with nHeight (offset 200) or nBits (offset 204).
+        if (is_tritium && payload.size() >= 216)
+        {
+            uint64_t nonce_serialized = 0;
+            for (int i = 0; i < 8; ++i)
+                nonce_serialized = (nonce_serialized << 8) | payload[208 + i];
+            if (nonce_serialized != nonce)
+                m_logger->error("[SUBMIT AUDIT]   ❌ CRITICAL: nNonce serialization mismatch at [208-215]! "
+                    "expected=0x{:016x} serialized=0x{:016x}", nonce, nonce_serialized);
+            else
+                m_logger->info("[SUBMIT AUDIT]   ✅ nNonce verified at [208-215]: 0x{:016x}", nonce_serialized);
+        }
     }
     
     m_blocks_verified.fetch_add(1, std::memory_order_relaxed);

@@ -485,6 +485,9 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
 
 bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 {
+    // Save endpoint so retry_template_request() can force a full reconnect if needed
+    m_wallet_endpoint = wallet_endpoint;
+
     std::string wallet_addr;
     wallet_endpoint.address(wallet_addr);
     uint16_t configured_port = wallet_endpoint.port();
@@ -560,6 +563,9 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                         self->retry_connect(wallet_endpoint);
                         return;
                     }
+
+                    // Fresh connection established — reset template retry counter
+                    self->m_template_retry_count = 0;
 
                     auto const print_statistics_interval = self->m_config.get_print_statistics_interval();
                     self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
@@ -721,6 +727,28 @@ void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
                 m_logger->error("[RX] First {} bytes: {}", bytes_to_log, hex_dump.str());
             }
             
+            // Check if this is the known zero-payload BLOCK_DATA pattern (00 00 00 00)
+            // caused by the node sending a legacy-format empty response on the stateless lane.
+            // This is a node-side bug (should send BLOCK_REJECTED instead), but we handle it
+            // gracefully by requesting a new template rather than disconnecting and triggering
+            // potentially thousands of reconnect retries.
+            bool is_zero_payload_block_data = (m_rx_accumulator.size() >= 4 &&
+                m_rx_accumulator[0] == 0x00 && m_rx_accumulator[1] == 0x00 &&
+                m_rx_accumulator[2] == 0x00 && m_rx_accumulator[3] == 0x00 &&
+                lane == ProtocolLane::STATELESS);
+
+            if (is_zero_payload_block_data)
+            {
+                m_logger->warn("[RX] Detected zero-payload BLOCK_DATA from node (node-side bug)");
+                m_logger->warn("[RX] Treating as template-not-ready — requesting new template instead of disconnecting");
+                m_rx_accumulator.clear();
+                if (m_miner_protocol && m_connection)
+                {
+                    retry_template_request();
+                }
+                return;
+            }
+
             m_logger->error("[RX] DISCONNECTING due to malformed packet");
             m_logger->error("[RX] ========================================");
             
@@ -812,8 +840,25 @@ void Worker_manager::retry_template_request()
     // Only if no push has arrived for 200 s (dead-connection indicator) do we fall back.
     if (solo_protocol->was_push_received_recently()) {
         m_logger->debug("[TemplateHealth] Push received recently — no GET_BLOCK needed; node is pushing normally");
+        // Node is responsive — reset the consecutive retry counter
+        m_template_retry_count = 0;
         return;
     }
+
+    // Retry cap: after MAX_TEMPLATE_RETRIES consecutive failed template requests, force a
+    // full TCP reconnect.  This prevents the miner from looping thousands of times at the
+    // application level when the node is genuinely unreachable after a block rejection.
+    ++m_template_retry_count;
+    if (m_template_retry_count > MAX_TEMPLATE_RETRIES)
+    {
+        m_logger->error("[Worker_manager] Max template retries ({}) exceeded — forcing reconnect",
+                        MAX_TEMPLATE_RETRIES);
+        m_template_retry_count = 0;
+        retry_connect(m_wallet_endpoint);
+        return;
+    }
+
+    m_logger->info("[Worker_manager] Template retry {}/{}", m_template_retry_count, MAX_TEMPLATE_RETRIES);
 
     // Get protocol lane from connection
     ProtocolLane lane = m_connection->get_protocol_lane();

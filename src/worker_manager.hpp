@@ -4,6 +4,7 @@
 #include "network/connection.hpp"
 #include "network/socket.hpp"
 #include "network/types.hpp"
+#include "network/endpoint.hpp"
 #include <spdlog/spdlog.h>
 #include "chrono/timer_factory.hpp"
 #include "timer_manager.hpp"
@@ -69,6 +70,15 @@ private:
 
     std::vector<std::shared_ptr<stats::Printer>> m_stats_printers;
     std::vector<std::shared_ptr<Worker>> m_workers;
+
+    // Stored wallet endpoint for use in forced reconnects (retry cap)
+    network::Endpoint m_wallet_endpoint;
+
+    // Consecutive template retry counter — reset when a push is received.
+    // After MAX_TEMPLATE_RETRIES attempts without a fresh template the miner
+    // forces a full TCP reconnect to recover from a stuck session.
+    static constexpr int MAX_TEMPLATE_RETRIES = 10;
+    int m_template_retry_count{0};
 };
 }
 
