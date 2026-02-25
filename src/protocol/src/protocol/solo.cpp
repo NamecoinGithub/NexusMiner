@@ -564,16 +564,13 @@ network::Shared_payload Solo::get_work_immediate()
 
 network::Shared_payload Solo::send_get_round()
 {
-    // GET_ROUND wrapper / stateless alias.
+    // GET_ROUND — pure informational/sanity probe.
     //
-    // On the STATELESS lane (port 9323+), GET_ROUND (0xD085) only returns
-    // NEW_ROUND/OLD_ROUND height info — it does NOT push a block template.
-    // To unlock a fresh template the miner must send GET_BLOCK (0xD081).
-    // So on stateless lane we alias send_get_round() → get_work() (GET_BLOCK).
+    // Sends GET_ROUND (legacy: opcode 0x85; stateless: mirror-mapped 0xD085) on
+    // all lanes.  The node responds with NEW_ROUND or OLD_ROUND containing height
+    // and difficulty info — it does NOT push a block template.
     //
-    // On the LEGACY lane (port 8323), GET_ROUND (opcode 133) triggers the node's
-    // handle_get_round_stateless() which CAN auto-push a BLOCK_DATA when the
-    // channel has advanced — keep the original behaviour there.
+    // To request a fresh mining template use send_recovery_work_request() instead.
 
     if (!m_authenticated) {
         m_logger->warn("[Solo GET_ROUND] Cannot send GET_ROUND - not authenticated yet");
@@ -585,16 +582,9 @@ network::Shared_payload Solo::send_get_round()
         return nullptr;
     }
 
-    if (m_protocol_lane == ProtocolLane::STATELESS) {
-        // Stateless alias: GET_ROUND → GET_BLOCK
-        // Node enforces its own rate limit (6000ms prod / 2000ms debug).
-        // Miner's 1000ms floor in get_work() allows rapid retry after recovery.
-        m_logger->debug("[Solo GET_ROUND] Stateless lane — aliasing GET_ROUND → GET_BLOCK (0xD081)");
-        return get_work();  // uses get_work()'s rate limiter + auth guard
-    }
-
-    // Legacy lane: send GET_ROUND (opcode 133 / 0x85) as before.
-    m_logger->debug("[Solo GET_ROUND] Requesting round status via GET_ROUND (legacy lane)");
+    // Always send GET_ROUND on all lanes (legacy: 0x85, stateless: 0xD085).
+    m_logger->debug("[Solo GET_ROUND] Sending GET_ROUND ({} lane)",
+        m_protocol_lane == ProtocolLane::STATELESS ? "stateless 0xD085" : "legacy 0x85");
     auto payload = PacketBuilder::build(m_protocol_lane, LLP::GET_ROUND);
     if (payload && !payload->empty()) {
         m_logger->debug("[Solo GET_ROUND] Encoded payload size: {} bytes (header-only)", payload->size());
@@ -602,6 +592,23 @@ network::Shared_payload Solo::send_get_round()
         m_logger->error("[Solo GET_ROUND] PacketBuilder::build returned null or empty payload!");
     }
     return payload;
+}
+
+network::Shared_payload Solo::send_recovery_work_request()
+{
+    // Recovery work request — requests a fresh mining template via GET_BLOCK.
+    //
+    // Sends GET_BLOCK on all lanes (legacy: 0x81; stateless: mirror-mapped 0xD081).
+    // Delegates to get_work() which enforces the miner-side 1s rate limiter and
+    // the authentication / reward-binding guards.  Callers must check for a null
+    // or empty return value (rate-limited or not yet authenticated).
+    //
+    // Use this method — not send_get_round() — whenever the goal is to force a
+    // template refresh (e.g. Timer_manager recovery, Worker_manager emergency).
+
+    m_logger->debug("[Solo Recovery] Requesting fresh template via GET_BLOCK ({} lane)",
+        m_protocol_lane == ProtocolLane::STATELESS ? "stateless 0xD081" : "legacy 0x81");
+    return get_work();
 }
 
 network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce)

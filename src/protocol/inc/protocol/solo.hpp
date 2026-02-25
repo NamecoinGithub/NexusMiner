@@ -73,11 +73,18 @@ public:
             }
         }
     };
-    /// Send GET_ROUND (legacy lane) or GET_BLOCK (stateless lane alias).
-    /// On the stateless lane, GET_ROUND does NOT push a template; this method
-    /// automatically forwards to get_work() (GET_BLOCK 0xD081) so template
-    /// recovery works correctly regardless of lane.
+    /// Send GET_ROUND on all lanes (legacy: 0x85; stateless: 0xD085).
+    /// This is a pure informational/sanity probe — the node responds with
+    /// NEW_ROUND or OLD_ROUND containing height and difficulty info.
+    /// It does NOT request a block template.  Use send_recovery_work_request()
+    /// when the intent is to force a fresh template retrieval.
     network::Shared_payload send_get_round();
+    /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
+    /// a fresh mining template.  Authentication-guarded; delegates to get_work()
+    /// and therefore respects the miner-side 1s rate limiter.  Returns null/empty
+    /// when rate-limited or not yet authenticated — callers must guard for this.
+    /// Use this method — not send_get_round() — for template recovery actions.
+    network::Shared_payload send_recovery_work_request();
     RoundStatus get_last_round_status() const { return m_last_round_status; }
     
     // Intelligent polling: Check if GET_ROUND should be sent now
