@@ -893,6 +893,100 @@ int main()
     }
 
     // ====================================================================
+    // Test 25: Push-triggered discard + recovery — new template accepted after channel advance
+    //
+    // Validates requirement #3 from the "fix mining lockout" issue:
+    //   push arrives → template discarded as stale → GET_BLOCK response arrives with
+    //   fresh template → template must be accepted (not erroneously judged stale).
+    // ====================================================================
+    std::cout << "\nTest 25: Push-triggered discard + recovery (new template accepted)" << std::endl;
+    {
+        using nexusminer::protocol::HeightTracker;
+
+        MiningTemplateInterface tmpl_interface(2, 0); // Hash channel
+
+        // Step 1: Initial template loaded (channel height X = 4165001).
+        auto data_init = create_mock_template(6594320, 0x1d00ffff, 2);
+        auto res_init = tmpl_interface.read_template(data_init, "test_node");
+        print_test_result("Initial template loaded successfully", res_init.is_valid);
+
+        // Finalise channel metadata (node is at X-1 = 4165000; template targets X = 4165001).
+        tmpl_interface.set_channel_height(4165001);
+        print_test_result("Template has valid state after set_channel_height", tmpl_interface.has_valid_template());
+
+        // Step 2: Simulate push notification — channel advanced to X (= 4165001).
+        // In production Solo::process_messages updates HeightTracker first, then the push handler
+        // calls discard_template() via check_template_health().  Here we call discard directly.
+        tmpl_interface.discard_template("Channel height-based staleness (channel advanced)");
+        print_test_result("Template discarded as stale on channel advance", !tmpl_interface.has_valid_template());
+
+        // Step 3: Recovery GET_BLOCK arrives — fresh template for channel X+1 = 4165002.
+        // This template must be accepted even though HeightTracker still reflects channel_height=X.
+        // The staleness check in validate_template() is SKIPPED for new templates (nChannelHeight=0).
+        auto data_recovery = create_mock_template(6594321, 0x1d00ffff, 2);
+        auto res_recovery = tmpl_interface.read_template(data_recovery, "test_node");
+        if (!res_recovery.is_valid) {
+            std::cout << "    Recovery template error: " << res_recovery.error_message << std::endl;
+        }
+        print_test_result("Recovery template accepted (not erroneously judged stale)", res_recovery.is_valid);
+
+        // Step 4: Finalise the recovery template's channel metadata (targets X+1 = 4165002).
+        tmpl_interface.set_channel_height(4165002);
+        print_test_result("Recovery template has valid state after set_channel_height",
+            tmpl_interface.has_valid_template());
+
+        // Step 5: Confirm the recovery template's channel height reflects the new target.
+        const auto* tmpl = tmpl_interface.get_current_template();
+        print_test_result("Recovery template nChannelHeight == 4165002",
+            tmpl != nullptr && tmpl->nChannelHeight == 4165002);
+
+        // Step 6: Verify degraded mode check would clear — has_valid_template() is now true,
+        // meaning the block handler in Worker_manager would clear m_degraded_mode.
+        print_test_result("has_valid_template() true after recovery (degraded mode would clear)",
+            tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 26: Degraded-mode re-entry guard — new template not discarded by stale check
+    //          when channel_target advances past previous channel_height
+    // ====================================================================
+    std::cout << "\nTest 26: Stale check does not discard recovery template (channel_target > channel_height)" << std::endl;
+    {
+        using nexusminer::protocol::HeightTracker;
+
+        MiningTemplateInterface tmpl_interface(2, 0);
+
+        // Load and finalise initial template for channel target 4165001.
+        auto data_init = create_mock_template(6594320, 0x1d00ffff, 2);
+        tmpl_interface.read_template(data_init, "test_node");
+        tmpl_interface.set_channel_height(4165001);
+
+        // Simulate channel advance (node now at 4165001) → discard old template.
+        tmpl_interface.discard_template("Channel height-based staleness (channel advanced)");
+
+        // Simulate recovery: GET_BLOCK returns a template targeting 4165002.
+        auto data_recovery = create_mock_template(6594321, 0x1d00ffff, 2);
+        auto res = tmpl_interface.read_template(data_recovery, "test_node");
+        print_test_result("Recovery template accepted (tmpl.nChannelHeight=0 skips stale check)", res.is_valid);
+
+        // Finalise recovery template.
+        tmpl_interface.set_channel_height(4165002);
+
+        // Now simulate update_channel_height() with node height = 4165001 (not yet at target 4165002).
+        // Template should NOT be discarded (node is still below template target).
+        bool discarded = tmpl_interface.update_channel_height(2, 4165001);
+        print_test_result("update_channel_height(4165001) does not discard template targeting 4165002",
+            !discarded);
+        print_test_result("Template remains valid after update_channel_height at node_height=4165001",
+            tmpl_interface.has_valid_template());
+
+        // Advancing to 4165002 (= channel_target) would mark it stale.
+        discarded = tmpl_interface.update_channel_height(2, 4165002);
+        print_test_result("update_channel_height(4165002) discards template targeting 4165002 (stale)",
+            discarded);
+    }
+
+    // ====================================================================
     // Summary
     // ====================================================================
     std::cout << "\n========================================" << std::endl;
