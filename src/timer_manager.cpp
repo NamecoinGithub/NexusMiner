@@ -158,8 +158,10 @@ chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_
             // Intelligent polling: only send if protocol says it's time
             if (protocol_shared->should_send_get_round())
             {
-                // Lane-aware GET_ROUND: use send_get_round() which selects the correct
-                // opcode framing (16-bit 0xD085 for stateless lane, 8-bit for legacy lane).
+                // send_get_round() is lane-aware: on stateless lane it aliases to GET_BLOCK,
+                // on legacy lane it sends GET_ROUND. Both use get_work()'s rate limiter on
+                // stateless. This makes the periodic sanity-check timer a universal recovery
+                // trigger regardless of lane.
                 auto payload = protocol_shared->send_get_round();
                 if (payload && !payload->empty()) {
                     connection_shared->transmit(payload);

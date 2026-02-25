@@ -73,6 +73,10 @@ public:
             }
         }
     };
+    /// Send GET_ROUND (legacy lane) or GET_BLOCK (stateless lane alias).
+    /// On the stateless lane, GET_ROUND does NOT push a template; this method
+    /// automatically forwards to get_work() (GET_BLOCK 0xD081) so template
+    /// recovery works correctly regardless of lane.
     network::Shared_payload send_get_round();
     RoundStatus get_last_round_status() const { return m_last_round_status; }
     
