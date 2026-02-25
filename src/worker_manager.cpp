@@ -335,7 +335,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     stop_all_workers();
                     
                     // Request fresh template
-                    retry_template_request();
+                    retry_template_request(true);
                 }
             );
             m_logger->info("[Worker_manager] Validation failure handler registered");
@@ -1186,7 +1186,7 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] Workers will idle until recovery");
 }
 
-void Worker_manager::retry_template_request()
+void Worker_manager::retry_template_request(bool bForce)
 {
     m_logger->info("[Worker_manager] Requesting fresh template...");
     
@@ -1205,8 +1205,16 @@ void Worker_manager::retry_template_request()
     // 200 s the node is operating normally — skip GET_BLOCK to avoid unnecessary polling.
     // Only if no push has arrived for 200 s (dead-connection indicator) do we fall back.
     if (solo_protocol->was_push_received_recently()) {
-        m_logger->debug("[TemplateHealth] Push received recently — no GET_BLOCK needed; node is pushing normally");
-        return;
+        if (!bForce) {
+            // Periodic health-check path: push is coming, no need to poll.
+            m_logger->debug("[TemplateHealth] Push received recently — no GET_BLOCK needed; node is pushing normally");
+            return;
+        }
+        // Forced recovery path: template was discarded + workers stopped.
+        // A push was received recently but the template never arrived (e.g. node-side
+        // 0-payload race).  We MUST request a new template regardless.
+        m_logger->warn("[Worker_manager] Recovery forced despite recent push — template was discarded, must re-request");
+        m_logger->warn("[Worker_manager]   Reason: real staleness detected after discard_template() + stop_all_workers()");
     }
 
     // Get protocol lane from connection
@@ -1219,7 +1227,9 @@ void Worker_manager::retry_template_request()
     if (lane == ProtocolLane::LEGACY) {
         // Legacy lane: Request via GET_BLOCK
         m_logger->info("[Worker_manager] → Sending GET_BLOCK request (legacy polling)");
-        auto work_payload = solo_protocol->get_work();
+        // Use get_work_immediate() on forced recovery to bypass miner-side rate limiter.
+        // Node PR #283 one-shot bypass handles the node-side.
+        auto work_payload = bForce ? solo_protocol->get_work_immediate() : solo_protocol->get_work();
         if (work_payload && !work_payload->empty()) {
             m_connection->transmit(work_payload);
         } else {
@@ -1270,7 +1280,7 @@ void Worker_manager::check_template_health()
 
             template_interface->discard_template("Channel height-based staleness (channel advanced)");
             stop_all_workers();
-            retry_template_request();
+            retry_template_request(true);
             return;
         }
     }
@@ -1324,7 +1334,7 @@ void Worker_manager::check_template_health()
         template_interface->discard_template("Emergency: age " + std::to_string(template_age) +
                                              "s exceeded " + std::to_string(TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) + "s limit");
         stop_all_workers();
-        retry_template_request();
+        retry_template_request(true);
     }
 }
 
