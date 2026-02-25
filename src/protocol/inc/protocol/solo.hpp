@@ -38,6 +38,10 @@ public:
     void reset() override;
     network::Shared_payload login(Login_handler handler) override;
     network::Shared_payload get_work() override;
+    /// Like get_work() but bypasses the miner-side rate limiter for immediate tip-moved refreshes.
+    /// The node-side PR #283 one-shot bypass serves this without striking the rate limit.
+    /// Only call from tip_moved / channel_stale paths — NOT from polling loops.
+    network::Shared_payload get_work_immediate();
     network::Shared_payload submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce) override;
     void set_block_handler(Set_block_handler handler) override { m_set_block_handler = std::move(handler); }
 
@@ -348,7 +352,14 @@ private:
     // ═══════════════════════════════════════════════════════════════════════
     // GET_BLOCK RATE LIMITER
     // ═══════════════════════════════════════════════════════════════════════
-    
+    //
+    // Miner-side: 1s guard prevents rapid-fire within a push cycle.
+    // Node-side (authoritative): 6s minimum (production), 2s (debug).
+    // Node PR #283: one-shot bypass serves first GET_BLOCK after push immediately.
+    //
+    // Use get_work_immediate() for tip_moved / channel_stale refreshes to
+    // reset the timer and leverage the PR #283 one-shot bypass.
+    //
     // Timestamp of last GET_BLOCK request (rate limiter to prevent node 300s ban)
     std::chrono::steady_clock::time_point m_last_get_block_time{};
     
