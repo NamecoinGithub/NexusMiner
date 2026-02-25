@@ -1,51 +1,117 @@
+# =============================================================================
 # NexusMiner Configuration Example
-# Copy this file to miner.conf and edit as needed.
+# =============================================================================
 #
-# Stateless solo mining on the Nexus network.
-# Requires Falcon authentication keys (generate with: ./NexusMiner --create-keys).
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  FORMAT WARNING                                                         │
+# │                                                                         │
+# │  ONLY TOML (.config / miner.conf) is supported.                        │
+# │  JSON (.conf) is NOT supported and will cause an error.                 │
+# │                                                                         │
+# │  How to use this file:                                                  │
+# │    • Copy to  miner.conf   (the parser accepts this name as TOML), OR  │
+# │    • Copy to  miner.config                                              │
+# │  Then fill in your genesis, reward_address, and Falcon keys below.     │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# ── QUICK MODE SWITCH ────────────────────────────────────────────────────────
+# CPU Prime:  channel=1  hardware="cpu"  port=8323  [cpu] section active
+# GPU Prime:  channel=1  hardware="gpu"  port=8323  [gpu] section active  (needs CUDA build)
+# GPU Hash:   channel=2  hardware="gpu"  port=8325  [gpu] section active
+# CPU Hash:   channel=2  hardware="cpu"  port=8325  [cpu] section active  (testing only)
+# See configs/ directory for ready-made per-mode files.
+# ─────────────────────────────────────────────────────────────────────────────
 
+# -----------------------------------------------------------------------------
+# [wallet] — Node connection settings
+# -----------------------------------------------------------------------------
 [wallet]
-ip = "127.0.0.1"
-port = 9323            # Stateless lane (primary). Legacy lane = 8323.
-mining_channel = 2     # 1 = PRIME, 2 = HASH
+ip = "127.0.0.1"           # Your Nexus node IP (127.0.0.1 = same machine)
+port = 8323                 # Mining port:
+                            #   8323 = Prime channel (channel = 1)
+                            #   8325 = Hash channel  (channel = 2)
 
-[workers]
-count = 1
-hardware = "cpu"
+# -----------------------------------------------------------------------------
+# [mining] — What and where to mine
+# -----------------------------------------------------------------------------
+[mining]
+channel = 1                 # Mining channel:
+                            #   1 = Prime (CPU or GPU sieve-based)
+                            #   2 = Hash  (GPU Skein-Keccak; CPU for testing only)
+genesis = "a174011c93ca1c80bca5388382b167cacd33d3154395ea8f45ac99a8308cd122"
+                            # Your Tritium account genesis hash (64 hex chars).
+                            # Get it with the API call: system/get/info
+reward_address = "8BMeGoCm4TysEn4MseoEwme9yVwkWRqGPYC4m1iHsFzb16udDRg"
+                            # Your NXS account address for block rewards.
+                            # Get it with the API call: finance/list/accounts
 
-[cpu]
-threads = 4
-
+# -----------------------------------------------------------------------------
+# [network] — Network and session settings
+# -----------------------------------------------------------------------------
 [network]
-local_ip = "auto"       # "auto" = detect local IP automatically
-keepalive_interval = 24 # Keep-alive ping interval in hours
-sim_link = true         # SIM Link: maintain simultaneous stateless+legacy connections
-                        # When true, a secondary connection is opened on the complementary
-                        # port (9323↔8323) for redundant template delivery and failover.
+local_ip = "127.0.0.1"     # Local bind address:
+                            #   127.0.0.1 = localhost only (node on same machine)
+                            #   0.0.0.0   = all interfaces (remote or VPN node)
+                            #   "auto"    = detect outbound IP via DNS
+                            #              (NOT recommended for localhost or VPN)
+keepalive_interval = 1      # Session keepalive ping interval in HOURS (1-168).
+                            # Prevents session cache eviction on the node.
+                            # Recommended: 1 for active miners, 24 for stable links.
 
-# GET_BLOCK miner-side rate limit (milliseconds).
-# Lower = faster recovery but may trigger node rate-limiting (node enforces ~2000ms minimum).
-# 2500ms: safe default (500ms margin above node's 2000ms floor).
-# 1000ms: aggressive recovery (requires LLL-TAO PR #283 one-shot bypass on the node).
-get_block_interval_ms = 2500
+# -----------------------------------------------------------------------------
+# [workers] — Worker count and hardware type
+# -----------------------------------------------------------------------------
+[workers]
+count = 4                   # Number of mining workers to spawn.
+                            # CPU Prime: set to your physical core count.
+                            # GPU Hash/Prime: 1 per GPU.
+hardware = "cpu"            # Worker hardware type:
+                            #   "cpu" = CPU workers (default — CPU Prime or CPU Hash)
+                            #   "gpu" = GPU workers (GPU Prime or GPU Hash; needs CUDA build)
 
-[falcon]
-# Generate keys with: ./NexusMiner --create-keys
-pubkey  = ""   # hex-encoded Falcon-1024 public key
-privkey = ""   # hex-encoded Falcon-1024 private key
+# -----------------------------------------------------------------------------
+# [cpu] — CPU worker settings  (active when hardware = "cpu")
+# Comment out or remove this section when using hardware = "gpu".
+# -----------------------------------------------------------------------------
+[cpu]
+threads = 1                 # Threads per worker.
+                            #   Prime: 1 recommended (sieve is single-threaded)
+                            #   Hash:  set to your core count for parallelism
+efficiency_cores = true     # Include E-cores on hybrid CPUs (Intel 12th gen+, ARM big.LITTLE)
+hyperthreading = true       # Include SMT/HT logical cores
+priority = 2                # Thread priority: 0=low 1=below_normal 2=normal 3=above_normal 4=high
+power_limit_percent = 100   # CPU power cap as % of TDP (50–100). Lower = less heat.
+target_hashrate = 0         # Target hashrate limit. 0 = unlimited.
 
-[colin]
-# Colin — Context-Oriented LLP Intelligence Node
-# Background diagnostic agent: monitors both SIM Link lanes and emits
-# actionable diagnostics to help operators identify issues quickly.
-enabled = true
-report_interval_seconds = 60   # How often Colin prints a diagnostic report
+# -----------------------------------------------------------------------------
+# [gpu] — GPU worker settings  (active when hardware = "gpu")
+# Uncomment this section and set hardware = "gpu" for GPU mining.
+# Requires NexusMiner built with CUDA/GPU support.
+# -----------------------------------------------------------------------------
+# [gpu]
+# device = 0                # GPU device index (0 = first GPU, 1 = second, etc.)
 
+# -----------------------------------------------------------------------------
+# [stats] — Statistics output
+# -----------------------------------------------------------------------------
+[stats]
+mode = "console"            # "console" = print to stdout  |  "file" = write to log file
+
+# -----------------------------------------------------------------------------
+# [logging] — Logging verbosity
+# -----------------------------------------------------------------------------
 [logging]
-level = 1       # 0=trace 1=debug 2=info 3=warn
-file  = ""      # Leave empty to log to console only
+level = 2                   # 0=off  1=error  2=info (recommended)  3=debug (verbose)
 
-[advanced]
-connection_retry_interval = 10   # seconds between reconnect attempts
-print_statistics_interval = 60   # seconds between stats printout
-ping_interval = 60               # seconds between keepalive pings
+# -----------------------------------------------------------------------------
+# [falcon] — Post-quantum Falcon-1024 authentication (required for solo mining)
+# Generate your keypair with: ./NexusMiner --create-keys
+# SECURITY: chmod 600 this config file to protect your private key.
+# -----------------------------------------------------------------------------
+[falcon]
+# Generate with: ./NexusMiner --create-keys
+pubkey = "YOUR_FALCON_PUBKEY_HEX_HERE"    # hex-encoded Falcon-1024 public key
+# Keep secret! chmod 600 this file.
+privkey = "YOUR_FALCON_PRIVKEY_HEX_HERE"  # hex-encoded Falcon-1024 private key
+# REQUIRED: enables block signing (safe, upstream-compatible)
+enable_disposable_falcon = true
