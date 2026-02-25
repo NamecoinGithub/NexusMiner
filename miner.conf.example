@@ -1,0 +1,51 @@
+# NexusMiner Configuration Example
+# Copy this file to miner.conf and edit as needed.
+#
+# Stateless solo mining on the Nexus network.
+# Requires Falcon authentication keys (generate with: ./NexusMiner --create-keys).
+
+[wallet]
+ip = "127.0.0.1"
+port = 9323            # Stateless lane (primary). Legacy lane = 8323.
+mining_channel = 2     # 1 = PRIME, 2 = HASH
+
+[workers]
+count = 1
+hardware = "cpu"
+
+[cpu]
+threads = 4
+
+[network]
+local_ip = "auto"       # "auto" = detect local IP automatically
+keepalive_interval = 24 # Keep-alive ping interval in hours
+sim_link = true         # SIM Link: maintain simultaneous stateless+legacy connections
+                        # When true, a secondary connection is opened on the complementary
+                        # port (9323↔8323) for redundant template delivery and failover.
+
+# GET_BLOCK miner-side rate limit (milliseconds).
+# Lower = faster recovery but may trigger node rate-limiting (node enforces ~2000ms minimum).
+# 2500ms: safe default (500ms margin above node's 2000ms floor).
+# 1000ms: aggressive recovery (requires LLL-TAO PR #283 one-shot bypass on the node).
+get_block_interval_ms = 2500
+
+[falcon]
+# Generate keys with: ./NexusMiner --create-keys
+pubkey  = ""   # hex-encoded Falcon-1024 public key
+privkey = ""   # hex-encoded Falcon-1024 private key
+
+[colin]
+# Colin — Context-Oriented LLP Intelligence Node
+# Background diagnostic agent: monitors both SIM Link lanes and emits
+# actionable diagnostics to help operators identify issues quickly.
+enabled = true
+report_interval_seconds = 60   # How often Colin prints a diagnostic report
+
+[logging]
+level = 1       # 0=trace 1=debug 2=info 3=warn
+file  = ""      # Leave empty to log to console only
+
+[advanced]
+connection_retry_interval = 10   # seconds between reconnect attempts
+print_statistics_interval = 60   # seconds between stats printout
+ping_interval = 60               # seconds between keepalive pings

@@ -21,6 +21,7 @@ namespace config { class Config; }
 namespace stats { class Collector; }
 namespace protocol { class Protocol; class Solo; }
 class Worker;
+class ColinAgent;
 
 class Worker_manager : public std::enable_shared_from_this<Worker_manager>
 {
@@ -100,6 +101,7 @@ private:
     uint32_t m_secondary_retry_count{0};
     uint32_t m_secondary_retry_delay_seconds{0};
     DualConnectionManager m_sim_link;  // Lane state bookkeeper
+    std::shared_ptr<ColinAgent> m_colin_agent;  // Diagnostic agent (started after first connect)
 };
 }
 

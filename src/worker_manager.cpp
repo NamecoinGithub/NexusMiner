@@ -1,4 +1,5 @@
 #include "worker_manager.hpp"
+#include "colin_agent.hpp"
 #include "cpu/worker_hash.hpp"
 
 #include "fpga/worker_hash.hpp"
@@ -458,6 +459,12 @@ void Worker_manager::stop()
 {
     m_timer_manager.stop();
 
+    if (m_colin_agent)
+    {
+        m_colin_agent->stop();
+        m_colin_agent.reset();
+    }
+
     // close connection
     m_connection.reset();
     m_secondary_connection.reset();
@@ -660,6 +667,18 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 
                         constexpr uint16_t LANE_HEALTH_INTERVAL = 30;  // log every 30s
                         self->m_timer_manager.start_lane_health_check_timer(LANE_HEALTH_INTERVAL, self);
+                    }
+
+                    // ====== COLIN: start diagnostic agent on first successful connect ======
+                    if (!self->m_colin_agent && self->m_config.get_colin_enabled())
+                    {
+                        self->m_colin_agent = std::make_shared<ColinAgent>(
+                            self->m_io_context,
+                            &self->m_sim_link,
+                            self->m_stats_collector,
+                            self->m_logger,
+                            self->m_config.get_colin_report_interval_seconds());
+                        self->m_colin_agent->start();
                     }
 
                     // Note: Block handler already registered in Worker_manager constructor

@@ -226,6 +226,35 @@ namespace config
                     {
                         config.set_enable_sim_link(parse_bool_value(value));
                     }
+                    else if (key == "get_block_interval_ms")
+                    {
+                        constexpr int MIN_GET_BLOCK_MS = 100;
+                        constexpr int MAX_GET_BLOCK_MS = 60000;
+                        int ms = parse_int_value(value);
+                        if (ms >= MIN_GET_BLOCK_MS && ms <= MAX_GET_BLOCK_MS)
+                            config.set_get_block_interval_ms(static_cast<uint32_t>(ms));
+                        else
+                            m_logger->warn("[Config] get_block_interval_ms={} out of range [{},{}] — using default",
+                                ms, MIN_GET_BLOCK_MS, MAX_GET_BLOCK_MS);
+                    }
+                }
+                else if (current_section == "colin")
+                {
+                    if (key == "enabled")
+                    {
+                        config.set_colin_enabled(parse_bool_value(value));
+                    }
+                    else if (key == "report_interval_seconds")
+                    {
+                        constexpr int MIN_COLIN_INTERVAL = 10;
+                        constexpr int MAX_COLIN_INTERVAL = 3600;
+                        int secs = parse_int_value(value);
+                        if (secs >= MIN_COLIN_INTERVAL && secs <= MAX_COLIN_INTERVAL)
+                            config.set_colin_report_interval_seconds(static_cast<uint32_t>(secs));
+                        else
+                            m_logger->warn("[Config] colin.report_interval_seconds={} out of range [{},{}] — using default",
+                                secs, MIN_COLIN_INTERVAL, MAX_COLIN_INTERVAL);
+                    }
                 }
                 else if (current_section == "logging")
                 {

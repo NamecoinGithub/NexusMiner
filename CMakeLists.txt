@@ -201,7 +201,8 @@ set(MAIN_SOURCE_FILES src/main.cpp
                 src/miner_keys.cpp
                 src/worker_manager.cpp 
                 src/timer_manager.cpp
-                src/dual_connection_manager.cpp)
+                src/dual_connection_manager.cpp
+                src/colin_agent.cpp)
 
 add_executable(NexusMiner ${MAIN_SOURCE_FILES})
 if (WITH_GPU_AMD AND WITH_PRIME)
