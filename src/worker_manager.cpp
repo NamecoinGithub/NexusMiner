@@ -130,8 +130,10 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                               block.nChannel,
                               (block.nChannel == 1) ? "prime" : "hash");
                 m_logger->info("[Worker_manager]   Difficulty: 0x{:08x}", nBits);
-                m_logger->info("[Worker_manager]   Merkle:     {}", 
-                              block.hashMerkleRoot.ToString().substr(0, 16) + "...");
+                m_logger->info("[Worker_manager]   Merkle:     {}...", 
+                              block.hashMerkleRoot.ToString().substr(0, 16));
+                m_logger->info("[Worker_manager]   PrevHash:   {}...",
+                              block.hashPrevBlock.ToString().substr(0, 20));
                 m_logger->info("[Worker_manager] ═══════════════════════════════════════");
                 
                 // ═══════════════════════════════════════════════════════════════

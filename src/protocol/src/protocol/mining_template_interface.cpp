@@ -109,12 +109,17 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     // 📥 TEMPLATE RECEIVED FROM NODE - Trust Node's nChannel Value
     // ═══════════════════════════════════════════════════════════════════════
     
+    // NOTE: format_hash_preview uses byte-reversed (big-integer) display order,
+    // matching ToString()/GetHex()/SubString() and the node's log convention.
+    // This allows direct cross-reference between [TemplateInterface] and [Worker_manager] logs,
+    // and between miner logs and node logs (e.g. node's hashPrevBlock SubString display).
     // Helper lambda for hex preview formatting (reduces code duplication)
-    auto format_hash_preview = [](const std::vector<uint8_t>& bytes, size_t preview_len = 8) -> std::string {
+    auto format_hash_preview = [](const std::vector<uint8_t>& bytes, size_t preview_len = 16) -> std::string {
         std::ostringstream hex;
         hex << std::hex << std::setfill('0');
-        for (size_t i = 0; i < std::min(preview_len, bytes.size()); ++i) {
-            hex << std::setw(2) << static_cast<unsigned int>(bytes[i]);
+        size_t total = bytes.size();
+        for (size_t i = 0; i < std::min(preview_len, total); ++i) {
+            hex << std::setw(2) << static_cast<unsigned int>(bytes[total - 1 - i]);
         }
         return hex.str();
     };
