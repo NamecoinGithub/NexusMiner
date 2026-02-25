@@ -200,7 +200,8 @@ set(MAIN_SOURCE_FILES src/main.cpp
                 src/miner.cpp 
                 src/miner_keys.cpp
                 src/worker_manager.cpp 
-                src/timer_manager.cpp)
+                src/timer_manager.cpp
+                src/dual_connection_manager.cpp)
 
 add_executable(NexusMiner ${MAIN_SOURCE_FILES})
 if (WITH_GPU_AMD AND WITH_PRIME)
@@ -240,4 +241,7 @@ endif()
 target_link_libraries(NexusMiner ${OPENSSL_LIBRARIES})
 target_link_libraries(NexusMiner Threads::Threads)
 
+# SIM Link DualConnectionManager unit test
+add_executable(dual_connection_manager_test src/dual_connection_manager_test.cpp src/dual_connection_manager.cpp)
+target_include_directories(dual_connection_manager_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 

@@ -15,10 +15,13 @@ Timer_manager::Timer_manager(chrono::Timer_factory::Sptr timer_factory)
 {
     m_connection_retry_timer = m_timer_factory->create_timer();
     m_ping_timer = m_timer_factory->create_timer();
+    m_secondary_ping_timer = m_timer_factory->create_timer();
     m_stats_collector_timer = m_timer_factory->create_timer();
     m_stats_printer_timer = m_timer_factory->create_timer();
     m_get_round_timer = m_timer_factory->create_timer();  // Template Staleness Prevention
     m_template_health_timer = m_timer_factory->create_timer();  // Template Health Monitoring
+    m_secondary_connection_retry_timer = m_timer_factory->create_timer();  // SIM Link secondary
+    m_lane_health_check_timer = m_timer_factory->create_timer();  // SIM Link lane health log
 }
 
 void Timer_manager::start_connection_retry_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager, 
@@ -31,6 +34,11 @@ void Timer_manager::start_connection_retry_timer(std::uint16_t timer_interval, s
 void Timer_manager::start_ping_timer(std::uint16_t timer_interval, std::weak_ptr<network::Connection> connection)
 {
     m_ping_timer->start(chrono::Seconds(timer_interval), ping_handler(timer_interval, std::move(connection)));
+}
+
+void Timer_manager::start_secondary_ping_timer(std::uint16_t timer_interval, std::weak_ptr<network::Connection> connection)
+{
+    m_secondary_ping_timer->start(chrono::Seconds(timer_interval), secondary_ping_handler(timer_interval, std::move(connection)));
 }
 
 void Timer_manager::start_stats_collector_timer(std::uint16_t timer_interval, std::vector<std::shared_ptr<Worker>> workers, 
@@ -55,9 +63,12 @@ void Timer_manager::stop()
 {
     m_connection_retry_timer->cancel();
     m_ping_timer->cancel();
+    m_secondary_ping_timer->cancel();
     m_stats_collector_timer->cancel();
     m_stats_printer_timer->cancel();
     m_get_round_timer->cancel();  // Template Staleness Prevention
+    m_secondary_connection_retry_timer->cancel();  // SIM Link secondary lane
+    m_lane_health_check_timer->cancel();  // SIM Link lane health log
 }
 
 chrono::Timer::Handler Timer_manager::connection_retry_handler(std::weak_ptr<Worker_manager> worker_manager,
@@ -95,6 +106,27 @@ chrono::Timer::Handler Timer_manager::ping_handler(std::uint16_t ping_interval, 
 
             // restart timer
             m_ping_timer->start(chrono::Seconds(ping_interval), ping_handler(ping_interval, std::move(connection_shared)));
+        }
+    };
+}
+
+chrono::Timer::Handler Timer_manager::secondary_ping_handler(std::uint16_t ping_interval, std::weak_ptr<network::Connection> connection)
+{
+    return[this, connection, ping_interval](bool canceled)
+    {
+        if (canceled)	// don't do anything if the timer has been canceled
+        {
+            return;
+        }
+
+        auto connection_shared = connection.lock();
+        if (connection_shared)
+        {
+            Packet packet{ static_cast<uint8_t>(Packet::PING) };
+            connection_shared->transmit(packet.get_bytes());
+
+            // restart timer
+            m_secondary_ping_timer->start(chrono::Seconds(ping_interval), secondary_ping_handler(ping_interval, std::move(connection_shared)));
         }
     };
 }
@@ -204,6 +236,61 @@ chrono::Timer::Handler Timer_manager::template_health_handler(std::uint16_t heal
                 template_health_handler(health_check_interval, worker_manager));
         }
     }; 
+}
+
+void Timer_manager::start_secondary_connection_retry_timer(std::uint16_t timer_interval,
+    std::weak_ptr<Worker_manager> worker_manager,
+    network::Endpoint const& secondary_endpoint)
+{
+    m_secondary_connection_retry_timer->start(chrono::Seconds(timer_interval),
+        secondary_connection_retry_handler(std::move(worker_manager), secondary_endpoint));
+}
+
+void Timer_manager::start_lane_health_check_timer(std::uint16_t timer_interval,
+    std::weak_ptr<Worker_manager> worker_manager)
+{
+    m_lane_health_check_timer->start(chrono::Seconds(timer_interval),
+        lane_health_check_handler(timer_interval, std::move(worker_manager)));
+}
+
+chrono::Timer::Handler Timer_manager::secondary_connection_retry_handler(
+    std::weak_ptr<Worker_manager> worker_manager,
+    network::Endpoint const& secondary_endpoint)
+{
+    return [worker_manager, secondary_endpoint](bool canceled)
+    {
+        if (canceled)
+        {
+            return;
+        }
+
+        auto wm = worker_manager.lock();
+        if (wm)
+        {
+            wm->connect_secondary(secondary_endpoint);
+        }
+    };
+}
+
+chrono::Timer::Handler Timer_manager::lane_health_check_handler(std::uint16_t health_check_interval,
+    std::weak_ptr<Worker_manager> worker_manager)
+{
+    return [this, health_check_interval, worker_manager](bool canceled)
+    {
+        if (canceled)
+        {
+            return;
+        }
+
+        auto wm = worker_manager.lock();
+        if (wm)
+        {
+            wm->log_lane_health();
+
+            m_lane_health_check_timer->start(chrono::Seconds(health_check_interval),
+                lane_health_check_handler(health_check_interval, worker_manager));
+        }
+    };
 }
 
 }

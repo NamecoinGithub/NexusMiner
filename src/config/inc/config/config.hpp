@@ -80,6 +80,17 @@ public:
 	bool has_reward_address() const { return !m_mining.m_reward_address.empty(); }
 	std::string const& get_reward_address() const { return m_mining.m_reward_address; }
 	
+	// SIM Link: dual-lane (stateless + legacy) simultaneous connection
+	bool get_enable_sim_link() const { return m_enable_sim_link; }
+	/// Returns the secondary port derived from the primary port.
+	/// Primary 9323 → secondary 8323 (legacy); primary 8323 → secondary 9323 (stateless).
+	std::uint16_t get_secondary_port() const
+	{
+		constexpr std::uint16_t STATELESS_PORT = 9323;
+		constexpr std::uint16_t LEGACY_PORT    = 8323;
+		return (m_port == STATELESS_PORT) ? LEGACY_PORT : STATELESS_PORT;
+	}
+	
 	// Setters for TOML parser
 	void set_wallet_ip(const std::string& ip) { m_wallet_ip = ip; }
 	void set_port(std::uint16_t port) { m_port = port; }
@@ -108,6 +119,7 @@ public:
 	// ChaCha20 and TLS setters
 	void set_enable_chacha20_wrapping(bool enable) { m_enable_chacha20_wrapping = enable; }
 	void set_enable_tls(bool enable) { m_enable_tls = enable; }
+	void set_enable_sim_link(bool enable) { m_enable_sim_link = enable; }
 	void set_tls_ca_cert_path(const std::string& path) { m_tls_ca_cert_path = path; }
 	void set_tls_verify_peer(bool verify) { m_tls_verify_peer = verify; }
 	void set_tls_server_name(const std::string& name) { m_tls_server_name = name; }
@@ -168,6 +180,9 @@ private:
 	
 	// Mining configuration for stateless mining (MINER_SET_REWARD protocol)
 	MiningConfig m_mining;
+	
+	// SIM Link: dual-lane (stateless + legacy) simultaneous connection (default: enabled)
+	bool m_enable_sim_link;
 
 };
 }

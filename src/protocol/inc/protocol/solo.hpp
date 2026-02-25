@@ -42,6 +42,11 @@ public:
     /// The node-side PR #283 one-shot bypass serves this without striking the rate limit.
     /// Only call from tip_moved / channel_stale paths — NOT from polling loops.
     network::Shared_payload get_work_immediate();
+    /// One-shot bypass of the miner-side GET_BLOCK rate limiter for SIM Link lane-failure recovery.
+    /// Resets the rate-limit clock so the very next get_work() call goes through immediately,
+    /// matching the node-side one-shot bypass from LLL-TAO PR #283.
+    /// The bypass is consumed after a single get_work() call; subsequent calls obey the normal limit.
+    void bypass_get_block_rate_limit_once();
     network::Shared_payload submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce) override;
     void set_block_handler(Set_block_handler handler) override { m_set_block_handler = std::move(handler); }
 
