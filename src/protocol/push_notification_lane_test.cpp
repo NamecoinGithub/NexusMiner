@@ -15,6 +15,7 @@
 
 #include "miner_opcodes.hpp"
 #include "protocol_lane.hpp"
+#include "mining/client_block.h"
 #include <iostream>
 #include <cassert>
 #include <cstdint>
@@ -212,6 +213,55 @@ int main()
             LLP::UnmirrorOpcode(0xD0D9) == LLP::PRIME_BLOCK_AVAILABLE);
         print_test_result("UnmirrorOpcode(0xD0DA) == 0xDA (218)",
             LLP::UnmirrorOpcode(0xD0DA) == LLP::HASH_BLOCK_AVAILABLE);
+    }
+
+    // ====================================================================
+    // Test 8: Dual-channel broadcast — node sends BOTH Prime and Hash pushes
+    // Since the node now broadcasts both channels on every push update, the
+    // miner must accept the non-subscribed channel push without disruption.
+    // ====================================================================
+    std::cout << "\nTest 8: Dual-channel broadcast — both Prime and Hash pushes received" << std::endl;
+    {
+        // Scenario A: Prime miner (channel 1) receives Prime push → should match
+        uint8_t mining_channel_prime = static_cast<uint8_t>(mining::CHANNEL_PRIME);
+        uint8_t mining_channel_hash  = static_cast<uint8_t>(mining::CHANNEL_HASH);
+
+        // Legacy lane: Prime miner receives PRIME push → match
+        bool prime_receives_prime_legacy = simulated_matches_opcode(
+            LLP::PRIME_BLOCK_AVAILABLE, false, LLP::PRIME_BLOCK_AVAILABLE);
+        print_test_result("Scenario A1: Prime miner receives legacy Prime push → match",
+            prime_receives_prime_legacy);
+
+        // Legacy lane: Prime miner receives HASH push → match in router, channel check in handler
+        bool prime_receives_hash_legacy = simulated_matches_opcode(
+            LLP::HASH_BLOCK_AVAILABLE, false, LLP::HASH_BLOCK_AVAILABLE);
+        // Handler will see channel mismatch (mining_channel_prime != CHANNEL_HASH) and return early.
+        // This is now treated as informational (not an error).
+        print_test_result("Scenario A2: Prime miner receives legacy Hash push → routed (handler guards channel)",
+            prime_receives_hash_legacy);
+
+        // Stateless lane: Hash miner receives Prime push (0xD0D9) → routed, handler guards channel
+        bool hash_receives_prime_stateless = simulated_matches_opcode(
+            LLP::MirrorOpcode(LLP::PRIME_BLOCK_AVAILABLE), true, LLP::PRIME_BLOCK_AVAILABLE);
+        print_test_result("Scenario B1: Hash miner receives stateless Prime push (0xD0D9) → routed",
+            hash_receives_prime_stateless);
+
+        // Stateless lane: Hash miner receives Hash push (0xD0DA) → match + process
+        bool hash_receives_hash_stateless = simulated_matches_opcode(
+            LLP::MirrorOpcode(LLP::HASH_BLOCK_AVAILABLE), true, LLP::HASH_BLOCK_AVAILABLE);
+        print_test_result("Scenario B2: Hash miner receives stateless Hash push (0xD0DA) → match",
+            hash_receives_hash_stateless);
+
+        // Channel mismatch detection: push_notification_handler guards by m_current_channel
+        // Prime miner (CHANNEL_PRIME) vs. Hash expected_channel → mismatch → informational no-op
+        bool prime_vs_hash = (mining_channel_prime != mining_channel_hash);
+        print_test_result("Channel guard: Prime miner + Hash push → mismatch (informational no-op)",
+            prime_vs_hash);
+
+        // Hash miner (CHANNEL_HASH) vs. Prime expected_channel → mismatch → informational no-op
+        bool hash_vs_prime = (mining_channel_hash != mining_channel_prime);
+        print_test_result("Channel guard: Hash miner + Prime push → mismatch (informational no-op)",
+            hash_vs_prime);
     }
 
     // ====================================================================

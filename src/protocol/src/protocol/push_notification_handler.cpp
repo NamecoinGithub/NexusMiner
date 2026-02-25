@@ -37,15 +37,17 @@ void PushNotificationHandler::handle_push_notification(
         m_logger->info("[Solo Push] ✉️  {}_BLOCK_AVAILABLE received", ch_name);
     }
 
-    /* Validate channel (should only receive if mining the matching channel) */
+    /* Validate channel — since node now broadcasts BOTH channels on every push update,
+     * receiving a push for the non-subscribed channel is expected and informational.
+     * Treat it as a no-op: update push-received timestamp (done by caller) but do not
+     * refresh the template or stop workers. */
     if (m_current_channel != expected_channel)
     {
-        m_logger->error("[Solo Push] ❌ Received {}_BLOCK_AVAILABLE but mining {} channel!",
+        m_logger->info("[Solo Push] ℹ️  {} push received on {} lane (mining {} channel) — informational only, ignoring",
                        ch_name,
+                       (lane == ProtocolLane::STATELESS) ? "stateless" : "legacy",
                        (m_current_channel == mining::CHANNEL_PRIME) ? "Prime" :
                        (m_current_channel == mining::CHANNEL_HASH)  ? "Hash"  : "Unknown");
-        if (lane == ProtocolLane::LEGACY)
-            m_logger->error("[Solo Push]    This should never happen (node filters by channel)");
         return;
     }
 
