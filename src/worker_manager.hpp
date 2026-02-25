@@ -56,7 +56,13 @@ private:
     
     // Worker control methods for degraded mode
     void stop_all_workers();
-    void retry_template_request();
+    /**
+     * @param bForce When true, bypasses the was_push_received_recently() guard.
+     *               Pass true from staleness recovery paths where the template
+     *               has already been discarded and workers stopped.
+     *               Pass false (default) from the periodic health-check timer.
+     */
+    void retry_template_request(bool bForce = false);
 
     void retry_connect(network::Endpoint const& wallet_endpoint);
     void retry_secondary_connect(network::Endpoint const& secondary_endpoint);
