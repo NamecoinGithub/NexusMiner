@@ -477,10 +477,24 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
     global_stats.m_connection_retries = 1;
     m_stats_collector->update_global_stats(global_stats);
 
-    // retry connect
-    auto const connection_retry_interval = m_config.get_connection_retry_interval();
-    m_logger->info("Connection retry {} seconds", connection_retry_interval);
-    m_timer_manager.start_connection_retry_timer(connection_retry_interval, shared_from_this(), wallet_endpoint);
+    ++m_connection_retry_count;
+
+    // Exponential backoff: start at the configured interval, double each failure, cap at 60s
+    constexpr uint32_t MAX_RETRY_DELAY_SECONDS = 60;
+    auto const base_delay = static_cast<uint32_t>(m_config.get_connection_retry_interval());
+    if (m_current_retry_delay_seconds == 0)
+        m_current_retry_delay_seconds = base_delay;
+    else
+        m_current_retry_delay_seconds = std::min(m_current_retry_delay_seconds * 2, MAX_RETRY_DELAY_SECONDS);
+
+    if (m_connection_retry_count > 10)
+        m_logger->error("Connection retry #{} - {} consecutive failures", 
+                        m_connection_retry_count, m_connection_retry_count);
+    else
+        m_logger->info("Connection retry {} seconds (attempt #{})", 
+                       m_current_retry_delay_seconds, m_connection_retry_count);
+
+    m_timer_manager.start_connection_retry_timer(m_current_retry_delay_seconds, shared_from_this(), wallet_endpoint);
 }
 
 bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
@@ -546,6 +560,10 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                 self->m_logger->info("[Solo] Local endpoint: {}:{}", local_addr, actual_local_port);
                 self->m_logger->debug("[Solo] Port Validation: Connection established on LLP port {}", 
                     actual_remote_port);
+
+                // Reset exponential backoff state on successful TCP connection
+                self->m_connection_retry_count = 0;
+                self->m_current_retry_delay_seconds = 0;
 
                 // login
                 if (auto solo_protocol = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol))
@@ -694,7 +712,7 @@ void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
         }
         else if (parse_result == ParseResult::MALFORMED)
         {
-            // Malformed packet - log loudly and disconnect
+            // Malformed packet - log loudly
             m_logger->error("[RX] ========================================");
             m_logger->error("[RX] MALFORMED PACKET DETECTED!");
             m_logger->error("[RX] ========================================");
@@ -720,7 +738,45 @@ void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
                 }
                 m_logger->error("[RX] First {} bytes: {}", bytes_to_log, hex_dump.str());
             }
-            
+
+            // Recovery: check if this looks like a zero-payload BLOCK_DATA from the node
+            // (node bug: sends truncated/broken BLOCK_DATA when get_block() fails internally).
+            // Pattern: all-zero bytes in accumulator = likely null/empty template response.
+            bool is_recoverable = false;
+            if (!m_rx_accumulator.empty() && m_rx_accumulator.size() <= 8)
+            {
+                bool all_zeros = true;
+                for (auto b : m_rx_accumulator)
+                    if (b != 0) { all_zeros = false; break; }
+                if (all_zeros)
+                    is_recoverable = true;
+            }
+
+            m_rx_accumulator.clear();
+
+            if (is_recoverable)
+            {
+                m_logger->warn("[RX] All-zero malformed bytes — likely node sent empty/null BLOCK_DATA response");
+                m_logger->warn("[RX] Attempting recovery: requesting new template without disconnecting");
+                // Request a fresh template via the protocol layer instead of disconnecting
+                if (auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get()))
+                {
+                    if (lane == ProtocolLane::STATELESS)
+                    {
+                        auto ready_payload = solo_protocol->send_miner_ready();
+                        if (ready_payload && !ready_payload->empty())
+                            m_connection->transmit(ready_payload);
+                    }
+                    else
+                    {
+                        auto work_payload = solo_protocol->get_work();
+                        if (work_payload && !work_payload->empty())
+                            m_connection->transmit(work_payload);
+                    }
+                }
+                break;
+            }
+
             m_logger->error("[RX] DISCONNECTING due to malformed packet");
             m_logger->error("[RX] ========================================");
             
@@ -730,8 +786,6 @@ void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
                 m_connection->close();
             }
             
-            // Clear accumulator
-            m_rx_accumulator.clear();
             return;
         }
         else // ParseResult::SUCCESS

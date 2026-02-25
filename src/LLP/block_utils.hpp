@@ -156,6 +156,22 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         offset += 8;
         return value;
     };
+
+    // Helper to read little-endian uint64 (used for nNonce — Nexus node writes nNonce as LE)
+    auto read_u64_le = [&]() -> std::uint64_t {
+        require(8);
+        std::uint64_t value =
+            static_cast<std::uint64_t>(data[offset]) |
+            (static_cast<std::uint64_t>(data[offset + 1]) << 8) |
+            (static_cast<std::uint64_t>(data[offset + 2]) << 16) |
+            (static_cast<std::uint64_t>(data[offset + 3]) << 24) |
+            (static_cast<std::uint64_t>(data[offset + 4]) << 32) |
+            (static_cast<std::uint64_t>(data[offset + 5]) << 40) |
+            (static_cast<std::uint64_t>(data[offset + 6]) << 48) |
+            (static_cast<std::uint64_t>(data[offset + 7]) << 56);
+        offset += 8;
+        return value;
+    };
     
     // Helper to read fixed-size byte array (for hash fields)
     auto read_bytes = [&](std::size_t n) -> std::vector<std::uint8_t> {
@@ -255,10 +271,10 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
             data[bits_offset + 2], data[bits_offset + 3],
             block.nBits);
         
-        // ✅ 7. nNonce (8 bytes, calculated offset: 204+4=208) - FIXED TO 8 BYTES!
+        // ✅ 7. nNonce (8 bytes, calculated offset: 204+4=208) - little-endian (Nexus node writes nNonce as LE)
         size_t nonce_offset = offset;
-        block.nNonce = read_u64();
-        // Log all 8 bytes of nNonce (already validated by read_u64)
+        block.nNonce = read_u64_le();
+        // Log all 8 bytes of nNonce (already validated by read_u64_le)
         std::ostringstream nonce_hex;
         nonce_hex << std::hex << std::setfill('0');
         for (size_t i = 0; i < 8; ++i) {
@@ -374,9 +390,9 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
             data[bits_offset + 2], data[bits_offset + 3],
             block.nBits);
         
-        // 7. nNonce (8 bytes, calculated offset: 204+4=208)
+        // 7. nNonce (8 bytes, calculated offset: 204+4=208) - little-endian (Nexus node writes nNonce as LE)
         size_t nonce_offset = offset;
-        block.nNonce = read_u64();
+        block.nNonce = read_u64_le();
         logger->info("[Deserialize] Bytes {}-{} (nNonce): ", nonce_offset, nonce_offset + 7);
         std::ostringstream nonce_hex;
         nonce_hex << std::hex << std::setfill('0');
@@ -493,9 +509,9 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
             data[bits_offset + 2], data[bits_offset + 3],
             block.nBits);
         
-        // 7. nNonce (8 bytes, big-endian)
+        // 7. nNonce (8 bytes, little-endian — Nexus node writes nNonce as LE)
         size_t nonce_offset = offset;
-        block.nNonce = read_u64();
+        block.nNonce = read_u64_le();
         std::ostringstream nonce_hex;
         nonce_hex << std::hex << std::setfill('0');
         for (size_t i = 0; i < 8 && (nonce_offset + i) < data.size(); ++i) {
@@ -566,6 +582,18 @@ inline std::vector<std::uint8_t> serialize_full_block(::LLP::CBlock const& block
         data.push_back((value >> 8) & 0xFF);
         data.push_back(value & 0xFF);
     };
+
+    // Helper to write little-endian uint64 (used for nNonce — Nexus node reads nNonce as LE)
+    auto write_u64_le = [&](std::uint64_t value) {
+        data.push_back(value & 0xFF);
+        data.push_back((value >> 8) & 0xFF);
+        data.push_back((value >> 16) & 0xFF);
+        data.push_back((value >> 24) & 0xFF);
+        data.push_back((value >> 32) & 0xFF);
+        data.push_back((value >> 40) & 0xFF);
+        data.push_back((value >> 48) & 0xFF);
+        data.push_back((value >> 56) & 0xFF);
+    };
     
     if (is_tritium) {
         // Tritium block format (216 bytes) - CORRECTED ORDER
@@ -594,8 +622,8 @@ inline std::vector<std::uint8_t> serialize_full_block(::LLP::CBlock const& block
         // ✅ 6. nBits (4 bytes at offset 204) - THEN THIS!
         write_u32(block.nBits);
         
-        // ✅ 7. nNonce (8 bytes at offset 208) - FIXED TO 8 BYTES!
-        write_u64(block.nNonce);
+        // ✅ 7. nNonce (8 bytes at offset 208) - little-endian (Nexus node reads nNonce as LE)
+        write_u64_le(block.nNonce);
         
     } else {
         // Legacy block format (220 bytes)
@@ -621,8 +649,8 @@ inline std::vector<std::uint8_t> serialize_full_block(::LLP::CBlock const& block
         // 6. nBits (4 bytes)
         write_u32(block.nBits);
         
-        // 7. nNonce (8 bytes)
-        write_u64(block.nNonce);
+        // 7. nNonce (8 bytes) - little-endian (Nexus node reads nNonce as LE)
+        write_u64_le(block.nNonce);
         
         // 8. nTime (4 bytes)
         write_u32(block.nTime);
