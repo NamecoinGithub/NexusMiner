@@ -202,8 +202,10 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
         return network::Shared_payload{};
     }
 
+    // v2 keepalive payload: [session_id(4 LE)][miner_prevblock_suffix(4 raw bytes)]
     std::vector<uint8_t> payload;
     append_uint32_le(payload, m_session.session_id);
+    payload.insert(payload.end(), m_prevblock_suffix.begin(), m_prevblock_suffix.end());
 
     // Build lane-aware packet based on protocol lane
     // On stateless lane, use mirror-mapped SESSION_KEEPALIVE (0xD0D4)
@@ -305,6 +307,13 @@ std::chrono::seconds SessionManager::get_time_until_keepalive() const
     auto remaining = interval_seconds - elapsed;
     
     return std::max(remaining, std::chrono::seconds(0));
+}
+
+void SessionManager::set_prevblock_suffix(const std::array<uint8_t, 4>& suffix)
+{
+    m_prevblock_suffix = suffix;
+    m_logger->debug("[SessionManager] prevblock_suffix updated: {:02x}{:02x}{:02x}{:02x}",
+                   suffix[0], suffix[1], suffix[2], suffix[3]);
 }
 
 void SessionManager::set_keepalive_interval(uint16_t hours)

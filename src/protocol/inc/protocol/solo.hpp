@@ -8,6 +8,7 @@
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/height_tracker.hpp"
+#include "protocol/keepalive_telemetry.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "spdlog/spdlog.h"
@@ -126,6 +127,10 @@ public:
     
     // Check if keep-alive ping is due
     bool is_keepalive_due() const;
+
+    // KEEPALIVE v2 telemetry: returns the latest snapshot received from the node.
+    // Returns an invalid (valid==false) snapshot if no v2 reply has been received yet.
+    KeepaliveTelemetrySnapshot get_keepalive_telemetry() const { return m_keepalive_telemetry.get(); }
 
     // SessionManager keepalive needs connection context
     void set_connection(std::shared_ptr<network::Connection> connection);
@@ -290,6 +295,9 @@ private:
     
     // Session manager for adaptive cache management
     std::shared_ptr<SessionManager> m_session_manager;
+
+    // KEEPALIVE v2 telemetry snapshot (thread-safe store, updated in SESSION_KEEPALIVE handler)
+    KeepaliveTelemetryStore m_keepalive_telemetry;
     
     // Mining Template Interface for unified READ/FEED operations
     std::unique_ptr<MiningTemplateInterface> m_template_interface;
