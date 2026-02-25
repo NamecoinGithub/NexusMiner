@@ -144,6 +144,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     m_logger->info("[Worker_manager] ✅ RECOVERY: Valid template received!");
                     m_logger->info("[Worker_manager]    Clearing degraded mode");
                     m_logger->info("[Worker_manager]    Resuming normal mining operations");
+                    m_logger->info("[Worker_manager] ⬇  DEGRADED MODE EXITED — mining resumed at height {} (channel {})",
+                                  block.nHeight, block.nChannel);
                     m_degraded_mode = false;
                     
                     // Update stats to reflect recovery
@@ -1203,6 +1205,7 @@ void Worker_manager::stop_all_workers()
     
     m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
     m_logger->warn("[Worker_manager] Workers will idle until recovery");
+    m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK + MINER_READY");
 }
 
 void Worker_manager::retry_template_request(bool bForce)
@@ -1253,10 +1256,25 @@ void Worker_manager::retry_template_request(bool bForce)
             m_connection->transmit(work_payload);
         } else {
             // Could be rate limited — not an error
-            m_logger->debug("[Worker_manager] GET_BLOCK skipped (rate limited or not ready)");
+            m_logger->warn("[Worker_manager]   GET_BLOCK suppressed (rate-limited or not authenticated) — recovery may be delayed");
         }
     } else if (lane == ProtocolLane::STATELESS) {
-        // Stateless lane: Re-send STATELESS_MINER_READY
+        // Stateless lane: Send GET_BLOCK first to actively request a template, then
+        // re-send MINER_READY to re-subscribe to future push notifications.
+        // Sending only MINER_READY is insufficient: the node may not push again until
+        // the next block, leaving the miner permanently in "WAITING FOR VALID TEMPLATE".
+        m_logger->info("[Worker_manager] → Sending GET_BLOCK request (stateless 0xD081)");
+        // Use get_work_immediate() on forced recovery to bypass the miner-side 1s rate limiter.
+        // The node enforces its own 6s minimum between GET_BLOCK responses (production) but
+        // provides a one-shot bypass (LLL-TAO PR #283) for the first request after a push,
+        // so forced recovery is served immediately without triggering node-side bans.
+        auto work_payload = bForce ? solo_protocol->get_work_immediate() : solo_protocol->get_work();
+        if (work_payload && !work_payload->empty()) {
+            m_connection->transmit(work_payload);
+        } else {
+            m_logger->warn("[Worker_manager]   GET_BLOCK suppressed (rate-limited or not authenticated) — falling back to MINER_READY only");
+        }
+        // Also re-subscribe to push notifications so the miner receives future pushes.
         m_logger->info("[Worker_manager] → Re-sending STATELESS_MINER_READY");
         auto miner_ready_payload = solo_protocol->send_miner_ready();
         if (miner_ready_payload && !miner_ready_payload->empty()) {
@@ -1280,6 +1298,15 @@ void Worker_manager::check_template_health()
     }
     
     if (!template_interface->has_valid_template()) {
+        // In degraded mode with no valid template — retry recovery to prevent permanent lockout.
+        // This handles the case where a previous recovery attempt (GET_BLOCK + MINER_READY) did
+        // not produce a template (e.g. node rate-limited the request or connection was briefly lost).
+        // Rate is naturally capped by the TEMPLATE_HEALTH_INTERVAL timer (30s), so retries fire
+        // at most once per 30s.  The node-side 6-second guard handles any per-request rate control.
+        if (m_degraded_mode) {
+            m_logger->warn("[Worker_manager] ⚠️  DEGRADED MODE: no valid template — retrying recovery request");
+            retry_template_request(true);
+        }
         return;
     }
     
