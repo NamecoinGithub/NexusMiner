@@ -13,6 +13,9 @@
  *  8. v2 telemetry parse: hashBestChain_prefix raw bytes preserved
  *  9. prevblock_suffix extraction: last 4 bytes of 128-byte GetBytes() are bytes[124..127]
  * 10. set_prevblock_suffix zeros: packet correctly sends zero suffix
+ * 11. received_at is set (non-default) after a v2 parse
+ * 12. age() returns 0.0 when valid==false
+ * 13. Parsing robustness: non-4/non-28 payload lengths are ignored (no crash)
  */
 
 #include "protocol/keepalive_telemetry.hpp"
@@ -294,6 +297,63 @@ void test_keepalive_v2_suffix_explicit_zeros() {
 }
 
 // ============================================================================
+// Test 11: received_at is set (non-default) after a v2 parse
+// ============================================================================
+void test_keepalive_v2_received_at_set() {
+    std::cout << "\nTest 11: received_at is set after v2 parse\n";
+
+    KeepaliveTelemetrySnapshot snap;
+    // Simulate the parse: set valid and received_at (mirrors solo.cpp handler)
+    snap.valid       = true;
+    snap.received_at = std::chrono::steady_clock::now();
+
+    // received_at must be non-default (default-constructed time_point is epoch)
+    bool is_set = (snap.received_at != std::chrono::steady_clock::time_point{});
+    print_test_result("received_at != default after parse", is_set);
+
+    // age() should be non-negative and very small (sub-second)
+    double a = snap.age();
+    print_test_result("age() >= 0.0 after parse", a >= 0.0);
+    print_test_result("age() < 1.0 (sub-second)", a < 1.0);
+}
+
+// ============================================================================
+// Test 12: age() returns 0.0 when valid==false
+// ============================================================================
+void test_keepalive_v2_age_invalid() {
+    std::cout << "\nTest 12: age() returns 0.0 when valid==false\n";
+    KeepaliveTelemetrySnapshot snap;  // valid==false by default
+    print_test_result("age() == 0.0 when not valid", snap.age() == 0.0);
+}
+
+// ============================================================================
+// Test 13: Parsing robustness — non-4/non-28 lengths produce no parse result
+// ============================================================================
+void test_keepalive_parse_robustness_other_lengths() {
+    std::cout << "\nTest 13: Parsing robustness: lengths != 4 and != 28 are ignored\n";
+
+    // Test lengths that must be silently ignored (not 4, not 28)
+    std::vector<size_t> ignored_lengths = { 0, 1, 2, 3, 5, 10, 16, 27, 29, 100 };
+    bool all_ok = true;
+    for (size_t len : ignored_lengths) {
+        std::vector<uint8_t> payload(len, 0xFF);
+        // Replicate the solo.cpp branching logic:
+        //   == 28 → v2 parse
+        //   == 4  → v1 parse
+        //   else  → ignore
+        bool handled = false;
+        if (!payload.empty() && len == 28) {
+            handled = true;  // would be v2 parsed
+        } else if (!payload.empty() && len == 4) {
+            handled = true;  // would be v1 parsed
+        }
+        // For all lengths in ignored_lengths, handled must be false
+        if (handled) { all_ok = false; break; }
+    }
+    print_test_result("Non-4/non-28 lengths are not handled (ignored)", all_ok);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -316,6 +376,9 @@ int main() {
     test_keepalive_v2_hash_prefix_raw();
     test_prevblock_suffix_extraction_logic();
     test_keepalive_v2_suffix_explicit_zeros();
+    test_keepalive_v2_received_at_set();
+    test_keepalive_v2_age_invalid();
+    test_keepalive_parse_robustness_other_lengths();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

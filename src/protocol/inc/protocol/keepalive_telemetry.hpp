@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <array>
+#include <chrono>
 #include <mutex>
 
 namespace nexusminer {
@@ -32,6 +33,15 @@ struct KeepaliveTelemetrySnapshot {
     uint32_t nBits{0};
     std::array<uint8_t, 4> hashBestChain_prefix{};  ///< First 4 bytes of node hashBestChain (raw bytes)
     bool valid{false};  ///< True once a v2 reply has been parsed at least once
+    std::chrono::steady_clock::time_point received_at{};  ///< Time when this snapshot was parsed
+
+    /// Return seconds elapsed since this snapshot was received.
+    /// Returns 0.0 if the snapshot has not yet been populated (valid == false).
+    double age() const {
+        if (!valid) return 0.0;
+        auto elapsed = std::chrono::steady_clock::now() - received_at;
+        return std::chrono::duration<double>(elapsed).count();
+    }
 };
 
 /**
