@@ -63,3 +63,13 @@ target_include_directories(phase2b_update_height_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/LLP
     ${CMAKE_SOURCE_DIR}/src
 )
+
+# KEEPALIVE v2 miner-side unit tests
+add_executable(keepalive_v2_test keepalive_v2_test.cpp)
+target_link_libraries(keepalive_v2_test PRIVATE protocol LLP spdlog)
+target_include_directories(keepalive_v2_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src
+)

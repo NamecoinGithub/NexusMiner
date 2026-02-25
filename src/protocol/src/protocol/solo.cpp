@@ -93,6 +93,17 @@ static uint32_t read_uint32_le(const std::vector<uint8_t>& src, size_t offset = 
            (static_cast<uint32_t>(src[offset + 3]) << 24);
 }
 
+// Helper function to parse uint32 from big-endian bytes
+static uint32_t read_uint32_be(const std::vector<uint8_t>& src, size_t offset = 0) {
+    if (src.size() < offset + 4) {
+        return 0;
+    }
+    return (static_cast<uint32_t>(src[offset]) << 24) |
+           (static_cast<uint32_t>(src[offset + 1]) << 16) |
+           (static_cast<uint32_t>(src[offset + 2]) << 8) |
+           static_cast<uint32_t>(src[offset + 3]);
+}
+
 // Helper function to serialize uint16 to little-endian bytes  
 static void append_uint16_le(std::vector<uint8_t>& dest, uint16_t value) {
     dest.push_back(value & 0xFF);
@@ -1269,6 +1280,20 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->info("[TEMPLATE ANCHOR] block.nHeight = {} (unified blockchain height)", tmpl->block.nHeight);
             }
 
+            // Update keepalive v2 suffix: last 4 bytes of hashPrevBlock (bytes[124..127] of GetBytes()).
+            // This suffix is appended to every outgoing SESSION_KEEPALIVE so the node can detect
+            // whether the miner is anchored to the current chain tip.
+            if (m_session_manager) {
+                auto prev_bytes = tmpl->block.hashPrevBlock.GetBytes();
+                std::array<uint8_t, 4> suffix{};
+                if (prev_bytes.size() >= 128) {
+                    suffix = { prev_bytes[124], prev_bytes[125], prev_bytes[126], prev_bytes[127] };
+                }
+                m_session_manager->set_prevblock_suffix(suffix);
+                m_logger->debug("[Solo Keepalive v2] prevblock_suffix set to {:02x}{:02x}{:02x}{:02x}",
+                               suffix[0], suffix[1], suffix[2], suffix[3]);
+            }
+
             // Snapshot current channel height for legacy GET_ROUND delta staleness
             if (m_last_round_status.has_channel_heights) {
                 uint32_t snapshot_height = m_last_round_status.get_channel_height(m_channel);
@@ -2391,16 +2416,54 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     }
     else if (matches_opcode(Packet::SESSION_KEEPALIVE))
     {
-        // LLL-TAO PR #22: Handle SESSION_KEEPALIVE response
-        m_logger->debug("[Solo Session] Received SESSION_KEEPALIVE response");
-        
-        if (packet.m_data && packet.m_length >= 4) {
-            // Parse remaining timeout (4 bytes, little-endian per LLL-TAO)
+        // KEEPALIVE receive handler: branch by payload length
+        //   4 bytes  → v1 reply (remaining session timeout, little-endian)
+        //   28 bytes → v2 telemetry reply from node (see KeepaliveTelemetrySnapshot)
+        m_logger->debug("[Solo Session] Received SESSION_KEEPALIVE response ({} bytes)", packet.m_length);
+
+        if (packet.m_data && packet.m_length == 28) {
+            // ── KEEPALIVE v2: parse 28-byte telemetry from node ──────────────────
+            // [0..3]   session_id           (u32 LE)
+            // [4..7]   unified_height       (u32 BE)
+            // [8..11]  prime_height         (u32 BE)
+            // [12..15] hash_height          (u32 BE)
+            // [16..19] stake_height         (u32 BE)
+            // [20..23] nBits                (u32 BE)
+            // [24..27] hashBestChain_prefix (4 raw bytes, first 4 bytes of hashBestChain)
+            const auto& d = *packet.m_data;
+
+            KeepaliveTelemetrySnapshot snap;
+            snap.session_id      = read_uint32_le(d, 0);
+            snap.unified_height  = read_uint32_be(d, 4);
+            snap.prime_height    = read_uint32_be(d, 8);
+            snap.hash_height     = read_uint32_be(d, 12);
+            snap.stake_height    = read_uint32_be(d, 16);
+            snap.nBits           = read_uint32_be(d, 20);
+            snap.hashBestChain_prefix = { d[24], d[25], d[26], d[27] };
+            snap.valid = true;
+
+            m_keepalive_telemetry.update(snap);
+
+            m_logger->info("[Solo Keepalive v2] Telemetry received:"
+                           " session=0x{:08x}"
+                           " unified={} prime={} hash={} stake={}"
+                           " nBits=0x{:08x}"
+                           " bestChain_prefix={:02x}{:02x}{:02x}{:02x}",
+                snap.session_id,
+                snap.unified_height, snap.prime_height,
+                snap.hash_height, snap.stake_height,
+                snap.nBits,
+                snap.hashBestChain_prefix[0], snap.hashBestChain_prefix[1],
+                snap.hashBestChain_prefix[2], snap.hashBestChain_prefix[3]);
+
+            if (m_session_manager) {
+                m_session_manager->record_keepalive();
+            }
+        } else if (packet.m_data && packet.m_length >= 4) {
+            // ── KEEPALIVE v1: remaining timeout (4 bytes LE) ─────────────────────
             uint32_t remaining_timeout = read_uint32_le(*packet.m_data);
-            
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
-            
-            // Record keepalive in session manager
+
             if (m_session_manager) {
                 m_session_manager->record_keepalive();
             }
