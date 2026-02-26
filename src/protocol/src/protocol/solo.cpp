@@ -2681,7 +2681,19 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         uint32_t unified_height = bytes2uint(*packet.m_data, 0);
         uint32_t channel_height = bytes2uint(*packet.m_data, 4);
         uint32_t difficulty = bytes2uint(*packet.m_data, 8);
-        
+
+        // Immediately update HeightTracker with the channel target derived from metadata.
+        // channel_height is the node's current channel tip; the template targets the NEXT block.
+        // This direct call ensures channel_target is always set in push-only mode (no GET_ROUND),
+        // without depending on set_channel_height() which has guards that may skip the update.
+        // genesis (channel_height == 0) is excluded intentionally — consistent with the
+        // existing set_channel_height() guard that also skips the zero case.
+        if (channel_height > 0) {
+            m_height_tracker.OnTemplateReceived(m_channel, channel_height + 1);
+            m_logger->info("[Solo Stateless] HeightTracker: channel_target set to {} (node channel_height={})",
+                channel_height + 1, channel_height);
+        }
+
         m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
         m_logger->info("[Solo Stateless] 📦 PARSED TEMPLATE METADATA");
         m_logger->info("[Solo Stateless]   Unified height: {} (0x{:08x})", unified_height, unified_height);
