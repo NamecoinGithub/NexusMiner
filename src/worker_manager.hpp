@@ -116,6 +116,18 @@ private:
     // recovery epoch.  Used to rate-limit health-monitor resends to one per
     // RECOVERY_RESEND_INTERVAL (10 s) without stopping workers each time.
     std::chrono::steady_clock::time_point m_recovery_last_get_block_sent_at{};
+
+    // Time of the most recent GET_BLOCK that was CONFIRMED transmitted (payload was
+    // non-null and non-empty, and transmit() was called).  Unlike the legacy
+    // m_recovery_last_get_block_sent_at, this is never updated for rate-limited attempts.
+    // Used as the authoritative rate-cap reference in check_template_health().
+    std::chrono::steady_clock::time_point m_recovery_last_get_block_transmitted_at{};
+
+    // True once at least one GET_BLOCK has been CONFIRMED transmitted in the current
+    // recovery epoch.  Reset to false at the start of each new recovery epoch.
+    // Used by check_template_health() to detect the doom-loop symptom where every
+    // GET_BLOCK attempt is rate-limited and the node never receives the request.
+    bool m_recovery_get_block_transmitted{false};
     
     // Persistent receive accumulator for TCP stream reassembly
     // Using deque for O(1) front removal when consuming packets
