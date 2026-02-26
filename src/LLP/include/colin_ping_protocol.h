@@ -22,18 +22,49 @@ ________________________________________________________________________________
 namespace LLP
 {
 
+    //=========================================================================
+    // UN-MIRRORED STATELESS-ONLY OPCODES
+    // These DO NOT follow the 0xD000|legacy mirror formula.
+    // They are STATELESS PORT ONLY — never valid on legacy port.
+    // ALL carry DATA payloads — never header-only.
+    //=========================================================================
+
+    /** KeepAlive V2 — stateless-only session keepalive with data payload **/
+    namespace KeepAliveV2Opcodes
+    {
+        /** KEEPALIVE_V2 (0xD100)
+         *
+         *  Sent by miner → node to keep authenticated stateless session alive.
+         *  DATA-bearing: 8-byte payload (big-endian):
+         *    [0-3]  uint32_t  sequence     Monotonic keepalive counter
+         *    [4-7]  uint32_t  timestamp_s  Unix time at miner send (seconds)
+         *
+         *  NOT a mirror of legacy PING (0xFD). Completely independent opcode.
+         *  Legacy port: use bare PING (0xFD, header-only).
+         **/
+        static constexpr uint16_t KEEPALIVE_V2     = 0xD100;
+
+        /** KEEPALIVE_V2_ACK (0xD101)
+         *
+         *  Sent by node → miner in response to KEEPALIVE_V2.
+         *  DATA-bearing: 8-byte payload (echo of miner's sequence + timestamp).
+         **/
+        static constexpr uint16_t KEEPALIVE_V2_ACK = 0xD101;
+
+        /** Exact payload size for both KEEPALIVE_V2 and KEEPALIVE_V2_ACK **/
+        static constexpr uint32_t PAYLOAD_SIZE = 8;
+    }
+
     /** Colin AI Diagnostic PING/PONG Opcodes
      *
      *  Piggybacked on every 60-second Colin Agent emit_report() cycle.
      *  Node sends PingFrame → Miner replies with PongFrame immediately.
      *
-     *  Stateless lane (16-bit):
+     *  Stateless lane (16-bit) ONLY:
      *    PING_DIAG: 0xD0E0
      *    PONG_DIAG: 0xD0E1
      *
-     *  Legacy lane (8-bit):
-     *    PING_DIAG: 0xE0
-     *    PONG_DIAG: 0xE1
+     *  NOT mirrored from any legacy opcode. Stateless port only.
      **/
     namespace ColinDiagOpcodes
     {
@@ -41,6 +72,13 @@ namespace LLP
         static constexpr uint16_t PONG_DIAG_STATELESS = 0xD0E1;
         static constexpr uint16_t PING_DIAG_LEGACY    = 0x00E0;
         static constexpr uint16_t PONG_DIAG_LEGACY    = 0x00E1;
+
+        /** Canonical stateless-only names (un-mirrored, data-bearing) **/
+        static constexpr uint16_t PING_DIAG  = PING_DIAG_STATELESS;  // 0xD0E0
+        static constexpr uint16_t PONG_DIAG  = PONG_DIAG_STATELESS;  // 0xD0E1
+
+        /** Exact payload size for both PING_DIAG and PONG_DIAG **/
+        static constexpr uint32_t PAYLOAD_SIZE = 64;
     }
 
     /** Wire frame size — both PingFrame and PongFrame are exactly 64 bytes on the wire. **/
@@ -261,6 +299,100 @@ namespace LLP
 
             assert(v.size() == COLIN_FRAME_SIZE);
             return v;
+        }
+    };
+
+    //=========================================================================
+    // OPCODE CLASSIFICATION HELPERS (miner side)
+    //=========================================================================
+
+    /** IsUnmirroredDataOpcode
+     *
+     *  Returns true if the 16-bit opcode is one of the un-mirrored,
+     *  stateless-only, DATA-bearing opcodes.
+     *
+     *  These must NEVER be received or sent on the legacy lane.
+     *
+     **/
+    inline bool IsUnmirroredDataOpcode(uint16_t opcode)
+    {
+        return opcode == KeepAliveV2Opcodes::KEEPALIVE_V2
+            || opcode == KeepAliveV2Opcodes::KEEPALIVE_V2_ACK
+            || opcode == ColinDiagOpcodes::PING_DIAG
+            || opcode == ColinDiagOpcodes::PONG_DIAG;
+    }
+
+    /** GetExpectedPayloadSize
+     *
+     *  Returns the required exact payload length (bytes) for fixed-size opcodes.
+     *  Returns 0 for variable-length or header-only opcodes.
+     *
+     **/
+    inline uint32_t GetExpectedPayloadSize(uint16_t opcode)
+    {
+        if(opcode == KeepAliveV2Opcodes::KEEPALIVE_V2
+        || opcode == KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
+            return KeepAliveV2Opcodes::PAYLOAD_SIZE;   // 8
+
+        if(opcode == ColinDiagOpcodes::PING_DIAG
+        || opcode == ColinDiagOpcodes::PONG_DIAG)
+            return ColinDiagOpcodes::PAYLOAD_SIZE;     // 64
+
+        return 0;  // variable or header-only
+    }
+
+    /** GetUnmirroredOpcodeName
+     *
+     *  Human-readable name for un-mirrored stateless opcodes (for debug logging).
+     *
+     **/
+    inline const char* GetUnmirroredOpcodeName(uint16_t opcode)
+    {
+        switch(opcode)
+        {
+            case KeepAliveV2Opcodes::KEEPALIVE_V2:      return "KEEPALIVE_V2";
+            case KeepAliveV2Opcodes::KEEPALIVE_V2_ACK:  return "KEEPALIVE_V2_ACK";
+            case ColinDiagOpcodes::PING_DIAG:            return "PING_DIAG";
+            case ColinDiagOpcodes::PONG_DIAG:            return "PONG_DIAG";
+            default:                                      return "UNKNOWN_UNMIRRORED";
+        }
+    }
+
+    //=========================================================================
+    // KeepAliveV2Frame — 8-byte payload for KEEPALIVE_V2 / KEEPALIVE_V2_ACK
+    //=========================================================================
+
+    /** KeepAliveV2Frame — 8-byte payload for KEEPALIVE_V2 / KEEPALIVE_V2_ACK **/
+    struct KeepAliveV2Frame
+    {
+        uint32_t sequence{0};
+        uint32_t timestamp_s{0};
+
+        /** Serialize — 8-byte big-endian wire format **/
+        std::vector<uint8_t> Serialize() const
+        {
+            std::vector<uint8_t> v;
+            v.reserve(8);
+            v.push_back((sequence    >> 24) & 0xFF);
+            v.push_back((sequence    >> 16) & 0xFF);
+            v.push_back((sequence    >>  8) & 0xFF);
+            v.push_back( sequence           & 0xFF);
+            v.push_back((timestamp_s >> 24) & 0xFF);
+            v.push_back((timestamp_s >> 16) & 0xFF);
+            v.push_back((timestamp_s >>  8) & 0xFF);
+            v.push_back( timestamp_s        & 0xFF);
+            return v;
+        }
+
+        /** Parse — deserialize 8-byte wire buffer **/
+        bool Parse(const std::vector<uint8_t>& data)
+        {
+            if(data.size() < 8) return false;
+            sequence    = (uint32_t(data[0])<<24)|(uint32_t(data[1])<<16)
+                        |(uint32_t(data[2])<<8)  | uint32_t(data[3]);
+            timestamp_s = (uint32_t(data[4])<<24)|(uint32_t(data[5])<<16)
+                        |(uint32_t(data[6])<<8)  | uint32_t(data[7]);
+            return true;
         }
     };
 
