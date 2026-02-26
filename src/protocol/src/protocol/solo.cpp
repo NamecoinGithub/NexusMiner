@@ -1224,11 +1224,29 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         if (connection) {
             source_endpoint = connection->remote_endpoint().to_string();
         }
-        
+
+        // Extract 12-byte metadata prefix (big-endian) and strip it before parsing
+        uint32_t nUnifiedHeight = 0, nChannelHeight = 0, nBitsMeta = 0;
+        {
+            const auto& d = *packet.m_data;
+            nUnifiedHeight = (uint32_t(d[0]) << 24) | (uint32_t(d[1]) << 16)
+                           | (uint32_t(d[2]) <<  8) |  uint32_t(d[3]);
+            nChannelHeight = (uint32_t(d[4]) << 24) | (uint32_t(d[5]) << 16)
+                           | (uint32_t(d[6]) <<  8) |  uint32_t(d[7]);
+            nBitsMeta      = (uint32_t(d[8]) << 24) | (uint32_t(d[9]) << 16)
+                           | (uint32_t(d[10]) << 8) |  uint32_t(d[11]);
+        }
+        m_logger->info("[Solo BLOCK_DATA] metadata prefix: nUnifiedHeight={} nChannelHeight={} nBits=0x{:08x}",
+                       nUnifiedHeight, nChannelHeight, nBitsMeta);
+
+        // Strip the 12-byte prefix; pass only the 216-byte Block::Serialize() output to read_template
+        auto block_serial = std::make_shared<network::Payload>(
+            packet.m_data->begin() + BLOCK_METADATA_PREFIX_SIZE, packet.m_data->end());
+
         if (m_template_interface) {
             m_logger->info("[Solo READ/FEED] Processing template via Mining Template Interface");
             
-            auto validation_result = m_template_interface->read_template(packet.m_data, source_endpoint);
+            auto validation_result = m_template_interface->read_template(block_serial, source_endpoint);
             
             if (!validation_result.is_valid) {
                 m_logger->error("[Solo READ] Template validation failed: {}", validation_result.error_message);
@@ -1256,10 +1274,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 return;
             }
             
-            // Update diagnostic height tracker (m_current_height is reference only;
-            // tmpl->block.nHeight is channel_target in stateless templates, not unified height).
-            // Use HeightTracker snapshot for the actual unified height.
-            m_current_height = m_height_tracker.GetSnapshot().unified_height;
+            // Update diagnostic height tracker; the metadata prefix gives us the authoritative
+            // unified height directly — no need to poll HeightTracker snapshot.
+            m_current_height = nUnifiedHeight;
 
             // Gap 1: Snapshot hashPrevBlock at template parse time (StakeMinter::hashLastBlock pattern).
             // A new template with a different hashPrevBlock signals that the chain tip has moved.

@@ -14,24 +14,27 @@ namespace network { class Connection; }
 namespace protocol
 {
 
-// Compact Block header layout (matching LLL-TAO BLOCK_DATA for stateless miner):
-//  - 0..3:   nVersion (4 bytes)
-//  - 4..35:  hashPrevBlock (32 bytes)
-//  - 36..67: hashMerkleRoot (32 bytes)
-//  - 68..71: nChannel (4)
-//  - 72..75: nHeight (4)
-//  - 76..79: nBits (4)
-//  - 80..87: nNonce (8)
-//  - 88..91: nTime (4)
-constexpr std::size_t MIN_BLOCK_HEADER_SIZE =
-      4  // nVersion
-    + 32 // hashPrevBlock
-    + 32 // hashMerkleRoot
-    + 4  // nChannel
-    + 4  // nHeight
-    + 4  // nBits
-    + 8  // nNonce
-    + 4; // nTime
+// Wire layout of BLOCK_DATA payload received from LLL-TAO node (228 bytes total):
+//
+// === 12-byte metadata prefix (big-endian) ===
+//  [0-3]    uint32_t  nUnifiedHeight   Node's unified block height
+//  [4-7]    uint32_t  nChannelHeight   Channel-specific height (for staleness detection)
+//  [8-11]   uint32_t  nBits            Target difficulty (= pBlock->nBits, echoed here for convenience)
+//
+// === 216-byte serialized Block (Block::Serialize(), Tritium format) ===
+//  [12-15]   uint32_t  nVersion          Block version
+//  [16-143]  uint8_t   hashPrevBlock[128] hashPrevBlock (uint1024_t, 128 bytes)
+//  [144-207] uint8_t   hashMerkleRoot[64] hashMerkleRoot (uint512_t, 64 bytes)
+//  [208-211] uint32_t  nChannel          Mining channel (1=Prime, 2=Hash)
+//  [212-215] uint32_t  nHeight           Block height (channel target: stateChannel.nChannelHeight + 1)
+//  [216-219] uint32_t  nBits             Packed difficulty target
+//  [220-227] uint64_t  nNonce            Proof-of-work nonce
+//
+// Note: nTime is NOT present in Block::Serialize() — Tritium blocks use network-consensus time.
+// Total BLOCK_DATA payload size: 228 bytes.
+static constexpr std::size_t BLOCK_METADATA_PREFIX_SIZE = 12;   // [nUnifiedHeight][nChannelHeight][nBits]
+static constexpr std::size_t BLOCK_SERIAL_SIZE          = 216;  // Block::Serialize() output
+static constexpr std::size_t MIN_BLOCK_HEADER_SIZE      = BLOCK_METADATA_PREFIX_SIZE + BLOCK_SERIAL_SIZE; // 228
 
 class Protocol {
 public:
