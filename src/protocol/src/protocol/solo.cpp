@@ -2499,6 +2499,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     } else {
                         m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
                     }
+                    // On stateless lane, also re-send MINER_READY to ensure push subscription
+                    // is maintained when requesting a fresh template (channel_advanced staleness).
+                    if (m_protocol_lane == ProtocolLane::STATELESS) {
+                        auto ready_payload = send_miner_ready();
+                        if (ready_payload && !ready_payload->empty()) {
+                            connection->transmit(ready_payload);
+                        }
+                    }
                 }
             });
     }
@@ -2522,6 +2530,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                         connection->transmit(work_payload);
                     } else {
                         m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
+                    }
+                    // On stateless lane, also re-send MINER_READY to ensure push subscription
+                    // is maintained when requesting a fresh template (channel_advanced staleness).
+                    if (m_protocol_lane == ProtocolLane::STATELESS) {
+                        auto ready_payload = send_miner_ready();
+                        if (ready_payload && !ready_payload->empty()) {
+                            connection->transmit(ready_payload);
+                        }
                     }
                 }
             });
