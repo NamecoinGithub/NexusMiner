@@ -2836,30 +2836,18 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             
             // Update diagnostic height reference (unified_height from packet metadata)
             m_current_height = unified_height;  // diagnostic only
-            
-            // Verify that block.nHeight (from 216-byte block bytes) matches the metadata unified_height.
-            // After the node fix, these should agree: block.nHeight == unified_height + 1.
-            // (metadata unified_height is tStateBest.nHeight; block.nHeight is the NEXT block height)
-            // We warn-and-continue (not abort) here because: the 216-byte block bytes contain the
-            // canonical ProofHash() inputs, so block.nHeight is always used as-is for submission.
-            // A mismatch simply indicates the node is running old firmware — the block is still valid
-            // for mining; ProofHash() correctness depends only on what's in block bytes, not metadata.
-            auto* tmpl = m_template_interface->get_current_template();
-            if (tmpl && unified_height > 0) {
-                uint32_t expected_block_height = unified_height + 1;
-                if (tmpl->block.nHeight != expected_block_height) {
-                    m_logger->warn("[Solo Stateless] ⚠️  Height mismatch: metadata unified_height+1={} but block.nHeight={}",
-                        expected_block_height, tmpl->block.nHeight);
-                    m_logger->warn("[Solo Stateless]   If node fix is applied, these should match.");
-                    m_logger->warn("[Solo Stateless]   Node may be running old firmware — continuing with block.nHeight as-is");
-                } else {
-                    m_logger->info("[Solo Stateless] ✅ Height verified: block.nHeight={} == metadata unified+1={} ✓",
-                        tmpl->block.nHeight, expected_block_height);
-                }
+
+            // HeightTracker: channel_height from metadata is the node tip (last mined block on this channel).
+            // The template targets the NEXT block → use channel_height + 1.
+            // This must be called immediately after read_template() succeeds; the metadata is already
+            // parsed above and does NOT require a GET_ROUND round-trip.
+            if (channel_height > 0) {
+                m_template_interface->set_channel_height(channel_height + 1);
+                m_logger->info("[Solo Stateless] ✓ HeightTracker updated: channel_height+1={} (node tip={}, template targets next block)",
+                    channel_height + 1, channel_height);
+            } else {
+                m_logger->warn("[Solo Stateless] ⚠️  channel_height==0 in metadata — skipping set_channel_height()");
             }
-            
-            // Set channel height as defensive secondary metadata (does NOT touch block.nHeight)
-            m_template_interface->set_channel_height(channel_height);
             
             // Stamp last-push-received time for push-cooldown guard in retry_template_request().
             // Allows the worker manager to skip GET_BLOCK polling while the node is pushing normally.
