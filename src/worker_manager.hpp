@@ -117,6 +117,18 @@ private:
     // RECOVERY_RESEND_INTERVAL (10 s) without stopping workers each time.
     std::chrono::steady_clock::time_point m_recovery_last_get_block_sent_at{};
 
+    // Time of the most recent GET_BLOCK that was CONFIRMED transmitted (payload was
+    // non-null and non-empty, and transmit() was called). Unlike
+    // m_recovery_last_get_block_sent_at, this is never updated for rate-limited attempts.
+    // Used as the authoritative rate-cap reference in check_template_health().
+    std::chrono::steady_clock::time_point m_recovery_last_get_block_transmitted_at{};
+
+    // True once at least one GET_BLOCK has been CONFIRMED transmitted in the current
+    // recovery epoch. Reset to false at the start of each new recovery epoch.
+    // Used by check_template_health() to detect the symptom where every GET_BLOCK
+    // attempt is rate-limited and the node never receives the request.
+    bool m_recovery_get_block_transmitted{false};
+
     // Time of the most recent escalation (epoch N → epoch N+1: stop workers + hard recovery).
     // Used to prevent re-escalation within MIN_ESCALATION_INTERVAL_SECONDS of the previous
     // escalation, giving the new GET_BLOCK time to be answered before workers are stopped again.
