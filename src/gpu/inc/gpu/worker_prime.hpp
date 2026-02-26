@@ -32,6 +32,7 @@ public:
     ~Worker_prime() noexcept override;
 
     void set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result) override;
+    bool is_running() const override { return !m_stop; }
     void update_statistics(stats::Collector& stats_collector) override;
 
 private:
