@@ -1320,52 +1320,30 @@ void Worker_manager::check_template_health()
         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
 
         if (ht_snap.is_template_stale()) {
-            // ── Post-push guard (doom-loop prevention) ────────────────────────────────
-            // In the push-driven protocol the node sends a fresh template very shortly
-            // after every push notification.  If the template was received (finalized via
-            // set_channel_height / HeightTracker::OnTemplateReceived) AFTER the last push,
-            // the staleness detected here is a HeightTracker artefact from the previous
-            // push cycle — the template itself is fresh.  Stopping workers in this case
-            // would enter a perpetual discard→stop→retry→discard doom loop.
+            // ── Temporal guard (doom-loop prevention) ────────────────────────────────
+            // Only stop workers and discard if the template is older than the last push.
+            // If the template was received AFTER the last push, channel_target is already
+            // updated for the new chain height — staleness is a false positive from the
+            // push updating channel_height before the new template updates channel_target.
             //
-            // Guard: skip stop_all_workers when last_template_update >= last push time.
-            // We still request a fresh template (non-forced, node will push on next advance)
-            // so the miner stays current without needlessly idling workers.
-            auto last_push_time = solo_protocol->get_last_push_received_time();
-            bool template_is_post_push =
-                (last_push_time != std::chrono::steady_clock::time_point{} &&
-                 ht_snap.last_template_update != std::chrono::steady_clock::time_point{} &&
-                 ht_snap.last_template_update >= last_push_time);
-
-            // Compute ages for diagnostic logging.
-            // Guard against default-initialized (zero) time_point to avoid wrap-around values.
-            auto now = std::chrono::steady_clock::now();
-            int64_t tmpl_age_ms = (ht_snap.last_template_update != std::chrono::steady_clock::time_point{})
-                ? std::chrono::duration_cast<std::chrono::milliseconds>(
-                      now - ht_snap.last_template_update).count()
-                : -1;
-            int64_t push_age_ms = (last_push_time != std::chrono::steady_clock::time_point{})
-                ? std::chrono::duration_cast<std::chrono::milliseconds>(
-                      now - last_push_time).count()
-                : -1;
-
-            m_logger->warn("[Worker_manager] ⚠️  {} channel advanced: channel_height {} >= channel_target {} — age {}s",
-                channel_name, ht_snap.channel_height, ht_snap.channel_target, template_age);
-            m_logger->info("[Worker_manager]    template_finalized_ago={}ms  push_received_ago={}ms  post_push={}",
-                tmpl_age_ms, push_age_ms, template_is_post_push ? "YES (fresh)" : "NO (pre-push)");
-
-            if (template_is_post_push) {
-                // Template was received AFTER the triggering push — it is fresh.
-                // Workers continue mining; a non-forced GET_BLOCK request is sent
-                // opportunistically so the miner picks up the next template quickly.
-                m_logger->info("[Worker_manager] ✅ Template is post-push — skipping stop_all_workers to prevent doom loop");
-                m_logger->info("[Worker_manager]    Workers continue mining; requesting fresh template opportunistically");
+            // Use HeightTracker timestamps: if last_template_update >= last_height_update,
+            // the template already accounts for the most recent push — do NOT stop workers.
+            bool template_is_newer_than_push = (ht_snap.last_template_update >= ht_snap.last_height_update);
+            if (template_is_newer_than_push) {
+                m_logger->debug("[Worker_manager] {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive stop",
+                    channel_name,
+                    std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
+                    std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
+                // Do not stop workers — the template is current. Request a refresh opportunistically.
                 retry_template_request(false);
                 return;
             }
-
-            // Template predates the last push → it is genuinely stale.
-            m_logger->info("[Worker_manager]    Requesting fresh template (channel height-based staleness, pre-push template)");
+            m_logger->warn("[Worker_manager] ⚠️  {} channel advanced: channel_height {} >= channel_target {} — age {}s",
+                channel_name, ht_snap.channel_height, ht_snap.channel_target, template_age);
+            m_logger->info("[Worker_manager]    Template (t={}) predates last push (t={}) — true staleness",
+                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
+                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
+            m_logger->info("[Worker_manager]    Requesting fresh template (channel height-based staleness)");
             template_interface->discard_template("Channel height-based staleness (channel advanced)");
             stop_all_workers();
             retry_template_request(true);
@@ -1400,6 +1378,18 @@ void Worker_manager::check_template_health()
         bool chain_advanced = ht_snap.is_template_stale();
 
         if (chain_advanced) {
+            // Apply the same temporal guard as the primary staleness check.
+            // Even in the emergency path, if the template is newer than the last push,
+            // the staleness is a false positive — suppress the hard recovery.
+            bool template_is_newer_than_push = (ht_snap.last_template_update >= ht_snap.last_height_update);
+            if (template_is_newer_than_push) {
+                m_logger->debug("[Worker_manager] EMERGENCY {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive stop",
+                    channel_name,
+                    std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
+                    std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
+                retry_template_request(false);
+                return;
+            }
             m_logger->error("[Worker_manager] ❌ EMERGENCY ({} channel): template {}s old AND chain advanced!",
                             channel_name, template_age);
             m_logger->error("[Worker_manager]    channel_height {} >= channel_target {} — push notification missed",
