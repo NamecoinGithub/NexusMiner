@@ -2885,12 +2885,12 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
     }
     // ═══════════════════════════════════════════════════════════════════════
-    // KEEPALIVE_V2_ACK (0xD101) — stateless-only, 8-byte echo payload
+    // KEEPALIVE_V2_ACK (0xD101) — stateless-only, 28-byte chain-state payload
     // ═══════════════════════════════════════════════════════════════════════
     else if(packet.m_is_uint16_opcode &&
             packet.m_header == ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
     {
-        /* Exact payload size enforcement for KEEPALIVE_V2_ACK */
+        /* Exact payload size enforcement for KEEPALIVE_V2_ACK (28 bytes) */
         std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
         uint32_t nExpected = ::LLP::GetExpectedPayloadSize(::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK);
         if(payload.size() != nExpected)
@@ -2900,11 +2900,23 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 nExpected, payload.size());
             return;
         }
-        ::LLP::KeepAliveV2Frame ack;
+        ::LLP::KeepAliveV2AckFrame ack;
         if(ack.Parse(payload))
         {
-            m_logger->debug("[KEEPALIVE_V2] ACK received: seq={}, timestamp_s={}",
-                ack.sequence, ack.timestamp_s);
+            m_logger->debug("[KEEPALIVE_V2] ACK received: seq={}"
+                            " unified_height={} prime_height={} hash_height={}"
+                            " hashPrevBlock_lo32=0x{:08x} hash_tip_lo32=0x{:08x} fork_score={}",
+                ack.sequence,
+                ack.unified_height, ack.prime_height, ack.hash_height,
+                ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
+
+            /* Fork detection: compare node's chain tip against miner's prevHash canary */
+            if(ack.IsForkDetected(ack.hashPrevBlock_lo32))
+            {
+                m_logger->warn("[KEEPALIVE_V2] Fork detected!"
+                               " miner_prevHash_lo32=0x{:08x} node_tip_lo32=0x{:08x} fork_score={}",
+                    ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
+            }
         }
     }
     else

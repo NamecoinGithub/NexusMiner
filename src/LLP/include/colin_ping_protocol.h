@@ -36,8 +36,8 @@ namespace LLP
          *
          *  Sent by miner → node to keep authenticated stateless session alive.
          *  DATA-bearing: 8-byte payload (big-endian):
-         *    [0-3]  uint32_t  sequence     Monotonic keepalive counter
-         *    [4-7]  uint32_t  timestamp_s  Unix time at miner send (seconds)
+         *    [0-3]  uint32_t  sequence            Monotonic miner keepalive counter
+         *    [4-7]  uint32_t  hashPrevBlock_lo32  Low 32 bits of miner's current prevHash (fork canary)
          *
          *  NOT a mirror of legacy PING (0xFD). Completely independent opcode.
          *  Legacy port: use bare PING (0xFD, header-only).
@@ -47,12 +47,20 @@ namespace LLP
         /** KEEPALIVE_V2_ACK (0xD101)
          *
          *  Sent by node → miner in response to KEEPALIVE_V2.
-         *  DATA-bearing: 8-byte payload (echo of miner's sequence + timestamp).
+         *  DATA-bearing: 28-byte payload (big-endian):
+         *    [0-3]   uint32_t  sequence            Echo of miner's sequence
+         *    [4-7]   uint32_t  hashPrevBlock_lo32  Echo of miner's prevHash canary
+         *    [8-11]  uint32_t  unified_height      Node's unified block height
+         *    [12-15] uint32_t  hash_tip_lo32       Low 32 bits of node's hashBestChain
+         *    [16-19] uint32_t  prime_height        Node's Prime channel height
+         *    [20-23] uint32_t  hash_height         Node's Hash channel height
+         *    [24-27] uint32_t  fork_score          0=healthy, >0=divergence magnitude
          **/
         static constexpr uint16_t KEEPALIVE_V2_ACK = 0xD101;
 
-        /** Exact payload size for both KEEPALIVE_V2 and KEEPALIVE_V2_ACK **/
-        static constexpr uint32_t PAYLOAD_SIZE = 8;
+        /** Payload sizes (different for each direction) **/
+        static constexpr uint32_t KEEPALIVE_V2_PAYLOAD_SIZE     = 8;   // miner → node
+        static constexpr uint32_t KEEPALIVE_V2_ACK_PAYLOAD_SIZE = 28;  // node → miner
     }
 
     /** Colin AI Diagnostic PING/PONG Opcodes
@@ -330,9 +338,11 @@ namespace LLP
      **/
     inline uint32_t GetExpectedPayloadSize(uint16_t opcode)
     {
-        if(opcode == KeepAliveV2Opcodes::KEEPALIVE_V2
-        || opcode == KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
-            return KeepAliveV2Opcodes::PAYLOAD_SIZE;   // 8
+        if(opcode == KeepAliveV2Opcodes::KEEPALIVE_V2)
+            return KeepAliveV2Opcodes::KEEPALIVE_V2_PAYLOAD_SIZE;     // 8
+
+        if(opcode == KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
+            return KeepAliveV2Opcodes::KEEPALIVE_V2_ACK_PAYLOAD_SIZE; // 28
 
         if(opcode == ColinDiagOpcodes::PING_DIAG
         || opcode == ColinDiagOpcodes::PONG_DIAG)
@@ -359,28 +369,30 @@ namespace LLP
     }
 
     //=========================================================================
-    // KeepAliveV2Frame — 8-byte payload for KEEPALIVE_V2 / KEEPALIVE_V2_ACK
+    // KeepAliveV2Frame — 8-byte payload for KEEPALIVE_V2 (miner → node, send side)
     //=========================================================================
 
-    /** KeepAliveV2Frame — 8-byte payload for KEEPALIVE_V2 / KEEPALIVE_V2_ACK **/
+    /** KeepAliveV2Frame — 8-byte miner → node payload for KEEPALIVE_V2 **/
     struct KeepAliveV2Frame
     {
         uint32_t sequence{0};
-        uint32_t timestamp_s{0};
+        uint32_t hashPrevBlock_lo32{0};  // low 32 bits of miner's current prevHash (fork canary)
+
+        static constexpr uint32_t PAYLOAD_SIZE = 8;
 
         /** Serialize — 8-byte big-endian wire format **/
         std::vector<uint8_t> Serialize() const
         {
             std::vector<uint8_t> v;
             v.reserve(8);
-            v.push_back((sequence    >> 24) & 0xFF);
-            v.push_back((sequence    >> 16) & 0xFF);
-            v.push_back((sequence    >>  8) & 0xFF);
-            v.push_back( sequence           & 0xFF);
-            v.push_back((timestamp_s >> 24) & 0xFF);
-            v.push_back((timestamp_s >> 16) & 0xFF);
-            v.push_back((timestamp_s >>  8) & 0xFF);
-            v.push_back( timestamp_s        & 0xFF);
+            v.push_back((sequence           >> 24) & 0xFF);
+            v.push_back((sequence           >> 16) & 0xFF);
+            v.push_back((sequence           >>  8) & 0xFF);
+            v.push_back( sequence                  & 0xFF);
+            v.push_back((hashPrevBlock_lo32  >> 24) & 0xFF);
+            v.push_back((hashPrevBlock_lo32  >> 16) & 0xFF);
+            v.push_back((hashPrevBlock_lo32  >>  8) & 0xFF);
+            v.push_back( hashPrevBlock_lo32         & 0xFF);
             return v;
         }
 
@@ -388,10 +400,65 @@ namespace LLP
         bool Parse(const std::vector<uint8_t>& data)
         {
             if(data.size() < 8) return false;
-            sequence    = (uint32_t(data[0])<<24)|(uint32_t(data[1])<<16)
-                        |(uint32_t(data[2])<<8)  | uint32_t(data[3]);
-            timestamp_s = (uint32_t(data[4])<<24)|(uint32_t(data[5])<<16)
-                        |(uint32_t(data[6])<<8)  | uint32_t(data[7]);
+            sequence           = (uint32_t(data[0])<<24)|(uint32_t(data[1])<<16)
+                               |(uint32_t(data[2])<<8)  | uint32_t(data[3]);
+            hashPrevBlock_lo32 = (uint32_t(data[4])<<24)|(uint32_t(data[5])<<16)
+                               |(uint32_t(data[6])<<8)  | uint32_t(data[7]);
+            return true;
+        }
+    };
+
+    //=========================================================================
+    // KeepAliveV2AckFrame — 28-byte payload for KEEPALIVE_V2_ACK (node → miner)
+    //=========================================================================
+
+    /** KeepAliveV2AckFrame — 28-byte node → miner payload (receive side)
+     *
+     *  After parsing, call IsForkDetected() to check for chain divergence.
+     *  Feed unified_height / prime_height / hash_height to the
+     *  Unified Block Height Manager.
+     *  Feed fork_score to the Fork Resolution Manager.
+     **/
+    struct KeepAliveV2AckFrame
+    {
+        uint32_t sequence{0};
+        uint32_t hashPrevBlock_lo32{0};  // echo of what miner sent
+        uint32_t unified_height{0};      // node's unified block height
+        uint32_t hash_tip_lo32{0};       // low 32 bits of node's hashBestChain
+        uint32_t prime_height{0};        // node's Prime channel height
+        uint32_t hash_height{0};         // node's Hash channel height
+        uint32_t fork_score{0};          // 0 = healthy, >0 = divergence magnitude
+
+        static constexpr uint32_t PAYLOAD_SIZE = 28;
+
+        /** IsForkDetected
+         *
+         *  Returns true if the node's chain tip low-32 doesn't match the miner's
+         *  prevHash canary OR if the node's Fork Detection Manager reports non-zero score.
+         *
+         *  @param[in] myHashPrevBlock_lo32  The value miner sent in the request
+         *  @return true if fork detected, false if chains agree
+         **/
+        bool IsForkDetected(uint32_t myHashPrevBlock_lo32) const
+        {
+            return (hash_tip_lo32 != myHashPrevBlock_lo32) || (fork_score > 0);
+        }
+
+        /** Parse — deserialize 28-byte wire buffer **/
+        bool Parse(const std::vector<uint8_t>& data)
+        {
+            if(data.size() < 28) return false;
+            auto r32 = [&](int o) -> uint32_t {
+                return (uint32_t(data[o  ]) << 24) | (uint32_t(data[o+1]) << 16)
+                     | (uint32_t(data[o+2]) <<  8) |  uint32_t(data[o+3]);
+            };
+            sequence           = r32(0);
+            hashPrevBlock_lo32 = r32(4);
+            unified_height     = r32(8);
+            hash_tip_lo32      = r32(12);
+            prime_height       = r32(16);
+            hash_height        = r32(20);
+            fork_score         = r32(24);
             return true;
         }
     };
