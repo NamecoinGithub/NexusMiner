@@ -51,7 +51,7 @@ public:
         // ── All three channel heights, kept independently ──────────────────────
         uint32_t prime_height{0};   ///< Prime channel height (GET_ROUND / KeepaliveAck / LegacyKeepalive)
         uint32_t hash_height{0};    ///< Hash channel height  (GET_ROUND / KeepaliveAck / LegacyKeepalive)
-        uint32_t stake_height{0};   ///< Stake channel height (LegacyKeepalive only — stateless ACK has no stake)
+        uint32_t stake_height{0};   ///< Stake channel height (KeepaliveAck / LegacyKeepalive)
 
         // ── Fork detection ─────────────────────────────────────────────────────
         uint32_t fork_score{0};      ///< Latest fork_score from KEEPALIVE_V2_ACK (0 = healthy)
@@ -170,17 +170,19 @@ public:
     /**
      * @brief Update heights from a stateless KEEPALIVE_V2_ACK response (opcode 0xD101).
      *
-     * The stateless ACK carries: unified_height, prime_height, hash_height, fork_score.
-     * It does NOT carry stake_height or nBits — those remain from the last OnLegacyKeepalive() call.
+     * The stateless ACK carries: unified_height, prime_height, hash_height,
+     * stake_height, fork_score (32-byte wire format per LLL-TAO PR #299).
      *
      * @param unified_height  Node's unified blockchain height
      * @param prime_height    Node's Prime channel height
      * @param hash_height     Node's Hash channel height
+     * @param stake_height    Node's Stake channel height
      * @param fork_score      Fork divergence score (0 = healthy, >0 = divergence magnitude)
      */
     void OnKeepaliveAck(uint32_t unified_height,
                         uint32_t prime_height,
                         uint32_t hash_height,
+                        uint32_t stake_height,
                         uint32_t fork_score);
 
     /**

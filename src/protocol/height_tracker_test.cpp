@@ -431,22 +431,21 @@ void test_pre_push_template_identified_correctly() {
 // Test 14: OnKeepaliveAck sets prime_height, hash_height, fork_score
 // ============================================================================
 void test_on_keepalive_ack_sets_heights() {
-    std::cout << "\nTest 14: OnKeepaliveAck sets prime_height, hash_height, fork_score\n";
+    std::cout << "\nTest 14: OnKeepaliveAck sets prime_height, hash_height, stake_height, fork_score\n";
     HeightTracker tracker;
     // Set channel to Hash (2) so channel_height mirrors hash_height
     tracker.OnTemplateReceived(2, 101);
-    tracker.OnKeepaliveAck(6000, 450, 800, 3);
+    tracker.OnKeepaliveAck(6000, 450, 800, 555, 3);
 
     auto snap = tracker.GetSnapshot();
     print_test_result("unified_height == 6000", snap.unified_height == 6000);
     print_test_result("prime_height == 450",    snap.prime_height == 450);
     print_test_result("hash_height == 800",     snap.hash_height == 800);
+    print_test_result("stake_height == 555",    snap.stake_height == 555);
     print_test_result("fork_score == 3",        snap.fork_score == 3);
     print_test_result("peak_fork_score == 3",   snap.peak_fork_score == 3);
     print_test_result("channel_height == hash_height (channel==2)",
                       snap.channel_height == 800);
-    print_test_result("stake_height unchanged (0)",
-                      snap.stake_height == 0);
     print_test_result("is_fork_active() == true", snap.is_fork_active());
     print_test_result("last_update_source == KEEPALIVE_ACK",
                       snap.last_update_source == HeightTracker::UpdateSource::KEEPALIVE_ACK);
@@ -473,17 +472,22 @@ void test_on_legacy_keepalive_sets_stake_height() {
 }
 
 // ============================================================================
-// Test 16: OnKeepaliveAck does NOT overwrite stake_height set by OnLegacyKeepalive
+// Test 16: OnKeepaliveAck sets stake_height (stateless ACK now carries it per LLL-TAO PR #299)
 // ============================================================================
-void test_keepalive_ack_preserves_stake_height() {
-    std::cout << "\nTest 16: OnKeepaliveAck preserves stake_height from OnLegacyKeepalive\n";
+void test_keepalive_ack_sets_stake_height() {
+    std::cout << "\nTest 16: OnKeepaliveAck sets stake_height (LLL-TAO PR #299)\n";
     HeightTracker tracker;
-    tracker.OnLegacyKeepalive(6000, 450, 800, 999, 0x1d00ffff);
-    tracker.OnKeepaliveAck(6001, 451, 801, 0);
+    tracker.OnKeepaliveAck(6001, 451, 801, 777, 0);
 
     auto snap = tracker.GetSnapshot();
-    print_test_result("stake_height preserved after OnKeepaliveAck",
-                      snap.stake_height == 999);
+    print_test_result("stake_height == 777 from OnKeepaliveAck",
+                      snap.stake_height == 777);
+
+    // Subsequent call updates stake_height with new value
+    tracker.OnKeepaliveAck(6002, 452, 802, 888, 0);
+    snap = tracker.GetSnapshot();
+    print_test_result("stake_height == 888 after second OnKeepaliveAck",
+                      snap.stake_height == 888);
 }
 
 // ============================================================================
@@ -492,8 +496,8 @@ void test_keepalive_ack_preserves_stake_height() {
 void test_peak_fork_score_is_high_water_mark() {
     std::cout << "\nTest 17: peak_fork_score is a persistent high-water mark\n";
     HeightTracker tracker;
-    tracker.OnKeepaliveAck(6000, 450, 800, 5);
-    tracker.OnKeepaliveAck(6001, 451, 801, 1);  // lower score
+    tracker.OnKeepaliveAck(6000, 450, 800, 0, 5);
+    tracker.OnKeepaliveAck(6001, 451, 801, 0, 1);  // lower score
 
     auto snap = tracker.GetSnapshot();
     print_test_result("fork_score == 1 (latest)",       snap.fork_score == 1);
@@ -524,7 +528,7 @@ int main() {
     test_pre_push_template_identified_correctly();
     test_on_keepalive_ack_sets_heights();
     test_on_legacy_keepalive_sets_stake_height();
-    test_keepalive_ack_preserves_stake_height();
+    test_keepalive_ack_sets_stake_height();
     test_peak_fork_score_is_high_water_mark();
 
     std::cout << "\n========================================\n";

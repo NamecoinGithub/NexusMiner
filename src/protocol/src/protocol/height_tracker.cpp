@@ -67,13 +67,14 @@ void HeightTracker::sync_channel_height_locked()
 void HeightTracker::OnKeepaliveAck(uint32_t unified_height,
                                     uint32_t prime_height,
                                     uint32_t hash_height,
+                                    uint32_t stake_height,
                                     uint32_t fork_score)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_state.unified_height = unified_height;
     m_state.prime_height   = prime_height;
     m_state.hash_height    = hash_height;
-    // stake_height intentionally NOT updated — stateless ACK does not carry it
+    m_state.stake_height   = stake_height;
     m_state.fork_score     = fork_score;
     if (fork_score > m_state.peak_fork_score)
         m_state.peak_fork_score = fork_score;

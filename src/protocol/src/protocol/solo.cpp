@@ -2925,12 +2925,12 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
     }
     // ═══════════════════════════════════════════════════════════════════════
-    // KEEPALIVE_V2_ACK (0xD101) — stateless-only, 28-byte chain-state payload
+    // KEEPALIVE_V2_ACK (0xD101) — stateless-only, 32-byte chain-state payload
     // ═══════════════════════════════════════════════════════════════════════
     else if(packet.m_is_uint16_opcode &&
             packet.m_header == ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
     {
-        /* Exact payload size enforcement for KEEPALIVE_V2_ACK (28 bytes) */
+        /* Exact payload size enforcement for KEEPALIVE_V2_ACK (32 bytes) */
         std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
         uint32_t nExpected = ::LLP::GetExpectedPayloadSize(::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK);
         if(payload.size() != nExpected)
@@ -2944,18 +2944,19 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         if(ack.Parse(payload))
         {
             m_logger->debug("[KEEPALIVE_V2] ACK received: seq={}"
-                            " unified_height={} prime_height={} hash_height={}"
+                            " unified_height={} prime_height={} hash_height={} stake_height={}"
                             " hashPrevBlock_lo32=0x{:08x} hash_tip_lo32=0x{:08x} fork_score={}",
                 ack.sequence,
-                ack.unified_height, ack.prime_height, ack.hash_height,
+                ack.unified_height, ack.prime_height, ack.hash_height, ack.stake_height,
                 ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
 
-            // Update HeightTracker with ACK chain-state heights (prime + hash + fork_score).
+            // Update HeightTracker with ACK chain-state heights (prime + hash + stake + fork_score).
             // OnKeepaliveAck() syncs channel_height from the appropriate sub-height and
             // tracks the persistent fork_score high-water mark (peak_fork_score).
             m_height_tracker.OnKeepaliveAck(ack.unified_height,
                                              ack.prime_height,
                                              ack.hash_height,
+                                             ack.stake_height,
                                              ack.fork_score);
 
             // Fork detection: compare node's chain tip against the miner's own locally
