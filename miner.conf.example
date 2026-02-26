@@ -26,8 +26,11 @@ mining_channel = 2     # 1 = PRIME  (CPU or GPU)
 # channel: 1 = Prime (large integer factoring — CPU or FPGA/GPU with PRIME build)
 #          2 = Hash  (SHA-3 hashing   — GPU strongly preferred)
 channel = 2
-genesis = ""            # Your Tritium GenesisHash (hex). Leave empty to use node default.
-reward_address = ""     # Your Nexus address for block rewards. Leave empty for node default.
+genesis = "a174011c93ca1c80bca5388382b167cacd33d3154395ea8f45ac99a8308cd122"
+                # Your Tritium account genesis hash (64 hex chars).
+                # Get it with the API call: system/get/info
+reward_address = "8BMeGoCm4TysEn4MseoEwme9yVwkWRqGPYC4m1iHsFzb16udDRg"
+                # Your Nexus address for block rewards. Leave empty for node default.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hardware Profiles — uncomment ONE block
