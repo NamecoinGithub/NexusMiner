@@ -2910,12 +2910,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 ack.unified_height, ack.prime_height, ack.hash_height,
                 ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
 
-            /* Fork detection: compare node's chain tip against miner's prevHash canary */
-            if(ack.IsForkDetected(ack.hashPrevBlock_lo32))
+            /* Fork detection: compare node's chain tip against the miner's OWN sent canary.
+             * Use m_last_sent_keepalive_v2_hash_prev_lo32 (tracked by send_keepalive_v2())
+             * instead of ack.hashPrevBlock_lo32 (the node's echo) so the comparison is
+             * grounded in the miner's internal state, not the node's response. */
+            if(ack.IsForkDetected(m_last_sent_keepalive_v2_hash_prev_lo32))
             {
                 m_logger->warn("[KEEPALIVE_V2] Fork detected!"
                                " miner_prevHash_lo32=0x{:08x} node_tip_lo32=0x{:08x} fork_score={}",
-                    ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
+                    m_last_sent_keepalive_v2_hash_prev_lo32, ack.hash_tip_lo32, ack.fork_score);
             }
         }
     }
@@ -2979,6 +2982,46 @@ network::Shared_payload Solo::send_session_keepalive()
     append_uint32_le(keepalive_data, m_session_id);
     
     return PacketBuilder::build(m_protocol_lane, LLP::SESSION_KEEPALIVE, keepalive_data);
+}
+
+network::Shared_payload Solo::send_keepalive_v2()
+{
+    // KEEPALIVE_V2 (0xD100) — stateless-only, 8-byte miner → node.
+    // Stateless lane only; silently returns null on legacy lane.
+    if (m_protocol_lane != ProtocolLane::STATELESS) {
+        return nullptr;
+    }
+
+    // Low 32 bits of the miner's current hashPrevBlock (fork canary).
+    // pn[0] holds the least-significant 32-bit word of the uint1024 value.
+    const uint32_t hash_prev_lo32 = m_last_known_hash_prev_block.get(0);
+
+    ::LLP::KeepAliveV2Frame frame;
+    frame.sequence           = ++m_keepalive_v2_sequence;
+    frame.hashPrevBlock_lo32 = hash_prev_lo32;
+
+    // Track the sent canary so the ACK handler can call IsForkDetected()
+    // with the miner's own value rather than relying on the node's echo.
+    m_last_sent_keepalive_v2_hash_prev_lo32 = hash_prev_lo32;
+
+    m_logger->debug("[KEEPALIVE_V2] Sending seq={} hashPrevBlock_lo32=0x{:08x}",
+        frame.sequence, frame.hashPrevBlock_lo32);
+
+    // Build wire bytes: [0xD1][0x00][4-byte BE length][8-byte payload].
+    // KEEPALIVE_V2 (0xD100) is an un-mirrored stateless opcode outside the
+    // 0xD000-0xD0FF mirror range so PacketBuilder cannot be used here; build directly.
+    const auto payload_bytes = frame.Serialize();
+    auto wire = std::make_shared<network::Payload>();
+    wire->reserve(2 + 4 + payload_bytes.size());
+    wire->push_back(0xD1);
+    wire->push_back(0x00);
+    const uint32_t plen = static_cast<uint32_t>(payload_bytes.size());
+    wire->push_back((plen >> 24) & 0xFF);
+    wire->push_back((plen >> 16) & 0xFF);
+    wire->push_back((plen >>  8) & 0xFF);
+    wire->push_back( plen        & 0xFF);
+    wire->insert(wire->end(), payload_bytes.begin(), payload_bytes.end());
+    return wire;
 }
 
 void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)

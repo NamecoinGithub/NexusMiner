@@ -22,6 +22,7 @@
 #include "protocol/session_manager.hpp"
 #include "protocol_lane.hpp"
 #include "miner_opcodes.hpp"
+#include "LLP/include/colin_ping_protocol.h"
 #include <iostream>
 #include <cassert>
 #include <cstdint>
@@ -354,6 +355,155 @@ void test_keepalive_parse_robustness_other_lengths() {
 }
 
 // ============================================================================
+// Test 14: KeepAliveV2Frame::Serialize() — 8-byte big-endian payload
+// ============================================================================
+void test_keepalive_v2_frame_serialize() {
+    std::cout << "\nTest 14: KeepAliveV2Frame::Serialize() produces correct 8-byte payload\n";
+
+    ::LLP::KeepAliveV2Frame frame;
+    frame.sequence           = 0x01020304;
+    frame.hashPrevBlock_lo32 = 0xDEADBEEF;
+
+    auto v = frame.Serialize();
+    print_test_result("Serialize() length == 8", v.size() == 8);
+
+    // sequence in big-endian at bytes [0..3]
+    print_test_result("sequence byte[0] == 0x01", v[0] == 0x01);
+    print_test_result("sequence byte[1] == 0x02", v[1] == 0x02);
+    print_test_result("sequence byte[2] == 0x03", v[2] == 0x03);
+    print_test_result("sequence byte[3] == 0x04", v[3] == 0x04);
+
+    // hashPrevBlock_lo32 in big-endian at bytes [4..7]
+    print_test_result("hashPrevBlock_lo32 byte[4] == 0xDE", v[4] == 0xDE);
+    print_test_result("hashPrevBlock_lo32 byte[5] == 0xAD", v[5] == 0xAD);
+    print_test_result("hashPrevBlock_lo32 byte[6] == 0xBE", v[6] == 0xBE);
+    print_test_result("hashPrevBlock_lo32 byte[7] == 0xEF", v[7] == 0xEF);
+}
+
+// ============================================================================
+// Test 15: KeepAliveV2AckFrame::Parse() — correct 28-byte field extraction
+// ============================================================================
+void test_keepalive_v2_ack_frame_parse() {
+    std::cout << "\nTest 15: KeepAliveV2AckFrame::Parse() decodes all 7 fields correctly\n";
+
+    // Construct the 28-byte ACK payload (all big-endian)
+    std::vector<uint8_t> payload(28, 0);
+    // [0-3]  sequence = 0x0000000A
+    payload[3] = 0x0A;
+    // [4-7]  hashPrevBlock_lo32 = 0x11223344
+    payload[4] = 0x11; payload[5] = 0x22; payload[6] = 0x33; payload[7] = 0x44;
+    // [8-11] unified_height = 6000001 = 0x005B8D81
+    payload[8]  = 0x00; payload[9]  = 0x5B; payload[10] = 0x8D; payload[11] = 0x81;
+    // [12-15] hash_tip_lo32 = 0xAABBCCDD
+    payload[12] = 0xAA; payload[13] = 0xBB; payload[14] = 0xCC; payload[15] = 0xDD;
+    // [16-19] prime_height = 2000042 = 0x001E84AA
+    payload[16] = 0x00; payload[17] = 0x1E; payload[18] = 0x84; payload[19] = 0xAA;
+    // [20-23] hash_height = 4000099 = 0x003D0963
+    payload[20] = 0x00; payload[21] = 0x3D; payload[22] = 0x09; payload[23] = 0x63;
+    // [24-27] fork_score = 7
+    payload[27] = 0x07;
+
+    ::LLP::KeepAliveV2AckFrame ack;
+    bool ok = ack.Parse(payload);
+    print_test_result("Parse() returns true for 28-byte payload", ok);
+    print_test_result("sequence == 10",            ack.sequence           == 10);
+    print_test_result("hashPrevBlock_lo32 == 0x11223344", ack.hashPrevBlock_lo32 == 0x11223344u);
+    print_test_result("unified_height == 6000001", ack.unified_height     == 6000001u);
+    print_test_result("hash_tip_lo32 == 0xAABBCCDD", ack.hash_tip_lo32   == 0xAABBCCDDu);
+    print_test_result("prime_height == 2000042",   ack.prime_height       == 2000042u);
+    print_test_result("hash_height == 4000099",    ack.hash_height        == 4000099u);
+    print_test_result("fork_score == 7",           ack.fork_score         == 7u);
+}
+
+// ============================================================================
+// Test 16: KeepAliveV2AckFrame::Parse() rejects payloads shorter than 28 bytes
+// ============================================================================
+void test_keepalive_v2_ack_frame_parse_short() {
+    std::cout << "\nTest 16: KeepAliveV2AckFrame::Parse() rejects short payloads\n";
+
+    ::LLP::KeepAliveV2AckFrame ack;
+    print_test_result("Parse({}) returns false", !ack.Parse({}));
+    print_test_result("Parse(27-byte) returns false",
+        !ack.Parse(std::vector<uint8_t>(27, 0)));
+    print_test_result("Parse(8-byte) returns false",
+        !ack.Parse(std::vector<uint8_t>(8, 0)));
+}
+
+// ============================================================================
+// Test 17: KeepAliveV2AckFrame::IsForkDetected() — healthy (no fork)
+// ============================================================================
+void test_keepalive_v2_ack_frame_no_fork() {
+    std::cout << "\nTest 17: IsForkDetected() returns false when healthy\n";
+
+    std::vector<uint8_t> payload(28, 0);
+    // hash_tip_lo32 = 0x12345678 (bytes [12-15])
+    payload[12] = 0x12; payload[13] = 0x34; payload[14] = 0x56; payload[15] = 0x78;
+    // fork_score = 0
+
+    ::LLP::KeepAliveV2AckFrame ack;
+    ack.Parse(payload);
+
+    // Miner's sent canary matches the node's tip → no fork
+    bool detected = ack.IsForkDetected(0x12345678u);
+    print_test_result("IsForkDetected(matching tip, score=0) == false", !detected);
+}
+
+// ============================================================================
+// Test 18: KeepAliveV2AckFrame::IsForkDetected() — tip mismatch → fork
+// ============================================================================
+void test_keepalive_v2_ack_frame_fork_tip_mismatch() {
+    std::cout << "\nTest 18: IsForkDetected() returns true on tip mismatch\n";
+
+    std::vector<uint8_t> payload(28, 0);
+    // hash_tip_lo32 = 0xAAAAAAAA
+    payload[12] = 0xAA; payload[13] = 0xAA; payload[14] = 0xAA; payload[15] = 0xAA;
+    // fork_score = 0
+
+    ::LLP::KeepAliveV2AckFrame ack;
+    ack.Parse(payload);
+
+    // Miner's canary (0xBBBBBBBB) ≠ node's tip (0xAAAAAAAA)
+    bool detected = ack.IsForkDetected(0xBBBBBBBBu);
+    print_test_result("IsForkDetected(mismatched tip, score=0) == true", detected);
+}
+
+// ============================================================================
+// Test 19: KeepAliveV2AckFrame::IsForkDetected() — fork_score > 0 → fork
+// ============================================================================
+void test_keepalive_v2_ack_frame_fork_score_nonzero() {
+    std::cout << "\nTest 19: IsForkDetected() returns true when fork_score > 0\n";
+
+    std::vector<uint8_t> payload(28, 0);
+    // hash_tip_lo32 = 0x12345678 (matches what miner will send)
+    payload[12] = 0x12; payload[13] = 0x34; payload[14] = 0x56; payload[15] = 0x78;
+    // fork_score = 5 (bytes [24-27])
+    payload[27] = 0x05;
+
+    ::LLP::KeepAliveV2AckFrame ack;
+    ack.Parse(payload);
+
+    // Tip matches but fork_score > 0 → fork detected
+    bool detected = ack.IsForkDetected(0x12345678u);
+    print_test_result("IsForkDetected(matching tip, score=5) == true", detected);
+}
+
+// ============================================================================
+// Test 20: KEEPALIVE_V2 payload size constants
+// ============================================================================
+void test_keepalive_v2_payload_size_constants() {
+    std::cout << "\nTest 20: KEEPALIVE_V2 payload size constants\n";
+    using namespace ::LLP::KeepAliveV2Opcodes;
+    print_test_result("KEEPALIVE_V2_PAYLOAD_SIZE == 8",
+        KEEPALIVE_V2_PAYLOAD_SIZE == 8u);
+    print_test_result("KEEPALIVE_V2_ACK_PAYLOAD_SIZE == 28",
+        KEEPALIVE_V2_ACK_PAYLOAD_SIZE == 28u);
+    print_test_result("KeepAliveV2Frame::PAYLOAD_SIZE == 8",
+        ::LLP::KeepAliveV2Frame::PAYLOAD_SIZE == 8u);
+    print_test_result("KeepAliveV2AckFrame::PAYLOAD_SIZE == 28",
+        ::LLP::KeepAliveV2AckFrame::PAYLOAD_SIZE == 28u);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -379,6 +529,13 @@ int main() {
     test_keepalive_v2_received_at_set();
     test_keepalive_v2_age_invalid();
     test_keepalive_parse_robustness_other_lengths();
+    test_keepalive_v2_frame_serialize();
+    test_keepalive_v2_ack_frame_parse();
+    test_keepalive_v2_ack_frame_parse_short();
+    test_keepalive_v2_ack_frame_no_fork();
+    test_keepalive_v2_ack_frame_fork_tip_mismatch();
+    test_keepalive_v2_ack_frame_fork_score_nonzero();
+    test_keepalive_v2_payload_size_constants();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

@@ -129,6 +129,11 @@ public:
     // Check if keep-alive ping is due
     bool is_keepalive_due() const;
 
+    // KEEPALIVE_V2 (0xD100) — stateless-only, 8-byte miner → node packet.
+    // Builds and returns the packet; updates m_last_sent_keepalive_v2_hash_prev_lo32
+    // so the matching KEEPALIVE_V2_ACK handler can call IsForkDetected() correctly.
+    network::Shared_payload send_keepalive_v2();
+
     // KEEPALIVE v2 telemetry: returns the latest snapshot received from the node.
     // Returns an invalid (valid==false) snapshot if no v2 reply has been received yet.
     KeepaliveTelemetrySnapshot get_keepalive_telemetry() const { return m_keepalive_telemetry.get(); }
@@ -319,6 +324,13 @@ private:
 
     // KEEPALIVE v2 telemetry snapshot (thread-safe store, updated in SESSION_KEEPALIVE handler)
     KeepaliveTelemetryStore m_keepalive_telemetry;
+
+    // KEEPALIVE_V2 (0xD100) send-side tracking.
+    // m_last_sent_keepalive_v2_hash_prev_lo32 is set by send_keepalive_v2() and read by
+    // the KEEPALIVE_V2_ACK handler to call IsForkDetected() with the miner's own canary
+    // rather than trusting the node's echo.
+    std::atomic<uint32_t> m_last_sent_keepalive_v2_hash_prev_lo32{0};
+    std::atomic<uint32_t> m_keepalive_v2_sequence{0};
     
     // Mining Template Interface for unified READ/FEED operations
     std::unique_ptr<MiningTemplateInterface> m_template_interface;
