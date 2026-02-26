@@ -1308,11 +1308,11 @@ void Worker_manager::clear_recovery_state()
     m_recovery_last_get_block_sent_at = {};
     m_recovery_last_get_block_transmitted_at = {};
     m_recovery_get_block_transmitted = false;
-    m_last_escalation_at = {};
 
     auto global_stats = m_stats_collector->get_global_stats();
     global_stats.m_degraded_mode = false;
     m_stats_collector->update_global_stats(global_stats);
+    m_last_escalation_at = {};
 }
 
 void Worker_manager::stop_all_workers()
@@ -1539,8 +1539,8 @@ void Worker_manager::check_template_health()
                           now_ts - m_recovery_last_get_block_transmitted_at).count();
 
                 if (recovery_elapsed_s > 30 && !m_recovery_get_block_transmitted) {
-                    m_logger->warn("[Worker_manager] ⚠️ RECOVERY STALL: {}s elapsed, no GET_BLOCK has been transmitted yet "
-                        "(attempts rate-limited). Forcing immediate bypass...", recovery_elapsed_s);
+                    m_logger->warn("[Worker_manager] ⚠️ RECOVERY STALL: {}s elapsed, NO GET_BLOCK has been transmitted yet "
+                        "(all attempts rate-limited). Forcing immediate bypass...", recovery_elapsed_s);
                     retry_template_request(true);
                     return;
                 }
