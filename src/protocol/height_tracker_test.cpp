@@ -428,14 +428,15 @@ void test_pre_push_template_identified_correctly() {
 }
 
 // ============================================================================
-// Test 14: OnKeepaliveAck sets prime_height, hash_height, fork_score
+// Test 14: OnLegacyKeepalive (stateless ACK path) sets all fields including fork_score
 // ============================================================================
 void test_on_keepalive_ack_sets_heights() {
-    std::cout << "\nTest 14: OnKeepaliveAck sets prime_height, hash_height, stake_height, fork_score\n";
+    std::cout << "\nTest 14: OnLegacyKeepalive (KEEPALIVE_V2_ACK path) sets prime/hash/stake/fork_score\n";
     HeightTracker tracker;
     // Set channel to Hash (2) so channel_height mirrors hash_height
     tracker.OnTemplateReceived(2, 101);
-    tracker.OnKeepaliveAck(6000, 450, 800, 555, 3);
+    // Simulate KEEPALIVE_V2_ACK: nbits=0 (not carried), fork_score=3
+    tracker.OnLegacyKeepalive(6000, 450, 800, 555, 0u, 3);
 
     auto snap = tracker.GetSnapshot();
     print_test_result("unified_height == 6000", snap.unified_height == 6000);
@@ -447,16 +448,17 @@ void test_on_keepalive_ack_sets_heights() {
     print_test_result("channel_height == hash_height (channel==2)",
                       snap.channel_height == 800);
     print_test_result("is_fork_active() == true", snap.is_fork_active());
-    print_test_result("last_update_source == KEEPALIVE_ACK",
-                      snap.last_update_source == HeightTracker::UpdateSource::KEEPALIVE_ACK);
+    print_test_result("last_update_source == LEGACY_KEEPALIVE",
+                      snap.last_update_source == HeightTracker::UpdateSource::LEGACY_KEEPALIVE);
 }
 
 // ============================================================================
-// Test 15: OnLegacyKeepalive sets stake_height and all channel heights
+// Test 15: OnLegacyKeepalive (SESSION_KEEPALIVE path) sets stake_height and nBits
 // ============================================================================
 void test_on_legacy_keepalive_sets_stake_height() {
-    std::cout << "\nTest 15: OnLegacyKeepalive sets stake_height and all channel heights\n";
+    std::cout << "\nTest 15: OnLegacyKeepalive (SESSION_KEEPALIVE path) sets stake_height and nBits\n";
     HeightTracker tracker;
+    // Simulate SESSION_KEEPALIVE: fork_score=0 (not carried)
     tracker.OnLegacyKeepalive(6001, 451, 801, 999, 0x1d00ffff);
 
     auto snap = tracker.GetSnapshot();
@@ -472,21 +474,21 @@ void test_on_legacy_keepalive_sets_stake_height() {
 }
 
 // ============================================================================
-// Test 16: OnKeepaliveAck sets stake_height (stateless ACK now carries it per LLL-TAO PR #299)
+// Test 16: OnLegacyKeepalive updates stake_height on successive calls
 // ============================================================================
 void test_keepalive_ack_sets_stake_height() {
-    std::cout << "\nTest 16: OnKeepaliveAck sets stake_height (LLL-TAO PR #299)\n";
+    std::cout << "\nTest 16: OnLegacyKeepalive updates stake_height on successive calls\n";
     HeightTracker tracker;
-    tracker.OnKeepaliveAck(6001, 451, 801, 777, 0);
+    tracker.OnLegacyKeepalive(6001, 451, 801, 777, 0u);
 
     auto snap = tracker.GetSnapshot();
-    print_test_result("stake_height == 777 from OnKeepaliveAck",
+    print_test_result("stake_height == 777",
                       snap.stake_height == 777);
 
     // Subsequent call updates stake_height with new value
-    tracker.OnKeepaliveAck(6002, 452, 802, 888, 0);
+    tracker.OnLegacyKeepalive(6002, 452, 802, 888, 0u);
     snap = tracker.GetSnapshot();
-    print_test_result("stake_height == 888 after second OnKeepaliveAck",
+    print_test_result("stake_height == 888 after second call",
                       snap.stake_height == 888);
 }
 
@@ -496,8 +498,8 @@ void test_keepalive_ack_sets_stake_height() {
 void test_peak_fork_score_is_high_water_mark() {
     std::cout << "\nTest 17: peak_fork_score is a persistent high-water mark\n";
     HeightTracker tracker;
-    tracker.OnKeepaliveAck(6000, 450, 800, 0, 5);
-    tracker.OnKeepaliveAck(6001, 451, 801, 0, 1);  // lower score
+    tracker.OnLegacyKeepalive(6000, 450, 800, 0, 0u, 5);
+    tracker.OnLegacyKeepalive(6001, 451, 801, 0, 0u, 1);  // lower score
 
     auto snap = tracker.GetSnapshot();
     print_test_result("fork_score == 1 (latest)",       snap.fork_score == 1);

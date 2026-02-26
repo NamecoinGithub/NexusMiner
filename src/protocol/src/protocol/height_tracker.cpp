@@ -9,7 +9,6 @@ const char* HeightTracker::source_name(UpdateSource src) {
         case UpdateSource::PUSH:             return "PUSH";
         case UpdateSource::GET_ROUND:        return "GET_ROUND";
         case UpdateSource::TEMPLATE:         return "TEMPLATE";
-        case UpdateSource::KEEPALIVE_ACK:    return "KEEPALIVE_ACK";
         case UpdateSource::LEGACY_KEEPALIVE: return "LEGACY_KEEPALIVE";
         default:                             return "NONE";
     }
@@ -64,31 +63,12 @@ void HeightTracker::sync_channel_height_locked()
         m_state.channel_height = m_state.hash_height;
 }
 
-void HeightTracker::OnKeepaliveAck(uint32_t unified_height,
-                                    uint32_t prime_height,
-                                    uint32_t hash_height,
-                                    uint32_t stake_height,
-                                    uint32_t fork_score)
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_state.unified_height = unified_height;
-    m_state.prime_height   = prime_height;
-    m_state.hash_height    = hash_height;
-    m_state.stake_height   = stake_height;
-    m_state.fork_score     = fork_score;
-    if (fork_score > m_state.peak_fork_score)
-        m_state.peak_fork_score = fork_score;
-    sync_channel_height_locked();
-    m_state.last_update_source    = UpdateSource::KEEPALIVE_ACK;
-    m_state.last_height_update    = std::chrono::steady_clock::now();
-    m_state.last_keepalive_ack_at = m_state.last_height_update;
-}
-
 void HeightTracker::OnLegacyKeepalive(uint32_t unified_height,
                                        uint32_t prime_height,
                                        uint32_t hash_height,
                                        uint32_t stake_height,
-                                       uint32_t nbits)
+                                       uint32_t nbits,
+                                       uint32_t fork_score)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_state.unified_height = unified_height;
@@ -97,6 +77,9 @@ void HeightTracker::OnLegacyKeepalive(uint32_t unified_height,
     m_state.stake_height   = stake_height;
     if (nbits != 0)
         m_state.difficulty_nbits = nbits;
+    m_state.fork_score = fork_score;
+    if (fork_score > m_state.peak_fork_score)
+        m_state.peak_fork_score = fork_score;
     sync_channel_height_locked();
     m_state.last_update_source = UpdateSource::LEGACY_KEEPALIVE;
     m_state.last_height_update = std::chrono::steady_clock::now();

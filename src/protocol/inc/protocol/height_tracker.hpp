@@ -31,8 +31,7 @@ public:
         PUSH,             ///< Updated by a push notification (BLOCK_AVAILABLE opcode)
         GET_ROUND,        ///< Updated by a GET_ROUND / NEW_ROUND response
         TEMPLATE,         ///< Updated by a received mining template
-        KEEPALIVE_ACK,    ///< Updated by a KEEPALIVE_V2_ACK stateless response (prime + hash + fork_score)
-        LEGACY_KEEPALIVE, ///< Updated by a legacy SESSION_KEEPALIVE response (prime + hash + stake + nBits)
+        LEGACY_KEEPALIVE, ///< Updated by a keepalive response (SESSION_KEEPALIVE or KEEPALIVE_V2_ACK)
     };
 
     /**
@@ -49,16 +48,13 @@ public:
         UpdateSource last_update_source{UpdateSource::NONE};
 
         // ── All three channel heights, kept independently ──────────────────────
-        uint32_t prime_height{0};   ///< Prime channel height (GET_ROUND / KeepaliveAck / LegacyKeepalive)
-        uint32_t hash_height{0};    ///< Hash channel height  (GET_ROUND / KeepaliveAck / LegacyKeepalive)
-        uint32_t stake_height{0};   ///< Stake channel height (KeepaliveAck / LegacyKeepalive)
+        uint32_t prime_height{0};   ///< Prime channel height (OnLegacyKeepalive)
+        uint32_t hash_height{0};    ///< Hash channel height  (OnLegacyKeepalive)
+        uint32_t stake_height{0};   ///< Stake channel height (OnLegacyKeepalive)
 
         // ── Fork detection ─────────────────────────────────────────────────────
         uint32_t fork_score{0};      ///< Latest fork_score from KEEPALIVE_V2_ACK (0 = healthy)
         uint32_t peak_fork_score{0}; ///< Highest fork_score seen since start (persistent canary)
-
-        // ── Keepalive timing ───────────────────────────────────────────────────
-        std::chrono::steady_clock::time_point last_keepalive_ack_at{}; ///< Time of last OnKeepaliveAck() call
 
         /// Time of last push/GET_ROUND update
         std::chrono::steady_clock::time_point last_height_update{};
@@ -168,40 +164,26 @@ public:
     void UpdateWithHashPrevBlock(const uint1024_t& h);
 
     /**
-     * @brief Update heights from a stateless KEEPALIVE_V2_ACK response (opcode 0xD101).
+     * @brief Update heights from a keepalive response.
      *
-     * The stateless ACK carries: unified_height, prime_height, hash_height,
-     * stake_height, fork_score (32-byte wire format per LLL-TAO PR #299).
-     *
-     * @param unified_height  Node's unified blockchain height
-     * @param prime_height    Node's Prime channel height
-     * @param hash_height     Node's Hash channel height
-     * @param stake_height    Node's Stake channel height
-     * @param fork_score      Fork divergence score (0 = healthy, >0 = divergence magnitude)
-     */
-    void OnKeepaliveAck(uint32_t unified_height,
-                        uint32_t prime_height,
-                        uint32_t hash_height,
-                        uint32_t stake_height,
-                        uint32_t fork_score);
-
-    /**
-     * @brief Update heights from a legacy SESSION_KEEPALIVE response (28-byte v2 payload).
-     *
-     * The legacy keepalive carries: unified_height, prime_height, hash_height, stake_height, nBits.
-     * This is the ONLY source of stake_height on the miner side.
+     * Handles both KEEPALIVE_V2_ACK (stateless, 32-byte) and SESSION_KEEPALIVE
+     * (legacy, 28-byte) paths. Both carry: unified_height, prime_height,
+     * hash_height, stake_height. The stateless ACK adds fork_score; the legacy
+     * path adds nBits. Pass 0 for the field not present in a given path.
      *
      * @param unified_height  Node's unified blockchain height
      * @param prime_height    Node's Prime channel height
      * @param hash_height     Node's Hash channel height
      * @param stake_height    Node's Stake channel height
-     * @param nbits           Difficulty in compact nBits (0 = unknown, skip update)
+     * @param nbits           Difficulty in compact nBits (0 = not carried by this path)
+     * @param fork_score      Fork divergence score (0 = healthy or not carried by this path)
      */
     void OnLegacyKeepalive(uint32_t unified_height,
                             uint32_t prime_height,
                             uint32_t hash_height,
                             uint32_t stake_height,
-                            uint32_t nbits);
+                            uint32_t nbits,
+                            uint32_t fork_score = 0);
 
     // =========================================================================
     // Read methods
