@@ -133,10 +133,6 @@ public:
     // Returns an invalid (valid==false) snapshot if no v2 reply has been received yet.
     KeepaliveTelemetrySnapshot get_keepalive_telemetry() const { return m_keepalive_telemetry.get(); }
 
-    // Last fork_score received in a KEEPALIVE_V2_ACK frame.
-    // Returns 0 if no ACK has been received yet or the chain is healthy.
-    uint32_t get_last_keepalive_fork_score() const { return m_height_tracker.GetSnapshot().peak_fork_score; }
-
     // SessionManager keepalive needs connection context
     void set_connection(std::shared_ptr<network::Connection> connection);
     
@@ -173,6 +169,9 @@ public:
     
     // HeightTracker snapshot (single source of truth for height/staleness decisions)
     HeightTracker::Snapshot get_height_tracker_snapshot() const { return m_height_tracker.GetSnapshot(); }
+
+    // HeightTracker reference (for direct read access by ColinAgent)
+    const HeightTracker& get_height_tracker() const { return m_height_tracker; }
 
     // Recovery callback: called by the push handler when a channel-stale recovery GET_BLOCK
     // is triggered (is_template_stale() is true at request_work_fn invocation time).

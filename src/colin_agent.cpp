@@ -158,14 +158,6 @@ void ColinAgent::run_diagnostics()
     if (m_dcm && !m_dcm->is_legacy_alive())
         recommendations.push_back("Check secondary (legacy:8323) connectivity");
 
-    // Update persistent fork-score canary from latest KEEPALIVE_V2_ACK data.
-    if (m_fork_score_source)
-    {
-        uint32_t fs = m_fork_score_source();
-        if (fs > m_last_fork_score)
-            m_last_fork_score = fs;
-    }
-
     emit_report(warnings, recommendations, gs);
 }
 void ColinAgent::emit_report(
@@ -186,8 +178,17 @@ void ColinAgent::emit_report(
         gs.m_accepted_blocks, gs.m_rejected_blocks, gs.m_connection_retries);
     if (gs.m_degraded_mode)
         m_logger->warn("[Colin]  ⚠️  MINING STOPPED — workers in degraded mode");
-    if (m_last_fork_score > 0)
-        m_logger->warn("[Colin]  KEEPALIVE_V2 fork_score={} ← fork canary active", m_last_fork_score);
+    if (m_height_tracker)
+    {
+        auto snap = m_height_tracker->GetSnapshot();
+        m_logger->info("[Colin]  Heights │ unified={} prime={} hash={} stake={}  (channel_height={})",
+            snap.unified_height, snap.prime_height,
+            snap.hash_height,    snap.stake_height,
+            snap.channel_height);
+        if (snap.peak_fork_score > 0)
+            m_logger->warn("[Colin]  ⚠️  FORK CANARY active: peak_fork_score={} current_fork_score={}",
+                snap.peak_fork_score, snap.fork_score);
+    }
 
     if (!warnings.empty())
     {
@@ -210,8 +211,7 @@ void ColinAgent::emit_report(
         if (ping.valid)
         {
             m_logger->info("[Colin]  ── Node Diagnostics (last PING_DIAG) ──────────");
-            m_logger->info("[Colin]    Seq #{}  NodeHeight={}  ChHeight={}",
-                ping.sequence, ping.unified_height, ping.channel_height);
+            m_logger->info("[Colin]    PING_DIAG Seq #{}", ping.sequence);
 
             /* Template push rates with drought warnings */
             if (ping.prime_pushes_30s == 0 && ping.hash_pushes_30s == 0)

@@ -2914,15 +2914,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->debug("[Colin PING] PongFrame transmitted (seq #{})",
                 m_colin_ping_handler.last_received_ping().sequence);
         }
-
-        /* Colin AI reactions — run after PONG is sent so reply latency is unaffected */
-        {
-            const auto& last_ping = m_colin_ping_handler.last_received_ping();
-            m_colin_ping_handler.ReactToNodeHealth(last_ping.health_flags, m_logger);
-            m_colin_ping_handler.ValidateHeightConsistency(
-                last_ping,
-                m_height_tracker.GetSnapshot().unified_height);
-        }
     }
     // ═══════════════════════════════════════════════════════════════════════
     // KEEPALIVE_V2_ACK (0xD101) — stateless-only, 32-byte chain-state payload
