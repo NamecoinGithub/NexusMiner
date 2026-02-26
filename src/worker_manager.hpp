@@ -126,9 +126,9 @@ private:
     // True once at least one GET_BLOCK has been CONFIRMED transmitted in the current
     // recovery epoch.  Reset to false at the start of each new recovery epoch.
     // Used by check_template_health() to detect the doom-loop symptom where every
-    // attempt is rate-limited and the node never receives the request.
+    // GET_BLOCK attempt is rate-limited and the node never receives the request.
     bool m_recovery_get_block_transmitted{false};
-
+    
     // Persistent receive accumulator for TCP stream reassembly
     // Using deque for O(1) front removal when consuming packets
     std::deque<uint8_t> m_rx_accumulator;

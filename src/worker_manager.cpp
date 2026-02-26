@@ -1288,7 +1288,7 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
     m_recovery_started_at = now;
     m_recovery_last_get_block_sent_at = {};         // cleared so first health-monitor check can resend
     m_recovery_last_get_block_transmitted_at = {};  // no confirmed transmission in new epoch yet
-    m_recovery_get_block_transmitted = false;       // no confirmed transmission in new epoch yet
+    m_recovery_get_block_transmitted = false;  // no confirmed transmission in new epoch yet
     m_logger->warn("[Worker_manager] ⚑ RECOVERY INITIATED — epoch {} (reason: {})",
                    m_recovery_epoch, reason ? reason : "unknown");
     m_logger->warn("[Worker_manager]   Health monitor will NOT stop workers during {} s recovery window",
@@ -1532,15 +1532,18 @@ void Worker_manager::check_template_health()
                 // Within recovery window: workers keep mining; only resend GET_BLOCK if
                 // RECOVERY_RESEND_INTERVAL has elapsed since the last confirmed transmission.
                 // Use m_recovery_last_get_block_transmitted_at (only set when a GET_BLOCK was
-                // actually transmitted) so rate-limited attempts don't suppress retries.
+                // actually transmitted) so that rate-limited attempts don't suppress retries.
                 bool first_send = (m_recovery_last_get_block_transmitted_at == std::chrono::steady_clock::time_point{});
                 auto since_last_s = first_send ? recovery_elapsed_s
                     : std::chrono::duration_cast<std::chrono::seconds>(
                           now_ts - m_recovery_last_get_block_transmitted_at).count();
 
+                // Change C: doom-loop stall detection — warn if recovery has been running
+                // for > 30 s without a single confirmed GET_BLOCK transmission.
                 if (recovery_elapsed_s > 30 && !m_recovery_get_block_transmitted) {
                     m_logger->warn("[Worker_manager] ⚠️ RECOVERY STALL: {}s elapsed, NO GET_BLOCK has been transmitted yet "
                         "(all attempts rate-limited). Forcing immediate bypass...", recovery_elapsed_s);
+                    // Use get_work_immediate() which resets the miner-side rate-limiter clock.
                     retry_template_request(true);
                     return;
                 }
