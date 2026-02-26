@@ -58,6 +58,14 @@ public:
     using PingSource = std::function<::LLP::ReceivedPingFrame()>;
     void set_ping_source(PingSource fn) { m_ping_source = std::move(fn); }
 
+    // ── KEEPALIVE_V2 Fork-Score Source ────────────────────────────────────
+    // Optional callback that returns the fork_score from the last
+    // KEEPALIVE_V2_ACK frame received by Solo.  Set by Worker_manager.
+    // A non-zero value means the node reported chain divergence; ColinAgent
+    // persists the highest seen value as a "canary" in the diagnostic report.
+    using ForkScoreSource = std::function<uint32_t()>;
+    void set_fork_score_source(ForkScoreSource fn) { m_fork_score_source = std::move(fn); }
+
     // ── Warning catalog ────────────────────────────────────────────────────
     // Returns a non-empty string if the pattern matches, empty string otherwise.
     // Used by tests to verify each warning pattern triggers the right text.
@@ -96,6 +104,8 @@ private:
     bool m_running{false};
 
     PingSource m_ping_source;  // Optional: supplies last ReceivedPingFrame for the report
+    ForkScoreSource m_fork_score_source;  // Optional: supplies last KEEPALIVE_V2_ACK fork_score
+    uint32_t m_last_fork_score{0};  // Persistent canary: highest fork_score seen since start
 
     std::deque<DiagSnapshot> m_history; // last 10 snapshots
 };
