@@ -1021,6 +1021,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             packet.m_header, get_llp_header_name(packet.m_header), packet.m_length);
         return;
     }
+
+    /* Guard: Un-mirrored stateless opcodes must never arrive on legacy lane */
+    if (m_protocol_lane == ProtocolLane::LEGACY &&
+        ::LLP::IsUnmirroredDataOpcode(static_cast<uint16_t>(packet.m_header)))
+    {
+        m_logger->error("[Colin] REJECTED un-mirrored stateless opcode 0x{:04x} ({}) on legacy lane"
+                        " — stateless port required",
+            packet.m_header, ::LLP::GetUnmirroredOpcodeName(static_cast<uint16_t>(packet.m_header)));
+        if (connection) connection->close();
+        return;
+    }
     
     // Log received packet for diagnostics with port information
     if (connection) {
@@ -2841,20 +2852,70 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
     }
     // ═══════════════════════════════════════════════════════════════════════
-    // COLIN AI DIAGNOSTIC PING/PONG (opcode 0xE0 legacy / 0xD0E0 stateless)
+    // COLIN AI DIAGNOSTIC PING/PONG (opcode 0xD0E0 stateless-only)
     // ═══════════════════════════════════════════════════════════════════════
     else if (matches_opcode(0xE0))
     {
-        /* Parse 64-byte PingFrame, build telemetry-enriched PongFrame, reply immediately */
-        const bool is_stateless = (m_protocol_lane == ProtocolLane::STATELESS);
-        std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
-        auto pong_bytes = m_colin_ping_handler.HandlePing(payload, is_stateless);
-        if(!pong_bytes.empty() && connection)
+        /* PING_DIAG is stateless-only — reject on legacy lane */
+        if (m_protocol_lane != ProtocolLane::STATELESS)
         {
-            /* PONG opcode: 0xE1 legacy / 0xD0E1 stateless (mirror-mapped by PacketBuilder) */
+            m_logger->warn("[Colin PING] PING_DIAG rejected on non-stateless lane — stateless port required");
+            return;
+        }
+
+        /* Exact payload size enforcement for fixed-size PING_DIAG opcode */
+        std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
+        uint32_t nExpected = ::LLP::GetExpectedPayloadSize(::LLP::ColinDiagOpcodes::PING_DIAG);
+        if (payload.size() != nExpected)
+        {
+            m_logger->warn("[Colin PING] Payload size mismatch for PING_DIAG:"
+                           " expected {} bytes, got {} — discarding",
+                nExpected, payload.size());
+            return;
+        }
+
+        /* Parse 64-byte PingFrame, build telemetry-enriched PongFrame, reply immediately */
+        auto pong_bytes = m_colin_ping_handler.HandlePing(payload, true /* stateless */);
+        if (!pong_bytes.empty() && connection)
+        {
+            /* PONG opcode: 0xD0E1 stateless (mirror-mapped by PacketBuilder) */
             connection->transmit(PacketBuilder::build(m_protocol_lane, 0xE1, pong_bytes));
             m_logger->debug("[Colin PING] PongFrame transmitted (seq #{})",
                 m_colin_ping_handler.last_received_ping().sequence);
+        }
+    }
+    // ═══════════════════════════════════════════════════════════════════════
+    // KEEPALIVE_V2_ACK (0xD101) — stateless-only, 28-byte chain-state payload
+    // ═══════════════════════════════════════════════════════════════════════
+    else if (packet.m_is_uint16_opcode &&
+             packet.m_header == static_cast<uint16_t>(::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK))
+    {
+        std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
+        uint32_t nExpected = ::LLP::GetExpectedPayloadSize(::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK);
+        if (payload.size() != nExpected)
+        {
+            m_logger->warn("[KEEPALIVE_V2] ACK payload size mismatch:"
+                           " expected {} bytes, got {} — discarding",
+                nExpected, payload.size());
+            return;
+        }
+        ::LLP::KeepAliveV2AckFrame ack;
+        if (ack.Parse(payload))
+        {
+            m_logger->debug("[KEEPALIVE_V2] ACK received: seq={}"
+                            " unified_height={} prime_height={} hash_height={}"
+                            " hashPrevBlock_lo32=0x{:08x} hash_tip_lo32=0x{:08x} fork_score={}",
+                ack.sequence,
+                ack.unified_height, ack.prime_height, ack.hash_height,
+                ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
+
+            /* Fork detection: compare node's chain tip against the miner's prevHash canary */
+            if (ack.IsForkDetected(ack.hashPrevBlock_lo32))
+            {
+                m_logger->warn("[KEEPALIVE_V2] Fork detected!"
+                               " miner_prevHash_lo32=0x{:08x} node_tip_lo32=0x{:08x} fork_score={}",
+                    ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
+            }
         }
     }
     else

@@ -11,6 +11,7 @@
 #include "miner_opcodes.hpp"
 #include "llp_logging.hpp"
 #include "protocol_lane.hpp"
+#include "LLP/include/colin_ping_protocol.h"
 #include <spdlog/spdlog.h>
 
 namespace nexusminer
@@ -93,6 +94,9 @@ namespace nexusminer
 		// (node pushes 228-byte template via this opcode)
 		inline bool is_stateless_header_only_opcode(uint16_t opcode) {
 			if (!is_stateless_opcode(opcode)) return false;
+			// Un-mirrored data opcodes (KEEPALIVE_V2, KEEPALIVE_V2_ACK, PING_DIAG, PONG_DIAG)
+			// are always data-bearing — never header-only
+			if (::LLP::IsUnmirroredDataOpcode(opcode)) return false;
 			// GET_BLOCK (0xD081) is ALWAYS data-bearing on stateless lane (228-byte template push)
 			// Legacy GET_BLOCK (129) is header-only request, but stateless repurposes it for push
 			if (opcode == LLP::StatelessMining::GET_BLOCK) return false;
@@ -1057,12 +1061,14 @@ namespace nexusminer
 			
 			// Validate that this is a valid opcode for stateless lane
 			// Accept properly mirrored stateless opcodes (0xD0xx) OR
-			// Accept un-mirrored push notification opcodes (217, 218) due to node bug
+			// Accept un-mirrored push notification opcodes (217, 218) due to node bug OR
+			// Accept un-mirrored data opcodes (KEEPALIVE_V2=0xD100, KEEPALIVE_V2_ACK=0xD101)
 			bool is_valid_stateless = PacketConstants::is_stateless_opcode(header16);
 			bool is_unmirrored_push_notification = (header16 == LLP::PRIME_BLOCK_AVAILABLE || 
 			                                        header16 == LLP::HASH_BLOCK_AVAILABLE);
+			bool is_unmirrored_data = ::LLP::IsUnmirroredDataOpcode(header16);
 			
-			if (!is_valid_stateless && !is_unmirrored_push_notification)
+			if (!is_valid_stateless && !is_unmirrored_push_notification && !is_unmirrored_data)
 			{
 				// Invalid opcode for stateless lane - malformed
 				result = ParseResult::MALFORMED;
@@ -1070,6 +1076,7 @@ namespace nexusminer
 			}
 			
 			// Check if this opcode is header-only (no length field follows)
+			// Un-mirrored data opcodes are always data-bearing (never header-only)
 			if (is_valid_stateless && PacketConstants::is_stateless_header_only_opcode(header16))
 			{
 				// Header-only stateless packet: complete with just 2-byte header

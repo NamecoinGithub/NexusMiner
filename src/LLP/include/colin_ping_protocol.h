@@ -22,18 +22,57 @@ ________________________________________________________________________________
 namespace LLP
 {
 
+    //=========================================================================
+    // UN-MIRRORED STATELESS-ONLY OPCODES
+    // These DO NOT follow the 0xD000|legacy mirror formula.
+    // They are STATELESS PORT ONLY — never valid on legacy port.
+    // ALL carry DATA payloads — never header-only.
+    //=========================================================================
+
+    /** KeepAlive V2 — stateless-only session keepalive with data payload **/
+    namespace KeepAliveV2Opcodes
+    {
+        /** KEEPALIVE_V2 (0xD100)
+         *
+         *  Sent by miner → node to keep authenticated stateless session alive.
+         *  DATA-bearing: 8-byte payload (big-endian):
+         *    [0-3]  uint32_t  sequence            Monotonic miner keepalive counter
+         *    [4-7]  uint32_t  hashPrevBlock_lo32  Low 32 bits of miner's current prevHash (fork canary)
+         *
+         *  NOT a mirror of legacy PING (0xFD). Completely independent opcode.
+         *  Legacy port: use bare PING (0xFD, header-only).
+         **/
+        static constexpr uint16_t KEEPALIVE_V2     = 0xD100;
+
+        /** KEEPALIVE_V2_ACK (0xD101)
+         *
+         *  Sent by node → miner in response to KEEPALIVE_V2.
+         *  DATA-bearing: 28-byte payload (big-endian):
+         *    [0-3]   uint32_t  sequence            Echo of miner's sequence
+         *    [4-7]   uint32_t  hashPrevBlock_lo32  Echo of miner's prevHash canary
+         *    [8-11]  uint32_t  unified_height      Node's unified block height
+         *    [12-15] uint32_t  hash_tip_lo32       Low 32 bits of node's hashBestChain
+         *    [16-19] uint32_t  prime_height         Node's Prime channel height
+         *    [20-23] uint32_t  hash_height          Node's Hash channel height
+         *    [24-27] uint32_t  fork_score           0=healthy, >0=divergence magnitude
+         **/
+        static constexpr uint16_t KEEPALIVE_V2_ACK = 0xD101;
+
+        /** Payload sizes **/
+        static constexpr uint32_t KEEPALIVE_V2_PAYLOAD_SIZE     = 8;
+        static constexpr uint32_t KEEPALIVE_V2_ACK_PAYLOAD_SIZE = 28;
+    }
+
     /** Colin AI Diagnostic PING/PONG Opcodes
      *
      *  Piggybacked on every 60-second Colin Agent emit_report() cycle.
      *  Node sends PingFrame → Miner replies with PongFrame immediately.
      *
-     *  Stateless lane (16-bit):
+     *  Stateless lane (16-bit) ONLY:
      *    PING_DIAG: 0xD0E0
      *    PONG_DIAG: 0xD0E1
      *
-     *  Legacy lane (8-bit):
-     *    PING_DIAG: 0xE0
-     *    PONG_DIAG: 0xE1
+     *  NOT mirrored from any legacy opcode. Stateless port only.
      **/
     namespace ColinDiagOpcodes
     {
@@ -41,6 +80,13 @@ namespace LLP
         static constexpr uint16_t PONG_DIAG_STATELESS = 0xD0E1;
         static constexpr uint16_t PING_DIAG_LEGACY    = 0x00E0;
         static constexpr uint16_t PONG_DIAG_LEGACY    = 0x00E1;
+
+        /** Canonical stateless-only names (un-mirrored, data-bearing) **/
+        static constexpr uint16_t PING_DIAG  = PING_DIAG_STATELESS;  // 0xD0E0
+        static constexpr uint16_t PONG_DIAG  = PONG_DIAG_STATELESS;  // 0xD0E1
+
+        /** Exact payload size for both PING_DIAG and PONG_DIAG **/
+        static constexpr uint32_t PAYLOAD_SIZE = 64;
     }
 
     /** Wire frame size — both PingFrame and PongFrame are exactly 64 bytes on the wire. **/
@@ -261,6 +307,153 @@ namespace LLP
 
             assert(v.size() == COLIN_FRAME_SIZE);
             return v;
+        }
+    };
+
+    //=========================================================================
+    // OPCODE CLASSIFICATION HELPERS (miner side)
+    //=========================================================================
+
+    /** IsUnmirroredDataOpcode
+     *
+     *  Returns true if the 16-bit opcode is one of the un-mirrored,
+     *  stateless-only, DATA-bearing opcodes.
+     *
+     *  These must NEVER be received or sent on the legacy lane.
+     *
+     **/
+    inline bool IsUnmirroredDataOpcode(uint16_t opcode)
+    {
+        return opcode == KeepAliveV2Opcodes::KEEPALIVE_V2
+            || opcode == KeepAliveV2Opcodes::KEEPALIVE_V2_ACK
+            || opcode == ColinDiagOpcodes::PING_DIAG
+            || opcode == ColinDiagOpcodes::PONG_DIAG;
+    }
+
+    /** GetExpectedPayloadSize
+     *
+     *  Returns the required exact payload length (bytes) for fixed-size un-mirrored opcodes.
+     *  Returns 0 for variable-length, header-only, or unknown opcodes.
+     *
+     **/
+    inline uint32_t GetExpectedPayloadSize(uint16_t opcode)
+    {
+        if (opcode == KeepAliveV2Opcodes::KEEPALIVE_V2)
+            return KeepAliveV2Opcodes::KEEPALIVE_V2_PAYLOAD_SIZE;     // 8
+
+        if (opcode == KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
+            return KeepAliveV2Opcodes::KEEPALIVE_V2_ACK_PAYLOAD_SIZE; // 28
+
+        if (opcode == ColinDiagOpcodes::PING_DIAG
+        ||  opcode == ColinDiagOpcodes::PONG_DIAG)
+            return ColinDiagOpcodes::PAYLOAD_SIZE;                     // 64
+
+        return 0;
+    }
+
+    /** GetUnmirroredOpcodeName
+     *
+     *  Returns a human-readable label for un-mirrored opcodes (for logging).
+     *
+     **/
+    inline const char* GetUnmirroredOpcodeName(uint16_t opcode)
+    {
+        switch (opcode)
+        {
+            case KeepAliveV2Opcodes::KEEPALIVE_V2:     return "KEEPALIVE_V2";
+            case KeepAliveV2Opcodes::KEEPALIVE_V2_ACK: return "KEEPALIVE_V2_ACK";
+            case ColinDiagOpcodes::PING_DIAG:          return "PING_DIAG";
+            case ColinDiagOpcodes::PONG_DIAG:          return "PONG_DIAG";
+            default:                                   return "UNKNOWN_UNMIRRORED";
+        }
+    }
+
+    //=========================================================================
+    // KEEPALIVE V2 WIRE FRAME STRUCTS
+    //=========================================================================
+
+    /** KeepAliveV2Frame — 8-byte Miner → Node payload (send side) **/
+    struct KeepAliveV2Frame
+    {
+        uint32_t sequence{0};
+        uint32_t hashPrevBlock_lo32{0};  // low 32 bits of miner's current prevHash (fork canary)
+
+        static constexpr uint32_t PAYLOAD_SIZE = 8;
+
+        std::vector<uint8_t> Serialize() const
+        {
+            std::vector<uint8_t> v;
+            v.reserve(8);
+            auto p32 = [&](uint32_t x){
+                v.push_back((x >> 24) & 0xFF); v.push_back((x >> 16) & 0xFF);
+                v.push_back((x >>  8) & 0xFF); v.push_back( x        & 0xFF);
+            };
+            p32(sequence);
+            p32(hashPrevBlock_lo32);
+            return v;
+        }
+
+        bool Parse(const std::vector<uint8_t>& data)
+        {
+            if (data.size() < 8) return false;
+            auto r32 = [&](int o) -> uint32_t {
+                return (uint32_t(data[o  ]) << 24) | (uint32_t(data[o+1]) << 16)
+                     | (uint32_t(data[o+2]) <<  8) |  uint32_t(data[o+3]);
+            };
+            sequence           = r32(0);
+            hashPrevBlock_lo32 = r32(4);
+            return true;
+        }
+    };
+
+    /** KeepAliveV2AckFrame — 28-byte Node → Miner payload (receive side)
+     *
+     *  After parsing, call IsForkDetected() to check for chain divergence.
+     *  Feed unified_height / prime_height / hash_height to the
+     *  Unified Block Height Manager.
+     *  Feed fork_score to the Fork Resolution Manager.
+     **/
+    struct KeepAliveV2AckFrame
+    {
+        uint32_t sequence{0};
+        uint32_t hashPrevBlock_lo32{0};  // echo of what miner sent
+        uint32_t unified_height{0};      // node's unified block height
+        uint32_t hash_tip_lo32{0};       // low 32 bits of node's hashBestChain
+        uint32_t prime_height{0};        // node's Prime channel height
+        uint32_t hash_height{0};         // node's Hash channel height
+        uint32_t fork_score{0};          // 0 = healthy, >0 = divergence magnitude
+
+        static constexpr uint32_t PAYLOAD_SIZE = 28;
+
+        /** IsForkDetected
+         *
+         *  Call with the hashPrevBlock_lo32 that the miner sent in the request.
+         *  Returns true if the node's chain tip low-32 doesn't match OR if
+         *  the node's Latent Fork Detection Manager reports non-zero score.
+         *
+         *  @param[in] myHashPrevBlock_lo32  The value miner sent in the request
+         *  @return true if fork detected, false if chains agree
+         **/
+        bool IsForkDetected(uint32_t myHashPrevBlock_lo32) const
+        {
+            return (hash_tip_lo32 != myHashPrevBlock_lo32) || (fork_score > 0);
+        }
+
+        bool Parse(const std::vector<uint8_t>& data)
+        {
+            if (data.size() < 28) return false;
+            auto r32 = [&](int o) -> uint32_t {
+                return (uint32_t(data[o  ]) << 24) | (uint32_t(data[o+1]) << 16)
+                     | (uint32_t(data[o+2]) <<  8) |  uint32_t(data[o+3]);
+            };
+            sequence           = r32(0);
+            hashPrevBlock_lo32 = r32(4);
+            unified_height     = r32(8);
+            hash_tip_lo32      = r32(12);
+            prime_height       = r32(16);
+            hash_height        = r32(20);
+            fork_score         = r32(24);
+            return true;
         }
     };
 
