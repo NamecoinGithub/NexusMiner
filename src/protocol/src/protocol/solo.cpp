@@ -1022,6 +1022,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         return;
     }
     
+    /* Guard: Un-mirrored stateless opcodes must never arrive on legacy lane */
+    if(m_protocol_lane == ProtocolLane::LEGACY &&
+       ::LLP::IsUnmirroredDataOpcode(static_cast<uint16_t>(packet.m_header)))
+    {
+        m_logger->error("[Colin] REJECTED un-mirrored stateless opcode 0x{:04x} ({}) on legacy lane"
+                        " — stateless port required",
+            packet.m_header, ::LLP::GetUnmirroredOpcodeName(static_cast<uint16_t>(packet.m_header)));
+        if(connection) connection->close();
+        return;
+    }
+    
     // Log received packet for diagnostics with port information
     if (connection) {
         auto const& remote_ep = connection->remote_endpoint();
@@ -2841,20 +2852,59 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
     }
     // ═══════════════════════════════════════════════════════════════════════
-    // COLIN AI DIAGNOSTIC PING/PONG (opcode 0xE0 legacy / 0xD0E0 stateless)
+    // COLIN AI DIAGNOSTIC PING/PONG (opcode 0xD0E0 stateless-only)
     // ═══════════════════════════════════════════════════════════════════════
     else if (matches_opcode(0xE0))
     {
-        /* Parse 64-byte PingFrame, build telemetry-enriched PongFrame, reply immediately */
-        const bool is_stateless = (m_protocol_lane == ProtocolLane::STATELESS);
+        /* PING_DIAG is stateless-only — reject on legacy lane */
+        if(m_protocol_lane != ProtocolLane::STATELESS)
+        {
+            m_logger->warn("[Colin PING] PING_DIAG rejected on non-stateless lane — stateless port required");
+            return;
+        }
+
+        /* Exact payload size enforcement for fixed-size PING_DIAG opcode */
         std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
-        auto pong_bytes = m_colin_ping_handler.HandlePing(payload, is_stateless);
+        uint32_t nExpected = ::LLP::GetExpectedPayloadSize(::LLP::ColinDiagOpcodes::PING_DIAG);
+        if(payload.size() != nExpected)
+        {
+            m_logger->warn("[Colin PING] Payload size mismatch for PING_DIAG:"
+                           " expected {} bytes, got {} — discarding",
+                nExpected, payload.size());
+            return;
+        }
+
+        /* Parse 64-byte PingFrame, build telemetry-enriched PongFrame, reply immediately */
+        auto pong_bytes = m_colin_ping_handler.HandlePing(payload, true /* stateless */);
         if(!pong_bytes.empty() && connection)
         {
-            /* PONG opcode: 0xE1 legacy / 0xD0E1 stateless (mirror-mapped by PacketBuilder) */
+            /* PONG opcode: 0xD0E1 stateless (mirror-mapped by PacketBuilder) */
             connection->transmit(PacketBuilder::build(m_protocol_lane, 0xE1, pong_bytes));
             m_logger->debug("[Colin PING] PongFrame transmitted (seq #{})",
                 m_colin_ping_handler.last_received_ping().sequence);
+        }
+    }
+    // ═══════════════════════════════════════════════════════════════════════
+    // KEEPALIVE_V2_ACK (0xD101) — stateless-only, 8-byte echo payload
+    // ═══════════════════════════════════════════════════════════════════════
+    else if(packet.m_is_uint16_opcode &&
+            packet.m_header == ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
+    {
+        /* Exact payload size enforcement for KEEPALIVE_V2_ACK */
+        std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
+        uint32_t nExpected = ::LLP::GetExpectedPayloadSize(::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK);
+        if(payload.size() != nExpected)
+        {
+            m_logger->warn("[KEEPALIVE_V2] ACK payload size mismatch:"
+                           " expected {} bytes, got {} — discarding",
+                nExpected, payload.size());
+            return;
+        }
+        ::LLP::KeepAliveV2Frame ack;
+        if(ack.Parse(payload))
+        {
+            m_logger->debug("[KEEPALIVE_V2] ACK received: seq={}, timestamp_s={}",
+                ack.sequence, ack.timestamp_s);
         }
     }
     else
