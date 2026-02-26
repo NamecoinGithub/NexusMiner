@@ -339,6 +339,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     clear_recovery_state();
                 } else {
                     m_logger->error("[Worker_manager] FAILED: No workers received template!");
+                    // Immediately request a new template — don't wait 30s for health monitor.
+                    // stop_all_workers() sets m_degraded_mode=true so check_template_health()
+                    // correctly retries at its 30s rate-cap if this request is also unanswered.
+                    stop_all_workers();
+                    retry_template_request(true);
                 }
             }
         );
