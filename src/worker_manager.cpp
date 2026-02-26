@@ -41,12 +41,12 @@ namespace {
 
     // Recovery window: if no template arrives within this many seconds after a
     // GET_BLOCK recovery is initiated, the health monitor escalates to hard recovery.
-    constexpr uint64_t RECOVERY_WINDOW_SECONDS = 60;
+    constexpr int64_t RECOVERY_WINDOW_SECONDS = 60;
 
     // Minimum interval between successive GET_BLOCK sends by the health monitor
     // during an active recovery.  Prevents rapid-fire GETs while still allowing
     // periodic retries if the first attempt is not answered.
-    constexpr uint64_t RECOVERY_RESEND_INTERVAL_SECONDS = 10;
+    constexpr int64_t RECOVERY_RESEND_INTERVAL_SECONDS = 10;
 }
 
 Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Config& config, 
@@ -1219,8 +1219,12 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
 {
     auto now = std::chrono::steady_clock::now();
     if (m_recovery_pending) {
-        // Already in a recovery epoch — do not reset the start time, but log so
-        // operators can see repeated initiations within the same epoch.
+        // Already in a recovery epoch — do NOT reset the start time or increment the
+        // epoch counter.  Multiple sources (push handler, health monitor) may both
+        // call mark_recovery_initiated() for the same staleness event; only the first
+        // call anchors the 60 s recovery window.  The reason parameter is logged here
+        // for observability (operators can see all sources that noticed the staleness)
+        // but the epoch is intentionally unchanged to avoid resetting the window clock.
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             now - m_recovery_started_at).count();
         m_logger->info("[Worker_manager] Recovery already pending (epoch {}, {}s elapsed, reason: {})",
@@ -1415,7 +1419,7 @@ void Worker_manager::check_template_health()
             auto recovery_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
                 now_ts - m_recovery_started_at).count();
 
-            if (recovery_elapsed_s < static_cast<int64_t>(RECOVERY_WINDOW_SECONDS)) {
+            if (recovery_elapsed_s < RECOVERY_WINDOW_SECONDS) {
                 // Within recovery window: workers keep mining; only resend GET_BLOCK if
                 // RECOVERY_RESEND_INTERVAL has elapsed since the last send.
                 bool first_send = (m_recovery_last_get_block_sent_at == std::chrono::steady_clock::time_point{});
@@ -1423,9 +1427,9 @@ void Worker_manager::check_template_health()
                     : std::chrono::duration_cast<std::chrono::seconds>(
                           now_ts - m_recovery_last_get_block_sent_at).count();
 
-                if (first_send || since_last_s >= static_cast<int64_t>(RECOVERY_RESEND_INTERVAL_SECONDS)) {
-                    m_logger->info("[Worker_manager] ⟳ Recovery resend GET_BLOCK (epoch {}, {}s elapsed, last sent {}s ago)",
-                        m_recovery_epoch, recovery_elapsed_s, first_send ? -1LL : since_last_s);
+                if (first_send || since_last_s >= RECOVERY_RESEND_INTERVAL_SECONDS) {
+                    m_logger->info("[Worker_manager] ⟳ Recovery resend GET_BLOCK (epoch {}, {}s elapsed, last sent: {})",
+                        m_recovery_epoch, recovery_elapsed_s, first_send ? "never" : std::to_string(since_last_s) + "s ago");
                     retry_template_request(true);  // Force GET_BLOCK + MINER_READY
                 } else {
                     m_logger->info("[Worker_manager] ⧖ Recovery pending (epoch {}, {}s elapsed) — health monitor skip-stop; "
