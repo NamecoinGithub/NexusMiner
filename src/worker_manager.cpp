@@ -1269,7 +1269,9 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
     ++m_recovery_epoch;
     m_recovery_pending = true;
     m_recovery_started_at = now;
-    m_recovery_last_get_block_sent_at = {};  // cleared so first health-monitor check can resend
+    m_recovery_last_get_block_sent_at = {};         // cleared so first health-monitor check can resend
+    m_recovery_last_get_block_transmitted_at = {};  // no confirmed transmission in new epoch yet
+    m_recovery_get_block_transmitted = false;  // no confirmed transmission in new epoch yet
     m_logger->warn("[Worker_manager] ⚑ RECOVERY INITIATED — epoch {} (reason: {})",
                    m_recovery_epoch, reason ? reason : "unknown");
     m_logger->warn("[Worker_manager]   Health monitor will NOT stop workers during {} s recovery window",
@@ -1287,6 +1289,8 @@ void Worker_manager::clear_recovery_state()
     m_recovery_epoch = 0;
     m_recovery_started_at = {};
     m_recovery_last_get_block_sent_at = {};
+    m_recovery_last_get_block_transmitted_at = {};
+    m_recovery_get_block_transmitted = false;
 
     auto global_stats = m_stats_collector->get_global_stats();
     global_stats.m_degraded_mode = false;
@@ -1373,6 +1377,9 @@ void Worker_manager::retry_template_request(bool bForce)
         if (work_payload && !work_payload->empty()) {
             m_connection->transmit(work_payload);
             m_recovery_last_get_block_sent_at = std::chrono::steady_clock::now();
+            m_recovery_last_get_block_transmitted_at = m_recovery_last_get_block_sent_at;
+            m_recovery_get_block_transmitted = true;
+            m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
         } else {
             // Could be rate limited — not an error
             m_logger->warn("[Worker_manager]   GET_BLOCK suppressed (rate-limited or not authenticated) — recovery may be delayed");
@@ -1391,6 +1398,9 @@ void Worker_manager::retry_template_request(bool bForce)
         if (work_payload && !work_payload->empty()) {
             m_connection->transmit(work_payload);
             m_recovery_last_get_block_sent_at = std::chrono::steady_clock::now();
+            m_recovery_last_get_block_transmitted_at = m_recovery_last_get_block_sent_at;
+            m_recovery_get_block_transmitted = true;
+            m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
         } else {
             m_logger->warn("[Worker_manager]   GET_BLOCK suppressed (rate-limited or not authenticated) — falling back to MINER_READY only");
         }
@@ -1502,19 +1512,31 @@ void Worker_manager::check_template_health()
 
             if (recovery_elapsed_s < RECOVERY_WINDOW_SECONDS) {
                 // Within recovery window: workers keep mining; only resend GET_BLOCK if
-                // RECOVERY_RESEND_INTERVAL has elapsed since the last send.
-                bool first_send = (m_recovery_last_get_block_sent_at == std::chrono::steady_clock::time_point{});
+                // RECOVERY_RESEND_INTERVAL has elapsed since the last confirmed transmission.
+                // Use m_recovery_last_get_block_transmitted_at (only set when a GET_BLOCK was
+                // actually transmitted) so that rate-limited attempts don't suppress retries.
+                bool first_send = (m_recovery_last_get_block_transmitted_at == std::chrono::steady_clock::time_point{});
                 auto since_last_s = first_send ? recovery_elapsed_s
                     : std::chrono::duration_cast<std::chrono::seconds>(
-                          now_ts - m_recovery_last_get_block_sent_at).count();
+                          now_ts - m_recovery_last_get_block_transmitted_at).count();
+
+                // Change C: doom-loop stall detection — warn if recovery has been running
+                // for > 30 s without a single confirmed GET_BLOCK transmission.
+                if (recovery_elapsed_s > 30 && !m_recovery_get_block_transmitted) {
+                    m_logger->warn("[Worker_manager] ⚠️ RECOVERY STALL: {}s elapsed, NO GET_BLOCK has been transmitted yet "
+                        "(all attempts rate-limited). Forcing immediate bypass...", recovery_elapsed_s);
+                    // Use get_work_immediate() which resets the miner-side rate-limiter clock.
+                    retry_template_request(true);
+                    return;
+                }
 
                 if (first_send || since_last_s >= RECOVERY_RESEND_INTERVAL_SECONDS) {
-                    m_logger->info("[Worker_manager] ⟳ Recovery resend GET_BLOCK (epoch {}, {}s elapsed, last sent: {})",
+                    m_logger->info("[Worker_manager] ⟳ Recovery resend GET_BLOCK (epoch {}, {}s elapsed, last transmitted: {})",
                         m_recovery_epoch, recovery_elapsed_s, first_send ? "never" : std::to_string(since_last_s) + "s ago");
                     retry_template_request(true);  // Force GET_BLOCK + MINER_READY
                 } else {
                     m_logger->info("[Worker_manager] ⧖ Recovery pending (epoch {}, {}s elapsed) — health monitor skip-stop; "
-                        "last GET_BLOCK {}s ago (resend in {}s)",
+                        "last GET_BLOCK transmitted {}s ago (resend in {}s)",
                         m_recovery_epoch, recovery_elapsed_s, since_last_s,
                         RECOVERY_RESEND_INTERVAL_SECONDS - since_last_s);
                 }
