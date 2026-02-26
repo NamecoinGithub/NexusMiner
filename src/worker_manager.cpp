@@ -743,25 +743,19 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                             self->m_logger,
                             self->m_config.get_colin_report_interval_seconds());
                         // Wire up PING_DIAG source so emit_report() can display node diagnostics
-                        if (dynamic_cast<protocol::Solo*>(self->m_miner_protocol.get()))
+                        if (auto* s = dynamic_cast<protocol::Solo*>(self->m_miner_protocol.get()))
                         {
                             std::weak_ptr<protocol::Protocol> weak_proto = self->m_miner_protocol;
                             self->m_colin_agent->set_ping_source(
                                 [weak_proto]() -> ::LLP::ReceivedPingFrame {
                                     auto proto = weak_proto.lock();
                                     if (!proto) return {};
-                                    auto* s = dynamic_cast<protocol::Solo*>(proto.get());
-                                    return s ? s->last_received_ping() : ::LLP::ReceivedPingFrame{};
+                                    auto* solo_ptr = dynamic_cast<protocol::Solo*>(proto.get());
+                                    return solo_ptr ? solo_ptr->last_received_ping() : ::LLP::ReceivedPingFrame{};
                                 });
-                            // Wire up KEEPALIVE_V2_ACK fork_score so emit_report() can
-                            // surface the fork canary in the periodic diagnostic report.
-                            self->m_colin_agent->set_fork_score_source(
-                                [weak_proto]() -> uint32_t {
-                                    auto proto = weak_proto.lock();
-                                    if (!proto) return 0;
-                                    auto* s = dynamic_cast<protocol::Solo*>(proto.get());
-                                    return s ? s->get_last_keepalive_fork_score() : 0;
-                                });
+                            // Wire up HeightTracker so emit_report() can display all channel heights
+                            // and the fork-score canary in the periodic diagnostic report.
+                            self->m_colin_agent->set_height_tracker(&s->get_height_tracker());
                         }
                         self->m_colin_agent->start();
                     }

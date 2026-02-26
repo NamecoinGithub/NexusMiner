@@ -52,10 +52,7 @@ namespace LLP
         /* 4. Log node health flags if any warnings are set */
         log_node_health(ping);
 
-        /* 5. Detect template drought */
-        detect_template_drought(ping);
-
-        /* 6. Build PongFrame echo */
+        /* 5. Build PongFrame echo */
         PongFrame pong = PongFrame::BuildFromPing(ping, recv_us, stateless);
 
         /* 7. Fill telemetry (safe defaults if no source registered) */
@@ -96,9 +93,7 @@ namespace LLP
                 mflags |= PongFrame::MFLAG_HASH_RATE_DROP;
             m_prev_hash_rate = hr;
 
-            /* MFLAG_STALE_WORK: height inconsistency from last ValidateHeightConsistency() */
-            if(!m_last_height_consistent)
-                mflags |= PongFrame::MFLAG_STALE_WORK;
+            /* MFLAG_STALE_WORK: left unset by miner side (node sets NFLAG_STALE_TEMPLATE if it detects staleness) */
 
             /* MFLAG_RECONNECT_RECOVERY: first PONG of this session */
             if(m_ping_count.load() == 1)
@@ -147,68 +142,5 @@ namespace LLP
             m_logger->warn("  [Colin PING] NODE: NODE_SYNCING (work may be stale)");
     }
 
-
-    void ColinPingHandler::ReactToNodeHealth(uint8_t flags, std::shared_ptr<spdlog::logger> logger)
-    {
-        if(!logger || flags == 0) return;
-
-        if(flags & ReceivedPingFrame::NFLAG_NODE_SYNCING)
-            logger->warn("[Colin AI] FLAG_NODE_SYNCING — node is not fully synced; work may be stale");
-        if(flags & ReceivedPingFrame::NFLAG_FIRST_CONNECT)
-            logger->info("[Colin AI] FLAG_FIRST_CONNECT — node reports first connect, resync channel");
-        if(flags & ReceivedPingFrame::NFLAG_HIGH_REJECT_RATE)
-            logger->warn("[Colin AI] FLAG_HIGH_REJECT_RATE — high rejection rate detected at node");
-        if(flags & ReceivedPingFrame::NFLAG_CHANNEL_MISMATCH)
-            logger->error("[Colin AI] FLAG_CHANNEL_MISMATCH — miner on wrong channel");
-        if(flags & ReceivedPingFrame::NFLAG_DEDUP_HIT)
-            logger->warn("[Colin AI] FLAG_DEDUP_HIT — node dedup cache hit, duplicate submission");
-        if(flags & ReceivedPingFrame::NFLAG_SIM_LINK_ACTIVE)
-            logger->debug("[Colin AI] FLAG_SIM_LINK_ACTIVE — sim link active on node");
-        if(flags & ReceivedPingFrame::NFLAG_RATE_LIMITED)
-            logger->warn("[Colin AI] FLAG_RATE_LIMITED — node is rate-limiting this miner, back off");
-        if(flags & ReceivedPingFrame::NFLAG_STALE_TEMPLATE)
-            logger->error("[Colin AI] FLAG_STALE_TEMPLATE — node detected stale template, request fresh block");
-    }
-
-
-    bool ColinPingHandler::ValidateHeightConsistency(const ReceivedPingFrame& ping, uint32_t myBestHeight)
-    {
-        if(!ping.valid || myBestHeight == 0)
-        {
-            m_last_height_consistent = true;
-            return true;
-        }
-
-        int32_t diff = static_cast<int32_t>(ping.unified_height)
-                     - static_cast<int32_t>(myBestHeight);
-
-        if(diff < -1 || diff > 1)
-        {
-            m_last_height_consistent = false;
-            if(m_logger)
-                m_logger->warn("[Colin AI] Height discrepancy: node={} miner={} diff={:+d} blocks",
-                    ping.unified_height, myBestHeight, diff);
-            return false;
-        }
-
-        m_last_height_consistent = true;
-        return true;
-    }
-
-
-    void ColinPingHandler::detect_template_drought(const ReceivedPingFrame& ping) const
-    {
-        if(!m_logger) return;
-
-        bool prime_drought = (ping.prime_pushes_30s == 0);
-        bool hash_drought  = (ping.hash_pushes_30s  == 0);
-
-        if(prime_drought && hash_drought)
-            m_logger->error("[Colin AI] Total template drought — node not pushing any templates");
-        else if(prime_drought && m_channel == 1)
-            m_logger->warn("[Colin AI] Prime template drought — no pushes in 30s window");
-        else if(hash_drought  && m_channel == 2)
-            m_logger->warn("[Colin AI] Hash template drought — no pushes in 30s window");
-    }
 
 } // namespace LLP
