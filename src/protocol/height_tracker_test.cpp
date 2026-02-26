@@ -428,80 +428,81 @@ void test_pre_push_template_identified_correctly() {
 }
 
 // ============================================================================
-// Test 14: OnKeepaliveAck (KEEPALIVE_V2_ACK path) sets all fields via helper
+// Test 14: OnKeepaliveResponse — unified path sets all channel heights + hash_tip_lo32
 // ============================================================================
-void test_on_keepalive_ack_sets_heights() {
-    std::cout << "\nTest 14: OnKeepaliveAck sets prime/hash/stake/fork_score via shared helper\n";
+void test_on_keepalive_response_unified() {
+    std::cout << "\nTest 14: OnKeepaliveResponse sets all channel heights including hash_tip_lo32\n";
     HeightTracker tracker;
     // Set channel to Hash (2) so channel_height mirrors hash_height
     tracker.OnTemplateReceived(2, 101);
-    tracker.OnKeepaliveAck(6000, 450, 800, 555, 3);
+    tracker.OnKeepaliveResponse(6000, 450, 800, 999, 0xCAFEBABEu, 3);
 
     auto snap = tracker.GetSnapshot();
     print_test_result("unified_height == 6000", snap.unified_height == 6000);
     print_test_result("prime_height == 450",    snap.prime_height == 450);
     print_test_result("hash_height == 800",     snap.hash_height == 800);
-    print_test_result("stake_height == 555",    snap.stake_height == 555);
+    print_test_result("stake_height == 999",    snap.stake_height == 999);
+    print_test_result("hash_tip_lo32 stored",   snap.hash_tip_lo32 == 0xCAFEBABEu);
     print_test_result("fork_score == 3",        snap.fork_score == 3);
     print_test_result("peak_fork_score == 3",   snap.peak_fork_score == 3);
     print_test_result("channel_height == hash_height (channel==2)",
                       snap.channel_height == 800);
     print_test_result("is_fork_active() == true", snap.is_fork_active());
-    print_test_result("last_update_source == KEEPALIVE_ACK",
-                      snap.last_update_source == HeightTracker::UpdateSource::KEEPALIVE_ACK);
+    print_test_result("last_update_source == KEEPALIVE",
+                      snap.last_update_source == HeightTracker::UpdateSource::KEEPALIVE);
 }
 
 // ============================================================================
-// Test 15: OnLegacyKeepalive (SESSION_KEEPALIVE path) sets stake_height and nBits
+// Test 15: OnKeepaliveResponse — legacy path (hash_tip_lo32=0, fork_score=0) is safe
 // ============================================================================
-void test_on_legacy_keepalive_sets_stake_height() {
-    std::cout << "\nTest 15: OnLegacyKeepalive sets stake_height and nBits via shared helper\n";
+void test_on_keepalive_response_legacy_zeros_safe() {
+    std::cout << "\nTest 15: OnKeepaliveResponse legacy zeros (hash_tip_lo32=0, fork_score=0) safe\n";
     HeightTracker tracker;
-    tracker.OnLegacyKeepalive(6001, 451, 801, 999, 0x1d00ffff);
+    tracker.OnKeepaliveResponse(6001, 451, 801, 999, 0u, 0u);
 
     auto snap = tracker.GetSnapshot();
-    print_test_result("stake_height == 999",    snap.stake_height == 999);
-    print_test_result("prime_height == 451",    snap.prime_height == 451);
-    print_test_result("hash_height == 801",     snap.hash_height == 801);
-    print_test_result("unified_height == 6001", snap.unified_height == 6001);
-    print_test_result("difficulty_nbits set",   snap.difficulty_nbits == 0x1d00ffff);
-    print_test_result("last_update_source == LEGACY_KEEPALIVE",
-                      snap.last_update_source == HeightTracker::UpdateSource::LEGACY_KEEPALIVE);
-    print_test_result("is_fork_active() == false (no fork_score set)",
-                      !snap.is_fork_active());
+    print_test_result("stake_height == 999",       snap.stake_height == 999);
+    print_test_result("prime_height == 451",       snap.prime_height == 451);
+    print_test_result("hash_height == 801",        snap.hash_height == 801);
+    print_test_result("unified_height == 6001",    snap.unified_height == 6001);
+    print_test_result("hash_tip_lo32 == 0 (safe)", snap.hash_tip_lo32 == 0);
+    print_test_result("fork_score == 0 (healthy)", snap.fork_score == 0);
+    print_test_result("is_fork_active() == false", !snap.is_fork_active());
+    print_test_result("last_update_source == KEEPALIVE",
+                      snap.last_update_source == HeightTracker::UpdateSource::KEEPALIVE);
 }
 
 // ============================================================================
-// Test 16: OnKeepaliveAck and OnLegacyKeepalive both update stake_height
+// Test 16: OnKeepaliveResponse updates stake_height correctly
 // ============================================================================
-void test_keepalive_ack_sets_stake_height() {
-    std::cout << "\nTest 16: Both keepalive methods update stake_height via shared helper\n";
+void test_keepalive_response_sets_stake_height() {
+    std::cout << "\nTest 16: OnKeepaliveResponse updates stake_height\n";
     HeightTracker tracker;
-    tracker.OnKeepaliveAck(6001, 451, 801, 777, 0);
+    tracker.OnKeepaliveResponse(6001, 451, 801, 777, 0u, 0u);
 
     auto snap = tracker.GetSnapshot();
-    print_test_result("stake_height == 777 via OnKeepaliveAck",
+    print_test_result("stake_height == 777 via OnKeepaliveResponse",
                       snap.stake_height == 777);
 
-    tracker.OnLegacyKeepalive(6002, 452, 802, 888, 0u);
+    tracker.OnKeepaliveResponse(6002, 452, 802, 888, 0u, 0u);
     snap = tracker.GetSnapshot();
-    print_test_result("stake_height == 888 via OnLegacyKeepalive",
+    print_test_result("stake_height == 888 via second OnKeepaliveResponse",
                       snap.stake_height == 888);
 }
 
 // ============================================================================
-// Test 17: peak_fork_score is a persistent high-water mark (via OnKeepaliveAck)
+// Test 17: peak_fork_score is a persistent high-water mark
 // ============================================================================
-void test_peak_fork_score_is_high_water_mark() {
+void test_peak_fork_score_high_water_mark() {
     std::cout << "\nTest 17: peak_fork_score is a persistent high-water mark\n";
     HeightTracker tracker;
-    tracker.OnKeepaliveAck(6000, 450, 800, 0, 5);
-    tracker.OnKeepaliveAck(6001, 451, 801, 0, 1);  // lower score
+    tracker.OnKeepaliveResponse(6000, 450, 800, 999, 0xCAFEBABEu, 5);
+    tracker.OnKeepaliveResponse(6001, 451, 801, 999, 0xCAFEBABEu, 1);  // lower score
 
     auto snap = tracker.GetSnapshot();
-    print_test_result("fork_score == 1 (latest)",       snap.fork_score == 1);
-    print_test_result("peak_fork_score == 5 (canary)",  snap.peak_fork_score == 5);
-    print_test_result("is_fork_active() still true",    snap.is_fork_active());
+    print_test_result("fork_score == 1 (latest)",      snap.fork_score == 1);
+    print_test_result("peak_fork_score == 5 (canary)", snap.peak_fork_score == 5);
+    print_test_result("is_fork_active() still true",   snap.is_fork_active());
 }
 
 // ============================================================================
@@ -525,10 +526,10 @@ int main() {
     test_difficulty_from_push_reflected_in_snapshot();
     test_post_push_timestamps_ordered_correctly();
     test_pre_push_template_identified_correctly();
-    test_on_keepalive_ack_sets_heights();
-    test_on_legacy_keepalive_sets_stake_height();
-    test_keepalive_ack_sets_stake_height();
-    test_peak_fork_score_is_high_water_mark();
+    test_on_keepalive_response_unified();
+    test_on_keepalive_response_legacy_zeros_safe();
+    test_keepalive_response_sets_stake_height();
+    test_peak_fork_score_high_water_mark();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

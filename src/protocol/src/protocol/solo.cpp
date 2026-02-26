@@ -2455,55 +2455,39 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     {
         // KEEPALIVE receive handler: branch by payload length
         //   4 bytes  → v1 reply (remaining session timeout, little-endian)
-        //   28 bytes → v2 telemetry reply from node (see KeepaliveTelemetrySnapshot)
+        //   32 bytes → unified keepalive reply from node (KeepAliveV2AckFrame format)
         m_logger->debug("[Solo Session] Received SESSION_KEEPALIVE response ({} bytes)", packet.m_length);
 
-        if (packet.m_data && packet.m_length == 28) {
-            // ── KEEPALIVE v2: parse 28-byte telemetry from node ──────────────────
-            // [0..3]   session_id           (u32 LE)
-            // [4..7]   unified_height       (u32 BE)
-            // [8..11]  prime_height         (u32 BE)
-            // [12..15] hash_height          (u32 BE)
-            // [16..19] stake_height         (u32 BE)
-            // [20..23] nBits                (u32 BE)
-            // [24..27] hashBestChain_prefix (4 raw bytes, first 4 bytes of hashBestChain)
-            const auto& d = *packet.m_data;
+        if (packet.m_data && packet.m_length == 32) {
+            // ── Unified 32-byte keepalive reply — parse using KeepAliveV2AckFrame ──
+            ::LLP::KeepAliveV2AckFrame unified;
+            if (unified.Parse(*packet.m_data))
+            {
+                m_height_tracker.OnKeepaliveResponse(unified.unified_height,
+                                                      unified.prime_height,
+                                                      unified.hash_height,
+                                                      unified.stake_height,
+                                                      unified.hash_tip_lo32,
+                                                      unified.fork_score);
 
-            KeepaliveTelemetrySnapshot snap;
-            snap.session_id      = read_uint32_le(d, 0);
-            snap.unified_height  = read_uint32_be(d, 4);
-            snap.prime_height    = read_uint32_be(d, 8);
-            snap.hash_height     = read_uint32_be(d, 12);
-            snap.stake_height    = read_uint32_be(d, 16);
-            snap.nBits           = read_uint32_be(d, 20);
-            snap.hashBestChain_prefix = { d[24], d[25], d[26], d[27] };
-            snap.valid = true;
-            snap.received_at = std::chrono::steady_clock::now();
+                m_logger->debug("[Solo Keepalive] Unified reply received:"
+                               " session=0x{:08x}"
+                               " unified={} prime={} hash={} stake={}"
+                               " hash_tip_lo32=0x{:08x} fork_score={}",
+                    unified.session_id,
+                    unified.unified_height, unified.prime_height,
+                    unified.hash_height, unified.stake_height,
+                    unified.hash_tip_lo32, unified.fork_score);
 
-            m_keepalive_telemetry.update(snap);
+                // Fork canary cross-check (legacy path: hash_tip_lo32 and fork_score will be 0)
+                if (unified.IsForkDetected(m_last_keepalive_prevhash_lo32))
+                    m_logger->warn("[SESSION_KEEPALIVE] Fork canary triggered:"
+                                   " hash_tip_lo32=0x{:08x} fork_score={}",
+                        unified.hash_tip_lo32, unified.fork_score);
 
-            // Update HeightTracker with all three channel heights from the legacy keepalive.
-            // This is the only source of stake_height on the miner side.
-            m_height_tracker.OnLegacyKeepalive(snap.unified_height,
-                                                snap.prime_height,
-                                                snap.hash_height,
-                                                snap.stake_height,
-                                                snap.nBits);
-
-            m_logger->debug("[Solo Keepalive v2] Telemetry received:"
-                           " session=0x{:08x}"
-                           " unified={} prime={} hash={} stake={}"
-                           " nBits=0x{:08x}"
-                           " bestChain_prefix={:02x}{:02x}{:02x}{:02x}",
-                snap.session_id,
-                snap.unified_height, snap.prime_height,
-                snap.hash_height, snap.stake_height,
-                snap.nBits,
-                snap.hashBestChain_prefix[0], snap.hashBestChain_prefix[1],
-                snap.hashBestChain_prefix[2], snap.hashBestChain_prefix[3]);
-
-            if (m_session_manager) {
-                m_session_manager->record_keepalive();
+                if (m_session_manager) {
+                    m_session_manager->record_keepalive();
+                }
             }
         } else if (packet.m_data && packet.m_length == 4) {
             // ── KEEPALIVE v1: remaining timeout (4 bytes LE) ─────────────────────
@@ -2934,21 +2918,20 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         ::LLP::KeepAliveV2AckFrame ack;
         if(ack.Parse(payload))
         {
-            m_logger->debug("[KEEPALIVE_V2] ACK received: seq={}"
+            m_logger->debug("[KEEPALIVE_V2] ACK received: session_id=0x{:08x}"
                             " unified_height={} prime_height={} hash_height={} stake_height={}"
                             " hashPrevBlock_lo32=0x{:08x} hash_tip_lo32=0x{:08x} fork_score={}",
-                ack.sequence,
+                ack.session_id,
                 ack.unified_height, ack.prime_height, ack.hash_height, ack.stake_height,
                 ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
 
-            // Update HeightTracker with ACK chain-state heights (prime + hash + stake + fork_score).
-            // OnKeepaliveAck() uses the shared apply_keepalive_heights_locked() helper and
-            // tracks the persistent fork_score high-water mark (peak_fork_score).
-            m_height_tracker.OnKeepaliveAck(ack.unified_height,
-                                             ack.prime_height,
-                                             ack.hash_height,
-                                             ack.stake_height,
-                                             ack.fork_score);
+            // Update HeightTracker with ACK chain-state heights.
+            m_height_tracker.OnKeepaliveResponse(ack.unified_height,
+                                                  ack.prime_height,
+                                                  ack.hash_height,
+                                                  ack.stake_height,
+                                                  ack.hash_tip_lo32,
+                                                  ack.fork_score);
 
             // Fork detection: compare node's chain tip against the miner's own locally
             // stored prevHash lo32 (NOT the echoed value from the ACK, which could be

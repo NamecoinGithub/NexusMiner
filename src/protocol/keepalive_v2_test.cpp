@@ -3,23 +3,17 @@
  * @brief Unit tests for KEEPALIVE v2 miner-side implementation
  *
  * Tests:
- *  1. KeepaliveTelemetryStore: default snapshot is invalid (valid==false)
- *  2. KeepaliveTelemetryStore: update/get round-trips all fields correctly
- *  3. SessionManager::build_keepalive_packet() produces 8-byte payload (v2 format)
- *  4. SessionManager v2 payload: session_id encoded little-endian in bytes [0..3]
- *  5. SessionManager v2 payload: suffix zeros when set_prevblock_suffix not called
- *  6. SessionManager v2 payload: suffix bytes [4..7] match set_prevblock_suffix()
- *  7. v2 telemetry parse: 28-byte big-endian fields decoded correctly
- *  8. v2 telemetry parse: hashBestChain_prefix raw bytes preserved
- *  9. prevblock_suffix extraction: last 4 bytes of 128-byte GetBytes() are bytes[124..127]
- * 10. set_prevblock_suffix zeros: packet correctly sends zero suffix
- * 11. received_at is set (non-default) after a v2 parse
- * 12. age() returns 0.0 when valid==false
- * 13. Parsing robustness: non-4/non-32 payload lengths are ignored (no crash)
- * 14. KeepAliveV2AckFrame: stake_height at bytes [24-27], fork_score at [28-31] (LLL-TAO PR #299)
+ *  1. SessionManager::build_keepalive_packet() produces 8-byte payload (v2 format)
+ *  2. SessionManager v2 payload: session_id encoded little-endian in bytes [0..3]
+ *  3. SessionManager v2 payload: suffix zeros when set_prevblock_suffix not called
+ *  4. SessionManager v2 payload: suffix bytes [4..7] match set_prevblock_suffix()
+ *  5. prevblock_suffix extraction: last 4 bytes of 128-byte GetBytes() are bytes[124..127]
+ *  6. set_prevblock_suffix zeros: packet correctly sends zero suffix
+ *  7. Parsing robustness: non-32 payload lengths rejected by Parse()
+ *  8. KeepAliveV2AckFrame: stake_height at bytes [24-27], fork_score at [28-31]
+ *  9. KeepAliveV2AckFrame::Parse() decodes session_id as little-endian at [0-3]
  */
 
-#include "protocol/keepalive_telemetry.hpp"
 #include "protocol/session_manager.hpp"
 #include "protocol_lane.hpp"
 #include "miner_opcodes.hpp"
@@ -56,63 +50,12 @@ void print_test_result(const char* name, bool passed) {
 // Helpers
 // ============================================================================
 
-// Read uint32 big-endian from a byte vector at offset
-static uint32_t read_be32(const std::vector<uint8_t>& v, size_t off) {
-    return (static_cast<uint32_t>(v[off]) << 24) |
-           (static_cast<uint32_t>(v[off+1]) << 16) |
-           (static_cast<uint32_t>(v[off+2]) << 8)  |
-            static_cast<uint32_t>(v[off+3]);
-}
-
 // Read uint32 little-endian from a byte vector at offset
 static uint32_t read_le32(const std::vector<uint8_t>& v, size_t off) {
     return  static_cast<uint32_t>(v[off])           |
            (static_cast<uint32_t>(v[off+1]) << 8)   |
            (static_cast<uint32_t>(v[off+2]) << 16)  |
            (static_cast<uint32_t>(v[off+3]) << 24);
-}
-
-// ============================================================================
-// Test 1: KeepaliveTelemetryStore default is invalid
-// ============================================================================
-void test_telemetry_store_default_invalid() {
-    std::cout << "\nTest 1: KeepaliveTelemetryStore default snapshot is invalid\n";
-    KeepaliveTelemetryStore store;
-    auto snap = store.get();
-    print_test_result("Default snapshot valid==false", !snap.valid);
-    print_test_result("Default snapshot session_id==0", snap.session_id == 0);
-    print_test_result("Default snapshot unified_height==0", snap.unified_height == 0);
-}
-
-// ============================================================================
-// Test 2: KeepaliveTelemetryStore update/get round-trips all fields
-// ============================================================================
-void test_telemetry_store_update() {
-    std::cout << "\nTest 2: KeepaliveTelemetryStore update/get round-trip\n";
-    KeepaliveTelemetryStore store;
-
-    KeepaliveTelemetrySnapshot snap;
-    snap.session_id      = 0xDEADBEEF;
-    snap.unified_height  = 6000001;
-    snap.prime_height    = 2000042;
-    snap.hash_height     = 4000099;
-    snap.stake_height    = 1001;
-    snap.nBits           = 0x1d00FFFF;
-    snap.hashBestChain_prefix = { 0xAB, 0xCD, 0xEF, 0x01 };
-    snap.valid           = true;
-
-    store.update(snap);
-    auto got = store.get();
-
-    print_test_result("session_id round-trips", got.session_id == 0xDEADBEEF);
-    print_test_result("unified_height round-trips", got.unified_height == 6000001);
-    print_test_result("prime_height round-trips", got.prime_height == 2000042);
-    print_test_result("hash_height round-trips", got.hash_height == 4000099);
-    print_test_result("stake_height round-trips", got.stake_height == 1001);
-    print_test_result("nBits round-trips", got.nBits == 0x1d00FFFF);
-    print_test_result("hashBestChain_prefix[0] == 0xAB", got.hashBestChain_prefix[0] == 0xAB);
-    print_test_result("hashBestChain_prefix[3] == 0x01", got.hashBestChain_prefix[3] == 0x01);
-    print_test_result("valid==true after update", got.valid);
 }
 
 // ============================================================================
@@ -136,22 +79,22 @@ static std::vector<uint8_t> make_keepalive_bytes(
 }
 
 // ============================================================================
-// Test 3: build_keepalive_packet() produces 8-byte payload (v2 format)
+// Test 1: build_keepalive_packet() produces 8-byte payload (v2 format)
 // Legacy wire layout: [opcode(1)][length_BE(4)][payload(8)] = 13 bytes total
 // ============================================================================
 void test_keepalive_v2_payload_size_legacy() {
-    std::cout << "\nTest 3: Legacy keepalive packet total wire size\n";
+    std::cout << "\nTest 1: Legacy keepalive packet total wire size\n";
     // Legacy: 1-byte opcode + 4-byte BE length + 8-byte payload = 13 bytes
     auto bytes = make_keepalive_bytes(0x00000001, ProtocolLane::LEGACY);
     print_test_result("Legacy wire size == 13 (1+4+8)", bytes.size() == 13);
 }
 
 // ============================================================================
-// Test 4: session_id encoded little-endian in payload bytes [0..3]
+// Test 2: session_id encoded little-endian in payload bytes [0..3]
 // For a legacy packet: bytes[0]=opcode, bytes[1..4]=length, bytes[5..8]=session_id LE
 // ============================================================================
 void test_keepalive_v2_session_id_le() {
-    std::cout << "\nTest 4: session_id is little-endian in bytes [payload+0..3]\n";
+    std::cout << "\nTest 2: session_id is little-endian in bytes [payload+0..3]\n";
     uint32_t session_id = 0x12345678;
     auto bytes = make_keepalive_bytes(session_id, ProtocolLane::LEGACY);
     if (bytes.size() < 13) {
@@ -164,10 +107,10 @@ void test_keepalive_v2_session_id_le() {
 }
 
 // ============================================================================
-// Test 5: suffix is zeros when set_prevblock_suffix not called
+// Test 3: suffix is zeros when set_prevblock_suffix not called
 // ============================================================================
 void test_keepalive_v2_suffix_zeros_default() {
-    std::cout << "\nTest 5: Default prevblock_suffix is all zeros\n";
+    std::cout << "\nTest 3: Default prevblock_suffix is all zeros\n";
     auto bytes = make_keepalive_bytes(0xCAFEBABE, ProtocolLane::LEGACY);
     if (bytes.size() < 13) {
         print_test_result("Packet large enough", false);
@@ -179,10 +122,10 @@ void test_keepalive_v2_suffix_zeros_default() {
 }
 
 // ============================================================================
-// Test 6: set_prevblock_suffix() sets bytes [4..7] of payload correctly
+// Test 4: set_prevblock_suffix() sets bytes [4..7] of payload correctly
 // ============================================================================
 void test_keepalive_v2_suffix_set() {
-    std::cout << "\nTest 6: set_prevblock_suffix() reflected in keepalive packet\n";
+    std::cout << "\nTest 4: set_prevblock_suffix() reflected in keepalive packet\n";
     std::array<uint8_t, 4> suffix = { 0x11, 0x22, 0x33, 0x44 };
     auto bytes = make_keepalive_bytes(0x00000001, ProtocolLane::LEGACY, &suffix);
     if (bytes.size() < 13) {
@@ -197,81 +140,15 @@ void test_keepalive_v2_suffix_set() {
 }
 
 // ============================================================================
-// Test 7: v2 telemetry parse — simulate the 28-byte receive handler logic
-// ============================================================================
-void test_keepalive_v2_telemetry_parse() {
-    std::cout << "\nTest 7: v2 telemetry parse: 28-byte big-endian fields\n";
-
-    // Construct a mock 28-byte KEEPALIVE v2 reply payload
-    std::vector<uint8_t> payload(28, 0);
-    // [0..3] session_id LE = 0xDEADBEEF
-    payload[0] = 0xEF; payload[1] = 0xBE; payload[2] = 0xAD; payload[3] = 0xDE;
-    // [4..7] unified_height BE = 6000001 = 0x005B8D81
-    payload[4] = 0x00; payload[5] = 0x5B; payload[6] = 0x8D; payload[7] = 0x81;
-    // [8..11] prime_height BE = 2000042 = 0x001E84AA
-    payload[8] = 0x00; payload[9] = 0x1E; payload[10] = 0x84; payload[11] = 0xAA;
-    // [12..15] hash_height BE = 4000099 = 0x003D0963
-    payload[12] = 0x00; payload[13] = 0x3D; payload[14] = 0x09; payload[15] = 0x63;
-    // [16..19] stake_height BE = 1001 = 0x000003E9
-    payload[16] = 0x00; payload[17] = 0x00; payload[18] = 0x03; payload[19] = 0xE9;
-    // [20..23] nBits BE = 0x1d00FFFF
-    payload[20] = 0x1D; payload[21] = 0x00; payload[22] = 0xFF; payload[23] = 0xFF;
-    // [24..27] hashBestChain_prefix raw bytes
-    payload[24] = 0xAB; payload[25] = 0xCD; payload[26] = 0xEF; payload[27] = 0x01;
-
-    // Replicate parsing logic from solo.cpp SESSION_KEEPALIVE handler
-    const auto& d = payload;
-    KeepaliveTelemetrySnapshot snap;
-    snap.session_id      = read_le32(d, 0);
-    snap.unified_height  = read_be32(d, 4);
-    snap.prime_height    = read_be32(d, 8);
-    snap.hash_height     = read_be32(d, 12);
-    snap.stake_height    = read_be32(d, 16);
-    snap.nBits           = read_be32(d, 20);
-    snap.hashBestChain_prefix = { d[24], d[25], d[26], d[27] };
-    snap.valid = true;
-
-    print_test_result("session_id == 0xDEADBEEF", snap.session_id == 0xDEADBEEF);
-    print_test_result("unified_height == 6000001", snap.unified_height == 6000001);
-    print_test_result("prime_height == 2000042",   snap.prime_height == 2000042);
-    print_test_result("hash_height == 4000099",    snap.hash_height == 4000099);
-    print_test_result("stake_height == 1001",       snap.stake_height == 1001);
-    print_test_result("nBits == 0x1d00FFFF",        snap.nBits == 0x1d00FFFFu);
-    print_test_result("hashBestChain_prefix valid == true", snap.valid);
-}
-
-// ============================================================================
-// Test 8: hashBestChain_prefix raw bytes preserved exactly
-// ============================================================================
-void test_keepalive_v2_hash_prefix_raw() {
-    std::cout << "\nTest 8: hashBestChain_prefix raw bytes preserved\n";
-    std::vector<uint8_t> payload(28, 0);
-    payload[24] = 0xCA; payload[25] = 0xFE; payload[26] = 0xBA; payload[27] = 0xBE;
-
-    KeepaliveTelemetrySnapshot snap;
-    snap.hashBestChain_prefix = { payload[24], payload[25], payload[26], payload[27] };
-
-    print_test_result("prefix[0] == 0xCA", snap.hashBestChain_prefix[0] == 0xCA);
-    print_test_result("prefix[1] == 0xFE", snap.hashBestChain_prefix[1] == 0xFE);
-    print_test_result("prefix[2] == 0xBA", snap.hashBestChain_prefix[2] == 0xBA);
-    print_test_result("prefix[3] == 0xBE", snap.hashBestChain_prefix[3] == 0xBE);
-}
-
-// ============================================================================
-// Test 9: prevblock_suffix extraction logic — last 4 bytes == bytes[124..127]
+// Test 5: prevblock_suffix extraction logic — last 4 bytes == bytes[124..127]
 // ============================================================================
 void test_prevblock_suffix_extraction_logic() {
-    std::cout << "\nTest 9: prevblock_suffix = bytes[124..127] of 128-byte GetBytes()\n";
+    std::cout << "\nTest 5: prevblock_suffix = bytes[124..127] of 128-byte GetBytes()\n";
 
     // Simulate a 128-byte GetBytes() with known pattern
     std::vector<uint8_t> hash_bytes(128);
     for (int i = 0; i < 128; ++i) hash_bytes[i] = static_cast<uint8_t>(i);
 
-    // The suffix extraction code in solo.cpp:
-    //   std::array<uint8_t, 4> suffix{};
-    //   if (prev_bytes.size() >= 128) {
-    //       suffix = { prev_bytes[124], prev_bytes[125], prev_bytes[126], prev_bytes[127] };
-    //   }
     std::array<uint8_t, 4> suffix{};
     if (hash_bytes.size() >= 128) {
         suffix = { hash_bytes[124], hash_bytes[125], hash_bytes[126], hash_bytes[127] };
@@ -284,10 +161,10 @@ void test_prevblock_suffix_extraction_logic() {
 }
 
 // ============================================================================
-// Test 10: set_prevblock_suffix with zeros sends zero suffix
+// Test 6: set_prevblock_suffix with zeros sends zero suffix
 // ============================================================================
 void test_keepalive_v2_suffix_explicit_zeros() {
-    std::cout << "\nTest 10: set_prevblock_suffix with zeros sends zero suffix\n";
+    std::cout << "\nTest 6: set_prevblock_suffix with zeros sends zero suffix\n";
     std::array<uint8_t, 4> zero_suffix = { 0, 0, 0, 0 };
     auto bytes = make_keepalive_bytes(0x00000001, ProtocolLane::LEGACY, &zero_suffix);
     if (bytes.size() < 13) {
@@ -299,77 +176,42 @@ void test_keepalive_v2_suffix_explicit_zeros() {
 }
 
 // ============================================================================
-// Test 11: received_at is set (non-default) after a v2 parse
-// ============================================================================
-void test_keepalive_v2_received_at_set() {
-    std::cout << "\nTest 11: received_at is set after v2 parse\n";
-
-    KeepaliveTelemetrySnapshot snap;
-    // Simulate the parse: set valid and received_at (mirrors solo.cpp handler)
-    snap.valid       = true;
-    snap.received_at = std::chrono::steady_clock::now();
-
-    // received_at must be non-default (default-constructed time_point is epoch)
-    bool is_set = (snap.received_at != std::chrono::steady_clock::time_point{});
-    print_test_result("received_at != default after parse", is_set);
-
-    // age() should be non-negative and very small (sub-second)
-    double a = snap.age();
-    print_test_result("age() >= 0.0 after parse", a >= 0.0);
-    print_test_result("age() < 1.0 (sub-second)", a < 1.0);
-}
-
-// ============================================================================
-// Test 12: age() returns 0.0 when valid==false
-// ============================================================================
-void test_keepalive_v2_age_invalid() {
-    std::cout << "\nTest 12: age() returns 0.0 when valid==false\n";
-    KeepaliveTelemetrySnapshot snap;  // valid==false by default
-    print_test_result("age() == 0.0 when not valid", snap.age() == 0.0);
-}
-
-// ============================================================================
-// Test 13: Parsing robustness — non-4/non-32 lengths produce no parse result
+// Test 7: Parsing robustness — short payload lengths rejected by Parse()
 // ============================================================================
 void test_keepalive_parse_robustness_other_lengths() {
-    std::cout << "\nTest 13: Parsing robustness: lengths != 4 and != 32 are ignored\n";
+    std::cout << "\nTest 7: Parsing robustness: lengths < 32 rejected by KeepAliveV2AckFrame::Parse()\n";
+    using ::LLP::KeepAliveV2AckFrame;
 
-    // Test lengths that must be silently ignored (not 4, not 32)
-    std::vector<size_t> ignored_lengths = { 0, 1, 2, 3, 5, 10, 16, 28, 31, 33, 100 };
-    bool all_ok = true;
-    for (size_t len : ignored_lengths) {
+    // All lengths < 32 must be rejected
+    std::vector<size_t> bad_lengths = { 0, 1, 4, 28, 31 };
+    bool all_rejected = true;
+    for (size_t len : bad_lengths) {
         std::vector<uint8_t> payload(len, 0xFF);
-        // Replicate the solo.cpp branching logic:
-        //   == 32 → v2 parse (KEEPALIVE_V2_ACK, LLL-TAO PR #299)
-        //   == 4  → v1 parse
-        //   else  → ignore
-        bool handled = false;
-        if (!payload.empty() && len == 32) {
-            handled = true;  // would be v2 parsed
-        } else if (!payload.empty() && len == 4) {
-            handled = true;  // would be v1 parsed
-        }
-        // For all lengths in ignored_lengths, handled must be false
-        if (handled) { all_ok = false; break; }
+        KeepAliveV2AckFrame frame;
+        if (frame.Parse(payload)) { all_rejected = false; break; }
     }
-    print_test_result("Non-4/non-32 lengths are not handled (ignored)", all_ok);
+    print_test_result("Lengths < 32 all rejected by Parse()", all_rejected);
+
+    // Confirm 32-byte buffer is accepted
+    std::vector<uint8_t> good(32, 0);
+    KeepAliveV2AckFrame frame;
+    print_test_result("32-byte buffer accepted by Parse()", frame.Parse(good));
 }
 
 // ============================================================================
-// Test 14: KeepAliveV2AckFrame 32-byte layout — stake_height at [24-27],
-//          fork_score at [28-31] (LLL-TAO PR #299)
+// Test 8: KeepAliveV2AckFrame 32-byte layout — stake_height at [24-27],
+//          fork_score at [28-31]
 // ============================================================================
 void test_keepalive_v2_ack_frame_layout() {
-    std::cout << "\nTest 14: KeepAliveV2AckFrame 32-byte layout (LLL-TAO PR #299)\n";
+    std::cout << "\nTest 8: KeepAliveV2AckFrame 32-byte layout\n";
     using ::LLP::KeepAliveV2AckFrame;
 
     print_test_result("PAYLOAD_SIZE == 32", KeepAliveV2AckFrame::PAYLOAD_SIZE == 32u);
 
-    // Build a 32-byte buffer with known values at stake_height and fork_score positions
     std::vector<uint8_t> data(32, 0);
-    // stake_height at bytes [24-27] = 0xAABBCCDD
+    // stake_height at bytes [24-27] = 0xAABBCCDD (BE)
     data[24] = 0xAA; data[25] = 0xBB; data[26] = 0xCC; data[27] = 0xDD;
-    // fork_score at bytes [28-31] = 0x11223344
+    // fork_score at bytes [28-31] = 0x11223344 (BE)
     data[28] = 0x11; data[29] = 0x22; data[30] = 0x33; data[31] = 0x44;
 
     KeepAliveV2AckFrame ack;
@@ -379,11 +221,27 @@ void test_keepalive_v2_ack_frame_layout() {
                       ack.stake_height == 0xAABBCCDDu);
     print_test_result("fork_score == 0x11223344 at bytes [28-31]",
                       ack.fork_score == 0x11223344u);
+    print_test_result("Parse() rejects 28-byte buffer", !ack.Parse(std::vector<uint8_t>(28, 0)));
+}
 
-    // Verify Parse() rejects old 28-byte buffer
-    std::vector<uint8_t> old_data(28, 0);
-    KeepAliveV2AckFrame ack2;
-    print_test_result("Parse() rejects 28-byte buffer (old format)", !ack2.Parse(old_data));
+// ============================================================================
+// Test 9: KeepAliveV2AckFrame::Parse() decodes session_id as little-endian at [0-3]
+// ============================================================================
+void test_parse_session_id_le() {
+    std::cout << "\nTest 9: KeepAliveV2AckFrame::Parse() decodes session_id LE at [0-3]\n";
+    using ::LLP::KeepAliveV2AckFrame;
+
+    std::vector<uint8_t> payload(32, 0);
+    // session_id = 0x12345678 LE → bytes [0..3] = 78 56 34 12
+    payload[0] = 0x78; payload[1] = 0x56; payload[2] = 0x34; payload[3] = 0x12;
+    // unified_height = 6000 BE at [8..11]
+    payload[8] = 0x00; payload[9] = 0x00; payload[10] = 0x17; payload[11] = 0x70;
+
+    KeepAliveV2AckFrame frame;
+    auto result = frame.Parse(payload);
+    print_test_result("Parse returns true", result);
+    print_test_result("session_id == 0x12345678", frame.session_id == 0x12345678u);
+    print_test_result("unified_height == 6000",   frame.unified_height == 6000u);
 }
 
 // ============================================================================
@@ -399,20 +257,15 @@ int main() {
     std::cout << "KEEPALIVE v2 Unit Tests\n";
     std::cout << "========================================\n";
 
-    test_telemetry_store_default_invalid();
-    test_telemetry_store_update();
     test_keepalive_v2_payload_size_legacy();
     test_keepalive_v2_session_id_le();
     test_keepalive_v2_suffix_zeros_default();
     test_keepalive_v2_suffix_set();
-    test_keepalive_v2_telemetry_parse();
-    test_keepalive_v2_hash_prefix_raw();
     test_prevblock_suffix_extraction_logic();
     test_keepalive_v2_suffix_explicit_zeros();
-    test_keepalive_v2_received_at_set();
-    test_keepalive_v2_age_invalid();
     test_keepalive_parse_robustness_other_lengths();
     test_keepalive_v2_ack_frame_layout();
+    test_parse_session_id_le();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

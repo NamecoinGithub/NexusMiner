@@ -31,8 +31,7 @@ public:
         PUSH,             ///< Updated by a push notification (BLOCK_AVAILABLE opcode)
         GET_ROUND,        ///< Updated by a GET_ROUND / NEW_ROUND response
         TEMPLATE,         ///< Updated by a received mining template
-        KEEPALIVE_ACK,    ///< Updated by a KEEPALIVE_V2_ACK stateless response (prime + hash + stake + fork_score)
-        LEGACY_KEEPALIVE, ///< Updated by a SESSION_KEEPALIVE response (prime + hash + stake + nBits)
+        KEEPALIVE,        ///< Updated by a unified keepalive response (both legacy and stateless paths)
     };
 
     /**
@@ -49,16 +48,17 @@ public:
         UpdateSource last_update_source{UpdateSource::NONE};
 
         // ── All three channel heights, kept independently ──────────────────────
-        uint32_t prime_height{0};   ///< Prime channel height (OnKeepaliveAck / OnLegacyKeepalive)
-        uint32_t hash_height{0};    ///< Hash channel height  (OnKeepaliveAck / OnLegacyKeepalive)
-        uint32_t stake_height{0};   ///< Stake channel height (OnKeepaliveAck / OnLegacyKeepalive)
+        uint32_t prime_height{0};   ///< Prime channel height (OnKeepaliveResponse)
+        uint32_t hash_height{0};    ///< Hash channel height  (OnKeepaliveResponse)
+        uint32_t stake_height{0};   ///< Stake channel height (OnKeepaliveResponse)
 
         // ── Fork detection ─────────────────────────────────────────────────────
-        uint32_t fork_score{0};      ///< Latest fork_score from KEEPALIVE_V2_ACK (0 = healthy)
+        uint32_t hash_tip_lo32{0};   ///< Lo32 of node's hashBestChain from last keepalive response
+        uint32_t fork_score{0};      ///< Latest fork_score from keepalive response (0 = healthy)
         uint32_t peak_fork_score{0}; ///< Highest fork_score seen since start (persistent canary)
 
         // ── Keepalive timing ───────────────────────────────────────────────────
-        std::chrono::steady_clock::time_point last_keepalive_ack_at{}; ///< Time of last OnKeepaliveAck() call
+        std::chrono::steady_clock::time_point last_keepalive_ack_at{}; ///< Time of last OnKeepaliveResponse() call
 
         /// Time of last push/GET_ROUND update
         std::chrono::steady_clock::time_point last_height_update{};
@@ -168,40 +168,28 @@ public:
     void UpdateWithHashPrevBlock(const uint1024_t& h);
 
     /**
-     * @brief Update heights from a stateless KEEPALIVE_V2_ACK response (opcode 0xD101).
+     * @brief Update all heights from a unified 32-byte keepalive response.
      *
-     * The stateless ACK carries: unified_height, prime_height, hash_height,
-     * stake_height, fork_score (32-byte wire format per LLL-TAO PR #299).
+     * Used for BOTH legacy SESSION_KEEPALIVE (port 8323) and stateless
+     * KEEPALIVE_V2_ACK (port 9323) — they now share the same wire format.
      *
-     * @param unified_height  Node's unified blockchain height
-     * @param prime_height    Node's Prime channel height
-     * @param hash_height     Node's Hash channel height
-     * @param stake_height    Node's Stake channel height
-     * @param fork_score      Fork divergence score (0 = healthy, >0 = divergence magnitude)
+     * On the legacy path, hashPrevBlock_lo32, hash_tip_lo32, and fork_score
+     * will be 0 (node sends zeros for fields not relevant to legacy miners).
+     * These zeros are safe — IsForkDetected() returns false when both are 0.
+     *
+     * @param unified_height     Node's unified blockchain height
+     * @param prime_height       Node's Prime channel height
+     * @param hash_height        Node's Hash channel height
+     * @param stake_height       Node's Stake channel height
+     * @param hash_tip_lo32      Lo32 of node's hashBestChain (fork cross-check)
+     * @param fork_score         Fork divergence score (0=healthy)
      */
-    void OnKeepaliveAck(uint32_t unified_height,
-                        uint32_t prime_height,
-                        uint32_t hash_height,
-                        uint32_t stake_height,
-                        uint32_t fork_score);
-
-    /**
-     * @brief Update heights from a SESSION_KEEPALIVE response (28-byte v2 payload).
-     *
-     * The legacy keepalive carries: unified_height, prime_height, hash_height,
-     * stake_height, nBits.
-     *
-     * @param unified_height  Node's unified blockchain height
-     * @param prime_height    Node's Prime channel height
-     * @param hash_height     Node's Hash channel height
-     * @param stake_height    Node's Stake channel height
-     * @param nbits           Difficulty in compact nBits (0 = unknown, skip update)
-     */
-    void OnLegacyKeepalive(uint32_t unified_height,
-                            uint32_t prime_height,
-                            uint32_t hash_height,
-                            uint32_t stake_height,
-                            uint32_t nbits);
+    void OnKeepaliveResponse(uint32_t unified_height,
+                              uint32_t prime_height,
+                              uint32_t hash_height,
+                              uint32_t stake_height,
+                              uint32_t hash_tip_lo32,
+                              uint32_t fork_score);
 
     // =========================================================================
     // Read methods
@@ -232,16 +220,6 @@ private:
     /// Sync channel_height from the per-channel sub-heights already stored in m_state.
     /// Call this (under m_mutex) after updating prime_height / hash_height.
     void sync_channel_height_locked();
-
-    /// Shared body for OnKeepaliveAck() and OnLegacyKeepalive(). Must be called
-    /// under m_mutex. Updates all three channel heights, difficulty (if nbits != 0),
-    /// fork_score, and peak_fork_score, then syncs channel_height.
-    void apply_keepalive_heights_locked(uint32_t unified_height,
-                                        uint32_t prime_height,
-                                        uint32_t hash_height,
-                                        uint32_t stake_height,
-                                        uint32_t nbits,
-                                        uint32_t fork_score);
 };
 
 } // namespace protocol

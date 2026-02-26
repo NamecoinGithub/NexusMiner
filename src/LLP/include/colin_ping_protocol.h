@@ -46,16 +46,17 @@ namespace LLP
 
         /** KEEPALIVE_V2_ACK (0xD101)
          *
-         *  Sent by node → miner in response to KEEPALIVE_V2.
-         *  DATA-bearing: 32-byte payload (big-endian):
-         *    [0-3]   uint32_t  sequence            Echo of miner's sequence
-         *    [4-7]   uint32_t  hashPrevBlock_lo32  Echo of miner's prevHash canary
-         *    [8-11]  uint32_t  unified_height      Node's unified block height
-         *    [12-15] uint32_t  hash_tip_lo32       Low 32 bits of node's hashBestChain
-         *    [16-19] uint32_t  prime_height        Node's Prime channel height
-         *    [20-23] uint32_t  hash_height         Node's Hash channel height
-         *    [24-27] uint32_t  stake_height        Node's Stake channel height
-         *    [28-31] uint32_t  fork_score          0=healthy, >0=divergence magnitude
+         *  Sent by node → miner in response to KEEPALIVE_V2 AND as the unified
+         *  SESSION_KEEPALIVE reply (both paths share the same 32-byte wire format).
+         *  DATA-bearing: 32-byte payload:
+         *    [0-3]   uint32_t  session_id          LE — session validation
+         *    [4-7]   uint32_t  hashPrevBlock_lo32  BE — echo of miner's fork canary (0 on legacy path)
+         *    [8-11]  uint32_t  unified_height      BE — node's unified block height
+         *    [12-15] uint32_t  hash_tip_lo32       BE — node's live tip lo32 (fork cross-check)
+         *    [16-19] uint32_t  prime_height        BE — node's Prime channel height
+         *    [20-23] uint32_t  hash_height         BE — node's Hash channel height
+         *    [24-27] uint32_t  stake_height        BE — node's Stake channel height
+         *    [28-31] uint32_t  fork_score          BE — 0=healthy, >0=divergence magnitude (0 on legacy path)
          **/
         static constexpr uint16_t KEEPALIVE_V2_ACK = 0xD101;
 
@@ -415,53 +416,58 @@ namespace LLP
 
     /** KeepAliveV2AckFrame — 32-byte node → miner payload (receive side)
      *
+     *  Unified 32-byte wire format used on BOTH KEEPALIVE_V2_ACK (stateless port)
+     *  and SESSION_KEEPALIVE (legacy port) paths.
      *  After parsing, call IsForkDetected() to check for chain divergence.
-     *  Feed unified_height / prime_height / hash_height / stake_height to the
-     *  Unified Block Height Manager.
-     *  Feed fork_score to the Fork Resolution Manager.
+     *  Feed unified_height / prime_height / hash_height / stake_height to
+     *  HeightTracker::OnKeepaliveResponse().
      **/
     struct KeepAliveV2AckFrame
     {
-        uint32_t sequence{0};
-        uint32_t hashPrevBlock_lo32{0};  // echo of what miner sent
-        uint32_t unified_height{0};      // node's unified block height
-        uint32_t hash_tip_lo32{0};       // low 32 bits of node's hashBestChain
-        uint32_t prime_height{0};        // node's Prime channel height
-        uint32_t hash_height{0};         // node's Hash channel height
-        uint32_t stake_height{0};        // node's Stake channel height
-        uint32_t fork_score{0};          // 0 = healthy, >0 = divergence magnitude
+        uint32_t session_id{0};          // [0-3]  LE — session validation
+        uint32_t hashPrevBlock_lo32{0};  // [4-7]  BE — echo of miner's fork canary (0 on legacy path)
+        uint32_t unified_height{0};      // [8-11] BE — node's unified block height
+        uint32_t hash_tip_lo32{0};       // [12-15] BE — node's live tip lo32 (fork cross-check)
+        uint32_t prime_height{0};        // [16-19] BE — node's Prime channel height
+        uint32_t hash_height{0};         // [20-23] BE — node's Hash channel height
+        uint32_t stake_height{0};        // [24-27] BE — node's Stake channel height
+        uint32_t fork_score{0};          // [28-31] BE — 0=healthy, >0=divergence magnitude (0 on legacy path)
 
         static constexpr uint32_t PAYLOAD_SIZE = 32;
 
-        /** IsForkDetected
+        /** IsForkDetected — compare node's tip against miner's locally stored prevHash canary.
          *
-         *  Returns true if the node's chain tip low-32 doesn't match the miner's
-         *  prevHash canary OR if the node's Fork Detection Manager reports non-zero score.
-         *
-         *  @param[in] myHashPrevBlock_lo32  The value miner sent in the request
-         *  @return true if fork detected, false if chains agree
+         *  @param[in] myHashPrevBlock_lo32  Lo32 of hashPrevBlock from miner's current template
+         *  @return true if fork detected
          **/
         bool IsForkDetected(uint32_t myHashPrevBlock_lo32) const
         {
             return (hash_tip_lo32 != myHashPrevBlock_lo32) || (fork_score > 0);
         }
 
-        /** Parse — deserialize 32-byte wire buffer **/
+        /** Parse — unified 32-byte wire format, used on BOTH SESSION_KEEPALIVE and KEEPALIVE_V2_ACK paths **/
         bool Parse(const std::vector<uint8_t>& data)
         {
             if(data.size() < 32) return false;
-            auto r32 = [&](int o) -> uint32_t {
+
+            // session_id: little-endian
+            session_id = static_cast<uint32_t>(data[0])
+                       | (static_cast<uint32_t>(data[1]) << 8)
+                       | (static_cast<uint32_t>(data[2]) << 16)
+                       | (static_cast<uint32_t>(data[3]) << 24);
+
+            // remaining fields: big-endian
+            auto r32be = [&](int o) -> uint32_t {
                 return (uint32_t(data[o  ]) << 24) | (uint32_t(data[o+1]) << 16)
                      | (uint32_t(data[o+2]) <<  8) |  uint32_t(data[o+3]);
             };
-            sequence           = r32(0);
-            hashPrevBlock_lo32 = r32(4);
-            unified_height     = r32(8);
-            hash_tip_lo32      = r32(12);
-            prime_height       = r32(16);
-            hash_height        = r32(20);
-            stake_height       = r32(24);
-            fork_score         = r32(28);
+            hashPrevBlock_lo32 = r32be(4);
+            unified_height     = r32be(8);
+            hash_tip_lo32      = r32be(12);
+            prime_height       = r32be(16);
+            hash_height        = r32be(20);
+            stake_height       = r32be(24);
+            fork_score         = r32be(28);
             return true;
         }
     };
