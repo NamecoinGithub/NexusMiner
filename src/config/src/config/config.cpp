@@ -47,6 +47,7 @@ namespace config
 		, m_get_block_interval_ms{2500}  // Default: 2500ms (node enforces 2000ms min + 500ms safety margin)
 		, m_colin_enabled{true}  // Default: Colin diagnostic agent enabled
 		, m_colin_report_interval_seconds{60}  // Default: report every 60 seconds
+		, m_colin_rpc_prompt{false}  // Default: RPC prompt disabled
 	{
 	}
 

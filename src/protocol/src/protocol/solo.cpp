@@ -3593,11 +3593,24 @@ bool Solo::should_poll_get_round()
     // - Stateless: STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9) / STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)
     // Event-driven GET_BLOCK handles template requests on demand.
     // Template health monitor (300s timeout) provides emergency safety net.
+
+    auto now = std::chrono::steady_clock::now();
+
+    // Emergency override: if the template is stale (age > TEMPLATE_AGE_WARNING_SECONDS_FOR_POLLING),
+    // force GET_ROUND to fire immediately regardless of POLLING_ENABLED, so it can cascade into
+    // a GET_BLOCK recovery (backup path) before the 200s hard emergency fires.
+    if (m_template_interface &&
+        m_template_interface->get_template_age() > TEMPLATE_AGE_WARNING_SECONDS_FOR_POLLING)
+    {
+        m_logger->warn("[Solo Poll] Template stale — forcing GET_ROUND probe (backup path for GET_BLOCK)");
+        m_last_get_round_time = now;
+        return true;
+    }
+
     if (!POLLING_ENABLED) {
         return false;
     }
 
-    auto now = std::chrono::steady_clock::now();
     auto elapsed_ms = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             now - m_last_get_round_time).count());

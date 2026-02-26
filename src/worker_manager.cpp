@@ -711,6 +711,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                             self->m_stats_collector,
                             self->m_logger,
                             self->m_config.get_colin_report_interval_seconds());
+                        self->m_colin_agent->set_rpc_prompt(self->m_config.get_colin_rpc_prompt());
                         self->m_colin_agent->start();
                     }
 

@@ -150,3 +150,75 @@ T1: Prime block mined → channel advances
     Snapshot:       is_template_stale()=true  (channel_height 2301207 >= channel_target 2301207)
     Action: Discard template, request fresh work [reason: channel_advanced]
 ```
+
+
+---
+
+## GET_ROUND as Intelligent GET_BLOCK Backup
+
+### Overview
+
+GET_ROUND is a *probe*, not a template request.  When it detects staleness it
+immediately triggers GET_BLOCK so mining can resume before the 200-second hard
+emergency fires.
+
+### Roles
+
+| Packet | Role | Delivers template? |
+|--------|------|--------------------|
+| GET_ROUND (0x85 / 0xD085) | Height/difficulty sanity probe | ❌ No |
+| GET_BLOCK (0x81 / 0xD081) | Template request (recovery) | ✅ Yes |
+
+GET_ROUND is sent as a lightweight *probe*.  It returns NEW_ROUND or OLD_ROUND
+with the current node height and difficulty — but **no block template**.  When
+the probe reveals that the miner's template is stale or absent, it immediately
+triggers `send_recovery_work_request()` (GET_BLOCK) to fetch a fresh template.
+
+### Recovery Sequence
+
+```
+push missed
+    │
+    ▼  (template age > 90 s — TEMPLATE_AGE_WARNING_SECONDS_FOR_POLLING)
+GET_ROUND fired by should_poll_get_round() emergency override
+    │
+    ▼
+height check (NEW_ROUND / OLD_ROUND response)
+    │
+    ▼  (no valid template held)
+GET_BLOCK sent (send_recovery_work_request())
+    │
+    ▼
+BLOCK_DATA arrives → template loaded → mining resumes
+    │
+    ▼  (before 200 s hard emergency)
+```
+
+### Configuration Constants
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `TEMPLATE_AGE_WARNING_SECONDS_FOR_POLLING` | 90 s | Emergency override threshold for GET_ROUND |
+| `MAX_TEMPLATE_AGE` | 200 s | Hard emergency: discard template + stop workers |
+
+The 90-second threshold is half the 200-second hard limit, giving the
+GET_ROUND → GET_BLOCK cascade a 110-second window to recover before the
+emergency fires.
+
+### Implementation
+
+**`solo.cpp` — `should_poll_get_round()`**: An emergency override checks
+`get_template_age()`.  If the template is older than
+`TEMPLATE_AGE_WARNING_SECONDS_FOR_POLLING` (90 s), GET_ROUND fires
+immediately regardless of `POLLING_ENABLED`.
+
+**`timer_manager.cpp` — `get_round_handler`**: After transmitting the
+GET_ROUND probe, the handler checks `has_valid_template()`.  When no valid
+template is held, it calls `send_recovery_work_request()` (GET_BLOCK) and
+transmits the result immediately.
+
+### Relationship to POLLING_ENABLED
+
+When `POLLING_ENABLED = false` (the default), GET_ROUND is normally suppressed.
+The emergency override in `should_poll_get_round()` bypasses this flag when the
+template is stale, ensuring the cascade can still fire even in push-driven mode.

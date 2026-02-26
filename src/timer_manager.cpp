@@ -7,11 +7,13 @@
 #include "stats/stats_printer.hpp"
 #include "worker.hpp"
 #include "protocol/solo.hpp"
+#include <spdlog/spdlog.h>
 
 namespace nexusminer
 {
 Timer_manager::Timer_manager(chrono::Timer_factory::Sptr timer_factory)
 : m_timer_factory{std::move(timer_factory)}
+, m_logger{spdlog::get("logger")}
 {
     m_connection_retry_timer = m_timer_factory->create_timer();
     m_ping_timer = m_timer_factory->create_timer();
@@ -190,13 +192,26 @@ chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_
             // Intelligent polling: only send if protocol says it's time
             if (protocol_shared->should_send_get_round())
             {
-                // send_get_round() sends GET_ROUND on all lanes (legacy: 0x85,
-                // stateless: 0xD085) as a pure height/difficulty sanity probe.
-                // Template recovery is handled separately by Worker_manager via
-                // send_recovery_work_request() (GET_BLOCK).
+                // GET_ROUND is the sanity-check probe; GET_BLOCK is the recovery action.
+                // Relationship:
+                //   GET_ROUND → height probe → if stale/no-template → GET_BLOCK (recovery)
+                //   GET_BLOCK → template request → BLOCK_DATA response → resume mining
+                // GET_ROUND does NOT itself deliver a template; it is only the trigger for GET_BLOCK.
                 auto payload = protocol_shared->send_get_round();
                 if (payload && !payload->empty()) {
                     connection_shared->transmit(payload);
+                }
+
+                // After sending the GET_ROUND probe, check if we also need a fresh template.
+                // This covers the case where push notifications were missed while POLLING_ENABLED.
+                if (!protocol_shared->has_valid_template()) {
+                    if (m_logger) {
+                        m_logger->info("[Timer GET_ROUND] No valid template — using GET_ROUND result to trigger GET_BLOCK recovery");
+                    }
+                    auto recovery = protocol_shared->send_recovery_work_request();
+                    if (recovery && !recovery->empty()) {
+                        connection_shared->transmit(recovery);
+                    }
                 }
             }
 

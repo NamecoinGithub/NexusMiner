@@ -3,6 +3,7 @@
 #include <asio/io_context.hpp>
 
 #include <ctime>
+#include <cstring>
 
 namespace nexusminer
 {
@@ -49,6 +50,17 @@ void ColinAgent::schedule_next()
         run_diagnostics();
         schedule_next();
     });
+}
+
+void ColinAgent::emit_rpc_commands()
+{
+    m_logger->info("[Colin] ── Diagnostic RPC Commands ───────────────────────────────");
+    m_logger->info("[Colin]   system/get/info                           ← node version, uptime");
+    m_logger->info("[Colin]   mining/get/info                           ← per-channel heights, difficulty");
+    m_logger->info("[Colin]   ledger/get/blockhash height=<N>           ← verify block hash at height");
+    m_logger->info("[Colin]   system/list/peers                         ← peer connectivity");
+    m_logger->info("[Colin]   users/get/status                          ← genesis/session state");
+    m_logger->info("[Colin] ─────────────────────────────────────────────────────────");
 }
 
 // ── Warning catalog (static helpers) ─────────────────────────────────────────
@@ -158,6 +170,12 @@ void ColinAgent::run_diagnostics()
     if (m_dcm && !m_dcm->is_legacy_alive())
         recommendations.push_back("Check secondary (legacy:8323) connectivity");
 
+    // Emit RPC commands prompt on first tick or whenever a WARNING is present
+    if (m_rpc_prompt && (m_first_tick || !warnings.empty()))
+        emit_rpc_commands();
+
+    m_first_tick = false;
+
     emit_report(warnings, recommendations, gs);
 }
 
@@ -195,6 +213,39 @@ void ColinAgent::emit_report(
     }
 
     m_logger->info("[Colin] ═══════════════════════════════════════════════════");
+}
+
+// ── PING diagnostic payload ───────────────────────────────────────────────────
+
+std::vector<uint8_t> ColinAgent::build_ping_payload() const
+{
+    // 17-byte compact TLV diagnostic payload (big-endian).
+    // The node ignores unknown PING payload bytes — fully backward-compatible.
+    std::vector<uint8_t> payload(17, 0);
+
+    // [0] Version
+    payload[0] = 0x01;
+
+    // [1-4] Unified height (last known) — currently unavailable at ColinAgent level; leave 0.
+    // [5-8] Channel height (last known) — similarly 0 until plumbed through.
+    // [9-12] Template age in seconds — unavailable here; left 0.
+
+    // [13] Lane bitmask
+    uint8_t lane_mask = 0;
+    if (m_dcm)
+    {
+        if (m_dcm->is_stateless_alive()) lane_mask |= 0x01;
+        if (m_dcm->is_legacy_alive())    lane_mask |= 0x02;
+    }
+    payload[13] = lane_mask;
+
+    // [14-15] Active workers count — not tracked at ColinAgent level; leave 0.
+    // [16] Colin warning flags
+    uint8_t warn_flags = 0;
+    if (m_dcm && !m_dcm->any_lane_alive()) warn_flags |= 0x02; // no_push: both lanes down
+    payload[16] = warn_flags;
+
+    return payload;
 }
 
 } // namespace nexusminer

@@ -49,6 +49,20 @@ public:
     void start();
     void stop();
 
+    // Enable/disable the RPC commands prompt at startup and on WARNING+ diagnostics.
+    void set_rpc_prompt(bool enable) { m_rpc_prompt = enable; }
+
+    // Build a compact 17-byte TLV diagnostic payload for the PING packet.
+    // Layout (big-endian):
+    //   [0]     Version = 0x01
+    //   [1-4]   Unified height (last known)
+    //   [5-8]   Channel height (last known)
+    //   [9-12]  Template age in seconds
+    //   [13]    Lane bitmask: bit0=stateless active, bit1=legacy active
+    //   [14-15] Active workers count
+    //   [16]    Colin warning flags (bit0=stale, bit1=no_push, bit2=lane_mismatch)
+    std::vector<uint8_t> build_ping_payload() const;
+
     // ── Warning catalog ────────────────────────────────────────────────────
     // Returns a non-empty string if the pattern matches, empty string otherwise.
     // Used by tests to verify each warning pattern triggers the right text.
@@ -63,6 +77,7 @@ public:
 private:
     void schedule_next();
     void run_diagnostics();
+    void emit_rpc_commands();
 
     std::string assess_primary_lane() const;
     std::string assess_secondary_lane() const;
@@ -85,6 +100,8 @@ private:
     uint32_t m_interval_s;
     asio::steady_timer m_timer;
     bool m_running{false};
+    bool m_rpc_prompt{false};
+    bool m_first_tick{true};
 
     std::deque<DiagSnapshot> m_history; // last 10 snapshots
 };

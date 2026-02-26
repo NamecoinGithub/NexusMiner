@@ -7,6 +7,8 @@
 #include <memory>
 #include <vector>
 
+#include <spdlog/spdlog.h>
+
 namespace nexusminer 
 {
 namespace network
@@ -81,6 +83,7 @@ private:
         std::weak_ptr<Worker_manager> worker_manager);
 
     chrono::Timer_factory::Sptr m_timer_factory;
+    std::shared_ptr<spdlog::logger> m_logger;
     chrono::Timer::Uptr m_connection_retry_timer;
     chrono::Timer::Uptr m_ping_timer;
     chrono::Timer::Uptr m_secondary_ping_timer;

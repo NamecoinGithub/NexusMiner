@@ -97,6 +97,7 @@ public:
 	// Colin AI diagnostic agent
 	bool get_colin_enabled() const { return m_colin_enabled; }
 	uint32_t get_colin_report_interval_seconds() const { return m_colin_report_interval_seconds; }
+	bool get_colin_rpc_prompt() const { return m_colin_rpc_prompt; }
 	
 	// Setters for TOML parser
 	void set_wallet_ip(const std::string& ip) { m_wallet_ip = ip; }
@@ -130,6 +131,7 @@ public:
 	void set_get_block_interval_ms(uint32_t ms) { m_get_block_interval_ms = ms; }
 	void set_colin_enabled(bool enabled) { m_colin_enabled = enabled; }
 	void set_colin_report_interval_seconds(uint32_t secs) { m_colin_report_interval_seconds = secs; }
+	void set_colin_rpc_prompt(bool enable) { m_colin_rpc_prompt = enable; }
 	void set_tls_ca_cert_path(const std::string& path) { m_tls_ca_cert_path = path; }
 	void set_tls_verify_peer(bool verify) { m_tls_verify_peer = verify; }
 	void set_tls_server_name(const std::string& name) { m_tls_server_name = name; }
@@ -200,6 +202,7 @@ private:
 	// Colin AI diagnostic agent configuration
 	bool m_colin_enabled;
 	uint32_t m_colin_report_interval_seconds;
+	bool m_colin_rpc_prompt;
 
 };
 }

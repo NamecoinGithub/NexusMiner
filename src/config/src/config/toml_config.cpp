@@ -255,6 +255,10 @@ namespace config
                             m_logger->warn("[Config] colin.report_interval_seconds={} out of range [{},{}] — using default",
                                 secs, MIN_COLIN_INTERVAL, MAX_COLIN_INTERVAL);
                     }
+                    else if (key == "rpc_prompt")
+                    {
+                        config.set_colin_rpc_prompt(parse_bool_value(value));
+                    }
                 }
                 else if (current_section == "logging")
                 {

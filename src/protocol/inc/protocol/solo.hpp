@@ -96,6 +96,13 @@ public:
     // Intelligent polling: Check if GET_ROUND should be sent now
     // Note: This modifies internal timing state, so cannot be truly const
     bool should_send_get_round() { return should_poll_get_round(); }
+
+    // Template validity check: delegates to MiningTemplateInterface.
+    // Returns true if a valid (non-stale) template is currently held.
+    bool has_valid_template() const
+    {
+        return m_template_interface && m_template_interface->has_valid_template();
+    }
     
     // Falcon miner authentication
     void set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_t> const& privkey);
@@ -378,6 +385,9 @@ private:
     static constexpr uint32_t POLL_INTERVAL_MIN_MS = 90000;    // 90 seconds (sanity-check interval if enabled)
     static constexpr uint32_t POLL_INTERVAL_MAX_MS = 120000;   // 120 seconds maximum
     // Note: When POLLING_ENABLED is true, backoff multiplier is 1.5x via integer arithmetic: interval + (interval >> 1)
+    // Emergency override: if template is stale past this threshold, force GET_ROUND regardless of POLLING_ENABLED.
+    // 90s = half the 200s emergency, giving the GET_ROUND→GET_BLOCK cascade 110s to recover before the hard emergency.
+    static constexpr uint64_t TEMPLATE_AGE_WARNING_SECONDS_FOR_POLLING = 90;
     
     // State flags
     bool m_needs_initial_round_check;  // Set true when new template received
