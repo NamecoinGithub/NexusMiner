@@ -194,6 +194,26 @@ void ColinAgent::emit_report(
             m_logger->info("[Colin]    • {}", r);
     }
 
+    /* Colin AI Miner — Node Diagnostic Section (from last received PingFrame) */
+    if (m_ping_source)
+    {
+        const auto ping = m_ping_source();
+        if (ping.valid)
+        {
+            m_logger->info("[Colin]  ── Node Diagnostics (last PING_DIAG) ──────────");
+            m_logger->info("[Colin]    Seq #{}  NodeHeight={}  ChHeight={}",
+                ping.sequence, ping.unified_height, ping.channel_height);
+            m_logger->info("[Colin]    PrimePushes={}  HashPushes={}",
+                ping.prime_pushes_30s, ping.hash_pushes_30s);
+            m_logger->info("[Colin]    Submitted={}  Accepted={}  Rejected={}",
+                ping.blocks_submitted, ping.blocks_accepted, ping.blocks_rejected);
+            if (ping.health_flags != 0)
+                m_logger->warn("[Colin]    NodeHealthFlags=0x{:02x}", ping.health_flags);
+            else
+                m_logger->info("[Colin]    NodeHealthFlags=0x00 (all clear)");
+        }
+    }
+
     m_logger->info("[Colin] ═══════════════════════════════════════════════════");
 }
 

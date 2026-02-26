@@ -711,6 +711,18 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                             self->m_stats_collector,
                             self->m_logger,
                             self->m_config.get_colin_report_interval_seconds());
+                        // Wire up PING_DIAG source so emit_report() can display node diagnostics
+                        if (dynamic_cast<protocol::Solo*>(self->m_miner_protocol.get()))
+                        {
+                            std::weak_ptr<protocol::Protocol> weak_proto = self->m_miner_protocol;
+                            self->m_colin_agent->set_ping_source(
+                                [weak_proto]() -> ::LLP::ReceivedPingFrame {
+                                    auto proto = weak_proto.lock();
+                                    if (!proto) return {};
+                                    auto* s = dynamic_cast<protocol::Solo*>(proto.get());
+                                    return s ? s->last_received_ping() : ::LLP::ReceivedPingFrame{};
+                                });
+                        }
                         self->m_colin_agent->start();
                     }
 

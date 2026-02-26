@@ -8,7 +8,8 @@ add_library(protocol STATIC src/protocol/solo.cpp
                             src/protocol/mining_template_interface.cpp
                             src/protocol/push_notification_handler.cpp
                             src/protocol/height_tracker.cpp
-                            src/protocol/packet_builder.cpp)
+                            src/protocol/packet_builder.cpp
+                            ${CMAKE_SOURCE_DIR}/src/LLP/colin_ping_handler.cpp)
                     
 target_include_directories(protocol
     PUBLIC 
