@@ -11,7 +11,7 @@
 #include "miner_opcodes.hpp"
 #include "llp_logging.hpp"
 #include "protocol_lane.hpp"
-#include "LLP/include/colin_ping_protocol.h"
+#include "include/colin_ping_protocol.h"
 #include <spdlog/spdlog.h>
 
 namespace nexusminer
@@ -94,8 +94,9 @@ namespace nexusminer
 		// (node pushes 228-byte template via this opcode)
 		inline bool is_stateless_header_only_opcode(uint16_t opcode) {
 			if (!is_stateless_opcode(opcode)) return false;
-			// Un-mirrored data opcodes (KEEPALIVE_V2, KEEPALIVE_V2_ACK, PING_DIAG, PONG_DIAG)
-			// are always data-bearing — never header-only
+			// Un-mirrored data opcodes (PING_DIAG=0xD0E0, PONG_DIAG=0xD0E1) are always data-bearing.
+			// Their un-mirrored byte (0xE0, 0xE1) falls in the legacy header-only catch-all range,
+			// so we must short-circuit before calling is_legacy_header_only_opcode.
 			if (::LLP::IsUnmirroredDataOpcode(opcode)) return false;
 			// GET_BLOCK (0xD081) is ALWAYS data-bearing on stateless lane (228-byte template push)
 			// Legacy GET_BLOCK (129) is header-only request, but stateless repurposes it for push

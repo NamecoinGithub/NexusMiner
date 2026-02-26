@@ -52,15 +52,15 @@ namespace LLP
          *    [4-7]   uint32_t  hashPrevBlock_lo32  Echo of miner's prevHash canary
          *    [8-11]  uint32_t  unified_height      Node's unified block height
          *    [12-15] uint32_t  hash_tip_lo32       Low 32 bits of node's hashBestChain
-         *    [16-19] uint32_t  prime_height         Node's Prime channel height
-         *    [20-23] uint32_t  hash_height          Node's Hash channel height
-         *    [24-27] uint32_t  fork_score           0=healthy, >0=divergence magnitude
+         *    [16-19] uint32_t  prime_height        Node's Prime channel height
+         *    [20-23] uint32_t  hash_height         Node's Hash channel height
+         *    [24-27] uint32_t  fork_score          0=healthy, >0=divergence magnitude
          **/
         static constexpr uint16_t KEEPALIVE_V2_ACK = 0xD101;
 
-        /** Payload sizes **/
-        static constexpr uint32_t KEEPALIVE_V2_PAYLOAD_SIZE     = 8;
-        static constexpr uint32_t KEEPALIVE_V2_ACK_PAYLOAD_SIZE = 28;
+        /** Payload sizes (different for each direction) **/
+        static constexpr uint32_t KEEPALIVE_V2_PAYLOAD_SIZE     = 8;   // miner → node
+        static constexpr uint32_t KEEPALIVE_V2_ACK_PAYLOAD_SIZE = 28;  // node → miner
     }
 
     /** Colin AI Diagnostic PING/PONG Opcodes
@@ -332,47 +332,47 @@ namespace LLP
 
     /** GetExpectedPayloadSize
      *
-     *  Returns the required exact payload length (bytes) for fixed-size un-mirrored opcodes.
-     *  Returns 0 for variable-length, header-only, or unknown opcodes.
+     *  Returns the required exact payload length (bytes) for fixed-size opcodes.
+     *  Returns 0 for variable-length or header-only opcodes.
      *
      **/
     inline uint32_t GetExpectedPayloadSize(uint16_t opcode)
     {
-        if (opcode == KeepAliveV2Opcodes::KEEPALIVE_V2)
+        if(opcode == KeepAliveV2Opcodes::KEEPALIVE_V2)
             return KeepAliveV2Opcodes::KEEPALIVE_V2_PAYLOAD_SIZE;     // 8
 
-        if (opcode == KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
+        if(opcode == KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
             return KeepAliveV2Opcodes::KEEPALIVE_V2_ACK_PAYLOAD_SIZE; // 28
 
-        if (opcode == ColinDiagOpcodes::PING_DIAG
-        ||  opcode == ColinDiagOpcodes::PONG_DIAG)
-            return ColinDiagOpcodes::PAYLOAD_SIZE;                     // 64
+        if(opcode == ColinDiagOpcodes::PING_DIAG
+        || opcode == ColinDiagOpcodes::PONG_DIAG)
+            return ColinDiagOpcodes::PAYLOAD_SIZE;     // 64
 
-        return 0;
+        return 0;  // variable or header-only
     }
 
     /** GetUnmirroredOpcodeName
      *
-     *  Returns a human-readable label for un-mirrored opcodes (for logging).
+     *  Human-readable name for un-mirrored stateless opcodes (for debug logging).
      *
      **/
     inline const char* GetUnmirroredOpcodeName(uint16_t opcode)
     {
-        switch (opcode)
+        switch(opcode)
         {
-            case KeepAliveV2Opcodes::KEEPALIVE_V2:     return "KEEPALIVE_V2";
-            case KeepAliveV2Opcodes::KEEPALIVE_V2_ACK: return "KEEPALIVE_V2_ACK";
-            case ColinDiagOpcodes::PING_DIAG:          return "PING_DIAG";
-            case ColinDiagOpcodes::PONG_DIAG:          return "PONG_DIAG";
-            default:                                   return "UNKNOWN_UNMIRRORED";
+            case KeepAliveV2Opcodes::KEEPALIVE_V2:      return "KEEPALIVE_V2";
+            case KeepAliveV2Opcodes::KEEPALIVE_V2_ACK:  return "KEEPALIVE_V2_ACK";
+            case ColinDiagOpcodes::PING_DIAG:            return "PING_DIAG";
+            case ColinDiagOpcodes::PONG_DIAG:            return "PONG_DIAG";
+            default:                                      return "UNKNOWN_UNMIRRORED";
         }
     }
 
     //=========================================================================
-    // KEEPALIVE V2 WIRE FRAME STRUCTS
+    // KeepAliveV2Frame — 8-byte payload for KEEPALIVE_V2 (miner → node, send side)
     //=========================================================================
 
-    /** KeepAliveV2Frame — 8-byte Miner → Node payload (send side) **/
+    /** KeepAliveV2Frame — 8-byte miner → node payload for KEEPALIVE_V2 **/
     struct KeepAliveV2Frame
     {
         uint32_t sequence{0};
@@ -380,33 +380,39 @@ namespace LLP
 
         static constexpr uint32_t PAYLOAD_SIZE = 8;
 
+        /** Serialize — 8-byte big-endian wire format **/
         std::vector<uint8_t> Serialize() const
         {
             std::vector<uint8_t> v;
             v.reserve(8);
-            auto p32 = [&](uint32_t x){
-                v.push_back((x >> 24) & 0xFF); v.push_back((x >> 16) & 0xFF);
-                v.push_back((x >>  8) & 0xFF); v.push_back( x        & 0xFF);
-            };
-            p32(sequence);
-            p32(hashPrevBlock_lo32);
+            v.push_back((sequence           >> 24) & 0xFF);
+            v.push_back((sequence           >> 16) & 0xFF);
+            v.push_back((sequence           >>  8) & 0xFF);
+            v.push_back( sequence                  & 0xFF);
+            v.push_back((hashPrevBlock_lo32  >> 24) & 0xFF);
+            v.push_back((hashPrevBlock_lo32  >> 16) & 0xFF);
+            v.push_back((hashPrevBlock_lo32  >>  8) & 0xFF);
+            v.push_back( hashPrevBlock_lo32         & 0xFF);
             return v;
         }
 
+        /** Parse — deserialize 8-byte wire buffer **/
         bool Parse(const std::vector<uint8_t>& data)
         {
-            if (data.size() < 8) return false;
-            auto r32 = [&](int o) -> uint32_t {
-                return (uint32_t(data[o  ]) << 24) | (uint32_t(data[o+1]) << 16)
-                     | (uint32_t(data[o+2]) <<  8) |  uint32_t(data[o+3]);
-            };
-            sequence           = r32(0);
-            hashPrevBlock_lo32 = r32(4);
+            if(data.size() < 8) return false;
+            sequence           = (uint32_t(data[0])<<24)|(uint32_t(data[1])<<16)
+                               |(uint32_t(data[2])<<8)  | uint32_t(data[3]);
+            hashPrevBlock_lo32 = (uint32_t(data[4])<<24)|(uint32_t(data[5])<<16)
+                               |(uint32_t(data[6])<<8)  | uint32_t(data[7]);
             return true;
         }
     };
 
-    /** KeepAliveV2AckFrame — 28-byte Node → Miner payload (receive side)
+    //=========================================================================
+    // KeepAliveV2AckFrame — 28-byte payload for KEEPALIVE_V2_ACK (node → miner)
+    //=========================================================================
+
+    /** KeepAliveV2AckFrame — 28-byte node → miner payload (receive side)
      *
      *  After parsing, call IsForkDetected() to check for chain divergence.
      *  Feed unified_height / prime_height / hash_height to the
@@ -427,9 +433,8 @@ namespace LLP
 
         /** IsForkDetected
          *
-         *  Call with the hashPrevBlock_lo32 that the miner sent in the request.
-         *  Returns true if the node's chain tip low-32 doesn't match OR if
-         *  the node's Latent Fork Detection Manager reports non-zero score.
+         *  Returns true if the node's chain tip low-32 doesn't match the miner's
+         *  prevHash canary OR if the node's Fork Detection Manager reports non-zero score.
          *
          *  @param[in] myHashPrevBlock_lo32  The value miner sent in the request
          *  @return true if fork detected, false if chains agree
@@ -439,9 +444,10 @@ namespace LLP
             return (hash_tip_lo32 != myHashPrevBlock_lo32) || (fork_score > 0);
         }
 
+        /** Parse — deserialize 28-byte wire buffer **/
         bool Parse(const std::vector<uint8_t>& data)
         {
-            if (data.size() < 28) return false;
+            if(data.size() < 28) return false;
             auto r32 = [&](int o) -> uint32_t {
                 return (uint32_t(data[o  ]) << 24) | (uint32_t(data[o+1]) << 16)
                      | (uint32_t(data[o+2]) <<  8) |  uint32_t(data[o+3]);
