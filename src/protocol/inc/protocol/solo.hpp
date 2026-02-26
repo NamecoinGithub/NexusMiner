@@ -169,6 +169,12 @@ public:
     // HeightTracker snapshot (single source of truth for height/staleness decisions)
     HeightTracker::Snapshot get_height_tracker_snapshot() const { return m_height_tracker.GetSnapshot(); }
 
+    // Recovery callback: called by the push handler when a channel-stale recovery GET_BLOCK
+    // is triggered (is_template_stale() is true at request_work_fn invocation time).
+    // Worker_manager registers this to set its recovery_pending flag for doom-loop prevention.
+    using Recovery_handler = std::function<void()>;
+    void set_recovery_initiated_handler(Recovery_handler h) { m_recovery_handler = std::move(h); }
+
     // Block-result counters (Gap 3)
     uint32_t get_blocks_accepted() const { return m_blocks_accepted.load(); }
     uint32_t get_blocks_rejected() const { return m_blocks_rejected.load(); }
@@ -325,6 +331,10 @@ private:
     
     // Push notification subscription state (MINER_READY sent after auth)
     std::atomic<bool> m_subscribed_to_notifications{false};
+
+    // Recovery callback — invoked when a push handler fires GET_BLOCK for a stale template
+    // (channel_advanced staleness), signalling Worker_manager to enter recovery_pending state.
+    Recovery_handler m_recovery_handler;
     
     // GET_ROUND status tracking (Template Staleness Prevention - LLL-TAO PR #131)
     RoundStatus m_last_round_status;  // Last received round status

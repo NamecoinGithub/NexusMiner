@@ -2492,6 +2492,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
             [&connection, this]() {
+                // Snapshot staleness BEFORE calling get_work_immediate() so we capture
+                // the state that triggered this request_work_fn invocation.
+                bool is_stale_recovery = m_height_tracker.GetSnapshot().is_template_stale();
                 if (connection) {
                     auto work_payload = get_work_immediate();
                     if (work_payload && !work_payload->empty()) {
@@ -2507,6 +2510,13 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                             connection->transmit(ready_payload);
                         }
                     }
+                }
+                // Notify Worker_manager that a channel-stale recovery was initiated so it
+                // can set recovery_pending and prevent check_template_health() from stopping
+                // workers redundantly while awaiting the GET_BLOCK response.
+                if (is_stale_recovery && m_recovery_handler) {
+                    m_logger->info("[Solo] Recovery initiated (channel_advanced) — notifying Worker_manager");
+                    m_recovery_handler();
                 }
             });
     }
@@ -2524,6 +2534,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
             [&connection, this]() {
+                // Snapshot staleness BEFORE calling get_work_immediate() so we capture
+                // the state that triggered this request_work_fn invocation.
+                bool is_stale_recovery = m_height_tracker.GetSnapshot().is_template_stale();
                 if (connection) {
                     auto work_payload = get_work_immediate();
                     if (work_payload && !work_payload->empty()) {
@@ -2539,6 +2552,13 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                             connection->transmit(ready_payload);
                         }
                     }
+                }
+                // Notify Worker_manager that a channel-stale recovery was initiated so it
+                // can set recovery_pending and prevent check_template_health() from stopping
+                // workers redundantly while awaiting the GET_BLOCK response.
+                if (is_stale_recovery && m_recovery_handler) {
+                    m_logger->info("[Solo] Recovery initiated (channel_advanced) — notifying Worker_manager");
+                    m_recovery_handler();
                 }
             });
     }

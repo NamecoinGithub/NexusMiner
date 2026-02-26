@@ -65,6 +65,13 @@ private:
      */
     void retry_template_request(bool bForce = false);
 
+    /// Mark that a GET_BLOCK recovery is now in progress.
+    /// Sets m_recovery_pending, increments m_recovery_epoch, records start time.
+    /// Called from:
+    ///  - the recovery_handler callback (push handler detected channel-stale staleness),
+    ///  - retry_template_request(true) (health monitor or validation failure path).
+    void mark_recovery_initiated(const char* reason);
+
     void retry_connect(network::Endpoint const& wallet_endpoint);
     void retry_secondary_connect(network::Endpoint const& secondary_endpoint);
 
@@ -82,6 +89,28 @@ private:
     
     // Degraded mode flag - set when mining is stopped due to invalid template
     bool m_degraded_mode;
+
+    // ── Recovery state (doom-loop prevention) ────────────────────────────────
+    // Set when a channel-stale GET_BLOCK recovery has been initiated (from push
+    // handler or health monitor) and no fresh template has arrived yet.
+    // Prevents check_template_health() from calling stop_all_workers()
+    // redundantly during the recovery window while awaiting the GET_BLOCK reply.
+    bool m_recovery_pending{false};
+
+    // Monotonically increasing counter: incremented each time a new recovery is
+    // initiated.  Allows per-epoch bypass tracking (one GET_BLOCK forced send per
+    // recovery epoch without triggering node-side rate-limit bans).
+    uint64_t m_recovery_epoch{0};
+
+    // Wall-clock time when the current recovery epoch started.
+    // Recovery window = 60 s; if no template arrives within that window the
+    // health monitor escalates (stop workers → hard recovery).
+    std::chrono::steady_clock::time_point m_recovery_started_at{};
+
+    // Time of the most recent GET_BLOCK sent by the health monitor during this
+    // recovery epoch.  Used to rate-limit health-monitor resends to one per
+    // RECOVERY_RESEND_INTERVAL (10 s) without stopping workers each time.
+    std::chrono::steady_clock::time_point m_recovery_last_get_block_sent_at{};
     
     // Persistent receive accumulator for TCP stream reassembly
     // Using deque for O(1) front removal when consuming packets
