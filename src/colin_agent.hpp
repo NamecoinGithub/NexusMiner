@@ -14,6 +14,7 @@
 
 #include "dual_connection_manager.hpp"
 #include "stats/stats_collector.hpp"
+#include "LLP/include/colin_ping_protocol.h"
 
 #include <asio/steady_timer.hpp>
 #include <spdlog/spdlog.h>
@@ -21,6 +22,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,16 +54,12 @@ public:
     // Enable/disable the RPC commands prompt at startup and on WARNING+ diagnostics.
     void set_rpc_prompt(bool enable) { m_rpc_prompt = enable; }
 
-    // Build a compact 17-byte TLV diagnostic payload for the PING packet.
-    // Layout (big-endian):
-    //   [0]     Version = 0x01
-    //   [1-4]   Unified height (last known)
-    //   [5-8]   Channel height (last known)
-    //   [9-12]  Template age in seconds
-    //   [13]    Lane bitmask: bit0=stateless active, bit1=legacy active
-    //   [14-15] Active workers count
-    //   [16]    Colin warning flags (bit0=stale, bit1=no_push, bit2=lane_mismatch)
-    std::vector<uint8_t> build_ping_payload() const;
+    // ── Colin AI Node Diagnostic Ping Source ──────────────────────────────
+    // Optional callback that returns the last received PING_DIAG frame.
+    // Set by Worker_manager after the Solo protocol is established so that
+    // emit_report() can display the latest node-side diagnostic data.
+    using PingSource = std::function<::LLP::ReceivedPingFrame()>;
+    void set_ping_source(PingSource fn) { m_ping_source = std::move(fn); }
 
     // ── Warning catalog ────────────────────────────────────────────────────
     // Returns a non-empty string if the pattern matches, empty string otherwise.
@@ -102,6 +100,8 @@ private:
     bool m_running{false};
     bool m_rpc_prompt{false};
     bool m_first_tick{true};
+
+    PingSource m_ping_source;  // Optional: supplies last ReceivedPingFrame for the report
 
     std::deque<DiagSnapshot> m_history; // last 10 snapshots
 };

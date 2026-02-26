@@ -3,7 +3,6 @@
 #include <asio/io_context.hpp>
 
 #include <ctime>
-#include <cstring>
 
 namespace nexusminer
 {
@@ -212,40 +211,27 @@ void ColinAgent::emit_report(
             m_logger->info("[Colin]    • {}", r);
     }
 
-    m_logger->info("[Colin] ═══════════════════════════════════════════════════");
-}
-
-// ── PING diagnostic payload ───────────────────────────────────────────────────
-
-std::vector<uint8_t> ColinAgent::build_ping_payload() const
-{
-    // 17-byte compact TLV diagnostic payload (big-endian).
-    // The node ignores unknown PING payload bytes — fully backward-compatible.
-    std::vector<uint8_t> payload(17, 0);
-
-    // [0] Version
-    payload[0] = 0x01;
-
-    // [1-4] Unified height (last known) — currently unavailable at ColinAgent level; leave 0.
-    // [5-8] Channel height (last known) — similarly 0 until plumbed through.
-    // [9-12] Template age in seconds — unavailable here; left 0.
-
-    // [13] Lane bitmask
-    uint8_t lane_mask = 0;
-    if (m_dcm)
+    /* Colin AI Miner — Node Diagnostic Section (from last received PING_DIAG frame) */
+    if (m_ping_source)
     {
-        if (m_dcm->is_stateless_alive()) lane_mask |= 0x01;
-        if (m_dcm->is_legacy_alive())    lane_mask |= 0x02;
+        const auto ping = m_ping_source();
+        if (ping.valid)
+        {
+            m_logger->info("[Colin]  ── Node Diagnostics (last PING_DIAG) ──────────");
+            m_logger->info("[Colin]    Seq #{}  NodeHeight={}  ChHeight={}",
+                ping.sequence, ping.unified_height, ping.channel_height);
+            m_logger->info("[Colin]    PrimePushes={}  HashPushes={}",
+                ping.prime_pushes_30s, ping.hash_pushes_30s);
+            m_logger->info("[Colin]    Submitted={}  Accepted={}  Rejected={}",
+                ping.blocks_submitted, ping.blocks_accepted, ping.blocks_rejected);
+            if (ping.health_flags != 0)
+                m_logger->warn("[Colin]    NodeHealthFlags=0x{:02x}", ping.health_flags);
+            else
+                m_logger->info("[Colin]    NodeHealthFlags=0x00 (all clear)");
+        }
     }
-    payload[13] = lane_mask;
 
-    // [14-15] Active workers count — not tracked at ColinAgent level; leave 0.
-    // [16] Colin warning flags
-    uint8_t warn_flags = 0;
-    if (m_dcm && !m_dcm->any_lane_alive()) warn_flags |= 0x02; // no_push: both lanes down
-    payload[16] = warn_flags;
-
-    return payload;
+    m_logger->info("[Colin] ═══════════════════════════════════════════════════");
 }
 
 } // namespace nexusminer
