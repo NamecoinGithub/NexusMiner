@@ -79,6 +79,13 @@ public:
     // When  the worker finds a new block, the BlockFoundHandler has to be called with the found BlockData
     virtual void set_block(::LLP::CBlock block, std::uint32_t nbits, Block_found_handler result) = 0;
 
+    // Returns true if the worker's mining thread is actively running (i.e. set_block() started it).
+    // Implementations backed by an m_stop atomic should override this to return !m_stop.
+    // The default returns true for async I/O workers (e.g. FPGA) that have no explicit stop flag.
+    // NOTE: All thread-based worker subclasses MUST override this to return !m_stop so that
+    // the workers_fed counter only counts threads that were actually started by set_block().
+    virtual bool is_running() const { return true; }
+
     virtual void update_statistics(stats::Collector& stats_collector) = 0;
 };
 

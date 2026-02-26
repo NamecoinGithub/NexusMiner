@@ -315,9 +315,13 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             // Submit the full block with SIM Link dual-lane fallback
                             submit_solution(full_block_bytes, block_data->nNonce);
                         });
-                        workers_fed++;
-                        m_logger->debug("[Worker_manager] Template sent to worker {}/{}", 
-                                       workers_fed, m_workers.size());
+                        if (worker->is_running()) {
+                            workers_fed++;
+                            m_logger->debug("[Worker_manager] Template sent to worker {}/{}", 
+                                           workers_fed, m_workers.size());
+                        } else {
+                            m_logger->warn("[Worker_manager] Worker {} did not start after set_block() — not counted", i);
+                        }
                     } else {
                         m_logger->warn("[Worker_manager] Skipping null worker at index {}", i);
                     }
