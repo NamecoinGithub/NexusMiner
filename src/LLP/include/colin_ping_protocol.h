@@ -47,20 +47,21 @@ namespace LLP
         /** KEEPALIVE_V2_ACK (0xD101)
          *
          *  Sent by node → miner in response to KEEPALIVE_V2.
-         *  DATA-bearing: 28-byte payload (big-endian):
+         *  DATA-bearing: 32-byte payload (big-endian):
          *    [0-3]   uint32_t  sequence            Echo of miner's sequence
          *    [4-7]   uint32_t  hashPrevBlock_lo32  Echo of miner's prevHash canary
          *    [8-11]  uint32_t  unified_height      Node's unified block height
          *    [12-15] uint32_t  hash_tip_lo32       Low 32 bits of node's hashBestChain
          *    [16-19] uint32_t  prime_height        Node's Prime channel height
          *    [20-23] uint32_t  hash_height         Node's Hash channel height
-         *    [24-27] uint32_t  fork_score          0=healthy, >0=divergence magnitude
+         *    [24-27] uint32_t  stake_height        Node's Stake channel height
+         *    [28-31] uint32_t  fork_score          0=healthy, >0=divergence magnitude
          **/
         static constexpr uint16_t KEEPALIVE_V2_ACK = 0xD101;
 
         /** Payload sizes (different for each direction) **/
         static constexpr uint32_t KEEPALIVE_V2_PAYLOAD_SIZE     = 8;   // miner → node
-        static constexpr uint32_t KEEPALIVE_V2_ACK_PAYLOAD_SIZE = 28;  // node → miner
+        static constexpr uint32_t KEEPALIVE_V2_ACK_PAYLOAD_SIZE = 32;  // node → miner
     }
 
     /** Colin AI Diagnostic PING/PONG Opcodes
@@ -409,13 +410,13 @@ namespace LLP
     };
 
     //=========================================================================
-    // KeepAliveV2AckFrame — 28-byte payload for KEEPALIVE_V2_ACK (node → miner)
+    // KeepAliveV2AckFrame — 32-byte payload for KEEPALIVE_V2_ACK (node → miner)
     //=========================================================================
 
-    /** KeepAliveV2AckFrame — 28-byte node → miner payload (receive side)
+    /** KeepAliveV2AckFrame — 32-byte node → miner payload (receive side)
      *
      *  After parsing, call IsForkDetected() to check for chain divergence.
-     *  Feed unified_height / prime_height / hash_height to the
+     *  Feed unified_height / prime_height / hash_height / stake_height to the
      *  Unified Block Height Manager.
      *  Feed fork_score to the Fork Resolution Manager.
      **/
@@ -427,9 +428,10 @@ namespace LLP
         uint32_t hash_tip_lo32{0};       // low 32 bits of node's hashBestChain
         uint32_t prime_height{0};        // node's Prime channel height
         uint32_t hash_height{0};         // node's Hash channel height
+        uint32_t stake_height{0};        // node's Stake channel height
         uint32_t fork_score{0};          // 0 = healthy, >0 = divergence magnitude
 
-        static constexpr uint32_t PAYLOAD_SIZE = 28;
+        static constexpr uint32_t PAYLOAD_SIZE = 32;
 
         /** IsForkDetected
          *
@@ -444,10 +446,10 @@ namespace LLP
             return (hash_tip_lo32 != myHashPrevBlock_lo32) || (fork_score > 0);
         }
 
-        /** Parse — deserialize 28-byte wire buffer **/
+        /** Parse — deserialize 32-byte wire buffer **/
         bool Parse(const std::vector<uint8_t>& data)
         {
-            if(data.size() < 28) return false;
+            if(data.size() < 32) return false;
             auto r32 = [&](int o) -> uint32_t {
                 return (uint32_t(data[o  ]) << 24) | (uint32_t(data[o+1]) << 16)
                      | (uint32_t(data[o+2]) <<  8) |  uint32_t(data[o+3]);
@@ -458,7 +460,8 @@ namespace LLP
             hash_tip_lo32      = r32(12);
             prime_height       = r32(16);
             hash_height        = r32(20);
-            fork_score         = r32(24);
+            stake_height       = r32(24);
+            fork_score         = r32(28);
             return true;
         }
     };

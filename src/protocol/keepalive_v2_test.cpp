@@ -15,13 +15,15 @@
  * 10. set_prevblock_suffix zeros: packet correctly sends zero suffix
  * 11. received_at is set (non-default) after a v2 parse
  * 12. age() returns 0.0 when valid==false
- * 13. Parsing robustness: non-4/non-28 payload lengths are ignored (no crash)
+ * 13. Parsing robustness: non-4/non-32 payload lengths are ignored (no crash)
+ * 14. KeepAliveV2AckFrame: stake_height at bytes [24-27], fork_score at [28-31] (LLL-TAO PR #299)
  */
 
 #include "protocol/keepalive_telemetry.hpp"
 #include "protocol/session_manager.hpp"
 #include "protocol_lane.hpp"
 #include "miner_opcodes.hpp"
+#include "LLP/include/colin_ping_protocol.h"
 #include <iostream>
 #include <cassert>
 #include <cstdint>
@@ -327,22 +329,22 @@ void test_keepalive_v2_age_invalid() {
 }
 
 // ============================================================================
-// Test 13: Parsing robustness — non-4/non-28 lengths produce no parse result
+// Test 13: Parsing robustness — non-4/non-32 lengths produce no parse result
 // ============================================================================
 void test_keepalive_parse_robustness_other_lengths() {
-    std::cout << "\nTest 13: Parsing robustness: lengths != 4 and != 28 are ignored\n";
+    std::cout << "\nTest 13: Parsing robustness: lengths != 4 and != 32 are ignored\n";
 
-    // Test lengths that must be silently ignored (not 4, not 28)
-    std::vector<size_t> ignored_lengths = { 0, 1, 2, 3, 5, 10, 16, 27, 29, 100 };
+    // Test lengths that must be silently ignored (not 4, not 32)
+    std::vector<size_t> ignored_lengths = { 0, 1, 2, 3, 5, 10, 16, 28, 31, 33, 100 };
     bool all_ok = true;
     for (size_t len : ignored_lengths) {
         std::vector<uint8_t> payload(len, 0xFF);
         // Replicate the solo.cpp branching logic:
-        //   == 28 → v2 parse
+        //   == 32 → v2 parse (KEEPALIVE_V2_ACK, LLL-TAO PR #299)
         //   == 4  → v1 parse
         //   else  → ignore
         bool handled = false;
-        if (!payload.empty() && len == 28) {
+        if (!payload.empty() && len == 32) {
             handled = true;  // would be v2 parsed
         } else if (!payload.empty() && len == 4) {
             handled = true;  // would be v1 parsed
@@ -350,7 +352,38 @@ void test_keepalive_parse_robustness_other_lengths() {
         // For all lengths in ignored_lengths, handled must be false
         if (handled) { all_ok = false; break; }
     }
-    print_test_result("Non-4/non-28 lengths are not handled (ignored)", all_ok);
+    print_test_result("Non-4/non-32 lengths are not handled (ignored)", all_ok);
+}
+
+// ============================================================================
+// Test 14: KeepAliveV2AckFrame 32-byte layout — stake_height at [24-27],
+//          fork_score at [28-31] (LLL-TAO PR #299)
+// ============================================================================
+void test_keepalive_v2_ack_frame_layout() {
+    std::cout << "\nTest 14: KeepAliveV2AckFrame 32-byte layout (LLL-TAO PR #299)\n";
+    using ::LLP::KeepAliveV2AckFrame;
+
+    print_test_result("PAYLOAD_SIZE == 32", KeepAliveV2AckFrame::PAYLOAD_SIZE == 32u);
+
+    // Build a 32-byte buffer with known values at stake_height and fork_score positions
+    std::vector<uint8_t> data(32, 0);
+    // stake_height at bytes [24-27] = 0xAABBCCDD
+    data[24] = 0xAA; data[25] = 0xBB; data[26] = 0xCC; data[27] = 0xDD;
+    // fork_score at bytes [28-31] = 0x11223344
+    data[28] = 0x11; data[29] = 0x22; data[30] = 0x33; data[31] = 0x44;
+
+    KeepAliveV2AckFrame ack;
+    bool parsed = ack.Parse(data);
+    print_test_result("Parse() returns true for 32-byte buffer", parsed);
+    print_test_result("stake_height == 0xAABBCCDD at bytes [24-27]",
+                      ack.stake_height == 0xAABBCCDDu);
+    print_test_result("fork_score == 0x11223344 at bytes [28-31]",
+                      ack.fork_score == 0x11223344u);
+
+    // Verify Parse() rejects old 28-byte buffer
+    std::vector<uint8_t> old_data(28, 0);
+    KeepAliveV2AckFrame ack2;
+    print_test_result("Parse() rejects 28-byte buffer (old format)", !ack2.Parse(old_data));
 }
 
 // ============================================================================
@@ -379,6 +412,7 @@ int main() {
     test_keepalive_v2_received_at_set();
     test_keepalive_v2_age_invalid();
     test_keepalive_parse_robustness_other_lengths();
+    test_keepalive_v2_ack_frame_layout();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

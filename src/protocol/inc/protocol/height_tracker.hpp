@@ -27,10 +27,12 @@ public:
      * @brief Source of the last height update
      */
     enum class UpdateSource {
-        NONE,       ///< No update received yet
-        PUSH,       ///< Updated by a push notification (BLOCK_AVAILABLE opcode)
-        GET_ROUND,  ///< Updated by a GET_ROUND / NEW_ROUND response
-        TEMPLATE,   ///< Updated by a received mining template
+        NONE,             ///< No update received yet
+        PUSH,             ///< Updated by a push notification (BLOCK_AVAILABLE opcode)
+        GET_ROUND,        ///< Updated by a GET_ROUND / NEW_ROUND response
+        TEMPLATE,         ///< Updated by a received mining template
+        KEEPALIVE_ACK,    ///< Updated by a KEEPALIVE_V2_ACK stateless response (prime + hash + stake + fork_score)
+        LEGACY_KEEPALIVE, ///< Updated by a SESSION_KEEPALIVE response (prime + hash + stake + nBits)
     };
 
     /**
@@ -45,6 +47,18 @@ public:
         uint32_t template_unified_height{0}; ///< Unified height at time of last template receipt
         uint1024_t hash_prev_block{};         ///< hashPrevBlock captured at template parse time (tip anchor)
         UpdateSource last_update_source{UpdateSource::NONE};
+
+        // ── All three channel heights, kept independently ──────────────────────
+        uint32_t prime_height{0};   ///< Prime channel height (OnKeepaliveAck / OnLegacyKeepalive)
+        uint32_t hash_height{0};    ///< Hash channel height  (OnKeepaliveAck / OnLegacyKeepalive)
+        uint32_t stake_height{0};   ///< Stake channel height (OnKeepaliveAck / OnLegacyKeepalive)
+
+        // ── Fork detection ─────────────────────────────────────────────────────
+        uint32_t fork_score{0};      ///< Latest fork_score from KEEPALIVE_V2_ACK (0 = healthy)
+        uint32_t peak_fork_score{0}; ///< Highest fork_score seen since start (persistent canary)
+
+        // ── Keepalive timing ───────────────────────────────────────────────────
+        std::chrono::steady_clock::time_point last_keepalive_ack_at{}; ///< Time of last OnKeepaliveAck() call
 
         /// Time of last push/GET_ROUND update
         std::chrono::steady_clock::time_point last_height_update{};
@@ -100,6 +114,9 @@ public:
             return static_cast<int32_t>(channel_target) -
                    static_cast<int32_t>(expected);
         }
+
+        /// True when the chain has reported any fork divergence since startup.
+        bool is_fork_active() const { return peak_fork_score > 0; }
     };
 
     HeightTracker() = default;
@@ -150,6 +167,42 @@ public:
      */
     void UpdateWithHashPrevBlock(const uint1024_t& h);
 
+    /**
+     * @brief Update heights from a stateless KEEPALIVE_V2_ACK response (opcode 0xD101).
+     *
+     * The stateless ACK carries: unified_height, prime_height, hash_height,
+     * stake_height, fork_score (32-byte wire format per LLL-TAO PR #299).
+     *
+     * @param unified_height  Node's unified blockchain height
+     * @param prime_height    Node's Prime channel height
+     * @param hash_height     Node's Hash channel height
+     * @param stake_height    Node's Stake channel height
+     * @param fork_score      Fork divergence score (0 = healthy, >0 = divergence magnitude)
+     */
+    void OnKeepaliveAck(uint32_t unified_height,
+                        uint32_t prime_height,
+                        uint32_t hash_height,
+                        uint32_t stake_height,
+                        uint32_t fork_score);
+
+    /**
+     * @brief Update heights from a SESSION_KEEPALIVE response (28-byte v2 payload).
+     *
+     * The legacy keepalive carries: unified_height, prime_height, hash_height,
+     * stake_height, nBits.
+     *
+     * @param unified_height  Node's unified blockchain height
+     * @param prime_height    Node's Prime channel height
+     * @param hash_height     Node's Hash channel height
+     * @param stake_height    Node's Stake channel height
+     * @param nbits           Difficulty in compact nBits (0 = unknown, skip update)
+     */
+    void OnLegacyKeepalive(uint32_t unified_height,
+                            uint32_t prime_height,
+                            uint32_t hash_height,
+                            uint32_t stake_height,
+                            uint32_t nbits);
+
     // =========================================================================
     // Read methods
     // =========================================================================
@@ -175,6 +228,20 @@ private:
     Snapshot m_state;
 
     static const char* source_name(UpdateSource src);
+
+    /// Sync channel_height from the per-channel sub-heights already stored in m_state.
+    /// Call this (under m_mutex) after updating prime_height / hash_height.
+    void sync_channel_height_locked();
+
+    /// Shared body for OnKeepaliveAck() and OnLegacyKeepalive(). Must be called
+    /// under m_mutex. Updates all three channel heights, difficulty (if nbits != 0),
+    /// fork_score, and peak_fork_score, then syncs channel_height.
+    void apply_keepalive_heights_locked(uint32_t unified_height,
+                                        uint32_t prime_height,
+                                        uint32_t hash_height,
+                                        uint32_t stake_height,
+                                        uint32_t nbits,
+                                        uint32_t fork_score);
 };
 
 } // namespace protocol
