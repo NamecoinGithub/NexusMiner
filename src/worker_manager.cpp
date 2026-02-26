@@ -26,6 +26,7 @@
 #include <iomanip>
 #include <sstream>
 #include <deque>
+#include <thread>
 
 namespace nexusminer
 {
@@ -47,6 +48,22 @@ namespace {
     // during an active recovery.  Prevents rapid-fire GETs while still allowing
     // periodic retries if the first attempt is not answered.
     constexpr int64_t RECOVERY_RESEND_INTERVAL_SECONDS = 10;
+
+    // Minimum interval between successive hard escalations (stop workers + hard recovery).
+    // Prevents re-escalation before the new epoch's GET_BLOCK has had time to be answered.
+    // 60s recovery window + 30s margin = 90s.
+    constexpr int64_t MIN_ESCALATION_INTERVAL_SECONDS = 90;
+
+    // Multiplier on RECOVERY_RESEND_INTERVAL_SECONDS for the per-epoch no-re-escalate window.
+    // 3 × 10s = 30s gives the new epoch's GET_BLOCK at least 3 resend intervals to be answered
+    // before another escalation is permitted.
+    constexpr int64_t EPOCH_NO_ESCALATE_MULTIPLIER = 3;
+
+    // Brief delay (milliseconds) after create_workers() before issuing GET_BLOCK.
+    // Allows newly spawned worker threads to enter their receive loop before the node
+    // responds to our GET_BLOCK with a fresh template, preventing set_block() from
+    // racing thread initialization.  C++ thread startup is typically < 5ms; 50ms is ample.
+    constexpr int WORKER_INIT_DELAY_MS = 50;
 }
 
 Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Config& config, 
@@ -1295,6 +1312,7 @@ void Worker_manager::clear_recovery_state()
     auto global_stats = m_stats_collector->get_global_stats();
     global_stats.m_degraded_mode = false;
     m_stats_collector->update_global_stats(global_stats);
+    m_last_escalation_at = {};
 }
 
 void Worker_manager::stop_all_workers()
@@ -1543,7 +1561,33 @@ void Worker_manager::check_template_health()
                 return;
             }
 
-            // Recovery window exceeded — escalate to hard recovery.
+            // Recovery window exceeded — check inter-escalation guards before escalating.
+
+            // Change B: Only escalate if sufficient time has passed since the last escalation.
+            // Prevents re-escalation before the new epoch's GET_BLOCK has had time to be answered.
+            if (m_last_escalation_at != std::chrono::steady_clock::time_point{}) {
+                auto since_last_escalation = std::chrono::duration_cast<std::chrono::seconds>(
+                    now_ts - m_last_escalation_at).count();
+                if (since_last_escalation < MIN_ESCALATION_INTERVAL_SECONDS) {
+                    m_logger->info("[Worker_manager] Escalation suppressed — only {}s since last escalation (min={}s), resending GET_BLOCK instead",
+                        since_last_escalation, MIN_ESCALATION_INTERVAL_SECONDS);
+                    retry_template_request(true);
+                    return;
+                }
+            }
+
+            // Change A: Do not re-escalate immediately after the previous escalation — give the
+            // new GET_BLOCK at least RECOVERY_RESEND_INTERVAL_SECONDS * 3 seconds to be answered.
+            if (m_recovery_epoch > 1) {
+                auto since_epoch_start = std::chrono::duration_cast<std::chrono::seconds>(
+                    now_ts - m_recovery_started_at).count();
+                if (since_epoch_start < (RECOVERY_RESEND_INTERVAL_SECONDS * EPOCH_NO_ESCALATE_MULTIPLIER)) {
+                    // Still within the no-re-escalate window — only resend GET_BLOCK, do not stop workers again.
+                    return;
+                }
+            }
+
+            // Escalate to hard recovery.
             m_logger->warn("[Worker_manager] ⚡ Recovery timeout: epoch {} exceeded {}s window ({}s elapsed)",
                 m_recovery_epoch, RECOVERY_WINDOW_SECONDS, recovery_elapsed_s);
             m_logger->warn("[Worker_manager]    Escalating: stop workers + discard template + GET_BLOCK");
@@ -1554,6 +1598,11 @@ void Worker_manager::check_template_health()
             // Bug 3 fix: Recreate workers immediately after stopping them so they are alive
             // and ready to receive the incoming template from retry_template_request().
             create_workers();
+            // Change C: Brief yield to give worker threads time to enter their receive loop before
+            // the node responds to our GET_BLOCK with a fresh template.
+            // 50ms is sufficient for thread startup; prevents set_block() from racing thread init.
+            std::this_thread::sleep_for(std::chrono::milliseconds(WORKER_INIT_DELAY_MS));
+            m_last_escalation_at = std::chrono::steady_clock::now();  // Change B: record escalation time
             retry_template_request(true);
             return;
         }
