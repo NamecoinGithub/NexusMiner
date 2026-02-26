@@ -161,6 +161,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         [](const auto& w) { return bool(w); });
                     if (!has_alive_workers) {
                         m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
+                        m_workers.clear();  // prevent duplication if any stale null entries remain
                         create_workers();
                     }
                 }
