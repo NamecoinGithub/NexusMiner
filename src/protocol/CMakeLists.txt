@@ -73,3 +73,13 @@ target_include_directories(keepalive_v2_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/LLP
     ${CMAKE_SOURCE_DIR}/src
 )
+
+# Push notification lane detection unit tests
+add_executable(push_notification_lane_test push_notification_lane_test.cpp)
+target_link_libraries(push_notification_lane_test PRIVATE LLP LLC)
+target_include_directories(push_notification_lane_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src
+)
