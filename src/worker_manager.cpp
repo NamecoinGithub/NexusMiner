@@ -152,6 +152,20 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // confirm workers actually received the template first.
                 // ═══════════════════════════════════════════════════════════════
 
+                // Bug 1 fix: In degraded mode, workers may have been stopped and reset
+                // by stop_all_workers().  Restart them now so set_block() below actually
+                // starts mining threads; without this the template is silently dropped and
+                // workers_fed falsely reads 0 keeping the miner in a doom loop.
+                if (m_degraded_mode) {
+                    bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
+                        [](const auto& w) { return bool(w); });
+                    if (!has_alive_workers) {
+                        m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
+                        m_workers.clear();  // prevent duplication if any stale null entries remain
+                        create_workers();
+                    }
+                }
+
                 /* Safety check - workers should be created by now */
                 if (m_workers.empty()) {
                     m_logger->error("[Worker_manager] CRITICAL: No workers available for mining!");
@@ -345,6 +359,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     
                     // Stop all workers
                     stop_all_workers();
+                    
+                    // Recreate workers so they are alive when the recovery template arrives
+                    create_workers();
                     
                     // Request fresh template
                     retry_template_request(true);
@@ -1281,13 +1298,16 @@ void Worker_manager::stop_all_workers()
     global_stats.m_degraded_mode = true;
     m_stats_collector->update_global_stats(global_stats);
     
-    // Note: We don't actually need to stop the worker threads here.
-    // Workers will naturally stop when they finish their current work
-    // because we won't feed them any new templates until recovery.
-    // The degraded mode flag is what matters for the UI display.
-    
+    // Reset all worker instances so that the next create_workers() call starts fresh
+    // without duplicating existing workers.  The shared_ptr reset() destroys the Worker
+    // object (and joins its mining thread in the destructor), effectively stopping it.
+    for (auto& worker : m_workers) {
+        worker.reset();
+    }
+    m_workers.clear();
+
     m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
-    m_logger->warn("[Worker_manager] Workers will idle until recovery");
+    m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
     m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK + MINER_READY");
 }
 
@@ -1412,6 +1432,14 @@ void Worker_manager::check_template_health()
     // keep triggering spurious recoveries on every 30 s tick.
     if (m_degraded_mode) {
         m_logger->warn("[Worker_manager] ⚠️  Valid template exists but m_degraded_mode=true — clearing stale flag");
+        // Restart any workers that were stopped by stop_all_workers() so that
+        // the re-feed below actually reaches live mining threads.
+        bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
+            [](const auto& w) { return bool(w); });
+        if (!has_alive_workers) {
+            m_logger->info("[Worker_manager] Belt-and-suspenders: restarting workers before re-feeding template");
+            create_workers();
+        }
         clear_recovery_state();
         // Re-feed the template so any workers that may have missed it get a copy.
         template_interface->feed_current_template();
@@ -1492,6 +1520,9 @@ void Worker_manager::check_template_health()
             template_interface->discard_template("Recovery timeout: " + std::to_string(recovery_elapsed_s) +
                                                  "s > " + std::to_string(RECOVERY_WINDOW_SECONDS) + "s window");
             stop_all_workers();
+            // Bug 3 fix: Recreate workers immediately after stopping them so they are alive
+            // and ready to receive the incoming template from retry_template_request().
+            create_workers();
             retry_template_request(true);
             return;
         }
@@ -1561,6 +1592,9 @@ void Worker_manager::check_template_health()
         template_interface->discard_template("Emergency: age " + std::to_string(template_age) +
                                              "s exceeded " + std::to_string(TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) + "s limit");
         stop_all_workers();
+        // Bug 3 fix: Recreate workers immediately after stopping them so they are alive
+        // and ready to receive the incoming template from retry_template_request().
+        create_workers();
         retry_template_request(true);
     }
 }
