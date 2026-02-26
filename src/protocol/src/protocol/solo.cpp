@@ -2951,15 +2951,13 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
 
             // Update HeightTracker with ACK chain-state heights (prime + hash + stake + fork_score).
-            // OnLegacyKeepalive() syncs channel_height from the appropriate sub-height and
+            // OnKeepaliveAck() uses the shared apply_keepalive_heights_locked() helper and
             // tracks the persistent fork_score high-water mark (peak_fork_score).
-            // KEEPALIVE_V2_ACK does not carry nBits — pass 0.
-            m_height_tracker.OnLegacyKeepalive(ack.unified_height,
-                                                ack.prime_height,
-                                                ack.hash_height,
-                                                ack.stake_height,
-                                                0u,
-                                                ack.fork_score);
+            m_height_tracker.OnKeepaliveAck(ack.unified_height,
+                                             ack.prime_height,
+                                             ack.hash_height,
+                                             ack.stake_height,
+                                             ack.fork_score);
 
             // Fork detection: compare node's chain tip against the miner's own locally
             // stored prevHash lo32 (NOT the echoed value from the ACK, which could be
