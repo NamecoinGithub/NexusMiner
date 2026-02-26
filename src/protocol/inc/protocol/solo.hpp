@@ -133,6 +133,10 @@ public:
     // Returns an invalid (valid==false) snapshot if no v2 reply has been received yet.
     KeepaliveTelemetrySnapshot get_keepalive_telemetry() const { return m_keepalive_telemetry.get(); }
 
+    // Last fork_score received in a KEEPALIVE_V2_ACK frame.
+    // Returns 0 if no ACK has been received yet or the chain is healthy.
+    uint32_t get_last_keepalive_fork_score() const { return m_last_keepalive_fork_score; }
+
     // SessionManager keepalive needs connection context
     void set_connection(std::shared_ptr<network::Connection> connection);
     
@@ -319,6 +323,16 @@ private:
 
     // KEEPALIVE v2 telemetry snapshot (thread-safe store, updated in SESSION_KEEPALIVE handler)
     KeepaliveTelemetryStore m_keepalive_telemetry;
+
+    // KEEPALIVE_V2 (0xD100) send-side tracking:
+    // The lo32 of hashPrevBlock that the miner put in its last KEEPALIVE_V2 frame.
+    // Stored locally so the ACK handler can compare against the node's echoed value
+    // without trusting the potentially-tampered echo in ack.hashPrevBlock_lo32.
+    uint32_t m_last_keepalive_prevhash_lo32{0};
+
+    // Last fork_score received in a KEEPALIVE_V2_ACK frame (0 = healthy).
+    // Exposed to ColinAgent for periodic diagnostic reporting.
+    uint32_t m_last_keepalive_fork_score{0};
     
     // Mining Template Interface for unified READ/FEED operations
     std::unique_ptr<MiningTemplateInterface> m_template_interface;

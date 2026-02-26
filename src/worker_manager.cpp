@@ -710,6 +710,15 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                                     auto* s = dynamic_cast<protocol::Solo*>(proto.get());
                                     return s ? s->last_received_ping() : ::LLP::ReceivedPingFrame{};
                                 });
+                            // Wire up KEEPALIVE_V2_ACK fork_score so emit_report() can
+                            // surface the fork canary in the periodic diagnostic report.
+                            self->m_colin_agent->set_fork_score_source(
+                                [weak_proto]() -> uint32_t {
+                                    auto proto = weak_proto.lock();
+                                    if (!proto) return 0;
+                                    auto* s = dynamic_cast<protocol::Solo*>(proto.get());
+                                    return s ? s->get_last_keepalive_fork_score() : 0;
+                                });
                         }
                         self->m_colin_agent->start();
                     }

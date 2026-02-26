@@ -1324,6 +1324,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_session_manager->set_prevblock_suffix(suffix);
                 m_logger->debug("[Solo Keepalive v2] prevblock_suffix set to {:02x}{:02x}{:02x}{:02x}",
                                suffix[0], suffix[1], suffix[2], suffix[3]);
+                // Track lo32 locally so KEEPALIVE_V2_ACK handler can verify without
+                // trusting the echoed value from the node (Defect 2 fix).
+                m_last_keepalive_prevhash_lo32 =
+                    (uint32_t(suffix[0]) << 24) | (uint32_t(suffix[1]) << 16)
+                  | (uint32_t(suffix[2]) <<  8) | uint32_t(suffix[3]);
             }
 
             // Snapshot current channel height for legacy GET_ROUND delta staleness
@@ -2937,12 +2942,38 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 ack.unified_height, ack.prime_height, ack.hash_height,
                 ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
 
-            /* Fork detection: compare node's chain tip against miner's prevHash canary */
-            if(ack.IsForkDetected(ack.hashPrevBlock_lo32))
+            // Update HeightTracker and ClientChannelManager with ACK chain-state heights.
+            // This ensures fork detection via the keepalive path has real effect
+            // (previously the heights were logged but never fed into state).
+            // KEEPALIVE_V2_ACK does not carry nBits (pass 0; HeightTracker accepts 0 as "unknown").
+            uint32_t ack_channel_height = (m_channel == 1) ? ack.prime_height : ack.hash_height;
+            update_height_state(ack.unified_height, ack_channel_height, 0u,
+                                HeightTracker::UpdateSource::PUSH);
+
+            // Persist the latest fork_score for ColinAgent diagnostic reporting.
+            m_last_keepalive_fork_score = ack.fork_score;
+
+            // Fork detection: compare node's chain tip against the miner's own locally
+            // stored prevHash lo32 (NOT the echoed value from the ACK, which could be
+            // tampered to mask a real fork).
+            if(ack.IsForkDetected(m_last_keepalive_prevhash_lo32))
             {
                 m_logger->warn("[KEEPALIVE_V2] Fork detected!"
                                " miner_prevHash_lo32=0x{:08x} node_tip_lo32=0x{:08x} fork_score={}",
-                    ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
+                    m_last_keepalive_prevhash_lo32, ack.hash_tip_lo32, ack.fork_score);
+
+                // Request a fresh template immediately to resolve the fork.
+                // get_work_immediate() bypasses the 1s miner-side rate limiter and
+                // leverages the node-side one-shot bypass (PR #283).
+                if(connection)
+                {
+                    auto work_payload = get_work_immediate();
+                    if(work_payload && !work_payload->empty())
+                    {
+                        connection->transmit(work_payload);
+                        m_logger->info("[KEEPALIVE_V2] Fresh template requested for fork recovery");
+                    }
+                }
             }
         }
     }
