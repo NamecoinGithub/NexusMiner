@@ -162,6 +162,9 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     // Initialize unified push notification handler
     m_push_handler = std::make_unique<PushNotificationHandler>(m_logger, m_channel);
     
+    // Initialize Colin AI Diagnostic PING/PONG handler with the shared logger
+    m_colin_ping_handler.set_logger(m_logger);
+    
     // Note: ChaCha20 wrapper is lazily initialized when enable_chacha20_wrapping() is called
     // This avoids unnecessary resource allocation when ChaCha20 is not needed
     
@@ -2835,6 +2838,23 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         else {
             m_logger->error("[Solo Stateless] No template interface available!");
+        }
+    }
+    // ═══════════════════════════════════════════════════════════════════════
+    // COLIN AI DIAGNOSTIC PING/PONG (opcode 0xE0 legacy / 0xD0E0 stateless)
+    // ═══════════════════════════════════════════════════════════════════════
+    else if (matches_opcode(0xE0))
+    {
+        /* Parse 64-byte PingFrame, build telemetry-enriched PongFrame, reply immediately */
+        const bool is_stateless = (m_protocol_lane == ProtocolLane::STATELESS);
+        std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
+        auto pong_bytes = m_colin_ping_handler.HandlePing(payload, is_stateless);
+        if(!pong_bytes.empty() && connection)
+        {
+            /* PONG opcode: 0xE1 legacy / 0xD0E1 stateless (mirror-mapped by PacketBuilder) */
+            connection->transmit(PacketBuilder::build(m_protocol_lane, 0xE1, pong_bytes));
+            m_logger->debug("[Colin PING] PongFrame transmitted (seq #{})",
+                m_colin_ping_handler.last_received_ping().sequence);
         }
     }
     else

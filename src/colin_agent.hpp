@@ -14,6 +14,7 @@
 
 #include "dual_connection_manager.hpp"
 #include "stats/stats_collector.hpp"
+#include "LLP/include/colin_ping_protocol.h"
 
 #include <asio/steady_timer.hpp>
 #include <spdlog/spdlog.h>
@@ -21,6 +22,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -48,6 +50,13 @@ public:
 
     void start();
     void stop();
+
+    // ── Colin AI Node Diagnostic Ping Source ──────────────────────────────
+    // Optional callback that returns the last received PING_DIAG frame.
+    // Set by Worker_manager after the Solo protocol is established so that
+    // emit_report() can display the latest node-side diagnostic data.
+    using PingSource = std::function<::LLP::ReceivedPingFrame()>;
+    void set_ping_source(PingSource fn) { m_ping_source = std::move(fn); }
 
     // ── Warning catalog ────────────────────────────────────────────────────
     // Returns a non-empty string if the pattern matches, empty string otherwise.
@@ -85,6 +94,8 @@ private:
     uint32_t m_interval_s;
     asio::steady_timer m_timer;
     bool m_running{false};
+
+    PingSource m_ping_source;  // Optional: supplies last ReceivedPingFrame for the report
 
     std::deque<DiagSnapshot> m_history; // last 10 snapshots
 };

@@ -11,6 +11,7 @@
 #include "protocol/keepalive_telemetry.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
+#include "LLP/colin_ping_handler.h"
 #include "spdlog/spdlog.h"
 #include <atomic>
 #include <chrono>
@@ -178,6 +179,12 @@ public:
     // Block-result counters (Gap 3)
     uint32_t get_blocks_accepted() const { return m_blocks_accepted.load(); }
     uint32_t get_blocks_rejected() const { return m_blocks_rejected.load(); }
+
+    // Colin AI Diagnostic PING/PONG handler
+    const ::LLP::ReceivedPingFrame& last_received_ping() const
+    {
+        return m_colin_ping_handler.last_received_ping();
+    }
 
 private:
     
@@ -417,6 +424,13 @@ private:
     
     // Helper method to determine and log lane from connection
     void initialize_protocol_lane(std::shared_ptr<network::Connection> connection);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // COLIN AI DIAGNOSTIC PING/PONG HANDLER
+    // ═══════════════════════════════════════════════════════════════════════
+    // Handles PING_DIAG (0xE0 legacy / 0xD0E0 stateless) from node and
+    // replies with a 64-byte PongFrame containing live miner telemetry.
+    ::LLP::ColinPingHandler m_colin_ping_handler;
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION
