@@ -148,6 +148,14 @@ public:
             return false;
         return (std::chrono::steady_clock::now() - m_last_push_received_time) < TEMPLATE_PUSH_COOLDOWN;
     }
+
+    // Returns the raw timestamp of the last received push notification (steady_clock).
+    // Used by Worker_manager::check_template_health() to determine whether the current
+    // template was received AFTER the last push (post-push = fresh, skip stop_all_workers).
+    std::chrono::steady_clock::time_point get_last_push_received_time() const
+    {
+        return m_last_push_received_time;
+    }
     
     // Stateless mining reward address binding (MINER_SET_REWARD protocol)
     void set_reward_address(std::string const& address) { m_reward_address = address; }
