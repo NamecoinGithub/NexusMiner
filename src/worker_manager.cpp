@@ -147,34 +147,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 m_logger->info("[Worker_manager] ═══════════════════════════════════════");
                 
                 // ═══════════════════════════════════════════════════════════════
-                // AUTO-RECOVERY: Clear degraded mode on valid template arrival
+                // Recovery state is cleared AFTER successful template distribution
+                // (see workers_fed > 0 branch below). Do not clear here — we must
+                // confirm workers actually received the template first.
                 // ═══════════════════════════════════════════════════════════════
-                if (m_degraded_mode) {
-                    m_logger->info("[Worker_manager] ✅ RECOVERY: Valid template received!");
-                    m_logger->info("[Worker_manager]    Clearing degraded mode");
-                    m_logger->info("[Worker_manager]    Resuming normal mining operations");
-                    m_logger->info("[Worker_manager] ⬇  DEGRADED MODE EXITED — mining resumed at height {} (channel {})",
-                                  block.nHeight, block.nChannel);
-                    m_degraded_mode = false;
-                    
-                    // Update stats to reflect recovery
-                    auto global_stats = m_stats_collector->get_global_stats();
-                    global_stats.m_degraded_mode = false;
-                    m_stats_collector->update_global_stats(global_stats);
-                }
 
-                // ═══════════════════════════════════════════════════════════════
-                // RECOVERY: Clear recovery_pending state on template acceptance
-                // ═══════════════════════════════════════════════════════════════
-                if (m_recovery_pending) {
-                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                        std::chrono::steady_clock::now() - m_recovery_started_at).count();
-                    m_logger->info("[Worker_manager] ✅ Recovery cleared — template received after {}s (epoch {})",
-                                  elapsed, m_recovery_epoch);
-                    m_recovery_pending = false;
-                    m_recovery_last_get_block_sent_at = {};
-                }
-                
                 /* Safety check - workers should be created by now */
                 if (m_workers.empty()) {
                     m_logger->error("[Worker_manager] CRITICAL: No workers available for mining!");
@@ -335,6 +312,17 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 if (workers_fed > 0) {
                     m_logger->info("[Worker_manager] ✓ Template distributed to {} workers - MINING STARTED", 
                                   workers_fed);
+                    // ✅ Clear degraded mode and all recovery state now that a valid template
+                    // has been successfully delivered to workers.  This is intentionally done
+                    // AFTER distribution so we only exit degraded mode when workers actually
+                    // received the template (not merely on template arrival).
+                    if (m_recovery_pending) {
+                        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::steady_clock::now() - m_recovery_started_at).count();
+                        m_logger->info("[Worker_manager] ✅ Recovery cleared — template distributed after {}s (epoch {})",
+                                      elapsed, m_recovery_epoch);
+                    }
+                    clear_recovery_state();
                 } else {
                     m_logger->error("[Worker_manager] FAILED: No workers received template!");
                 }
@@ -1253,6 +1241,23 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
                    RECOVERY_WINDOW_SECONDS);
 }
 
+void Worker_manager::clear_recovery_state()
+{
+    if (!m_degraded_mode && !m_recovery_pending)
+        return;  // Nothing to clear
+
+    m_logger->info("[Worker_manager] ✅ Recovery complete — clearing degraded mode");
+    m_degraded_mode = false;
+    m_recovery_pending = false;
+    m_recovery_epoch = 0;
+    m_recovery_started_at = {};
+    m_recovery_last_get_block_sent_at = {};
+
+    auto global_stats = m_stats_collector->get_global_stats();
+    global_stats.m_degraded_mode = false;
+    m_stats_collector->update_global_stats(global_stats);
+}
+
 void Worker_manager::stop_all_workers()
 {
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
@@ -1391,6 +1396,18 @@ void Worker_manager::check_template_health()
     uint8_t channel = template_interface->get_channel();
     std::string channel_name = (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
 
+    // ── Belt-and-suspenders guard ────────────────────────────────────────────
+    // If a valid template exists but m_degraded_mode is still set (e.g. because
+    // clear_recovery_state() was somehow bypassed), clear it now so the stats
+    // printer stops showing "MINING STOPPED" and the health monitor doesn't
+    // keep triggering spurious recoveries on every 30 s tick.
+    if (m_degraded_mode) {
+        m_logger->warn("[Worker_manager] ⚠️  Valid template exists but m_degraded_mode=true — clearing stale flag");
+        clear_recovery_state();
+        // Re-feed the template so any workers that may have missed it get a copy.
+        template_interface->feed_current_template();
+    }
+
     // Channel height-based staleness detection (primary check — HeightTracker is the single
     // source of truth).  Template is stale when channel_height >= channel_target (both non-zero).
     {
@@ -1405,7 +1422,13 @@ void Worker_manager::check_template_health()
             //
             // Use HeightTracker timestamps: if last_template_update >= last_height_update,
             // the template already accounts for the most recent push — do NOT stop workers.
-            bool template_is_newer_than_push = (ht_snap.last_template_update >= ht_snap.last_height_update);
+            //
+            // STARTUP GUARD: if last_template_update == time_point{} (no template has ever
+            // been received), treat the template as older than the push regardless of the
+            // comparison result — a zero time_point can spuriously compare >= any push time.
+            bool template_never_received = (ht_snap.last_template_update == std::chrono::steady_clock::time_point{});
+            bool template_is_newer_than_push = (!template_never_received &&
+                                                ht_snap.last_template_update >= ht_snap.last_height_update);
             if (template_is_newer_than_push) {
                 m_logger->debug("[Worker_manager] {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive stop",
                     channel_name,
@@ -1495,7 +1518,10 @@ void Worker_manager::check_template_health()
             // Apply the same temporal guard as the primary staleness check.
             // Even in the emergency path, if the template is newer than the last push,
             // the staleness is a false positive — suppress the hard recovery.
-            bool template_is_newer_than_push = (ht_snap.last_template_update >= ht_snap.last_height_update);
+            // STARTUP GUARD: zero time_point compares as epoch; treat as "never received".
+            bool template_never_received = (ht_snap.last_template_update == std::chrono::steady_clock::time_point{});
+            bool template_is_newer_than_push = (!template_never_received &&
+                                                ht_snap.last_template_update >= ht_snap.last_height_update);
             if (template_is_newer_than_push) {
                 m_logger->debug("[Worker_manager] EMERGENCY {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive stop",
                     channel_name,

@@ -72,6 +72,11 @@ private:
     ///  - retry_template_request(true) (health monitor or validation failure path).
     void mark_recovery_initiated(const char* reason);
 
+    /// Clear degraded mode and all recovery state after a valid template is delivered to workers.
+    /// Called from the template feed handler when workers_fed > 0, and as a belt-and-suspenders
+    /// guard from check_template_health() when a valid template exists but m_degraded_mode is set.
+    void clear_recovery_state();
+
     void retry_connect(network::Endpoint const& wallet_endpoint);
     void retry_secondary_connect(network::Endpoint const& secondary_endpoint);
 
