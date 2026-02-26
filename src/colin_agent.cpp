@@ -203,14 +203,65 @@ void ColinAgent::emit_report(
             m_logger->info("[Colin]  ── Node Diagnostics (last PING_DIAG) ──────────");
             m_logger->info("[Colin]    Seq #{}  NodeHeight={}  ChHeight={}",
                 ping.sequence, ping.unified_height, ping.channel_height);
-            m_logger->info("[Colin]    PrimePushes={}  HashPushes={}",
-                ping.prime_pushes_30s, ping.hash_pushes_30s);
-            m_logger->info("[Colin]    Submitted={}  Accepted={}  Rejected={}",
-                ping.blocks_submitted, ping.blocks_accepted, ping.blocks_rejected);
-            if (ping.health_flags != 0)
-                m_logger->warn("[Colin]    NodeHealthFlags=0x{:02x}", ping.health_flags);
+
+            /* Template push rates with drought warnings */
+            if (ping.prime_pushes_30s == 0 && ping.hash_pushes_30s == 0)
+                m_logger->error("[Colin]    Prime pushes/30s: 0   Hash pushes/30s: 0  ⚠ TOTAL DROUGHT");
+            else if (ping.prime_pushes_30s == 0)
+                m_logger->warn("[Colin]    Prime pushes/30s: 0 ⚠   Hash pushes/30s: {}",
+                    ping.hash_pushes_30s);
+            else if (ping.hash_pushes_30s == 0)
+                m_logger->warn("[Colin]    Prime pushes/30s: {}   Hash pushes/30s: 0 ⚠",
+                    ping.prime_pushes_30s);
             else
-                m_logger->info("[Colin]    NodeHealthFlags=0x00 (all clear)");
+                m_logger->info("[Colin]    Prime pushes/30s: {}   Hash pushes/30s: {}",
+                    ping.prime_pushes_30s, ping.hash_pushes_30s);
+
+            /* Submission accept/reject rate */
+            if (ping.blocks_submitted > 0)
+            {
+                uint32_t reject_pct = static_cast<uint32_t>(
+                    static_cast<uint64_t>(ping.blocks_rejected) * 100u / ping.blocks_submitted);
+                m_logger->info("[Colin]    Submissions: {} sent / {} accepted / {} rejected ({}%)",
+                    ping.blocks_submitted, ping.blocks_accepted,
+                    ping.blocks_rejected, reject_pct);
+            }
+            else
+            {
+                m_logger->info("[Colin]    Submissions: 0 sent (no submissions this interval)");
+            }
+
+            /* Decoded node health flags */
+            if (ping.health_flags == 0)
+            {
+                m_logger->info("[Colin]    Node Health: ✓ OK");
+            }
+            else
+            {
+                /* Build human-readable flag list */
+                std::string flag_str;
+                auto append = [&](const char* name) {
+                    if (!flag_str.empty()) flag_str += " | ";
+                    flag_str += name;
+                };
+                if (ping.health_flags & ::LLP::ReceivedPingFrame::NFLAG_NODE_SYNCING)
+                    append("NODE_SYNCING");
+                if (ping.health_flags & ::LLP::ReceivedPingFrame::NFLAG_FIRST_CONNECT)
+                    append("FIRST_CONNECT");
+                if (ping.health_flags & ::LLP::ReceivedPingFrame::NFLAG_HIGH_REJECT_RATE)
+                    append("HIGH_REJECT_RATE");
+                if (ping.health_flags & ::LLP::ReceivedPingFrame::NFLAG_CHANNEL_MISMATCH)
+                    append("CHANNEL_MISMATCH");
+                if (ping.health_flags & ::LLP::ReceivedPingFrame::NFLAG_DEDUP_HIT)
+                    append("DEDUP_HIT");
+                if (ping.health_flags & ::LLP::ReceivedPingFrame::NFLAG_SIM_LINK_ACTIVE)
+                    append("SIM_LINK_ACTIVE");
+                if (ping.health_flags & ::LLP::ReceivedPingFrame::NFLAG_RATE_LIMITED)
+                    append("RATE_LIMITED");
+                if (ping.health_flags & ::LLP::ReceivedPingFrame::NFLAG_STALE_TEMPLATE)
+                    append("STALE_TEMPLATE");
+                m_logger->warn("[Colin]    Node Health: ⚠ {}", flag_str);
+            }
         }
     }
 

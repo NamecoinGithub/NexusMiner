@@ -164,6 +164,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     
     // Initialize Colin AI Diagnostic PING/PONG handler with the shared logger
     m_colin_ping_handler.set_logger(m_logger);
+    m_colin_ping_handler.set_channel(m_channel);
     
     // Note: ChaCha20 wrapper is lazily initialized when enable_chacha20_wrapping() is called
     // This avoids unnecessary resource allocation when ChaCha20 is not needed
@@ -2882,6 +2883,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             connection->transmit(PacketBuilder::build(m_protocol_lane, 0xE1, pong_bytes));
             m_logger->debug("[Colin PING] PongFrame transmitted (seq #{})",
                 m_colin_ping_handler.last_received_ping().sequence);
+        }
+
+        /* Colin AI reactions — run after PONG is sent so reply latency is unaffected */
+        {
+            const auto& last_ping = m_colin_ping_handler.last_received_ping();
+            m_colin_ping_handler.ReactToNodeHealth(last_ping.health_flags, m_logger);
+            m_colin_ping_handler.ValidateHeightConsistency(
+                last_ping,
+                m_height_tracker.GetSnapshot().unified_height);
         }
     }
     // ═══════════════════════════════════════════════════════════════════════

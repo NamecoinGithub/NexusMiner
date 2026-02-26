@@ -73,6 +73,9 @@ namespace LLP
          **/
         void set_telemetry_source(ITelemetry* src) { m_telemetry = src; }
 
+        /** set_channel — set miner channel (1=Prime, 2=Hash) for drought detection **/
+        void set_channel(uint8_t channel) { m_channel = channel; }
+
 
         /** HandlePing
          *
@@ -94,6 +97,40 @@ namespace LLP
                                         bool stateless);
 
 
+        /** ReactToNodeHealth
+         *
+         *  Called immediately after HandlePing() in solo.cpp.
+         *  Reads health_flags from the last parsed PingFrame and triggers
+         *  the appropriate Colin Miner AI response.
+         *
+         *  health_flags reactions:
+         *    FLAG_NODE_SYNCING (bit 0)      → log WARNING
+         *    FLAG_FIRST_CONNECT (bit 1)     → log INFO
+         *    FLAG_HIGH_REJECT_RATE (bit 2)  → log WARNING
+         *    FLAG_CHANNEL_MISMATCH (bit 3)  → log ERROR
+         *    FLAG_DEDUP_HIT (bit 4)         → log WARNING
+         *    FLAG_SIM_LINK_ACTIVE (bit 5)   → log DEBUG
+         *    FLAG_RATE_LIMITED (bit 6)      → log WARNING
+         *    FLAG_STALE_TEMPLATE (bit 7)    → log ERROR
+         *
+         *  @param[in] flags   The health_flags byte from the last received PingFrame
+         *  @param[in] logger  spdlog logger reference for diagnostic output
+         **/
+        void ReactToNodeHealth(uint8_t flags, std::shared_ptr<spdlog::logger> logger);
+
+
+        /** ValidateHeightConsistency
+         *
+         *  Compares node-reported heights from PingFrame against miner's own tracking.
+         *  Logs warnings if divergence is detected.
+         *
+         *  @param[in] ping          The parsed PingFrame from the node
+         *  @param[in] myBestHeight  Miner's current best known height
+         *  @return true if heights agree (within 1 block), false if divergence detected
+         **/
+        bool ValidateHeightConsistency(const ReceivedPingFrame& ping, uint32_t myBestHeight);
+
+
         /** last_received_ping — access the last successfully parsed PingFrame
          *  for use by the Colin AI Miner terminal report.
          **/
@@ -102,18 +139,31 @@ namespace LLP
         /** ping_count — number of pings handled this session **/
         uint64_t ping_count() const { return m_ping_count.load(); }
 
+        /** last_rtt_us — one-way latency of last received ping (node send → miner recv) in µs **/
+        uint64_t last_rtt_us() const { return m_last_rtt_us.load(); }
+
+        /** last_height_consistent — true if last ValidateHeightConsistency() agreed **/
+        bool last_height_consistent() const { return m_last_height_consistent; }
+
     private:
 
         ITelemetry*                       m_telemetry{nullptr};
         ReceivedPingFrame                 m_last_ping;
         std::atomic<uint64_t>             m_ping_count{0};
+        std::atomic<uint64_t>             m_last_rtt_us{0};
         std::shared_ptr<spdlog::logger>   m_logger;
+        uint8_t                           m_channel{2};              // 1=Prime, 2=Hash
+        bool                              m_last_height_consistent{true};
+        uint32_t                          m_prev_hash_rate{0};       // for drop detection
 
         /** get_time_us — current time in microseconds since epoch **/
         static uint64_t get_time_us();
 
         /** log_node_health — render node health_flags to debug output **/
         void log_node_health(const ReceivedPingFrame& ping) const;
+
+        /** detect_template_drought — log warning if template push counts indicate drought **/
+        void detect_template_drought(const ReceivedPingFrame& ping) const;
     };
 
 } // namespace LLP
