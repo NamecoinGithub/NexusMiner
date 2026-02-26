@@ -2482,6 +2482,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
 
             m_keepalive_telemetry.update(snap);
 
+            // Update HeightTracker with all three channel heights from the legacy keepalive.
+            // This is the only source of stake_height on the miner side.
+            m_height_tracker.OnLegacyKeepalive(snap.unified_height,
+                                                snap.prime_height,
+                                                snap.hash_height,
+                                                snap.stake_height,
+                                                snap.nBits);
+
             m_logger->debug("[Solo Keepalive v2] Telemetry received:"
                            " session=0x{:08x}"
                            " unified={} prime={} hash={} stake={}"
@@ -2942,16 +2950,13 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 ack.unified_height, ack.prime_height, ack.hash_height,
                 ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
 
-            // Update HeightTracker and ClientChannelManager with ACK chain-state heights.
-            // This ensures fork detection via the keepalive path has real effect
-            // (previously the heights were logged but never fed into state).
-            // KEEPALIVE_V2_ACK does not carry nBits (pass 0; HeightTracker accepts 0 as "unknown").
-            uint32_t ack_channel_height = (m_channel == 1) ? ack.prime_height : ack.hash_height;
-            update_height_state(ack.unified_height, ack_channel_height, 0u,
-                                HeightTracker::UpdateSource::PUSH);
-
-            // Persist the latest fork_score for ColinAgent diagnostic reporting.
-            m_last_keepalive_fork_score = ack.fork_score;
+            // Update HeightTracker with ACK chain-state heights (prime + hash + fork_score).
+            // OnKeepaliveAck() syncs channel_height from the appropriate sub-height and
+            // tracks the persistent fork_score high-water mark (peak_fork_score).
+            m_height_tracker.OnKeepaliveAck(ack.unified_height,
+                                             ack.prime_height,
+                                             ack.hash_height,
+                                             ack.fork_score);
 
             // Fork detection: compare node's chain tip against the miner's own locally
             // stored prevHash lo32 (NOT the echoed value from the ACK, which could be

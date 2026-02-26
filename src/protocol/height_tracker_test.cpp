@@ -428,6 +428,80 @@ void test_pre_push_template_identified_correctly() {
 }
 
 // ============================================================================
+// Test 14: OnKeepaliveAck sets prime_height, hash_height, fork_score
+// ============================================================================
+void test_on_keepalive_ack_sets_heights() {
+    std::cout << "\nTest 14: OnKeepaliveAck sets prime_height, hash_height, fork_score\n";
+    HeightTracker tracker;
+    // Set channel to Hash (2) so channel_height mirrors hash_height
+    tracker.OnTemplateReceived(2, 101);
+    tracker.OnKeepaliveAck(6000, 450, 800, 3);
+
+    auto snap = tracker.GetSnapshot();
+    print_test_result("unified_height == 6000", snap.unified_height == 6000);
+    print_test_result("prime_height == 450",    snap.prime_height == 450);
+    print_test_result("hash_height == 800",     snap.hash_height == 800);
+    print_test_result("fork_score == 3",        snap.fork_score == 3);
+    print_test_result("peak_fork_score == 3",   snap.peak_fork_score == 3);
+    print_test_result("channel_height == hash_height (channel==2)",
+                      snap.channel_height == 800);
+    print_test_result("stake_height unchanged (0)",
+                      snap.stake_height == 0);
+    print_test_result("is_fork_active() == true", snap.is_fork_active());
+    print_test_result("last_update_source == KEEPALIVE_ACK",
+                      snap.last_update_source == HeightTracker::UpdateSource::KEEPALIVE_ACK);
+}
+
+// ============================================================================
+// Test 15: OnLegacyKeepalive sets stake_height and all channel heights
+// ============================================================================
+void test_on_legacy_keepalive_sets_stake_height() {
+    std::cout << "\nTest 15: OnLegacyKeepalive sets stake_height and all channel heights\n";
+    HeightTracker tracker;
+    tracker.OnLegacyKeepalive(6001, 451, 801, 999, 0x1d00ffff);
+
+    auto snap = tracker.GetSnapshot();
+    print_test_result("stake_height == 999",    snap.stake_height == 999);
+    print_test_result("prime_height == 451",    snap.prime_height == 451);
+    print_test_result("hash_height == 801",     snap.hash_height == 801);
+    print_test_result("unified_height == 6001", snap.unified_height == 6001);
+    print_test_result("difficulty_nbits set",   snap.difficulty_nbits == 0x1d00ffff);
+    print_test_result("last_update_source == LEGACY_KEEPALIVE",
+                      snap.last_update_source == HeightTracker::UpdateSource::LEGACY_KEEPALIVE);
+    print_test_result("is_fork_active() == false (no fork_score set)",
+                      !snap.is_fork_active());
+}
+
+// ============================================================================
+// Test 16: OnKeepaliveAck does NOT overwrite stake_height set by OnLegacyKeepalive
+// ============================================================================
+void test_keepalive_ack_preserves_stake_height() {
+    std::cout << "\nTest 16: OnKeepaliveAck preserves stake_height from OnLegacyKeepalive\n";
+    HeightTracker tracker;
+    tracker.OnLegacyKeepalive(6000, 450, 800, 999, 0x1d00ffff);
+    tracker.OnKeepaliveAck(6001, 451, 801, 0);
+
+    auto snap = tracker.GetSnapshot();
+    print_test_result("stake_height preserved after OnKeepaliveAck",
+                      snap.stake_height == 999);
+}
+
+// ============================================================================
+// Test 17: peak_fork_score is a persistent high-water mark
+// ============================================================================
+void test_peak_fork_score_is_high_water_mark() {
+    std::cout << "\nTest 17: peak_fork_score is a persistent high-water mark\n";
+    HeightTracker tracker;
+    tracker.OnKeepaliveAck(6000, 450, 800, 5);
+    tracker.OnKeepaliveAck(6001, 451, 801, 1);  // lower score
+
+    auto snap = tracker.GetSnapshot();
+    print_test_result("fork_score == 1 (latest)",       snap.fork_score == 1);
+    print_test_result("peak_fork_score == 5 (canary)",  snap.peak_fork_score == 5);
+    print_test_result("is_fork_active() still true",    snap.is_fork_active());
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -448,6 +522,10 @@ int main() {
     test_difficulty_from_push_reflected_in_snapshot();
     test_post_push_timestamps_ordered_correctly();
     test_pre_push_template_identified_correctly();
+    test_on_keepalive_ack_sets_heights();
+    test_on_legacy_keepalive_sets_stake_height();
+    test_keepalive_ack_preserves_stake_height();
+    test_peak_fork_score_is_high_water_mark();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
