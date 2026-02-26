@@ -1343,10 +1343,13 @@ void Worker_manager::check_template_health()
             m_logger->info("[Worker_manager]    Template (t={}) predates last push (t={}) — true staleness",
                 std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
                 std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
-            m_logger->info("[Worker_manager]    Requesting fresh template (channel height-based staleness)");
-            template_interface->discard_template("Channel height-based staleness (channel advanced)");
-            stop_all_workers();
-            retry_template_request(true);
+            // Do NOT stop workers — the push handler already sent GET_BLOCK.
+            // Workers mining a stale-height template are harmless (won't find a valid block
+            // at the old height) but stopping creates a doom-loop if the GET_BLOCK response
+            // is slow (e.g. the node-side first-request bypass did not fire).
+            // Reserve stop_all_workers() for the age-based emergency timeout only.
+            m_logger->info("[Worker_manager] ✓ Workers continuing to mine while awaiting fresh template (channel stale but not emergency)");
+            retry_template_request(true);  // Force GET_BLOCK + MINER_READY
             return;
         }
     }
