@@ -20,6 +20,7 @@
 #include <iostream>
 #include <cassert>
 #include <cstdint>
+#include <thread>
 
 using namespace nexusminer::protocol;
 
@@ -356,6 +357,77 @@ void test_difficulty_from_push_reflected_in_snapshot() {
 }
 
 // ============================================================================
+// Test 12: Post-push guard — last_template_update >= last push time when
+//          template is received AFTER a push notification.
+//          This is the HeightTracker side of the doom-loop prevention fix:
+//          Worker_manager::check_template_health() uses these timestamps to
+//          decide whether to skip stop_all_workers for a "stale" template that
+//          was actually received after the push that caused the stale reading.
+// ============================================================================
+void test_post_push_timestamps_ordered_correctly() {
+    std::cout << "\nTest 12: Post-push guard — last_template_update >= last_push after push→template\n";
+    HeightTracker tracker;
+
+    // Step 1: Push notification arrives (block Y mined, channel at Y).
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    auto snap_after_push = tracker.GetSnapshot();
+
+    // Verify push time is recorded.
+    print_test_result("last_height_update set after push",
+                      snap_after_push.last_height_update != std::chrono::steady_clock::time_point{});
+
+    // last_template_update should be before last_height_update (no template yet).
+    print_test_result("last_template_update < last_height_update before template arrives",
+                      snap_after_push.last_template_update < snap_after_push.last_height_update);
+
+    // channel_height = 100, channel_target still 0 (no template) → not stale.
+    print_test_result("Not stale (no channel_target yet)",
+                      !snap_after_push.is_template_stale());
+
+    // Step 2: Recovery GET_BLOCK returns a template targeting Y+1 = 101.
+    // Small sleep to ensure measurable time difference between push and template.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    tracker.OnTemplateReceived(1, 101);
+    auto snap_after_tmpl = tracker.GetSnapshot();
+
+    // last_template_update must be >= last_height_update (post-push guard).
+    print_test_result("last_template_update >= last_height_update after template (post-push)",
+                      snap_after_tmpl.last_template_update >= snap_after_tmpl.last_height_update);
+
+    // is_template_stale() must be false: channel_height (100) < channel_target (101).
+    print_test_result("Not stale after template for 101 (channel_height=100 < target=101)",
+                      !snap_after_tmpl.is_template_stale());
+}
+
+// ============================================================================
+// Test 13: Pre-push guard — template received BEFORE a push has
+//          last_template_update < last_height_update, so check_template_health
+//          correctly identifies it as a pre-push (genuinely stale) template
+//          and does NOT skip stop_all_workers.
+// ============================================================================
+void test_pre_push_template_identified_correctly() {
+    std::cout << "\nTest 13: Pre-push guard — last_template_update < last_height_update (pre-push template)\n";
+    HeightTracker tracker;
+
+    // Step 1: Template received first (targeting 101, channel at 100).
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 101);
+
+    // Step 2: A later push arrives (channel advances to 101 — template is now stale).
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    tracker.OnPushNotification(5001, 101, 0x1d00ffff);
+    auto snap = tracker.GetSnapshot();
+
+    // last_template_update < last_height_update → pre-push template.
+    print_test_result("last_template_update < last_height_update (pre-push template)",
+                      snap.last_template_update < snap.last_height_update);
+
+    // is_template_stale() must be true: channel_height (101) >= channel_target (101).
+    print_test_result("is_template_stale() == true (pre-push, channel_height == channel_target)",
+                      snap.is_template_stale());
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -374,6 +446,8 @@ int main() {
     test_is_tip_moved_detected();
     test_is_tip_moved_resets_on_new_template();
     test_difficulty_from_push_reflected_in_snapshot();
+    test_post_push_timestamps_ordered_correctly();
+    test_pre_push_template_identified_correctly();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
