@@ -116,6 +116,11 @@ private:
     // recovery epoch.  Used to rate-limit health-monitor resends to one per
     // RECOVERY_RESEND_INTERVAL (10 s) without stopping workers each time.
     std::chrono::steady_clock::time_point m_recovery_last_get_block_sent_at{};
+
+    // Time of the most recent escalation (epoch N → epoch N+1: stop workers + hard recovery).
+    // Used to prevent re-escalation within MIN_ESCALATION_INTERVAL_SECONDS of the previous
+    // escalation, giving the new GET_BLOCK time to be answered before workers are stopped again.
+    std::chrono::steady_clock::time_point m_last_escalation_at{};
     
     // Persistent receive accumulator for TCP stream reassembly
     // Using deque for O(1) front removal when consuming packets
