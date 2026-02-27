@@ -69,7 +69,7 @@ Was push received within last 200 s?  YES → skip GET_BLOCK (push is working)
        NO (200 s cooldown expired)
        │
        ▼
-GET_BLOCK rate limiter: elapsed ≥ 6500 ms?  NO → skip (wait for rate limit)
+GET_BLOCK rate limiter: elapsed ≥ 2000 ms?  NO → skip (wait for rate limit)
        │
        YES
        │
@@ -89,7 +89,7 @@ Transmit GET_BLOCK → node responds with fresh template
                 ─────────────────────  ─────────────────────────
 MAX_TEMPLATE_AGE        600 s               200 s
 WARNING_TEMPLATE_AGE     50 s                50 s (unchanged)
-GET_BLOCK rate limit   6500 ms            6500 ms (unchanged)
+GET_BLOCK rate limit   6500 ms            2000 ms
 Push cooldown fallback  N/A               200 s (new)
 Node push throttle      N/A               2000 ms (node PR)
 ```

@@ -513,19 +513,11 @@ network::Shared_payload Solo::login(Login_handler handler)
 
 network::Shared_payload Solo::get_work()
 {
-    // GET_BLOCK rate limiter — miner-side 1s guard, node-side 6s is authoritative.
+    // GET_BLOCK rate limiter — miner-side 2s guard matches node's 2-second rate limit.
     //
-    // Architecture (with LLL-TAO PR #283 one-shot bypass):
-    //   - Node: 6s minimum, 10-strike → 300s ban (production)
-    //   - Node PR #283: first GET_BLOCK after push is served immediately (one-shot bypass)
-    //   - Miner: 1s guard prevents rapid-fire loops within a single push cycle
-    //
-    // Flow per Hash block (~18s):
-    //   1. Push arrives → tip_moved → get_work_immediate() resets timer → get_work() fires
-    //      → Node PR #283 one-shot bypass serves it → template received ✓
-    //   2. If template race/empty → retry after 1s → node's 6s guard handles it
-    //   3. Next push ~18s later → repeat from step 1
-    constexpr auto GET_BLOCK_MIN_INTERVAL = std::chrono::milliseconds(1000);
+    // Node enforces 2-second minimum between GET_BLOCK requests. Miner matches this
+    // to avoid unnecessary empty responses.
+    constexpr auto GET_BLOCK_MIN_INTERVAL = std::chrono::milliseconds(2000);
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - m_last_get_block_time);
@@ -533,7 +525,7 @@ network::Shared_payload Solo::get_work()
     if (m_last_get_block_time != std::chrono::steady_clock::time_point{} &&
         elapsed < GET_BLOCK_MIN_INTERVAL)
     {
-        m_logger->info("[Solo] GET_BLOCK rate-limited ({}ms < {}ms) — node's 6s guard is authoritative; will retry on next push",
+        m_logger->info("[Solo] GET_BLOCK rate-limited ({}ms < {}ms) — will retry on next push",
                        elapsed.count(), GET_BLOCK_MIN_INTERVAL.count());
         return network::Shared_payload{};  // Return empty — caller checks for null/empty
     }
@@ -581,18 +573,17 @@ network::Shared_payload Solo::get_work()
 
 network::Shared_payload Solo::get_work_immediate()
 {
-    // Bypass miner-side rate limiter — node PR #283 one-shot bypass serves this immediately.
-    // Reset the rate-limit clock so the next get_work() call also goes through normally.
+    // Bypass miner-side rate limiter for recovery — node's 2-second limit allows rapid recovery GET_BLOCKs.
+    // Reset the rate-limit clock so the next get_work() call goes through immediately.
     m_last_get_block_time = std::chrono::steady_clock::time_point{};
-    m_logger->info("[Solo] GET_BLOCK immediate (tip_moved bypass) — relying on node PR #283 one-shot");
+    m_logger->info("[Solo] GET_BLOCK immediate (tip_moved bypass) — node's 2-second limit allows immediate recovery");
     return get_work();
 }
 
 void Solo::bypass_get_block_rate_limit_once()
 {
-    // One-shot rate-limit bypass for SIM Link lane-failure recovery.
-    // Resets the miner-side rate-limit clock so the very next get_work() call fires immediately
-    // (matching the node-side one-shot bypass from LLL-TAO PR #283).
+    // One-shot rate-limit bypass for recovery scenarios. Node allows GET_BLOCK every 2 seconds,
+    // so this bypass is only needed for immediate first-request after lane recovery.
     m_last_get_block_time = std::chrono::steady_clock::time_point{};
     m_logger->info("[Solo] GET_BLOCK rate-limit one-shot bypass armed (SIM Link lane recovery)");
 }
@@ -2975,8 +2966,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     m_last_keepalive_prevhash_lo32, ack.hash_tip_lo32, ack.fork_score);
 
                 // Request a fresh template immediately to resolve the fork.
-                // get_work_immediate() bypasses the 1s miner-side rate limiter and
-                // leverages the node-side one-shot bypass (PR #283).
+                // get_work_immediate() bypasses the miner-side rate limiter;
+                // node's 2-second limit allows rapid recovery.
                 if(connection)
                 {
                     auto work_payload = get_work_immediate();
