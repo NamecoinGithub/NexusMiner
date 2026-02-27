@@ -116,6 +116,20 @@ std::string ColinAgent::check_fork_score(uint32_t fork_score, uint32_t peak_fork
     return {};
 }
 
+std::string ColinAgent::check_tip_sync(uint32_t miner_prevhash_lo32, uint32_t node_tip_lo32)
+{
+    if (miner_prevhash_lo32 == 0 || node_tip_lo32 == 0)
+        return {};  // insufficient data — skip
+    if (miner_prevhash_lo32 == node_tip_lo32)
+        return {};  // in sync — all good
+    char buf_m[9], buf_n[9];
+    snprintf(buf_m, 9, "%08x", miner_prevhash_lo32);
+    snprintf(buf_n, 9, "%08x", node_tip_lo32);
+    return std::string("TipSync mismatch: miner_prevhash_lo32=0x") + buf_m +
+           " vs node_tip_lo32=0x" + buf_n +
+           " — miner may be on stale/forked tip";
+}
+
 // ── Lane assessment ───────────────────────────────────────────────────────────
 
 std::string ColinAgent::assess_primary_lane() const
@@ -185,6 +199,19 @@ void ColinAgent::run_diagnostics()
                                    "s — node may have dropped the session");
             }
         }
+        {
+            uint32_t miner_lo32 = 0;
+            {
+                auto bytes = ht_snap.hash_prev_block.GetBytes();
+                if (bytes.size() >= 128)
+                    miner_lo32 = (uint32_t(bytes[124]) << 24) | (uint32_t(bytes[125]) << 16)
+                               | (uint32_t(bytes[126]) <<  8) |  uint32_t(bytes[127]);
+            }
+            m_last_miner_prevhash_lo32 = miner_lo32;
+            m_last_node_tip_lo32 = ht_snap.hash_tip_lo32;
+            auto w = check_tip_sync(miner_lo32, ht_snap.hash_tip_lo32);
+            if (!w.empty()) warnings.push_back(w);
+        }
     }
 
     emit_report(warnings, recommendations, gs);
@@ -232,6 +259,27 @@ void ColinAgent::emit_report(
             }
         } else {
             m_logger->info("[Colin]  Keepalive │ no ACK received yet (session just started or legacy node)");
+        }
+    }
+
+    // TipSync cross-check: miner's template prevhash_lo32 vs node's keepalive-reported hash_tip_lo32
+    if (m_height_tracker) {
+        uint32_t miner_prevhash_lo32 = m_last_miner_prevhash_lo32;
+        uint32_t node_tip_lo32 = m_last_node_tip_lo32;
+        bool have_both = (miner_prevhash_lo32 != 0 && node_tip_lo32 != 0);
+        if (have_both) {
+            if (miner_prevhash_lo32 == node_tip_lo32) {
+                m_logger->info("[Colin]  TipSync  │ ✓ miner prevhash_lo32 0x{:08x} == node tip_lo32 0x{:08x}  (in sync)",
+                    miner_prevhash_lo32, node_tip_lo32);
+            } else {
+                m_logger->warn("[Colin]  TipSync  │ ⚠ MISMATCH miner_prevhash_lo32=0x{:08x}  node_tip_lo32=0x{:08x}",
+                    miner_prevhash_lo32, node_tip_lo32);
+                m_logger->warn("[Colin]  TipSync  │   Miner may be on a stale or forked tip — watch for next keepalive update");
+            }
+        } else if (miner_prevhash_lo32 != 0 && node_tip_lo32 == 0) {
+            m_logger->info("[Colin]  TipSync  │ node tip_lo32=0 (legacy path or no keepalive ACK yet — skip cross-check)");
+        } else {
+            m_logger->info("[Colin]  TipSync  │ waiting for template + keepalive ACK data");
         }
     }
 
