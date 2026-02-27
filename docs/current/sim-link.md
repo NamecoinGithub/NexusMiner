@@ -62,6 +62,21 @@ lane so it can request a fresh template immediately.
 - `submit_solution()` tries the primary connection first and falls back to the secondary
   within 100 ms if the primary is unavailable
 
+### Heartbeat / Keepalive
+
+Both lanes use **`SessionManager::start_keepalive_timer()`** as the sole heartbeat driver.
+The former bare `Packet::PING` timer has been removed because it carried no payload and
+conveyed no height data to the node.
+
+| Property | Value |
+|----------|-------|
+| Timer owner | `SessionManager::start_keepalive_timer()` |
+| Interval | 45 seconds |
+| Packet type | `SESSION_KEEPALIVE` |
+| Miner → Node payload | 8 bytes: `session_id (4 LE)` + `hashPrevBlock_lo32 (4 BE)` |
+| Node → Miner reply | 32 bytes: `unified_height`, `prime_height`, `hash_height`, `stake_height`, `hash_tip_lo32`, `fork_score` |
+| Height ingestion point | `HeightTracker::OnKeepaliveResponse()` (both lanes) |
+
 ### GET_BLOCK Rate Limiter
 
 | Setting | Value | Notes |
