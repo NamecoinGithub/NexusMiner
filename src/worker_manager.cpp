@@ -42,7 +42,11 @@ namespace {
 
     // Recovery window: if no template arrives within this many seconds after a
     // GET_BLOCK recovery is initiated, the health monitor escalates to hard recovery.
-    constexpr int64_t RECOVERY_WINDOW_SECONDS = 60;
+    // Channel-aware: Prime blocks genuinely take 2-5+ min, so a 60 s window causes
+    // spurious escalations during normal long Prime blocks. Hash blocks arrive every
+    // ~18 s so 60 s (≈ 3 blocks) is appropriate for Hash.
+    constexpr int64_t RECOVERY_WINDOW_SECONDS_HASH  =  60;   // Hash blocks every ~18s; 60s ≈ 3 blocks
+    constexpr int64_t RECOVERY_WINDOW_SECONDS_PRIME = 300;   // Prime blocks take 2-5+ min; 300s gives margin
 
     // Minimum interval between successive GET_BLOCK sends by the health monitor
     // during an active recovery.  Prevents rapid-fire GETs while still allowing
@@ -51,7 +55,9 @@ namespace {
 
     // Minimum interval between successive hard escalations (stop workers + hard recovery).
     // Prevents re-escalation before the new epoch's GET_BLOCK has had time to be answered.
-    // 60s recovery window + 30s margin = 90s.
+    // Must be at least RECOVERY_RESEND_INTERVAL_SECONDS * 3 so that a GET_BLOCK sent during
+    // escalation has time to be answered before we escalate again (minimum = 10 × 3 = 30s).
+    // 90s = 10 × 9 — 3× the minimum — provides comfortable margin for slow nodes.
     constexpr int64_t MIN_ESCALATION_INTERVAL_SECONDS = 90;
 
     // Multiplier on RECOVERY_RESEND_INTERVAL_SECONDS for the per-epoch no-re-escalate window.
@@ -72,8 +78,9 @@ namespace {
     // Brief delay (milliseconds) after create_workers() before issuing GET_BLOCK.
     // Allows newly spawned worker threads to enter their receive loop before the node
     // responds to our GET_BLOCK with a fresh template, preventing set_block() from
-    // racing thread initialization.  C++ thread startup is typically < 5ms; 50ms is ample.
-    constexpr int WORKER_INIT_DELAY_MS = 50;
+    // racing thread initialization.  500ms gives workers adequate time on all platforms;
+    // 50ms was insufficient on slow platforms, causing workers_fed==0 and mini doom-loops.
+    constexpr int WORKER_INIT_DELAY_MS = 500;
 }
 
 Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Config& config, 
@@ -1312,8 +1319,7 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
     m_recovery_get_block_transmitted = false;  // no confirmed transmission in new epoch yet
     m_logger->warn("[Worker_manager] ⚑ RECOVERY INITIATED — epoch {} (reason: {})",
                    m_recovery_epoch, reason ? reason : "unknown");
-    m_logger->warn("[Worker_manager]   Health monitor will NOT stop workers during {} s recovery window",
-                   RECOVERY_WINDOW_SECONDS);
+    m_logger->warn("[Worker_manager]   Health monitor will NOT stop workers during channel recovery window");
 }
 
 void Worker_manager::clear_recovery_state()
@@ -1483,6 +1489,12 @@ void Worker_manager::check_template_health()
     uint8_t channel = template_interface->get_channel();
     std::string channel_name = (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
 
+    // Channel-aware recovery window: Prime blocks take 2-5+ min, so use a longer window
+    // to avoid spurious escalations during normal long Prime blocks.
+    const int64_t effective_recovery_window =
+        (channel == mining::CHANNEL_PRIME) ? RECOVERY_WINDOW_SECONDS_PRIME
+                                           : RECOVERY_WINDOW_SECONDS_HASH;
+
     // ── Belt-and-suspenders guard ────────────────────────────────────────────
     // If a valid template exists but m_degraded_mode is still set (e.g. because
     // clear_recovery_state() was somehow bypassed), clear it now so the stats
@@ -1549,7 +1561,7 @@ void Worker_manager::check_template_health()
             auto recovery_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
                 now_ts - m_recovery_started_at).count();
 
-            if (recovery_elapsed_s < RECOVERY_WINDOW_SECONDS) {
+            if (recovery_elapsed_s < effective_recovery_window) {
                 // Within recovery window: workers keep mining; only resend GET_BLOCK if
                 // RECOVERY_RESEND_INTERVAL has elapsed since the last confirmed transmission.
                 // Use m_recovery_last_get_block_transmitted_at (only set when a GET_BLOCK was
@@ -1609,21 +1621,24 @@ void Worker_manager::check_template_health()
             }
 
             // Escalate to hard recovery.
-            m_logger->warn("[Worker_manager] ⚡ Recovery timeout: epoch {} exceeded {}s window ({}s elapsed)",
-                m_recovery_epoch, RECOVERY_WINDOW_SECONDS, recovery_elapsed_s);
+            m_logger->warn("[Worker_manager] ⚡ Recovery timeout: {} epoch {} exceeded {}s window ({}s elapsed)",
+                channel_name, m_recovery_epoch, effective_recovery_window, recovery_elapsed_s);
             m_logger->warn("[Worker_manager]    Escalating: stop workers + discard template + GET_BLOCK");
             m_recovery_pending = false;  // Reset so next staleness detection starts a fresh epoch
             template_interface->discard_template("Recovery timeout: " + std::to_string(recovery_elapsed_s) +
-                                                 "s > " + std::to_string(RECOVERY_WINDOW_SECONDS) + "s window");
+                                                 "s > " + std::to_string(effective_recovery_window) + "s window");
             stop_all_workers();
             // Bug 3 fix: Recreate workers immediately after stopping them so they are alive
             // and ready to receive the incoming template from retry_template_request().
             create_workers();
-            // Change C: Brief yield to give worker threads time to enter their receive loop before
-            // the node responds to our GET_BLOCK with a fresh template.
-            // 50ms is sufficient for thread startup; prevents set_block() from racing thread init.
+            // Recovery Tuning 2: 500ms gives workers adequate time to enter their receive loop
+            // before the node responds to our GET_BLOCK with a fresh template, preventing
+            // set_block() from racing thread initialization and causing workers_fed==0 mini doom-loops.
             std::this_thread::sleep_for(std::chrono::milliseconds(WORKER_INIT_DELAY_MS));
             m_last_escalation_at = std::chrono::steady_clock::now();  // Change B: record escalation time
+            // Recovery Tuning 3: Start a fresh epoch immediately so the next health-monitor tick
+            // sees a clean recovery window clock — preventing immediate re-escalation.
+            mark_recovery_initiated("escalation_hard_recovery");
             retry_template_request(true);
             return;
         }

@@ -3439,6 +3439,22 @@ bool Solo::finalize_template_with_channel_height(uint32_t node_channel_height, c
             // Gap 1 (legacy lane): snapshot hashPrevBlock for parity with stateless lane.
             m_last_known_hash_prev_block = tmpl->block.hashPrevBlock;
             m_height_tracker.UpdateWithHashPrevBlock(tmpl->block.hashPrevBlock);
+
+            // Gap 3: Update session keepalive prevblock_suffix on legacy GET_ROUND lane
+            // (mirrors the stateless lane at BLOCK_DATA parse time) so the fork-canary
+            // suffix is always current regardless of which protocol lane delivered the template.
+            if (m_session_manager) {
+                auto suffix_bytes = m_last_known_hash_prev_block.GetBytes();
+                std::array<uint8_t, 4> suffix{};
+                if (suffix_bytes.size() >= 128) {
+                    suffix = { suffix_bytes[124], suffix_bytes[125], suffix_bytes[126], suffix_bytes[127] };
+                }
+                m_session_manager->set_prevblock_suffix(suffix);
+                m_last_keepalive_prevhash_lo32 =
+                    (uint32_t(suffix[0]) << 24) | (uint32_t(suffix[1]) << 16)
+                  | (uint32_t(suffix[2]) <<  8) | uint32_t(suffix[3]);
+            }
+
             auto prev_bytes = m_last_known_hash_prev_block.GetBytes();
             std::string prev_hex;
             for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i) {
