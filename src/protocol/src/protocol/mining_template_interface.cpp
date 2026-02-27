@@ -283,6 +283,12 @@ void MiningTemplateInterface::set_template_feed_handler(TemplateFeedHandler hand
     m_logger->debug("[TemplateInterface] Feed handler registered");
 }
 
+void MiningTemplateInterface::set_template_cleared_callback(TemplateClearedCallback cb)
+{
+    m_template_cleared_callback = std::move(cb);
+    m_logger->debug("[TemplateInterface] Template-cleared callback registered");
+}
+
 void MiningTemplateInterface::set_validation_failure_handler(ValidationFailureHandler handler)
 {
     m_validation_failure_handler = std::move(handler);
@@ -1025,8 +1031,15 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
 
 void MiningTemplateInterface::discard_template(const std::string& reason)
 {
-    std::lock_guard<std::mutex> lock(m_template_mutex);
-    discard_template_unsafe(reason);
+    {
+        std::lock_guard<std::mutex> lock(m_template_mutex);
+        discard_template_unsafe(reason);
+    }
+    // Invoke the cleared callback outside the mutex so callers can safely
+    // zero derived state (e.g. SESSION_KEEPALIVE prevblock_suffix).
+    if (m_template_cleared_callback) {
+        m_template_cleared_callback();
+    }
 }
 
 void MiningTemplateInterface::discard_template_unsafe(const std::string& reason)

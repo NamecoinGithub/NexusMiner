@@ -225,6 +225,17 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
         }
     );
     m_logger->info("[Solo] Template feed handler registered - ready to distribute work to workers");
+
+    // Register template-cleared callback: zero prevblock_suffix in SESSION_KEEPALIVE
+    // so the node sees a clean slate when a template is discarded.
+    m_template_interface->set_template_cleared_callback(
+        [this]() {
+            if (m_session_manager) {
+                m_session_manager->set_prevblock_suffix({0, 0, 0, 0});
+                m_logger->debug("[Solo] Template cleared — prevblock_suffix zeroed in session keepalive");
+            }
+        }
+    );
 }
 
 std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t>& genesis)

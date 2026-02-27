@@ -75,6 +75,7 @@ public:
     static std::string check_connection_retries(uint32_t retry_count);
     static std::string check_template_age(uint64_t age_seconds);
     static std::string check_mining_stopped(bool degraded_mode);
+    static std::string check_fork_score(uint32_t fork_score, uint32_t peak_fork_score);
 
 private:
     void schedule_next();

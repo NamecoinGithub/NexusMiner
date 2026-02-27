@@ -97,6 +97,21 @@ public:
      * @brief Template validation failure callback type
      */
     using ValidationFailureHandler = std::function<void(const ValidationResult& result)>;
+
+    /**
+     * @brief Callback invoked whenever the current template is discarded
+     *
+     * Registered via set_template_cleared_callback(). Called at the end of
+     * discard_template() (outside the mutex) so callers can zero any
+     * derived state (e.g. SESSION_KEEPALIVE prevblock_suffix).
+     */
+    using TemplateClearedCallback = std::function<void()>;
+
+    /**
+     * @brief Register a callback to be invoked on every discard_template() call
+     * @param cb Callback function (may be nullptr to clear)
+     */
+    void set_template_cleared_callback(TemplateClearedCallback cb);
     
     /**
      * @brief Constructor
@@ -470,6 +485,7 @@ private:
     MiningTemplate m_current_template;
     TemplateFeedHandler m_feed_handler;
     ValidationFailureHandler m_validation_failure_handler;
+    TemplateClearedCallback m_template_cleared_callback;
     mutable std::mutex m_template_mutex;  // Protects m_current_template access
     
     HeightTracker* m_height_tracker{nullptr};  // Non-owning; for centralized height tracking
