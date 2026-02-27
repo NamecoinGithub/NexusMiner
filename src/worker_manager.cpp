@@ -51,17 +51,19 @@ namespace {
     // Minimum interval between successive GET_BLOCK sends by the health monitor
     // during an active recovery.  Prevents rapid-fire GETs while still allowing
     // periodic retries if the first attempt is not answered.
-    constexpr int64_t RECOVERY_RESEND_INTERVAL_SECONDS = 10;
+    // 15s gives 4 attempts in a 60s hash-block window (t=0, t=15, t=30, t=45),
+    // and two chances within the node's 30s AutoCoolDown window.
+    constexpr int64_t RECOVERY_RESEND_INTERVAL_SECONDS = 15;
 
     // Minimum interval between successive hard escalations (stop workers + hard recovery).
     // Prevents re-escalation before the new epoch's GET_BLOCK has had time to be answered.
     // Must be at least RECOVERY_RESEND_INTERVAL_SECONDS * 3 so that a GET_BLOCK sent during
-    // escalation has time to be answered before we escalate again (minimum = 10 × 3 = 30s).
-    // 90s = 10 × 9 — 3× the minimum — provides comfortable margin for slow nodes.
+    // escalation has time to be answered before we escalate again (minimum = 15 × 3 = 45s).
+    // 90s provides 2× the minimum — comfortable margin for slow nodes.
     constexpr int64_t MIN_ESCALATION_INTERVAL_SECONDS = 90;
 
     // Multiplier on RECOVERY_RESEND_INTERVAL_SECONDS for the per-epoch no-re-escalate window.
-    // 3 × 10s = 30s gives the new epoch's GET_BLOCK at least 3 resend intervals to be answered
+    // 3 × 15s = 45s gives the new epoch's GET_BLOCK at least 3 resend intervals to be answered
     // before another escalation is permitted.
     constexpr int64_t EPOCH_NO_ESCALATE_MULTIPLIER = 3;
 
@@ -1391,8 +1393,8 @@ void Worker_manager::retry_template_request(bool bForce)
     }
 
     // Push-cooldown guard (push-driven era): if the node pushed a template within the last
-    // 200 s the node is operating normally — skip GET_BLOCK to avoid unnecessary polling.
-    // Only if no push has arrived for 200 s (dead-connection indicator) do we fall back.
+    // 30 s (node's new AutoCoolDown) the node is operating normally — skip GET_BLOCK to
+    // avoid unnecessary polling. Only if no push has arrived for 30 s do we fall back.
     if (solo_protocol->was_push_received_recently()) {
         if (!bForce) {
             // Periodic health-check path: push is coming, no need to poll.
@@ -1430,15 +1432,17 @@ void Worker_manager::retry_template_request(bool bForce)
             m_logger->warn("[Worker_manager]   GET_BLOCK suppressed (rate-limited or not authenticated) — recovery may be delayed");
         }
     } else if (lane == ProtocolLane::STATELESS) {
-        // Stateless lane: Send GET_BLOCK first to actively request a template, then
-        // re-send MINER_READY to re-subscribe to future push notifications.
-        // Sending only MINER_READY is insufficient: the node may not push again until
-        // the next block, leaving the miner permanently in "WAITING FOR VALID TEMPLATE".
+        // RECOVERY STRATEGY: Send MINER_READY first to reset node's AutoCoolDown,
+        // then GET_BLOCK to actively request a template.
+        // The companion LLL-TAO PR resets m_get_block_cooldown on MINER_READY receipt.
+        m_logger->info("[Worker_manager] → Re-sending STATELESS_MINER_READY (resets node AutoCoolDown)");
+        auto miner_ready_payload = solo_protocol->send_miner_ready();
+        if (miner_ready_payload && !miner_ready_payload->empty()) {
+            m_connection->transmit(miner_ready_payload);
+        }
+
         m_logger->info("[Worker_manager] → Sending GET_BLOCK request (stateless 0xD081)");
-        // Use get_work_immediate() on forced recovery to bypass the miner-side 1s rate limiter.
-        // The node enforces its own 6s minimum between GET_BLOCK responses (production) but
-        // provides a one-shot bypass (LLL-TAO PR #283) for the first request after a push,
-        // so forced recovery is served immediately without triggering node-side bans.
+        // Use get_work_immediate() on forced recovery to bypass the miner-side rate limiter.
         auto work_payload = bForce ? solo_protocol->get_work_immediate() : solo_protocol->get_work();
         if (work_payload && !work_payload->empty()) {
             m_connection->transmit(work_payload);
@@ -1447,13 +1451,7 @@ void Worker_manager::retry_template_request(bool bForce)
             m_recovery_get_block_transmitted = true;
             m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
         } else {
-            m_logger->warn("[Worker_manager]   GET_BLOCK suppressed (rate-limited or not authenticated) — falling back to MINER_READY only");
-        }
-        // Also re-subscribe to push notifications so the miner receives future pushes.
-        m_logger->info("[Worker_manager] → Re-sending STATELESS_MINER_READY");
-        auto miner_ready_payload = solo_protocol->send_miner_ready();
-        if (miner_ready_payload && !miner_ready_payload->empty()) {
-            m_connection->transmit(miner_ready_payload);
+            m_logger->warn("[Worker_manager]   GET_BLOCK suppressed (rate-limited or not authenticated)");
         }
     } else {
         m_logger->error("[Worker_manager] → Unknown protocol lane - cannot request template");

@@ -300,7 +300,7 @@ private:
     // Push-driven era: timestamp of the last successfully received template push.
     // Used by was_push_received_recently() to avoid unnecessary GET_BLOCK polling
     // when the node is delivering templates normally (within TEMPLATE_PUSH_COOLDOWN).
-    static constexpr std::chrono::seconds TEMPLATE_PUSH_COOLDOWN{200};
+    static constexpr std::chrono::seconds TEMPLATE_PUSH_COOLDOWN{30};
     std::chrono::steady_clock::time_point m_last_push_received_time{};
 
     // Block-result counters (Gap 3): incremented by BLOCK_ACCEPTED / BLOCK_REJECTED handlers.
