@@ -124,6 +124,7 @@ Colin prints a structured diagnostic report every 60 seconds (configurable):
 | Connection retries > 100 | Connection instability | Check network / node restart |
 | Template age > 150 s | Approaching emergency timeout | Verify push notifications working |
 | `MINING STOPPED` | Workers in degraded mode | Check template delivery path |
+| TipSync mismatch | Miner may be on a stale or forked tip | Watch for next keepalive ACK update; check node chain sync |
 
 Configure Colin in `miner.conf`:
 ```toml

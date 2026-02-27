@@ -77,6 +77,12 @@ public:
     static std::string check_mining_stopped(bool degraded_mode);
     static std::string check_fork_score(uint32_t fork_score, uint32_t peak_fork_score);
 
+    // Check for tip sync mismatch between miner's template prevhash_lo32
+    // and node's keepalive-reported hash_tip_lo32.
+    // Returns empty string if in sync, ok-to-skip, or insufficient data.
+    // Returns warning string only on actual mismatch.
+    static std::string check_tip_sync(uint32_t miner_prevhash_lo32, uint32_t node_tip_lo32);
+
 private:
     void schedule_next();
     void run_diagnostics();
@@ -105,6 +111,9 @@ private:
 
     PingSource m_ping_source;  // Optional: supplies last ReceivedPingFrame for the report
     const nexusminer::protocol::HeightTracker* m_height_tracker{nullptr};  // Optional: HeightTracker owned by Solo
+
+    uint32_t m_last_miner_prevhash_lo32{0};
+    uint32_t m_last_node_tip_lo32{0};
 
     std::deque<DiagSnapshot> m_history; // last 10 snapshots
 };
