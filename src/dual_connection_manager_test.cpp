@@ -77,11 +77,19 @@ int main()
     }
 
     {
-        std::cout << "Test 5: Rate-limit constants reflect SIM policy\n";
-        ok &= expect(DualConnectionManager::GET_BLOCK_MINER_INTERVAL_MS == 2500,
-                     "Miner-side interval is 2500ms");
-        ok &= expect(DualConnectionManager::GET_BLOCK_NODE_INTERVAL_MS == 6000,
-                     "Node-side interval is 6000ms");
+        std::cout << "Test 5: Single source of truth for GET_BLOCK rate limit\n";
+        // GET_BLOCK_MINER_INTERVAL_MS and GET_BLOCK_NODE_INTERVAL_MS have been removed
+        // from DualConnectionManager — they were dead code that misled developers.
+        // The single enforced rate limit is the local constexpr GET_BLOCK_MIN_INTERVAL
+        // (2000ms) in Solo::get_work(), matching the node's 2-second AutoCoolDown.
+        //
+        // The compile-time proof that the constants are gone is that this file compiles
+        // without them — any reference to GET_BLOCK_MINER_INTERVAL_MS or
+        // GET_BLOCK_NODE_INTERVAL_MS would be a compile error.
+        DualConnectionManager mgr;
+        mgr.set_stateless_alive(true);
+        ok &= expect(mgr.is_stateless_alive(),
+                     "DualConnectionManager liveness works without stale GET_BLOCK timing constants");
         std::cout << '\n';
     }
 

@@ -91,7 +91,7 @@ public:
 		return (m_port == STATELESS_PORT) ? LEGACY_PORT : STATELESS_PORT;
 	}
 
-	// GET_BLOCK miner-side rate limit (milliseconds, default 2500)
+	// GET_BLOCK miner-side rate limit (milliseconds, default 2000)
 	uint32_t get_get_block_interval_ms() const { return m_get_block_interval_ms; }
 
 	// Colin AI diagnostic agent

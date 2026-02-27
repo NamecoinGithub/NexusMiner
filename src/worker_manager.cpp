@@ -52,7 +52,7 @@ namespace {
     // during an active recovery.  Prevents rapid-fire GETs while still allowing
     // periodic retries if the first attempt is not answered.
     // 15s gives 4 attempts in a 60s hash-block window (t=0, t=15, t=30, t=45),
-    // and two chances within the node's 30s AutoCoolDown window.
+    // well above the node's 2s rate-limit floor (GET_BLOCK_COOLDOWN_SECONDS).
     constexpr int64_t RECOVERY_RESEND_INTERVAL_SECONDS = 15;
 
     // Minimum interval between successive hard escalations (stop workers + hard recovery).
@@ -76,6 +76,11 @@ namespace {
     // Colin agent: maximum acceptable seconds between keepalive ACK responses.
     // If no ACK is received for this long, the node may have dropped the session.
     constexpr int64_t KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS = 300;
+
+    // Aggressive secondary reconnect delay during degraded mode.
+    // Overrides exponential backoff to reconnect the secondary lane quickly
+    // so it can serve as a template fallback during recovery.
+    constexpr uint32_t DEGRADED_SECONDARY_RETRY_DELAY_SECONDS = 5;
 
     // Brief delay (milliseconds) after create_workers() before issuing GET_BLOCK.
     // Allows newly spawned worker threads to enter their receive loop before the node
@@ -647,11 +652,10 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     if (self->m_sim_link.consume_bypass(surviving_lane)) {
                         auto* sec_solo = dynamic_cast<protocol::Solo*>(self->m_secondary_protocol.get());
                         if (sec_solo && self->m_secondary_connection) {
-                            // Node-side 6-second limit (LLL-TAO):
-                            // The node enforces roughly 6000ms minimum between GET_BLOCK
-                            // requests per session after the first recovery bypass.  We
-                            // explicitly bypass miner-side once here, then normal flow
-                            // resumes and node-side 6s remains authoritative.
+                            // Node enforces a 2-second minimum between GET_BLOCK requests
+                            // (AutoCoolDown). We bypass the miner-side once here so the
+                            // surviving lane can request a fresh template immediately; then
+                            // normal 2s miner-side floor resumes.
                             sec_solo->bypass_get_block_rate_limit_once();
                             auto work_payload = sec_solo->send_recovery_work_request();
                             if (work_payload && !work_payload->empty()) {
@@ -1419,7 +1423,7 @@ void Worker_manager::retry_template_request(bool bForce)
         // Legacy lane: Request via GET_BLOCK
         m_logger->info("[Worker_manager] → Sending GET_BLOCK request (legacy polling)");
         // Use get_work_immediate() on forced recovery to bypass miner-side rate limiter.
-        // Node PR #283 one-shot bypass handles the node-side.
+        // Node enforces a 2-second minimum between GET_BLOCK requests (AutoCoolDown).
         auto work_payload = bForce ? solo_protocol->get_work_immediate() : solo_protocol->get_work();
         if (work_payload && !work_payload->empty()) {
             m_connection->transmit(work_payload);
@@ -1475,8 +1479,51 @@ void Worker_manager::check_template_health()
         // This handles the case where a previous recovery attempt (GET_BLOCK + MINER_READY) did
         // not produce a template (e.g. node rate-limited the request or connection was briefly lost).
         // Rate is naturally capped by the TEMPLATE_HEALTH_INTERVAL timer (30s), so retries fire
-        // at most once per 30s.  The node-side 6-second guard handles any per-request rate control.
+        // at most once per 30s.  The node's 2s rate-limit floor handles per-request rate control.
         if (m_degraded_mode) {
+            auto ht_snap = solo_protocol->get_height_tracker_snapshot();
+
+            // Bug 2 fix: If keepalive ACK is stale (>KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS)
+            // AND we're in degraded mode, the session is presumed dead — force a full TCP
+            // reconnect instead of retrying GET_BLOCK on a dead session.
+            bool keepalive_ack_received = (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+            if (keepalive_ack_received) {
+                auto since_ack_s = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count();
+                if (since_ack_s > KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS && m_connection) {
+                    m_logger->error("[Worker_manager] KEEPALIVE TIMEOUT — session presumed dead "
+                                   "(last ACK {}s ago), forcing reconnect", since_ack_s);
+                    auto wallet_endpoint = m_connection->remote_endpoint();
+                    retry_connect(wallet_endpoint);
+                    return;
+                }
+            }
+
+            // Bug 3 fix: If secondary lane is alive, try GET_BLOCK via secondary for faster recovery.
+            if (m_secondary_connection && m_secondary_protocol) {
+                auto* sec_solo = dynamic_cast<protocol::Solo*>(m_secondary_protocol.get());
+                if (sec_solo) {
+                    sec_solo->bypass_get_block_rate_limit_once();
+                    auto work_payload = sec_solo->send_recovery_work_request();
+                    if (work_payload && !work_payload->empty()) {
+                        m_logger->info("[SIM Link] DEGRADED MODE fallback — GET_BLOCK sent via secondary lane");
+                        m_secondary_connection->transmit(work_payload);
+                    }
+                }
+            } else if (!m_secondary_connection && m_config.get_enable_sim_link() && m_connection) {
+                // Bug 3 fix: Secondary lane is DOWN — force aggressive reconnect with 5s delay.
+                std::string wallet_addr;
+                m_connection->remote_endpoint().address(wallet_addr);
+                if (!wallet_addr.empty()) {
+                    m_logger->info("[SIM Link] DEGRADED MODE: secondary lane DOWN — forcing aggressive reconnect ({}s delay)",
+                                   DEGRADED_SECONDARY_RETRY_DELAY_SECONDS);
+                    m_secondary_retry_delay_seconds = DEGRADED_SECONDARY_RETRY_DELAY_SECONDS;
+                    network::Endpoint secondary_endpoint{
+                        network::Transport_protocol::tcp, wallet_addr, m_config.get_secondary_port()};
+                    retry_secondary_connect(secondary_endpoint);
+                }
+            }
+
             m_logger->warn("[Worker_manager] ⚠️  DEGRADED MODE: no valid template — retrying recovery request");
             retry_template_request(true);
         }
