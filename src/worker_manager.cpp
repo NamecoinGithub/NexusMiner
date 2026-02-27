@@ -716,8 +716,6 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     auto const print_statistics_interval = self->m_config.get_print_statistics_interval();
                     self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
                     self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
-                    self->m_timer_manager.start_ping_timer(self->m_config.get_ping_interval(), self->m_connection);
-
                     // Solo mining uses stateless protocol with mandatory Falcon authentication (no GET_HEIGHT)
                     self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
                     self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
@@ -754,7 +752,6 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     constexpr uint16_t TEMPLATE_HEALTH_INTERVAL = 30;
                     self->m_timer_manager.start_template_health_timer(TEMPLATE_HEALTH_INTERVAL, self);
                     self->m_logger->info("[Worker_manager] Template health monitor started (30s interval)");
-                    self->m_logger->info("[SIM Link] Primary lane ping timer started ({}s)", self->m_config.get_ping_interval());
 
                     // ====== SIM LINK: mark primary lane alive + start health check ======
                     {
@@ -961,8 +958,6 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                             }
 
                             self->m_logger->info("[SIM Link] ✓ Secondary lane authenticated and ready — both lanes ALIVE");
-                            self->m_timer_manager.start_secondary_ping_timer(self->m_config.get_ping_interval(), self->m_secondary_connection);
-                            self->m_logger->info("[SIM Link] Secondary lane ping timer started ({}s)", self->m_config.get_ping_interval());
                         }));
             }
             else

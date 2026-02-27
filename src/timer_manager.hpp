@@ -27,6 +27,11 @@ class Worker_manager;
 class Worker;
 
 
+// NOTE: Heartbeat / keepalive is NOT managed by Timer_manager.
+// SessionManager::start_keepalive_timer() owns the 45-second SESSION_KEEPALIVE
+// heartbeat for both the primary and secondary lanes.  The former Packet::PING
+// timer (bare header-only ping) was removed because it carried no payload and
+// conveyed no height data to the node.
 class Timer_manager
 {
 public:
@@ -35,8 +40,6 @@ public:
 
     void start_connection_retry_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager, 
         network::Endpoint const& wallet_endpoint);
-    void start_ping_timer(std::uint16_t timer_interval, std::weak_ptr<network::Connection> connection);
-    void start_secondary_ping_timer(std::uint16_t timer_interval, std::weak_ptr<network::Connection> connection);
     void start_stats_collector_timer(std::uint16_t timer_interval, std::vector<std::shared_ptr<Worker>> workers, 
         std::shared_ptr<stats::Collector> stats_collector);
     void start_stats_printer_timer(std::uint16_t timer_interval, std::vector<std::shared_ptr<stats::Printer>> stats_printers);
@@ -63,8 +66,6 @@ private:
 
     chrono::Timer::Handler connection_retry_handler(std::weak_ptr<Worker_manager> worker_manager,
         network::Endpoint const& wallet_endpoint);
-    chrono::Timer::Handler ping_handler(std::uint16_t ping_interval, std::weak_ptr<network::Connection> connection);
-    chrono::Timer::Handler secondary_ping_handler(std::uint16_t ping_interval, std::weak_ptr<network::Connection> connection);
     chrono::Timer::Handler stats_collector_handler(std::uint16_t stats_collector_interval, std::vector<std::shared_ptr<Worker>> workers, 
         std::shared_ptr<stats::Collector> stats_collector);
     chrono::Timer::Handler stats_printer_handler(std::uint16_t stats_printer_interval, std::vector<std::shared_ptr<stats::Printer>> stats_printers);
@@ -82,8 +83,6 @@ private:
 
     chrono::Timer_factory::Sptr m_timer_factory;
     chrono::Timer::Uptr m_connection_retry_timer;
-    chrono::Timer::Uptr m_ping_timer;
-    chrono::Timer::Uptr m_secondary_ping_timer;
     chrono::Timer::Uptr m_stats_collector_timer;
     chrono::Timer::Uptr m_stats_printer_timer;
     chrono::Timer::Uptr m_get_round_timer;  // Template Staleness Prevention
