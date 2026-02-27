@@ -1250,6 +1250,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo BLOCK_DATA] metadata prefix: nUnifiedHeight={} nChannelHeight={} nBits=0x{:08x}",
                        nUnifiedHeight, nChannelHeight, nBitsMeta);
 
+        // Update HeightTracker with the channel target derived from metadata.
+        // nChannelHeight is the node's current channel tip; the template targets the NEXT block.
+        // genesis (nChannelHeight == 0) is excluded — consistent with the stateless lane guard.
+        if (nChannelHeight > 0) {
+            m_height_tracker.OnTemplateReceived(m_channel, nChannelHeight + 1);
+            m_logger->info("[Solo BLOCK_DATA] HeightTracker: channel_target set to {} (node channel_height={})",
+                nChannelHeight + 1, nChannelHeight);
+        }
+
         // Strip the 12-byte prefix; pass only the 216-byte Block::Serialize() output to read_template
         auto block_serial = std::make_shared<network::Payload>(
             packet.m_data->begin() + BLOCK_METADATA_PREFIX_SIZE, packet.m_data->end());
