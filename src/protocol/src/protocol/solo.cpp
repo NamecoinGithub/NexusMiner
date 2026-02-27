@@ -2454,8 +2454,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     else if (matches_opcode(Packet::SESSION_KEEPALIVE))
     {
         // KEEPALIVE receive handler: branch by payload length
-        //   4 bytes  → v1 reply (remaining session timeout, little-endian)
-        //   32 bytes → unified keepalive reply from node (KeepAliveV2AckFrame format)
+        //   32 bytes → unified keepalive reply (v2): KeepAliveV2AckFrame; provides
+        //              unified_height / prime_height / hash_height / stake_height / fork_score
+        //   4 bytes  → v1 reply (legacy nodes only): remaining session timeout (LE u32)
+        //              heights NOT updated — HeightTracker must rely on push notifications instead
         m_logger->debug("[Solo Session] Received SESSION_KEEPALIVE response ({} bytes)", packet.m_length);
 
         if (packet.m_data && packet.m_length == 32) {
@@ -3009,14 +3011,15 @@ void Solo::set_protocol_lane(ProtocolLane lane)
 
 network::Shared_payload Solo::send_session_keepalive()
 {
-    // LLL-TAO PR #22: Send SESSION_KEEPALIVE to maintain session
     m_logger->debug("[Solo Session] Sending SESSION_KEEPALIVE for session 0x{:08x}", m_session_id);
-    
-    // Build keepalive packet with session ID (4 bytes, little-endian)
-    std::vector<uint8_t> keepalive_data;
-    append_uint32_le(keepalive_data, m_session_id);
-    
-    return PacketBuilder::build(m_protocol_lane, LLP::SESSION_KEEPALIVE, keepalive_data);
+
+    // Delegate to SessionManager which builds the correct 8-byte v2 payload:
+    //   [0..3] session_id             (u32 little-endian)
+    //   [4..7] miner_prevblock_suffix (last 4 bytes of hashPrevBlock, raw bytes;
+    //                                  zeros when no valid template is available)
+    // This causes the node to reply with the 32-byte unified KeepAliveV2AckFrame
+    // (unified_height / prime_height / hash_height / stake_height / hash_tip_lo32 / fork_score).
+    return m_session_manager->build_keepalive_packet();
 }
 
 void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)

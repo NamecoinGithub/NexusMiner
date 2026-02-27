@@ -120,7 +120,9 @@ public:
     void enable_block_signing(bool enable) { m_disposable_falcon_enabled = enable; }
     bool is_block_signing_enabled() const { return m_disposable_falcon_enabled; }
     
-    // Session management (LLL-TAO PR #22)
+    // Session management (LLL-TAO PR #22 / PR #217)
+    // Sends SESSION_KEEPALIVE via SessionManager (8-byte v2 payload: session_id + prevhash_lo32).
+    // Node replies with the 32-byte unified KeepAliveV2AckFrame carrying all channel heights.
     network::Shared_payload send_session_keepalive();
     std::uint32_t get_session_id() const;
     bool is_session_active() const;
