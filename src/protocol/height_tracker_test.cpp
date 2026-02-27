@@ -14,6 +14,9 @@
  *  9. is_tip_moved() detects unified tip advance (Phase 3A: tip_moved refresh reason)
  * 10. is_tip_moved() resets to false after new template received
  * 11. Difficulty from push updates is reflected in HeightTracker snapshot
+ * 18. Push updates prime_height for Prime channel (no keepalive regression)
+ * 19. Push updates hash_height for Hash channel (no keepalive regression)
+ * 20. Production regression: push advances prime_height past keepalive value
  */
 
 #include "protocol/height_tracker.hpp"
@@ -506,6 +509,53 @@ void test_peak_fork_score_high_water_mark() {
 }
 
 // ============================================================================
+// Test 18: Push updates prime_height for Prime channel
+// ============================================================================
+void test_push_updates_per_channel_heights() {
+    std::cout << "\nTest 18: Push updates prime_height for Prime channel\n";
+    HeightTracker tracker;
+    tracker.OnTemplateReceived(1, 101);
+    tracker.OnKeepaliveResponse(5000, 100, 200, 300, 0, 0);
+    auto snap1 = tracker.GetSnapshot();
+    print_test_result("prime_height == 100 after keepalive", snap1.prime_height == 100);
+    tracker.OnPushNotification(5002, 102, 0x1d00ffff);
+    auto snap2 = tracker.GetSnapshot();
+    print_test_result("channel_height == 102 after push", snap2.channel_height == 102);
+    print_test_result("prime_height == 102 after push (no drift)", snap2.prime_height == 102);
+}
+
+// ============================================================================
+// Test 19: Push updates hash_height for Hash channel
+// ============================================================================
+void test_push_updates_hash_height() {
+    std::cout << "\nTest 19: Push updates hash_height for Hash channel\n";
+    HeightTracker tracker;
+    tracker.OnTemplateReceived(2, 201);
+    tracker.OnKeepaliveResponse(5000, 100, 200, 300, 0, 0);
+    auto snap1 = tracker.GetSnapshot();
+    print_test_result("hash_height == 200 after keepalive", snap1.hash_height == 200);
+    tracker.OnPushNotification(5002, 202, 0x1d00ffff);
+    auto snap2 = tracker.GetSnapshot();
+    print_test_result("channel_height == 202 after push", snap2.channel_height == 202);
+    print_test_result("hash_height == 202 after push (no drift)", snap2.hash_height == 202);
+}
+
+// ============================================================================
+// Test 20: Production regression (prime drift from 2331124 to 2331126)
+// ============================================================================
+void test_push_keepalive_no_regression() {
+    std::cout << "\nTest 20: Production regression (prime drift from 2331124 to 2331126)\n";
+    HeightTracker tracker;
+    tracker.OnTemplateReceived(1, 2331125);
+    tracker.OnKeepaliveResponse(6609207, 2331124, 2193089, 2084996, 0, 0);
+    tracker.OnPushNotification(6609208, 2331126, 0x0414b755);
+    auto snap = tracker.GetSnapshot();
+    print_test_result("channel_height == 2331126", snap.channel_height == 2331126);
+    print_test_result("prime_height == 2331126 (no drift)", snap.prime_height == 2331126);
+    print_test_result("is_template_stale (2331126 >= 2331125)", snap.is_template_stale());
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -530,6 +580,9 @@ int main() {
     test_on_keepalive_response_legacy_zeros_safe();
     test_keepalive_response_sets_stake_height();
     test_peak_fork_score_high_water_mark();
+    test_push_updates_per_channel_heights();
+    test_push_updates_hash_height();
+    test_push_keepalive_no_regression();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

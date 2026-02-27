@@ -22,6 +22,14 @@ void HeightTracker::OnPushNotification(uint32_t unified_height,
     m_state.unified_height = unified_height;
     m_state.channel_height = channel_height;
     m_state.difficulty_nbits = nbits;
+
+    // Keep per-channel heights in sync so sync_channel_height_locked()
+    // cannot regress channel_height to a stale keepalive value.
+    if (m_state.channel == 1)
+        m_state.prime_height = channel_height;
+    else if (m_state.channel == 2)
+        m_state.hash_height = channel_height;
+
     m_state.last_update_source = UpdateSource::PUSH;
     m_state.last_height_update = std::chrono::steady_clock::now();
 }
@@ -34,6 +42,13 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
     m_state.unified_height = unified_height;
     m_state.channel_height = channel_height;
     m_state.difficulty_nbits = nbits;
+
+    // Keep per-channel heights in sync (same reason as OnPushNotification)
+    if (m_state.channel == 1)
+        m_state.prime_height = channel_height;
+    else if (m_state.channel == 2)
+        m_state.hash_height = channel_height;
+
     m_state.last_update_source = UpdateSource::GET_ROUND;
     m_state.last_height_update = std::chrono::steady_clock::now();
 }
