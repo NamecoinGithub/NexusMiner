@@ -59,6 +59,16 @@ namespace {
     // before another escalation is permitted.
     constexpr int64_t EPOCH_NO_ESCALATE_MULTIPLIER = 3;
 
+    // Keepalive ACK guard: if an ACK was received within this many seconds of the
+    // emergency timeout, the TCP connection is demonstrably alive and we defer the
+    // hard recovery to avoid spurious stops during slow-block scenarios.
+    // 2× keepalive interval (keepalive every 45s → 90s guard).
+    constexpr int64_t KEEPALIVE_ACK_RECENT_THRESHOLD_SECONDS = 90;
+
+    // Colin agent: maximum acceptable seconds between keepalive ACK responses.
+    // If no ACK is received for this long, the node may have dropped the session.
+    constexpr int64_t KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS = 300;
+
     // Brief delay (milliseconds) after create_workers() before issuing GET_BLOCK.
     // Allows newly spawned worker threads to enter their receive loop before the node
     // responds to our GET_BLOCK with a fresh template, preventing set_block() from
@@ -414,7 +424,18 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* miner reconnects and re-authenticates rather than mining on a dead session. */
         solo_protocol->set_session_expired_handler(
             [this]() {
+                m_logger->warn("[Worker_manager] Session EXPIRED — initiating reconnect for re-authentication");
                 mark_recovery_initiated("keepalive_session_mismatch");
+                // Schedule a reconnect via io_context to avoid calling retry_connect()
+                // from within a packet-receive callback (stack depth / reentrancy safety).
+                if (m_io_context && m_connection) {
+                    auto wallet_endpoint = m_connection->remote_endpoint();
+                    ::asio::post(*m_io_context, [self = shared_from_this(), wallet_endpoint]() {
+                        self->m_logger->warn("[Worker_manager] Closing stale session connection — reconnecting");
+                        self->m_connection.reset();
+                        self->retry_connect(wallet_endpoint);
+                    });
+                }
             }
         );
         m_logger->info("[Worker_manager] Session expired handler registered");
@@ -1638,6 +1659,22 @@ void Worker_manager::check_template_health()
 
         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
         bool chain_advanced = ht_snap.is_template_stale();
+
+        // Gap 3: If a keepalive ACK was received recently (within 2× keepalive interval = 90s),
+        // the TCP connection is demonstrably alive — defer the hard recovery to avoid
+        // spurious stops during slow-block scenarios (e.g. long Prime blocks).
+        bool recent_ack = (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{}) &&
+            (std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count() < KEEPALIVE_ACK_RECENT_THRESHOLD_SECONDS);
+        if (recent_ack && !chain_advanced) {
+            auto since_ack_s = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count();
+            m_logger->warn("[Worker_manager] EMERGENCY deferred: keepalive ACK is recent ({}s ago) — "
+                           "connection alive, awaiting push for template refresh",
+                           since_ack_s);
+            retry_template_request(false);
+            return;
+        }
 
         if (chain_advanced) {
             // Apply the same temporal guard as the primary staleness check.

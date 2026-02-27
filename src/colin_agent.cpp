@@ -10,6 +10,7 @@ namespace nexusminer
 // Warning-catalog threshold constants
 static constexpr uint32_t WARN_CONNECTION_RETRIES = 100;
 static constexpr uint64_t WARN_TEMPLATE_AGE_SECONDS = 150;
+static constexpr int64_t WARN_KEEPALIVE_ACK_STALE_SECONDS = 300;  // 5 min without keepalive ACK
 
 ColinAgent::ColinAgent(
     std::shared_ptr<asio::io_context> io_context,
@@ -106,6 +107,15 @@ std::string ColinAgent::check_mining_stopped(bool degraded_mode)
     return {};
 }
 
+std::string ColinAgent::check_fork_score(uint32_t fork_score, uint32_t peak_fork_score)
+{
+    if (fork_score > 0)
+        return "FORK CANARY active: fork_score=" + std::to_string(fork_score) +
+               " peak=" + std::to_string(peak_fork_score) +
+               " — miner may be on a divergent chain";
+    return {};
+}
+
 // ── Lane assessment ───────────────────────────────────────────────────────────
 
 std::string ColinAgent::assess_primary_lane() const
@@ -157,6 +167,25 @@ void ColinAgent::run_diagnostics()
         recommendations.push_back("Check primary (stateless:9323) connectivity");
     if (m_dcm && !m_dcm->is_legacy_alive())
         recommendations.push_back("Check secondary (legacy:8323) connectivity");
+
+    if (m_height_tracker) {
+        auto ht_snap = m_height_tracker->GetSnapshot();
+        {
+            auto w = check_fork_score(ht_snap.fork_score, ht_snap.peak_fork_score);
+            if (!w.empty()) {
+                warnings.push_back(w);
+                recommendations.push_back("Check node chain sync; consider restart if fork_score persists");
+            }
+        }
+        if (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{}) {
+            auto since_ack = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count();
+            if (since_ack > WARN_KEEPALIVE_ACK_STALE_SECONDS) {
+                warnings.push_back("No keepalive ACK for " + std::to_string(since_ack) +
+                                   "s — node may have dropped the session");
+            }
+        }
+    }
 
     emit_report(warnings, recommendations, gs);
 }
