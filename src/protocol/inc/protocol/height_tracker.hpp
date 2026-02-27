@@ -48,8 +48,8 @@ public:
         UpdateSource last_update_source{UpdateSource::NONE};
 
         // ── All three channel heights, kept independently ──────────────────────
-        uint32_t prime_height{0};   ///< Prime channel height (OnKeepaliveResponse)
-        uint32_t hash_height{0};    ///< Hash channel height  (OnKeepaliveResponse)
+        uint32_t prime_height{0};   ///< Prime channel height (OnKeepaliveResponse + OnPushNotification/OnGetRound when channel==1)
+        uint32_t hash_height{0};    ///< Hash channel height  (OnKeepaliveResponse + OnPushNotification/OnGetRound when channel==2)
         uint32_t stake_height{0};   ///< Stake channel height (OnKeepaliveResponse)
 
         // ── Fork detection ─────────────────────────────────────────────────────
