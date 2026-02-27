@@ -40,12 +40,13 @@ public:
     network::Shared_payload login(Login_handler handler) override;
     network::Shared_payload get_work() override;
     /// Like get_work() but bypasses the miner-side rate limiter for immediate tip-moved refreshes.
-    /// The node-side PR #283 one-shot bypass serves this without striking the rate limit.
+    /// Node's 2-second limit allows rapid recovery GET_BLOCKs.
     /// Only call from tip_moved / channel_stale paths — NOT from polling loops.
     network::Shared_payload get_work_immediate();
     /// One-shot bypass of the miner-side GET_BLOCK rate limiter for SIM Link lane-failure recovery.
-    /// Resets the rate-limit clock so the very next get_work() call goes through immediately,
-    /// matching the node-side one-shot bypass from LLL-TAO PR #283.
+    /// Resets the rate-limit clock so the very next get_work() call goes through immediately.
+    /// Node allows GET_BLOCK every 2 seconds, so this bypass is only needed for the
+    /// immediate first-request after lane recovery.
     /// The bypass is consumed after a single get_work() call; subsequent calls obey the normal limit.
     void bypass_get_block_rate_limit_once();
     network::Shared_payload submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce) override;
@@ -87,7 +88,7 @@ public:
     network::Shared_payload send_get_round();
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work()
-    /// and therefore respects the miner-side 1s rate limiter.  Returns null/empty
+    /// and therefore respects the miner-side 2s rate limiter.  Returns null/empty
     /// when rate-limited or not yet authenticated — callers must guard for this.
     /// Use this method — not send_get_round() — for template recovery actions.
     network::Shared_payload send_recovery_work_request();
@@ -420,14 +421,13 @@ private:
     // GET_BLOCK RATE LIMITER
     // ═══════════════════════════════════════════════════════════════════════
     //
-    // Miner-side: 1s guard prevents rapid-fire within a push cycle.
-    // Node-side (authoritative): 6s minimum (production), 2s (debug).
-    // Node PR #283: one-shot bypass serves first GET_BLOCK after push immediately.
+    // Miner-side: 2s guard matches node's 2-second GET_BLOCK rate limit.
+    // Node-side: 2s minimum via AutoCoolDown (no longer the old 30s lockout).
     //
     // Use get_work_immediate() for tip_moved / channel_stale refreshes to
-    // reset the timer and leverage the PR #283 one-shot bypass.
+    // reset the timer for immediate first-request after lane recovery.
     //
-    // Timestamp of last GET_BLOCK request (rate limiter to prevent node 300s ban)
+    // Timestamp of last GET_BLOCK request (rate limiter)
     std::chrono::steady_clock::time_point m_last_get_block_time{};
     
     // ═══════════════════════════════════════════════════════════════════════
