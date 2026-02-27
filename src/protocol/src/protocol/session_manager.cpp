@@ -261,6 +261,9 @@ void SessionManager::set_state(SessionState state)
                       state_names[static_cast<int>(state)]);
         
         m_session.state = state;
+
+        if (state == SessionState::EXPIRED && m_session_expired_handler)
+            m_session_expired_handler();
     }
 }
 

@@ -407,6 +407,17 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             }
         );
         m_logger->info("[Worker_manager] Recovery handler registered");
+
+        /* ========== REGISTER SESSION EXPIRED HANDLER ========== */
+        /* Called by Solo keepalive handlers when a session_id mismatch is detected, */
+        /* indicating a stale session after node restart. Triggers recovery so the   */
+        /* miner reconnects and re-authenticates rather than mining on a dead session. */
+        solo_protocol->set_session_expired_handler(
+            [this]() {
+                mark_recovery_initiated("keepalive_session_mismatch");
+            }
+        );
+        m_logger->info("[Worker_manager] Session expired handler registered");
         
         m_miner_protocol = solo_protocol;
   

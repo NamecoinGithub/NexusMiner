@@ -2479,6 +2479,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     unified.hash_height, unified.stake_height,
                     unified.hash_tip_lo32, unified.fork_score);
 
+                // Session ID validation (Gap 1): detect stale replies from a previous session.
+                // session_id == 0 means legacy / unset — skip check.
+                if (handle_session_id_mismatch(unified.session_id))
+                    return;
+
                 // Fork canary cross-check (legacy path: hash_tip_lo32 and fork_score will be 0)
                 if (unified.IsForkDetected(m_last_keepalive_prevhash_lo32))
                     m_logger->warn("[SESSION_KEEPALIVE] Fork canary triggered:"
@@ -2925,6 +2930,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 ack.unified_height, ack.prime_height, ack.hash_height, ack.stake_height,
                 ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
 
+            // Session ID validation (Gap 1): detect stale ACKs from a previous session.
+            // session_id == 0 means legacy / unset — skip check.
+            if (handle_session_id_mismatch(ack.session_id))
+                return;
+
             // Update HeightTracker with ACK chain-state heights.
             m_height_tracker.OnKeepaliveResponse(ack.unified_height,
                                                   ack.prime_height,
@@ -3102,6 +3112,21 @@ void Solo::reset_auth_state()
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_connection = nullptr;
     m_logger->debug("[Solo Auth] Authentication state reset");
+}
+
+bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
+{
+    if (!m_session_manager || ack_session_id == 0 ||
+        ack_session_id == m_session_manager->get_session_id())
+        return false;
+
+    m_logger->warn("[KEEPALIVE_V2] Session ID mismatch: ack.session_id=0x{:08x} != local=0x{:08x}"
+                   " — possible stale session after node restart",
+        ack_session_id, m_session_manager->get_session_id());
+    m_session_manager->set_state(SessionManager::SessionState::EXPIRED);
+    if (m_session_expired_handler)
+        m_session_expired_handler();
+    return true;
 }
 
 void Solo::handle_miner_auth_challenge(const Packet& packet)

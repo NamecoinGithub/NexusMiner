@@ -8,6 +8,7 @@
 #include <chrono>
 #include <atomic>
 #include <array>
+#include <functional>
 #include "asio/io_context.hpp"
 #include "asio/steady_timer.hpp"
 #include "network/types.hpp"
@@ -43,6 +44,18 @@ public:
         ACTIVE,           // Session active with keepalive
         EXPIRED           // Session expired, needs re-onboarding
     };
+
+    /**
+     * @brief Callback type invoked when session transitions to EXPIRED state.
+     * Registered by Solo/Worker_manager to trigger recovery on session mismatch.
+     */
+    using SessionExpiredHandler = std::function<void()>;
+
+    /**
+     * @brief Register a callback to be invoked when session transitions to EXPIRED.
+     * @param h Callback function (void())
+     */
+    void set_session_expired_handler(SessionExpiredHandler h) { m_session_expired_handler = std::move(h); }
     
     /**
      * @brief Session information structure
@@ -268,6 +281,9 @@ private:
     
     // Logger
     std::shared_ptr<spdlog::logger> m_logger;
+
+    // Callback invoked when session transitions to EXPIRED state
+    SessionExpiredHandler m_session_expired_handler;
 };
 
 } // namespace protocol

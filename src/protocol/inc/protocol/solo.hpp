@@ -174,6 +174,12 @@ public:
     using Recovery_handler = std::function<void()>;
     void set_recovery_initiated_handler(Recovery_handler h) { m_recovery_handler = std::move(h); }
 
+    // Session-expired callback: called when a KEEPALIVE ACK session_id mismatch is detected.
+    // Worker_manager registers this to trigger recovery on stale session (same pattern as
+    // Recovery_handler above).
+    using Session_expired_handler = std::function<void()>;
+    void set_session_expired_handler(Session_expired_handler h) { m_session_expired_handler = std::move(h); }
+
     // Block-result counters (Gap 3)
     uint32_t get_blocks_accepted() const { return m_blocks_accepted.load(); }
     uint32_t get_blocks_rejected() const { return m_blocks_rejected.load(); }
@@ -194,6 +200,11 @@ private:
     
     // Helper method to send SET_CHANNEL packet
     void send_set_channel(std::shared_ptr<network::Connection> connection);
+
+    // Session ID mismatch check — shared by KEEPALIVE_V2_ACK and SESSION_KEEPALIVE handlers.
+    // Returns true if a mismatch was detected (state set to EXPIRED, handler called);
+    // caller must return immediately when true is returned.
+    bool handle_session_id_mismatch(uint32_t ack_session_id);
     
     // Challenge-response authentication methods
     void handle_miner_auth_challenge(const Packet& packet);
@@ -343,6 +354,10 @@ private:
     // Recovery callback — invoked when a push handler fires GET_BLOCK for a stale template
     // (channel_advanced staleness), signalling Worker_manager to enter recovery_pending state.
     Recovery_handler m_recovery_handler;
+
+    // Session-expired callback — invoked when a keepalive ACK carries a mismatched session_id,
+    // signalling Worker_manager to trigger recovery for the stale session.
+    Session_expired_handler m_session_expired_handler;
     
     // GET_ROUND status tracking (Template Staleness Prevention - LLL-TAO PR #131)
     RoundStatus m_last_round_status;  // Last received round status
