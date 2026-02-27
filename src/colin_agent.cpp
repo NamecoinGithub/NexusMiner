@@ -219,6 +219,22 @@ void ColinAgent::emit_report(
                 snap.peak_fork_score, snap.fork_score);
     }
 
+    // Keepalive ACK health (Gap 4 — visibility into silent-death scenario)
+    if (m_height_tracker) {
+        auto snap = m_height_tracker->GetSnapshot();
+        if (snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{}) {
+            auto keepalive_age_s = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - snap.last_keepalive_ack_at).count();
+            if (keepalive_age_s < 300) {
+                m_logger->info("[Colin]  Keepalive │ last ACK {}s ago ✓", keepalive_age_s);
+            } else {
+                m_logger->warn("[Colin]  Keepalive │ last ACK {}s ago ⚠ (>300s — silent death risk)", keepalive_age_s);
+            }
+        } else {
+            m_logger->info("[Colin]  Keepalive │ no ACK received yet (session just started or legacy node)");
+        }
+    }
+
     if (!warnings.empty())
     {
         m_logger->warn("[Colin]  ── Warnings ──────────────────────────────────");
