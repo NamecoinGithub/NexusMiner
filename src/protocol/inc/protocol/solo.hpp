@@ -122,7 +122,7 @@ public:
     
     // Session management (LLL-TAO PR #22 / PR #217)
     // Sends SESSION_KEEPALIVE via SessionManager (8-byte v2 payload: session_id + prevhash_lo32).
-    // Falls back to 4-byte v1 if no SessionManager is available.
+    // Node replies with the 32-byte unified KeepAliveV2AckFrame carrying all channel heights.
     network::Shared_payload send_session_keepalive();
     std::uint32_t get_session_id() const;
     bool is_session_active() const;

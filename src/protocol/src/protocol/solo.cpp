@@ -3018,22 +3018,8 @@ network::Shared_payload Solo::send_session_keepalive()
     //   [4..7] miner_prevblock_suffix (last 4 bytes of hashPrevBlock, raw bytes;
     //                                  zeros when no valid template is available)
     // This causes the node to reply with the 32-byte unified KeepAliveV2AckFrame
-    // instead of the 4-byte v1 timeout-only reply.
-    if (m_session_manager) {
-        auto pkt = m_session_manager->build_keepalive_packet();
-        if (pkt && !pkt->empty()) {
-            m_logger->debug("[Solo Session] SESSION_KEEPALIVE delegated to SessionManager (8-byte v2 payload)");
-            return pkt;
-        }
-        m_logger->warn("[Solo Session] SessionManager::build_keepalive_packet() returned null or empty — falling back to 4-byte v1");
-    }
-
-    // Fallback: 4-byte v1 (no session manager, or session_id==0, or UNKNOWN lane)
-    // Node will reply with v1 4-byte timeout — heights not updated, but session stays alive.
-    std::vector<uint8_t> keepalive_data;
-    append_uint32_le(keepalive_data, m_session_id);
-    m_logger->debug("[Solo Session] SESSION_KEEPALIVE sent as 4-byte v1 fallback");
-    return PacketBuilder::build(m_protocol_lane, LLP::SESSION_KEEPALIVE, keepalive_data);
+    // (unified_height / prime_height / hash_height / stake_height / hash_tip_lo32 / fork_score).
+    return m_session_manager->build_keepalive_packet();
 }
 
 void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
