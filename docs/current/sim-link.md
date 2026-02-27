@@ -81,16 +81,15 @@ conveyed no height data to the node.
 
 | Setting | Value | Notes |
 |---------|-------|-------|
-| `get_block_interval_ms` | 1000 ms (default) | Miner-side guard — prevents tight retry loops |
-| Node AutoCoolDown | 30 s (was 200s) | Node's safety-net cooldown (reset on MINER_READY) |
-| Node minimum (LLL-TAO) | 2000 ms | Node's authoritative floor |
-| Safety margin | 1000 ms | Node floor (2000ms) − miner guard (1000ms) = 1000ms headroom |
+| `get_block_interval_ms` | 2000 ms (default) | Miner-side guard — matches node's 2-second AutoCoolDown |
+| Node AutoCoolDown | 2 s | Node's rate-limit floor (GET_BLOCK_COOLDOWN_SECONDS) |
+| Node minimum (LLL-TAO) | 2000 ms | Node's authoritative floor (unchanged) |
 | One-shot bypass | immediate | Armed by tip_moved/recovery paths |
 
 Configure in `miner.conf`:
 ```toml
 [network]
-get_block_interval_ms = 1000   # Aligned with LLL-TAO DDoS redesign PR
+get_block_interval_ms = 2000   # Matches node's 2-second AutoCoolDown (GET_BLOCK_COOLDOWN_SECONDS)
 ```
 
 ### Colin — Diagnostic Agent
@@ -140,7 +139,7 @@ report_interval_seconds = 60
 ```toml
 [network]
 sim_link = true                # Enable dual-lane simultaneous connections (default: true)
-get_block_interval_ms = 1000   # Miner-side GET_BLOCK rate limit in milliseconds
+get_block_interval_ms = 2000   # Miner-side GET_BLOCK rate limit in milliseconds
 
 [colin]
 enabled = true                 # Enable Colin diagnostic agent (default: true)
