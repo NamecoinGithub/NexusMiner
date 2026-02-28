@@ -73,6 +73,44 @@ public:
     // emit_report() logs all four channel heights and the fork-score canary.
     void set_height_tracker(const nexusminer::protocol::HeightTracker* ht) { m_height_tracker = ht; }
 
+    // ── MiningTemplateInterface Source ────────────────────────────────────
+    // Optional: supplies a snapshot of the current template state for the report.
+    // The snapshot copies only the fields needed — no mutable pointer escapes.
+    struct TemplateSnapshot {
+        bool     has_valid_template{false};
+        uint32_t unified_height{0};       // block.nHeight — canonical unified height (for ProofHash)
+        uint32_t nBits{0};                // compact difficulty from block header
+        uint32_t channel_height{0};       // nChannelHeight — staleness metadata only, NOT in ProofHash
+        uint32_t channel{0};              // 1=Prime, 2=Hash
+        uint64_t age_seconds{0};          // seconds since template was received
+        const char* state_name{nullptr};  // MiningTemplateInterface::state_to_string(state)
+        // TemplateStats lifetime counters
+        uint64_t templates_received{0};
+        uint64_t templates_validated{0};
+        uint64_t templates_rejected{0};
+        uint64_t templates_stale{0};
+        uint64_t templates_fed{0};
+        uint64_t templates_expired_age{0};
+        uint64_t templates_expired_height{0};
+    };
+    using TemplateSource = std::function<TemplateSnapshot()>;
+    void set_template_source(TemplateSource fn) { m_template_source = std::move(fn); }
+
+    // ── ColinPingHandler Telemetry Source ─────────────────────────────────
+    // Optional: supplies the last PONG telemetry built by ColinPingHandler
+    // (ping-count, RTT, hash-rate kH/s, temp, thread count, queue depth, health flags).
+    struct PongTelemetrySnapshot {
+        uint64_t ping_count{0};
+        uint64_t last_rtt_us{0};
+        uint32_t hash_rate_khs{0};
+        uint32_t temp_cdeg{0};
+        uint32_t thread_count{0};
+        uint32_t queue_depth{0};
+        uint8_t  health_flags{0};
+    };
+    using PongTelemetrySource = std::function<PongTelemetrySnapshot()>;
+    void set_pong_telemetry_source(PongTelemetrySource fn) { m_pong_telemetry_source = std::move(fn); }
+
     // ── Warning catalog ────────────────────────────────────────────────────
     // Returns a non-empty string if the pattern matches, empty string otherwise.
     // Used by tests to verify each warning pattern triggers the right text.
@@ -97,7 +135,7 @@ private:
 
     std::string assess_primary_lane() const;
     std::string assess_secondary_lane() const;
-    void emit_report(const std::vector<std::string>& warnings,
+    void emit_report(std::vector<std::string>& warnings,
                      const std::vector<std::string>& recommendations,
                      const stats::Global& gs);
 
@@ -120,6 +158,8 @@ private:
     PingSource m_ping_source;  // Optional: supplies last ReceivedPingFrame for the report
     StatusSource m_status_source;  // Optional: supplies last SessionStatusAckFrame for the report
     const nexusminer::protocol::HeightTracker* m_height_tracker{nullptr};  // Optional: HeightTracker owned by Solo
+    TemplateSource      m_template_source;       // Optional: supplies TemplateSnapshot from MiningTemplateInterface
+    PongTelemetrySource m_pong_telemetry_source; // Optional: supplies PongTelemetrySnapshot from ColinPingHandler
 
     uint32_t m_last_miner_prevhash_lo32{0};
     uint32_t m_last_node_tip_lo32{0};

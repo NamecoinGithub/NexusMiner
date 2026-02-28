@@ -217,7 +217,7 @@ void ColinAgent::run_diagnostics()
     emit_report(warnings, recommendations, gs);
 }
 void ColinAgent::emit_report(
-    const std::vector<std::string>& warnings,
+    std::vector<std::string>& warnings,
     const std::vector<std::string>& recommendations,
     const stats::Global& gs)
 {
@@ -385,6 +385,60 @@ void ColinAgent::emit_report(
                 m_logger->warn("[Colin]    Node Health: ⚠ {}", flag_str);
             }
         }
+    }
+
+    /* Active Template section (BLOCK_DATA canonical source) */
+    if (m_template_source)
+    {
+        auto ts = m_template_source();
+        m_logger->info("[Colin]  ── Active Template (BLOCK_DATA canonical) ─────");
+        if (ts.has_valid_template)
+        {
+            m_logger->info("[Colin]    State:          {}", ts.state_name ? ts.state_name : "?");
+            m_logger->info("[Colin]    unified_height: {}  (block.nHeight — canonical for ProofHash)", ts.unified_height);
+            m_logger->info("[Colin]    nBits:          0x{:08x}", ts.nBits);
+            m_logger->info("[Colin]    channel_height: {}  (nChannelHeight — staleness metadata only)", ts.channel_height);
+            m_logger->info("[Colin]    channel:        {} ({})", ts.channel, ts.channel == 1 ? "Prime" : "Hash");
+            m_logger->info("[Colin]    age:            {}s", ts.age_seconds);
+
+            // Cross-check: compare template unified height with HeightTracker snapshot
+            if (m_height_tracker)
+            {
+                auto ht = m_height_tracker->GetSnapshot();
+                if (ht.unified_height != 0 && ts.unified_height != 0 &&
+                    ht.unified_height != ts.unified_height)
+                {
+                    m_logger->warn("[Colin]    ⚠️  HEIGHT DRIFT: HeightTracker.unified={} vs template.block.nHeight={}",
+                        ht.unified_height, ts.unified_height);
+                }
+            }
+
+            if (ts.age_seconds > WARN_TEMPLATE_AGE_SECONDS)
+                m_logger->warn("[Colin]    ⚠️  TEMPLATE AGING: {}s — approaching emergency timeout", ts.age_seconds);
+        }
+        else
+        {
+            m_logger->warn("[Colin]    ⚠️  NO VALID TEMPLATE — workers have no work to do!");
+        }
+        m_logger->info("[Colin]    Lifetime — rcvd:{} valid:{} rejected:{} stale:{} fed:{} expiredAge:{} expiredHt:{}",
+            ts.templates_received, ts.templates_validated, ts.templates_rejected,
+            ts.templates_stale, ts.templates_fed,
+            ts.templates_expired_age, ts.templates_expired_height);
+    }
+
+    /* Miner Telemetry section (from ColinPingHandler PONG outbound) */
+    if (m_pong_telemetry_source)
+    {
+        auto pt = m_pong_telemetry_source();
+        m_logger->info("[Colin]  ── Miner Telemetry (PONG outbound) ─────────────");
+        m_logger->info("[Colin]    Ping count: {}  Last RTT: {} µs", pt.ping_count, pt.last_rtt_us);
+        if (pt.hash_rate_khs > 0)
+            m_logger->info("[Colin]    Hash-rate: {} kH/s  Threads: {}  Queue: {}",
+                pt.hash_rate_khs, pt.thread_count, pt.queue_depth);
+        if (pt.temp_cdeg > 0)
+            m_logger->info("[Colin]    Temp: {:.1f} °C", pt.temp_cdeg / 10.0f);
+        if (pt.health_flags != 0)
+            m_logger->warn("[Colin]    Health flags: 0x{:02x}", pt.health_flags);
     }
 
     m_logger->info("[Colin] ═══════════════════════════════════════════════════");
