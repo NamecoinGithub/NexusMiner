@@ -1209,6 +1209,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo BLOCK_DATA] metadata prefix: nUnifiedHeight={} nChannelHeight={} nBits=0x{:08x}",
                        nUnifiedHeight, nChannelHeight, nBitsMeta);
 
+        // Feed HeightTracker + ClientChannelManager from authoritative node BLOCK_DATA metadata.
+        update_height_state(nUnifiedHeight, nChannelHeight, nBitsMeta, HeightTracker::UpdateSource::PUSH);
+
         // Update HeightTracker with the channel target derived from metadata.
         // nChannelHeight is the node's current channel tip; the template targets the NEXT block.
         // genesis (nChannelHeight == 0) is excluded — consistent with the stateless lane guard.
@@ -2651,6 +2654,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         uint32_t unified_height = bytes2uint(*packet.m_data, 0);
         uint32_t channel_height = bytes2uint(*packet.m_data, 4);
         uint32_t difficulty = bytes2uint(*packet.m_data, 8);
+
+        // Feed HeightTracker + ClientChannelManager from authoritative node BLOCK_DATA metadata.
+        update_height_state(unified_height, channel_height, difficulty, HeightTracker::UpdateSource::PUSH);
 
         // Immediately update HeightTracker with the channel target derived from metadata.
         // channel_height is the node's current channel tip; the template targets the NEXT block.
