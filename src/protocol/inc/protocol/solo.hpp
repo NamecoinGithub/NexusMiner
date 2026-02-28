@@ -173,6 +173,10 @@ public:
         return m_colin_ping_handler.last_received_ping();
     }
 
+    // Non-owning reference to the Colin ping handler for diagnostics (ping_count, last_rtt_us).
+    // Lifetime: as long as this Solo instance is alive.
+    const ::LLP::ColinPingHandler& get_ping_handler() const { return m_colin_ping_handler; }
+
     // SESSION_STATUS_ACK tracking — updated whenever a SESSION_STATUS_ACK is received
     /** Returns the most recently received SESSION_STATUS_ACK frame (zero if never received) **/
     const ::LLP::SessionStatusAckFrame& last_session_status_ack() const { return m_last_session_status_ack; }

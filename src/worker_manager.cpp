@@ -818,6 +818,61 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                             // Wire up HeightTracker so emit_report() can display all channel heights
                             // and the fork-score canary in the periodic diagnostic report.
                             self->m_colin_agent->set_height_tracker(&s->get_height_tracker());
+
+                            // Wire MiningTemplateInterface → Colin template source
+                            if (auto* tmpl_iface = s->get_template_interface())
+                            {
+                                self->m_colin_agent->set_template_source(
+                                    [weak_proto]() -> ColinAgent::TemplateSnapshot {
+                                        ColinAgent::TemplateSnapshot snap;
+                                        auto proto = weak_proto.lock();
+                                        if (!proto) return snap;
+                                        auto* solo_ptr = dynamic_cast<protocol::Solo*>(proto.get());
+                                        if (!solo_ptr) return snap;
+                                        auto* iface = solo_ptr->get_template_interface();
+                                        if (!iface) return snap;
+
+                                        auto stats = iface->get_stats();
+                                        snap.templates_received       = stats.templates_received;
+                                        snap.templates_validated      = stats.templates_validated;
+                                        snap.templates_rejected       = stats.templates_rejected;
+                                        snap.templates_stale          = stats.templates_stale;
+                                        snap.templates_fed            = stats.templates_fed;
+                                        snap.templates_expired_age    = stats.templates_expired_age;
+                                        snap.templates_expired_height = stats.templates_expired_height;
+
+                                        if (iface->has_valid_template())
+                                        {
+                                            if (const auto* tmpl = iface->get_current_template())
+                                            {
+                                                snap.has_valid_template = true;
+                                                snap.unified_height = tmpl->block.nHeight;  // canonical for ProofHash
+                                                snap.nBits          = tmpl->nBits;
+                                                snap.channel_height = tmpl->nChannelHeight; // staleness metadata only
+                                                snap.channel        = tmpl->block.nChannel;
+                                                snap.state_name     = protocol::MiningTemplateInterface::state_to_string(tmpl->state);
+                                                snap.age_seconds    = iface->get_template_age();
+                                            }
+                                        }
+                                        return snap;
+                                    });
+                                self->m_logger->info("[Worker_manager] Colin template source wired");
+                            }
+
+                            // Wire ColinPingHandler → Colin pong telemetry source
+                            self->m_colin_agent->set_pong_telemetry_source(
+                                [weak_proto]() -> ColinAgent::PongTelemetrySnapshot {
+                                    ColinAgent::PongTelemetrySnapshot pt;
+                                    auto proto = weak_proto.lock();
+                                    if (!proto) return pt;
+                                    auto* solo_ptr = dynamic_cast<protocol::Solo*>(proto.get());
+                                    if (!solo_ptr) return pt;
+                                    const auto& handler = solo_ptr->get_ping_handler();
+                                    pt.ping_count  = handler.ping_count();
+                                    pt.last_rtt_us = handler.last_rtt_us();
+                                    return pt;
+                                });
+                            self->m_logger->info("[Worker_manager] Colin pong telemetry source wired");
                         }
                         self->m_colin_agent->start();
                     }
