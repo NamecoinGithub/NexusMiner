@@ -244,6 +244,25 @@ void ColinAgent::emit_report(
         if (snap.peak_fork_score > 0)
             m_logger->warn("[Colin]  ⚠️  FORK CANARY active: peak_fork_score={} current_fork_score={}",
                 snap.peak_fork_score, snap.fork_score);
+
+        // Template feed source: confirms whether BLOCK_DATA metadata feed is working
+        if (snap.channel_target > 0) {
+            const char* src = "NONE";
+            const char* label = "";
+            switch (snap.last_update_source) {
+                case nexusminer::protocol::HeightTracker::UpdateSource::PUSH:
+                    src = "PUSH"; label = " (BLOCK_DATA metadata)"; break;
+                case nexusminer::protocol::HeightTracker::UpdateSource::GET_ROUND:
+                    src = "GET_ROUND"; label = " (fallback)"; break;
+                case nexusminer::protocol::HeightTracker::UpdateSource::TEMPLATE:
+                    src = "TEMPLATE"; label = " (BLOCK_DATA metadata → template received)"; break;
+                case nexusminer::protocol::HeightTracker::UpdateSource::KEEPALIVE:
+                    src = "KEEPALIVE"; label = " (keepalive fallback)"; break;
+                default: break;
+            }
+            m_logger->info("[Colin]  Template Feed │ last_update_source={}{} channel_target={}",
+                src, label, snap.channel_target);
+        }
     }
 
     // Keepalive ACK health (Gap 4 — visibility into silent-death scenario)

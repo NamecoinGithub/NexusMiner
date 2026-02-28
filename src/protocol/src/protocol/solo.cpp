@@ -1206,19 +1206,21 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             nBitsMeta      = (uint32_t(d[8]) << 24) | (uint32_t(d[9]) << 16)
                            | (uint32_t(d[10]) << 8) |  uint32_t(d[11]);
         }
-        m_logger->info("[Solo BLOCK_DATA] metadata prefix: nUnifiedHeight={} nChannelHeight={} nBits=0x{:08x}",
-                       nUnifiedHeight, nChannelHeight, nBitsMeta);
-
-        // Feed HeightTracker + ClientChannelManager from authoritative node BLOCK_DATA metadata.
+        // ── HeightTracker BLOCK_DATA feed (Step 1/2) ───────────────────────────────
+        // Feed unified_height, channel_height, nBits from the authoritative node
+        // BLOCK_DATA metadata prefix.  This is the canonical source of truth for
+        // staleness detection — validate_current_template() reads HeightTracker
+        // exclusively (not block.nHeight, which is the unified height for ProofHash).
         update_height_state(nUnifiedHeight, nChannelHeight, nBitsMeta, HeightTracker::UpdateSource::PUSH);
 
-        // Update HeightTracker with the channel target derived from metadata.
-        // nChannelHeight is the node's current channel tip; the template targets the NEXT block.
-        // genesis (nChannelHeight == 0) is excluded — consistent with the stateless lane guard.
+        // ── HeightTracker BLOCK_DATA feed (Step 2/2) ───────────────────────────────
+        // Record channel_target = channel_height + 1 so is_template_stale() can
+        // detect when the node's channel tip reaches or passes this template's target.
+        // Skip genesis (channel_height == 0) to avoid false-positive staleness at startup.
         if (nChannelHeight > 0) {
             m_height_tracker.OnTemplateReceived(m_channel, nChannelHeight + 1);
-            m_logger->info("[Solo BLOCK_DATA] HeightTracker: channel_target set to {} (node channel_height={})",
-                nChannelHeight + 1, nChannelHeight);
+            m_logger->info("[Solo BLOCK_DATA] HeightTracker fed: unified={} channel={} nBits=0x{:08x} → channel_target={}",
+                nUnifiedHeight, nChannelHeight, nBitsMeta, nChannelHeight + 1);
         }
 
         // Strip the 12-byte prefix; pass only the 216-byte Block::Serialize() output to read_template
@@ -2655,19 +2657,21 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         uint32_t channel_height = bytes2uint(*packet.m_data, 4);
         uint32_t difficulty = bytes2uint(*packet.m_data, 8);
 
-        // Feed HeightTracker + ClientChannelManager from authoritative node BLOCK_DATA metadata.
+        // ── HeightTracker BLOCK_DATA feed (Step 1/2) ───────────────────────────────
+        // Feed unified_height, channel_height, nBits from the authoritative node
+        // BLOCK_DATA metadata prefix.  This is the canonical source of truth for
+        // staleness detection — validate_current_template() reads HeightTracker
+        // exclusively (not block.nHeight, which is the unified height for ProofHash).
         update_height_state(unified_height, channel_height, difficulty, HeightTracker::UpdateSource::PUSH);
 
-        // Immediately update HeightTracker with the channel target derived from metadata.
-        // channel_height is the node's current channel tip; the template targets the NEXT block.
-        // This direct call ensures channel_target is always set in push-only mode (no GET_ROUND),
-        // without depending on set_channel_height() which has guards that may skip the update.
-        // genesis (channel_height == 0) is excluded intentionally — consistent with the
-        // existing set_channel_height() guard that also skips the zero case.
+        // ── HeightTracker BLOCK_DATA feed (Step 2/2) ───────────────────────────────
+        // Record channel_target = channel_height + 1 so is_template_stale() can
+        // detect when the node's channel tip reaches or passes this template's target.
+        // Skip genesis (channel_height == 0) to avoid false-positive staleness at startup.
         if (channel_height > 0) {
             m_height_tracker.OnTemplateReceived(m_channel, channel_height + 1);
-            m_logger->info("[Solo Stateless] HeightTracker: channel_target set to {} (node channel_height={})",
-                channel_height + 1, channel_height);
+            m_logger->info("[Solo Stateless] HeightTracker fed: unified={} channel={} nBits=0x{:08x} → channel_target={}",
+                unified_height, channel_height, difficulty, channel_height + 1);
         }
 
         m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
