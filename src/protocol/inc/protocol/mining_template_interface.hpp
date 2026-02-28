@@ -493,8 +493,8 @@ private:
     std::shared_ptr<spdlog::logger> m_logger;
     
     // Template staleness prevention constants (push-driven era)
-    static constexpr uint64_t MAX_TEMPLATE_AGE = 200;      // Dead-connection detector: node pushes within ~2 s of tip advance
-    static constexpr uint64_t WARNING_TEMPLATE_AGE = 50;   // Proactive warning threshold
+    static constexpr uint64_t MAX_TEMPLATE_AGE = 600;      // Dead-connection detector: safely above 5-min Prime block max
+    static constexpr uint64_t WARNING_TEMPLATE_AGE = 300;  // Warn after Prime block window expires
     
     // Thread-safe statistics (atomic for multi-worker safety)
     std::atomic<uint64_t> m_templates_received;

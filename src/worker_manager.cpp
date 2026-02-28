@@ -33,12 +33,12 @@ namespace nexusminer
 
 // Template age timeout constants (seconds) - unified for both Prime and Hash channels.
 // In the push-driven protocol the node pushes a fresh template on every unified tip advance
-// (including hash blocks every ~18s).  If 200s elapse with no push, the connection is
-// likely dead regardless of channel — hence a single emergency threshold for both.
-// WARNING at 150s gives operators a 50s window to notice the approaching emergency.
+// (including hash blocks every ~18s).  Prime blocks can take 2-5+ minutes, so thresholds
+// must be safely above that window to avoid false emergencies.
+// WARNING at 480s gives operators a 120s (2-minute) window before the 600s emergency fires.
 namespace {
-    constexpr uint64_t TEMPLATE_AGE_WARNING_SECONDS = 150;          // warn 50s before emergency
-    constexpr uint64_t TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 200; // matches MiningTemplateInterface::MAX_TEMPLATE_AGE
+    constexpr uint64_t TEMPLATE_AGE_WARNING_SECONDS = 480;          // warn 2 min before emergency
+    constexpr uint64_t TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 600; // matches MiningTemplateInterface::MAX_TEMPLATE_AGE
 
     // Recovery window: if no template arrives within this many seconds after a
     // GET_BLOCK recovery is initiated, the health monitor escalates to hard recovery.
@@ -259,8 +259,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             bool channel_stale = ht_snap.is_template_stale();
 
                             // Check 2 — Age (SECONDARY: safety net for missed push notifications)
-                            // 200s matches the push-driven era MAX_TEMPLATE_AGE
-                            constexpr uint64_t SUBMISSION_MAX_AGE_SECONDS = 200;
+                            // 600s matches the push-driven era MAX_TEMPLATE_AGE
+                            constexpr uint64_t SUBMISSION_MAX_AGE_SECONDS = 600;
                             bool age_stale = (template_age > SUBMISSION_MAX_AGE_SECONDS);
 
                             if (channel_stale || age_stale)
@@ -297,14 +297,15 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                         }
                                     }
                                 } else if (lane == ProtocolLane::STATELESS) {
-                                    // Stateless lane: Re-send STATELESS_MINER_READY to prompt node state machine
-                                    m_logger->info("[Worker_manager] → Re-sending STATELESS_MINER_READY (no polling)");
-                                    m_logger->info("[Worker_manager]   Prompts node to push fresh STATELESS_GET_BLOCK");
+                                    // Stateless lane: Request fresh template via GET_BLOCK (0xD081).
+                                    // MINER_READY is NOT used here — it is a one-time subscription handshake
+                                    // sent only during initial login. GET_BLOCK is the correct recovery request.
+                                    m_logger->info("[Worker_manager] → Sending GET_BLOCK request (stateless 0xD081)");
                                     auto* solo_conn_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
                                     if (solo_conn_protocol && m_connection) {
-                                        auto miner_ready_payload = solo_conn_protocol->send_miner_ready();
-                                        if (miner_ready_payload && !miner_ready_payload->empty()) {
-                                            m_connection->transmit(miner_ready_payload);
+                                        auto work_payload = solo_conn_protocol->get_work();
+                                        if (work_payload && !work_payload->empty()) {
+                                            m_connection->transmit(work_payload);
                                         }
                                     }
                                 } else {
@@ -1297,18 +1298,11 @@ void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
                 // Request a fresh template via the protocol layer instead of disconnecting
                 if (auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get()))
                 {
-                    if (lane == ProtocolLane::STATELESS)
-                    {
-                        auto ready_payload = solo_protocol->send_miner_ready();
-                        if (ready_payload && !ready_payload->empty())
-                            m_connection->transmit(ready_payload);
-                    }
-                    else
-                    {
-                        auto work_payload = solo_protocol->get_work();
-                        if (work_payload && !work_payload->empty())
-                            m_connection->transmit(work_payload);
-                    }
+                    // Use GET_BLOCK (0xD081) for recovery regardless of lane.
+                    // MINER_READY is a one-time subscription handshake; do NOT use it for recovery.
+                    auto work_payload = solo_protocol->get_work();
+                    if (work_payload && !work_payload->empty())
+                        m_connection->transmit(work_payload);
                 }
                 break;
             }
@@ -1510,7 +1504,7 @@ void Worker_manager::stop_all_workers()
 
     m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
     m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
-    m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK + MINER_READY");
+    m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK (0xD081)");
 }
 
 void Worker_manager::retry_template_request(bool bForce)
@@ -1555,15 +1549,9 @@ void Worker_manager::retry_template_request(bool bForce)
             m_logger->warn("[Worker_manager]   GET_BLOCK not sent (not authenticated) — recovery may be delayed");
         }
     } else if (lane == ProtocolLane::STATELESS) {
-        // RECOVERY STRATEGY: Send MINER_READY first to reset node's AutoCoolDown,
-        // then GET_BLOCK to actively request a template.
-        // The companion LLL-TAO PR resets m_get_block_cooldown on MINER_READY receipt.
-        m_logger->info("[Worker_manager] → Re-sending STATELESS_MINER_READY (resets node AutoCoolDown)");
-        auto miner_ready_payload = solo_protocol->send_miner_ready();
-        if (miner_ready_payload && !miner_ready_payload->empty()) {
-            m_connection->transmit(miner_ready_payload);
-        }
-
+        // Stateless lane: Request fresh template via GET_BLOCK (0xD081).
+        // MINER_READY is NOT used here — it is a one-time subscription handshake
+        // sent only during initial login. GET_BLOCK is the correct recovery request.
         m_logger->info("[Worker_manager] → Sending GET_BLOCK request (stateless 0xD081)");
         auto work_payload = solo_protocol->get_work();
         if (work_payload && !work_payload->empty()) {
@@ -1573,7 +1561,7 @@ void Worker_manager::retry_template_request(bool bForce)
             m_recovery_get_block_transmitted = true;
             m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
         } else {
-            m_logger->warn("[Worker_manager]   GET_BLOCK not sent (not authenticated)");
+            m_logger->warn("[Worker_manager]   GET_BLOCK not sent (not authenticated) — recovery may be delayed");
         }
     } else {
         m_logger->error("[Worker_manager] → Unknown protocol lane - cannot request template");
@@ -1663,18 +1651,22 @@ void Worker_manager::check_template_health()
     // printer stops showing "MINING STOPPED" and the health monitor doesn't
     // keep triggering spurious recoveries on every 30 s tick.
     if (m_degraded_mode) {
-        m_logger->warn("[Worker_manager] ⚠️  Valid template exists but m_degraded_mode=true — clearing stale flag");
-        // Restart any workers that were stopped by stop_all_workers() so that
-        // the re-feed below actually reaches live mining threads.
+        m_logger->warn("[Worker_manager] ⚠️  Valid template exists but m_degraded_mode=true — clearing outdated degraded flag");
         bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
             [](const auto& w) { return bool(w); });
-        if (!has_alive_workers) {
-            m_logger->info("[Worker_manager] Belt-and-suspenders: restarting workers before re-feeding template");
+        if (has_alive_workers) {
+            // Workers are alive and mining — just clear the stale degraded flag.
+            // No need to restart workers or re-feed template — they are already mining.
+            m_logger->info("[Worker_manager] Belt-and-suspenders: workers already alive, clearing stale degraded flag only");
+            clear_recovery_state();
+        } else {
+            // Workers are dead — restart them and re-feed the template.
+            m_logger->info("[Worker_manager] Belt-and-suspenders: workers dead, restarting and re-feeding template");
             create_workers();
+            clear_recovery_state();
+            // Re-feed the template so the newly created workers receive it.
+            template_interface->feed_current_template();
         }
-        clear_recovery_state();
-        // Re-feed the template so any workers that may have missed it get a copy.
-        template_interface->feed_current_template();
     }
 
     // Channel height-based staleness detection (primary check — HeightTracker is the single
