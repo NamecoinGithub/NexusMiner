@@ -646,20 +646,14 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 
                 if (self->m_sim_link.is_legacy_alive() || self->m_sim_link.is_stateless_alive()) {
                     self->m_logger->info("[SIM Link] Primary lane DEAD — secondary lane alive, workers continue mining");
-                    // Bypass rate limiter on secondary for immediate template refresh
                     ProtocolLane surviving_lane = self->m_sim_link.is_stateless_alive()
                         ? ProtocolLane::STATELESS : ProtocolLane::LEGACY;
                     if (self->m_sim_link.consume_bypass(surviving_lane)) {
                         auto* sec_solo = dynamic_cast<protocol::Solo*>(self->m_secondary_protocol.get());
                         if (sec_solo && self->m_secondary_connection) {
-                            // Node enforces a 2-second minimum between GET_BLOCK requests
-                            // (AutoCoolDown). We bypass the miner-side once here so the
-                            // surviving lane can request a fresh template immediately; then
-                            // normal 2s miner-side floor resumes.
-                            sec_solo->bypass_get_block_rate_limit_once();
                             auto work_payload = sec_solo->send_recovery_work_request();
                             if (work_payload && !work_payload->empty()) {
-                                self->m_logger->info("[SIM Link] One-shot bypass — GET_BLOCK sent on surviving {} lane",
+                                self->m_logger->info("[SIM Link] GET_BLOCK sent on surviving {} lane",
                                     get_lane_name(surviving_lane));
                                 self->m_secondary_connection->transmit(work_payload);
                             }
@@ -956,15 +950,9 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                             // request work immediately on the secondary lane.
                             if (self->m_sim_link.consume_bypass(sec_lane)) {
                                 if (auto sec_solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_secondary_protocol)) {
-                                    // Node-side 6-second limit (LLL-TAO):
-                                    // First recovery GET_BLOCK may bypass once; afterward
-                                    // node resumes enforcing ~6000ms spacing.  This one-shot
-                                    // bypass keeps template recovery immediate without creating
-                                    // a tight retry loop.
-                                    sec_solo->bypass_get_block_rate_limit_once();
                                     auto work_payload = sec_solo->send_recovery_work_request();
                                     if (work_payload && !work_payload->empty()) {
-                                        self->m_logger->info("[SIM Link] One-shot bypass — GET_BLOCK sent on secondary lane");
+                                        self->m_logger->info("[SIM Link] GET_BLOCK sent on secondary lane");
                                         self->m_secondary_connection->transmit(work_payload);
                                     }
                                 }
@@ -1396,21 +1384,9 @@ void Worker_manager::retry_template_request(bool bForce)
         mark_recovery_initiated("health_monitor_or_validation");
     }
 
-    // Push-cooldown guard (push-driven era): if the node pushed a template within the last
-    // 30 s (node's new AutoCoolDown) the node is operating normally — skip GET_BLOCK to
-    // avoid unnecessary polling. Only if no push has arrived for 30 s do we fall back.
-    if (solo_protocol->was_push_received_recently()) {
-        if (!bForce) {
-            // Periodic health-check path: push is coming, no need to poll.
-            m_logger->debug("[TemplateHealth] Push received recently — no GET_BLOCK needed; node is pushing normally");
-            return;
-        }
-        // Forced recovery path: template was discarded + workers stopped.
-        // A push was received recently but the template never arrived (e.g. node-side
-        // 0-payload race).  We MUST request a new template regardless.
-        m_logger->warn("[Worker_manager] Recovery forced despite recent push — template was discarded, must re-request");
-        m_logger->warn("[Worker_manager]   Reason: real staleness detected after discard_template() + stop_all_workers()");
-    }
+    // No miner-side push-cooldown guard. Node's 2-second AutoCoolDown (server-side)
+    // is the sole rate limiter for GET_BLOCK. Miner always transmits GET_BLOCK
+    // on recovery paths; the node decides whether to serve or return an empty response.
 
     // Get protocol lane from connection
     ProtocolLane lane = m_connection->get_protocol_lane();
@@ -1422,9 +1398,7 @@ void Worker_manager::retry_template_request(bool bForce)
     if (lane == ProtocolLane::LEGACY) {
         // Legacy lane: Request via GET_BLOCK
         m_logger->info("[Worker_manager] → Sending GET_BLOCK request (legacy polling)");
-        // Use get_work_immediate() on forced recovery to bypass miner-side rate limiter.
-        // Node enforces a 2-second minimum between GET_BLOCK requests (AutoCoolDown).
-        auto work_payload = bForce ? solo_protocol->get_work_immediate() : solo_protocol->get_work();
+        auto work_payload = solo_protocol->get_work();
         if (work_payload && !work_payload->empty()) {
             m_connection->transmit(work_payload);
             m_recovery_last_get_block_sent_at = std::chrono::steady_clock::now();
@@ -1432,8 +1406,7 @@ void Worker_manager::retry_template_request(bool bForce)
             m_recovery_get_block_transmitted = true;
             m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
         } else {
-            // Could be rate limited — not an error
-            m_logger->warn("[Worker_manager]   GET_BLOCK suppressed (rate-limited or not authenticated) — recovery may be delayed");
+            m_logger->warn("[Worker_manager]   GET_BLOCK not sent (not authenticated) — recovery may be delayed");
         }
     } else if (lane == ProtocolLane::STATELESS) {
         // RECOVERY STRATEGY: Send MINER_READY first to reset node's AutoCoolDown,
@@ -1446,8 +1419,7 @@ void Worker_manager::retry_template_request(bool bForce)
         }
 
         m_logger->info("[Worker_manager] → Sending GET_BLOCK request (stateless 0xD081)");
-        // Use get_work_immediate() on forced recovery to bypass the miner-side rate limiter.
-        auto work_payload = bForce ? solo_protocol->get_work_immediate() : solo_protocol->get_work();
+        auto work_payload = solo_protocol->get_work();
         if (work_payload && !work_payload->empty()) {
             m_connection->transmit(work_payload);
             m_recovery_last_get_block_sent_at = std::chrono::steady_clock::now();
@@ -1455,7 +1427,7 @@ void Worker_manager::retry_template_request(bool bForce)
             m_recovery_get_block_transmitted = true;
             m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
         } else {
-            m_logger->warn("[Worker_manager]   GET_BLOCK suppressed (rate-limited or not authenticated)");
+            m_logger->warn("[Worker_manager]   GET_BLOCK not sent (not authenticated)");
         }
     } else {
         m_logger->error("[Worker_manager] → Unknown protocol lane - cannot request template");
@@ -1503,7 +1475,6 @@ void Worker_manager::check_template_health()
             if (m_secondary_connection && m_secondary_protocol) {
                 auto* sec_solo = dynamic_cast<protocol::Solo*>(m_secondary_protocol.get());
                 if (sec_solo) {
-                    sec_solo->bypass_get_block_rate_limit_once();
                     auto work_payload = sec_solo->send_recovery_work_request();
                     if (work_payload && !work_payload->empty()) {
                         m_logger->info("[SIM Link] DEGRADED MODE fallback — GET_BLOCK sent via secondary lane");
@@ -1620,8 +1591,7 @@ void Worker_manager::check_template_health()
                 // for > 30 s without a single confirmed GET_BLOCK transmission.
                 if (recovery_elapsed_s > 30 && !m_recovery_get_block_transmitted) {
                     m_logger->warn("[Worker_manager] ⚠️ RECOVERY STALL: {}s elapsed, NO GET_BLOCK has been transmitted yet "
-                        "(all attempts rate-limited). Forcing immediate bypass...", recovery_elapsed_s);
-                    // Use get_work_immediate() which resets the miner-side rate-limiter clock.
+                        "(not authenticated?). Retrying...", recovery_elapsed_s);
                     retry_template_request(true);
                     return;
                 }

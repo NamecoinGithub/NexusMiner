@@ -38,17 +38,10 @@ public:
 
     void reset() override;
     network::Shared_payload login(Login_handler handler) override;
+    /// Request a fresh mining template via GET_BLOCK.
+    /// Authentication-guarded; returns null if not authenticated or reward not bound.
+    /// No miner-side rate limiting — the node's 2-second AutoCoolDown enforces the server-side floor.
     network::Shared_payload get_work() override;
-    /// Like get_work() but bypasses the miner-side rate limiter for immediate tip-moved refreshes.
-    /// Node's 2-second limit allows rapid recovery GET_BLOCKs.
-    /// Only call from tip_moved / channel_stale paths — NOT from polling loops.
-    network::Shared_payload get_work_immediate();
-    /// One-shot bypass of the miner-side GET_BLOCK rate limiter for SIM Link lane-failure recovery.
-    /// Resets the rate-limit clock so the very next get_work() call goes through immediately.
-    /// Node allows GET_BLOCK every 2 seconds, so this bypass is only needed for the
-    /// immediate first-request after lane recovery.
-    /// The bypass is consumed after a single get_work() call; subsequent calls obey the normal limit.
-    void bypass_get_block_rate_limit_once();
     network::Shared_payload submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce) override;
     void set_block_handler(Set_block_handler handler) override { m_set_block_handler = std::move(handler); }
 
@@ -87,9 +80,8 @@ public:
     /// when the intent is to force a fresh template retrieval.
     network::Shared_payload send_get_round();
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
-    /// a fresh mining template.  Authentication-guarded; delegates to get_work()
-    /// and therefore respects the miner-side 2s rate limiter.  Returns null/empty
-    /// when rate-limited or not yet authenticated — callers must guard for this.
+    /// a fresh mining template.  Authentication-guarded; delegates to get_work().
+    /// Returns null/empty if not yet authenticated — callers must guard for this.
     /// Use this method — not send_get_round() — for template recovery actions.
     network::Shared_payload send_recovery_work_request();
     RoundStatus get_last_round_status() const { return m_last_round_status; }
@@ -137,24 +129,6 @@ public:
     // Mining Template Interface access (unified READ/FEED system)
     MiningTemplateInterface* get_template_interface() { return m_template_interface.get(); }
     const MiningTemplateInterface* get_template_interface() const { return m_template_interface.get(); }
-    
-    // Push-cooldown guard: returns true if a push was received within TEMPLATE_PUSH_COOLDOWN.
-    // Used by Worker_manager::retry_template_request() to skip GET_BLOCK polling when the
-    // node is pushing normally (push-driven era: fresh template arrives within ~2 s of each tip advance).
-    bool was_push_received_recently() const
-    {
-        if (m_last_push_received_time == std::chrono::steady_clock::time_point{})
-            return false;
-        return (std::chrono::steady_clock::now() - m_last_push_received_time) < TEMPLATE_PUSH_COOLDOWN;
-    }
-
-    // Returns the raw timestamp of the last received push notification (steady_clock).
-    // Used by Worker_manager::check_template_health() to determine whether the current
-    // template was received AFTER the last push (post-push = fresh, skip stop_all_workers).
-    std::chrono::steady_clock::time_point get_last_push_received_time() const
-    {
-        return m_last_push_received_time;
-    }
     
     // Stateless mining reward address binding (MINER_SET_REWARD protocol)
     void set_reward_address(std::string const& address) { m_reward_address = address; }
@@ -298,12 +272,6 @@ private:
     // hashPrevBlock signals that the chain tip has moved.
     uint1024_t m_last_known_hash_prev_block;
 
-    // Push-driven era: timestamp of the last successfully received template push.
-    // Used by was_push_received_recently() to avoid unnecessary GET_BLOCK polling
-    // when the node is delivering templates normally (within TEMPLATE_PUSH_COOLDOWN).
-    static constexpr std::chrono::seconds TEMPLATE_PUSH_COOLDOWN{30};
-    std::chrono::steady_clock::time_point m_last_push_received_time{};
-
     // Block-result counters (Gap 3): incremented by BLOCK_ACCEPTED / BLOCK_REJECTED handlers.
     std::atomic<uint32_t> m_blocks_accepted{0};
     std::atomic<uint32_t> m_blocks_rejected{0};
@@ -416,19 +384,6 @@ private:
     void on_old_round_received();
     void on_template_received(uint32_t template_height);
     void check_unified_height_delta(uint32_t current_unified_height);
-    
-    // ═══════════════════════════════════════════════════════════════════════
-    // GET_BLOCK RATE LIMITER
-    // ═══════════════════════════════════════════════════════════════════════
-    //
-    // Miner-side: 2s guard matches node's 2-second GET_BLOCK rate limit.
-    // Node-side: 2s minimum via AutoCoolDown (no longer the old 30s lockout).
-    //
-    // Use get_work_immediate() for tip_moved / channel_stale refreshes to
-    // reset the timer for immediate first-request after lane recovery.
-    //
-    // Timestamp of last GET_BLOCK request (rate limiter)
-    std::chrono::steady_clock::time_point m_last_get_block_time{};
     
     // ═══════════════════════════════════════════════════════════════════════
     // PORT-LANE SEPARATION STATE (STRICT - NO FALLBACK)
