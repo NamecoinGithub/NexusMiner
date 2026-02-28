@@ -1399,22 +1399,12 @@ void Worker_manager::retry_template_request(bool bForce)
         mark_recovery_initiated("health_monitor_or_validation");
     }
 
-    // Push-cooldown guard (push-driven era): if the node pushed a template within the last
-    // 30 s (node's new AutoCoolDown) the node is operating normally — skip GET_BLOCK to
-    // avoid unnecessary polling. Only if no push has arrived for 30 s do we fall back.
-    if (solo_protocol->was_push_received_recently()) {
-        if (!bForce) {
-            // Periodic health-check path: push is coming, no need to poll.
-            m_logger->debug("[TemplateHealth] Push received recently — no GET_BLOCK needed; node is pushing normally");
-            return;
-        }
-        // Forced recovery path: template was discarded + workers stopped.
-        // A push was received recently but the template never arrived (e.g. node-side
-        // 0-payload race).  We MUST request a new template regardless.
-    }
     // No miner-side push-cooldown guard. Node's 2-second AutoCoolDown (server-side)
-    // is the sole rate limiter for GET_BLOCK. Miner always transmits GET_BLOCK
-    // on recovery paths; the node decides whether to serve or return an empty response.
+    // is the sole rate limiter for GET_BLOCK requests. The miner always transmits
+    // GET_BLOCK on recovery paths; the node decides whether to serve or return an
+    // empty response. was_push_received_recently() was removed by PR #228 as it
+    // caused recovery doom loops by blocking GET_BLOCK when a push was received
+    // but the template was subsequently discarded as stale.
 
     // Get protocol lane from connection
     ProtocolLane lane = m_connection->get_protocol_lane();
