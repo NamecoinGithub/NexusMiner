@@ -84,8 +84,8 @@ namespace nexusminer
 			MINER_REWARD_RESULT = LLP::MINER_REWARD_RESULT,
 
 			/** SESSION STATUS (Phase 2 stateless, legacy opcodes 219/220) **/
-			SESSION_STATUS     = LLP::SessionStatusOpcodes::SESSION_STATUS_LEGACY,
-			SESSION_STATUS_ACK = LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY,
+			SESSION_STATUS     = ::LLP::SessionStatusOpcodes::SESSION_STATUS_LEGACY,
+			SESSION_STATUS_ACK = ::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY,
 
 			/** PUSH NOTIFICATIONS (LLL-TAO PR #156) **/
 			MINER_READY = LLP::MINER_READY,
@@ -188,8 +188,8 @@ namespace nexusminer
 				case LLP::MINER_READY: return "STATELESS_MINER_READY (0xD0D8)";
 				case LLP::PRIME_BLOCK_AVAILABLE: return "STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9)";
 				case LLP::HASH_BLOCK_AVAILABLE: return "STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)";
-				case LLP::SessionStatusOpcodes::SESSION_STATUS_LEGACY:     return "STATELESS_SESSION_STATUS (0xD0DB)";
-				case LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY: return "STATELESS_SESSION_STATUS_ACK (0xD0DC)";
+				case ::LLP::SessionStatusOpcodes::SESSION_STATUS_LEGACY:     return "STATELESS_SESSION_STATUS (0xD0DB)";
+				case ::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY: return "STATELESS_SESSION_STATUS_ACK (0xD0DC)";
 				default:
 					{
 						// Thread-safe: use ostringstream instead of static buffer
