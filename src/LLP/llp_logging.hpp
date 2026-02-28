@@ -10,6 +10,7 @@
 #include <cctype>
 #include "network/types.hpp"
 #include "miner_opcodes.hpp"
+#include "include/colin_ping_protocol.h"
 
 namespace nexusminer
 {
@@ -82,6 +83,10 @@ namespace nexusminer
 			MINER_SET_REWARD = LLP::MINER_SET_REWARD,
 			MINER_REWARD_RESULT = LLP::MINER_REWARD_RESULT,
 
+			/** SESSION STATUS (Phase 2 stateless, legacy opcodes 219/220) **/
+			SESSION_STATUS     = LLP::SessionStatusOpcodes::SESSION_STATUS_LEGACY,
+			SESSION_STATUS_ACK = LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY,
+
 			/** PUSH NOTIFICATIONS (LLL-TAO PR #156) **/
 			MINER_READY = LLP::MINER_READY,
 			PRIME_BLOCK_AVAILABLE = LLP::PRIME_BLOCK_AVAILABLE,
@@ -143,6 +148,8 @@ namespace nexusminer
 			case LLP_Headers::MINER_READY: return "MINER_READY";
 			case LLP_Headers::PRIME_BLOCK_AVAILABLE: return "PRIME_BLOCK_AVAILABLE";
 			case LLP_Headers::HASH_BLOCK_AVAILABLE: return "HASH_BLOCK_AVAILABLE";
+			case LLP_Headers::SESSION_STATUS: return "SESSION_STATUS";
+			case LLP_Headers::SESSION_STATUS_ACK: return "SESSION_STATUS_ACK";
 			case LLP_Headers::PING: return "PING";
 			case LLP_Headers::CLOSE: return "CLOSE";
 			default: return "UNKNOWN";
@@ -181,6 +188,8 @@ namespace nexusminer
 				case LLP::MINER_READY: return "STATELESS_MINER_READY (0xD0D8)";
 				case LLP::PRIME_BLOCK_AVAILABLE: return "STATELESS_PRIME_BLOCK_AVAILABLE (0xD0D9)";
 				case LLP::HASH_BLOCK_AVAILABLE: return "STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)";
+				case LLP::SessionStatusOpcodes::SESSION_STATUS_LEGACY:     return "STATELESS_SESSION_STATUS (0xD0DB)";
+				case LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY: return "STATELESS_SESSION_STATUS_ACK (0xD0DC)";
 				default:
 					{
 						// Thread-safe: use ostringstream instead of static buffer
