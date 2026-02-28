@@ -60,25 +60,15 @@ Gives operators immediate confirmation that each push reflects an actual tip adv
 
 ## Diagram 4 — Rate limiter hierarchy (miner side)
 
-```
-Miner wants a template
-       │
-       ▼
-Was push received within last 200 s?  YES → skip GET_BLOCK (push is working)
-       │
-       NO (200 s cooldown expired)
-       │
-       ▼
-GET_BLOCK rate limiter: elapsed ≥ 2000 ms?  NO → skip (wait for rate limit)
-       │
-       YES
-       │
-       ▼
-Transmit GET_BLOCK → node responds with fresh template
-```
+The miner has NO client-side GET_BLOCK rate limiter.
+All rate limiting is enforced by the node's 2-second AutoCoolDown (server-side).
 
-`Solo::was_push_received_recently()` implements the 200 s push-cooldown check.
-`Worker_manager::retry_template_request()` calls it before transmitting GET_BLOCK.
+Miner sends GET_BLOCK whenever recovery logic determines a template is needed.
+Node returns:
+  - Full 216-byte template (if AutoCoolDown elapsed or localhost bypass active)
+  - Empty BLOCK_DATA response (if AutoCoolDown not yet elapsed)
+
+Miner handles empty response gracefully — next push notification retries.
 
 ---
 
@@ -89,14 +79,12 @@ Transmit GET_BLOCK → node responds with fresh template
                 ─────────────────────  ─────────────────────────
 MAX_TEMPLATE_AGE        600 s               200 s
 WARNING_TEMPLATE_AGE     50 s                50 s (unchanged)
-GET_BLOCK rate limit   6500 ms            2000 ms
-Push cooldown fallback  N/A               200 s (new)
+GET_BLOCK rate limit   6500 ms            none (node-side only)
+Push cooldown fallback  N/A               removed
 Node push throttle      N/A               2000 ms (node PR)
 ```
 
 Files changed:
 - `src/mining/client_block.h` — `MAX_TEMPLATE_AGE_SECONDS`
 - `src/protocol/inc/protocol/mining_template_interface.hpp` — `MAX_TEMPLATE_AGE`, `WARNING_TEMPLATE_AGE`
-- `src/protocol/inc/protocol/solo.hpp` — `TEMPLATE_PUSH_COOLDOWN`, `m_last_push_received_time`
-- `src/protocol/src/protocol/solo.cpp` — hashPrevBlock delta log, push timestamp
-- `src/worker_manager.cpp` — push-cooldown guard, `SUBMISSION_MAX_AGE_SECONDS`
+- `src/protocol/src/protocol/solo.cpp` — hashPrevBlock delta log

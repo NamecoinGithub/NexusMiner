@@ -77,15 +77,15 @@ int main()
     }
 
     {
-        std::cout << "Test 5: Single source of truth for GET_BLOCK rate limit\n";
-        // GET_BLOCK_MINER_INTERVAL_MS and GET_BLOCK_NODE_INTERVAL_MS have been removed
-        // from DualConnectionManager — they were dead code that misled developers.
-        // The single enforced rate limit is the local constexpr GET_BLOCK_MIN_INTERVAL
-        // (2000ms) in Solo::get_work(), matching the node's 2-second AutoCoolDown.
+        std::cout << "Test 5: No miner-side GET_BLOCK rate limiter\n";
+        // The miner-side GET_BLOCK rate limiter (GET_BLOCK_MIN_INTERVAL in Solo::get_work())
+        // has been removed. The node's 2-second AutoCoolDown (server-side) is the sole
+        // rate limiter for GET_BLOCK. Any miner-side suppression was redundant and caused
+        // doom loops during recovery.
         //
-        // The compile-time proof that the constants are gone is that this file compiles
-        // without them — any reference to GET_BLOCK_MINER_INTERVAL_MS or
-        // GET_BLOCK_NODE_INTERVAL_MS would be a compile error.
+        // The compile-time proof that the DualConnectionManager timing constants are gone
+        // is that this file compiles without them — any reference to
+        // GET_BLOCK_MINER_INTERVAL_MS or GET_BLOCK_NODE_INTERVAL_MS would be a compile error.
         DualConnectionManager mgr;
         mgr.set_stateless_alive(true);
         ok &= expect(mgr.is_stateless_alive(),
