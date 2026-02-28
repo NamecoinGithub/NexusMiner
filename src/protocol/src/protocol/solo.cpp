@@ -2935,6 +2935,29 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
     }
+    // SESSION_STATUS_ACK (0xD0DC / legacy 220) — node responded to our session health query
+    // ═══════════════════════════════════════════════════════════════════════
+    else if(packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK)
+         || packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY))
+    {
+        std::vector<uint8_t> data = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
+        ::LLP::SessionStatusAckFrame ack;
+        if(ack.Parse(data))
+        {
+            m_logger->info("[Solo] SESSION_STATUS_ACK: lane_health=0x{:04x} uptime={}s "
+                           "primary={} secondary={} simlink={} auth={}",
+                           ack.lane_health_flags, ack.uptime_seconds,
+                           ack.IsPrimaryAlive(), ack.IsSecondaryAlive(),
+                           ack.IsSimLinkActive(), ack.IsAuthenticated());
+
+            m_last_session_status_ack      = ack;
+            m_last_session_status_ack_time = std::chrono::steady_clock::now();
+        }
+        else
+        {
+            m_logger->warn("[Solo] SESSION_STATUS_ACK: malformed payload (size={})", data.size());
+        }
+    }
     else
     {
         m_logger->debug("Invalid header received: 0x{:04x}", packet.m_header);
@@ -2996,6 +3019,14 @@ network::Shared_payload Solo::send_session_keepalive()
     // This causes the node to reply with the 32-byte unified KeepAliveV2AckFrame
     // (unified_height / prime_height / hash_height / stake_height / hash_tip_lo32 / fork_score).
     return m_session_manager->build_keepalive_packet();
+}
+
+network::Shared_payload Solo::build_session_status_packet(
+    bool degraded, bool workers_running, bool secondary_up) const
+{
+    bool has_tmpl = m_template_interface && m_template_interface->has_valid_template();
+    return m_session_manager->build_session_status_packet(
+        degraded, has_tmpl, workers_running, secondary_up);
 }
 
 void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)

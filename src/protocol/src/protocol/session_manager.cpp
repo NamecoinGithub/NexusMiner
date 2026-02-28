@@ -221,6 +221,42 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
     return packet.get_bytes();
 }
 
+network::Shared_payload SessionManager::build_session_status_packet(
+    bool degraded, bool has_template, bool workers_running, bool secondary_up) const
+{
+    using namespace ::LLP::SessionStatusOpcodes;
+
+    if (m_session.session_id == 0)
+        return network::Shared_payload{};
+
+    if (m_protocol_lane == ProtocolLane::UNKNOWN) {
+        m_logger->error("[SessionManager] build_session_status_packet() called with UNKNOWN protocol lane");
+        return network::Shared_payload{};
+    }
+
+    uint32_t status_flags = 0;
+    if (degraded)        status_flags |= MINER_DEGRADED;
+    if (has_template)    status_flags |= MINER_HAS_TEMPLATE;
+    if (workers_running) status_flags |= MINER_WORKERS_ACTIVE;
+    if (secondary_up)    status_flags |= MINER_SECONDARY_UP;
+
+    ::LLP::SessionStatusFrame frame;
+    frame.session_id   = m_session.session_id;
+    frame.status_flags = status_flags;
+    auto payload = frame.Serialize();
+
+    bool use_stateless = (m_protocol_lane == ProtocolLane::STATELESS);
+
+    // Build lane-aware packet following the same framing as build_keepalive_packet()
+    Packet packet = use_stateless
+        ? Packet{ static_cast<uint16_t>(SESSION_STATUS),
+                  std::make_shared<network::Payload>(payload) }
+        : Packet{ static_cast<uint8_t>(SESSION_STATUS_LEGACY),
+                  std::make_shared<network::Payload>(payload) };
+
+    return packet.get_bytes();
+}
+
 bool SessionManager::is_keepalive_due() const
 {
     if (!is_active()) {

@@ -283,6 +283,26 @@ void ColinAgent::emit_report(
         }
     }
 
+    /* SESSION_STATUS_ACK section — node lane-health report */
+    if (m_status_source)
+    {
+        auto [ack, ack_time] = m_status_source();
+        if (ack.session_id != 0)
+        {
+            auto age_s = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - ack_time).count();
+            m_logger->info("[Colin]  ── Node Lane Health (SESSION_STATUS_ACK, {}s ago) ──", age_s);
+            m_logger->info("[Colin]    Primary alive:   {}", ack.IsPrimaryAlive()   ? "✅" : "❌");
+            m_logger->info("[Colin]    Secondary alive: {}", ack.IsSecondaryAlive() ? "✅" : "❌");
+            m_logger->info("[Colin]    SIM Link active: {}", ack.IsSimLinkActive()  ? "✅" : "❌");
+            m_logger->info("[Colin]    Authenticated:   {}", ack.IsAuthenticated()  ? "✅" : "❌");
+            m_logger->info("[Colin]    Node uptime:     {}s", ack.uptime_seconds);
+            if (age_s > 120)
+                warnings.push_back("No SESSION_STATUS_ACK for >" + std::to_string(age_s) +
+                                   "s — node may have dropped session or lane is silent");
+        }
+    }
+
     if (!warnings.empty())
     {
         m_logger->warn("[Colin]  ── Warnings ──────────────────────────────────");

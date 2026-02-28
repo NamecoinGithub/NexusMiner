@@ -84,3 +84,13 @@ target_include_directories(push_notification_lane_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/LLP
     ${CMAKE_SOURCE_DIR}/src
 )
+
+# SESSION_STATUS / SESSION_STATUS_ACK wire-protocol unit tests
+add_executable(session_status_wire_test session_status_wire_test.cpp)
+target_link_libraries(session_status_wire_test PRIVATE LLP)
+target_include_directories(session_status_wire_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src
+)

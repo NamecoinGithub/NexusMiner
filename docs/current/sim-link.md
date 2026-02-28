@@ -77,6 +77,43 @@ conveyed no height data to the node.
 | Node → Miner reply | 32 bytes: `unified_height`, `prime_height`, `hash_height`, `stake_height`, `hash_tip_lo32`, `fork_score` |
 | Height ingestion point | `HeightTracker::OnKeepaliveResponse()` (both lanes) |
 
+### SESSION_STATUS — Lane Health Query
+
+In addition to `SESSION_KEEPALIVE`, the miner periodically sends a `SESSION_STATUS` request
+(opcode 219 / `0xD0DB`) on each live lane to query the node's view of lane and session health.
+The node responds with `SESSION_STATUS_ACK` (opcode 220 / `0xD0DC`) carrying 16 bytes of
+lane health state.
+
+| Property | Value |
+|----------|-------|
+| Opcode (legacy) | 219 (`0xDB`) |
+| Opcode (stateless) | `0xD0DB` |
+| Direction | miner → node |
+| Request payload | 8 bytes: `session_id (4 LE)` + `status_flags (4 BE)` |
+| ACK opcode (legacy) | 220 (`0xDC`) |
+| ACK opcode (stateless) | `0xD0DC` |
+| ACK payload | 16 bytes: `session_id (4 LE)` + `lane_health_flags (4 BE)` + `uptime_seconds (4 BE)` + `status_echo_flags (4 BE)` |
+| Send interval | 60 seconds (piggybacked on lane-health-check timer) |
+| Code location | `Worker_manager::send_session_status_if_due()` |
+
+**Lane health flags** (ACK bytes `[4-7]`):
+- bit 0 (`0x01`): stateless (primary) lane alive
+- bit 1 (`0x02`): legacy (secondary) lane alive
+- bit 2 (`0x04`): SIM Link dual-lane active
+- bit 3 (`0x08`): session authenticated
+
+**Miner status flags** (request bytes `[4-7]` and ACK echo `[12-15]`):
+- bit 0 (`0x01`): miner degraded mode active
+- bit 1 (`0x02`): miner has valid template
+- bit 2 (`0x04`): workers running
+- bit 3 (`0x08`): secondary lane connected
+
+The send interval is hardcoded to 60 seconds, piggybacked on the existing lane-health-check timer (every 30 s) with an internal 60-second gate. Future releases may expose this as a config option:
+```toml
+[network]
+session_status_interval_seconds = 60  # Planned: How often to send SESSION_STATUS queries
+```
+
 ### GET_BLOCK Rate Limiter
 
 | Setting | Value | Notes |
@@ -125,6 +162,7 @@ Colin prints a structured diagnostic report every 60 seconds (configurable):
 | Template age > 150 s | Approaching emergency timeout | Verify push notifications working |
 | `MINING STOPPED` | Workers in degraded mode | Check template delivery path |
 | TipSync mismatch | Miner may be on a stale or forked tip | Watch for next keepalive ACK update; check node chain sync |
+| No SESSION_STATUS_ACK for > 120s | Node may have dropped session or lane is silent | Check keepalive path; consider reconnect |
 
 Configure Colin in `miner.conf`:
 ```toml

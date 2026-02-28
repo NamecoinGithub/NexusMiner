@@ -14,6 +14,7 @@
 #include "network/types.hpp"
 #include "protocol_lane.hpp"
 #include "spdlog/spdlog.h"
+#include "LLP/include/colin_ping_protocol.h"
 
 namespace nexusminer {
 namespace network { class Connection; }
@@ -129,6 +130,23 @@ public:
      *                                  zeros when no valid template is available)
      */
     network::Shared_payload build_keepalive_packet() const;
+
+    /**
+     * @brief Build SESSION_STATUS packet bytes (8-byte payload)
+     *
+     * Encodes the miner's current status for the node's lane-health query system.
+     * Uses the correct opcode framing for the configured protocol lane.
+     *
+     * @param degraded        True if workers are in degraded mode
+     * @param has_template    True if a valid mining template is currently held
+     * @param workers_running True if mining workers are active
+     * @param secondary_up    True if the secondary (legacy) lane is connected
+     */
+    network::Shared_payload build_session_status_packet(
+        bool degraded,
+        bool has_template,
+        bool workers_running,
+        bool secondary_up) const;
     
     /**
      * @brief Check if keepalive ping is due

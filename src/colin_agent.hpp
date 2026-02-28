@@ -59,6 +59,14 @@ public:
     using PingSource = std::function<::LLP::ReceivedPingFrame()>;
     void set_ping_source(PingSource fn) { m_ping_source = std::move(fn); }
 
+    // ── SESSION_STATUS_ACK Source ──────────────────────────────────────────
+    // Optional callback returning the last received SESSION_STATUS_ACK frame
+    // and the time it was received.  Set by Worker_manager after the Solo
+    // protocol is established so emit_report() can display node lane health.
+    using StatusSource = std::function<std::pair<::LLP::SessionStatusAckFrame,
+                                                 std::chrono::steady_clock::time_point>()>;
+    void set_status_source(StatusSource fn) { m_status_source = std::move(fn); }
+
     // ── HeightTracker ─────────────────────────────────────────────────────
     // Optional pointer to the HeightTracker owned by Solo.  Set by
     // Worker_manager after the Solo protocol is established.  When set,
@@ -110,6 +118,7 @@ private:
     bool m_running{false};
 
     PingSource m_ping_source;  // Optional: supplies last ReceivedPingFrame for the report
+    StatusSource m_status_source;  // Optional: supplies last SessionStatusAckFrame for the report
     const nexusminer::protocol::HeightTracker* m_height_tracker{nullptr};  // Optional: HeightTracker owned by Solo
 
     uint32_t m_last_miner_prevhash_lo32{0};
