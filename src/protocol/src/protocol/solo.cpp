@@ -1382,7 +1382,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     m_logger->info("[TEMPLATE ANCHOR]   Workers still initializing — chain tip noted, applies next block");
                 } else {
                     m_last_template_feed_tp = now_tp;
-                    if (ms_since_last < ANCHOR_REPUSH_DEBOUNCE_MS && tip_changed) {
+                    if (tip_changed) {
                         m_logger->info("[TEMPLATE ANCHOR] ⚡ Debounce bypassed: chain tip changed (hashPrevBlock)");
                     }
                     m_logger->info("[Solo FEED] Dispatching validated template to workers (height: {}, nBits: 0x{:08x})",
