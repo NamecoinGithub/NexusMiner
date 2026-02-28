@@ -82,9 +82,11 @@ namespace nexusminer
 			// Auth/session range (206-218): have length + payload, EXCEPT MINER_READY
 			if (opcode == LLP::MINER_READY) return true;  // MINER_READY is header-only
 			if (opcode >= LEGACY_AUTH_OPCODE_MIN && opcode <= LLP::HASH_BLOCK_AVAILABLE) return false;
+			// SESSION_STATUS (219) and SESSION_STATUS_ACK (220): data-bearing (mirror-mapped opcodes)
+			if (opcode == 219 || opcode == 220) return false;
 			// PING and CLOSE: header-only
 			if (opcode >= LLP::PING) return true;
-			// Everything else in 219-252 range: header-only (generic request/response)
+			// Everything else in 221-252 range: header-only (generic request/response)
 			return true;
 		}
 		

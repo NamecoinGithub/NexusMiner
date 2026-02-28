@@ -804,6 +804,17 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                                     auto* solo_ptr = dynamic_cast<protocol::Solo*>(proto.get());
                                     return solo_ptr ? solo_ptr->last_received_ping() : ::LLP::ReceivedPingFrame{};
                                 });
+                            // Wire up SESSION_STATUS_ACK source for node lane-health diagnostics
+                            self->m_colin_agent->set_status_source(
+                                [weak_proto]() -> std::pair<::LLP::SessionStatusAckFrame,
+                                                             std::chrono::steady_clock::time_point> {
+                                    auto proto = weak_proto.lock();
+                                    if (!proto) return {};
+                                    auto* solo_ptr = dynamic_cast<protocol::Solo*>(proto.get());
+                                    if (!solo_ptr) return {};
+                                    return { solo_ptr->last_session_status_ack(),
+                                             solo_ptr->last_session_status_ack_time() };
+                                });
                             // Wire up HeightTracker so emit_report() can display all channel heights
                             // and the fork-score canary in the periodic diagnostic report.
                             self->m_colin_agent->set_height_tracker(&s->get_height_tracker());
@@ -1060,6 +1071,46 @@ void Worker_manager::log_lane_health()
     m_logger->info("[SIM Link] Lane health — Primary: {} | Secondary: {}",
         primary_alive   ? "ALIVE" : "DEAD",
         secondary_alive ? "ALIVE" : "DEAD");
+
+    send_session_status_if_due();
+}
+
+void Worker_manager::send_session_status_if_due()
+{
+    auto now = std::chrono::steady_clock::now();
+    constexpr int64_t SESSION_STATUS_INTERVAL_SECONDS = 60;
+    if (std::chrono::duration_cast<std::chrono::seconds>(
+            now - m_last_session_status_sent).count() < SESSION_STATUS_INTERVAL_SECONDS)
+        return;
+    m_last_session_status_sent = now;
+
+    bool degraded    = m_degraded_mode;
+    bool workers_run = !m_degraded_mode && !m_workers.empty();
+    bool sec_up      = static_cast<bool>(m_secondary_connection);
+
+    // Primary lane
+    if (m_connection)
+    {
+        auto* solo = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
+        if (solo)
+        {
+            auto pkt = solo->build_session_status_packet(degraded, workers_run, sec_up);
+            if (pkt && !pkt->empty())
+                m_connection->transmit(pkt);
+        }
+    }
+
+    // Secondary lane
+    if (m_secondary_connection)
+    {
+        auto* sec_solo = dynamic_cast<protocol::Solo*>(m_secondary_protocol.get());
+        if (sec_solo)
+        {
+            auto pkt = sec_solo->build_session_status_packet(degraded, workers_run, sec_up);
+            if (pkt && !pkt->empty())
+                m_secondary_connection->transmit(pkt);
+        }
+    }
 }
 
 void Worker_manager::process_data(network::Shared_payload&& receive_buffer)

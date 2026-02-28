@@ -330,6 +330,8 @@ namespace LLP
             || opcode == KeepAliveV2Opcodes::KEEPALIVE_V2_ACK
             || opcode == ColinDiagOpcodes::PING_DIAG
             || opcode == ColinDiagOpcodes::PONG_DIAG;
+        // Note: SESSION_STATUS / SESSION_STATUS_ACK are mirror-mapped opcodes
+        // (not un-mirrored) — they are intentionally NOT listed here.
     }
 
     /** GetExpectedPayloadSize
@@ -349,6 +351,13 @@ namespace LLP
         if(opcode == ColinDiagOpcodes::PING_DIAG
         || opcode == ColinDiagOpcodes::PONG_DIAG)
             return ColinDiagOpcodes::PAYLOAD_SIZE;     // 64
+
+        // Forward-declare for SESSION_STATUS / SESSION_STATUS_ACK
+        // (defined below in SessionStatusOpcodes namespace)
+        if(opcode == static_cast<uint16_t>(0xD0DB))   // SESSION_STATUS
+            return 8u;
+        if(opcode == static_cast<uint16_t>(0xD0DC))   // SESSION_STATUS_ACK
+            return 16u;
 
         return 0;  // variable or header-only
     }
@@ -471,6 +480,126 @@ namespace LLP
             return true;
         }
     };
+
+    //=========================================================================
+    // SessionStatusFrame — 8-byte miner → node payload for SESSION_STATUS
+    //                       (legacy opcode 219 / 0xDB; stateless 0xD0DB)
+    //=========================================================================
+
+    namespace SessionStatusOpcodes
+    {
+        static constexpr uint8_t  SESSION_STATUS_LEGACY     = 219;   // 0xDB
+        static constexpr uint8_t  SESSION_STATUS_ACK_LEGACY = 220;   // 0xDC
+        static constexpr uint16_t SESSION_STATUS            = 0xD0DB;
+        static constexpr uint16_t SESSION_STATUS_ACK        = 0xD0DC;
+
+        static constexpr uint32_t REQUEST_PAYLOAD_SIZE = 8;
+        static constexpr uint32_t ACK_PAYLOAD_SIZE     = 16;
+
+        /* Lane health flags (ACK bytes [4-7]) */
+        static constexpr uint32_t LANE_PRIMARY_ALIVE   = 0x01;
+        static constexpr uint32_t LANE_SECONDARY_ALIVE = 0x02;
+        static constexpr uint32_t LANE_SIM_LINK_ACTIVE = 0x04;
+        static constexpr uint32_t LANE_AUTHENTICATED   = 0x08;
+
+        /* Miner status flags (REQUEST bytes [4-7]) */
+        static constexpr uint32_t MINER_DEGRADED       = 0x01;
+        static constexpr uint32_t MINER_HAS_TEMPLATE   = 0x02;
+        static constexpr uint32_t MINER_WORKERS_ACTIVE = 0x04;
+        static constexpr uint32_t MINER_SECONDARY_UP   = 0x08;
+    }
+
+    /** SessionStatusFrame — 8-byte miner → node request **/
+    struct SessionStatusFrame
+    {
+        uint32_t session_id{0};
+        uint32_t status_flags{0};
+
+        static constexpr uint32_t PAYLOAD_SIZE = 8;
+
+        /** Serialize to wire format **/
+        std::vector<uint8_t> Serialize() const
+        {
+            std::vector<uint8_t> v;
+            v.reserve(8);
+            // session_id: little-endian
+            v.push_back(static_cast<uint8_t>( session_id        & 0xFF));
+            v.push_back(static_cast<uint8_t>((session_id >>  8) & 0xFF));
+            v.push_back(static_cast<uint8_t>((session_id >> 16) & 0xFF));
+            v.push_back(static_cast<uint8_t>((session_id >> 24) & 0xFF));
+            // status_flags: big-endian
+            v.push_back(static_cast<uint8_t>((status_flags >> 24) & 0xFF));
+            v.push_back(static_cast<uint8_t>((status_flags >> 16) & 0xFF));
+            v.push_back(static_cast<uint8_t>((status_flags >>  8) & 0xFF));
+            v.push_back(static_cast<uint8_t>( status_flags        & 0xFF));
+            return v;
+        }
+
+        /** Parse from wire buffer **/
+        bool Parse(const std::vector<uint8_t>& data)
+        {
+            if(data.size() < 8) return false;
+            session_id =  static_cast<uint32_t>(data[0])
+                       | (static_cast<uint32_t>(data[1]) <<  8)
+                       | (static_cast<uint32_t>(data[2]) << 16)
+                       | (static_cast<uint32_t>(data[3]) << 24);
+            status_flags = (static_cast<uint32_t>(data[4]) << 24)
+                         | (static_cast<uint32_t>(data[5]) << 16)
+                         | (static_cast<uint32_t>(data[6]) <<  8)
+                         |  static_cast<uint32_t>(data[7]);
+            return true;
+        }
+    };
+
+    /** SessionStatusAckFrame — 16-byte node → miner response **/
+    struct SessionStatusAckFrame
+    {
+        uint32_t session_id{0};
+        uint32_t lane_health_flags{0};
+        uint32_t uptime_seconds{0};
+        uint32_t status_echo_flags{0};
+
+        static constexpr uint32_t PAYLOAD_SIZE = 16;
+
+        /** Parse from wire buffer **/
+        bool Parse(const std::vector<uint8_t>& data)
+        {
+            if(data.size() < 16) return false;
+            session_id =  static_cast<uint32_t>(data[0])
+                       | (static_cast<uint32_t>(data[1]) <<  8)
+                       | (static_cast<uint32_t>(data[2]) << 16)
+                       | (static_cast<uint32_t>(data[3]) << 24);
+            lane_health_flags = (static_cast<uint32_t>(data[4])  << 24)
+                              | (static_cast<uint32_t>(data[5])  << 16)
+                              | (static_cast<uint32_t>(data[6])  <<  8)
+                              |  static_cast<uint32_t>(data[7]);
+            uptime_seconds    = (static_cast<uint32_t>(data[8])  << 24)
+                              | (static_cast<uint32_t>(data[9])  << 16)
+                              | (static_cast<uint32_t>(data[10]) <<  8)
+                              |  static_cast<uint32_t>(data[11]);
+            status_echo_flags = (static_cast<uint32_t>(data[12]) << 24)
+                              | (static_cast<uint32_t>(data[13]) << 16)
+                              | (static_cast<uint32_t>(data[14]) <<  8)
+                              |  static_cast<uint32_t>(data[15]);
+            return true;
+        }
+
+        /** True if the stateless (primary) lane is alive per the node's report **/
+        bool IsPrimaryAlive()   const { return (lane_health_flags & SessionStatusOpcodes::LANE_PRIMARY_ALIVE)   != 0; }
+        /** True if the legacy (secondary) lane is alive per the node's report **/
+        bool IsSecondaryAlive() const { return (lane_health_flags & SessionStatusOpcodes::LANE_SECONDARY_ALIVE) != 0; }
+        /** True if SIM Link dual-lane mode is active per the node's report **/
+        bool IsSimLinkActive()  const { return (lane_health_flags & SessionStatusOpcodes::LANE_SIM_LINK_ACTIVE) != 0; }
+        /** True if session is authenticated per the node's report **/
+        bool IsAuthenticated()  const { return (lane_health_flags & SessionStatusOpcodes::LANE_AUTHENTICATED)   != 0; }
+    };
+
+    /** IsSessionStatusOpcode — returns true if opcode is SESSION_STATUS or SESSION_STATUS_ACK **/
+    inline bool IsSessionStatusOpcode(uint16_t opcode)
+    {
+        return opcode == SessionStatusOpcodes::SESSION_STATUS
+            || opcode == SessionStatusOpcodes::SESSION_STATUS_ACK;
+    }
 
 } // namespace LLP
 

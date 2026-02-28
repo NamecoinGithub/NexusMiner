@@ -119,6 +119,12 @@ public:
     network::Shared_payload send_session_keepalive();
     std::uint32_t get_session_id() const;
     bool is_session_active() const;
+
+    // Build a SESSION_STATUS packet for transmission on this lane.
+    // Uses the SessionManager and current template/worker state internally.
+    // Returns null if session is not active or lane is UNKNOWN.
+    network::Shared_payload build_session_status_packet(
+        bool degraded, bool workers_running, bool secondary_up) const;
     
     // Check if keep-alive ping is due
     bool is_keepalive_due() const;
@@ -166,6 +172,12 @@ public:
     {
         return m_colin_ping_handler.last_received_ping();
     }
+
+    // SESSION_STATUS_ACK tracking — updated whenever a SESSION_STATUS_ACK is received
+    /** Returns the most recently received SESSION_STATUS_ACK frame (zero if never received) **/
+    const ::LLP::SessionStatusAckFrame& last_session_status_ack() const { return m_last_session_status_ack; }
+    /** Returns time of last SESSION_STATUS_ACK (default time_point if never received) **/
+    std::chrono::steady_clock::time_point last_session_status_ack_time() const { return m_last_session_status_ack_time; }
 
 private:
     
@@ -404,6 +416,11 @@ private:
     // Handles PING_DIAG (0xE0 legacy / 0xD0E0 stateless) from node and
     // replies with a 64-byte PongFrame containing live miner telemetry.
     ::LLP::ColinPingHandler m_colin_ping_handler;
+
+    // ── SESSION_STATUS_ACK tracking ─────────────────────────────────────────
+    // Updated whenever SESSION_STATUS_ACK (0xD0DC / legacy 220) is received.
+    ::LLP::SessionStatusAckFrame m_last_session_status_ack{};
+    std::chrono::steady_clock::time_point m_last_session_status_ack_time{};
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION

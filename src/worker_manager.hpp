@@ -47,6 +47,9 @@ public:
     // SIM Link: log the current state of both lanes (called by lane health-check timer)
     void log_lane_health();
 
+    // SIM Link: send SESSION_STATUS on each live lane if 60-second interval has elapsed
+    void send_session_status_if_due();
+
 private:
 
     void process_data(network::Shared_payload&& receive_buffer);
@@ -153,6 +156,10 @@ private:
     uint32_t m_secondary_retry_delay_seconds{0};
     DualConnectionManager m_sim_link;  // Lane state bookkeeper
     std::shared_ptr<ColinAgent> m_colin_agent;  // Diagnostic agent (started after first connect)
+
+    // Time of the most recent SESSION_STATUS sent on any lane.
+    // Used to gate send_session_status_if_due() to at most once per 60 seconds.
+    std::chrono::steady_clock::time_point m_last_session_status_sent{};
 };
 }
 
