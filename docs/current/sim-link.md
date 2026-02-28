@@ -108,10 +108,10 @@ lane health state.
 - bit 2 (`0x04`): workers running
 - bit 3 (`0x08`): secondary lane connected
 
-Configure the send interval in `miner.conf`:
+The send interval is hardcoded to 60 seconds, piggybacked on the existing lane-health-check timer (every 30 s) with an internal 60-second gate. Future releases may expose this as a config option:
 ```toml
 [network]
-session_status_interval_seconds = 60  # How often to send SESSION_STATUS queries (default: 60)
+session_status_interval_seconds = 60  # Planned: How often to send SESSION_STATUS queries
 ```
 
 ### GET_BLOCK Rate Limiter
