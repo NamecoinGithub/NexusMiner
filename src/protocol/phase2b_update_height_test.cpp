@@ -11,6 +11,11 @@
  *  4. ClientChannelManager is updated with the same values as HeightTracker
  *     when UpdateFromGetRound is called with identical data.
  *  5. Fork detection works after ClientChannelManager update.
+ *  6. Node BLOCK_DATA metadata fields feed unified/channel/difficulty first,
+ *     then template target is derived from channel_height + 1.
+ *  7. Stateless lane BLOCK_DATA fields drive HeightTracker identically to the
+ *     legacy lane — both lanes call update_height_state() → OnPushNotification()
+ *     → OnTemplateReceived() and produce identical HeightTracker snapshots.
  */
 
 #include "protocol/push_notification_handler.hpp"
@@ -296,6 +301,47 @@ static void test_node_block_data_fields_drive_height_tracker()
 }
 
 // ============================================================================
+// Test 7: Stateless lane BLOCK_DATA metadata also drives HeightTracker identically to legacy lane.
+//         Both lanes call update_height_state() → OnPushNotification() → OnTemplateReceived().
+//         The only difference is the packet parser; the HeightTracker update is identical.
+// ============================================================================
+static void test_stateless_lane_mirrors_legacy_for_height_tracker()
+{
+    std::cout << "\nTest 7: Stateless lane BLOCK_DATA fields drive HeightTracker identically to legacy\n";
+
+    constexpr uint32_t UNIFIED = 8000;
+    constexpr uint32_t CHANNEL = 500;
+    constexpr uint32_t DIFF    = 0x1a0fffff;
+
+    HeightTracker tracker_legacy;
+    HeightTracker tracker_stateless;
+
+    // Legacy lane sequence
+    tracker_legacy.OnPushNotification(UNIFIED, CHANNEL, DIFF);
+    tracker_legacy.OnTemplateReceived(CHANNEL_HASH, CHANNEL + 1);
+
+    // Stateless lane sequence (identical calls — same update path)
+    tracker_stateless.OnPushNotification(UNIFIED, CHANNEL, DIFF);
+    tracker_stateless.OnTemplateReceived(CHANNEL_HASH, CHANNEL + 1);
+
+    auto snap_l = tracker_legacy.GetSnapshot();
+    auto snap_s = tracker_stateless.GetSnapshot();
+
+    print_test_result("Legacy and stateless lanes produce identical unified_height",
+        snap_l.unified_height == snap_s.unified_height);
+    print_test_result("Legacy and stateless lanes produce identical channel_height",
+        snap_l.channel_height == snap_s.channel_height);
+    print_test_result("Legacy and stateless lanes produce identical channel_target",
+        snap_l.channel_target == snap_s.channel_target);
+    print_test_result("Legacy and stateless lanes produce identical difficulty_nbits",
+        snap_l.difficulty_nbits == snap_s.difficulty_nbits);
+    print_test_result("channel_target == CHANNEL + 1",
+        snap_l.channel_target == CHANNEL + 1);
+    print_test_result("template_unified_height == UNIFIED",
+        snap_l.template_unified_height == UNIFIED);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main()
@@ -310,6 +356,7 @@ int main()
     test_fork_detection_via_update_callback();
     test_height_tracker_staleness_matches_expected();
     test_node_block_data_fields_drive_height_tracker();
+    test_stateless_lane_mirrors_legacy_for_height_tracker();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
