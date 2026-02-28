@@ -150,12 +150,28 @@ public:
     /**
      * @brief Record that a new mining template has been received
      *
+     * channel_target is only advanced, never regressed — a stale GET_BLOCK
+     * response must not undo a push-derived advancement set by
+     * AdvanceChannelTarget().
+     *
      * @param channel                Mining channel (1=Prime, 2=Hash)
      * @param template_channel_target Block nHeight from the template header
      *                               (represents the channel height this template
      *                               is targeting, i.e. next block to mine)
      */
     void OnTemplateReceived(uint32_t channel, uint32_t template_channel_target);
+
+    /**
+     * @brief Advance channel_target without a full template update
+     *
+     * Called by the push handler after detecting staleness so that
+     * subsequent pushes with the same channel_height do not
+     * re-trigger the recovery/doom-loop.  Only advances — never
+     * regresses channel_target below its current value.
+     *
+     * @param new_target  New channel target (typically channel_height + 1)
+     */
+    void AdvanceChannelTarget(uint32_t new_target);
 
     /**
      * @brief Record the hashPrevBlock from the most recently received template

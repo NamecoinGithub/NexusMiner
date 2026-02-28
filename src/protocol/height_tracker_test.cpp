@@ -556,6 +556,146 @@ void test_push_keepalive_no_regression() {
 }
 
 // ============================================================================
+// Test 21: AdvanceChannelTarget only advances, never regresses
+// ============================================================================
+void test_advance_channel_target_only_advances() {
+    std::cout << "\nTest 21: AdvanceChannelTarget only advances, never regresses\n";
+    HeightTracker tracker;
+
+    // Set initial channel_target via OnTemplateReceived
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 101);
+    auto snap = tracker.GetSnapshot();
+    print_test_result("channel_target == 101 after OnTemplateReceived",
+                      snap.channel_target == 101);
+
+    // Advance to 105 via AdvanceChannelTarget
+    tracker.AdvanceChannelTarget(105);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_target == 105 after AdvanceChannelTarget(105)",
+                      snap.channel_target == 105);
+
+    // Attempting to set a lower value via AdvanceChannelTarget is a no-op
+    tracker.AdvanceChannelTarget(102);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_target still 105 after AdvanceChannelTarget(102)",
+                      snap.channel_target == 105);
+
+    // Attempting to set the same value is a no-op
+    tracker.AdvanceChannelTarget(105);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_target still 105 after AdvanceChannelTarget(105)",
+                      snap.channel_target == 105);
+
+    // Advancing beyond current value works
+    tracker.AdvanceChannelTarget(110);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_target == 110 after AdvanceChannelTarget(110)",
+                      snap.channel_target == 110);
+}
+
+// ============================================================================
+// Test 22: OnTemplateReceived does not regress channel_target
+// ============================================================================
+void test_on_template_received_no_regress() {
+    std::cout << "\nTest 22: OnTemplateReceived does not regress channel_target\n";
+    HeightTracker tracker;
+
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 101);
+    auto snap = tracker.GetSnapshot();
+    print_test_result("channel_target == 101 initially", snap.channel_target == 101);
+
+    // Push advances channel_target (simulating push-detected staleness)
+    tracker.AdvanceChannelTarget(105);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_target == 105 after AdvanceChannelTarget",
+                      snap.channel_target == 105);
+
+    // Stale GET_BLOCK response arrives with a lower channel_target
+    tracker.OnTemplateReceived(1, 102);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_target still 105 after stale OnTemplateReceived(102)",
+                      snap.channel_target == 105);
+
+    // But template_unified_height and timestamps are still updated
+    print_test_result("last_update_source == TEMPLATE",
+                      snap.last_update_source == HeightTracker::UpdateSource::TEMPLATE);
+
+    // A fresh template with a higher target DOES advance
+    tracker.OnTemplateReceived(1, 110);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_target == 110 after fresh OnTemplateReceived(110)",
+                      snap.channel_target == 110);
+}
+
+// ============================================================================
+// Test 23: Doom-loop prevention — push staleness detection fires once per
+//          chain advance, not on every subsequent push with same height
+// ============================================================================
+void test_doom_loop_prevention() {
+    std::cout << "\nTest 23: Doom-loop prevention — staleness fires once per advance\n";
+    HeightTracker tracker;
+
+    // Initial: template targeting block 101
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 101);
+
+    // Push₁: channel advances to 101 → stale
+    tracker.OnPushNotification(5001, 101, 0x1d00ffff);
+    auto snap = tracker.GetSnapshot();
+    print_test_result("Push₁: is_template_stale() true (101 >= 101)",
+                      snap.is_template_stale());
+
+    // Simulate push handler advancing channel_target after detecting staleness
+    tracker.AdvanceChannelTarget(102);
+
+    // Push₂: same channel_height 101 → should NOT be stale anymore
+    tracker.OnPushNotification(5002, 101, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    print_test_result("Push₂: is_template_stale() false (101 < 102)",
+                      !snap.is_template_stale());
+
+    // Push₃: channel advances again to 102 → stale again (correct!)
+    tracker.OnPushNotification(5003, 102, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    print_test_result("Push₃: is_template_stale() true (102 >= 102)",
+                      snap.is_template_stale());
+}
+
+// ============================================================================
+// Test 24: Stale GET_BLOCK response does not cause regression
+// ============================================================================
+void test_stale_get_block_no_regression() {
+    std::cout << "\nTest 24: Stale GET_BLOCK response does not regress channel_target\n";
+    HeightTracker tracker;
+
+    // Push says chain is at channel_height 105
+    tracker.OnPushNotification(5010, 105, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 101);  // old template target
+
+    // Push-handler detects stale (105 >= 101) and advances target
+    tracker.AdvanceChannelTarget(106);
+
+    // Stale GET_BLOCK response has channel_height=99 (3 blocks behind)
+    tracker.OnGetRound(5007, 99, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 100);  // stale template target
+
+    auto snap = tracker.GetSnapshot();
+    // channel_target should NOT have regressed to 100
+    print_test_result("channel_target still 106 after stale GET_BLOCK (not regressed to 100)",
+                      snap.channel_target == 106);
+
+    // But channel_height was updated from OnGetRound (99) — that's the template's view
+    // Push re-arriving would set it back to current
+    tracker.OnPushNotification(5011, 105, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_height restored to 105 from push",
+                      snap.channel_height == 105);
+    print_test_result("Not stale: 105 < 106", !snap.is_template_stale());
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -583,6 +723,10 @@ int main() {
     test_push_updates_per_channel_heights();
     test_push_updates_hash_height();
     test_push_keepalive_no_regression();
+    test_advance_channel_target_only_advances();
+    test_on_template_received_no_regress();
+    test_doom_loop_prevention();
+    test_stale_get_block_no_regression();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

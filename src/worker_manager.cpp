@@ -430,14 +430,21 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* workers instead of 8.                                                       */
         solo_protocol->set_recovery_initiated_handler(
             [this]() {
+                // Only stop workers if this is a NEW recovery epoch.
+                // When recovery is already pending (e.g. from a prior push),
+                // re-stopping workers would kill workers that were just
+                // restarted by a GET_BLOCK response, causing a doom-loop.
+                bool was_pending = m_recovery_pending;
                 mark_recovery_initiated("push_staleness");
 
-                // Stop stale workers. They will be recreated just-in-time by the
-                // set_block_handler degraded-mode guard when the recovery template arrives.
-                // Do NOT call create_workers() here — it races with set_block_handler when
-                // push notifications arrive during the recovery window, causing double-spawn
-                // (16 workers instead of 8).
-                stop_all_workers();
+                if (!was_pending) {
+                    // Stop stale workers. They will be recreated just-in-time by the
+                    // set_block_handler degraded-mode guard when the recovery template arrives.
+                    // Do NOT call create_workers() here — it races with set_block_handler when
+                    // push notifications arrive during the recovery window, causing double-spawn
+                    // (16 workers instead of 8).
+                    stop_all_workers();
+                }
 
                 // Request a fresh template
                 retry_template_request(true);
