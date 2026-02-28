@@ -1541,15 +1541,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Retry once
             work_payload = get_work();
             if (!work_payload || work_payload->empty()) {
-                m_logger->error("[Solo] CRITICAL: GET_BLOCK retry also failed - mining may stall");
-                // On stateless lane: re-send MINER_READY to prompt node to push a fresh template.
-                // This avoids a stall when GET_BLOCK is rate-limited after rejection.
-                if (m_protocol_lane == ProtocolLane::STATELESS) {
-                    m_logger->warn("[Solo] Stateless lane: sending MINER_READY to request template push");
-                    auto ready_payload = send_miner_ready();
-                    if (ready_payload && !ready_payload->empty())
-                        connection->transmit(ready_payload);
-                }
+                m_logger->error("[Solo] CRITICAL: GET_BLOCK retry also failed - will wait for next node push");
+                // NOTE: Do NOT send MINER_READY here. MINER_READY is a one-time subscription
+                // handshake; the node keeps the miner subscribed for the session lifetime.
+                // The next push from the node will trigger a fresh GET_BLOCK request.
             } else {
                 connection->transmit(work_payload);
             }
@@ -2518,14 +2513,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     } else {
                         m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
                     }
-                    // On stateless lane, also re-send MINER_READY to ensure push subscription
-                    // is maintained when requesting a fresh template (channel_advanced staleness).
-                    if (m_protocol_lane == ProtocolLane::STATELESS) {
-                        auto ready_payload = send_miner_ready();
-                        if (ready_payload && !ready_payload->empty()) {
-                            connection->transmit(ready_payload);
-                        }
-                    }
+                    // NOTE: Do NOT send MINER_READY here. MINER_READY is a one-time subscription
+                    // handshake sent only during initial login. The node keeps the miner subscribed
+                    // for the lifetime of the session. GET_BLOCK (0xD081) is the correct recovery
+                    // request — it asks for a fresh template without resetting the subscription state.
                 }
                 // Notify Worker_manager that a channel-stale recovery was initiated so it
                 // can set recovery_pending and prevent check_template_health() from stopping
@@ -2556,14 +2547,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     } else {
                         m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
                     }
-                    // On stateless lane, also re-send MINER_READY to ensure push subscription
-                    // is maintained when requesting a fresh template (channel_advanced staleness).
-                    if (m_protocol_lane == ProtocolLane::STATELESS) {
-                        auto ready_payload = send_miner_ready();
-                        if (ready_payload && !ready_payload->empty()) {
-                            connection->transmit(ready_payload);
-                        }
-                    }
+                    // NOTE: Do NOT send MINER_READY here. MINER_READY is a one-time subscription
+                    // handshake sent only during initial login. The node keeps the miner subscribed
+                    // for the lifetime of the session. GET_BLOCK (0xD081) is the correct recovery
+                    // request — it asks for a fresh template without resetting the subscription state.
                 }
                 // Notify Worker_manager that a channel-stale recovery was initiated so it
                 // can set recovery_pending and prevent check_template_health() from stopping
