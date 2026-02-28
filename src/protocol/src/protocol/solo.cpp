@@ -218,6 +218,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             if (m_set_block_handler) {
                 m_logger->info("[Solo] Distributing template to worker threads...");
                 m_set_block_handler(tmpl.block, nBits);
+                m_last_template_feed_tp = std::chrono::steady_clock::now();
                 m_logger->info("[Solo] ✓ Template distributed - workers should start mining");
             } else {
                 m_logger->error("[Solo] CRITICAL: No block handler registered!");
@@ -1159,12 +1160,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // ENHANCED DIAGNOSTICS: Template delivery tracking
         // ═══════════════════════════════════════════════════════════════════
         m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
-        m_logger->info("[Solo Template Delivery] 📥 TEMPLATE RECEIVED VIA: BLOCK_DATA (0x00)");
-        m_logger->info("[Solo Template Delivery]   Delivery Method: Legacy 8-bit opcode");
+        if (m_protocol_lane == ProtocolLane::STATELESS) {
+            m_logger->info("[Solo Template Delivery] 📥 TEMPLATE RECEIVED VIA: STATELESS_BLOCK_DATA (0xD000)");
+            m_logger->info("[Solo Template Delivery]   Delivery Method: Stateless 16-bit opcode (mirror-mapped)");
+        } else {
+            m_logger->info("[Solo Template Delivery] 📥 TEMPLATE RECEIVED VIA: BLOCK_DATA (0x00)");
+            m_logger->info("[Solo Template Delivery]   Delivery Method: Legacy 8-bit opcode");
+        }
         m_logger->info("[Solo Template Delivery]   Payload Size: {} bytes", packet.m_data->size());
         m_logger->info("[Solo Template Delivery]   Packet Length: {} bytes", packet.m_length);
         m_logger->info("[Solo Template Delivery]   Protocol Lane: {}", 
-            get_lane_name(m_protocol_lane));
+            m_protocol_lane == ProtocolLane::STATELESS ? "Stateless" : "Legacy");
         m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
         
         // TRAINING WHEELS: Full hex dump of BLOCK_DATA payload for debugging
@@ -1251,6 +1257,16 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->info("[Solo READ] Template validated successfully in {} μs", 
                 validation_result.validation_time.count());
             
+            // Populate MiningTemplate::nChannelHeight metadata from the 12-byte prefix.
+            // This field is used for staleness display in Colin diagnostic — it does NOT
+            // affect block.nHeight (unified height baked into the 216-byte template bytes).
+            // channel_height from prefix = node's current channel tip; template targets channel_height + 1.
+            if (nChannelHeight > 0) {
+                m_template_interface->set_channel_height(nChannelHeight + 1);
+                m_logger->debug("[Solo BLOCK_DATA] ✓ MiningTemplate::nChannelHeight set to {} (metadata only)",
+                    nChannelHeight + 1);
+            }
+            
             // Get the validated template
             auto const* tmpl = m_template_interface->get_current_template();
             if (!tmpl) {
@@ -1336,23 +1352,37 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->debug("[Solo]   Push notifications or health monitor will provide height updates");
             }
             
-            // FEED: Dispatch to block handler
-            if (!m_set_block_handler) {
-                m_logger->error("[Solo FEED] CRITICAL: No block handler set - cannot process BLOCK_DATA");
-                m_logger->error("[Solo FEED]   - This indicates an initialization failure");
-                m_logger->error("[Solo FEED] Recovery: Block will be discarded, requesting new work");
-                if (connection) {
-                    auto work_payload = get_work();
-                    if (work_payload && !work_payload->empty()) {
-                        connection->transmit(work_payload);
-                    }
-                }
-                return;
-            }
             
-            m_logger->info("[Solo FEED] Dispatching validated template to workers (height: {}, nBits: 0x{:08x})", 
-                tmpl->block.nHeight, tmpl->nBits);
-            m_set_block_handler(tmpl->block, tmpl->nBits);
+            // TEMPLATE_ANCHOR re-push debounce: suppress if workers were fed < ANCHOR_REPUSH_DEBOUNCE_MS ago.
+            // The auto-feed from template_feed_handler (triggered inside read_template() above) already
+            // distributed this template to workers. Only re-push if enough time has passed since the
+            // last feed so workers have finished initializing from the previous distribution.
+            auto now_tp = std::chrono::steady_clock::now();
+            auto ms_since_last_feed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now_tp - m_last_template_feed_tp).count();
+
+            if (ms_since_last_feed < ANCHOR_REPUSH_DEBOUNCE_MS) {
+                m_logger->info("[TEMPLATE ANCHOR] ⏱ Re-push suppressed: last feed was {}ms ago (< {}ms debounce)",
+                    ms_since_last_feed, ANCHOR_REPUSH_DEBOUNCE_MS);
+                m_logger->info("[TEMPLATE ANCHOR]   Workers still initializing — chain tip update noted, will apply on next block");
+            } else {
+                if (!m_set_block_handler) {
+                    m_logger->error("[Solo FEED] CRITICAL: No block handler set - cannot process BLOCK_DATA");
+                    m_logger->error("[Solo FEED]   - This indicates an initialization failure");
+                    m_logger->error("[Solo FEED] Recovery: Block will be discarded, requesting new work");
+                    if (connection) {
+                        auto work_payload = get_work();
+                        if (work_payload && !work_payload->empty()) {
+                            connection->transmit(work_payload);
+                        }
+                    }
+                    return;
+                }
+                m_logger->info("[Solo FEED] Dispatching validated template to workers (height: {}, nBits: 0x{:08x})", 
+                    tmpl->block.nHeight, tmpl->nBits);
+                m_set_block_handler(tmpl->block, tmpl->nBits);
+                m_last_template_feed_tp = now_tp;
+            }
             
             // Log template interface statistics periodically
             auto stats = m_template_interface->get_stats();

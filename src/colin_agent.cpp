@@ -420,15 +420,27 @@ void ColinAgent::emit_report(
             m_logger->info("[Colin]    channel:        {} ({})", ts.channel, ts.channel == 1 ? "Prime" : "Hash");
             m_logger->info("[Colin]    age:            {}s", ts.age_seconds);
 
-            // Cross-check: compare template unified height with HeightTracker snapshot
+            // Cross-check: compare template unified height with HeightTracker snapshot.
+            // Normal: HeightTracker.unified_height + 1 == template.block.nHeight
+            // (HeightTracker tracks the current chain tip; template targets the NEXT block).
+            // Only warn when the difference is not exactly +1 (true drift).
             if (m_height_tracker)
             {
                 auto ht = m_height_tracker->GetSnapshot();
-                if (ht.unified_height != 0 && ts.unified_height != 0 &&
-                    ht.unified_height != ts.unified_height)
+                if (ht.unified_height != 0 && ts.unified_height != 0)
                 {
-                    m_logger->warn("[Colin]    ⚠️  HEIGHT DRIFT: HeightTracker.unified={} vs template.block.nHeight={}",
-                        ht.unified_height, ts.unified_height);
+                    int32_t height_drift = static_cast<int32_t>(ts.unified_height)
+                                        - static_cast<int32_t>(ht.unified_height + 1);
+                    if (height_drift != 0)
+                    {
+                        m_logger->warn("[Colin]    ⚠️  HEIGHT DRIFT: HeightTracker.unified={} vs template.block.nHeight={} (drift={}; expected 0)",
+                            ht.unified_height, ts.unified_height, height_drift);
+                    }
+                    else
+                    {
+                        m_logger->debug("[Colin]    HEIGHT_DRIFT: none (unified={} + 1 == template.nHeight={})",
+                            ht.unified_height, ts.unified_height);
+                    }
                 }
             }
 

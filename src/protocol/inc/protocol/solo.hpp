@@ -425,6 +425,12 @@ private:
     // Updated whenever SESSION_STATUS_ACK (0xD0DC / legacy 220) is received.
     ::LLP::SessionStatusAckFrame m_last_session_status_ack{};
     std::chrono::steady_clock::time_point m_last_session_status_ack_time{};
+
+    // ── TEMPLATE_ANCHOR debounce ─────────────────────────────────────────────
+    // Suppress TEMPLATE_ANCHOR re-push if workers were fed < ANCHOR_REPUSH_DEBOUNCE_MS ago.
+    // Workers need ~500ms each to initialize; set to 1500ms for 8-worker safety margin.
+    std::chrono::steady_clock::time_point m_last_template_feed_tp{};
+    static constexpr int64_t ANCHOR_REPUSH_DEBOUNCE_MS = 1500;
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION
