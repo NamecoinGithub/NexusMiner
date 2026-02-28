@@ -423,11 +423,26 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         }
 
         /* ========== REGISTER RECOVERY INITIATED HANDLER ========== */
-        /* Called by Solo push handler when a channel-stale GET_BLOCK recovery fires */
-        /* so Worker_manager can set recovery_pending and gate check_template_health(). */
+        /* Called by Solo push handler when a channel-stale GET_BLOCK recovery fires. */
+        /* Must stop workers now — they are still running on stale nonces. If we only */
+        /* set m_recovery_pending, workers stay busy and will not accept the recovery  */
+        /* template (set_block returns is_running()=false, workers_fed=0, doom loop).  */
+        /* Pattern mirrors validation_failure_handler: stop → recreate → request.     */
         solo_protocol->set_recovery_initiated_handler(
             [this]() {
                 mark_recovery_initiated("push_staleness");
+
+                // Stop stale workers so they are in a clean waiting state when the fresh template arrives
+                stop_all_workers();
+
+                // Recreate workers so they are alive and ready to receive set_block() from the recovery template
+                create_workers();
+
+                // Brief delay so newly spawned threads enter their receive loop before the GET_BLOCK response arrives
+                std::this_thread::sleep_for(std::chrono::milliseconds(WORKER_INIT_DELAY_MS));
+
+                // Request a fresh template
+                retry_template_request(true);
             }
         );
         m_logger->info("[Worker_manager] Recovery handler registered");
@@ -1408,8 +1423,6 @@ void Worker_manager::retry_template_request(bool bForce)
         // Forced recovery path: template was discarded + workers stopped.
         // A push was received recently but the template never arrived (e.g. node-side
         // 0-payload race).  We MUST request a new template regardless.
-        m_logger->warn("[Worker_manager] Recovery forced despite recent push — template was discarded, must re-request");
-        m_logger->warn("[Worker_manager]   Reason: real staleness detected after discard_template() + stop_all_workers()");
     }
 
     // Get protocol lane from connection
