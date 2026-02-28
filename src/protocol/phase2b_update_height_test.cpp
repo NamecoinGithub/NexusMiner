@@ -263,6 +263,39 @@ static void test_height_tracker_staleness_matches_expected()
 }
 
 // ============================================================================
+// Test 6: Node BLOCK_DATA metadata fields feed unified/channel/difficulty first,
+//         then template target is derived from channel_height + 1.
+// ============================================================================
+static void test_node_block_data_fields_drive_height_tracker()
+{
+    std::cout << "\nTest 6: Node BLOCK_DATA fields drive nBits, unified height, and channel target\n";
+
+    constexpr uint32_t UNIFIED  = 7000;
+    constexpr uint32_t CHANNEL  = 450;
+    constexpr uint32_t DIFF     = 0x1b01abcd;
+
+    HeightTracker tracker;
+    HashClientManager mgr;
+
+    // Mirrors Solo::update_height_state(...) for BLOCK_DATA metadata feed.
+    tracker.OnPushNotification(UNIFIED, CHANNEL, DIFF);
+    mgr.UpdateFromGetRound(UNIFIED, CHANNEL);
+
+    // Mirrors Solo::OnTemplateReceived(channel_height + 1) for template target.
+    tracker.OnTemplateReceived(CHANNEL_HASH, CHANNEL + 1);
+
+    auto snap = tracker.GetSnapshot();
+    auto [node_u, node_c] = mgr.GetNodeHeights();
+
+    print_test_result("HeightTracker unified_height from BLOCK_DATA metadata", snap.unified_height == UNIFIED);
+    print_test_result("HeightTracker difficulty_nbits from BLOCK_DATA metadata", snap.difficulty_nbits == DIFF);
+    print_test_result("HeightTracker channel_target == channel_height + 1", snap.channel_target == CHANNEL + 1);
+    print_test_result("template_unified_height captured from metadata unified_height", snap.template_unified_height == UNIFIED);
+    print_test_result("ClientChannelManager unified_height matches metadata", node_u == UNIFIED);
+    print_test_result("ClientChannelManager channel_height matches metadata", node_c == CHANNEL);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main()
@@ -276,6 +309,7 @@ int main()
     test_channel_manager_same_data_as_height_tracker();
     test_fork_detection_via_update_callback();
     test_height_tracker_staleness_matches_expected();
+    test_node_block_data_fields_drive_height_tracker();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
