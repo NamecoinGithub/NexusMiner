@@ -423,11 +423,26 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         }
 
         /* ========== REGISTER RECOVERY INITIATED HANDLER ========== */
-        /* Called by Solo push handler when a channel-stale GET_BLOCK recovery fires */
-        /* so Worker_manager can set recovery_pending and gate check_template_health(). */
+        /* Called by Solo push handler when a channel-stale GET_BLOCK recovery fires. */
+        /* Must stop workers now — they are still running on stale nonces. If we only */
+        /* set m_recovery_pending, workers stay busy and will not accept the recovery  */
+        /* template (set_block returns is_running()=false, workers_fed=0, doom loop).  */
+        /* Pattern mirrors validation_failure_handler: stop → recreate → request.     */
         solo_protocol->set_recovery_initiated_handler(
             [this]() {
                 mark_recovery_initiated("push_staleness");
+
+                // Stop stale workers so they are in a clean waiting state when the fresh template arrives
+                stop_all_workers();
+
+                // Recreate workers so they are alive and ready to receive set_block() from the recovery template
+                create_workers();
+
+                // Brief delay so newly spawned threads enter their receive loop before the GET_BLOCK response arrives
+                std::this_thread::sleep_for(std::chrono::milliseconds(WORKER_INIT_DELAY_MS));
+
+                // Request a fresh template
+                retry_template_request(true);
             }
         );
         m_logger->info("[Worker_manager] Recovery handler registered");
@@ -1384,6 +1399,19 @@ void Worker_manager::retry_template_request(bool bForce)
         mark_recovery_initiated("health_monitor_or_validation");
     }
 
+    // Push-cooldown guard (push-driven era): if the node pushed a template within the last
+    // 30 s (node's new AutoCoolDown) the node is operating normally — skip GET_BLOCK to
+    // avoid unnecessary polling. Only if no push has arrived for 30 s do we fall back.
+    if (solo_protocol->was_push_received_recently()) {
+        if (!bForce) {
+            // Periodic health-check path: push is coming, no need to poll.
+            m_logger->debug("[TemplateHealth] Push received recently — no GET_BLOCK needed; node is pushing normally");
+            return;
+        }
+        // Forced recovery path: template was discarded + workers stopped.
+        // A push was received recently but the template never arrived (e.g. node-side
+        // 0-payload race).  We MUST request a new template regardless.
+    }
     // No miner-side push-cooldown guard. Node's 2-second AutoCoolDown (server-side)
     // is the sole rate limiter for GET_BLOCK. Miner always transmits GET_BLOCK
     // on recovery paths; the node decides whether to serve or return an empty response.
