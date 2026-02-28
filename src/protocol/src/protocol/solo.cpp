@@ -1280,8 +1280,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Gap 1: Snapshot hashPrevBlock at template parse time (StakeMinter::hashLastBlock pattern).
             // A new template with a different hashPrevBlock signals that the chain tip has moved.
             // Detect tip-change BEFORE updating m_last_known_hash_prev_block (Change 1a).
+            bool tip_changed = false;
             if (m_last_known_hash_prev_block != uint1024_t(0)) {
                 if (tmpl->block.hashPrevBlock != m_last_known_hash_prev_block) {
+                    tip_changed = true;
                     auto format_hex8 = [](const uint1024_t& h) -> std::string {
                         auto bytes = h.GetBytes();
                         std::string s;
@@ -1374,12 +1376,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 auto now_tp = std::chrono::steady_clock::now();
                 auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
                     now_tp - m_last_template_feed_tp).count();
-                if (ms_since_last < ANCHOR_REPUSH_DEBOUNCE_MS) {
+                if (ms_since_last < ANCHOR_REPUSH_DEBOUNCE_MS && !tip_changed) {
                     m_logger->info("[TEMPLATE ANCHOR] ⏱ Re-push suppressed: last feed was {}ms ago (< {}ms debounce)",
                         ms_since_last, ANCHOR_REPUSH_DEBOUNCE_MS);
                     m_logger->info("[TEMPLATE ANCHOR]   Workers still initializing — chain tip noted, applies next block");
                 } else {
                     m_last_template_feed_tp = now_tp;
+                    if (ms_since_last < ANCHOR_REPUSH_DEBOUNCE_MS && tip_changed) {
+                        m_logger->info("[TEMPLATE ANCHOR] ⚡ Debounce bypassed: chain tip changed (hashPrevBlock)");
+                    }
                     m_logger->info("[Solo FEED] Dispatching validated template to workers (height: {}, nBits: 0x{:08x})",
                         tmpl->block.nHeight, tmpl->nBits);
                     m_set_block_handler(tmpl->block, tmpl->nBits);
