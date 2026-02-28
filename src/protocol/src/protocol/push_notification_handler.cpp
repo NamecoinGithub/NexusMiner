@@ -129,6 +129,15 @@ void PushNotificationHandler::handle_push_notification(
             }
             m_logger->info("[Solo Push] Requesting fresh {} template...", ch_name);
             request_work_fn();
+
+            // Advance channel_target so subsequent pushes with the same
+            // channel_height do not re-trigger the recovery/doom-loop.
+            // This must happen AFTER request_work_fn() so the first
+            // staleness detection still fires recovery + GET_BLOCK.
+            if (height_tracker) {
+                uint32_t next_expected_target = snap.channel_height + 1;
+                height_tracker->AdvanceChannelTarget(next_expected_target);
+            }
         }
         else
         {
