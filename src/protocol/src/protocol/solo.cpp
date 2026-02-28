@@ -2662,7 +2662,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // BLOCK_DATA metadata prefix.  This is the canonical source of truth for
         // staleness detection — validate_current_template() reads HeightTracker
         // exclusively (not block.nHeight, which is the unified height for ProofHash).
-        update_height_state(unified_height, channel_height, difficulty, HeightTracker::UpdateSource::PUSH);
+        // Use TEMPLATE source (not PUSH) so last_template_update timestamp is set,
+        // enabling the post-push guard in check_template_health() to suppress false-positive
+        // emergency stops when the GET_BLOCK response arrives after a push notification.
+        update_height_state(unified_height, channel_height, difficulty, HeightTracker::UpdateSource::TEMPLATE);
 
         // ── HeightTracker BLOCK_DATA feed (Step 2/2) ───────────────────────────────
         // Record channel_target = channel_height + 1 so is_template_stale() can
@@ -3600,6 +3603,13 @@ void Solo::update_height_state(uint32_t unified_height, uint32_t channel_height,
     if (source == HeightTracker::UpdateSource::PUSH) {
         m_height_tracker.OnPushNotification(unified_height, channel_height, difficulty_nbits);
     } else if (source == HeightTracker::UpdateSource::GET_ROUND) {
+        m_height_tracker.OnGetRound(unified_height, channel_height, difficulty_nbits);
+    } else if (source == HeightTracker::UpdateSource::TEMPLATE) {
+        // Template metadata has the same field semantics as GET_ROUND response.
+        // Route through OnGetRound() to update unified_height, channel_height, difficulty_nbits.
+        // OnTemplateReceived() is called separately by the handler (after read_template()
+        // succeeds) to set channel_target — see the STATELESS_GET_BLOCK handler in
+        // process_messages() and the legacy BLOCK_DATA handler.
         m_height_tracker.OnGetRound(unified_height, channel_height, difficulty_nbits);
     } else {
         m_logger->warn("[Solo] update_height_state: unexpected source {}, defaulting to GET_ROUND",

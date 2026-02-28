@@ -1829,6 +1829,20 @@ void Worker_manager::check_template_health()
     //     Either way the connection needs recovery — do NOT silently loop forever.
     if (template_age > TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
 
+        // Bug D fix: During an active recovery epoch, the miner is already waiting for a
+        // fresh GET_BLOCK response.  Discarding the template now makes recovery self-defeating:
+        // we'd have no template AND no recovery in progress simultaneously (doom-loop).
+        // Suppress the hard emergency discard while recovery is pending; the recovery window
+        // escalation logic (above) handles escalation if the window expires without a template.
+        if (m_recovery_pending) {
+            m_logger->debug("[Worker_manager] Emergency aging ({}s) suppressed during active recovery (epoch {})",
+                            template_age, m_recovery_epoch);
+            // Resend GET_BLOCK (non-force: respects RECOVERY_RESEND_INTERVAL_SECONDS rate-limit)
+            // so recovery keeps making progress without escalating to hard stop/restart.
+            retry_template_request(false);
+            return;
+        }
+
         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
         bool chain_advanced = ht_snap.is_template_stale();
 
