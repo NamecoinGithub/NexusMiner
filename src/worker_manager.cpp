@@ -1399,13 +1399,6 @@ void Worker_manager::retry_template_request(bool bForce)
         mark_recovery_initiated("health_monitor_or_validation");
     }
 
-    // No miner-side push-cooldown guard. Node's 2-second AutoCoolDown (server-side)
-    // is the sole rate limiter for GET_BLOCK requests. The miner always transmits
-    // GET_BLOCK on recovery paths; the node decides whether to serve or return an
-    // empty response. was_push_received_recently() was removed by PR #228 as it
-    // caused recovery doom loops by blocking GET_BLOCK when a push was received
-    // but the template was subsequently discarded as stale.
-
     // Get protocol lane from connection
     ProtocolLane lane = m_connection->get_protocol_lane();
     uint16_t remote_port = m_connection->remote_endpoint().port();
