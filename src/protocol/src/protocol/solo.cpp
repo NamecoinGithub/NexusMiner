@@ -1209,13 +1209,16 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo BLOCK_DATA] metadata prefix: nUnifiedHeight={} nChannelHeight={} nBits=0x{:08x}",
                        nUnifiedHeight, nChannelHeight, nBitsMeta);
 
-        // Update HeightTracker with the channel target derived from metadata.
+        // Feed the 3 critical fields (nBits, unified height, channel height) from NODE block
+        // data to HeightTracker and ClientChannelManager for fork detection / AutoCooldown.
         // nChannelHeight is the node's current channel tip; the template targets the NEXT block.
         // genesis (nChannelHeight == 0) is excluded — consistent with the stateless lane guard.
         if (nChannelHeight > 0) {
+            update_height_state(nUnifiedHeight, nChannelHeight, nBitsMeta,
+                                HeightTracker::UpdateSource::TEMPLATE);
             m_height_tracker.OnTemplateReceived(m_channel, nChannelHeight + 1);
-            m_logger->info("[Solo BLOCK_DATA] HeightTracker: channel_target set to {} (node channel_height={})",
-                nChannelHeight + 1, nChannelHeight);
+            m_logger->info("[Solo BLOCK_DATA] HeightTracker: channel_target set to {} (node channel_height={}, nBits=0x{:08x})",
+                nChannelHeight + 1, nChannelHeight, nBitsMeta);
         }
 
         // Strip the 12-byte prefix; pass only the 216-byte Block::Serialize() output to read_template
@@ -2652,16 +2655,19 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         uint32_t channel_height = bytes2uint(*packet.m_data, 4);
         uint32_t difficulty = bytes2uint(*packet.m_data, 8);
 
-        // Immediately update HeightTracker with the channel target derived from metadata.
+        // Feed the 3 critical fields (nBits, unified height, channel height) from NODE block
+        // data to HeightTracker and ClientChannelManager for fork detection / AutoCooldown.
         // channel_height is the node's current channel tip; the template targets the NEXT block.
         // This direct call ensures channel_target is always set in push-only mode (no GET_ROUND),
         // without depending on set_channel_height() which has guards that may skip the update.
         // genesis (channel_height == 0) is excluded intentionally — consistent with the
         // existing set_channel_height() guard that also skips the zero case.
         if (channel_height > 0) {
+            update_height_state(unified_height, channel_height, difficulty,
+                                HeightTracker::UpdateSource::TEMPLATE);
             m_height_tracker.OnTemplateReceived(m_channel, channel_height + 1);
-            m_logger->info("[Solo Stateless] HeightTracker: channel_target set to {} (node channel_height={})",
-                channel_height + 1, channel_height);
+            m_logger->info("[Solo Stateless] HeightTracker: channel_target set to {} (node channel_height={}, nBits=0x{:08x})",
+                channel_height + 1, channel_height, difficulty);
         }
 
         m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
@@ -3590,6 +3596,11 @@ void Solo::update_height_state(uint32_t unified_height, uint32_t channel_height,
     if (source == HeightTracker::UpdateSource::PUSH) {
         m_height_tracker.OnPushNotification(unified_height, channel_height, difficulty_nbits);
     } else if (source == HeightTracker::UpdateSource::GET_ROUND) {
+        m_height_tracker.OnGetRound(unified_height, channel_height, difficulty_nbits);
+    } else if (source == HeightTracker::UpdateSource::TEMPLATE) {
+        // Node block data (GET_BLOCK): feed the 3 critical fields (nBits, unified height,
+        // channel height) to HeightTracker.  OnTemplateReceived() follows separately to set
+        // channel_target and override the update source to TEMPLATE.
         m_height_tracker.OnGetRound(unified_height, channel_height, difficulty_nbits);
     } else {
         m_logger->warn("[Solo] update_height_state: unexpected source {}, defaulting to GET_ROUND",
