@@ -217,6 +217,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             // Feed to worker threads via set_block_handler
             if (m_set_block_handler) {
                 m_logger->info("[Solo] Distributing template to worker threads...");
+                m_last_template_feed_tp = std::chrono::steady_clock::now();
                 m_set_block_handler(tmpl.block, nBits);
                 m_logger->info("[Solo] ✓ Template distributed - workers should start mining");
             } else {
@@ -1211,7 +1212,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // BLOCK_DATA metadata prefix.  This is the canonical source of truth for
         // staleness detection — validate_current_template() reads HeightTracker
         // exclusively (not block.nHeight, which is the unified height for ProofHash).
-        update_height_state(nUnifiedHeight, nChannelHeight, nBitsMeta, HeightTracker::UpdateSource::PUSH);
+        // Use TEMPLATE source (not PUSH) so last_template_update timestamp is set,
+        // enabling the post-push guard in check_template_health() to suppress false-positive
+        // emergency stops when the GET_BLOCK response arrives after a push notification.
+        update_height_state(nUnifiedHeight, nChannelHeight, nBitsMeta, HeightTracker::UpdateSource::TEMPLATE);
 
         // ── HeightTracker BLOCK_DATA feed (Step 2/2) ───────────────────────────────
         // Record channel_target = channel_height + 1 so is_template_stale() can
@@ -1256,6 +1260,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             if (!tmpl) {
                 m_logger->error("[Solo FEED] No valid template available after validation");
                 return;
+            }
+
+            // Bug 4 fix: Update nChannelHeight in the template interface so the Colin
+            // diagnostic can display the correct channel_height.  Must be called AFTER
+            // read_template() so the template state is not EMPTY.  Internally calls
+            // HeightTracker::OnTemplateReceived() to set channel_target (idempotent with
+            // the earlier direct call above).
+            // nChannelHeight == 0 means genesis / not yet known — skip to avoid setting
+            // an incorrect channel_height of 1 in the template interface.
+            if (nChannelHeight > 0) {
+                m_template_interface->set_channel_height(nChannelHeight + 1);
             }
             
             // Update diagnostic height tracker; the metadata prefix gives us the authoritative
@@ -1349,10 +1364,27 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 }
                 return;
             }
-            
-            m_logger->info("[Solo FEED] Dispatching validated template to workers (height: {}, nBits: 0x{:08x})", 
-                tmpl->block.nHeight, tmpl->nBits);
-            m_set_block_handler(tmpl->block, tmpl->nBits);
+
+            // TEMPLATE_ANCHOR debounce: suppress re-push if read_template() already fired
+            // the template_feed_handler (which calls m_set_block_handler) within the last
+            // ANCHOR_REPUSH_DEBOUNCE_MS ms.  Double-feeds cause partial worker initialisation
+            // because some workers receive the new template while others are still computing
+            // starting multiples for the previous one.
+            {
+                auto now_tp = std::chrono::steady_clock::now();
+                auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now_tp - m_last_template_feed_tp).count();
+                if (ms_since_last < ANCHOR_REPUSH_DEBOUNCE_MS) {
+                    m_logger->info("[TEMPLATE ANCHOR] ⏱ Re-push suppressed: last feed was {}ms ago (< {}ms debounce)",
+                        ms_since_last, ANCHOR_REPUSH_DEBOUNCE_MS);
+                    m_logger->info("[TEMPLATE ANCHOR]   Workers still initializing — chain tip noted, applies next block");
+                } else {
+                    m_last_template_feed_tp = now_tp;
+                    m_logger->info("[Solo FEED] Dispatching validated template to workers (height: {}, nBits: 0x{:08x})",
+                        tmpl->block.nHeight, tmpl->nBits);
+                    m_set_block_handler(tmpl->block, tmpl->nBits);
+                }
+            }
             
             // Log template interface statistics periodically
             auto stats = m_template_interface->get_stats();
