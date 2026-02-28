@@ -513,24 +513,9 @@ network::Shared_payload Solo::login(Login_handler handler)
 
 network::Shared_payload Solo::get_work()
 {
-    // GET_BLOCK rate limiter — miner-side 2s guard matches node's 2-second rate limit.
-    //
-    // Node enforces 2-second minimum between GET_BLOCK requests. Miner matches this
-    // to avoid unnecessary empty responses.
-    constexpr auto GET_BLOCK_MIN_INTERVAL = std::chrono::milliseconds(2000);
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - m_last_get_block_time);
-
-    if (m_last_get_block_time != std::chrono::steady_clock::time_point{} &&
-        elapsed < GET_BLOCK_MIN_INTERVAL)
-    {
-        m_logger->info("[Solo] GET_BLOCK rate-limited ({}ms < {}ms) — will retry on next push",
-                       elapsed.count(), GET_BLOCK_MIN_INTERVAL.count());
-        return network::Shared_payload{};  // Return empty — caller checks for null/empty
-    }
-
-    m_last_get_block_time = now;  // Update timestamp before sending
+    /// Request a fresh mining template via GET_BLOCK.
+    /// Authentication-guarded; returns null if not authenticated or reward not bound.
+    /// No miner-side rate limiting — the node's 2-second AutoCoolDown enforces the server-side floor.
 
     /* Validate prerequisites */
     if (!m_authenticated) {
@@ -569,23 +554,6 @@ network::Shared_payload Solo::get_work()
     }
     
     return payload;     
-}
-
-network::Shared_payload Solo::get_work_immediate()
-{
-    // Bypass miner-side rate limiter for recovery — node's 2-second limit allows rapid recovery GET_BLOCKs.
-    // Reset the rate-limit clock so the next get_work() call goes through immediately.
-    m_last_get_block_time = std::chrono::steady_clock::time_point{};
-    m_logger->info("[Solo] GET_BLOCK immediate (tip_moved bypass) — node's 2-second limit allows immediate recovery");
-    return get_work();
-}
-
-void Solo::bypass_get_block_rate_limit_once()
-{
-    // One-shot rate-limit bypass for recovery scenarios. Node allows GET_BLOCK every 2 seconds,
-    // so this bypass is only needed for immediate first-request after lane recovery.
-    m_last_get_block_time = std::chrono::steady_clock::time_point{};
-    m_logger->info("[Solo] GET_BLOCK rate-limit one-shot bypass armed (SIM Link lane recovery)");
 }
 
 network::Shared_payload Solo::send_get_round()
@@ -2527,10 +2495,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     }
     else if (matches_opcode(Packet::PRIME_BLOCK_AVAILABLE))
     {
-        // Stamp push-received time immediately on every push, regardless of whether
-        // GET_BLOCK is sent.  This keeps was_push_received_recently() accurate when
-        // the rate-limiter suppresses GET_BLOCK (e.g. tip_moved during a rate-limit window).
-        m_last_push_received_time = std::chrono::steady_clock::now();
         m_push_handler->handle_push_notification(
             packet, mining::CHANNEL_PRIME, m_protocol_lane,
             m_template_interface.get(),
@@ -2539,15 +2503,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
             [&connection, this]() {
-                // Snapshot staleness BEFORE calling get_work_immediate() so we capture
+                // Snapshot staleness BEFORE calling get_work() so we capture
                 // the state that triggered this request_work_fn invocation.
                 bool is_stale_recovery = m_height_tracker.GetSnapshot().is_template_stale();
                 if (connection) {
-                    auto work_payload = get_work_immediate();
+                    auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
                     } else {
-                        m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
+                        m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
                     }
                     // On stateless lane, also re-send MINER_READY to ensure push subscription
                     // is maintained when requesting a fresh template (channel_advanced staleness).
@@ -2569,10 +2533,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     }
     else if (matches_opcode(Packet::HASH_BLOCK_AVAILABLE))
     {
-        // Stamp push-received time immediately on every push, regardless of whether
-        // GET_BLOCK is sent.  This keeps was_push_received_recently() accurate when
-        // the rate-limiter suppresses GET_BLOCK (e.g. tip_moved during a rate-limit window).
-        m_last_push_received_time = std::chrono::steady_clock::now();
         m_push_handler->handle_push_notification(
             packet, mining::CHANNEL_HASH, m_protocol_lane,
             m_template_interface.get(),
@@ -2581,15 +2541,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
             [&connection, this]() {
-                // Snapshot staleness BEFORE calling get_work_immediate() so we capture
+                // Snapshot staleness BEFORE calling get_work() so we capture
                 // the state that triggered this request_work_fn invocation.
                 bool is_stale_recovery = m_height_tracker.GetSnapshot().is_template_stale();
                 if (connection) {
-                    auto work_payload = get_work_immediate();
+                    auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
                     } else {
-                        m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
+                        m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
                     }
                     // On stateless lane, also re-send MINER_READY to ensure push subscription
                     // is maintained when requesting a fresh template (channel_advanced staleness).
@@ -2871,10 +2831,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->warn("[Solo Stateless] ⚠️  channel_height==0 in metadata — skipping set_channel_height()");
             }
             
-            // Stamp last-push-received time for push-cooldown guard in retry_template_request().
-            // Allows the worker manager to skip GET_BLOCK polling while the node is pushing normally.
-            m_last_push_received_time = std::chrono::steady_clock::now();
-            
             // Template is now ready for mining!
             m_logger->info("[Solo Stateless] 🎯 Template ready for mining!");
             m_logger->info("[Solo Stateless] Mining for block height: {} (channel: {})",
@@ -2966,11 +2922,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     m_last_keepalive_prevhash_lo32, ack.hash_tip_lo32, ack.fork_score);
 
                 // Request a fresh template immediately to resolve the fork.
-                // get_work_immediate() bypasses the miner-side rate limiter;
-                // node's 2-second limit allows rapid recovery.
+                // Node's 2-second AutoCoolDown is the sole rate limiter.
                 if(connection)
                 {
-                    auto work_payload = get_work_immediate();
+                    auto work_payload = get_work();
                     if(work_payload && !work_payload->empty())
                     {
                         connection->transmit(work_payload);
