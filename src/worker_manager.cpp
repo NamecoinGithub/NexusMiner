@@ -26,7 +26,6 @@
 #include <iomanip>
 #include <sstream>
 #include <deque>
-#include <thread>
 
 namespace nexusminer
 {
@@ -82,12 +81,6 @@ namespace {
     // so it can serve as a template fallback during recovery.
     constexpr uint32_t DEGRADED_SECONDARY_RETRY_DELAY_SECONDS = 5;
 
-    // Brief delay (milliseconds) after create_workers() before issuing GET_BLOCK.
-    // Allows newly spawned worker threads to enter their receive loop before the node
-    // responds to our GET_BLOCK with a fresh template, preventing set_block() from
-    // racing thread initialization.  500ms gives workers adequate time on all platforms;
-    // 50ms was insufficient on slow platforms, causing workers_fed==0 and mini doom-loops.
-    constexpr int WORKER_INIT_DELAY_MS = 500;
 }
 
 Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Config& config, 
@@ -1781,13 +1774,8 @@ void Worker_manager::check_template_health()
             template_interface->discard_template("Recovery timeout: " + std::to_string(recovery_elapsed_s) +
                                                  "s > " + std::to_string(effective_recovery_window) + "s window");
             stop_all_workers();
-            // Bug 3 fix: Recreate workers immediately after stopping them so they are alive
-            // and ready to receive the incoming template from retry_template_request().
-            create_workers();
-            // Recovery Tuning 2: 500ms gives workers adequate time to enter their receive loop
-            // before the node responds to our GET_BLOCK with a fresh template, preventing
-            // set_block() from racing thread initialization and causing workers_fed==0 mini doom-loops.
-            std::this_thread::sleep_for(std::chrono::milliseconds(WORKER_INIT_DELAY_MS));
+            // Workers are recreated just-in-time by the set_block_handler degraded-mode guard
+            // when the recovery template arrives. Avoid eager restart and I/O-thread blocking.
             m_last_escalation_at = std::chrono::steady_clock::now();  // Change B: record escalation time
             // Recovery Tuning 3: Start a fresh epoch immediately so the next health-monitor tick
             // sees a clean recovery window clock — preventing immediate re-escalation.
