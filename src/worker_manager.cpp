@@ -1308,16 +1308,23 @@ void Worker_manager::process_secondary_data(network::Shared_payload&& receive_bu
         return;
     }
 
-    while (!m_secondary_rx_accumulator.empty())
-    {
-        std::vector<uint8_t> buffer_view(m_secondary_rx_accumulator.begin(),
-                                         m_secondary_rx_accumulator.end());
-        auto buffer_shared = std::make_shared<network::Payload>(std::move(buffer_view));
+    if (m_secondary_rx_accumulator.empty())
+        return;
 
+    // Build the buffer once (single allocation) and advance parse_offset
+    // instead of re-copying the accumulator on every iteration.
+    std::vector<uint8_t> buffer_view(m_secondary_rx_accumulator.begin(),
+                                     m_secondary_rx_accumulator.end());
+    auto buffer_shared = std::make_shared<network::Payload>(std::move(buffer_view));
+    std::size_t parse_offset = 0;
+    std::size_t total_consumed = 0;
+
+    while (parse_offset < buffer_shared->size())
+    {
         ParseResult parse_result;
         std::size_t bytes_consumed = 0;
         auto packet = extract_packet_from_buffer_with_result(
-            buffer_shared, bytes_consumed, 0, lane, parse_result);
+            buffer_shared, bytes_consumed, parse_offset, lane, parse_result);
 
         if (parse_result == ParseResult::NEED_MORE_DATA)
         {
@@ -1335,8 +1342,8 @@ void Worker_manager::process_secondary_data(network::Shared_payload&& receive_bu
         }
         else
         {
-            m_secondary_rx_accumulator.erase(m_secondary_rx_accumulator.begin(),
-                                              m_secondary_rx_accumulator.begin() + bytes_consumed);
+            parse_offset  += bytes_consumed;
+            total_consumed += bytes_consumed;
             if (packet.m_header == Packet::PING)
             {
                 m_logger->trace("[SIM Link RX] PING on secondary lane");
@@ -1346,6 +1353,15 @@ void Worker_manager::process_secondary_data(network::Shared_payload&& receive_bu
                 m_secondary_protocol->process_messages(std::move(packet), m_secondary_connection);
             }
         }
+    }
+
+    // Erase all consumed bytes from the accumulator in one shot
+    if (total_consumed > 0)
+    {
+        m_secondary_rx_accumulator.erase(m_secondary_rx_accumulator.begin(),
+                                          m_secondary_rx_accumulator.begin() + total_consumed);
+        m_logger->trace("[SIM Link RX] Total consumed {} bytes, {} bytes remaining in accumulator",
+                        total_consumed, m_secondary_rx_accumulator.size());
     }
 }
 
