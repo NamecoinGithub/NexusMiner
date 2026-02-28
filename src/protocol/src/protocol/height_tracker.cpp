@@ -30,6 +30,18 @@ void HeightTracker::OnPushNotification(uint32_t unified_height,
     else if (m_state.channel == 2)
         m_state.hash_height = channel_height;
 
+    // When the push advances channel_height to or past the current
+    // channel_target, advance channel_target to channel_height + 1.
+    // This prevents is_template_stale() from firing a false positive
+    // in the push notification handler — the push IS the signal that
+    // a new block was found, and the GET_BLOCK response (via
+    // is_tip_moved()) will deliver the fresh template that confirms
+    // the target via OnTemplateReceived().
+    if (channel_height > 0 && m_state.channel_target > 0 &&
+        channel_height >= m_state.channel_target) {
+        m_state.channel_target = channel_height + 1;
+    }
+
     m_state.last_update_source = UpdateSource::PUSH;
     m_state.last_height_update = std::chrono::steady_clock::now();
 }

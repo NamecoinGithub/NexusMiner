@@ -4,19 +4,19 @@
  *
  * Tests:
  *  1. Push update + template received produces expected drift delta 0
- *  2. Channel height advanced makes IsTemplateStale true
+ *  2. Push advancing channel_height past channel_target advances channel_target (no false staleness)
  *  3. Snapshot is consistent after concurrent-style updates
  *  4. ExplainMismatch returns empty string when heights are consistent
  *  5. ExplainMismatch reports drift when template target differs from expected
  *  6. ExplainMismatch reports staleness when channel height >= template target
  *  7. GET_ROUND update sets source correctly
- *  8. Channel height advancing DOES make template stale
+ *  8. Push channel advance advances channel_target (prevents false staleness)
  *  9. is_tip_moved() detects unified tip advance (Phase 3A: tip_moved refresh reason)
  * 10. is_tip_moved() resets to false after new template received
  * 11. Difficulty from push updates is reflected in HeightTracker snapshot
  * 18. Push updates prime_height for Prime channel (no keepalive regression)
  * 19. Push updates hash_height for Hash channel (no keepalive regression)
- * 20. Production regression: push advances prime_height past keepalive value
+ * 20. Production regression: push advances channel_target (no false staleness)
  */
 
 #include "protocol/height_tracker.hpp"
@@ -76,29 +76,36 @@ void test_push_then_template_no_drift() {
 }
 
 // ============================================================================
-// Test 2: Channel height advanced makes IsTemplateStale true
+// Test 2: Push advancing channel_height past channel_target advances
+//         channel_target (prevents false-positive staleness after push)
 // ============================================================================
 void test_channel_height_advance_makes_stale() {
-    std::cout << "\nTest 2: Channel height advance → IsTemplateStale true\n";
+    std::cout << "\nTest 2: Push channel advance → channel_target advanced, NOT stale\n";
     HeightTracker tracker;
 
     // Template was for height 101
     tracker.OnPushNotification(5000, 100, 0x1d00ffff);
     tracker.OnTemplateReceived(1, 101);
 
-    // Another miner finds the block; push notifies new channel height 101
+    // Another miner finds the block; push notifies new channel height 101.
+    // OnPushNotification now advances channel_target to 102 (channel_height+1)
+    // because channel_height(101) >= channel_target(101).
     tracker.OnPushNotification(5001, 101, 0x1d00ffff);
 
     auto snap = tracker.GetSnapshot();
 
-    // channel_height (101) >= channel_target (101) → stale
-    print_test_result("is_template_stale() == true after channel advance",
-                      snap.is_template_stale());
+    // channel_target was advanced to 102 → NOT stale (101 < 102)
+    print_test_result("is_template_stale() == false after push channel advance",
+                      !snap.is_template_stale());
 
-    // ExplainMismatch should report STALE
+    // channel_target updated to channel_height + 1
+    print_test_result("channel_target advanced to 102",
+                      snap.channel_target == 102);
+
+    // ExplainMismatch should be empty (heights are consistent)
     std::string msg = tracker.ExplainMismatch();
-    print_test_result("ExplainMismatch() mentions STALE",
-                      msg.find("STALE") != std::string::npos);
+    print_test_result("ExplainMismatch() is empty after push advance",
+                      msg.empty());
 }
 
 // ============================================================================
@@ -221,10 +228,11 @@ void test_unified_advance_does_not_make_stale() {
 }
 
 // ============================================================================
-// Test 8: Channel height advancing DOES make template stale
+// Test 8: Channel height advancing via push advances channel_target
+//         (prevents false-positive staleness in push notification handler)
 // ============================================================================
 void test_channel_advance_makes_stale() {
-    std::cout << "\nTest 8: Channel height advancing → stale\n";
+    std::cout << "\nTest 8: Channel height advancing via push → channel_target advanced\n";
     HeightTracker tracker;
 
     // Initial state: channel at 100, template for 101
@@ -232,18 +240,23 @@ void test_channel_advance_makes_stale() {
     tracker.OnTemplateReceived(1, 101);
 
     // Channel height advances to 101 (another miner found the block)
+    // OnPushNotification advances channel_target to 102
     tracker.OnPushNotification(5001, 101, 0x1d00ffff);
 
     auto snap = tracker.GetSnapshot();
 
-    // Template is stale: channel_height (101) >= channel_target (101)
-    print_test_result("is_template_stale() == true after channel advance",
-                      snap.is_template_stale());
+    // NOT stale: channel_target advanced to 102 (channel_height 101 < 102)
+    print_test_result("is_template_stale() == false after push channel advance",
+                      !snap.is_template_stale());
 
-    // ExplainMismatch should mention STALE
+    // channel_target advanced
+    print_test_result("channel_target == 102 after push advance",
+                      snap.channel_target == 102);
+
+    // ExplainMismatch empty (consistent)
     std::string msg = tracker.ExplainMismatch();
-    print_test_result("ExplainMismatch() mentions STALE after channel advance",
-                      msg.find("STALE") != std::string::npos);
+    print_test_result("ExplainMismatch() is empty after push channel advance",
+                      msg.empty());
 }
 
 // ============================================================================
@@ -404,19 +417,20 @@ void test_post_push_timestamps_ordered_correctly() {
 
 // ============================================================================
 // Test 13: Pre-push guard — template received BEFORE a push has
-//          last_template_update < last_height_update, so check_template_health
-//          correctly identifies it as a pre-push (genuinely stale) template
-//          and does NOT skip stop_all_workers.
+//          last_template_update < last_height_update.  But with the
+//          channel_target advance fix, is_template_stale() returns false
+//          because OnPushNotification advances channel_target to 102.
 // ============================================================================
 void test_pre_push_template_identified_correctly() {
-    std::cout << "\nTest 13: Pre-push guard — last_template_update < last_height_update (pre-push template)\n";
+    std::cout << "\nTest 13: Pre-push guard — push advances channel_target (no false staleness)\n";
     HeightTracker tracker;
 
     // Step 1: Template received first (targeting 101, channel at 100).
     tracker.OnPushNotification(5000, 100, 0x1d00ffff);
     tracker.OnTemplateReceived(1, 101);
 
-    // Step 2: A later push arrives (channel advances to 101 — template is now stale).
+    // Step 2: A later push arrives (channel advances to 101).
+    // OnPushNotification advances channel_target to 102.
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
     tracker.OnPushNotification(5001, 101, 0x1d00ffff);
     auto snap = tracker.GetSnapshot();
@@ -425,9 +439,13 @@ void test_pre_push_template_identified_correctly() {
     print_test_result("last_template_update < last_height_update (pre-push template)",
                       snap.last_template_update < snap.last_height_update);
 
-    // is_template_stale() must be true: channel_height (101) >= channel_target (101).
-    print_test_result("is_template_stale() == true (pre-push, channel_height == channel_target)",
-                      snap.is_template_stale());
+    // is_template_stale() must be false: channel_target advanced to 102.
+    print_test_result("is_template_stale() == false (channel_target advanced to 102)",
+                      !snap.is_template_stale());
+
+    // channel_target was advanced by the push
+    print_test_result("channel_target == 102 after push advance",
+                      snap.channel_target == 102);
 }
 
 // ============================================================================
@@ -542,6 +560,8 @@ void test_push_updates_hash_height() {
 
 // ============================================================================
 // Test 20: Production regression (prime drift from 2331124 to 2331126)
+//          Push advances channel_height past channel_target → channel_target
+//          is advanced to channel_height + 1, not stale.
 // ============================================================================
 void test_push_keepalive_no_regression() {
     std::cout << "\nTest 20: Production regression (prime drift from 2331124 to 2331126)\n";
@@ -552,7 +572,64 @@ void test_push_keepalive_no_regression() {
     auto snap = tracker.GetSnapshot();
     print_test_result("channel_height == 2331126", snap.channel_height == 2331126);
     print_test_result("prime_height == 2331126 (no drift)", snap.prime_height == 2331126);
-    print_test_result("is_template_stale (2331126 >= 2331125)", snap.is_template_stale());
+    // Push advanced channel_target to 2331127 (channel_height+1)
+    print_test_result("channel_target advanced to 2331127", snap.channel_target == 2331127);
+    print_test_result("is_template_stale() == false after push advance", !snap.is_template_stale());
+}
+
+// ============================================================================
+// Test 21: Push channel_target advance — comprehensive scenarios
+//          Verifies OnPushNotification advances channel_target correctly
+//          and that is_tip_moved() still triggers GET_BLOCK via the
+//          push notification handler (not is_template_stale).
+// ============================================================================
+void test_push_channel_target_advance_comprehensive() {
+    std::cout << "\nTest 21: Push channel_target advance — comprehensive scenarios\n";
+    HeightTracker tracker;
+
+    // Scenario A: channel_target not set yet (0) — push should NOT advance it
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    auto snap = tracker.GetSnapshot();
+    print_test_result("channel_target stays 0 when not set",
+                      snap.channel_target == 0);
+    print_test_result("is_template_stale() == false (channel_target==0)",
+                      !snap.is_template_stale());
+
+    // Set template target
+    tracker.OnTemplateReceived(1, 101);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_target == 101 after template",
+                      snap.channel_target == 101);
+
+    // Scenario B: push with channel_height < channel_target — no advance
+    tracker.OnPushNotification(5005, 100, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_target unchanged when channel_height < target (100 < 101)",
+                      snap.channel_target == 101);
+    print_test_result("is_template_stale() == false (100 < 101)",
+                      !snap.is_template_stale());
+
+    // Scenario C: push with channel_height == channel_target — advance
+    tracker.OnPushNotification(5010, 101, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_target advanced to 102 when channel_height == target",
+                      snap.channel_target == 102);
+    print_test_result("is_template_stale() == false after advance (101 < 102)",
+                      !snap.is_template_stale());
+
+    // Scenario D: is_tip_moved() should be true (unified advanced past template_unified)
+    // template_unified_height was captured as 5005 (from the last OnTemplateReceived when unified was 5005)
+    print_test_result("is_tip_moved() == true (unified advanced)",
+                      snap.is_tip_moved());
+
+    // Scenario E: push with channel_height > channel_target (skip)
+    tracker.OnTemplateReceived(1, 102);  // Reset target to 102
+    tracker.OnPushNotification(5020, 105, 0x1d00ffff);  // Skip ahead
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_target advanced to 106 after multi-skip",
+                      snap.channel_target == 106);
+    print_test_result("is_template_stale() == false after multi-skip (105 < 106)",
+                      !snap.is_template_stale());
 }
 
 // ============================================================================
@@ -583,6 +660,7 @@ int main() {
     test_push_updates_per_channel_heights();
     test_push_updates_hash_height();
     test_push_keepalive_no_regression();
+    test_push_channel_target_advance_comprehensive();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

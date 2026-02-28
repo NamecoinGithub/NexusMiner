@@ -230,8 +230,9 @@ static void test_fork_detection_via_update_callback()
 // ============================================================================
 // Test 5: validate_current_template uses HeightTracker (not ClientChannelManager)
 //         Verified indirectly: HeightTracker::Snapshot::is_template_stale() correctly
-//         signals staleness after push updates, while ClientChannelManager heights
-//         are only informational.
+//         signals staleness decisions, while ClientChannelManager heights
+//         are only informational.  Push notifications now advance channel_target
+//         to prevent false-positive staleness.
 // ============================================================================
 static void test_height_tracker_staleness_matches_expected()
 {
@@ -248,19 +249,22 @@ static void test_height_tracker_staleness_matches_expected()
     print_test_result("Not stale when channel_height(100) < channel_target(101)",
         !snap.is_template_stale());
 
-    // Push update: channel_height advances to 101 (someone else mined that block)
+    // Push update: channel_height advances to 101 (someone else mined that block).
+    // OnPushNotification advances channel_target to 102.
     tracker.OnPushNotification(5001, 101, 0x1a0abc12);
     snap = tracker.GetSnapshot();
-    print_test_result("Stale when channel_height(101) >= channel_target(101)",
-        snap.is_template_stale());
+    print_test_result("Not stale after push (channel_target advanced to 102)",
+        !snap.is_template_stale());
+    print_test_result("channel_target == 102 after push advance",
+        snap.channel_target == 102);
 
-    // A unified-only advance does NOT change the staleness (already stale from channel advance)
+    // A unified-only advance with same channel_height does NOT change staleness
     tracker.OnPushNotification(5002, 101, 0x1a0abc12);
     snap = tracker.GetSnapshot();
-    print_test_result("Stale status unchanged by unified-only advance (was already stale)",
-        snap.is_template_stale());  // still stale: channel_height(101) >= channel_target(101)
+    print_test_result("Not stale after unified-only advance (channel_height < channel_target)",
+        !snap.is_template_stale());
 
-    // Reset: new template with channel_target = 102
+    // New template with channel_target = 102 (confirms the push-advanced target)
     tracker.OnTemplateReceived(CHANNEL_PRIME, 102);
     snap = tracker.GetSnapshot();
     print_test_result("Not stale with new template target(102) > channel_height(101)",
