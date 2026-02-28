@@ -410,8 +410,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // Stop all workers
                     stop_all_workers();
                     
-                    // Recreate workers so they are alive when the recovery template arrives
-                    create_workers();
+                    // NOTE: create_workers() intentionally omitted here.
+                    // Worker recreation is handled by recovery_initiated_handler (for push staleness)
+                    // or by the block distribution handler's degraded-mode guard when the recovery
+                    // template arrives. Calling create_workers() here causes duplicate workers when
+                    // both handlers fire for the same staleness event.
                     
                     // Request fresh template
                     retry_template_request(true);
@@ -516,6 +519,17 @@ void Worker_manager::create_stats_printers()
 
 void Worker_manager::create_workers()
 {
+    // Safety: clear any pre-existing workers before creating new ones to prevent duplication.
+    // create_workers() is only ever called when a fresh worker set is needed (startup, or after
+    // stop_all_workers()). If called while workers already exist (e.g. due to duplicate handler
+    // invocations for the same staleness event), discard stale workers rather than duplicating them.
+    if (!m_workers.empty()) {
+        m_logger->warn("[Worker_manager] create_workers(): clearing {} pre-existing workers to prevent duplication",
+                       m_workers.size());
+        for (auto& w : m_workers) { w.reset(); }
+        m_workers.clear();
+    }
+
     auto internal_id = 0U;
     for(auto& worker_config : m_config.get_worker_config())
     {
