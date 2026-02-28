@@ -135,7 +135,8 @@ void PushNotificationHandler::handle_push_notification(
             // This must happen AFTER request_work_fn() so the first
             // staleness detection still fires recovery + GET_BLOCK.
             if (height_tracker) {
-                height_tracker->AdvanceChannelTarget(snap.channel_height + 1);
+                uint32_t next_expected_target = snap.channel_height + 1;
+                height_tracker->AdvanceChannelTarget(next_expected_target);
             }
         }
         else
