@@ -12,8 +12,9 @@ namespace nexusminer
 static constexpr uint32_t WARN_CONNECTION_RETRIES = 100;
 static constexpr uint64_t WARN_TEMPLATE_AGE_SECONDS = 150;
 static constexpr int64_t WARN_KEEPALIVE_ACK_STALE_SECONDS = 300;  // 5 min without keepalive ACK
-static constexpr int32_t WARN_CANONICAL_DRIFT_THRESHOLD = 3;      // blocks ahead before warning
-static constexpr int64_t WARN_DIAGNOSTIC_STALE_SECONDS = 120;     // 2 min without any diagnostic update
+static constexpr int32_t WARN_CANONICAL_DRIFT_THRESHOLD = 500;    // blocks ahead before warning
+static constexpr uint64_t WARN_DIAGNOSTIC_STALE_SECONDS = 180;    // 3 min without any diagnostic update
+static constexpr uint64_t WARN_DIAGNOSTIC_INIT_GRACE_SECONDS = 30; // grace period before warning about uninit diagnostic
 
 ColinAgent::ColinAgent(
     std::shared_ptr<asio::io_context> io_context,
@@ -132,35 +133,6 @@ std::string ColinAgent::check_tip_sync(uint32_t miner_prevhash_lo32, uint32_t no
            " vs node_tip_lo32=0x" + buf_n +
            " — miner may be on stale/forked tip";
 }
-
-std::string ColinAgent::check_canonical_drift(int32_t drift)
-{
-    if (drift <= WARN_CANONICAL_DRIFT_THRESHOLD)
-        return {};  // drift within tolerance — canonical either caught up or slightly behind
-    return "HeightDrift +" + std::to_string(drift) +
-           " — canonical BLOCK_DATA path lagging behind push/round";
-}
-
-std::string ColinAgent::check_diagnostic_staleness(int64_t age_seconds)
-{
-    if (age_seconds < WARN_DIAGNOSTIC_STALE_SECONDS)
-        return {};  // fresh enough
-    return "No diagnostic update (push/round/keepalive) for " +
-           std::to_string(age_seconds) + "s — all observer sources may be stale";
-// ── New hooks using canonical / diagnostic split ──────────────────────────────
-
-// Maximum expected inter-channel skew (blocks). Unified height and channel
-// target are different height dimensions, so a non-zero drift is normal.
-// Warn only when drift exceeds this threshold, which suggests a real anomaly.
-static constexpr int32_t WARN_CANONICAL_DRIFT_THRESHOLD = 500;
-
-// Warn when diagnostic has received no data for this many seconds.
-static constexpr uint64_t WARN_DIAGNOSTIC_STALE_SECONDS = 180;
-
-// Grace period: don't warn about uninitialised diagnostic observer before
-// this many seconds have elapsed, since the first keepalive ACK / push
-// arrives within the first few seconds of a session.
-static constexpr uint64_t WARN_DIAGNOSTIC_INIT_GRACE_SECONDS = 30;
 
 std::string ColinAgent::check_canonical_drift(int32_t drift)
 {
@@ -519,7 +491,7 @@ void ColinAgent::emit_report(
             auto diag_latest = diag.latest_received_at();
             auto diag_age_s = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - diag_latest).count();
-            auto w = check_diagnostic_staleness(diag_age_s);
+            auto w = check_diagnostic_freshness(static_cast<uint64_t>(diag_age_s), diag.is_initialized());
             if (!w.empty()) {
                 m_logger->warn("[Colin]    DiagStale │ ⚠ no diagnostic update for {}s", diag_age_s);
                 warnings.push_back(w);

@@ -39,14 +39,6 @@ namespace protocol {
  *
  * Thread-safe: all public methods are protected by an internal mutex.
  * Snapshot() returns a plain-struct copy for lockless reads by callers.
- *
- * Architecture:
- *   CanonicalChainState  — updated ONLY by BLOCK_DATA / STATELESS_GET_BLOCK receipts.
- *                          Drives all mining decisions (template validation, staleness,
- *                          worker dispatch). Advances monotonically.
- *   DiagnosticObserverState — updated by push notifications, keepalive ACKs, and
- *                          GET_ROUND responses. Read-only for Colin diagnostics.
- *                          NEVER drives mining decisions.
  */
 class HeightTracker {
 public:
@@ -77,82 +69,6 @@ public:
         uint32_t canonical_difficulty_nbits{0}; ///< nBits from BLOCK_DATA metadata prefix
         uint32_t canonical_prime_height{0};     ///< Prime channel height (canonical, from BLOCK_DATA when channel==1)
         uint32_t canonical_hash_height{0};      ///< Hash channel height (canonical, from BLOCK_DATA when channel==2)
-        uint32_t canonical_channel_target{0};   ///< channel_height + 1 (the block we're mining for)
-        uint1024_t canonical_hash_prev_block{}; ///< hashPrevBlock from BLOCK_DATA (fork detection anchor)
-        std::chrono::steady_clock::time_point canonical_received_at{}; ///< When this canonical state was set
-
-        /// True when canonical state has been set at least once from a BLOCK_DATA receipt
-        bool is_initialized() const { return canonical_unified_height > 0; }
-    };
-
-    // ─── Diagnostic observer state (push / keepalive / GET_ROUND) ─────────
-    /**
-     * @brief Telemetry/diagnostic data updated by push notifications,
-     *        keepalive ACKs, and GET_ROUND responses.
-     *
-     * Read-only for Colin diagnostics.  Never drives mining decisions.
-     */
-    struct DiagnosticObserverState {
-        // Push notification data
-        uint32_t push_unified_height{0};
-        uint32_t push_channel_height{0};
-        uint32_t push_prime_height{0};
-        uint32_t push_hash_height{0};
-        uint32_t push_difficulty_nbits{0};
-
-        // GET_ROUND data
-        uint32_t round_unified_height{0};
-        uint32_t round_channel_height{0};
-        uint32_t round_prime_height{0};
-        uint32_t round_hash_height{0};
-        uint32_t round_difficulty_nbits{0};
-
-        // Keepalive data
-        uint32_t keepalive_unified_height{0};
-        uint32_t keepalive_prime_height{0};
-        uint32_t keepalive_hash_height{0};
-        uint32_t keepalive_stake_height{0};
-
-        // Diagnostic equivalent of canonical_hash_prev_block (lo32 from keepalive ACK).
-        // The keepalive provides only the lo32 of node's hashBestChain — a lightweight
-        // fork cross-check peer of the full canonical_hash_prev_block from BLOCK_DATA.
-        uint32_t hash_tip_lo32{0};   ///< Lo32 of node's hashBestChain (diagnostic fork detection)
-
-        uint32_t fork_score{0};
-        uint32_t peak_fork_score{0};
-
-        // ── Diagnostic timestamps ──────────────────────────────────────────
-        std::chrono::steady_clock::time_point last_push_at{};          ///< Time of last OnPushNotification()
-        std::chrono::steady_clock::time_point last_round_at{};         ///< Time of last OnGetRound()
-        std::chrono::steady_clock::time_point last_keepalive_ack_at{}; ///< Time of last OnKeepaliveResponse()
-
-        /// True when diagnostic state has been set at least once (any push, round, or keepalive data received).
-        /// Diagnostic equivalent of CanonicalChainState::is_initialized().
-        bool is_initialized() const {
-            return push_unified_height > 0 || round_unified_height > 0 || keepalive_unified_height > 0;
-        }
-
-        /// Most recent timestamp across all diagnostic sources.
-        /// Diagnostic equivalent of CanonicalChainState::canonical_received_at.
-        /// Returns default time_point{} if no diagnostic data has been received.
-        std::chrono::steady_clock::time_point latest_received_at() const {
-            return std::max({last_push_at, last_round_at, last_keepalive_ack_at});
-        }
-    };
-
-    /**
-     * @brief Authoritative mining state — driven ONLY by BLOCK_DATA / STATELESS_GET_BLOCK
-     *
-     * This struct represents the single source of truth for all mining decisions.
-     * It is NEVER updated by push notifications, keepalive ACKs, or GET_ROUND responses.
-     *
-     * Invariant: canonical_unified_height and canonical_channel_height only advance
-     * monotonically — they NEVER regress.
-     */
-    struct CanonicalChainState {
-        uint32_t canonical_unified_height{0};   ///< block.nHeight from BLOCK_DATA
-        uint32_t canonical_channel_height{0};   ///< nChannelHeight from BLOCK_DATA metadata prefix
-        uint32_t canonical_difficulty_nbits{0}; ///< nBits from BLOCK_DATA metadata prefix
         uint32_t canonical_channel_target{0};   ///< channel_height + 1 (the block we're mining for)
         uint1024_t canonical_hash_prev_block{}; ///< hashPrevBlock from BLOCK_DATA (fork detection anchor)
         std::chrono::steady_clock::time_point canonical_received_at{}; ///< When this canonical state was set
@@ -398,20 +314,6 @@ public:
                              uint32_t metadata_nbits,
                              const uint1024_t& hash_prev_block);
 
-    /**
-     * @brief Get the canonical chain state (for mining decisions)
-     * Thread-safe snapshot — use for template validation, staleness detection,
-     * worker dispatch, and all operational decisions.
-     */
-    CanonicalChainState GetCanonicalSnapshot() const;
-
-    /**
-     * @brief Get the diagnostic observer state (for Colin agent only)
-     * Thread-safe snapshot — use ONLY for logging and diagnostics.
-     * MUST NOT be used to make mining decisions.
-     */
-    DiagnosticObserverState GetDiagnosticSnapshot() const;
-
     // =========================================================================
     // Update methods (called from protocol handlers)
     // =========================================================================
@@ -452,19 +354,6 @@ public:
      */
     void OnTemplateMetadata(uint32_t unified_height, uint32_t channel_height,
                             uint32_t nbits);
-
-    /**
-     * @brief Canonical height update from BLOCK_DATA / STATELESS_GET_BLOCK.
-     *
-     * This is the ONLY method that updates CanonicalChainState.  Heights are
-     * monotonically advanced — stale BLOCK_DATA responses cannot regress them.
-     *
-     * @param unified_height  Unified height from block data
-     * @param channel_height  Channel height from block data
-     * @param nbits           Difficulty from block data
-     */
-    void OnBlockDataReceived(uint32_t unified_height, uint32_t channel_height,
-                             uint32_t nbits);
 
     /**
      * @brief Record that a new mining template has been received
@@ -586,11 +475,6 @@ private:
     // Latest non-zero difficulty from any non-keepalive source (push, GET_ROUND, block data).
     // Difficulty doesn't suffer from the height-regression problem, so the latest value wins.
     uint32_t m_latest_difficulty_nbits{0};
-
-    // Misc state not belonging to canonical or diagnostic
-    uint32_t m_channel{0};                            ///< Mining channel (set by OnTemplateReceived)
-    uint32_t m_template_unified_height{0};             ///< Unified height at last template receipt
-    UpdateSource m_last_update_source{UpdateSource::NONE};
 
     /// Build a Snapshot from canonical + diagnostic (must be called under m_mutex).
     Snapshot build_snapshot_locked() const;
