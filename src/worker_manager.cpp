@@ -1865,7 +1865,21 @@ void Worker_manager::check_template_health()
                     miner_lo32, ht_snap.hash_tip_lo32, ht_snap.peak_fork_score);
                 m_logger->warn("[Worker_manager]    Keepalive fork_score is diagnostic only — workers NOT stopped. Canonical hashPrevBlock changes trigger real fork recovery.");
             }
+    // ── Fork / tip mismatch detection (DIAGNOSTIC ONLY) ────────────────────────
+    // Fork score and hash_tip_lo32 come from keepalive ACKs (DiagnosticObserverState).
+    // They are INFORMATIONAL and must NOT be used to trigger hard stops, as keepalive
+    // data can lag chain advancement by 45s and cause false-positive fork detections
+    // during normal block-finding events.
+    //
+    // Real fork detection uses canonical_hash_prev_block vs push hashPrevBlock
+    // (handled by the TEMPLATE_ANCHOR in solo.cpp, not here).
+    {
+        auto diag = solo_protocol->get_diagnostic_snapshot();
+        if (diag.keepalive_peak_fork_score > 0) {
+            m_logger->warn("[Worker_manager] [Colin] FORK CANARY: peak_fork_score={} fork_score={} hash_tip_lo32=0x{:08x} (diagnostic only — not stopping workers)",
+                diag.keepalive_peak_fork_score, diag.keepalive_fork_score, diag.keepalive_hash_tip_lo32);
         }
+        // Do NOT stop workers based on keepalive fork_score alone.
     }
 
     // Age-based warning: 150s gives a 50s window before the 200s emergency fires.

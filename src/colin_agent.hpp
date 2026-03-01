@@ -129,15 +129,26 @@ public:
     // Returns warning string only on actual mismatch.
     static std::string check_tip_sync(uint32_t miner_prevhash_lo32, uint32_t node_tip_lo32);
 
-    // Check canonical height drift — returns warning when push/round heights
-    // run significantly ahead of canonical BLOCK_DATA heights.
-    // Uses height_drift_from_canonical() from HeightTracker::Snapshot.
+    // ── New hooks using canonical / diagnostic split ──────────────────────────
+
+    // Check canonical height drift (CanonicalChainState::height_drift_from_canonical()).
+    // Warns when |drift| exceeds the expected inter-channel skew threshold.
+    // Returns empty string when drift is within normal range or data unavailable.
     static std::string check_canonical_drift(int32_t drift);
 
-    // Check diagnostic data freshness — returns warning when the most recent
-    // diagnostic source (push/round/keepalive) exceeds age threshold.
-    // Uses DiagnosticObserverState::latest_received_at().
-    static std::string check_diagnostic_staleness(int64_t age_seconds);
+    // Check whether DiagnosticObserverState has received any data yet.
+    // Returns a warning if diagnostic is uninitialized after the miner has been
+    // running long enough to expect push / GET_ROUND / keepalive data.
+    // elapsed_seconds is the time since the mining session started.
+    static std::string check_diagnostic_initialized(bool is_initialized,
+                                                    uint64_t elapsed_seconds);
+
+    // Check freshness of the most recent diagnostic update (latest_received_at()).
+    // Returns a warning when the diagnostic observer has gone silent for too long,
+    // indicating push notifications, GET_ROUND, and keepalive have all stopped.
+    // latest_age_seconds is seconds since latest_received_at() (caller computes this).
+    static std::string check_diagnostic_freshness(uint64_t latest_age_seconds,
+                                                  bool is_initialized);
 
 private:
     void schedule_next();
@@ -173,6 +184,8 @@ private:
 
     uint32_t m_last_miner_prevhash_lo32{0};
     uint32_t m_last_node_tip_lo32{0};
+
+    std::chrono::steady_clock::time_point m_start_time{std::chrono::steady_clock::now()};
 
     std::deque<DiagSnapshot> m_history; // last 10 snapshots
 };

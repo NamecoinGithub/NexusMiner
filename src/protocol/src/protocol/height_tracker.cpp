@@ -15,6 +15,9 @@ const char* HeightTracker::source_name(UpdateSource src) {
     }
 }
 
+// ── OnPushNotification: updates DiagnosticObserverState push fields ONLY ──────
+// Does NOT touch canonical state. Push-derived channel_height is reflected in
+// GetSnapshot() via the max(canonical, push) composition in build_snapshot_locked().
 void HeightTracker::OnPushNotification(uint32_t unified_height,
                                         uint32_t channel_height,
                                         uint32_t nbits)
@@ -38,6 +41,7 @@ void HeightTracker::OnPushNotification(uint32_t unified_height,
     m_diagnostic.last_push_at = now;
 }
 
+// ── OnGetRound: updates DiagnosticObserverState round fields ONLY ─────────────
 void HeightTracker::OnGetRound(uint32_t unified_height,
                                 uint32_t channel_height,
                                 uint32_t nbits)
@@ -61,43 +65,44 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
     m_diagnostic.last_round_at = now;
 }
 
+// ── OnTemplateMetadata: backward-compat wrapper → delegates to OnBlockDataReceived ──
+// Kept for existing call sites in update_height_state(TEMPLATE). The hash_prev_block
+// will be set separately via UpdateWithHashPrevBlock() after read_template() succeeds.
 void HeightTracker::OnTemplateMetadata(uint32_t unified_height,
                                         uint32_t channel_height,
                                         uint32_t nbits)
 {
-    // Delegate to OnBlockDataReceived for backward compatibility.
-    OnBlockDataReceived(unified_height, channel_height, nbits);
+    OnBlockDataReceived(unified_height, channel_height, nbits, uint1024_t{});
 }
 
-void HeightTracker::OnBlockDataReceived(uint32_t unified_height,
-                                         uint32_t channel_height,
-                                         uint32_t nbits)
+// ── OnBlockDataReceived: THE canonical update (BLOCK_DATA / STATELESS_GET_BLOCK) ─
+// Only method that writes to m_canonical. Advances monotonically — never regresses.
+void HeightTracker::OnBlockDataReceived(uint32_t block_unified_height,
+                                         uint32_t metadata_channel_height,
+                                         uint32_t metadata_nbits,
+                                         const uint1024_t& hash_prev_block)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // Monotonic — only advance canonical heights
+    if (block_unified_height > m_canonical.canonical_unified_height)
+        m_canonical.canonical_unified_height = block_unified_height;
 
-    // Only advance — never regress canonical heights.
-    if (unified_height > m_canonical.canonical_unified_height)
-        m_canonical.canonical_unified_height = unified_height;
-    if (channel_height > m_canonical.canonical_channel_height) {
-        m_canonical.canonical_channel_height = channel_height;
-        m_canonical.canonical_channel_target = channel_height + 1;
-    }
-    // Guard against nbits==0: template metadata may arrive from a stale
-    // response — don't clear a valid difficulty with zero.
-    if (nbits != 0) {
-        m_canonical.canonical_difficulty_nbits = nbits;
-        m_latest_difficulty_nbits = nbits;
+    if (metadata_channel_height > m_canonical.canonical_channel_height) {
+        m_canonical.canonical_channel_height = metadata_channel_height;
+        // Advance channel_target to channel_height + 1 (only if higher)
+        uint32_t new_target = metadata_channel_height + 1;
+        if (new_target > m_canonical.canonical_channel_target)
+            m_canonical.canonical_channel_target = new_target;
     }
 
-    // Keep per-channel canonical heights in sync
-    if (m_channel == 1 && channel_height > m_canonical.canonical_prime_height)
-        m_canonical.canonical_prime_height = channel_height;
-    else if (m_channel == 2 && channel_height > m_canonical.canonical_hash_height)
-        m_canonical.canonical_hash_height = channel_height;
+    if (metadata_nbits != 0)
+        m_canonical.canonical_difficulty_nbits = metadata_nbits;
+
+    if (hash_prev_block != uint1024_t{})
+        m_canonical.canonical_hash_prev_block = hash_prev_block;
 
     m_canonical.canonical_received_at = std::chrono::steady_clock::now();
     m_last_update_source = UpdateSource::TEMPLATE;
-    m_last_height_update = m_canonical.canonical_received_at;
 }
 
 void HeightTracker::OnTemplateReceived(uint32_t channel,
@@ -135,6 +140,9 @@ void HeightTracker::UpdateWithHashPrevBlock(const uint1024_t& h)
     m_canonical.canonical_hash_prev_block = h;
 }
 
+// ── OnKeepaliveResponse: updates DiagnosticObserverState keepalive fields ONLY ─
+// Does NOT call sync_channel_height_locked() — keepalive data must NOT regress
+// canonical channel_height or corrupt is_template_stale() / fork detection.
 void HeightTracker::OnKeepaliveResponse(uint32_t unified_height,
                                          uint32_t prime_height,
                                          uint32_t hash_height,
