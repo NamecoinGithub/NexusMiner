@@ -218,6 +218,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             if (m_set_block_handler) {
                 m_logger->info("[Solo] Distributing template to worker threads...");
                 m_last_template_feed_tp = std::chrono::steady_clock::now();
+                m_last_template_feed_height = tmpl.block.nHeight;
                 m_set_block_handler(tmpl.block, nBits);
                 m_logger->info("[Solo] ✓ Template distributed - workers should start mining");
             } else {
@@ -1369,21 +1370,31 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
 
             // TEMPLATE_ANCHOR debounce: suppress re-push if read_template() already fired
             // the template_feed_handler (which calls m_set_block_handler) within the last
-            // ANCHOR_REPUSH_DEBOUNCE_MS ms.  Double-feeds cause partial worker initialisation
-            // because some workers receive the new template while others are still computing
-            // starting multiples for the previous one.
+            // ANCHOR_REPUSH_DEBOUNCE_MS ms FOR THE SAME BLOCK HEIGHT.  Double-feeds cause
+            // partial worker initialisation because some workers receive the new template
+            // while others are still computing starting multiples for the previous one.
             {
                 auto now_tp = std::chrono::steady_clock::now();
                 auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
                     now_tp - m_last_template_feed_tp).count();
-                if (ms_since_last < ANCHOR_REPUSH_DEBOUNCE_MS && !tip_changed) {
-                    m_logger->info("[TEMPLATE ANCHOR] ⏱ Re-push suppressed: last feed was {}ms ago (< {}ms debounce)",
-                        ms_since_last, ANCHOR_REPUSH_DEBOUNCE_MS);
-                    m_logger->info("[TEMPLATE ANCHOR]   Workers still initializing — chain tip noted, applies next block");
+
+                // Height guard (Option A fix): suppress if the debounce window is active AND
+                // the height being distributed matches the last fed height.
+                // This prevents tip_changed from bypassing the debounce when Path 1
+                // already distributed the exact same template moments ago.
+                bool debounce_active = (ms_since_last < ANCHOR_REPUSH_DEBOUNCE_MS);
+                bool same_height_as_last_feed = (tmpl->block.nHeight == m_last_template_feed_height);
+
+                if (debounce_active && same_height_as_last_feed) {
+                    m_logger->info("[TEMPLATE ANCHOR] ⏱ Re-push suppressed: same height {} already fed {}ms ago (< {}ms debounce window)",
+                        tmpl->block.nHeight, ms_since_last, ANCHOR_REPUSH_DEBOUNCE_MS);
+                    m_logger->info("[TEMPLATE ANCHOR]   Workers still initializing — chain tip noted, no double-distribution");
                 } else {
                     m_last_template_feed_tp = now_tp;
+                    m_last_template_feed_height = tmpl->block.nHeight;
                     if (tip_changed) {
-                        m_logger->info("[TEMPLATE ANCHOR] ⚡ Debounce bypassed: chain tip changed (hashPrevBlock)");
+                        m_logger->info("[TEMPLATE ANCHOR] ⚡ Debounce bypassed: chain tip changed (hashPrevBlock), new height {}",
+                            tmpl->block.nHeight);
                     }
                     m_logger->info("[Solo FEED] Dispatching validated template to workers (height: {}, nBits: 0x{:08x})",
                         tmpl->block.nHeight, tmpl->nBits);
