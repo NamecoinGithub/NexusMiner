@@ -618,7 +618,9 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
 
     // ── StatelessBlockUtility pre-check: nonce sanity ──────────────────────
     // Mirrors StatelessBlockUtility::encode_submit() pre-check 1 (nonce == 0
-    // means the worker has not yet solved the block).
+    // means the worker has not yet solved the block).  encode_submit() also
+    // enforces this via MiningTemplateInterface, but catching it here avoids
+    // unnecessary template lookup.
     if (nonce == 0) {
         m_logger->error("[Solo Submit] CRITICAL: nonce is zero — "
                         "block not yet solved (uninitialized template). "

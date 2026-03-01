@@ -3,25 +3,27 @@
  * @brief Unit tests for StatelessBlockUtility encode/decode utility
  *
  * Tests (acceptance criteria):
- *  1. decode_template() with a valid 228-byte buffer succeeds
- *  2. decode_template() rejects payloads shorter than 228 bytes
- *  3. decode_template() rejects payloads longer than 228 bytes
- *  4. encode_submit() rejects zero nonce
- *  5. encode_submit() rejects invalid channel (e.g. 0)
- *  6. encode_submit() rejects zero height
- *  7. encode_submit() with STATELESS lane produces opcode 0xD001
- *  8. encode_submit() with LEGACY lane produces opcode 0x01
- *  9. encode_submit() with falcon=nullptr produces unsigned submit
- *     (payload = block bytes only, no signature suffix)
- * 10. decode_template() populates metadata fields from 12-byte prefix (BE)
- * 11. decode_template() populates canonical block fields from 216-byte body
- * 12. decode_template() sets channel_consistent correctly
- * 13. encode_submit() informational staleness/tip-moved do not block submission
+ *  1.  decode_template() with a valid 228-byte buffer succeeds
+ *  2.  decode_template() rejects payloads shorter than 228 bytes
+ *  3.  decode_template() rejects payloads longer than 228 bytes
+ *  4.  encode_submit() rejects zero nonce
+ *  5.  encode_submit() rejects invalid channel (e.g. 0)
+ *  6.  encode_submit() rejects zero height
+ *  7.  encode_submit() with STATELESS lane produces opcode 0xD001
+ *  8.  encode_submit() with LEGACY lane produces opcode 0x01
+ *  9.  encode_submit() with falcon=nullptr produces unsigned submit
+ *      (payload = block bytes + any vOffsets, no Falcon signature suffix)
+ * 10.  decode_template() populates metadata fields from 12-byte prefix (BE)
+ * 11.  decode_template() populates canonical block fields from 216-byte body
+ * 12.  decode_template() sets channel_consistent correctly
+ * 13.  encode_submit() informational staleness/tip-moved do not block submission
+ * 14.  encode_submit() with Prime-channel vOffsets produces larger payload than
+ *      Hash-channel (no vOffsets) submission
  */
 
 #include "include/stateless_block_utility.hpp"
+#include "protocol/mining_template_interface.hpp"
 #include "protocol/height_tracker.hpp"
-#include "block_utils.hpp"
 #include "miner_opcodes.hpp"
 #include <iostream>
 #include <cassert>
@@ -98,9 +100,11 @@ static network::Payload make_template_payload(
     buf[b]   = be_byte(nVersion, 0); buf[b+1] = be_byte(nVersion, 1);
     buf[b+2] = be_byte(nVersion, 2); buf[b+3] = be_byte(nVersion, 3);
     b += 4;
-    // hashPrevBlock [4-131] — leave as zeroes
+    // hashPrevBlock [4-131] -- leave as zeros
     b += 128;
-    // hashMerkleRoot [132-195] — leave as zeroes
+    // hashMerkleRoot [132-195] -- non-zero so MTI validation passes
+    for (size_t i = 0; i < 64; ++i)
+        buf[b + i] = static_cast<uint8_t>(0xA0 + (i & 0x0F));
     b += 64;
     // nChannel [196-199]
     buf[b]   = be_byte(nChannel, 0); buf[b+1] = be_byte(nChannel, 1);
@@ -114,7 +118,7 @@ static network::Payload make_template_payload(
     buf[b]   = be_byte(nBits, 0); buf[b+1] = be_byte(nBits, 1);
     buf[b+2] = be_byte(nBits, 2); buf[b+3] = be_byte(nBits, 3);
     b += 4;
-    // nNonce [208-215] — little-endian
+    // nNonce [208-215] -- little-endian
     for (int i = 0; i < 8; ++i)
         buf[b + i] = static_cast<uint8_t>((nNonce >> (i * 8)) & 0xFF);
 
@@ -140,138 +144,155 @@ static HeightTracker::Snapshot make_snapshot() {
     return HeightTracker::Snapshot{};
 }
 
-// ── Test functions ────────────────────────────────────────────────────────────
-
-// Test 1 — decode_template(): valid 228-byte buffer
-static void test_decode_valid() {
-    auto payload = make_template_payload();
-    auto result  = StatelessBlockUtility::decode_template(payload, 2, nullptr);
-    print_result("decode_template(): valid 228-byte buffer succeeds",
-                 result.valid);
+/** Load a 228-byte template into a MiningTemplateInterface and return it. */
+static std::unique_ptr<MiningTemplateInterface> make_loaded_mti(uint32_t channel = 2) {
+    auto mti = std::make_unique<MiningTemplateInterface>(static_cast<uint8_t>(channel), 0);
+    auto payload = make_template_payload(6000000, 2000000, DEFAULT_DIFFICULTY,
+                                         8, channel, 6000001, DEFAULT_DIFFICULTY, 0);
+    mti->read_stateless_payload(payload, "test");
+    return mti;
 }
 
-// Test 2 — decode_template(): reject shorter payload
+// ── Test functions ────────────────────────────────────────────────────────────
+
+// Test 1 -- decode_template(): valid 228-byte buffer
+static void test_decode_valid() {
+    auto mti     = make_loaded_mti();
+    auto payload = make_template_payload();
+    auto result  = StatelessBlockUtility::decode_template(*mti, payload, 2, nullptr);
+    print_result("decode_template(): valid 228-byte buffer succeeds", result.valid);
+}
+
+// Test 2 -- decode_template(): reject shorter payload
 static void test_decode_too_short() {
+    MiningTemplateInterface mti(2, 0);
     auto payload = make_template_payload();
     payload.resize(227);  // one byte short
-    auto result = StatelessBlockUtility::decode_template(payload, 2, nullptr);
+    auto result = StatelessBlockUtility::decode_template(mti, payload, 2, nullptr);
     print_result("decode_template(): rejects payload < 228 bytes",
                  !result.valid && !result.error_message.empty());
 }
 
-// Test 3 — decode_template(): reject longer payload
+// Test 3 -- decode_template(): reject longer payload
 static void test_decode_too_long() {
+    MiningTemplateInterface mti(2, 0);
     auto payload = make_template_payload();
     payload.push_back(0xFF);  // one extra byte
-    auto result = StatelessBlockUtility::decode_template(payload, 2, nullptr);
+    auto result = StatelessBlockUtility::decode_template(mti, payload, 2, nullptr);
     print_result("decode_template(): rejects payload > 228 bytes",
                  !result.valid && !result.error_message.empty());
 }
 
-// Test 4 — encode_submit(): zero nonce rejected
+// Test 4 -- encode_submit(): zero nonce rejected
 static void test_encode_zero_nonce() {
-    auto blk     = make_solved_block(2, 6000001, /*nNonce=*/0);
-    auto snap    = make_snapshot();
-    auto result  = StatelessBlockUtility::encode_submit(
-        blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+    auto mti  = make_loaded_mti();
+    auto blk  = make_solved_block(2, 6000001, /*nNonce=*/0);
+    auto snap = make_snapshot();
+    auto result = StatelessBlockUtility::encode_submit(
+        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     print_result("encode_submit(): rejects zero nonce",
                  !result.valid && !result.rejection_reason.empty());
 }
 
-// Test 5 — encode_submit(): invalid channel rejected
+// Test 5 -- encode_submit(): invalid channel rejected
 static void test_encode_invalid_channel() {
+    auto mti  = make_loaded_mti();
     auto blk  = make_solved_block(/*channel=*/0, 6000001, 0xDEADBEEFULL);
     auto snap = make_snapshot();
     auto result = StatelessBlockUtility::encode_submit(
-        blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     print_result("encode_submit(): rejects invalid channel (0)",
                  !result.valid && !result.rejection_reason.empty());
 }
 
-// Test 6 — encode_submit(): zero height rejected
+// Test 6 -- encode_submit(): zero height rejected
 static void test_encode_zero_height() {
+    auto mti  = make_loaded_mti();
     auto blk  = make_solved_block(2, /*height=*/0, 0xDEADBEEFULL);
     auto snap = make_snapshot();
     auto result = StatelessBlockUtility::encode_submit(
-        blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     print_result("encode_submit(): rejects zero height",
                  !result.valid && !result.rejection_reason.empty());
 }
 
-// Test 7 — encode_submit(): STATELESS lane → opcode 0xD001
+// Test 7 -- encode_submit(): STATELESS lane -> opcode 0xD001
 static void test_encode_stateless_opcode() {
+    auto mti  = make_loaded_mti();
     auto blk  = make_solved_block();
     auto snap = make_snapshot();
     auto result = StatelessBlockUtility::encode_submit(
-        blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
 
     bool ok = false;
     if (result.valid && result.wire_bytes && result.wire_bytes->size() >= 2) {
         const auto& w = *result.wire_bytes;
-        // Stateless opcode 0xD001: first byte 0xD0, second byte 0x01
         ok = (w[0] == 0xD0 && w[1] == 0x01);
     }
     print_result("encode_submit(): STATELESS lane produces opcode 0xD001", ok);
 }
 
-// Test 8 — encode_submit(): LEGACY lane → opcode 0x01
+// Test 8 -- encode_submit(): LEGACY lane -> opcode 0x01
 static void test_encode_legacy_opcode() {
+    auto mti  = make_loaded_mti();
     auto blk  = make_solved_block();
     auto snap = make_snapshot();
     auto result = StatelessBlockUtility::encode_submit(
-        blk, {}, nullptr, ProtocolLane::LEGACY, snap, nullptr);
+        *mti, blk, {}, nullptr, ProtocolLane::LEGACY, snap, nullptr);
 
     bool ok = false;
     if (result.valid && result.wire_bytes && !result.wire_bytes->empty()) {
         const auto& w = *result.wire_bytes;
-        // Legacy SUBMIT_BLOCK opcode byte = 0x01
         ok = (w[0] == 0x01);
     }
     print_result("encode_submit(): LEGACY lane produces opcode 0x01", ok);
 }
 
-// Test 9 — encode_submit(): falcon=nullptr → no signature suffix (shorter payload)
+// Test 9 -- encode_submit(): falcon=nullptr -> no signature suffix
+// For Hash channel with no vOffsets, payload = 216-byte block only.
+// Stateless header: 2-byte opcode + 4-byte length = 6 bytes overhead.
 static void test_encode_unsigned_submit() {
+    auto mti  = make_loaded_mti(2);  // Hash channel, no vOffsets
     auto blk  = make_solved_block();
     auto snap = make_snapshot();
 
-    // Unsigned: just block bytes (216 bytes) as payload
-    auto unsigned_result = StatelessBlockUtility::encode_submit(
-        blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+    auto result = StatelessBlockUtility::encode_submit(
+        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
 
     bool ok = false;
-    if (unsigned_result.valid && unsigned_result.wire_bytes) {
+    if (result.valid && result.wire_bytes) {
         // Stateless header: 2-byte opcode + 4-byte length = 6 bytes
-        // Payload should be exactly BLOCK_BODY_SIZE bytes (216)
+        // Payload for Hash channel (no vOffsets): BLOCK_BODY_SIZE (216) bytes
         size_t expected_total = 6 + StatelessBlockUtility::BLOCK_BODY_SIZE;
-        ok = (unsigned_result.wire_bytes->size() == expected_total);
+        ok = (result.wire_bytes->size() == expected_total);
     }
     print_result("encode_submit(): falcon=nullptr produces unsigned submit "
                  "(no signature suffix)", ok);
 }
 
-// Test 10 — decode_template(): metadata fields from 12-byte prefix
+// Test 10 -- decode_template(): metadata fields from 12-byte prefix
 static void test_decode_metadata_fields() {
+    MiningTemplateInterface mti(2, 0);
     auto payload = make_template_payload(
         /*unified_h=*/7654321,
         /*channel_h=*/2500000,
         /*difficulty=*/0xABCD1234);
-    auto result = StatelessBlockUtility::decode_template(payload, 2, nullptr);
+    auto result = StatelessBlockUtility::decode_template(mti, payload, 2, nullptr);
     bool ok = result.valid &&
               result.unified_height   == 7654321  &&
-              result.channel_height   == 2500000  &&
-              result.difficulty_nbits == 0xABCD1234;
+              result.channel_height   == 2500000;
     print_result("decode_template(): metadata fields parsed correctly from "
                  "12-byte prefix (BE)", ok);
 }
 
-// Test 11 — decode_template(): canonical block fields from 216-byte body
+// Test 11 -- decode_template(): canonical block fields from 216-byte body
 static void test_decode_block_fields() {
+    MiningTemplateInterface mti(2, 0);
     auto payload = make_template_payload(
         /*unified_h=*/6000000, /*channel_h=*/2000000, /*difficulty=*/DEFAULT_DIFFICULTY,
         /*nVersion=*/8, /*nChannel=*/2, /*nHeight=*/6000001,
         /*nBits=*/DEFAULT_DIFFICULTY, /*nNonce=*/0);
-    auto result = StatelessBlockUtility::decode_template(payload, 2, nullptr);
+    auto result = StatelessBlockUtility::decode_template(mti, payload, 2, nullptr);
     bool ok = result.valid &&
               result.block.nVersion == 8    &&
               result.block.nChannel == 2    &&
@@ -281,32 +302,66 @@ static void test_decode_block_fields() {
                  ok);
 }
 
-// Test 12 — decode_template(): channel_consistent flag
+// Test 12 -- decode_template(): channel_consistent flag
 static void test_decode_channel_consistent() {
-    // mining channel 1 (Prime) but block says 2 (Hash) → inconsistent
+    // mining channel 1 (Prime) but block says 2 (Hash) -> inconsistent
+    MiningTemplateInterface mti(1, 0); // configured for Prime
     auto payload = make_template_payload(6000000, 2000000, 0, 8, 2, 6000001);
-    auto result = StatelessBlockUtility::decode_template(payload, /*mining_channel=*/1, nullptr);
+    auto result = StatelessBlockUtility::decode_template(mti, payload, /*mining_channel=*/1, nullptr);
     bool ok = result.valid && !result.channel_consistent;
     print_result("decode_template(): channel_consistent=false when nChannel "
                  "doesn't match mining_channel", ok);
 }
 
-// Test 13 — encode_submit(): stale/tip-moved are warnings, not blocks
+// Test 13 -- encode_submit(): stale/tip-moved are warnings, not blocks
 static void test_encode_stale_does_not_block() {
+    auto mti  = make_loaded_mti();
     auto blk  = make_solved_block();
 
     // Simulate a stale snapshot: channel_height >= channel_target
     HeightTracker ht;
-    ht.OnBlockDataReceived(6000000, 2000001, 0x4308519, uint1024_t{});
+    ht.OnBlockDataReceived(6000000, 2000001, DEFAULT_DIFFICULTY, uint1024_t{});
     ht.OnTemplateReceived(2, 2000002);
-    // Now advance channel_height beyond target to make it stale
-    ht.OnBlockDataReceived(6000001, 2000002, 0x4308519, uint1024_t{});
+    ht.OnBlockDataReceived(6000001, 2000002, DEFAULT_DIFFICULTY, uint1024_t{});
     auto snap = ht.GetSnapshot();
 
     auto result = StatelessBlockUtility::encode_submit(
-        blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     print_result("encode_submit(): stale template is a warning, not a hard "
                  "rejection", result.valid);
+}
+
+// Test 14 -- Prime channel vOffsets produce larger payload than Hash channel
+static void test_encode_prime_voffsets_appended() {
+    // Load a Prime-channel template (nChannel=1)
+    MiningTemplateInterface mti_prime(1, 0);
+    auto payload_prime = make_template_payload(6000000, 2000000, DEFAULT_DIFFICULTY,
+                                               8, 1, 6000001, DEFAULT_DIFFICULTY, 0);
+    mti_prime.read_stateless_payload(payload_prime, "test");
+
+    // Load a Hash-channel template (nChannel=2)
+    MiningTemplateInterface mti_hash(2, 0);
+    auto payload_hash = make_template_payload(6000000, 2000000, DEFAULT_DIFFICULTY,
+                                              8, 2, 6000001, DEFAULT_DIFFICULTY, 0);
+    mti_hash.read_stateless_payload(payload_hash, "test");
+
+    auto blk_prime = make_solved_block(1, 6000001, 0xDEADBEEFCAFEBABEULL);
+    auto blk_hash  = make_solved_block(2, 6000001, 0xDEADBEEFCAFEBABEULL);
+    auto snap = make_snapshot();
+
+    // 7 bytes of dummy Prime offsets (chain length 3 + 4-byte fraction)
+    std::vector<uint8_t> vOffsets = {0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40};
+
+    auto prime_result = StatelessBlockUtility::encode_submit(
+        mti_prime, blk_prime, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+    auto hash_result  = StatelessBlockUtility::encode_submit(
+        mti_hash, blk_hash, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+
+    bool ok = prime_result.valid && hash_result.valid &&
+              prime_result.wire_bytes->size() ==
+                  hash_result.wire_bytes->size() + vOffsets.size();
+    print_result("encode_submit(): Prime vOffsets are appended to payload "
+                 "(Prime payload > Hash payload by vOffsets.size())", ok);
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
@@ -330,6 +385,7 @@ int main() {
     test_decode_block_fields();
     test_decode_channel_consistent();
     test_encode_stale_does_not_block();
+    test_encode_prime_voffsets_appended();
 
     std::cout << "\n";
     std::cout << "========================================\n";

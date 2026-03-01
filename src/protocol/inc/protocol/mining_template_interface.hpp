@@ -86,6 +86,10 @@ public:
         uint32_t nChannelHeight;    // Channel-specific height (CRITICAL for staleness detection)
                                     // Only increments when THIS channel mines a block
                                     // Examples: Prime channel: 2165443, Hash channel: 4165001
+
+        // Stateless-lane metadata (12-byte prefix, big-endian; diagnostic only)
+        uint32_t nUnifiedHeightMeta{0};  // unified_height from STATELESS_GET_BLOCK prefix
+        uint32_t nChannelHeightMeta{0};  // channel_height from STATELESS_GET_BLOCK prefix
     };
     
     /**
@@ -154,6 +158,26 @@ public:
      */
     ValidationResult read_template(network::Shared_payload data,
                                    const std::string& source_endpoint = "");
+    
+    /**
+     * @brief Read and process a STATELESS_GET_BLOCK / BLOCK_DATA payload (228 bytes)
+     *
+     * Handles the stateless lane's 228-byte BLOCK_DATA format:
+     *   [0-3]   unified_height (BE) — diagnostic, stored in MiningTemplate::nUnifiedHeightMeta
+     *   [4-7]   channel_height (BE) — diagnostic, stored in MiningTemplate::nChannelHeightMeta
+     *   [8-11]  difficulty_nbits (BE) — echoed for convenience
+     *   [12-227] 216-byte Tritium Block::Serialize() — delegated to read_template()
+     *
+     * The 12-byte metadata prefix is DIAGNOSTIC only; the canonical mining state
+     * (nHeight, nChannel, nBits, hashPrevBlock) comes exclusively from the 216-byte block body.
+     *
+     * @param payload228   The full 228-byte STATELESS_GET_BLOCK payload.
+     *                     Returns invalid ValidationResult if size != 228.
+     * @param source_endpoint Node endpoint for logging
+     * @return ValidationResult from the underlying read_template() call
+     */
+    ValidationResult read_stateless_payload(const network::Payload& payload228,
+                                            const std::string& source_endpoint = "");
     
     /**
      * @brief Check if a valid template is available for mining
@@ -362,6 +386,22 @@ public:
      */
     std::vector<uint8_t> prepare_block_submission(const std::vector<uint8_t>& merkle_root,
                                                    uint64_t nonce);
+
+    /**
+     * @brief Prepare block for submission, appending Prime channel vOffsets
+     *
+     * For the Prime channel (nChannel == 1), the Cunningham-chain offsets computed
+     * by ValidatePrimeCandidate() must be appended to the serialized block bytes so
+     * the node can verify the prime cluster. For the Hash channel, vOffsets is ignored.
+     *
+     * @param merkle_root Block's merkle root
+     * @param nonce Block's nonce value
+     * @param vOffsets Prime chain offsets (empty for Hash channel)
+     * @return Submission payload bytes (block bytes + vOffsets for Prime), empty if invalid
+     */
+    std::vector<uint8_t> prepare_block_submission(const std::vector<uint8_t>& merkle_root,
+                                                   uint64_t nonce,
+                                                   const std::vector<uint8_t>& vOffsets);
     
     // =========================================================================
     // Session Management (FALCON Tunnel Integration)

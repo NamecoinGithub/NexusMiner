@@ -348,10 +348,14 @@ void Worker_prime::run()
 					if (m_found_nonce_callback)
 					{
 						m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
-						::asio::post(*m_io_context, [self = shared_from_this()]()
+						// Capture offsets by value so they survive the async post
+						auto captured_offsets = offsets;
+						::asio::post(*m_io_context, [self = shared_from_this(), captured_offsets = std::move(captured_offsets)]()
 						{
+							auto bd = std::make_unique<Block_data>(self->m_block);
+							bd->vOffsets = captured_offsets; // Prime chain offsets for submission
 							self->m_found_nonce_callback(self->m_config.m_internal_id, 
-								std::make_unique<Block_data>(self->m_block));
+								std::move(bd));
 						});
 					}
 					else

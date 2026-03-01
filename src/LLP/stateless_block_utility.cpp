@@ -4,13 +4,17 @@
  *
  * Compiled as part of the `protocol` STATIC library (listed in
  * src/protocol/CMakeLists.txt) so that it can include both LLP headers
- * (block_utils.hpp) and protocol headers (falcon_wrapper.hpp,
+ * and protocol headers (falcon_wrapper.hpp, mining_template_interface.hpp,
  * packet_builder.hpp).
+ *
+ * All encode/decode logic is delegated to MiningTemplateInterface:
+ *   decode_template() -> MiningTemplateInterface::read_stateless_payload()
+ *   encode_submit()   -> MiningTemplateInterface::prepare_block_submission()
+ * This file provides only the pre-check gate and Falcon-signing layer.
  */
 
 #include "include/stateless_block_utility.hpp"
 
-#include "block_utils.hpp"
 #include "miner_opcodes.hpp"
 #include "protocol/falcon_wrapper.hpp"
 #include "protocol/packet_builder.hpp"
@@ -38,40 +42,47 @@ static void append_u16_le(std::vector<uint8_t>& dest, uint16_t value) {
     dest.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
 }
 
-static uint32_t read_u32_be(const network::Payload& buf, size_t offset) {
-    return (static_cast<uint32_t>(buf[offset])     << 24) |
-           (static_cast<uint32_t>(buf[offset + 1]) << 16) |
-           (static_cast<uint32_t>(buf[offset + 2]) <<  8) |
-            static_cast<uint32_t>(buf[offset + 3]);
-}
-
 // ---------------------------------------------------------------------------
 // decode_template
 // ---------------------------------------------------------------------------
 
 DecodedTemplate StatelessBlockUtility::decode_template(
+    MiningTemplateInterface& tmpl_iface,
     const network::Payload& raw_payload,
     uint32_t mining_channel,
     std::shared_ptr<spdlog::logger> logger)
 {
     DecodedTemplate result;
 
-    // ── Size gate ────────────────────────────────────────────────────────────
-    if (raw_payload.size() != TEMPLATE_PAYLOAD_SIZE) {
-        result.error_message =
-            "STATELESS_GET_BLOCK payload size " +
-            std::to_string(raw_payload.size()) +
-            " != " + std::to_string(TEMPLATE_PAYLOAD_SIZE) + " (expected)";
+    // ── Delegate to MiningTemplateInterface::read_stateless_payload() ─────────
+    // MTI handles the size gate, metadata prefix extraction, and block body
+    // decode via llp_utils::deserialize_block_header().
+    auto vresult = tmpl_iface.read_stateless_payload(raw_payload, "stateless");
+    if (!vresult.is_valid) {
+        result.error_message = vresult.error_message;
         if (logger)
             logger->error("[StatelessBlockUtility::decode_template] {}",
                           result.error_message);
         return result;
     }
 
-    // ── Diagnostic metadata (bytes 0–11, big-endian) ─────────────────────────
-    result.unified_height   = read_u32_be(raw_payload, 0);
-    result.channel_height   = read_u32_be(raw_payload, 4);
-    result.difficulty_nbits = read_u32_be(raw_payload, 8);
+    // ── Extract decoded data from MTI's current template ─────────────────────
+    const auto* tmpl = tmpl_iface.get_current_template();
+    if (!tmpl) {
+        result.error_message = "read_stateless_payload succeeded but no current template";
+        if (logger)
+            logger->error("[StatelessBlockUtility::decode_template] {}",
+                          result.error_message);
+        return result;
+    }
+
+    // Canonical mining state (from 216-byte block body)
+    result.block = tmpl->block;
+
+    // Diagnostic metadata (from 12-byte prefix, stored by read_stateless_payload)
+    result.unified_height   = tmpl->nUnifiedHeightMeta;
+    result.channel_height   = tmpl->nChannelHeightMeta;
+    result.difficulty_nbits = tmpl->block.nBits; // echoed in prefix; use block value
 
     if (logger)
         logger->debug("[StatelessBlockUtility::decode_template] "
@@ -79,32 +90,14 @@ DecodedTemplate StatelessBlockUtility::decode_template(
                       result.unified_height, result.channel_height,
                       result.difficulty_nbits);
 
-    // ── Canonical block body (bytes 12–227, 216-byte Tritium) ────────────────
-    network::Payload block_bytes(raw_payload.begin() + METADATA_PREFIX_SIZE,
-                                 raw_payload.end());
-    try {
-        result.block = llp_utils::deserialize_block_header(block_bytes);
-    } catch (const std::exception& ex) {
-        result.error_message =
-            std::string("block body deserialization failed: ") + ex.what();
-        if (logger)
-            logger->error("[StatelessBlockUtility::decode_template] {}",
-                          result.error_message);
-        return result;
-    }
-
     // ── Derived validation flags ─────────────────────────────────────────────
-    // metadata_consistent: block.nHeight should equal unified_height + 1
-    // (the template targets the NEXT block to be mined).  Allow ±1 for the
-    // tip-advance race window.
     if (result.unified_height > 0 && result.block.nHeight > 0) {
         int32_t diff = static_cast<int32_t>(result.block.nHeight) -
                        static_cast<int32_t>(result.unified_height + 1);
         result.metadata_consistent = (diff >= -1 && diff <= 1);
     }
 
-    result.channel_consistent =
-        (result.block.nChannel == mining_channel);
+    result.channel_consistent = (result.block.nChannel == mining_channel);
 
     if (logger) {
         if (!result.metadata_consistent)
@@ -128,8 +121,9 @@ DecodedTemplate StatelessBlockUtility::decode_template(
 // ---------------------------------------------------------------------------
 
 SubmitResult StatelessBlockUtility::encode_submit(
+    MiningTemplateInterface& tmpl_iface,
     const ::LLP::CBlock& solved_block,
-    const std::vector<uint8_t>& /*vOffsets*/,
+    const std::vector<uint8_t>& vOffsets,
     FalconSignatureWrapper* falcon,
     ProtocolLane lane,
     const HeightTracker::Snapshot& ht,
@@ -139,7 +133,7 @@ SubmitResult StatelessBlockUtility::encode_submit(
 
     // ── Pre-check 1: Nonce sanity ────────────────────────────────────────────
     if (solved_block.nNonce == 0) {
-        result.rejection_reason = "nNonce is zero — block not yet solved";
+        result.rejection_reason = "nNonce is zero -- block not yet solved";
         if (logger)
             logger->error("[StatelessBlockUtility::encode_submit] {}",
                           result.rejection_reason);
@@ -160,19 +154,19 @@ SubmitResult StatelessBlockUtility::encode_submit(
     // ── Pre-check 3: Height plausibility ────────────────────────────────────
     if (solved_block.nHeight == 0) {
         result.rejection_reason =
-            "nHeight is zero — template not yet received";
+            "nHeight is zero -- template not yet received";
         if (logger)
             logger->error("[StatelessBlockUtility::encode_submit] {}",
                           result.rejection_reason);
         return result;
     }
 
-    // ── Pre-check 4: Staleness (informational — node is authoritative) ────────
+    // ── Pre-check 4: Staleness (informational -- node is authoritative) ────────
     if (ht.is_template_stale()) {
         if (logger)
             logger->warn("[StatelessBlockUtility::encode_submit] "
                          "template appears stale (channel_height={} >= "
-                         "channel_target={}) — submitting anyway; "
+                         "channel_target={}) -- submitting anyway; "
                          "node is authoritative",
                          ht.channel_height, ht.channel_target);
     }
@@ -182,26 +176,28 @@ SubmitResult StatelessBlockUtility::encode_submit(
         if (logger)
             logger->warn("[StatelessBlockUtility::encode_submit] "
                          "unified tip moved (unified_height={} > "
-                         "template_unified_height={}) — submitting anyway",
+                         "template_unified_height={}) -- submitting anyway",
                          ht.unified_height, ht.template_unified_height);
     }
 
-    // ── Serialize the canonical block body ────────────────────────────────────
-    // Tritium format (216 bytes): nVersion(4) hashPrevBlock(128)
-    // hashMerkleRoot(64) nChannel(4) nHeight(4) nBits(4) nNonce(8)
-    auto block_bytes = llp_utils::serialize_full_block(solved_block,
-                                                        /*is_tritium=*/true);
-    if (block_bytes.size() != BLOCK_BODY_SIZE) {
+    // ── Pre-check 6: Delegate serialization to MiningTemplateInterface ────────
+    // prepare_block_submission(merkle_root, nonce, vOffsets) handles Tritium
+    // format, submit-audit logging, and Prime-channel vOffsets appending.
+    auto merkle_bytes = solved_block.hashMerkleRoot.GetBytes();
+    auto block_bytes = tmpl_iface.prepare_block_submission(
+        merkle_bytes, solved_block.nNonce, vOffsets);
+
+    if (block_bytes.empty()) {
         result.rejection_reason =
-            "serialized block size " + std::to_string(block_bytes.size()) +
-            " != " + std::to_string(BLOCK_BODY_SIZE) + " (expected Tritium)";
+            "MiningTemplateInterface::prepare_block_submission returned empty -- "
+            "no valid template or block validation failed";
         if (logger)
             logger->error("[StatelessBlockUtility::encode_submit] {}",
                           result.rejection_reason);
         return result;
     }
 
-    // ── Pre-check 6: Disposable Falcon sign (optional) ───────────────────────
+    // ── Pre-check 7: Disposable Falcon sign (optional) ───────────────────────
     std::vector<uint8_t> plaintext;
 
     if (falcon != nullptr) {
@@ -244,7 +240,8 @@ SubmitResult StatelessBlockUtility::encode_submit(
                           "signed: block({})+ts(8)+siglen(2)+sig({}) = {} bytes",
                           block_bytes.size(), sig_len, plaintext.size());
     } else {
-        // No signing — payload is just the serialized block bytes
+        // No signing -- payload is just the serialized block bytes (+ any vOffsets
+        // already appended by prepare_block_submission for Prime channel)
         plaintext = std::move(block_bytes);
         if (logger)
             logger->debug("[StatelessBlockUtility::encode_submit] "
@@ -252,7 +249,7 @@ SubmitResult StatelessBlockUtility::encode_submit(
                           plaintext.size());
     }
 
-    // ── Pre-check 7: Wire encode ─────────────────────────────────────────────
+    // ── Pre-check 8: Wire encode ─────────────────────────────────────────────
     auto wire = PacketBuilder::build(lane, LLP::SUBMIT_BLOCK, plaintext);
     if (!wire || wire->empty()) {
         result.rejection_reason = "PacketBuilder::build returned empty result";

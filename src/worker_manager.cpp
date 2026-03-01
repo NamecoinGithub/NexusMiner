@@ -338,10 +338,14 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             m_logger->info("[Worker_manager] Preparing full block submission");
                             m_logger->info("[Worker_manager]   Height: {}", block_data->nHeight);
                             m_logger->info("[Worker_manager]   Nonce:  0x{:016x}", block_data->nNonce);
+                            if (!block_data->vOffsets.empty())
+                                m_logger->info("[Worker_manager]   vOffsets: {} bytes (Prime channel)",
+                                               block_data->vOffsets.size());
                             
                             auto full_block_bytes = template_interface->prepare_block_submission(
                                 block_data->merkle_root.GetBytes(), 
-                                block_data->nNonce);
+                                block_data->nNonce,
+                                block_data->vOffsets);
                             
                             if (full_block_bytes.empty())
                             {
@@ -980,7 +984,8 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                     }
                     if (!tmpl_iface) return;
                     auto full_bytes = tmpl_iface->prepare_block_submission(
-                        block_data->merkle_root.GetBytes(), block_data->nNonce);
+                        block_data->merkle_root.GetBytes(), block_data->nNonce,
+                        block_data->vOffsets);
                     if (!full_bytes.empty())
                         submit_solution(full_bytes, block_data->nNonce);
                 });
