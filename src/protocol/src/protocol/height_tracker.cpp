@@ -23,11 +23,22 @@ void HeightTracker::OnPushNotification(uint32_t unified_height,
                                         uint32_t nbits)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_diagnostic.push_unified_height  = unified_height;
-    m_diagnostic.push_channel_height  = channel_height;
+    m_diagnostic.push_unified_height = unified_height;
+    m_diagnostic.push_channel_height = channel_height;
     m_diagnostic.push_difficulty_nbits = nbits;
-    m_diagnostic.last_push_at = std::chrono::steady_clock::now();
+    if (nbits != 0)
+        m_latest_difficulty_nbits = nbits;
+
+    // Keep per-channel push heights in sync
+    if (m_channel == 1)
+        m_diagnostic.push_prime_height = channel_height;
+    else if (m_channel == 2)
+        m_diagnostic.push_hash_height = channel_height;
+
     m_last_update_source = UpdateSource::PUSH;
+    auto now = std::chrono::steady_clock::now();
+    m_last_height_update = now;
+    m_diagnostic.last_push_at = now;
 }
 
 // ── OnGetRound: updates DiagnosticObserverState round fields ONLY ─────────────
@@ -36,11 +47,22 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
                                 uint32_t nbits)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_diagnostic.round_unified_height  = unified_height;
-    m_diagnostic.round_channel_height  = channel_height;
+    m_diagnostic.round_unified_height = unified_height;
+    m_diagnostic.round_channel_height = channel_height;
     m_diagnostic.round_difficulty_nbits = nbits;
-    m_diagnostic.last_round_at = std::chrono::steady_clock::now();
+    if (nbits != 0)
+        m_latest_difficulty_nbits = nbits;
+
+    // Keep per-channel round heights in sync
+    if (m_channel == 1)
+        m_diagnostic.round_prime_height = channel_height;
+    else if (m_channel == 2)
+        m_diagnostic.round_hash_height = channel_height;
+
     m_last_update_source = UpdateSource::GET_ROUND;
+    auto now = std::chrono::steady_clock::now();
+    m_last_height_update = now;
+    m_diagnostic.last_round_at = now;
 }
 
 // ── OnTemplateMetadata: backward-compat wrapper → delegates to OnBlockDataReceived ──
@@ -88,27 +110,27 @@ void HeightTracker::OnTemplateReceived(uint32_t channel,
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_channel = channel;
-    // Advance canonical channel_target monotonically — a stale GET_BLOCK response
-    // must not undo a push-derived advancement set by AdvanceChannelTarget().
-    if (template_channel_target > m_canonical.canonical_channel_target) {
-        m_canonical.canonical_channel_target = template_channel_target;
-        // A fresh template advancing channel_target means we recovered from any fork.
-        // Clear the diagnostic fork canary so Colin shows "healthy" after recovery.
-        m_diagnostic.keepalive_fork_score       = 0;
-        m_diagnostic.keepalive_peak_fork_score  = 0;
+    // Only advance channel_target — a stale GET_BLOCK response must not
+    // undo a push-derived advancement set by AdvanceChannelTarget().
+    if (template_channel_target > m_channel_target) {
+        m_channel_target = template_channel_target;
+        // Clear fork scores after successful recovery — a fresh template
+        // that advances the target means the fork is resolved.
+        m_diagnostic.fork_score = 0;
+        m_diagnostic.peak_fork_score = 0;
     }
-    // Capture unified height at template receipt (from canonical if available, else push)
-    m_template_unified_height = std::max(m_canonical.canonical_unified_height,
-                                          m_diagnostic.push_unified_height);
+    // Capture tip at template receipt — use max(canonical, push, round) for consistency
+    auto snap = build_snapshot_locked();
+    m_template_unified_height = snap.unified_height;
     m_last_update_source = UpdateSource::TEMPLATE;
-    m_canonical.canonical_received_at = std::chrono::steady_clock::now();
+    m_last_template_update = std::chrono::steady_clock::now();
 }
 
 void HeightTracker::AdvanceChannelTarget(uint32_t new_target)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (new_target > m_canonical.canonical_channel_target) {
-        m_canonical.canonical_channel_target = new_target;
+    if (new_target > m_channel_target) {
+        m_channel_target = new_target;
     }
 }
 
@@ -129,59 +151,65 @@ void HeightTracker::OnKeepaliveResponse(uint32_t unified_height,
                                          uint32_t fork_score)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // Diagnostic only — keepalive ACKs never update canonical state.
     m_diagnostic.keepalive_unified_height = unified_height;
     m_diagnostic.keepalive_prime_height   = prime_height;
     m_diagnostic.keepalive_hash_height    = hash_height;
     m_diagnostic.keepalive_stake_height   = stake_height;
-    m_diagnostic.keepalive_hash_tip_lo32  = hash_tip_lo32;
-    m_diagnostic.keepalive_fork_score     = fork_score;
-    if (fork_score > m_diagnostic.keepalive_peak_fork_score)
-        m_diagnostic.keepalive_peak_fork_score = fork_score;
-    m_diagnostic.last_keepalive_ack_at = std::chrono::steady_clock::now();
+    m_diagnostic.hash_tip_lo32            = hash_tip_lo32;
+    m_diagnostic.fork_score               = fork_score;
+    if (fork_score > m_diagnostic.peak_fork_score)
+        m_diagnostic.peak_fork_score = fork_score;
     m_last_update_source = UpdateSource::KEEPALIVE;
+    auto now = std::chrono::steady_clock::now();
+    m_last_height_update = now;
+    m_diagnostic.last_keepalive_ack_at = now;
 }
 
-// ── build_snapshot_locked: compose Snapshot from canonical + diagnostic ─────────
-// Must be called under m_mutex.
 HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     Snapshot s;
 
-    // unified_height and channel_height: use max(canonical, push) so that:
-    //   1. Push-driven staleness detection continues to work.
-    //   2. Canonical prevents keepalive regressions.
-    //   3. is_tip_moved() fires correctly when push advances beyond canonical.
-    if (m_canonical.is_initialized()) {
-        s.unified_height    = std::max(m_canonical.canonical_unified_height,
-                                       m_diagnostic.push_unified_height);
-        s.channel_height    = std::max(m_canonical.canonical_channel_height,
-                                       m_diagnostic.push_channel_height);
-        s.difficulty_nbits  = m_canonical.canonical_difficulty_nbits;
-    } else {
-        s.unified_height    = m_diagnostic.push_unified_height;
-        s.channel_height    = m_diagnostic.push_channel_height;
-        s.difficulty_nbits  = m_diagnostic.push_difficulty_nbits;
-    }
+    // Compose unified/channel heights: max(canonical, push, round)
+    // Keepalive heights are excluded — they must never regress mining decisions.
+    s.unified_height = std::max({m_canonical.canonical_unified_height,
+                                  m_diagnostic.push_unified_height,
+                                  m_diagnostic.round_unified_height});
+    s.channel_height = std::max({m_canonical.canonical_channel_height,
+                                  m_diagnostic.push_channel_height,
+                                  m_diagnostic.round_channel_height});
 
-    s.channel_target         = m_canonical.canonical_channel_target;
-    s.hash_prev_block        = m_canonical.canonical_hash_prev_block;
-    s.channel                = m_channel;
+    // Difficulty: latest non-zero from any non-keepalive source
+    s.difficulty_nbits = m_latest_difficulty_nbits;
+
+    s.channel_target = m_channel_target;
+    s.channel = m_channel;
     s.template_unified_height = m_template_unified_height;
-    s.last_update_source     = m_last_update_source;
+    s.hash_prev_block = m_canonical.canonical_hash_prev_block;
+    s.last_update_source = m_last_update_source;
 
-    // Per-channel heights and fork detection come exclusively from keepalive (diagnostic)
-    s.prime_height           = m_diagnostic.keepalive_prime_height;
-    s.hash_height            = m_diagnostic.keepalive_hash_height;
-    s.stake_height           = m_diagnostic.keepalive_stake_height;
-    s.hash_tip_lo32          = m_diagnostic.keepalive_hash_tip_lo32;
-    s.fork_score             = m_diagnostic.keepalive_fork_score;
-    s.peak_fork_score        = m_diagnostic.keepalive_peak_fork_score;
-    s.last_keepalive_ack_at  = m_diagnostic.last_keepalive_ack_at;
+    // Per-channel heights: max(canonical, push, round)
+    s.prime_height = std::max({m_canonical.canonical_prime_height,
+                                m_diagnostic.push_prime_height,
+                                m_diagnostic.round_prime_height});
+    s.hash_height  = std::max({m_canonical.canonical_hash_height,
+                                m_diagnostic.push_hash_height,
+                                m_diagnostic.round_hash_height});
+    s.stake_height = m_diagnostic.keepalive_stake_height;
 
-    // last_template_update = when canonical state was last set (OnBlockDataReceived / OnTemplateReceived)
-    s.last_template_update   = m_canonical.canonical_received_at;
-    // last_height_update = max of canonical receipt and last push (for post-push guard)
-    s.last_height_update     = std::max(m_canonical.canonical_received_at,
-                                        m_diagnostic.last_push_at);
+    // Fork detection fields — diagnostic only
+    s.hash_tip_lo32 = m_diagnostic.hash_tip_lo32;
+    s.fork_score = m_diagnostic.fork_score;
+    s.peak_fork_score = m_diagnostic.peak_fork_score;
+
+    // Timing
+    s.last_keepalive_ack_at = m_diagnostic.last_keepalive_ack_at;
+    s.last_height_update = m_last_height_update;
+    s.last_template_update = m_last_template_update;
+
+    // Canonical reference for drift computation and fork detection
+    s.canonical_unified_height = m_canonical.canonical_unified_height;
+    s.canonical_channel_height = m_canonical.canonical_channel_height;
+    s.canonical_hash_prev_block = m_canonical.canonical_hash_prev_block;
 
     return s;
 }

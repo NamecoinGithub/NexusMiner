@@ -12,6 +12,8 @@ namespace nexusminer
 static constexpr uint32_t WARN_CONNECTION_RETRIES = 100;
 static constexpr uint64_t WARN_TEMPLATE_AGE_SECONDS = 150;
 static constexpr int64_t WARN_KEEPALIVE_ACK_STALE_SECONDS = 300;  // 5 min without keepalive ACK
+static constexpr int32_t WARN_CANONICAL_DRIFT_THRESHOLD = 3;      // blocks ahead before warning
+static constexpr int64_t WARN_DIAGNOSTIC_STALE_SECONDS = 120;     // 2 min without any diagnostic update
 
 ColinAgent::ColinAgent(
     std::shared_ptr<asio::io_context> io_context,
@@ -131,6 +133,20 @@ std::string ColinAgent::check_tip_sync(uint32_t miner_prevhash_lo32, uint32_t no
            " — miner may be on stale/forked tip";
 }
 
+std::string ColinAgent::check_canonical_drift(int32_t drift)
+{
+    if (drift <= WARN_CANONICAL_DRIFT_THRESHOLD)
+        return {};  // drift within tolerance — canonical either caught up or slightly behind
+    return "HeightDrift +" + std::to_string(drift) +
+           " — canonical BLOCK_DATA path lagging behind push/round";
+}
+
+std::string ColinAgent::check_diagnostic_staleness(int64_t age_seconds)
+{
+    if (age_seconds < WARN_DIAGNOSTIC_STALE_SECONDS)
+        return {};  // fresh enough
+    return "No diagnostic update (push/round/keepalive) for " +
+           std::to_string(age_seconds) + "s — all observer sources may be stale";
 // ── New hooks using canonical / diagnostic split ──────────────────────────────
 
 // Maximum expected inter-channel skew (blocks). Unified height and channel
@@ -443,6 +459,71 @@ void ColinAgent::emit_report(
             m_logger->info("[Colin]  TipSync  │ node tip_lo32=0 (legacy path or no keepalive ACK yet — skip cross-check)");
         } else {
             m_logger->info("[Colin]  TipSync  │ waiting for template + keepalive ACK data");
+        }
+    }
+
+    /* Canonical Drift section — uses height_drift_from_canonical() to detect
+     * when push/round heights are running ahead of the canonical BLOCK_DATA path.
+     * Also reports DiagnosticObserverState::is_initialized() and latest_received_at()
+     * so operators can see whether all three diagnostic sources are feeding data. */
+    if (m_height_tracker)
+    {
+        auto snap = m_height_tracker->GetSnapshot();
+        auto diag = m_height_tracker->GetDiagnosticSnapshot();
+        auto canonical = m_height_tracker->GetCanonicalSnapshot();
+
+        m_logger->info("[Colin]  ── Canonical vs Diagnostic State ──────────────");
+
+        // Canonical initialization status
+        if (canonical.is_initialized()) {
+            auto canonical_age_s = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - canonical.canonical_received_at).count();
+            m_logger->info("[Colin]    Canonical │ ✓ initialized  unified={} channel={} target={} ({}s ago)",
+                canonical.canonical_unified_height, canonical.canonical_channel_height,
+                canonical.canonical_channel_target, canonical_age_s);
+        } else {
+            m_logger->warn("[Colin]    Canonical │ ⚠ NOT initialized (no BLOCK_DATA received yet)");
+        }
+
+        // Diagnostic initialization status
+        if (diag.is_initialized()) {
+            auto diag_latest = diag.latest_received_at();
+            auto diag_age_s = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - diag_latest).count();
+            m_logger->info("[Colin]    Diagnostic │ ✓ initialized  push_unified={} round_unified={} keepalive_unified={} (latest {}s ago)",
+                diag.push_unified_height, diag.round_unified_height,
+                diag.keepalive_unified_height, diag_age_s);
+        } else {
+            m_logger->warn("[Colin]    Diagnostic │ ⚠ NOT initialized (no push/round/keepalive data yet)");
+        }
+
+        // Height drift: how far composed snapshot heights have drifted from canonical
+        if (canonical.is_initialized()) {
+            int32_t drift = snap.height_drift_from_canonical();
+            if (drift == 0) {
+                m_logger->info("[Colin]    HeightDrift │ ✓ 0 (canonical caught up with push/round)");
+            } else if (drift > 0 && drift <= WARN_CANONICAL_DRIFT_THRESHOLD) {
+                m_logger->info("[Colin]    HeightDrift │ +{} (push/round ahead — normal during BLOCK_DATA latency)", drift);
+            } else if (drift > WARN_CANONICAL_DRIFT_THRESHOLD) {
+                m_logger->warn("[Colin]    HeightDrift │ ⚠ +{} (push/round significantly ahead — BLOCK_DATA may be delayed)", drift);
+                auto w = check_canonical_drift(drift);
+                if (!w.empty()) warnings.push_back(w);
+            } else {
+                // Negative drift should not happen (canonical > composed) — log as anomaly
+                m_logger->warn("[Colin]    HeightDrift │ ⚠ {} (anomaly — canonical ahead of composed snapshot)", drift);
+            }
+        }
+
+        // Diagnostic staleness: warn if all diagnostic sources have gone silent
+        if (diag.is_initialized()) {
+            auto diag_latest = diag.latest_received_at();
+            auto diag_age_s = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - diag_latest).count();
+            auto w = check_diagnostic_staleness(diag_age_s);
+            if (!w.empty()) {
+                m_logger->warn("[Colin]    DiagStale │ ⚠ no diagnostic update for {}s", diag_age_s);
+                warnings.push_back(w);
+            }
         }
     }
 
