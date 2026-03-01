@@ -14,24 +14,32 @@
  *  9. is_tip_moved() detects unified tip advance (Phase 3A: tip_moved refresh reason)
  * 10. is_tip_moved() resets to false after new template received
  * 11. Difficulty from push updates is reflected in HeightTracker snapshot
- * 18. Push updates prime_height for Prime channel (keepalive isolated)
- * 19. Push updates hash_height for Hash channel (keepalive isolated)
- * 20. Production regression: push advances prime_height past keepalive value
- * 27. Canonical isolation — keepalive cannot corrupt canonical state
- * 30. OnBlockDataReceived monotonicity (stale block data never regresses)
- * 31. height_drift_from_canonical() measures push-vs-canonical drift
- * 32. canonical_hash_prev_block anchored to BLOCK_DATA (Tritium block)
  *     (GET_ROUND and keepalive difficulty go to diagnostic only — not in snapshot)
+ * 12. Post-push guard — last_template_update >= last push time
+ * 13. Pre-push guard — template received BEFORE a push is identified correctly
+ * 14. OnKeepaliveResponse sets diagnostic fields only (not unified/channel_height)
+ * 15. OnKeepaliveResponse legacy zeros — safe, no canonical corruption
+ * 16. OnKeepaliveResponse updates stake_height correctly
+ * 17. peak_fork_score is a persistent high-water mark
  * 18. Push updates channel_height; prime_height is keepalive-only (diagnostic)
  * 19. Push updates channel_height; hash_height is keepalive-only (diagnostic)
  * 20. Production regression: push advances channel_height; prime_height from keepalive
+ * 21. AdvanceChannelTarget only advances, never regresses
+ * 22. OnTemplateReceived does not regress channel_target
+ * 23. Doom-loop prevention — staleness fires once per advance
+ * 24. Stale GET_BLOCK response does not cause regression
+ * 25. OnTemplateMetadata does NOT regress channel_height
+ * 26. OnTemplateMetadata per-channel heights — canonical is monotonic
  * 27. Canonical state only from OnBlockDataReceived — push/keepalive don't corrupt
  * 28. Keepalive does not regress canonical unified/channel heights
  * 29. OnBlockDataReceived is monotonic — stale BLOCK_DATA cannot regress canonical
  * 30. Fork score lives in DiagnosticObserverState, not canonical
  * 31. height_drift_from_canonical() returns 0 for healthy state
- * 32. DiagnosticObserverState::is_initialized() — diagnostic equivalent of canonical is_initialized()
- * 33. DiagnosticObserverState::latest_received_at() — diagnostic equivalent of canonical_received_at
+ * 32. canonical_hash_prev_block anchored to BLOCK_DATA (Tritium block)
+ * 33. DiagnosticObserverState::is_initialized() — diagnostic equivalent of canonical
+ * 34. DiagnosticObserverState::latest_received_at() — diagnostic equivalent of canonical_received_at
+ * 35. AdvanceChannelTarget() also updates canonical_channel_target
+ * 36. OnTemplateReceived() sets template_unified_height from canonical
  */
 
 #include "protocol/height_tracker.hpp"
@@ -1409,17 +1417,11 @@ int main() {
     test_height_drift_from_canonical();
     test_canonical_hash_prev_block();
     test_diagnostic_observer_helpers();
-    // New tests for canonical/diagnostic isolation
     test_canonical_state_only_from_block_data();
     test_keepalive_does_not_corrupt_canonical();
-    test_on_block_data_received_monotonic();
     test_diagnostic_fork_score_isolated();
-    test_height_drift_from_canonical();
-    test_fork_scores_reset_on_template_advance();
-    test_fork_scores_sticky_without_advance();
     test_diagnostic_is_initialized();
     test_diagnostic_latest_received_at();
-    // New tests for Bug 2 and Bug 3 fixes
     test_advance_channel_target_updates_canonical();
     test_on_template_received_sets_template_unified_height();
 
