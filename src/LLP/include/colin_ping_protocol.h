@@ -446,12 +446,17 @@ namespace LLP
 
         /** IsForkDetected — compare node's tip against miner's locally stored prevHash canary.
          *
+         *  Returns true only when the node explicitly reports a fork (fork_score > 0)
+         *  AND the tip doesn't match the miner's prevHash.  A prevhash mismatch alone
+         *  is normal block advancement (handled by PUSH notifications); fork_score alone
+         *  with matching tips means the fork was already resolved.
+         *
          *  @param[in] myHashPrevBlock_lo32  Lo32 of hashPrevBlock from miner's current template
          *  @return true if fork detected
          **/
         bool IsForkDetected(uint32_t myHashPrevBlock_lo32) const
         {
-            return (hash_tip_lo32 != myHashPrevBlock_lo32) || (fork_score > 0);
+            return (fork_score > 0) && (hash_tip_lo32 != myHashPrevBlock_lo32);
         }
 
         /** Parse — unified 32-byte wire format, used on BOTH SESSION_KEEPALIVE and KEEPALIVE_V2_ACK paths **/
