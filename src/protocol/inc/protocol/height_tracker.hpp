@@ -135,6 +135,35 @@ public:
                 return false;
             return keepalive_hash_tip_lo32 != canonical_hash_prev_lo32;
         }
+
+        /**
+         * @brief True when at least one diagnostic source has provided data.
+         *
+         * Diagnostic equivalent of CanonicalChainState::is_initialized().
+         * Returns true as soon as any of push notifications, GET_ROUND responses,
+         * or keepalive ACKs have been received.
+         */
+        bool is_initialized() const {
+            return push_unified_height > 0 ||
+                   round_unified_height > 0 ||
+                   keepalive_unified_height > 0;
+        }
+
+        /**
+         * @brief Time of the most recent diagnostic update from any source.
+         *
+         * Diagnostic equivalent of CanonicalChainState::canonical_received_at.
+         * Returns the latest timestamp across push, GET_ROUND, and keepalive
+         * sources. Returns a default-constructed (epoch) time_point when no
+         * source has been received yet.
+         */
+        std::chrono::steady_clock::time_point latest_received_at() const {
+            auto t = std::chrono::steady_clock::time_point{};
+            if (last_push_at > t)          t = last_push_at;
+            if (last_round_at > t)         t = last_round_at;
+            if (last_keepalive_ack_at > t) t = last_keepalive_ack_at;
+            return t;
+        }
     };
 
     /**

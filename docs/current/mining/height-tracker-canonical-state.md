@@ -204,6 +204,15 @@ bool is_fork_canary_active() const { return keepalive_peak_fork_score > 0; }
 /// True when node's reported best-chain tip differs from template's hashPrevBlock
 /// (informational — fires for 0-4 s after every new block; NOT a hard-stop trigger)
 bool is_tip_sync_mismatch(uint32_t canonical_hash_prev_lo32) const;
+
+/// True when at least one diagnostic source (push, GET_ROUND, or keepalive) has provided data.
+/// Diagnostic equivalent of CanonicalChainState::is_initialized().
+bool is_initialized() const;
+
+/// Most recent update time across push, GET_ROUND, and keepalive sources.
+/// Diagnostic equivalent of CanonicalChainState::canonical_received_at.
+/// Returns epoch time_point when no source has been received yet.
+std::chrono::steady_clock::time_point latest_received_at() const;
 ```
 
 ---
@@ -267,6 +276,8 @@ tracker) cannot cause canonical heights to retreat.
 | 29 | `OnBlockDataReceived()` is monotonic — stale BLOCK_DATA with lower heights is silently ignored |
 | 30 | `fork_score` lives exclusively in `DiagnosticObserverState`; `GetCanonicalSnapshot()` has no fork field |
 | 31 | `height_drift_from_canonical()` returns 0 when unified equals channel_target; non-zero otherwise |
+| 32 | `DiagnosticObserverState::is_initialized()` — false before any data, true after any of push/GET_ROUND/keepalive; false when only BLOCK_DATA received |
+| 33 | `DiagnosticObserverState::latest_received_at()` — epoch before any data; advances with each source; equals `last_keepalive_ack_at` after keepalive |
 
 ---
 

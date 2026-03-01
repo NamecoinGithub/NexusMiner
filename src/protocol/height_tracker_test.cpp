@@ -23,6 +23,8 @@
  * 29. OnBlockDataReceived is monotonic — stale BLOCK_DATA cannot regress canonical
  * 30. Fork score lives in DiagnosticObserverState, not canonical
  * 31. height_drift_from_canonical() returns 0 for healthy state
+ * 32. DiagnosticObserverState::is_initialized() — diagnostic equivalent of canonical is_initialized()
+ * 33. DiagnosticObserverState::latest_received_at() — diagnostic equivalent of canonical_received_at
  */
 
 #include "protocol/height_tracker.hpp"
@@ -1057,6 +1059,78 @@ void test_fork_scores_sticky_without_advance() {
 }
 
 // ============================================================================
+// Test 32: DiagnosticObserverState::is_initialized() — diagnostic equivalent
+// ============================================================================
+void test_diagnostic_is_initialized() {
+    std::cout << "\nTest 32: DiagnosticObserverState::is_initialized() — diagnostic equivalent\n";
+
+    // Empty tracker: neither canonical nor diagnostic should be initialized
+    HeightTracker tracker;
+    auto diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("is_initialized() == false when no data",     !diag.is_initialized());
+
+    // Keepalive alone initializes diagnostic
+    tracker.OnKeepaliveResponse(6000, 450, 800, 999, 0xCAFEBABEu, 0);
+    diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("is_initialized() == true after keepalive",   diag.is_initialized());
+
+    // Fresh tracker: push alone initializes diagnostic
+    HeightTracker tracker2;
+    tracker2.OnPushNotification(6100, 2332100, 0x1d00ffff);
+    diag = tracker2.GetDiagnosticSnapshot();
+    print_test_result("is_initialized() == true after push",        diag.is_initialized());
+
+    // Fresh tracker: GET_ROUND alone initializes diagnostic
+    HeightTracker tracker3;
+    tracker3.OnGetRound(6200, 2332200, 0x1d00ffff);
+    diag = tracker3.GetDiagnosticSnapshot();
+    print_test_result("is_initialized() == true after GET_ROUND",   diag.is_initialized());
+
+    // Canonical BLOCK_DATA does NOT initialize diagnostic
+    HeightTracker tracker4;
+    tracker4.OnBlockDataReceived(6300, 2332300, 0x1d00ffff, uint1024_t{});
+    diag = tracker4.GetDiagnosticSnapshot();
+    print_test_result("is_initialized() == false after BLOCK_DATA only",  !diag.is_initialized());
+    auto can = tracker4.GetCanonicalSnapshot();
+    print_test_result("canonical is_initialized() == true after BLOCK_DATA", can.is_initialized());
+}
+
+// ============================================================================
+// Test 33: DiagnosticObserverState::latest_received_at() — diagnostic equivalent
+// ============================================================================
+void test_diagnostic_latest_received_at() {
+    std::cout << "\nTest 33: DiagnosticObserverState::latest_received_at() — diagnostic equivalent\n";
+
+    HeightTracker tracker;
+    auto epoch = std::chrono::steady_clock::time_point{};
+    auto diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("latest_received_at() == epoch when no data",
+                      diag.latest_received_at() == epoch);
+
+    // Push sets a timestamp
+    tracker.OnPushNotification(6100, 2332100, 0x1d00ffff);
+    diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("latest_received_at() > epoch after push",
+                      diag.latest_received_at() > epoch);
+
+    auto after_push = diag.latest_received_at();
+
+    // GET_ROUND at a later time should become the latest
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    tracker.OnGetRound(6200, 2332200, 0x1d00ffff);
+    diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("latest_received_at() advances after GET_ROUND",
+                      diag.latest_received_at() >= after_push);
+
+    // Keepalive at a later time should become the latest
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    tracker.OnKeepaliveResponse(6000, 450, 800, 999, 0, 0);
+    diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("latest_received_at() == last_keepalive_ack_at after keepalive",
+                      diag.latest_received_at() == diag.last_keepalive_ack_at);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -1098,6 +1172,8 @@ int main() {
     test_height_drift_from_canonical();
     test_fork_scores_reset_on_template_advance();
     test_fork_scores_sticky_without_advance();
+    test_diagnostic_is_initialized();
+    test_diagnostic_latest_received_at();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
