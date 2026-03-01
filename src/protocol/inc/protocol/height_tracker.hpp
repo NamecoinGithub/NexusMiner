@@ -148,19 +148,22 @@ public:
                     uint32_t nbits);
 
     /**
-     * @brief Update heights from BLOCK_DATA / GET_BLOCK response metadata
+     * @brief Monotonic height update from BLOCK_DATA / STATELESS_GET_BLOCK metadata
      *
-     * Like OnGetRound() but channel_height is **monotonic** — it is only
-     * advanced, never regressed below the current value.  This prevents a
-     * stale GET_BLOCK response (built by the node before push notifications
-     * advanced the chain) from undoing push-derived channel_height values.
+     * Called by update_height_state() when the source is TEMPLATE.  Unlike
+     * OnGetRound() / OnPushNotification(), this method only **advances**
+     * unified_height and channel_height — it never regresses them.
      *
-     * unified_height and difficulty_nbits are always overwritten (the
-     * template is authoritative for those fields at receipt time).
+     * Rationale: A BLOCK_DATA response may arrive after several push
+     * notifications have already advanced the tracker to a higher height.
+     * Unconditionally overwriting with the (now-stale) template metadata
+     * regresses the tracker, hiding true staleness from is_template_stale()
+     * and is_tip_moved(), causing the miner to mine a dead template for
+     * hundreds of seconds.
      *
-     * @param unified_height  Unified blockchain height from metadata prefix
-     * @param channel_height  Channel-specific height from metadata prefix
-     * @param nbits           Difficulty in compact nBits from metadata prefix
+     * @param unified_height  Unified height from template metadata
+     * @param channel_height  Channel height from template metadata
+     * @param nbits           Difficulty from template metadata
      */
     void OnTemplateMetadata(uint32_t unified_height, uint32_t channel_height,
                             uint32_t nbits);

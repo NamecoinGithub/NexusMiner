@@ -3685,10 +3685,14 @@ void Solo::update_height_state(uint32_t unified_height, uint32_t channel_height,
     } else if (source == HeightTracker::UpdateSource::GET_ROUND) {
         m_height_tracker.OnGetRound(unified_height, channel_height, difficulty_nbits);
     } else if (source == HeightTracker::UpdateSource::TEMPLATE) {
-        // Template metadata may arrive with a stale channel_height when the
-        // GET_BLOCK response was built before push notifications advanced the
-        // chain.  Use OnTemplateMetadata() which only advances channel_height
-        // — never regresses below push-derived values.
+        // Template metadata may arrive after pushes/keepalives have already
+        // advanced the tracker beyond the metadata heights.  Use the monotonic
+        // OnTemplateMetadata() so that stale BLOCK_DATA metadata cannot regress
+        // unified_height / channel_height, which would hide true staleness from
+        // is_template_stale() and is_tip_moved().
+        // OnTemplateReceived() is called separately by the handler (after read_template()
+        // succeeds) to set channel_target — see the STATELESS_GET_BLOCK handler in
+        // process_messages() and the legacy BLOCK_DATA handler.
         m_height_tracker.OnTemplateMetadata(unified_height, channel_height, difficulty_nbits);
     } else {
         m_logger->warn("[Solo] update_height_state: unexpected source {}, defaulting to GET_ROUND",

@@ -81,6 +81,12 @@ namespace {
     // so it can serve as a template fallback during recovery.
     constexpr uint32_t DEGRADED_SECONDARY_RETRY_DELAY_SECONDS = 5;
 
+    // Unified height drift threshold: if HeightTracker.unified_height exceeds
+    // template.block.nHeight by more than this many blocks, the template is
+    // presumed stale (hashPrevBlock is wrong) and must be discarded.
+    // 2 blocks allows for normal in-flight lag; drift > 2 is pathological.
+    constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 2;
+
 }
 
 Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Config& config, 
@@ -1789,6 +1795,66 @@ void Worker_manager::check_template_health()
             mark_recovery_initiated("escalation_hard_recovery");
             retry_template_request(true);
             return;
+        }
+    }
+
+    // ── Unified height drift detection ──────────────────────────────────────
+    // If HeightTracker's unified_height has advanced past the template's
+    // block.nHeight by more than UNIFIED_DRIFT_THRESHOLD blocks, the template
+    // is on a stale tip even if the channel height hasn't triggered
+    // is_template_stale() (e.g. only other channels found blocks, or stale
+    // BLOCK_DATA metadata regressed the tracker before OnTemplateMetadata fix).
+    {
+        auto ht_snap = solo_protocol->get_height_tracker_snapshot();
+        uint32_t tmpl_height = template_interface->get_template_height();
+
+        if (ht_snap.unified_height > 0 && tmpl_height > 0 &&
+            ht_snap.unified_height > tmpl_height + UNIFIED_DRIFT_THRESHOLD)
+        {
+            int32_t drift = static_cast<int32_t>(ht_snap.unified_height) -
+                            static_cast<int32_t>(tmpl_height);
+            m_logger->warn("[Worker_manager] ⚠️  HEIGHT_DRIFT: unified={} vs template.nHeight={} (drift={}) — template on stale tip",
+                ht_snap.unified_height, tmpl_height, drift);
+            template_interface->discard_template("Unified height drift: " +
+                std::to_string(drift) + " blocks behind");
+            stop_all_workers();
+            create_workers();
+            retry_template_request(true);
+            return;
+        }
+    }
+
+    // ── Fork / tip mismatch detection ───────────────────────────────────────
+    // If the keepalive ACK reports a non-zero fork_score AND the node's
+    // hash_tip_lo32 differs from the template's hashPrevBlock lo32, the miner
+    // is on the wrong fork.  Discard the stale template immediately.
+    {
+        auto ht_snap = solo_protocol->get_height_tracker_snapshot();
+
+        if (ht_snap.fork_score > 0 && ht_snap.hash_tip_lo32 != 0)
+        {
+            // Extract lo32 from the template's hashPrevBlock stored in the tracker.
+            auto prev_bytes = ht_snap.hash_prev_block.GetBytes();
+            uint32_t miner_lo32 = 0;
+            if (prev_bytes.size() >= 128) {
+                miner_lo32 = (uint32_t(prev_bytes[124]) << 24) |
+                             (uint32_t(prev_bytes[125]) << 16) |
+                             (uint32_t(prev_bytes[126]) <<  8) |
+                              uint32_t(prev_bytes[127]);
+            }
+
+            if (miner_lo32 != 0 && miner_lo32 != ht_snap.hash_tip_lo32)
+            {
+                m_logger->error("[Worker_manager] ❌ FORK DETECTED: miner_prevhash_lo32=0x{:08x} vs node_tip_lo32=0x{:08x} (fork_score={})",
+                    miner_lo32, ht_snap.hash_tip_lo32, ht_snap.fork_score);
+                m_logger->error("[Worker_manager]    Template is on the wrong fork — forcing hard recovery");
+                template_interface->discard_template("Fork detected: tip mismatch (fork_score=" +
+                    std::to_string(ht_snap.fork_score) + ")");
+                stop_all_workers();
+                create_workers();
+                retry_template_request(true);
+                return;
+            }
         }
     }
 

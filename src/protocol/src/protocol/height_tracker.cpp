@@ -55,24 +55,27 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
 }
 
 void HeightTracker::OnTemplateMetadata(uint32_t unified_height,
-                                       uint32_t channel_height,
-                                       uint32_t nbits)
+                                        uint32_t channel_height,
+                                        uint32_t nbits)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_state.unified_height = unified_height;
 
-    // Only advance channel_height — a stale GET_BLOCK response must not
-    // undo a push-derived advancement.
-    if (channel_height > m_state.channel_height) {
+    // Only advance — never regress from push/keepalive values.
+    if (unified_height > m_state.unified_height)
+        m_state.unified_height = unified_height;
+    if (channel_height > m_state.channel_height)
         m_state.channel_height = channel_height;
-    }
-    m_state.difficulty_nbits = nbits;
+    // Guard against nbits==0: unlike OnGetRound() which unconditionally assigns,
+    // template metadata may arrive from a stale response — don't clear a valid
+    // difficulty with zero.
+    if (nbits != 0)
+        m_state.difficulty_nbits = nbits;
 
-    // Keep per-channel heights in sync (advance-only)
-    if (m_state.channel == 1)
-        m_state.prime_height = std::max(m_state.prime_height, channel_height);
-    else if (m_state.channel == 2)
-        m_state.hash_height = std::max(m_state.hash_height, channel_height);
+    // Keep per-channel heights in sync (same reason as OnPushNotification)
+    if (m_state.channel == 1 && channel_height > m_state.prime_height)
+        m_state.prime_height = channel_height;
+    else if (m_state.channel == 2 && channel_height > m_state.hash_height)
+        m_state.hash_height = channel_height;
 
     m_state.last_update_source = UpdateSource::TEMPLATE;
     m_state.last_height_update = std::chrono::steady_clock::now();
