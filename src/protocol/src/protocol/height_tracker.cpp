@@ -64,6 +64,9 @@ void HeightTracker::OnTemplateMetadata(uint32_t unified_height,
         m_state.unified_height = unified_height;
     if (channel_height > m_state.channel_height)
         m_state.channel_height = channel_height;
+    // Guard against nbits==0: unlike OnGetRound() which unconditionally assigns,
+    // template metadata may arrive from a stale response — don't clear a valid
+    // difficulty with zero.
     if (nbits != 0)
         m_state.difficulty_nbits = nbits;
 
