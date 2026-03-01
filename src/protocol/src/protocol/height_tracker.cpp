@@ -53,6 +53,30 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
     m_state.last_height_update = std::chrono::steady_clock::now();
 }
 
+void HeightTracker::OnTemplateMetadata(uint32_t unified_height,
+                                        uint32_t channel_height,
+                                        uint32_t nbits)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    // Only advance — never regress from push/keepalive values.
+    if (unified_height > m_state.unified_height)
+        m_state.unified_height = unified_height;
+    if (channel_height > m_state.channel_height)
+        m_state.channel_height = channel_height;
+    if (nbits != 0)
+        m_state.difficulty_nbits = nbits;
+
+    // Keep per-channel heights in sync (same reason as OnPushNotification)
+    if (m_state.channel == 1 && channel_height > m_state.prime_height)
+        m_state.prime_height = channel_height;
+    else if (m_state.channel == 2 && channel_height > m_state.hash_height)
+        m_state.hash_height = channel_height;
+
+    m_state.last_update_source = UpdateSource::TEMPLATE;
+    m_state.last_height_update = std::chrono::steady_clock::now();
+}
+
 void HeightTracker::OnTemplateReceived(uint32_t channel,
                                         uint32_t template_channel_target)
 {
