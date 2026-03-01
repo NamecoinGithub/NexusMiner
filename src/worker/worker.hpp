@@ -65,6 +65,11 @@ public:
 	uint32_t nBits = 0x7b032ed8;
 	uint64_t nNonce = 21155560019;
 
+	// Prime channel offsets (Cunningham chain offsets from ValidatePrimeCandidate).
+	// Empty for Hash channel. Populated by worker_prime before firing the callback
+	// so that worker_manager can include them in prepare_block_submission().
+	std::vector<uint8_t> vOffsets;
+
 };
 
 class Worker {

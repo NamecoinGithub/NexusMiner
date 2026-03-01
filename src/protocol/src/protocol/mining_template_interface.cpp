@@ -248,6 +248,65 @@ MiningTemplateInterface::read_template(network::Shared_payload data,
     return read_template(*data, source_endpoint);
 }
 
+MiningTemplateInterface::ValidationResult
+MiningTemplateInterface::read_stateless_payload(const network::Payload& payload228,
+                                                 const std::string& source_endpoint)
+{
+    // ── Stateless BLOCK_DATA wire-format constants ────────────────────────────
+    static constexpr size_t METADATA_SIZE = 12;   // [unified_height(4)][channel_height(4)][nBits(4)]
+    static constexpr size_t BLOCK_SIZE    = 216;  // Tritium Block::Serialize() output
+    static constexpr size_t EXPECTED_SIZE = METADATA_SIZE + BLOCK_SIZE; // 228
+
+    // Size gate
+    if (payload228.size() != EXPECTED_SIZE) {
+        ValidationResult result;
+        result.is_valid = false;
+        result.error_message = "STATELESS_GET_BLOCK payload size " +
+            std::to_string(payload228.size()) +
+            " != " + std::to_string(EXPECTED_SIZE) + " (expected)";
+        m_logger->error("[TemplateInterface] read_stateless_payload: {}",
+                        result.error_message);
+        return result;
+    }
+
+    // ── Extract 12-byte metadata prefix (big-endian) ─────────────────────────
+    // These are DIAGNOSTIC fields only — the canonical mining state comes from
+    // the 216-byte block body below.
+    auto read_be32 = [&](size_t off) -> uint32_t {
+        return (static_cast<uint32_t>(payload228[off])     << 24) |
+               (static_cast<uint32_t>(payload228[off + 1]) << 16) |
+               (static_cast<uint32_t>(payload228[off + 2]) <<  8) |
+                static_cast<uint32_t>(payload228[off + 3]);
+    };
+    uint32_t nUnifiedHeightMeta   = read_be32(0);
+    uint32_t nChannelHeightMeta   = read_be32(4);
+    uint32_t nDifficultyMetaEcho  = read_be32(8);  // echoed nBits — not used separately
+
+    m_logger->debug("[TemplateInterface] read_stateless_payload: "
+                    "metadata unified={} channel={} nBits=0x{:08x}",
+                    nUnifiedHeightMeta, nChannelHeightMeta, nDifficultyMetaEcho);
+
+    // ── Delegate the 216-byte block body to the canonical read_template() ────
+    network::Payload block_body(payload228.begin() + METADATA_SIZE, payload228.end());
+    auto result = read_template(block_body, source_endpoint);
+
+    // ── Store diagnostic metadata in the current template (if decode succeeded) ─
+    if (result.is_valid) {
+        std::lock_guard<std::mutex> lock(m_template_mutex);
+        m_current_template.nUnifiedHeightMeta = nUnifiedHeightMeta;
+        m_current_template.nChannelHeightMeta = nChannelHeightMeta;
+        // NOTE: m_last_unified_height is intentionally kept as block.nHeight (set by
+        // read_template() above).  block.nHeight is the NEXT unified block height
+        // (tStateBest.nHeight + 1), which is what the set_channel_height() corruption
+        // guard compares against m_current_template.block.nHeight.  Overriding
+        // m_last_unified_height with nUnifiedHeightMeta (the CURRENT tip, i.e. one less)
+        // would cause the guard to always fire for stateless templates, silently
+        // discarding every template received via read_stateless_payload().
+    }
+
+    return result;
+}
+
 bool MiningTemplateInterface::has_valid_template() const
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
@@ -491,6 +550,28 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     m_logger->info("[TemplateInterface] Block submission prepared: {} bytes ({} format)",
         payload.size(), is_tritium ? "Tritium" : "Legacy");
     
+    return payload;
+}
+
+std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
+    const std::vector<uint8_t>& merkle_root,
+    uint64_t nonce,
+    const std::vector<uint8_t>& vOffsets)
+{
+    // Delegate the block serialization to the base overload
+    auto payload = prepare_block_submission(merkle_root, nonce);
+    if (payload.empty())
+        return payload;
+
+    // For Prime channel, append Cunningham-chain offsets so the node can verify
+    // the prime cluster via GetPrimeDifficulty() / GetOffsets().
+    // Hash channel vOffsets are always empty — no-op.
+    if (!vOffsets.empty() && m_channel == 1) {
+        payload.insert(payload.end(), vOffsets.begin(), vOffsets.end());
+        m_logger->debug("[TemplateInterface] Appended {} vOffset bytes for Prime channel",
+                        vOffsets.size());
+    }
+
     return payload;
 }
 
@@ -998,8 +1079,10 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
     
     // DEFENSIVE: Verify block.nHeight was NOT corrupted (must remain unified height).
     // set_channel_height() must ONLY update metadata — never block.nHeight.
-    // Note: m_last_unified_height is set to tmpl.block.nHeight in read_template(),
-    // which is already the unified blockchain height (tStateBest.nHeight + 1).
+    // m_last_unified_height is always set to tmpl.block.nHeight in read_template()
+    // (read_stateless_payload() deliberately does NOT override it).  For stateless
+    // templates, nUnifiedHeightMeta is the current chain tip (block.nHeight - 1);
+    // using it here would cause a false mismatch on every stateless template.
     // So both should be identical; any difference indicates in-flight corruption.
     if (m_last_unified_height > 0 && m_current_template.block.nHeight != m_last_unified_height) {
         m_logger->error("[TemplateInterface] ❌ CRITICAL: block.nHeight ({}) != last_unified_height ({})!",

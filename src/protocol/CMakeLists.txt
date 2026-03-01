@@ -9,7 +9,8 @@ add_library(protocol STATIC src/protocol/solo.cpp
                             src/protocol/push_notification_handler.cpp
                             src/protocol/height_tracker.cpp
                             src/protocol/packet_builder.cpp
-                            ${CMAKE_SOURCE_DIR}/src/LLP/colin_ping_handler.cpp)
+                            ${CMAKE_SOURCE_DIR}/src/LLP/colin_ping_handler.cpp
+                            ${CMAKE_SOURCE_DIR}/src/LLP/stateless_block_utility.cpp)
                     
 target_include_directories(protocol
     PUBLIC 
@@ -17,6 +18,8 @@ target_include_directories(protocol
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>
     PRIVATE
         ${CMAKE_SOURCE_DIR}/src/Util/include
+        ${CMAKE_SOURCE_DIR}/src/LLP/include
+        ${CMAKE_SOURCE_DIR}/src
 )
 
 target_link_libraries(protocol PRIVATE network LLP stats config spdlog nlohmann_json::nlohmann_json ${OPENSSL_LIBRARIES})
@@ -92,5 +95,19 @@ target_include_directories(session_status_wire_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
     ${CMAKE_SOURCE_DIR}/src/LLP/inc
     ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+# StatelessBlockUtility encode/decode unit tests
+add_executable(stateless_block_utility_test
+    stateless_block_utility_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp)
+target_link_libraries(stateless_block_utility_test PRIVATE protocol LLP spdlog)
+target_include_directories(stateless_block_utility_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src/LLP/include
+    ${CMAKE_SOURCE_DIR}/src/LLC/inc
     ${CMAKE_SOURCE_DIR}/src
 )
