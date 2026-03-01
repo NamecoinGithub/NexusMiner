@@ -148,6 +148,10 @@ public:
     // HeightTracker snapshot (single source of truth for height/staleness decisions)
     HeightTracker::Snapshot get_height_tracker_snapshot() const { return m_height_tracker.GetSnapshot(); }
 
+    // HeightTracker canonical/diagnostic snapshots (for code that needs explicit separation)
+    HeightTracker::CanonicalChainState get_canonical_snapshot() const { return m_height_tracker.GetCanonicalSnapshot(); }
+    HeightTracker::DiagnosticObserverState get_diagnostic_snapshot() const { return m_height_tracker.GetDiagnosticSnapshot(); }
+
     // HeightTracker reference (for direct read access by ColinAgent)
     const HeightTracker& get_height_tracker() const { return m_height_tracker; }
 

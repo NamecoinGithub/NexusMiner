@@ -20,6 +20,14 @@ namespace protocol {
  *
  * Thread-safe: all public methods are protected by an internal mutex.
  * Snapshot() returns a plain-struct copy for lockless reads by callers.
+ *
+ * Architecture:
+ *   CanonicalChainState  — updated ONLY by BLOCK_DATA / STATELESS_GET_BLOCK receipts.
+ *                          Drives all mining decisions (template validation, staleness,
+ *                          worker dispatch). Advances monotonically.
+ *   DiagnosticObserverState — updated by push notifications, keepalive ACKs, and
+ *                          GET_ROUND responses. Read-only for Colin diagnostics.
+ *                          NEVER drives mining decisions.
  */
 class HeightTracker {
 public:
@@ -32,6 +40,101 @@ public:
         GET_ROUND,        ///< Updated by a GET_ROUND / NEW_ROUND response
         TEMPLATE,         ///< Updated by a received mining template
         KEEPALIVE,        ///< Updated by a unified keepalive response (both legacy and stateless paths)
+    };
+
+    /**
+     * @brief Authoritative mining state — driven ONLY by BLOCK_DATA / STATELESS_GET_BLOCK
+     *
+     * This struct represents the single source of truth for all mining decisions.
+     * It is NEVER updated by push notifications, keepalive ACKs, or GET_ROUND responses.
+     *
+     * Invariant: canonical_unified_height and canonical_channel_height only advance
+     * monotonically — they NEVER regress.
+     */
+    struct CanonicalChainState {
+        uint32_t canonical_unified_height{0};   ///< block.nHeight from BLOCK_DATA
+        uint32_t canonical_channel_height{0};   ///< nChannelHeight from BLOCK_DATA metadata prefix
+        uint32_t canonical_difficulty_nbits{0}; ///< nBits from BLOCK_DATA metadata prefix
+        uint32_t canonical_channel_target{0};   ///< channel_height + 1 (the block we're mining for)
+        uint1024_t canonical_hash_prev_block{}; ///< hashPrevBlock from BLOCK_DATA (fork detection anchor)
+        std::chrono::steady_clock::time_point canonical_received_at{}; ///< When this canonical state was set
+
+        /// True when canonical state has been set at least once from a BLOCK_DATA receipt
+        bool is_initialized() const { return canonical_unified_height > 0; }
+
+        /**
+         * @brief True when canonical channel target has been met by the chain
+         */
+        bool is_canonically_stale() const {
+            return (canonical_channel_height > 0 && canonical_channel_target > 0 &&
+                    canonical_channel_height >= canonical_channel_target);
+        }
+
+        /**
+         * @brief HEIGHT_DRIFT check using only canonical state
+         *
+         * Compares canonical_unified_height against canonical_channel_target using
+         * signed arithmetic. Returns 0 when they are equal, which can occur when
+         * the template's unified height happens to equal the channel target (e.g.,
+         * in single-channel contexts or diagnostic checks). Non-zero values indicate
+         * the magnitude of the difference between the two dimensions.
+         *
+         * Note: In a multi-channel blockchain, canonical_unified_height and
+         * canonical_channel_target represent different height dimensions, so a
+         * non-zero result is normal. This is primarily useful for Colin diagnostics.
+         */
+        int32_t height_drift_from_canonical() const {
+            if (canonical_channel_target == 0 || canonical_unified_height == 0)
+                return 0;
+            return static_cast<int32_t>(canonical_unified_height) -
+                   static_cast<int32_t>(canonical_channel_target);
+        }
+    };
+
+    /**
+     * @brief Diagnostic and telemetry state — for Colin agent observation ONLY
+     *
+     * Updated by push notifications, keepalive ACKs, and GET_ROUND responses.
+     * MUST NOT be used to make any mining decisions (template validation,
+     * staleness detection, worker dispatch, fork detection for hard stops).
+     */
+    struct DiagnosticObserverState {
+        // ── Heights from push notifications (BLOCK_AVAILABLE) ─────────────────
+        uint32_t push_unified_height{0};
+        uint32_t push_channel_height{0};
+        uint32_t push_difficulty_nbits{0};
+        std::chrono::steady_clock::time_point last_push_at{};
+
+        // ── Heights from GET_ROUND / NEW_ROUND responses ────────────────────────
+        uint32_t round_unified_height{0};
+        uint32_t round_channel_height{0};
+        uint32_t round_difficulty_nbits{0};
+        std::chrono::steady_clock::time_point last_round_at{};
+
+        // ── Keepalive telemetry (SESSION_KEEPALIVE ACK) ─────────────────────────
+        uint32_t keepalive_unified_height{0};
+        uint32_t keepalive_prime_height{0};
+        uint32_t keepalive_hash_height{0};
+        uint32_t keepalive_stake_height{0};
+        uint32_t keepalive_hash_tip_lo32{0};   ///< Lo32 of node's hashBestChain
+        uint32_t keepalive_fork_score{0};       ///< Current fork score from node
+        uint32_t keepalive_peak_fork_score{0};  ///< High-water mark (diagnostic canary only)
+        std::chrono::steady_clock::time_point last_keepalive_ack_at{};
+
+        /// True when the node reported any fork divergence (diagnostic canary — do NOT use for hard stops)
+        bool is_fork_canary_active() const { return keepalive_peak_fork_score > 0; }
+
+        /**
+         * @brief True when TipSync mismatch is detected (diagnostic warning only)
+         *
+         * Fires normally during the 0-4 second window after a new block before
+         * the miner receives the new template.  NOT a reason to stop workers.
+         */
+        bool is_tip_sync_mismatch(uint32_t canonical_hash_prev_lo32) const {
+            if (keepalive_hash_tip_lo32 == 0 || canonical_hash_prev_lo32 == 0)
+                return false;
+            return keepalive_hash_tip_lo32 != canonical_hash_prev_lo32;
+        }
     };
 
     /**
@@ -120,6 +223,41 @@ public:
     };
 
     HeightTracker() = default;
+
+    // =========================================================================
+    // Canonical update (BLOCK_DATA / STATELESS_GET_BLOCK only)
+    // =========================================================================
+
+    /**
+     * @brief Set canonical chain state from a received BLOCK_DATA template
+     *
+     * This is the primary method that updates CanonicalChainState.
+     * Called once per successfully parsed BLOCK_DATA receipt (via OnTemplateMetadata
+     * or directly). Monotonically advances canonical heights — never regresses.
+     *
+     * @param block_unified_height   block.nHeight from parsed BLOCK_DATA
+     * @param metadata_channel_height nChannelHeight from 12-byte metadata prefix
+     * @param metadata_nbits          nBits from 12-byte metadata prefix
+     * @param hash_prev_block         hashPrevBlock (pass uint1024_t{} if not yet parsed)
+     */
+    void OnBlockDataReceived(uint32_t block_unified_height,
+                             uint32_t metadata_channel_height,
+                             uint32_t metadata_nbits,
+                             const uint1024_t& hash_prev_block);
+
+    /**
+     * @brief Get the canonical chain state (for mining decisions)
+     * Thread-safe snapshot — use for template validation, staleness detection,
+     * worker dispatch, and all operational decisions.
+     */
+    CanonicalChainState GetCanonicalSnapshot() const;
+
+    /**
+     * @brief Get the diagnostic observer state (for Colin agent only)
+     * Thread-safe snapshot — use ONLY for logging and diagnostics.
+     * MUST NOT be used to make mining decisions.
+     */
+    DiagnosticObserverState GetDiagnosticSnapshot() const;
 
     // =========================================================================
     // Update methods (called from protocol handlers)
@@ -250,13 +388,18 @@ public:
 
 private:
     mutable std::mutex m_mutex;
-    Snapshot m_state;
+    CanonicalChainState m_canonical{};
+    DiagnosticObserverState m_diagnostic{};
+
+    // Misc state not belonging to canonical or diagnostic
+    uint32_t m_channel{0};                            ///< Mining channel (set by OnTemplateReceived)
+    uint32_t m_template_unified_height{0};             ///< Unified height at last template receipt
+    UpdateSource m_last_update_source{UpdateSource::NONE};
+
+    /// Build a Snapshot from canonical + diagnostic (must be called under m_mutex).
+    Snapshot build_snapshot_locked() const;
 
     static const char* source_name(UpdateSource src);
-
-    /// Sync channel_height from the per-channel sub-heights already stored in m_state.
-    /// Call this (under m_mutex) after updating prime_height / hash_height.
-    void sync_channel_height_locked();
 };
 
 } // namespace protocol
