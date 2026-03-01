@@ -129,6 +129,16 @@ public:
     // Returns warning string only on actual mismatch.
     static std::string check_tip_sync(uint32_t miner_prevhash_lo32, uint32_t node_tip_lo32);
 
+    // Check canonical height drift — returns warning when push/round heights
+    // run significantly ahead of canonical BLOCK_DATA heights.
+    // Uses height_drift_from_canonical() from HeightTracker::Snapshot.
+    static std::string check_canonical_drift(int32_t drift);
+
+    // Check diagnostic data freshness — returns warning when the most recent
+    // diagnostic source (push/round/keepalive) exceeds age threshold.
+    // Uses DiagnosticObserverState::latest_received_at().
+    static std::string check_diagnostic_staleness(int64_t age_seconds);
+
 private:
     void schedule_next();
     void run_diagnostics();

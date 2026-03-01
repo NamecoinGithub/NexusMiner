@@ -1025,6 +1025,61 @@ void test_canonical_hash_prev_block() {
                       canon.canonical_hash_prev_block == new_prev_hash);
 }
 
+// Test 33: DiagnosticObserverState::is_initialized() and latest_received_at()
+void test_diagnostic_observer_helpers() {
+    std::cout << "\nTest 33: DiagnosticObserverState::is_initialized() and latest_received_at()\n";
+    HeightTracker tracker;
+
+    // Before any updates, diagnostic state is NOT initialized
+    auto diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("diagnostic not initialized before any update",
+                      !diag.is_initialized());
+    print_test_result("latest_received_at is default before any update",
+                      diag.latest_received_at() == std::chrono::steady_clock::time_point{});
+
+    // After push notification, diagnostic state IS initialized
+    auto before_push = std::chrono::steady_clock::now();
+    tracker.OnPushNotification(100, 50, 0x1D00FFFF);
+    auto after_push = std::chrono::steady_clock::now();
+    diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("diagnostic initialized after push",
+                      diag.is_initialized());
+    print_test_result("last_push_at set after push",
+                      diag.last_push_at >= before_push && diag.last_push_at <= after_push);
+    print_test_result("latest_received_at reflects push",
+                      diag.latest_received_at() >= before_push);
+
+    // After GET_ROUND, latest_received_at advances
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    auto before_round = std::chrono::steady_clock::now();
+    tracker.OnGetRound(101, 51, 0x1D00FFFF);
+    auto after_round = std::chrono::steady_clock::now();
+    diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("last_round_at set after GET_ROUND",
+                      diag.last_round_at >= before_round && diag.last_round_at <= after_round);
+    print_test_result("latest_received_at >= round time (most recent)",
+                      diag.latest_received_at() >= before_round);
+
+    // After keepalive, latest_received_at may advance further
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    auto before_ka = std::chrono::steady_clock::now();
+    tracker.OnKeepaliveResponse(102, 52, 53, 10, 0xDEADBEEF, 0);
+    diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("latest_received_at >= keepalive time",
+                      diag.latest_received_at() >= before_ka);
+
+    // Canonical is NOT initialized (no BLOCK_DATA received)
+    auto canonical = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical NOT initialized without BLOCK_DATA",
+                      !canonical.is_initialized());
+
+    // Now receive BLOCK_DATA — canonical becomes initialized
+    tracker.OnBlockDataReceived(103, 53, 0x1D00FFFF);
+    canonical = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical IS initialized after BLOCK_DATA",
+                      canonical.is_initialized());
+}
+
 // ============================================================================
 // main
 // ============================================================================
@@ -1065,6 +1120,7 @@ int main() {
     test_on_block_data_received_monotonic();
     test_height_drift_from_canonical();
     test_canonical_hash_prev_block();
+    test_diagnostic_observer_helpers();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

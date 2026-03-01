@@ -33,7 +33,9 @@ void HeightTracker::OnPushNotification(uint32_t unified_height,
         m_diagnostic.push_hash_height = channel_height;
 
     m_last_update_source = UpdateSource::PUSH;
-    m_last_height_update = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    m_last_height_update = now;
+    m_diagnostic.last_push_at = now;
 }
 
 void HeightTracker::OnGetRound(uint32_t unified_height,
@@ -54,7 +56,9 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
         m_diagnostic.round_hash_height = channel_height;
 
     m_last_update_source = UpdateSource::GET_ROUND;
-    m_last_height_update = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    m_last_height_update = now;
+    m_diagnostic.last_round_at = now;
 }
 
 void HeightTracker::OnTemplateMetadata(uint32_t unified_height,

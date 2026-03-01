@@ -314,7 +314,21 @@ struct DiagnosticObserverState {
 
     uint32_t fork_score{0};
     uint32_t peak_fork_score{0};
+
+    // Diagnostic timestamps
+    std::chrono::steady_clock::time_point last_push_at{};
+    std::chrono::steady_clock::time_point last_round_at{};
     std::chrono::steady_clock::time_point last_keepalive_ack_at{};
+
+    // Diagnostic equivalent of CanonicalChainState::is_initialized()
+    bool is_initialized() const {
+        return push_unified_height > 0 || round_unified_height > 0 || keepalive_unified_height > 0;
+    }
+
+    // Diagnostic equivalent of CanonicalChainState::canonical_received_at
+    std::chrono::steady_clock::time_point latest_received_at() const {
+        return std::max({last_push_at, last_round_at, last_keepalive_ack_at});
+    }
 };
 ```
 
@@ -322,6 +336,7 @@ struct DiagnosticObserverState {
 
 ## 9. Related Documents
 
+- [colin-agent-canonical-integration.md](colin-agent-canonical-integration.md) — Colin Agent diagnostic hooks using canonical/diagnostic state
 - [height-tracker-block-data-feed.md](../../current/mining/height-tracker-block-data-feed.md) — Two-step BLOCK_DATA feed sequence
 - [unified-tip-vs-channel-height.md](../../current/mining/unified-tip-vs-channel-height.md) — Staleness detection definitions
 - [unified-push-architecture.md](../unified-push-architecture.md) — Push notification flow
@@ -329,4 +344,5 @@ struct DiagnosticObserverState {
 - [connection-recovery.md](connection-recovery.md) — Reconnection and session recovery
 - `src/protocol/inc/protocol/height_tracker.hpp` — `HeightTracker` class definition
 - `src/protocol/src/protocol/height_tracker.cpp` — `HeightTracker` implementation
+- `src/colin_agent.hpp` / `src/colin_agent.cpp` — Colin Agent diagnostic hooks
 - `src/worker_manager.cpp` — Fork detection (diagnostic-only check_template_health)

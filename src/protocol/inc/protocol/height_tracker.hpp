@@ -1,6 +1,7 @@
 #ifndef NEXUSMINER_PROTOCOL_HEIGHT_TRACKER_HPP
 #define NEXUSMINER_PROTOCOL_HEIGHT_TRACKER_HPP
 
+#include <algorithm>
 #include <cstdint>
 #include <chrono>
 #include <mutex>
@@ -111,7 +112,24 @@ public:
 
         uint32_t fork_score{0};
         uint32_t peak_fork_score{0};
-        std::chrono::steady_clock::time_point last_keepalive_ack_at{};
+
+        // ── Diagnostic timestamps ──────────────────────────────────────────
+        std::chrono::steady_clock::time_point last_push_at{};          ///< Time of last OnPushNotification()
+        std::chrono::steady_clock::time_point last_round_at{};         ///< Time of last OnGetRound()
+        std::chrono::steady_clock::time_point last_keepalive_ack_at{}; ///< Time of last OnKeepaliveResponse()
+
+        /// True when diagnostic state has been set at least once (any push, round, or keepalive data received).
+        /// Diagnostic equivalent of CanonicalChainState::is_initialized().
+        bool is_initialized() const {
+            return push_unified_height > 0 || round_unified_height > 0 || keepalive_unified_height > 0;
+        }
+
+        /// Most recent timestamp across all diagnostic sources.
+        /// Diagnostic equivalent of CanonicalChainState::canonical_received_at.
+        /// Returns default time_point{} if no diagnostic data has been received.
+        std::chrono::steady_clock::time_point latest_received_at() const {
+            return std::max({last_push_at, last_round_at, last_keepalive_ack_at});
+        }
     };
 
     /**
