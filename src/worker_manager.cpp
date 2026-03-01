@@ -1834,37 +1834,6 @@ void Worker_manager::check_template_health()
     // Guard: only log when the keepalive ACK is fresh (received within
     // KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS).  A stale keepalive means
     // hash_tip_lo32 is stale data — don't even warn on it.
-    {
-        auto ht_snap = solo_protocol->get_height_tracker_snapshot();
-
-        bool has_keepalive = (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
-        bool keepalive_fresh = has_keepalive &&
-            (std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count()
-             < KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS);
-
-        bool should_check_fork = ht_snap.fork_score > 0
-                              && ht_snap.hash_tip_lo32 != 0
-                              && keepalive_fresh;
-
-        if (should_check_fork)
-        {
-            // Extract lo32 from the template's hashPrevBlock stored in the tracker.
-            auto prev_bytes = ht_snap.hash_prev_block.GetBytes();
-            uint32_t miner_lo32 = 0;
-            if (prev_bytes.size() >= 128) {
-                miner_lo32 = (uint32_t(prev_bytes[124]) << 24) |
-                             (uint32_t(prev_bytes[125]) << 16) |
-                             (uint32_t(prev_bytes[126]) <<  8) |
-                              uint32_t(prev_bytes[127]);
-            }
-
-            if (miner_lo32 != 0 && miner_lo32 != ht_snap.hash_tip_lo32)
-            {
-                m_logger->warn("[Worker_manager] ⚠️  DIAGNOSTIC fork hint: miner_prevhash_lo32=0x{:08x} vs node_tip_lo32=0x{:08x} (keepalive_peak_fork_score={})",
-                    miner_lo32, ht_snap.hash_tip_lo32, ht_snap.peak_fork_score);
-                m_logger->warn("[Worker_manager]    Keepalive fork_score is diagnostic only — workers NOT stopped. Canonical hashPrevBlock changes trigger real fork recovery.");
-            }
     // ── Fork / tip mismatch detection (DIAGNOSTIC ONLY) ────────────────────────
     // Fork score and hash_tip_lo32 come from keepalive ACKs (DiagnosticObserverState).
     // They are INFORMATIONAL and must NOT be used to trigger hard stops, as keepalive

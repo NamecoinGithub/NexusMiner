@@ -29,12 +29,6 @@ void HeightTracker::OnPushNotification(uint32_t unified_height,
     if (nbits != 0)
         m_latest_difficulty_nbits = nbits;
 
-    // Keep per-channel push heights in sync
-    if (m_channel == 1)
-        m_diagnostic.push_prime_height = channel_height;
-    else if (m_channel == 2)
-        m_diagnostic.push_hash_height = channel_height;
-
     m_last_update_source = UpdateSource::PUSH;
     auto now = std::chrono::steady_clock::now();
     m_last_height_update = now;
@@ -52,12 +46,6 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
     m_diagnostic.round_difficulty_nbits = nbits;
     if (nbits != 0)
         m_latest_difficulty_nbits = nbits;
-
-    // Keep per-channel round heights in sync
-    if (m_channel == 1)
-        m_diagnostic.round_prime_height = channel_height;
-    else if (m_channel == 2)
-        m_diagnostic.round_hash_height = channel_height;
 
     m_last_update_source = UpdateSource::GET_ROUND;
     auto now = std::chrono::steady_clock::now();
@@ -116,8 +104,8 @@ void HeightTracker::OnTemplateReceived(uint32_t channel,
         m_channel_target = template_channel_target;
         // Clear fork scores after successful recovery — a fresh template
         // that advances the target means the fork is resolved.
-        m_diagnostic.fork_score = 0;
-        m_diagnostic.peak_fork_score = 0;
+        m_diagnostic.keepalive_fork_score = 0;
+        m_diagnostic.keepalive_peak_fork_score = 0;
     }
     // Capture tip at template receipt — use max(canonical, push, round) for consistency
     auto snap = build_snapshot_locked();
@@ -156,10 +144,10 @@ void HeightTracker::OnKeepaliveResponse(uint32_t unified_height,
     m_diagnostic.keepalive_prime_height   = prime_height;
     m_diagnostic.keepalive_hash_height    = hash_height;
     m_diagnostic.keepalive_stake_height   = stake_height;
-    m_diagnostic.hash_tip_lo32            = hash_tip_lo32;
-    m_diagnostic.fork_score               = fork_score;
-    if (fork_score > m_diagnostic.peak_fork_score)
-        m_diagnostic.peak_fork_score = fork_score;
+    m_diagnostic.keepalive_hash_tip_lo32      = hash_tip_lo32;
+    m_diagnostic.keepalive_fork_score         = fork_score;
+    if (fork_score > m_diagnostic.keepalive_peak_fork_score)
+        m_diagnostic.keepalive_peak_fork_score = fork_score;
     m_last_update_source = UpdateSource::KEEPALIVE;
     auto now = std::chrono::steady_clock::now();
     m_last_height_update = now;
@@ -187,19 +175,15 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     s.hash_prev_block = m_canonical.canonical_hash_prev_block;
     s.last_update_source = m_last_update_source;
 
-    // Per-channel heights: max(canonical, push, round)
-    s.prime_height = std::max({m_canonical.canonical_prime_height,
-                                m_diagnostic.push_prime_height,
-                                m_diagnostic.round_prime_height});
-    s.hash_height  = std::max({m_canonical.canonical_hash_height,
-                                m_diagnostic.push_hash_height,
-                                m_diagnostic.round_hash_height});
+    // Per-channel heights: canonical only (push/round per-channel fields removed in PR #256)
+    s.prime_height = m_canonical.canonical_prime_height;
+    s.hash_height  = m_canonical.canonical_hash_height;
     s.stake_height = m_diagnostic.keepalive_stake_height;
 
     // Fork detection fields — diagnostic only
-    s.hash_tip_lo32 = m_diagnostic.hash_tip_lo32;
-    s.fork_score = m_diagnostic.fork_score;
-    s.peak_fork_score = m_diagnostic.peak_fork_score;
+    s.hash_tip_lo32 = m_diagnostic.keepalive_hash_tip_lo32;
+    s.fork_score = m_diagnostic.keepalive_fork_score;
+    s.peak_fork_score = m_diagnostic.keepalive_peak_fork_score;
 
     // Timing
     s.last_keepalive_ack_at = m_diagnostic.last_keepalive_ack_at;
