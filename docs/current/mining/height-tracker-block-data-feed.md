@@ -145,8 +145,9 @@ If `channel_height == 0` (genesis guard), the `channel_target={}` part is omitte
 
 ## 8. Related Documents
 
+- [canonical-height-architecture.md](../../diagrams/mining-loops/canonical-height-architecture.md) — Canonical vs Diagnostic state isolation architecture and diagrams
 - [unified-tip-vs-channel-height.md](unified-tip-vs-channel-height.md) — `is_template_stale()` and `is_tip_moved()` semantics
 - [height-tracking.md](../mining-protocols/height-tracking.md) — GET_ROUND / 12-byte format
 - [stateless-mining.md](../mining-protocols/stateless-mining.md) — stateless lane overview
-- `src/protocol/inc/protocol/height_tracker.hpp` — `HeightTracker::Snapshot` struct
+- `src/protocol/inc/protocol/height_tracker.hpp` — `HeightTracker` class (CanonicalChainState / DiagnosticObserverState)
 - `src/protocol/src/protocol/solo.cpp` — `process_messages()` BLOCK_DATA and STATELESS_GET_BLOCK handlers
