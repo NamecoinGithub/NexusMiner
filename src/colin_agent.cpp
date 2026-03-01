@@ -2,6 +2,7 @@
 
 #include <asio/io_context.hpp>
 
+#include <cstdlib>
 #include <ctime>
 
 namespace nexusminer
@@ -130,6 +131,51 @@ std::string ColinAgent::check_tip_sync(uint32_t miner_prevhash_lo32, uint32_t no
            " — miner may be on stale/forked tip";
 }
 
+// ── New hooks using canonical / diagnostic split ──────────────────────────────
+
+// Maximum expected inter-channel skew (blocks). Unified height and channel
+// target are different height dimensions, so a non-zero drift is normal.
+// Warn only when drift exceeds this threshold, which suggests a real anomaly.
+static constexpr int32_t WARN_CANONICAL_DRIFT_THRESHOLD = 500;
+
+// Warn when diagnostic has received no data for this many seconds.
+static constexpr uint64_t WARN_DIAGNOSTIC_STALE_SECONDS = 180;
+
+// Grace period: don't warn about uninitialised diagnostic observer before
+// this many seconds have elapsed, since the first keepalive ACK / push
+// arrives within the first few seconds of a session.
+static constexpr uint64_t WARN_DIAGNOSTIC_INIT_GRACE_SECONDS = 30;
+
+std::string ColinAgent::check_canonical_drift(int32_t drift)
+{
+    if (drift == 0) return {};
+    if (std::abs(drift) > WARN_CANONICAL_DRIFT_THRESHOLD)
+        return "Canonical height drift=" + std::to_string(drift) +
+               " (|drift|>" + std::to_string(WARN_CANONICAL_DRIFT_THRESHOLD) +
+               ") — unified vs channel_target skew outside expected range";
+    return {};
+}
+
+std::string ColinAgent::check_diagnostic_initialized(bool is_initialized,
+                                                      uint64_t elapsed_seconds)
+{
+    if (is_initialized) return {};
+    if (elapsed_seconds < WARN_DIAGNOSTIC_INIT_GRACE_SECONDS) return {};
+    return "DiagnosticObserver uninitialized after " + std::to_string(elapsed_seconds) +
+           "s — no push notification, GET_ROUND, or keepalive ACK received yet"
+           " — check node connectivity";
+}
+
+std::string ColinAgent::check_diagnostic_freshness(uint64_t latest_age_seconds,
+                                                    bool is_initialized)
+{
+    if (!is_initialized) return {};  // not yet initialized — separate check covers this
+    if (latest_age_seconds <= WARN_DIAGNOSTIC_STALE_SECONDS) return {};
+    return "Diagnostic observer silent for " + std::to_string(latest_age_seconds) +
+           "s (no push/GET_ROUND/keepalive) — node may have dropped the session"
+           " or push notifications have stopped";
+}
+
 // ── Lane assessment ───────────────────────────────────────────────────────────
 
 std::string ColinAgent::assess_primary_lane() const
@@ -212,6 +258,48 @@ void ColinAgent::run_diagnostics()
             auto w = check_tip_sync(miner_lo32, ht_snap.hash_tip_lo32);
             if (!w.empty()) warnings.push_back(w);
         }
+
+        // ── New hooks: canonical drift + diagnostic observer health ───────────
+        {
+            auto canonical = m_height_tracker->GetCanonicalSnapshot();
+            if (canonical.is_initialized()) {
+                auto w = check_canonical_drift(canonical.height_drift_from_canonical());
+                if (!w.empty()) {
+                    warnings.push_back(w);
+                    recommendations.push_back(
+                        "Verify node is on the expected channel; check BLOCK_DATA feed");
+                }
+            }
+        }
+        {
+            auto diag = m_height_tracker->GetDiagnosticSnapshot();
+            uint64_t elapsed_s = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - m_start_time).count());
+            {
+                auto w = check_diagnostic_initialized(diag.is_initialized(), elapsed_s);
+                if (!w.empty()) {
+                    warnings.push_back(w);
+                    recommendations.push_back(
+                        "Ensure node is sending push notifications and keepalive ACKs");
+                }
+            }
+            {
+                auto latest = diag.latest_received_at();
+                uint64_t age_s = 0;
+                if (latest != std::chrono::steady_clock::time_point{}) {
+                    age_s = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::steady_clock::now() - latest).count());
+                }
+                auto w = check_diagnostic_freshness(age_s, diag.is_initialized());
+                if (!w.empty()) {
+                    warnings.push_back(w);
+                    recommendations.push_back(
+                        "Check node block propagation; verify keepalive interval is ≤60s");
+                }
+            }
+        }
     }
 
     emit_report(warnings, recommendations, gs);
@@ -278,6 +366,62 @@ void ColinAgent::emit_report(
             }
         } else {
             m_logger->info("[Colin]  Keepalive │ no ACK received yet (session just started or legacy node)");
+        }
+    }
+
+    // ── Canonical Chain State section ──────────────────────────────────────────
+    // Uses GetCanonicalSnapshot() and GetDiagnosticSnapshot() directly.
+    if (m_height_tracker) {
+        auto canonical = m_height_tracker->GetCanonicalSnapshot();
+        auto diag      = m_height_tracker->GetDiagnosticSnapshot();
+
+        m_logger->info("[Colin]  ── Canonical Chain State ────────────────────────");
+        if (canonical.is_initialized()) {
+            m_logger->info("[Colin]    Canonical │ unified={} channel={} channel_target={} nbits=0x{:08x}",
+                canonical.canonical_unified_height,
+                canonical.canonical_channel_height,
+                canonical.canonical_channel_target,
+                canonical.canonical_difficulty_nbits);
+
+            int32_t drift = canonical.height_drift_from_canonical();
+            if (drift == 0) {
+                m_logger->info("[Colin]    Canonical │ height_drift_from_canonical=0 ✓ (unified == channel_target)");
+            } else if (!check_canonical_drift(drift).empty()) {
+                m_logger->warn("[Colin]    Canonical │ ⚠ height_drift_from_canonical={} (|drift|>{} — investigate)",
+                    drift, WARN_CANONICAL_DRIFT_THRESHOLD);
+            } else {
+                m_logger->info("[Colin]    Canonical │ height_drift_from_canonical={} (inter-channel skew, normal)",
+                    drift);
+            }
+        } else {
+            m_logger->info("[Colin]    Canonical │ not yet initialized (no BLOCK_DATA received)");
+        }
+
+        m_logger->info("[Colin]  ── Diagnostic Observer State ─────────────────────");
+        if (diag.is_initialized()) {
+            auto latest = diag.latest_received_at();
+            uint64_t age_s = 0;
+            if (latest != std::chrono::steady_clock::time_point{}) {
+                age_s = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now() - latest).count());
+            }
+            const char* freshness_marker = (age_s <= WARN_DIAGNOSTIC_STALE_SECONDS) ? "✓" : "⚠";
+            m_logger->info("[Colin]    Diagnostic │ latest_received_at={}s ago {} push_unified={} round_unified={} keepalive_unified={}",
+                age_s, freshness_marker,
+                diag.push_unified_height,
+                diag.round_unified_height,
+                diag.keepalive_unified_height);
+            if (age_s > WARN_DIAGNOSTIC_STALE_SECONDS)
+                m_logger->warn("[Colin]    Diagnostic │ ⚠ observer silent for {}s — no push/GET_ROUND/keepalive", age_s);
+        } else {
+            uint64_t elapsed_s = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - m_start_time).count());
+            if (elapsed_s >= WARN_DIAGNOSTIC_INIT_GRACE_SECONDS)
+                m_logger->warn("[Colin]    Diagnostic │ ⚠ uninitialized after {}s (no push/GET_ROUND/keepalive yet)", elapsed_s);
+            else
+                m_logger->info("[Colin]    Diagnostic │ not yet initialized ({}s elapsed — within grace period)", elapsed_s);
         }
     }
 

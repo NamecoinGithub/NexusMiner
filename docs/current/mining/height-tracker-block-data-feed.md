@@ -62,21 +62,24 @@ metadata prefix, **not** any field in the block header.
 
 ---
 
-## 3. Authoritative Source Hierarchy
+## 3. Authoritative Source Hierarchy (Post-Canonical Refactor)
 
-When multiple mechanisms can update `HeightTracker`, this priority ordering
-determines which one is most trusted:
+After the `CanonicalChainState` / `DiagnosticObserverState` separation, the source
+hierarchy no longer uses a single priority ordering — sources are now strictly separated
+by purpose:
 
-| Priority | Source | `UpdateSource` | Mechanism |
-|----------|--------|---------------|-----------|
-| 1 (highest) | Node BLOCK_DATA metadata prefix | `PUSH` | `update_height_state(…, PUSH)` in BLOCK_DATA handler |
-| 2 | Push notification (BLOCK_AVAILABLE) | `PUSH` | `update_height_state(…, PUSH)` in push handler |
-| 3 | GET_ROUND / NEW_ROUND response | `GET_ROUND` | `update_height_state(…, GET_ROUND)` in GET_ROUND handler |
-| 4 (lowest) | Keepalive ACK | `KEEPALIVE` | `OnKeepaliveResponse()` in keepalive handler |
+| Source | Writes To | Purpose |
+|--------|-----------|---------|
+| Node BLOCK_DATA metadata prefix | `CanonicalChainState` | All mining decisions (the only canonical update path) |
+| Push notification (BLOCK_AVAILABLE) | `DiagnosticObserverState.push_*` | Push-driven staleness via `max(canonical, push)` composition |
+| GET_ROUND / NEW_ROUND response | `DiagnosticObserverState.round_*` | Colin diagnostic display only |
+| Keepalive ACK | `DiagnosticObserverState.keepalive_*` | Colin telemetry display only |
 
-The BLOCK_DATA metadata is the highest-priority source because it is the
-node's direct answer to `GET_BLOCK` — it carries the exact channel height and
-difficulty that correspond to the template being delivered.
+The key invariant: **only `OnBlockDataReceived()` updates `CanonicalChainState`**.
+Keepalive and GET_ROUND data can never regress canonical heights.
+
+See [height-tracker-canonical-state.md](height-tracker-canonical-state.md) for the full
+architectural reference and the `GetSnapshot()` composition rules.
 
 ---
 
@@ -145,8 +148,10 @@ If `channel_height == 0` (genesis guard), the `channel_target={}` part is omitte
 
 ## 8. Related Documents
 
+- [height-tracker-canonical-state.md](height-tracker-canonical-state.md) — `CanonicalChainState` / `DiagnosticObserverState` architecture (current authoritative reference)
 - [unified-tip-vs-channel-height.md](unified-tip-vs-channel-height.md) — `is_template_stale()` and `is_tip_moved()` semantics
-- [height-tracking.md](../mining-protocols/height-tracking.md) — GET_ROUND / 12-byte format
-- [stateless-mining.md](../mining-protocols/stateless-mining.md) — stateless lane overview
-- `src/protocol/inc/protocol/height_tracker.hpp` — `HeightTracker::Snapshot` struct
-- `src/protocol/src/protocol/solo.cpp` — `process_messages()` BLOCK_DATA and STATELESS_GET_BLOCK handlers
+- [../mining-protocols/height-tracking.md](../mining-protocols/height-tracking.md) — GET_ROUND / 12-byte format
+- [../mining-protocols/stateless-mining.md](../mining-protocols/stateless-mining.md) — stateless lane overview
+- `src/protocol/inc/protocol/height_tracker.hpp` — `CanonicalChainState`, `DiagnosticObserverState`, `Snapshot` structs
+- `src/protocol/src/protocol/height_tracker.cpp` — implementation
+- `src/protocol/height_tracker_test.cpp` — unit tests (Tests 1–26 existing; Tests 27–31 canonical isolation)

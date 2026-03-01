@@ -1824,52 +1824,21 @@ void Worker_manager::check_template_health()
         }
     }
 
-    // ── Fork / tip mismatch detection ───────────────────────────────────────
-    // If the keepalive ACK reports a non-zero fork_score AND the node's
-    // hash_tip_lo32 differs from the template's hashPrevBlock lo32, the miner
-    // is on the wrong fork.  Discard the stale template immediately.
+    // ── Fork / tip mismatch detection (DIAGNOSTIC ONLY) ────────────────────────
+    // Fork score and hash_tip_lo32 come from keepalive ACKs (DiagnosticObserverState).
+    // They are INFORMATIONAL and must NOT be used to trigger hard stops, as keepalive
+    // data can lag chain advancement by 45s and cause false-positive fork detections
+    // during normal block-finding events.
     //
-    // Guard: only act when the keepalive ACK is fresh (received within
-    // KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS).  A stale keepalive means
-    // hash_tip_lo32 is stale data — don't trigger hard recovery on it.
+    // Real fork detection uses canonical_hash_prev_block vs push hashPrevBlock
+    // (handled by the TEMPLATE_ANCHOR in solo.cpp, not here).
     {
-        auto ht_snap = solo_protocol->get_height_tracker_snapshot();
-
-        bool has_keepalive = (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
-        bool keepalive_fresh = has_keepalive &&
-            (std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count()
-             < KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS);
-
-        bool should_check_fork = ht_snap.fork_score > 0
-                              && ht_snap.hash_tip_lo32 != 0
-                              && keepalive_fresh;
-
-        if (should_check_fork)
-        {
-            // Extract lo32 from the template's hashPrevBlock stored in the tracker.
-            auto prev_bytes = ht_snap.hash_prev_block.GetBytes();
-            uint32_t miner_lo32 = 0;
-            if (prev_bytes.size() >= 128) {
-                miner_lo32 = (uint32_t(prev_bytes[124]) << 24) |
-                             (uint32_t(prev_bytes[125]) << 16) |
-                             (uint32_t(prev_bytes[126]) <<  8) |
-                              uint32_t(prev_bytes[127]);
-            }
-
-            if (miner_lo32 != 0 && miner_lo32 != ht_snap.hash_tip_lo32)
-            {
-                m_logger->error("[Worker_manager] ❌ FORK DETECTED: miner_prevhash_lo32=0x{:08x} vs node_tip_lo32=0x{:08x} (fork_score={})",
-                    miner_lo32, ht_snap.hash_tip_lo32, ht_snap.fork_score);
-                m_logger->error("[Worker_manager]    Template is on the wrong fork — forcing hard recovery");
-                template_interface->discard_template("Fork detected: tip mismatch (fork_score=" +
-                    std::to_string(ht_snap.fork_score) + ")");
-                stop_all_workers();
-                create_workers();
-                retry_template_request(true);
-                return;
-            }
+        auto diag = solo_protocol->get_diagnostic_snapshot();
+        if (diag.keepalive_peak_fork_score > 0) {
+            m_logger->warn("[Worker_manager] [Colin] FORK CANARY: peak_fork_score={} fork_score={} hash_tip_lo32=0x{:08x} (diagnostic only — not stopping workers)",
+                diag.keepalive_peak_fork_score, diag.keepalive_fork_score, diag.keepalive_hash_tip_lo32);
         }
+        // Do NOT stop workers based on keepalive fork_score alone.
     }
 
     // Age-based warning: 150s gives a 50s window before the 200s emergency fires.
