@@ -84,8 +84,11 @@ namespace {
     // Unified height drift threshold: if HeightTracker.unified_height exceeds
     // template.block.nHeight by more than this many blocks, the template is
     // presumed stale (hashPrevBlock is wrong) and must be discarded.
-    // 2 blocks allows for normal in-flight lag; drift > 2 is pathological.
-    constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 2;
+    // On a 3-channel Nexus blockchain, the unified height advances whenever any
+    // channel (Prime, Hash, Stake) finds a block. A drift of 1-3 blocks between
+    // push notification and new BLOCK_DATA template is normal during the propagation
+    // window. Set threshold to 5 to avoid false-positive template discards.
+    constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
 
 }
 

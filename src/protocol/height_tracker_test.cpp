@@ -1307,6 +1307,68 @@ void test_diagnostic_latest_received_at() {
 }
 
 // ============================================================================
+// Test 34: AdvanceChannelTarget() also updates canonical_channel_target
+// ============================================================================
+void test_advance_channel_target_updates_canonical() {
+    std::cout << "\nTest 34: AdvanceChannelTarget updates canonical_channel_target\n";
+    HeightTracker tracker;
+
+    // Give it a canonical base via OnBlockDataReceived
+    tracker.OnBlockDataReceived(6000, 2000, 0x1d00ffff, uint1024_t{});
+    auto canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical_channel_target == 2001 after BLOCK_DATA",
+                      canon.canonical_channel_target == 2001);
+
+    // AdvanceChannelTarget beyond canonical
+    tracker.AdvanceChannelTarget(2010);
+    canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical_channel_target == 2010 after AdvanceChannelTarget(2010)",
+                      canon.canonical_channel_target == 2010);
+
+    // Snapshot channel_target should also reflect the advance
+    auto snap = tracker.GetSnapshot();
+    print_test_result("snapshot channel_target == 2010",
+                      snap.channel_target == 2010);
+
+    // Attempting to regress is a no-op on canonical too
+    tracker.AdvanceChannelTarget(2005);
+    canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical_channel_target still 2010 after lower AdvanceChannelTarget(2005)",
+                      canon.canonical_channel_target == 2010);
+}
+
+// ============================================================================
+// Test 35: OnTemplateReceived() sets template_unified_height from canonical
+// ============================================================================
+void test_on_template_received_sets_template_unified_height() {
+    std::cout << "\nTest 35: OnTemplateReceived sets template_unified_height\n";
+    HeightTracker tracker;
+
+    // With no data, template_unified_height should be 0
+    auto snap = tracker.GetSnapshot();
+    print_test_result("template_unified_height == 0 before any data",
+                      snap.template_unified_height == 0);
+
+    // Receive canonical BLOCK_DATA to set unified height
+    tracker.OnBlockDataReceived(6612224, 2332312, 0x043d6262, uint1024_t{});
+
+    // Receive template — template_unified_height should be set to canonical unified height
+    tracker.OnTemplateReceived(2, 2332313);
+    snap = tracker.GetSnapshot();
+    auto canon = tracker.GetCanonicalSnapshot();
+    print_test_result("template_unified_height == canonical_unified_height after OnTemplateReceived",
+                      snap.template_unified_height == canon.canonical_unified_height);
+    print_test_result("template_unified_height == 6612224",
+                      snap.template_unified_height == 6612224);
+
+    // After tip moves (push arrives with higher height), is_tip_moved() returns true
+    tracker.OnPushNotification(6612225, 2332313, 0x043d6262);
+    snap = tracker.GetSnapshot();
+    print_test_result("is_tip_moved() == true after push advances beyond template_unified_height",
+                      snap.is_tip_moved());
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -1357,6 +1419,9 @@ int main() {
     test_fork_scores_sticky_without_advance();
     test_diagnostic_is_initialized();
     test_diagnostic_latest_received_at();
+    // New tests for Bug 2 and Bug 3 fixes
+    test_advance_channel_target_updates_canonical();
+    test_on_template_received_sets_template_unified_height();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

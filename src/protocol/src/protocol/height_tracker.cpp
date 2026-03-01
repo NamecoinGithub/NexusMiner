@@ -116,9 +116,15 @@ void HeightTracker::OnTemplateReceived(uint32_t channel,
 void HeightTracker::AdvanceChannelTarget(uint32_t new_target)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (new_target > m_channel_target) {
+    // Push-driven monotonic advance of channel_target (both legacy and canonical fields).
+    // Does NOT violate the "canonical only updated by OnBlockDataReceived" invariant —
+    // this is a push-handler advance of channel_target only, not a full canonical state
+    // update (unified_height, channel_height etc. are NOT modified here).
+    // Keeps GetCanonicalSnapshot().canonical_channel_target in sync with push-driven advances.
+    if (new_target > m_channel_target)
         m_channel_target = new_target;
-    }
+    if (new_target > m_canonical.canonical_channel_target)
+        m_canonical.canonical_channel_target = new_target;
 }
 
 void HeightTracker::UpdateWithHashPrevBlock(const uint1024_t& h)
@@ -167,7 +173,9 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     // Difficulty: latest non-zero from any non-keepalive source
     s.difficulty_nbits = m_latest_difficulty_nbits;
 
-    s.channel_target = m_channel_target;
+    // Use max of legacy and canonical channel_target: whichever writer advanced it last
+    // (push handler via AdvanceChannelTarget, or BLOCK_DATA via OnBlockDataReceived) wins.
+    s.channel_target = std::max(m_channel_target, m_canonical.canonical_channel_target);
     s.channel = m_channel;
     s.template_unified_height = m_template_unified_height;
     s.hash_prev_block = m_canonical.canonical_hash_prev_block;
