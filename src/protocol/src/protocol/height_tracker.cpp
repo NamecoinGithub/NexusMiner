@@ -92,6 +92,10 @@ void HeightTracker::OnTemplateReceived(uint32_t channel,
     // must not undo a push-derived advancement set by AdvanceChannelTarget().
     if (template_channel_target > m_canonical.canonical_channel_target) {
         m_canonical.canonical_channel_target = template_channel_target;
+        // A fresh template advancing channel_target means we recovered from any fork.
+        // Clear the diagnostic fork canary so Colin shows "healthy" after recovery.
+        m_diagnostic.keepalive_fork_score       = 0;
+        m_diagnostic.keepalive_peak_fork_score  = 0;
     }
     // Capture unified height at template receipt (from canonical if available, else push)
     m_template_unified_height = std::max(m_canonical.canonical_unified_height,
