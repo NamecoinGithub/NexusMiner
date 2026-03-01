@@ -696,6 +696,78 @@ void test_stale_get_block_no_regression() {
 }
 
 // ============================================================================
+// Test 25: OnTemplateMetadata does NOT regress channel_height
+//          (fixes HeightTracker update gap after stale GET_BLOCK responses)
+// ============================================================================
+void test_on_template_metadata_monotonic() {
+    std::cout << "\nTest 25: OnTemplateMetadata does NOT regress channel_height\n";
+    HeightTracker tracker;
+
+    // Simulate: pushes advance channel to 2332106
+    tracker.OnPushNotification(6611706, 2332106, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 2332100);  // old template target
+
+    auto snap = tracker.GetSnapshot();
+    print_test_result("channel_height == 2332106 after push",
+                      snap.channel_height == 2332106);
+
+    // Stale GET_BLOCK response arrives with channel_height=2332100
+    // OnTemplateMetadata must NOT regress channel_height to 2332100.
+    tracker.OnTemplateMetadata(6611706, 2332100, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_height still 2332106 after stale OnTemplateMetadata(2332100)",
+                      snap.channel_height == 2332106);
+    print_test_result("unified_height updated to 6611706",
+                      snap.unified_height == 6611706);
+    print_test_result("last_update_source == TEMPLATE",
+                      snap.last_update_source == HeightTracker::UpdateSource::TEMPLATE);
+
+    // Fresh template metadata with a higher channel_height DOES advance
+    tracker.OnTemplateMetadata(6611710, 2332108, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    print_test_result("channel_height advanced to 2332108 from fresh OnTemplateMetadata",
+                      snap.channel_height == 2332108);
+    print_test_result("unified_height advanced to 6611710",
+                      snap.unified_height == 6611710);
+}
+
+// ============================================================================
+// Test 26: OnTemplateMetadata per-channel heights are advance-only
+// ============================================================================
+void test_on_template_metadata_per_channel_no_regression() {
+    std::cout << "\nTest 26: OnTemplateMetadata per-channel heights are advance-only\n";
+    HeightTracker tracker;
+
+    // Prime channel: push sets prime_height=500
+    tracker.OnTemplateReceived(1, 1);  // set channel to Prime
+    tracker.OnPushNotification(10000, 500, 0x1d00ffff);
+    auto snap = tracker.GetSnapshot();
+    print_test_result("prime_height == 500 after push",
+                      snap.prime_height == 500);
+
+    // Stale template metadata with channel_height=400 must not regress prime_height
+    tracker.OnTemplateMetadata(10001, 400, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    print_test_result("prime_height still 500 after stale OnTemplateMetadata(400)",
+                      snap.prime_height == 500);
+    print_test_result("channel_height still 500 (not regressed)",
+                      snap.channel_height == 500);
+
+    // Hash channel test
+    HeightTracker hash_tracker;
+    hash_tracker.OnTemplateReceived(2, 1);  // set channel to Hash
+    hash_tracker.OnPushNotification(10000, 300, 0x1d00ffff);
+    snap = hash_tracker.GetSnapshot();
+    print_test_result("hash_height == 300 after push",
+                      snap.hash_height == 300);
+
+    hash_tracker.OnTemplateMetadata(10001, 250, 0x1d00ffff);
+    snap = hash_tracker.GetSnapshot();
+    print_test_result("hash_height still 300 after stale OnTemplateMetadata(250)",
+                      snap.hash_height == 300);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -727,6 +799,8 @@ int main() {
     test_on_template_received_no_regress();
     test_doom_loop_prevention();
     test_stale_get_block_no_regression();
+    test_on_template_metadata_monotonic();
+    test_on_template_metadata_per_channel_no_regression();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

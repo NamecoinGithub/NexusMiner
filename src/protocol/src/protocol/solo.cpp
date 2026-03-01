@@ -1222,10 +1222,23 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Record channel_target = channel_height + 1 so is_template_stale() can
         // detect when the node's channel tip reaches or passes this template's target.
         // Skip genesis (channel_height == 0) to avoid false-positive staleness at startup.
-        if (nChannelHeight > 0) {
-            m_height_tracker.OnTemplateReceived(m_channel, nChannelHeight + 1);
+        //
+        // Use the effective channel height (max of metadata and tracker) to prevent
+        // a stale GET_BLOCK response from setting a channel_target below what push
+        // notifications have already established.
+        uint32_t effectiveChannelHeight = nChannelHeight;
+        {
+            auto ht_snap = m_height_tracker.GetSnapshot();
+            if (ht_snap.channel_height > effectiveChannelHeight) {
+                m_logger->info("[Solo BLOCK_DATA] Metadata channel_height={} stale vs tracker={} — using tracker value",
+                    nChannelHeight, ht_snap.channel_height);
+                effectiveChannelHeight = ht_snap.channel_height;
+            }
+        }
+        if (effectiveChannelHeight > 0) {
+            m_height_tracker.OnTemplateReceived(m_channel, effectiveChannelHeight + 1);
             m_logger->info("[Solo BLOCK_DATA] HeightTracker fed: unified={} channel={} nBits=0x{:08x} → channel_target={}",
-                nUnifiedHeight, nChannelHeight, nBitsMeta, nChannelHeight + 1);
+                nUnifiedHeight, effectiveChannelHeight, nBitsMeta, effectiveChannelHeight + 1);
         }
 
         // Strip the 12-byte prefix; pass only the 216-byte Block::Serialize() output to read_template
@@ -1268,10 +1281,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // read_template() so the template state is not EMPTY.  Internally calls
             // HeightTracker::OnTemplateReceived() to set channel_target (idempotent with
             // the earlier direct call above).
-            // nChannelHeight == 0 means genesis / not yet known — skip to avoid setting
-            // an incorrect channel_height of 1 in the template interface.
-            if (nChannelHeight > 0) {
-                m_template_interface->set_channel_height(nChannelHeight + 1);
+            // Use effectiveChannelHeight (max of metadata and tracker) to prevent
+            // validate_current_template() from immediately discarding the template
+            // when push notifications have already advanced the tracker.
+            if (effectiveChannelHeight > 0) {
+                m_template_interface->set_channel_height(effectiveChannelHeight + 1);
             }
             
             // Update diagnostic height tracker; the metadata prefix gives us the authoritative
@@ -2725,10 +2739,23 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Record channel_target = channel_height + 1 so is_template_stale() can
         // detect when the node's channel tip reaches or passes this template's target.
         // Skip genesis (channel_height == 0) to avoid false-positive staleness at startup.
-        if (channel_height > 0) {
-            m_height_tracker.OnTemplateReceived(m_channel, channel_height + 1);
+        //
+        // Use the effective channel height (max of metadata and tracker) to prevent
+        // a stale GET_BLOCK response from setting a channel_target below what push
+        // notifications have already established.
+        uint32_t effectiveChannelHeight = channel_height;
+        {
+            auto ht_snap = m_height_tracker.GetSnapshot();
+            if (ht_snap.channel_height > effectiveChannelHeight) {
+                m_logger->info("[Solo Stateless] Metadata channel_height={} stale vs tracker={} — using tracker value",
+                    channel_height, ht_snap.channel_height);
+                effectiveChannelHeight = ht_snap.channel_height;
+            }
+        }
+        if (effectiveChannelHeight > 0) {
+            m_height_tracker.OnTemplateReceived(m_channel, effectiveChannelHeight + 1);
             m_logger->info("[Solo Stateless] HeightTracker fed: unified={} channel={} nBits=0x{:08x} → channel_target={}",
-                unified_height, channel_height, difficulty, channel_height + 1);
+                unified_height, effectiveChannelHeight, difficulty, effectiveChannelHeight + 1);
         }
 
         m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
@@ -2886,14 +2913,13 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Update diagnostic height reference (unified_height from packet metadata)
             m_current_height = unified_height;  // diagnostic only
 
-            // HeightTracker: channel_height from metadata is the node tip (last mined block on this channel).
-            // The template targets the NEXT block → use channel_height + 1.
-            // This must be called immediately after read_template() succeeds; the metadata is already
-            // parsed above and does NOT require a GET_ROUND round-trip.
-            if (channel_height > 0) {
-                m_template_interface->set_channel_height(channel_height + 1);
-                m_logger->info("[Solo Stateless] ✓ HeightTracker updated: channel_height+1={} (node tip={}, template targets next block)",
-                    channel_height + 1, channel_height);
+            // HeightTracker: Use effectiveChannelHeight (max of metadata and tracker)
+            // so that a stale GET_BLOCK response does not set nChannelHeight below
+            // what push notifications have already established.
+            if (effectiveChannelHeight > 0) {
+                m_template_interface->set_channel_height(effectiveChannelHeight + 1);
+                m_logger->info("[Solo Stateless] ✓ HeightTracker updated: channel_height+1={} (effective tip={}, template targets next block)",
+                    effectiveChannelHeight + 1, effectiveChannelHeight);
             } else {
                 m_logger->warn("[Solo Stateless] ⚠️  channel_height==0 in metadata — skipping set_channel_height()");
             }
@@ -3659,12 +3685,11 @@ void Solo::update_height_state(uint32_t unified_height, uint32_t channel_height,
     } else if (source == HeightTracker::UpdateSource::GET_ROUND) {
         m_height_tracker.OnGetRound(unified_height, channel_height, difficulty_nbits);
     } else if (source == HeightTracker::UpdateSource::TEMPLATE) {
-        // Template metadata has the same field semantics as GET_ROUND response.
-        // Route through OnGetRound() to update unified_height, channel_height, difficulty_nbits.
-        // OnTemplateReceived() is called separately by the handler (after read_template()
-        // succeeds) to set channel_target — see the STATELESS_GET_BLOCK handler in
-        // process_messages() and the legacy BLOCK_DATA handler.
-        m_height_tracker.OnGetRound(unified_height, channel_height, difficulty_nbits);
+        // Template metadata may arrive with a stale channel_height when the
+        // GET_BLOCK response was built before push notifications advanced the
+        // chain.  Use OnTemplateMetadata() which only advances channel_height
+        // — never regresses below push-derived values.
+        m_height_tracker.OnTemplateMetadata(unified_height, channel_height, difficulty_nbits);
     } else {
         m_logger->warn("[Solo] update_height_state: unexpected source {}, defaulting to GET_ROUND",
                        static_cast<int>(source));
