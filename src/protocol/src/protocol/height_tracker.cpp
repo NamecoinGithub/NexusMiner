@@ -1,4 +1,5 @@
 #include "protocol/height_tracker.hpp"
+#include <algorithm>
 #include <sstream>
 
 namespace nexusminer {
