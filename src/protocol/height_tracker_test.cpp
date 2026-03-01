@@ -14,9 +14,12 @@
  *  9. is_tip_moved() detects unified tip advance (Phase 3A: tip_moved refresh reason)
  * 10. is_tip_moved() resets to false after new template received
  * 11. Difficulty from push updates is reflected in HeightTracker snapshot
- * 18. Push updates prime_height for Prime channel (no keepalive regression)
- * 19. Push updates hash_height for Hash channel (no keepalive regression)
+ * 18. Push updates prime_height for Prime channel (keepalive isolated)
+ * 19. Push updates hash_height for Hash channel (keepalive isolated)
  * 20. Production regression: push advances prime_height past keepalive value
+ * 27. Canonical isolation — keepalive cannot corrupt canonical state
+ * 30. OnBlockDataReceived monotonicity (stale block data never regresses)
+ * 31. height_drift_from_canonical() measures push-vs-canonical drift
  */
 
 #include "protocol/height_tracker.hpp"
@@ -431,48 +434,80 @@ void test_pre_push_template_identified_correctly() {
 }
 
 // ============================================================================
-// Test 14: OnKeepaliveResponse — unified path sets all channel heights + hash_tip_lo32
+// Test 14: OnKeepaliveResponse — diagnostic path (keepalive heights do NOT
+//          corrupt canonical snapshot; fork detection fields DO appear)
 // ============================================================================
 void test_on_keepalive_response_unified() {
-    std::cout << "\nTest 14: OnKeepaliveResponse sets all channel heights including hash_tip_lo32\n";
+    std::cout << "\nTest 14: OnKeepaliveResponse — diagnostic only (no canonical corruption)\n";
     HeightTracker tracker;
     // Set channel to Hash (2) so channel_height mirrors hash_height
     tracker.OnTemplateReceived(2, 101);
     tracker.OnKeepaliveResponse(6000, 450, 800, 999, 0xCAFEBABEu, 3);
 
     auto snap = tracker.GetSnapshot();
-    print_test_result("unified_height == 6000", snap.unified_height == 6000);
-    print_test_result("prime_height == 450",    snap.prime_height == 450);
-    print_test_result("hash_height == 800",     snap.hash_height == 800);
+    // Keepalive heights must NOT appear in the snapshot (they are diagnostic only)
+    print_test_result("unified_height == 0 (keepalive does not set canonical)",
+                      snap.unified_height == 0);
+    print_test_result("prime_height == 0 (keepalive does not set canonical)",
+                      snap.prime_height == 0);
+    print_test_result("hash_height == 0 (keepalive does not set canonical)",
+                      snap.hash_height == 0);
+    print_test_result("channel_height == 0 (keepalive does not set canonical)",
+                      snap.channel_height == 0);
+
+    // Stake height and fork detection fields DO come from diagnostic
     print_test_result("stake_height == 999",    snap.stake_height == 999);
     print_test_result("hash_tip_lo32 stored",   snap.hash_tip_lo32 == 0xCAFEBABEu);
     print_test_result("fork_score == 3",        snap.fork_score == 3);
     print_test_result("peak_fork_score == 3",   snap.peak_fork_score == 3);
-    print_test_result("channel_height == hash_height (channel==2)",
-                      snap.channel_height == 800);
     print_test_result("is_fork_active() == true", snap.is_fork_active());
     print_test_result("last_update_source == KEEPALIVE",
                       snap.last_update_source == HeightTracker::UpdateSource::KEEPALIVE);
+
+    // Diagnostic snapshot has the keepalive heights
+    auto diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("diag.keepalive_unified_height == 6000",
+                      diag.keepalive_unified_height == 6000);
+    print_test_result("diag.keepalive_prime_height == 450",
+                      diag.keepalive_prime_height == 450);
+    print_test_result("diag.keepalive_hash_height == 800",
+                      diag.keepalive_hash_height == 800);
 }
 
 // ============================================================================
-// Test 15: OnKeepaliveResponse — legacy path (hash_tip_lo32=0, fork_score=0) is safe
+// Test 15: OnKeepaliveResponse — legacy path (hash_tip_lo32=0, fork_score=0)
+//          is safe and does NOT corrupt canonical heights
 // ============================================================================
 void test_on_keepalive_response_legacy_zeros_safe() {
-    std::cout << "\nTest 15: OnKeepaliveResponse legacy zeros (hash_tip_lo32=0, fork_score=0) safe\n";
+    std::cout << "\nTest 15: OnKeepaliveResponse legacy zeros — safe, no canonical corruption\n";
     HeightTracker tracker;
     tracker.OnKeepaliveResponse(6001, 451, 801, 999, 0u, 0u);
 
     auto snap = tracker.GetSnapshot();
+    // Keepalive heights must NOT appear in the snapshot
+    print_test_result("unified_height == 0 (keepalive does not set canonical)",
+                      snap.unified_height == 0);
+    print_test_result("prime_height == 0 (keepalive does not set canonical)",
+                      snap.prime_height == 0);
+    print_test_result("hash_height == 0 (keepalive does not set canonical)",
+                      snap.hash_height == 0);
+
+    // Stake and fork fields from diagnostic
     print_test_result("stake_height == 999",       snap.stake_height == 999);
-    print_test_result("prime_height == 451",       snap.prime_height == 451);
-    print_test_result("hash_height == 801",        snap.hash_height == 801);
-    print_test_result("unified_height == 6001",    snap.unified_height == 6001);
     print_test_result("hash_tip_lo32 == 0 (safe)", snap.hash_tip_lo32 == 0);
     print_test_result("fork_score == 0 (healthy)", snap.fork_score == 0);
     print_test_result("is_fork_active() == false", !snap.is_fork_active());
     print_test_result("last_update_source == KEEPALIVE",
                       snap.last_update_source == HeightTracker::UpdateSource::KEEPALIVE);
+
+    // Diagnostic snapshot has the keepalive heights
+    auto diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("diag.keepalive_unified_height == 6001",
+                      diag.keepalive_unified_height == 6001);
+    print_test_result("diag.keepalive_prime_height == 451",
+                      diag.keepalive_prime_height == 451);
+    print_test_result("diag.keepalive_hash_height == 801",
+                      diag.keepalive_hash_height == 801);
 }
 
 // ============================================================================
@@ -509,15 +544,17 @@ void test_peak_fork_score_high_water_mark() {
 }
 
 // ============================================================================
-// Test 18: Push updates prime_height for Prime channel
+// Test 18: Push updates prime_height for Prime channel (keepalive does NOT
+//          set snapshot prime_height — only push/block data do)
 // ============================================================================
 void test_push_updates_per_channel_heights() {
-    std::cout << "\nTest 18: Push updates prime_height for Prime channel\n";
+    std::cout << "\nTest 18: Push updates prime_height for Prime channel (keepalive isolated)\n";
     HeightTracker tracker;
     tracker.OnTemplateReceived(1, 101);
     tracker.OnKeepaliveResponse(5000, 100, 200, 300, 0, 0);
     auto snap1 = tracker.GetSnapshot();
-    print_test_result("prime_height == 100 after keepalive", snap1.prime_height == 100);
+    // Keepalive prime_height does NOT appear in snapshot
+    print_test_result("prime_height == 0 after keepalive (diagnostic only)", snap1.prime_height == 0);
     tracker.OnPushNotification(5002, 102, 0x1d00ffff);
     auto snap2 = tracker.GetSnapshot();
     print_test_result("channel_height == 102 after push", snap2.channel_height == 102);
@@ -525,15 +562,17 @@ void test_push_updates_per_channel_heights() {
 }
 
 // ============================================================================
-// Test 19: Push updates hash_height for Hash channel
+// Test 19: Push updates hash_height for Hash channel (keepalive does NOT
+//          set snapshot hash_height — only push/block data do)
 // ============================================================================
 void test_push_updates_hash_height() {
-    std::cout << "\nTest 19: Push updates hash_height for Hash channel\n";
+    std::cout << "\nTest 19: Push updates hash_height for Hash channel (keepalive isolated)\n";
     HeightTracker tracker;
     tracker.OnTemplateReceived(2, 201);
     tracker.OnKeepaliveResponse(5000, 100, 200, 300, 0, 0);
     auto snap1 = tracker.GetSnapshot();
-    print_test_result("hash_height == 200 after keepalive", snap1.hash_height == 200);
+    // Keepalive hash_height does NOT appear in snapshot
+    print_test_result("hash_height == 0 after keepalive (diagnostic only)", snap1.hash_height == 0);
     tracker.OnPushNotification(5002, 202, 0x1d00ffff);
     auto snap2 = tracker.GetSnapshot();
     print_test_result("channel_height == 202 after push", snap2.channel_height == 202);
@@ -768,6 +807,46 @@ void test_on_template_metadata_per_channel_no_regression() {
 }
 
 // ============================================================================
+// Test 27: Canonical isolation — OnBlockDataReceived sets canonical,
+//          keepalive cannot corrupt it
+// ============================================================================
+void test_canonical_isolation() {
+    std::cout << "\nTest 27: Canonical isolation — keepalive cannot corrupt canonical\n";
+    HeightTracker tracker;
+    tracker.OnTemplateReceived(1, 101);
+
+    // Set canonical via OnBlockDataReceived
+    tracker.OnBlockDataReceived(6000, 500, 0x1d00ffff);
+    auto canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical.unified_height == 6000", canon.unified_height == 6000);
+    print_test_result("canonical.channel_height == 500",  canon.channel_height == 500);
+
+    // Keepalive with LOWER heights must NOT corrupt canonical
+    tracker.OnKeepaliveResponse(5990, 490, 790, 300, 0xDEADBEEFu, 2);
+    canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical.unified_height still 6000 after stale keepalive",
+                      canon.unified_height == 6000);
+    print_test_result("canonical.channel_height still 500 after stale keepalive",
+                      canon.channel_height == 500);
+
+    // Keepalive with HIGHER heights still must NOT corrupt canonical
+    tracker.OnKeepaliveResponse(7000, 600, 900, 400, 0xCAFEBABEu, 0);
+    canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical.unified_height still 6000 after higher keepalive",
+                      canon.unified_height == 6000);
+    print_test_result("canonical.channel_height still 500 after higher keepalive",
+                      canon.channel_height == 500);
+
+    // Only OnBlockDataReceived can advance canonical
+    tracker.OnBlockDataReceived(7001, 601, 0x1d00ffff);
+    canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical.unified_height advanced to 7001 via OnBlockDataReceived",
+                      canon.unified_height == 7001);
+    print_test_result("canonical.channel_height advanced to 601 via OnBlockDataReceived",
+                      canon.channel_height == 601);
+}
+
+// ============================================================================
 // Test 28: Fork scores reset when OnTemplateReceived advances channel_target
 // ============================================================================
 void test_fork_scores_reset_on_template_advance() {
@@ -812,6 +891,77 @@ void test_fork_scores_sticky_without_advance() {
 }
 
 // ============================================================================
+// Test 30: OnBlockDataReceived monotonicity — stale block data never regresses
+// ============================================================================
+void test_on_block_data_received_monotonic() {
+    std::cout << "\nTest 30: OnBlockDataReceived monotonicity\n";
+    HeightTracker tracker;
+    tracker.OnTemplateReceived(1, 101);
+
+    // First block data sets canonical
+    tracker.OnBlockDataReceived(6000, 500, 0x1d00ffff);
+    auto canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical.unified_height == 6000", canon.unified_height == 6000);
+    print_test_result("canonical.channel_height == 500",  canon.channel_height == 500);
+
+    // Stale block data with lower heights does NOT regress
+    tracker.OnBlockDataReceived(5990, 490, 0x1d001111);
+    canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical.unified_height still 6000 (monotonic)",
+                      canon.unified_height == 6000);
+    print_test_result("canonical.channel_height still 500 (monotonic)",
+                      canon.channel_height == 500);
+    // difficulty IS updated (not subject to monotonicity)
+    print_test_result("canonical.difficulty_nbits updated to 0x1d001111",
+                      canon.difficulty_nbits == 0x1d001111);
+
+    // Higher block data advances canonical
+    tracker.OnBlockDataReceived(6010, 510, 0x1d002222);
+    canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical.unified_height advanced to 6010",
+                      canon.unified_height == 6010);
+    print_test_result("canonical.channel_height advanced to 510",
+                      canon.channel_height == 510);
+
+    // Zero nbits does not clear difficulty
+    tracker.OnBlockDataReceived(6020, 520, 0);
+    canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical.difficulty_nbits unchanged with zero nbits",
+                      canon.difficulty_nbits == 0x1d002222);
+}
+
+// ============================================================================
+// Test 31: height_drift_from_canonical() measures push-vs-canonical drift
+// ============================================================================
+void test_height_drift_from_canonical() {
+    std::cout << "\nTest 31: height_drift_from_canonical() measures drift\n";
+    HeightTracker tracker;
+    tracker.OnTemplateReceived(1, 101);
+
+    // Set canonical via block data
+    tracker.OnBlockDataReceived(6000, 500, 0x1d00ffff);
+    auto snap = tracker.GetSnapshot();
+    // No push yet, so snapshot.unified_height == canonical.unified_height
+    print_test_result("drift == 0 when canonical == snapshot",
+                      snap.height_drift_from_canonical() == 0);
+
+    // Push advances past canonical
+    tracker.OnPushNotification(6005, 505, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    // snap.unified_height = max(6000, 6005) = 6005
+    // canonical_unified_height = 6000
+    // drift = 6005 - 6000 = 5
+    print_test_result("drift == 5 when push is ahead of canonical",
+                      snap.height_drift_from_canonical() == 5);
+
+    // Block data catches up to push
+    tracker.OnBlockDataReceived(6005, 505, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    print_test_result("drift == 0 when canonical catches up",
+                      snap.height_drift_from_canonical() == 0);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -845,8 +995,11 @@ int main() {
     test_stale_get_block_no_regression();
     test_on_template_metadata_monotonic();
     test_on_template_metadata_per_channel_no_regression();
+    test_canonical_isolation();
     test_fork_scores_reset_on_template_advance();
     test_fork_scores_sticky_without_advance();
+    test_on_block_data_received_monotonic();
+    test_height_drift_from_canonical();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

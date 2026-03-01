@@ -1824,14 +1824,16 @@ void Worker_manager::check_template_health()
         }
     }
 
-    // ── Fork / tip mismatch detection ───────────────────────────────────────
+    // ── Fork / tip mismatch detection (DIAGNOSTIC ONLY) ──────────────────
     // If the keepalive ACK reports a non-zero fork_score AND the node's
-    // hash_tip_lo32 differs from the template's hashPrevBlock lo32, the miner
-    // is on the wrong fork.  Discard the stale template immediately.
+    // hash_tip_lo32 differs from the template's hashPrevBlock lo32, log a
+    // diagnostic warning.  Keepalive-derived fork_score is NOT authoritative
+    // for mining decisions — only canonical hashPrevBlock changes (from
+    // OnBlockDataReceived) trigger real fork recovery.
     //
-    // Guard: only act when the keepalive ACK is fresh (received within
+    // Guard: only log when the keepalive ACK is fresh (received within
     // KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS).  A stale keepalive means
-    // hash_tip_lo32 is stale data — don't trigger hard recovery on it.
+    // hash_tip_lo32 is stale data — don't even warn on it.
     {
         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
 
@@ -1859,15 +1861,9 @@ void Worker_manager::check_template_health()
 
             if (miner_lo32 != 0 && miner_lo32 != ht_snap.hash_tip_lo32)
             {
-                m_logger->error("[Worker_manager] ❌ FORK DETECTED: miner_prevhash_lo32=0x{:08x} vs node_tip_lo32=0x{:08x} (fork_score={})",
-                    miner_lo32, ht_snap.hash_tip_lo32, ht_snap.fork_score);
-                m_logger->error("[Worker_manager]    Template is on the wrong fork — forcing hard recovery");
-                template_interface->discard_template("Fork detected: tip mismatch (fork_score=" +
-                    std::to_string(ht_snap.fork_score) + ")");
-                stop_all_workers();
-                create_workers();
-                retry_template_request(true);
-                return;
+                m_logger->warn("[Worker_manager] ⚠️  DIAGNOSTIC fork hint: miner_prevhash_lo32=0x{:08x} vs node_tip_lo32=0x{:08x} (keepalive_peak_fork_score={})",
+                    miner_lo32, ht_snap.hash_tip_lo32, ht_snap.peak_fork_score);
+                m_logger->warn("[Worker_manager]    Keepalive fork_score is diagnostic only — workers NOT stopped. Canonical hashPrevBlock changes trigger real fork recovery.");
             }
         }
     }
