@@ -1013,6 +1013,50 @@ void test_height_drift_from_canonical() {
 }
 
 // ============================================================================
+// Test 28: Fork scores reset when OnTemplateReceived advances channel_target
+// ============================================================================
+void test_fork_scores_reset_on_template_advance() {
+    std::cout << "\nTest 28: Fork scores reset when OnTemplateReceived advances channel_target\n";
+    HeightTracker tracker;
+    // Set up: channel=2 (Hash), initial template, then a fork
+    tracker.OnTemplateReceived(2, 101);
+    tracker.OnKeepaliveResponse(6000, 450, 800, 999, 0xCAFEBABEu, 5);
+
+    auto snap = tracker.GetSnapshot();
+    print_test_result("fork_score == 5 after keepalive",      snap.fork_score == 5);
+    print_test_result("peak_fork_score == 5 after keepalive", snap.peak_fork_score == 5);
+    print_test_result("is_fork_active() == true",             snap.is_fork_active());
+
+    // Recovery: a fresh template arrives that advances channel_target
+    tracker.OnTemplateReceived(2, 102);
+
+    snap = tracker.GetSnapshot();
+    print_test_result("fork_score == 0 after recovery template",      snap.fork_score == 0);
+    print_test_result("peak_fork_score == 0 after recovery template", snap.peak_fork_score == 0);
+    print_test_result("is_fork_active() == false after recovery",     !snap.is_fork_active());
+    print_test_result("channel_target == 102",                        snap.channel_target == 102);
+}
+
+// ============================================================================
+// Test 29: Fork scores NOT reset when OnTemplateReceived doesn't advance target
+// ============================================================================
+void test_fork_scores_sticky_without_advance() {
+    std::cout << "\nTest 29: Fork scores NOT reset when OnTemplateReceived doesn't advance target\n";
+    HeightTracker tracker;
+    tracker.OnTemplateReceived(2, 101);
+    tracker.OnKeepaliveResponse(6000, 450, 800, 999, 0xCAFEBABEu, 3);
+
+    // Stale template that doesn't advance channel_target
+    tracker.OnTemplateReceived(2, 100);
+
+    auto snap = tracker.GetSnapshot();
+    print_test_result("fork_score still 3 (stale template)",      snap.fork_score == 3);
+    print_test_result("peak_fork_score still 3 (stale template)", snap.peak_fork_score == 3);
+    print_test_result("is_fork_active() still true",              snap.is_fork_active());
+    print_test_result("channel_target unchanged at 101",          snap.channel_target == 101);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -1052,6 +1096,8 @@ int main() {
     test_on_block_data_received_monotonic();
     test_diagnostic_fork_score_isolated();
     test_height_drift_from_canonical();
+    test_fork_scores_reset_on_template_advance();
+    test_fork_scores_sticky_without_advance();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
