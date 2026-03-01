@@ -20,6 +20,7 @@
  * 27. Canonical isolation — keepalive cannot corrupt canonical state
  * 30. OnBlockDataReceived monotonicity (stale block data never regresses)
  * 31. height_drift_from_canonical() measures push-vs-canonical drift
+ * 32. canonical_hash_prev_block anchored to BLOCK_DATA (Tritium block)
  */
 
 #include "protocol/height_tracker.hpp"
@@ -818,32 +819,38 @@ void test_canonical_isolation() {
     // Set canonical via OnBlockDataReceived
     tracker.OnBlockDataReceived(6000, 500, 0x1d00ffff);
     auto canon = tracker.GetCanonicalSnapshot();
-    print_test_result("canonical.unified_height == 6000", canon.unified_height == 6000);
-    print_test_result("canonical.channel_height == 500",  canon.channel_height == 500);
+    print_test_result("canonical_unified_height == 6000", canon.canonical_unified_height == 6000);
+    print_test_result("canonical_channel_height == 500",  canon.canonical_channel_height == 500);
+    print_test_result("canonical_channel_target == 501",  canon.canonical_channel_target == 501);
+    print_test_result("is_initialized() == true",         canon.is_initialized());
+    print_test_result("canonical_received_at is set",
+                      canon.canonical_received_at != std::chrono::steady_clock::time_point{});
 
     // Keepalive with LOWER heights must NOT corrupt canonical
     tracker.OnKeepaliveResponse(5990, 490, 790, 300, 0xDEADBEEFu, 2);
     canon = tracker.GetCanonicalSnapshot();
-    print_test_result("canonical.unified_height still 6000 after stale keepalive",
-                      canon.unified_height == 6000);
-    print_test_result("canonical.channel_height still 500 after stale keepalive",
-                      canon.channel_height == 500);
+    print_test_result("canonical_unified_height still 6000 after stale keepalive",
+                      canon.canonical_unified_height == 6000);
+    print_test_result("canonical_channel_height still 500 after stale keepalive",
+                      canon.canonical_channel_height == 500);
 
     // Keepalive with HIGHER heights still must NOT corrupt canonical
     tracker.OnKeepaliveResponse(7000, 600, 900, 400, 0xCAFEBABEu, 0);
     canon = tracker.GetCanonicalSnapshot();
-    print_test_result("canonical.unified_height still 6000 after higher keepalive",
-                      canon.unified_height == 6000);
-    print_test_result("canonical.channel_height still 500 after higher keepalive",
-                      canon.channel_height == 500);
+    print_test_result("canonical_unified_height still 6000 after higher keepalive",
+                      canon.canonical_unified_height == 6000);
+    print_test_result("canonical_channel_height still 500 after higher keepalive",
+                      canon.canonical_channel_height == 500);
 
     // Only OnBlockDataReceived can advance canonical
     tracker.OnBlockDataReceived(7001, 601, 0x1d00ffff);
     canon = tracker.GetCanonicalSnapshot();
-    print_test_result("canonical.unified_height advanced to 7001 via OnBlockDataReceived",
-                      canon.unified_height == 7001);
-    print_test_result("canonical.channel_height advanced to 601 via OnBlockDataReceived",
-                      canon.channel_height == 601);
+    print_test_result("canonical_unified_height advanced to 7001 via OnBlockDataReceived",
+                      canon.canonical_unified_height == 7001);
+    print_test_result("canonical_channel_height advanced to 601 via OnBlockDataReceived",
+                      canon.canonical_channel_height == 601);
+    print_test_result("canonical_channel_target advanced to 602",
+                      canon.canonical_channel_target == 602);
 }
 
 // ============================================================================
@@ -901,33 +908,38 @@ void test_on_block_data_received_monotonic() {
     // First block data sets canonical
     tracker.OnBlockDataReceived(6000, 500, 0x1d00ffff);
     auto canon = tracker.GetCanonicalSnapshot();
-    print_test_result("canonical.unified_height == 6000", canon.unified_height == 6000);
-    print_test_result("canonical.channel_height == 500",  canon.channel_height == 500);
+    print_test_result("canonical_unified_height == 6000", canon.canonical_unified_height == 6000);
+    print_test_result("canonical_channel_height == 500",  canon.canonical_channel_height == 500);
+    print_test_result("canonical_channel_target == 501",  canon.canonical_channel_target == 501);
 
     // Stale block data with lower heights does NOT regress
     tracker.OnBlockDataReceived(5990, 490, 0x1d001111);
     canon = tracker.GetCanonicalSnapshot();
-    print_test_result("canonical.unified_height still 6000 (monotonic)",
-                      canon.unified_height == 6000);
-    print_test_result("canonical.channel_height still 500 (monotonic)",
-                      canon.channel_height == 500);
+    print_test_result("canonical_unified_height still 6000 (monotonic)",
+                      canon.canonical_unified_height == 6000);
+    print_test_result("canonical_channel_height still 500 (monotonic)",
+                      canon.canonical_channel_height == 500);
+    print_test_result("canonical_channel_target still 501 (monotonic)",
+                      canon.canonical_channel_target == 501);
     // difficulty IS updated (not subject to monotonicity)
-    print_test_result("canonical.difficulty_nbits updated to 0x1d001111",
-                      canon.difficulty_nbits == 0x1d001111);
+    print_test_result("canonical_difficulty_nbits updated to 0x1d001111",
+                      canon.canonical_difficulty_nbits == 0x1d001111);
 
     // Higher block data advances canonical
     tracker.OnBlockDataReceived(6010, 510, 0x1d002222);
     canon = tracker.GetCanonicalSnapshot();
-    print_test_result("canonical.unified_height advanced to 6010",
-                      canon.unified_height == 6010);
-    print_test_result("canonical.channel_height advanced to 510",
-                      canon.channel_height == 510);
+    print_test_result("canonical_unified_height advanced to 6010",
+                      canon.canonical_unified_height == 6010);
+    print_test_result("canonical_channel_height advanced to 510",
+                      canon.canonical_channel_height == 510);
+    print_test_result("canonical_channel_target advanced to 511",
+                      canon.canonical_channel_target == 511);
 
     // Zero nbits does not clear difficulty
     tracker.OnBlockDataReceived(6020, 520, 0);
     canon = tracker.GetCanonicalSnapshot();
-    print_test_result("canonical.difficulty_nbits unchanged with zero nbits",
-                      canon.difficulty_nbits == 0x1d002222);
+    print_test_result("canonical_difficulty_nbits unchanged with zero nbits",
+                      canon.canonical_difficulty_nbits == 0x1d002222);
 }
 
 // ============================================================================
@@ -959,6 +971,58 @@ void test_height_drift_from_canonical() {
     snap = tracker.GetSnapshot();
     print_test_result("drift == 0 when canonical catches up",
                       snap.height_drift_from_canonical() == 0);
+}
+
+// ============================================================================
+// Test 32: canonical_hash_prev_block anchored to BLOCK_DATA (Tritium block)
+// ============================================================================
+void test_canonical_hash_prev_block() {
+    std::cout << "\nTest 32: canonical_hash_prev_block anchored to BLOCK_DATA\n";
+    HeightTracker tracker;
+    tracker.OnTemplateReceived(1, 101);
+
+    // Before any block data: is_initialized() is false, hash_prev_block is zero
+    auto canon = tracker.GetCanonicalSnapshot();
+    print_test_result("is_initialized() == false before block data",
+                      !canon.is_initialized());
+    print_test_result("canonical_hash_prev_block is zero before block data",
+                      canon.canonical_hash_prev_block == uint1024_t(0));
+
+    // OnBlockDataReceived sets heights; UpdateWithHashPrevBlock sets hashPrevBlock
+    tracker.OnBlockDataReceived(6000, 500, 0x1d00ffff);
+    uint1024_t fake_prev_hash(0xDEADBEEFu);
+    tracker.UpdateWithHashPrevBlock(fake_prev_hash);
+
+    canon = tracker.GetCanonicalSnapshot();
+    print_test_result("is_initialized() == true after block data",
+                      canon.is_initialized());
+    print_test_result("canonical_hash_prev_block set from UpdateWithHashPrevBlock",
+                      canon.canonical_hash_prev_block == fake_prev_hash);
+
+    // Snapshot's hash_prev_block is sourced from canonical
+    auto snap = tracker.GetSnapshot();
+    print_test_result("snapshot.hash_prev_block == canonical_hash_prev_block",
+                      snap.hash_prev_block == fake_prev_hash);
+    print_test_result("snapshot.canonical_hash_prev_block == canonical source",
+                      snap.canonical_hash_prev_block == fake_prev_hash);
+
+    // Keepalive does NOT affect canonical_hash_prev_block
+    tracker.OnKeepaliveResponse(7000, 600, 900, 400, 0xCAFEBABEu, 1);
+    canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical_hash_prev_block unchanged after keepalive",
+                      canon.canonical_hash_prev_block == fake_prev_hash);
+
+    // Diagnostic hash_tip_lo32 is separate (lo32 of node's hashBestChain)
+    auto diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("diagnostic hash_tip_lo32 == 0xCAFEBABE from keepalive",
+                      diag.hash_tip_lo32 == 0xCAFEBABEu);
+
+    // Update hash_prev_block with new chain tip
+    uint1024_t new_prev_hash(0xFEEDFACEu);
+    tracker.UpdateWithHashPrevBlock(new_prev_hash);
+    canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical_hash_prev_block updated to new tip",
+                      canon.canonical_hash_prev_block == new_prev_hash);
 }
 
 // ============================================================================
@@ -1000,6 +1064,7 @@ int main() {
     test_fork_scores_sticky_without_advance();
     test_on_block_data_received_monotonic();
     test_height_drift_from_canonical();
+    test_canonical_hash_prev_block();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

@@ -72,25 +72,28 @@ void HeightTracker::OnBlockDataReceived(uint32_t unified_height,
     std::lock_guard<std::mutex> lock(m_mutex);
 
     // Only advance — never regress canonical heights.
-    if (unified_height > m_canonical.unified_height)
-        m_canonical.unified_height = unified_height;
-    if (channel_height > m_canonical.channel_height)
-        m_canonical.channel_height = channel_height;
+    if (unified_height > m_canonical.canonical_unified_height)
+        m_canonical.canonical_unified_height = unified_height;
+    if (channel_height > m_canonical.canonical_channel_height) {
+        m_canonical.canonical_channel_height = channel_height;
+        m_canonical.canonical_channel_target = channel_height + 1;
+    }
     // Guard against nbits==0: template metadata may arrive from a stale
     // response — don't clear a valid difficulty with zero.
     if (nbits != 0) {
-        m_canonical.difficulty_nbits = nbits;
+        m_canonical.canonical_difficulty_nbits = nbits;
         m_latest_difficulty_nbits = nbits;
     }
 
     // Keep per-channel canonical heights in sync
-    if (m_channel == 1 && channel_height > m_canonical.prime_height)
-        m_canonical.prime_height = channel_height;
-    else if (m_channel == 2 && channel_height > m_canonical.hash_height)
-        m_canonical.hash_height = channel_height;
+    if (m_channel == 1 && channel_height > m_canonical.canonical_prime_height)
+        m_canonical.canonical_prime_height = channel_height;
+    else if (m_channel == 2 && channel_height > m_canonical.canonical_hash_height)
+        m_canonical.canonical_hash_height = channel_height;
 
+    m_canonical.canonical_received_at = std::chrono::steady_clock::now();
     m_last_update_source = UpdateSource::TEMPLATE;
-    m_last_height_update = std::chrono::steady_clock::now();
+    m_last_height_update = m_canonical.canonical_received_at;
 }
 
 void HeightTracker::OnTemplateReceived(uint32_t channel,
@@ -125,7 +128,7 @@ void HeightTracker::AdvanceChannelTarget(uint32_t new_target)
 void HeightTracker::UpdateWithHashPrevBlock(const uint1024_t& h)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_hash_prev_block = h;
+    m_canonical.canonical_hash_prev_block = h;
 }
 
 void HeightTracker::OnKeepaliveResponse(uint32_t unified_height,
@@ -156,10 +159,10 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
 
     // Compose unified/channel heights: max(canonical, push, round)
     // Keepalive heights are excluded — they must never regress mining decisions.
-    s.unified_height = std::max({m_canonical.unified_height,
+    s.unified_height = std::max({m_canonical.canonical_unified_height,
                                   m_diagnostic.push_unified_height,
                                   m_diagnostic.round_unified_height});
-    s.channel_height = std::max({m_canonical.channel_height,
+    s.channel_height = std::max({m_canonical.canonical_channel_height,
                                   m_diagnostic.push_channel_height,
                                   m_diagnostic.round_channel_height});
 
@@ -169,14 +172,14 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     s.channel_target = m_channel_target;
     s.channel = m_channel;
     s.template_unified_height = m_template_unified_height;
-    s.hash_prev_block = m_hash_prev_block;
+    s.hash_prev_block = m_canonical.canonical_hash_prev_block;
     s.last_update_source = m_last_update_source;
 
     // Per-channel heights: max(canonical, push, round)
-    s.prime_height = std::max({m_canonical.prime_height,
+    s.prime_height = std::max({m_canonical.canonical_prime_height,
                                 m_diagnostic.push_prime_height,
                                 m_diagnostic.round_prime_height});
-    s.hash_height  = std::max({m_canonical.hash_height,
+    s.hash_height  = std::max({m_canonical.canonical_hash_height,
                                 m_diagnostic.push_hash_height,
                                 m_diagnostic.round_hash_height});
     s.stake_height = m_diagnostic.keepalive_stake_height;
@@ -191,9 +194,10 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     s.last_height_update = m_last_height_update;
     s.last_template_update = m_last_template_update;
 
-    // Canonical reference for drift computation
-    s.canonical_unified_height = m_canonical.unified_height;
-    s.canonical_channel_height = m_canonical.channel_height;
+    // Canonical reference for drift computation and fork detection
+    s.canonical_unified_height = m_canonical.canonical_unified_height;
+    s.canonical_channel_height = m_canonical.canonical_channel_height;
+    s.canonical_hash_prev_block = m_canonical.canonical_hash_prev_block;
 
     return s;
 }

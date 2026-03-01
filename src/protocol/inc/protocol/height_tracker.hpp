@@ -54,17 +54,26 @@ public:
 
     // ─── Canonical chain state (BLOCK_DATA only) ──────────────────────────
     /**
-     * @brief Authoritative mining state updated exclusively by OnBlockDataReceived().
+     * @brief Authoritative mining state updated exclusively by OnBlockDataReceived()
+     *        and UpdateWithHashPrevBlock().
      *
-     * Heights are monotonically advancing.  This is the ONLY state that drives
-     * mining decisions (template staleness, tip-moved, drift detection).
+     * Anchored to the decoded 216-byte Tritium block from BLOCK_DATA /
+     * STATELESS_GET_BLOCK.  Heights are monotonically advancing.  This is the
+     * ONLY state that drives mining decisions (template staleness, tip-moved,
+     * drift detection).
      */
     struct CanonicalChainState {
-        uint32_t unified_height{0};
-        uint32_t channel_height{0};
-        uint32_t difficulty_nbits{0};
-        uint32_t prime_height{0};
-        uint32_t hash_height{0};
+        uint32_t canonical_unified_height{0};   ///< block.nHeight from BLOCK_DATA
+        uint32_t canonical_channel_height{0};   ///< nChannelHeight from BLOCK_DATA metadata prefix
+        uint32_t canonical_difficulty_nbits{0}; ///< nBits from BLOCK_DATA metadata prefix
+        uint32_t canonical_prime_height{0};     ///< Prime channel height (canonical, from BLOCK_DATA when channel==1)
+        uint32_t canonical_hash_height{0};      ///< Hash channel height (canonical, from BLOCK_DATA when channel==2)
+        uint32_t canonical_channel_target{0};   ///< channel_height + 1 (the block we're mining for)
+        uint1024_t canonical_hash_prev_block{}; ///< hashPrevBlock from BLOCK_DATA (fork detection anchor)
+        std::chrono::steady_clock::time_point canonical_received_at{}; ///< When this canonical state was set
+
+        /// True when canonical state has been set at least once from a BLOCK_DATA receipt
+        bool is_initialized() const { return canonical_unified_height > 0; }
     };
 
     // ─── Diagnostic observer state (push / keepalive / GET_ROUND) ─────────
@@ -94,7 +103,12 @@ public:
         uint32_t keepalive_prime_height{0};
         uint32_t keepalive_hash_height{0};
         uint32_t keepalive_stake_height{0};
-        uint32_t hash_tip_lo32{0};
+
+        // Diagnostic equivalent of canonical_hash_prev_block (lo32 from keepalive ACK).
+        // The keepalive provides only the lo32 of node's hashBestChain — a lightweight
+        // fork cross-check peer of the full canonical_hash_prev_block from BLOCK_DATA.
+        uint32_t hash_tip_lo32{0};   ///< Lo32 of node's hashBestChain (diagnostic fork detection)
+
         uint32_t fork_score{0};
         uint32_t peak_fork_score{0};
         std::chrono::steady_clock::time_point last_keepalive_ack_at{};
@@ -205,9 +219,10 @@ public:
                    static_cast<int32_t>(canonical_unified_height);
         }
 
-        // ── Canonical reference (for drift computation) ────────────────────────
+        // ── Canonical reference (for drift computation and fork detection) ───
         uint32_t canonical_unified_height{0};
         uint32_t canonical_channel_height{0};
+        uint1024_t canonical_hash_prev_block{}; ///< From canonical state (BLOCK_DATA decoded Tritium block)
     };
 
     HeightTracker() = default;
@@ -296,6 +311,8 @@ public:
      * @brief Record the hashPrevBlock from the most recently received template
      *
      * Call this after parsing a new template to capture the chain tip anchor.
+     * Updates both the canonical state (canonical_hash_prev_block) and the
+     * snapshot's hash_prev_block field.
      * Used to detect tip changes between successive templates (StakeMinter pattern).
      *
      * @param h  hashPrevBlock from the template's block header
@@ -377,7 +394,6 @@ private:
     uint32_t m_channel_target{0};
     uint32_t m_channel{0};
     uint32_t m_template_unified_height{0};
-    uint1024_t m_hash_prev_block{};
     UpdateSource m_last_update_source{UpdateSource::NONE};
     std::chrono::steady_clock::time_point m_last_height_update{};
     std::chrono::steady_clock::time_point m_last_template_update{};
