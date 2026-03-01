@@ -44,8 +44,7 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
     m_diagnostic.round_unified_height = unified_height;
     m_diagnostic.round_channel_height = channel_height;
     m_diagnostic.round_difficulty_nbits = nbits;
-    if (nbits != 0)
-        m_latest_difficulty_nbits = nbits;
+    // GET_ROUND is diagnostic-only — does NOT update m_latest_difficulty_nbits
 
     m_last_update_source = UpdateSource::GET_ROUND;
     auto now = std::chrono::steady_clock::now();
@@ -157,14 +156,13 @@ void HeightTracker::OnKeepaliveResponse(uint32_t unified_height,
 HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     Snapshot s;
 
-    // Compose unified/channel heights: max(canonical, push, round)
-    // Keepalive heights are excluded — they must never regress mining decisions.
-    s.unified_height = std::max({m_canonical.canonical_unified_height,
-                                  m_diagnostic.push_unified_height,
-                                  m_diagnostic.round_unified_height});
-    s.channel_height = std::max({m_canonical.canonical_channel_height,
-                                  m_diagnostic.push_channel_height,
-                                  m_diagnostic.round_channel_height});
+    // Compose unified/channel heights: max(canonical, push)
+    // GET_ROUND and keepalive heights are excluded — they are diagnostic-only
+    // and must never regress mining decisions.
+    s.unified_height = std::max(m_canonical.canonical_unified_height,
+                                m_diagnostic.push_unified_height);
+    s.channel_height = std::max(m_canonical.canonical_channel_height,
+                                m_diagnostic.push_channel_height);
 
     // Difficulty: latest non-zero from any non-keepalive source
     s.difficulty_nbits = m_latest_difficulty_nbits;
