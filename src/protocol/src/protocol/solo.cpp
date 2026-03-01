@@ -610,343 +610,111 @@ network::Shared_payload Solo::send_recovery_work_request()
 
 network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce)
 {
-    // Enhanced diagnostics: Validate block_data before submission
     if (block_data.empty()) {
         m_logger->error("[Solo Submit] CRITICAL: block_data is empty! Cannot submit block.");
         return network::Shared_payload{};
     }
 
-    // ── StatelessBlockUtility pre-check: nonce sanity ──────────────────────
-    // Mirrors StatelessBlockUtility::encode_submit() pre-check 1 (nonce == 0
-    // means the worker has not yet solved the block).  encode_submit() also
-    // enforces this via MiningTemplateInterface, but catching it here avoids
-    // unnecessary template lookup.
-    if (nonce == 0) {
-        m_logger->error("[Solo Submit] CRITICAL: nonce is zero — "
-                        "block not yet solved (uninitialized template). "
-                        "Refusing submission.");
+    // ── Delegate to StatelessBlockUtility::encode_submit() ──────────────────
+    // encode_submit() handles all pre-checks (nonce, channel, height, staleness),
+    // Disposable Falcon signing, and PacketBuilder framing (0xD001 vs 0x01).
+    // Solo::submit_block() adds ChaCha20 encryption on top of the signed payload.
+    if (!m_template_interface || !m_template_interface->has_valid_template()) {
+        m_logger->error("[Solo Submit] No valid template — cannot submit block");
         return network::Shared_payload{};
     }
-    
-    // Verify Falcon wrapper is available (required for stateless sessions)
-    if (!m_falcon_wrapper || !m_falcon_wrapper->is_valid()) {
-        m_logger->error("[Solo Submit] CRITICAL: Falcon wrapper not available for block signing");
-        m_logger->error("[Solo Submit] Stateless sessions REQUIRE signed block submissions per LLL-TAO protocol");
+
+    const auto* tmpl = m_template_interface->get_current_template();
+    if (!tmpl) {
+        m_logger->error("[Solo Submit] get_current_template() returned null");
         return network::Shared_payload{};
     }
-    
-    // ════════════════════════════════════════════════════════════════════════════════
-    // TRAINING WHEELS MODE: Comprehensive SUBMIT_BLOCK logging
-    // ════════════════════════════════════════════════════════════════════════════════
-    m_logger->info("════════════════════════════════════════════════════════");
-    m_logger->info("📤 SUBMIT_BLOCK PREPARATION (Training Wheels Mode)");
-    m_logger->info("════════════════════════════════════════════════════════");
-    
-    // Get current timestamp for block submission (8 bytes, little-endian)
-    uint64_t submission_timestamp = static_cast<uint64_t>(
-        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
-    
-    /* Block details */
-    m_logger->info("📦 BLOCK DATA:");
-    m_logger->info("   Serialized size: {} bytes (expected: 216)", block_data.size());
-    m_logger->info("   Nonce: 0x{:016x}", nonce);
 
-    // [SUBMIT AUDIT] log hashPrevBlock from bytes[4-11] of block_data (primary staleness anchor).
-    // Node Guard 2 will verify this equals hashBestChain at submission time.
-    if (block_data.size() >= 12) {
-        std::string prev_hex;
-        for (size_t i = 4; i < 12; ++i) {
-            char buf[3]; snprintf(buf, sizeof(buf), "%02x", block_data[i]); prev_hex += buf;
-        }
-        m_logger->info("[SUBMIT AUDIT] block.hashPrevBlock = {}... (node Guard 2 will verify == hashBestChain)",
-            prev_hex);
-    }
-    
-    // Build the complete submission payload: full_block + timestamp
-    std::vector<uint8_t> message_to_sign;
-    message_to_sign.reserve(block_data.size() + 8);  // full_block + timestamp(8)
-    message_to_sign.insert(message_to_sign.end(), block_data.begin(), block_data.end());
-    append_uint64_le(message_to_sign, submission_timestamp);
-    
-    // Generate Falcon signature for block submission
-    auto sig_result = m_falcon_wrapper->sign_payload(message_to_sign, 
-        FalconSignatureWrapper::SignatureType::BLOCK);
-    
-    if (!sig_result.success) {
-        m_logger->error("❌ Falcon signature generation FAILED: {}", sig_result.error_message);
-        m_logger->error("════════════════════════════════════════════════════════");
+    // Reconstruct the block to submit: current template + found nonce.
+    // block_data[0:216] was serialized from the same template by prepare_block_submission().
+    ::LLP::CBlock block_to_submit = tmpl->block;
+    block_to_submit.nNonce = nonce;
+
+    // Extract Prime channel vOffsets from block_data (bytes after 216-byte Tritium body).
+    // For Hash channel block_data is exactly 216 bytes so this is always empty.
+    std::vector<uint8_t> vOffsets;
+    if (block_data.size() > 216)
+        vOffsets.assign(block_data.begin() + 216, block_data.end());
+
+    auto submit_result = StatelessBlockUtility::encode_submit(
+        *m_template_interface, block_to_submit, vOffsets,
+        m_falcon_wrapper.get(), m_protocol_lane,
+        m_height_tracker.GetSnapshot(), m_logger);
+
+    if (!submit_result.valid) {
+        m_logger->error("[Solo Submit] encode_submit() rejected block: {}",
+                        submit_result.rejection_reason);
         return network::Shared_payload{};
     }
-    
-    /* Falcon signature details and validation */
-    size_t expected_sig_size = m_falcon_wrapper->get_signature_size();
-    std::string falcon_version = m_falcon_wrapper->is_falcon1024() ? "Falcon-1024" : "Falcon-512";
-    
-    m_logger->info("🔐 FALCON SIGNATURE ({}):", falcon_version);
-    m_logger->info("   Signature size: {} bytes (expected: {})", 
-                   sig_result.signature.size(), expected_sig_size);
-    
-    // Validate signature size matches the Falcon version
-    if (sig_result.signature.size() != expected_sig_size) {
-        m_logger->error("❌ SIGNATURE SIZE MISMATCH!");
-        m_logger->error("   Expected: {} bytes ({})", expected_sig_size, falcon_version);
-        m_logger->error("   Got: {} bytes", sig_result.signature.size());
-        m_logger->error("   This indicates a key version mismatch or signing error");
-        m_logger->error("════════════════════════════════════════════════════════");
+
+    // ── Extract plaintext payload from PacketBuilder-framed wire_bytes ────────
+    // STATELESS wire format: [opcode(2 BE)][length(4 BE)][plaintext_payload]
+    // LEGACY wire format:    [opcode(1)   ][length(4 BE)][plaintext_payload]
+    const size_t header_size = (m_protocol_lane == ProtocolLane::STATELESS) ? 6u : 5u;
+    const auto& framed = *submit_result.wire_bytes;
+    if (framed.size() <= header_size) {
+        m_logger->error("[Solo Submit] Wire frame too small: {} bytes (header={})",
+                        framed.size(), header_size);
         return network::Shared_payload{};
     }
-    
-    m_logger->info("   Timestamp: {} (0x{:016x})", submission_timestamp, submission_timestamp);
-    m_logger->info("   Signed data format: [block({})][ timestamp(8)]", block_data.size());
-    
-    /* Build plaintext payload BEFORE encryption
-     * Wire format (Disposable Falcon only):
-     *   [block_data (N bytes)] [timestamp (8 bytes LE)] [sig_len (2 bytes LE)] [disposable_sig (sig_len bytes)]
-     *
-     * The node's SignedWorkSubmission::Deserialize() expects exactly this format with no trailing fields.
-     */
-    std::vector<uint8_t> plaintextPayload;
-    plaintextPayload.reserve(block_data.size() + 8 + 2 + sig_result.signature.size());
+    std::vector<uint8_t> plaintextPayload(framed.begin() + header_size, framed.end());
 
-    // Field 1: Full serialized block (must be exactly 216 bytes for Tritium)
-    plaintextPayload.insert(plaintextPayload.end(), block_data.begin(), block_data.end());
+    m_logger->info("[Solo Submit] Plaintext payload: {} bytes "
+                   "[block][timestamp(8)][sig_len(2)][sig]",
+                   plaintextPayload.size());
 
-    // Field 2: Submission timestamp (8 bytes LE)
-    append_uint64_le(plaintextPayload, submission_timestamp);
-
-    // Field 3: Disposable signature length (2 bytes LE)
-    uint16_t sig_len = static_cast<uint16_t>(sig_result.signature.size());
-    append_uint16_le(plaintextPayload, sig_len);
-
-    // Field 4: Disposable signature bytes
-    plaintextPayload.insert(plaintextPayload.end(),
-                           sig_result.signature.begin(),
-                           sig_result.signature.end());
-
-    // ════════════════════════════════════════════════════════════════════════
-    // EMERGENCY PLAINTEXT LAYOUT DIAGNOSTIC
-    // This log is CRITICAL for debugging ChaCha20 decryption failures.
-    // The node's SignedWorkSubmission::Deserialize() uses fixed offsets.
-    // If ANY offset here doesn't match the node's expectations, decryption
-    // will appear to succeed but deserialization will be garbled.
-    // ════════════════════════════════════════════════════════════════════════
-    {
-        const size_t off_block     = 0;
-        const size_t off_timestamp = block_data.size();                    // = 216
-        const size_t off_siglen    = block_data.size() + 8;               // = 224
-        const size_t off_sig       = block_data.size() + 8 + 2;           // = 226
-        const size_t expected_total = block_data.size() + 8 + 2 + sig_len;
-
-        m_logger->info("══════════════════════════════════════════════════════════");
-        m_logger->info("📐 PLAINTEXT LAYOUT DIAGNOSTIC (for ChaCha20 debug)");
-        m_logger->info("══════════════════════════════════════════════════════════");
-        m_logger->info("  [offset {:>4}] block_data    : {} bytes (expected: 216)",
-                       off_block, block_data.size());
-        m_logger->info("  [offset {:>4}] timestamp     : 8 bytes LE = 0x{:016x}",
-                       off_timestamp, submission_timestamp);
-        m_logger->info("  [offset {:>4}] sig_len       : 2 bytes LE = {} (0x{:04x})",
-                       off_siglen, sig_len, sig_len);
-        m_logger->info("  [offset {:>4}] disposable_sig: {} bytes",
-                       off_sig, sig_len);
-        m_logger->info("  Total plaintext  : {} bytes (expected: {})",
-                       plaintextPayload.size(), expected_total);
-        m_logger->info("  block_data OK    : {}", (block_data.size() == 216) ? "✅ YES (216 bytes)" : "❌ NO — WRONG SIZE!");
-        m_logger->info("  payload size OK  : {}", (plaintextPayload.size() == expected_total) ? "✅ YES" : "❌ NO — MISMATCH!");
-
-        // Show raw bytes at the sig_len boundary for cross-checking with node logs
-        if (plaintextPayload.size() >= off_siglen + 2) {
-            m_logger->info("  sig_len bytes at offset {}: {:02x} {:02x}  (LE = {} = 0x{:04x})",
-                           off_siglen,
-                           plaintextPayload[off_siglen], plaintextPayload[off_siglen + 1],
-                           sig_len, sig_len);
-        }
-
-        // First 64 bytes of plaintext for pattern verification
-        m_logger->info("  First 64 plaintext bytes (hex):");
-        std::string hexDump = HexUtils::FormatHexDump(plaintextPayload, 64);
-        std::vector<std::string> lines = HexUtils::SplitHexDump(hexDump, 32);
-        for (const auto& line : lines)
-            m_logger->info("    {}", line);
-
-        m_logger->info("══════════════════════════════════════════════════════════");
-
-        // HARD ASSERT: block_data must be exactly 216 bytes or the whole submission is garbage
-        if (block_data.size() != 216) {
-            m_logger->error("❌ CRITICAL: block_data.size() = {} but node expects 216 bytes!", block_data.size());
-            m_logger->error("   All offset math is wrong. Refusing to submit.");
-            m_logger->error("   This likely means the block template changed format after the Block Height Refactor.");
-            m_logger->error("   Check: MiningTemplateInterface::read_template() and llp_utils::deserialize_block_header()");
-            return network::Shared_payload{};
-        }
-    }
-
-    m_logger->info("📄 PLAINTEXT PAYLOAD (BEFORE ENCRYPTION):");
-    m_logger->info("   Total size: {} bytes", plaintextPayload.size());
-    m_logger->info("   Format: [block({})][timestamp(8)][siglen(2)][disposable_sig({})]",
-                   block_data.size(), sig_result.signature.size());
-    m_logger->info("   First 64 bytes (hex - this is PLAINTEXT):");
-    
-    std::string hexDump = HexUtils::FormatHexDump(plaintextPayload, 64);
-    std::vector<std::string> lines = HexUtils::SplitHexDump(hexDump, 32);
-    for(const auto& line : lines)
-        m_logger->info("      {}", line);
-    
-    m_logger->info("");
-    
-    /* Check encryption readiness */
-    m_logger->info("🔒 CHACHA20-POLY1305 ENCRYPTION:");
-    m_logger->info("   Checking encryption context...");
-    m_logger->info("   ChaCha20 enabled: {}", m_enable_chacha20 ? "YES" : "NO");
-    
-    // Load genesis for key derivation
+    // ── ChaCha20-Poly1305 encryption ─────────────────────────────────────────
     std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
-    bool has_valid_genesis = is_valid_genesis(tritium_genesis);
-    
-    m_logger->info("   Genesis available: {}", has_valid_genesis ? "YES" : "NO");
-    m_logger->info("   Session ID: 0x{:08x}", m_session_id);
-    
-    if(!m_enable_chacha20 || !has_valid_genesis)
-    {
-        m_logger->error("❌ ENCRYPTION NOT READY - CANNOT SUBMIT!");
-        m_logger->error("   Modern nodes require ChaCha20 encryption");
-        m_logger->error("   ChaCha20 enabled: {}", m_enable_chacha20 ? "YES" : "NO");
-        m_logger->error("   Genesis available: {}", has_valid_genesis ? "YES" : "NO");
-        m_logger->error("   Session may not be authenticated");
-        m_logger->error("   Check that MINER_AUTH was successful");
-        m_logger->error("════════════════════════════════════════════════════════");
+    if (!m_enable_chacha20 || !is_valid_genesis(tritium_genesis)) {
+        m_logger->error("[Solo Submit] ChaCha20 not ready (enabled={}, genesis={})",
+                        m_enable_chacha20, is_valid_genesis(tritium_genesis));
         return network::Shared_payload{};
     }
-    
-    m_logger->info("   Status: Encrypting payload...");
-    
-    /* Encrypt the payload */
+
     try {
-        // Initialize ChaCha20 wrapper if not already done
         if (!m_chacha20_wrapper)
             m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
-        
-        // Derive session key from genesis
-        auto session_key = derive_chacha20_session_key(tritium_genesis);
-        
-        // Generate random nonce for this encryption
-        auto nonce = ChaCha20Wrapper::generate_nonce();
-        
-        // Encrypt the payload with AAD for domain separation
-        auto encrypt_result = m_chacha20_wrapper->encrypt(plaintextPayload, session_key, nonce, AAD_BLOCK_SUBMISSION);
-        
-        if(!encrypt_result.success || encrypt_result.data.empty())
-        {
-            m_logger->error("❌ ChaCha20 encryption FAILED!");
-            m_logger->error("   Error: {}", encrypt_result.error_message);
-            m_logger->error("   Encryption function returned false or empty result");
-            m_logger->error("   Cannot submit without encryption");
-            m_logger->error("════════════════════════════════════════════════════════");
+
+        auto session_key   = derive_chacha20_session_key(tritium_genesis);
+        auto enc_nonce     = ChaCha20Wrapper::generate_nonce();
+        auto encrypt_result = m_chacha20_wrapper->encrypt(
+            plaintextPayload, session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
+
+        if (!encrypt_result.success || encrypt_result.data.empty()) {
+            m_logger->error("[Solo Submit] ChaCha20 encryption failed: {}",
+                            encrypt_result.error_message);
             return network::Shared_payload{};
         }
-        
-        // Build encrypted payload: nonce(12) + ciphertext+tag
+
+        // Wire format: [nonce(12)][ciphertext+tag]
         std::vector<uint8_t> encryptedPayload;
         encryptedPayload.reserve(12 + encrypt_result.data.size());
-        encryptedPayload.insert(encryptedPayload.end(), nonce.begin(), nonce.end());
-        encryptedPayload.insert(encryptedPayload.end(), encrypt_result.data.begin(), encrypt_result.data.end());
-        
-        m_logger->info("   Status: ✅ ENCRYPTION SUCCESS");
-        m_logger->info("   Encrypted size: {} bytes (includes 12-byte nonce + 16-byte auth tag)", encryptedPayload.size());
-        m_logger->info("   First 64 bytes (hex - this should look RANDOM):");
-        
-        hexDump = HexUtils::FormatHexDump(encryptedPayload, 64);
-        lines = HexUtils::SplitHexDump(hexDump, 32);
-        for(const auto& line : lines)
-            m_logger->info("      {}", line);
-        
-        /* CRITICAL: Validate encryption actually occurred */
-        m_logger->info("");
-        m_logger->info("🔍 ENCRYPTION VALIDATION:");
-        
-        // Check 1: Data should be different (compare first bytes of actual ciphertext, skip nonce)
-        // NOTE: This is validation code, not secret comparison. We're checking if encryption
-        // worked by comparing ciphertext vs plaintext. The result is immediately logged,
-        // so timing information is not sensitive. Actual crypto auth tag verification is
-        // done by OpenSSL's EVP interface using constant-time comparison internally.
-        bool dataMatches = false;
-        size_t checkSize = std::min(size_t(64), std::min(encrypt_result.data.size(), plaintextPayload.size()));
-        
-        if(checkSize > 0)
-        {
-            // Compare ciphertext (skip 12-byte nonce) with plaintext
-            dataMatches = (memcmp(encrypt_result.data.data(), plaintextPayload.data(), checkSize) == 0);
-        }
-        
-        if(dataMatches)
-        {
-            m_logger->error("❌ VALIDATION FAILED: Encrypted data MATCHES plaintext!");
-            m_logger->error("   This means encryption DID NOT WORK!");
-            m_logger->error("   Refusing to send - node will reject anyway");
-            m_logger->error("════════════════════════════════════════════════════════");
-            return network::Shared_payload{};
-        }
-        
-        // Check 2: Count matching bytes (should be very few in encrypted data)
-        size_t matchingBytes = 0;
-        for(size_t i = 0; i < checkSize; ++i)
-        {
-            if(encrypt_result.data[i] == plaintextPayload[i])
-                matchingBytes++;
-        }
-        
-        double matchPercent = (double)matchingBytes * 100.0 / checkSize;
-        
-        m_logger->info("   Matching bytes: {}/{} ({}%)",
-                       matchingBytes, checkSize, (int)matchPercent);
-        
-        if(matchPercent > 30.0)
-        {
-            m_logger->error("❌ VALIDATION FAILED: Too many matching bytes ({}%)", (int)matchPercent);
-            m_logger->error("   Encrypted data doesn't look encrypted!");
-            m_logger->error("   Expected < 30% match, encryption may have failed silently");
-            m_logger->error("════════════════════════════════════════════════════════");
-            return network::Shared_payload{};
-        }
-        
-        // Check 3: Heuristic check for plaintext patterns (on ciphertext, not full payload with nonce)
-        if(HexUtils::LooksLikePlaintext(encrypt_result.data, 64))
-        {
-            m_logger->warn("⚠️  WARNING: Encrypted data has plaintext-like patterns");
-            m_logger->warn("   This is suspicious - encryption may not be working");
-        }
-        
-        m_logger->info("   ✅ VALIDATION PASSED: Data is properly encrypted");
-        m_logger->info("   Encrypted data is different from plaintext");
-        m_logger->info("   Safe to send to node");
-        
-        m_logger->info("════════════════════════════════════════════════════════");
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // LANE-BASED OPCODE SELECTION: Use PacketBuilder for correct framing
-        // Mirror-mapped: SUBMIT_BLOCK (1) -> 0xD001 (not 0xD00A!)
-        // ═══════════════════════════════════════════════════════════════════
-        const char* lane_name = (m_protocol_lane == ProtocolLane::STATELESS) ? "STATELESS" : "LEGACY";
-        const char* packet_name = (m_protocol_lane == ProtocolLane::STATELESS) ? "STATELESS_SUBMIT_BLOCK" : "SUBMIT_BLOCK";
-        
-        m_logger->info("📤 Submitting block via {} lane", lane_name);
-        m_logger->info("📤 Sending encrypted {} packet to node...", packet_name);
-        
+        encryptedPayload.insert(encryptedPayload.end(), enc_nonce.begin(), enc_nonce.end());
+        encryptedPayload.insert(encryptedPayload.end(),
+                                encrypt_result.data.begin(), encrypt_result.data.end());
+
+        m_logger->info("[Solo Submit] Encrypted payload: {} bytes → SUBMIT_BLOCK",
+                       encryptedPayload.size());
+
         auto result = PacketBuilder::build(m_protocol_lane, LLP::SUBMIT_BLOCK, encryptedPayload);
-        
         if (!result || result->empty()) {
-            m_logger->error("❌ {} packet encoding failed!", packet_name);
+            m_logger->error("[Solo Submit] PacketBuilder::build() returned empty packet");
             return network::Shared_payload{};
         }
-        
-        // Show final wire format hex dump
-        m_logger->info("[Solo Submit] {} wire format (first 128 bytes):", packet_name);
-        m_logger->info("\n{}", format_llp_payload_hexdump(result, 128));
-        
+
+        m_logger->info("[Solo Submit] {} wire format: {} bytes",
+            (m_protocol_lane == ProtocolLane::STATELESS)
+                ? "STATELESS_SUBMIT_BLOCK (0xD001)" : "SUBMIT_BLOCK (0x01)",
+            result->size());
         return result;
     }
     catch (const std::exception& e) {
-        m_logger->error("❌ Exception during encryption: {}", e.what());
-        m_logger->error("════════════════════════════════════════════════════════");
+        m_logger->error("[Solo Submit] Exception during encryption: {}", e.what());
         return network::Shared_payload{};
     }
 }
@@ -2679,83 +2447,59 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo Template Delivery]   Protocol Mode: Stateless Push");
         m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
         
-        m_logger->info("[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD081) received!");
-        m_logger->info("[Solo Stateless] This is the NEW push notification protocol");
-        m_logger->info("[Solo Stateless] Template size: {} bytes (expected: 228)", packet.m_length);
-        
-        // Validate 228-byte template format (12 metadata + 216 block)
-        constexpr size_t TEMPLATE_SIZE = 228;
-        constexpr size_t METADATA_SIZE = 12;
-        constexpr size_t BLOCK_SIZE = 216;
-        
-        if (!packet.m_data || packet.m_length != TEMPLATE_SIZE) {
-            m_logger->error("[Solo Stateless] Invalid template size: {} (expected {})", 
-                           packet.m_length, TEMPLATE_SIZE);
+        m_logger->info("[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD081) received! {} bytes",
+                       packet.m_length);
+
+        if (!m_template_interface) {
+            m_logger->error("[Solo Stateless] No template interface available!");
             return;
         }
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // CRITICAL VERIFICATION: Is metadata HOT (inserted on wire) or part of block?
-        // ═══════════════════════════════════════════════════════════════════
-        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
-        m_logger->info("[Solo Stateless] ⚠️  CRITICAL ASSUMPTION VERIFICATION");
-        m_logger->info("[Solo Stateless] Template format: 228 bytes = 12 metadata + 216 block");
-        m_logger->info("[Solo Stateless] Assumption: Node sends HOT metadata (prepended on wire)");
-        m_logger->info("[Solo Stateless]   - Bytes 0-11:   Metadata (unified_height, channel_height, difficulty)");
-        m_logger->info("[Solo Stateless]   - Bytes 12-227: Block template (216-byte Tritium format)");
-        m_logger->info("[Solo Stateless] Alternative: Metadata extracted from block fields (nHeight, nBits)");
-        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // VALIDATION: Dump raw metadata bytes for format verification
-        // ═══════════════════════════════════════════════════════════════════
-        m_logger->info("[Solo Stateless] 📦 RAW METADATA (First 12 bytes of 228-byte payload)");
-        m_logger->info("[Solo Stateless] Hex dump of metadata:");
-        std::string metadata_hex;
-        for (size_t i = 0; i < METADATA_SIZE && i < packet.m_data->size(); ++i) {
-            char buf[4];
-            snprintf(buf, sizeof(buf), "%02x ", (*packet.m_data)[i]);
-            metadata_hex += buf;
-            if ((i + 1) % 4 == 0) metadata_hex += " | ";  // Group by uint32
-        }
-        m_logger->info("[Solo Stateless]   {}", metadata_hex);
-        
-        // Also show first 32 bytes of block template for comparison
-        m_logger->info("[Solo Stateless] 📦 RAW BLOCK START (Bytes 12-43 of 228-byte payload)");
-        std::string block_hex;
-        for (size_t i = METADATA_SIZE; i < METADATA_SIZE + 32 && i < packet.m_data->size(); ++i) {
-            char buf[4];
-            snprintf(buf, sizeof(buf), "%02x ", (*packet.m_data)[i]);
-            block_hex += buf;
-            if ((i - METADATA_SIZE + 1) % 8 == 0) block_hex += " | ";
-        }
-        m_logger->info("[Solo Stateless]   {}", block_hex);
-        m_logger->info("[Solo Stateless] Expected block start: nVersion (4 bytes) = first uint32 shown above");
-        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
-        
-        // Parse 12-byte metadata (big-endian per LLL-TAO PR #170)
-        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
-        uint32_t channel_height = bytes2uint(*packet.m_data, 4);
-        uint32_t difficulty = bytes2uint(*packet.m_data, 8);
 
-        // ── HeightTracker BLOCK_DATA feed (Step 1/2) ───────────────────────────────
-        // Feed unified_height, channel_height, nBits from the authoritative node
-        // BLOCK_DATA metadata prefix.  This is the canonical source of truth for
-        // staleness detection — validate_current_template() reads HeightTracker
-        // exclusively (not block.nHeight, which is the unified height for ProofHash).
-        // Use TEMPLATE source (not PUSH) so last_template_update timestamp is set,
-        // enabling the post-push guard in check_template_health() to suppress false-positive
-        // emergency stops when the GET_BLOCK response arrives after a push notification.
-        update_height_state(unified_height, channel_height, difficulty, HeightTracker::UpdateSource::TEMPLATE);
+        // ── Decode via StatelessBlockUtility::decode_template() ─────────────────
+        // decode_template() validates the 228-byte size, extracts the 12-byte
+        // metadata prefix (diagnostic: unified_height, channel_height, nBits), and
+        // delegates the 216-byte block body decode to
+        // MiningTemplateInterface::read_stateless_payload().  All canonical mining
+        // state (nHeight, nChannel, nBits, hashPrevBlock) comes from the block body.
+        if (!packet.m_data) {
+            m_logger->error("[Solo Stateless] Null packet data");
+            return;
+        }
+        auto decoded = StatelessBlockUtility::decode_template(
+            *m_template_interface, *packet.m_data, m_channel, m_logger);
 
-        // ── HeightTracker BLOCK_DATA feed (Step 2/2) ───────────────────────────────
-        // Record channel_target = channel_height + 1 so is_template_stale() can
-        // detect when the node's channel tip reaches or passes this template's target.
-        // Skip genesis (channel_height == 0) to avoid false-positive staleness at startup.
-        //
-        // Use the effective channel height (max of metadata and tracker) to prevent
-        // a stale GET_BLOCK response from setting a channel_target below what push
-        // notifications have already established.
+        if (!decoded.valid) {
+            m_logger->error("[Solo Stateless] Template decode failed: {}", decoded.error_message);
+            return;
+        }
+
+        uint32_t unified_height = decoded.unified_height;
+        uint32_t channel_height = decoded.channel_height;
+        uint32_t difficulty     = decoded.difficulty_nbits;
+
+        m_logger->info("[Solo Stateless] 📦 Metadata: unified={} channel={} nBits=0x{:08x}",
+                       unified_height, channel_height, difficulty);
+        if (!decoded.channel_consistent) {
+            m_logger->warn("[Solo Stateless] ⚠️  Channel mismatch: block.nChannel={} vs mining channel={}",
+                           decoded.block.nChannel, m_channel);
+        }
+        if (!decoded.metadata_consistent) {
+            m_logger->warn("[Solo Stateless] ⚠️  Height mismatch: block.nHeight={} vs unified_height+1={}",
+                           decoded.block.nHeight, unified_height + 1);
+        }
+
+
+        // ── HeightTracker feed (TEMPLATE source) ────────────────────────────────
+        // Registers unified/channel heights as TEMPLATE source so last_template_update
+        // timestamp is set — the post-push guard in check_template_health() uses this
+        // to suppress false-positive emergency stops when a GET_BLOCK response arrives
+        // after a push notification.
+        update_height_state(unified_height, channel_height, difficulty,
+                            HeightTracker::UpdateSource::TEMPLATE);
+
+        // ── channel_target: use effective channel height (max of metadata + tracker) ─
+        // Prevents a stale GET_BLOCK response from setting channel_target below what
+        // push notifications have already established.
         uint32_t effectiveChannelHeight = channel_height;
         {
             auto ht_snap = m_height_tracker.GetSnapshot();
@@ -2771,180 +2515,46 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 unified_height, effectiveChannelHeight, difficulty, effectiveChannelHeight + 1);
         }
 
-        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
-        m_logger->info("[Solo Stateless] 📦 PARSED TEMPLATE METADATA");
-        m_logger->info("[Solo Stateless]   Unified height: {} (0x{:08x})", unified_height, unified_height);
-        m_logger->info("[Solo Stateless]   Channel height: {} (0x{:08x})", channel_height, channel_height);
-        m_logger->info("[Solo Stateless]   Difficulty:     0x{:08x} ({})", difficulty, difficulty);
-        m_logger->info("[Solo Stateless]   Block size:     {} bytes", BLOCK_SIZE);
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // SANITY CHECKS: Validate parsed values are reasonable
-        // ═══════════════════════════════════════════════════════════════════
-        bool validation_warnings = false;
-        
-        if (unified_height == 0) {
-            m_logger->warn("[Solo Stateless] ⚠️  Unified height is 0 - unusual but possible for genesis");
-            validation_warnings = true;
-        }
-        if (unified_height > 100000000) {
-            m_logger->error("[Solo Stateless] ❌ Unified height {} exceeds reasonable limit - possible byte order issue!", 
-                           unified_height);
-            validation_warnings = true;
-        }
-        
-        if (channel_height == 0) {
-            m_logger->warn("[Solo Stateless] ⚠️  Channel height is 0 - unusual but possible for genesis");
-            validation_warnings = true;
-        }
-        if (channel_height > unified_height) {
-            m_logger->error("[Solo Stateless] ❌ Channel height {} > unified height {} - invalid!", 
-                           channel_height, unified_height);
-            validation_warnings = true;
-        }
-        if (channel_height > 100000000) {
-            m_logger->error("[Solo Stateless] ❌ Channel height {} exceeds reasonable limit - possible byte order issue!", 
-                           channel_height);
-            validation_warnings = true;
-        }
-        
-        if (difficulty == 0) {
-            m_logger->error("[Solo Stateless] ❌ Difficulty is 0 - invalid!");
-            validation_warnings = true;
-        }
-        
-        if (validation_warnings) {
-            m_logger->warn("[Solo Stateless] ⚠️  VALIDATION WARNINGS DETECTED - verify metadata format with LLL-TAO PR #170");
-            m_logger->warn("[Solo Stateless] ⚠️  Current parsing assumes: [unified_height(4)][channel_height(4)][difficulty(4)] in BIG-ENDIAN");
-        } else {
-            m_logger->info("[Solo Stateless] ✅ Metadata validation passed - values appear reasonable");
-        }
-        m_logger->info("[Solo Stateless] ═══════════════════════════════════════");
-        
-        // Extract 216-byte block template
-        std::vector<uint8_t> block_template(packet.m_data->begin() + METADATA_SIZE,
-                                             packet.m_data->end());
-        
-        if (block_template.size() != BLOCK_SIZE) {
-            m_logger->error("[Solo Stateless] Block size mismatch: {} (expected {})",
-                           block_template.size(), BLOCK_SIZE);
-            return;
-        }
-        
-        // Process the block template using existing infrastructure
-        // The block_template contains the serialized block data
-        m_logger->info("[Solo Stateless] Processing 216-byte block template...");
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // VERIFICATION: Confirm read_template can parse 216-byte Tritium blocks
-        // ═══════════════════════════════════════════════════════════════════
-        m_logger->info("[Solo Stateless] Verifying 216-byte Tritium block format:");
-        m_logger->info("[Solo Stateless]   - Block size: {} bytes (Tritium format)", block_template.size());
-        m_logger->info("[Solo Stateless]   - read_template supports: 92 (Compact), 216 (Tritium), 220+ (Legacy)");
-        m_logger->info("[Solo Stateless]   - Expected: parse_block_header will deserialize as Tritium");
-        
-        // Feed to the template interface (same as BLOCK_DATA handling)
-        if (m_template_interface) {
-            auto block_payload = std::make_shared<network::Payload>(block_template);
-            auto validation_result = m_template_interface->read_template(block_payload, 
-                connection ? connection->remote_endpoint().to_string() : "unknown");
-            
-            if (!validation_result.is_valid) {
-                m_logger->error("[Solo Stateless] Template validation failed: {}", 
-                               validation_result.error_message);
-                m_logger->error("[Solo Stateless] This may indicate block format mismatch or parsing issue");
-                return;
-            }
-            
-            m_logger->info("[Solo Stateless] ✅ Template validated in {} μs", 
-                          validation_result.validation_time.count());
-            m_logger->info("[Solo Stateless] ✅ read_template successfully parsed 216-byte Tritium block");
-            
-            // Verify that block.nHeight (from 216-byte block bytes) matches the metadata unified_height.
-            // After the node fix, these should agree: block.nHeight == unified_height + 1.
-            // (metadata unified_height is tStateBest.nHeight; block.nHeight is the NEXT block height)
-            // We warn-and-continue (not abort) here because: the 216-byte block bytes contain the
-            // canonical ProofHash() inputs, so block.nHeight is always used as-is for submission.
-            // A mismatch indicates the node is running old firmware — the block is still valid
-            // for mining; ProofHash() correctness depends only on what's in block bytes, not metadata.
+        // ── hashPrevBlock change detector ────────────────────────────────────────
+        // decoded.block.hashPrevBlock is the canonical tip anchor from the block body.
+        {
+            if (m_last_known_hash_prev_block != uint1024_t(0) &&
+                decoded.block.hashPrevBlock != m_last_known_hash_prev_block)
             {
-                auto const* tmpl = m_template_interface->get_current_template();
-                if (tmpl && unified_height > 0)
-                {
-                    uint32_t expected_block_height = unified_height + 1;
-                    if (tmpl->block.nHeight != expected_block_height)
-                    {
-                        m_logger->warn("[Solo Stateless] ⚠️  Height mismatch: metadata unified_height+1={} but block.nHeight={}",
-                            expected_block_height, tmpl->block.nHeight);
-                        m_logger->warn("[Solo Stateless]   If node fix is applied, these should match.");
-                        m_logger->warn("[Solo Stateless]   Node may be running old firmware — continuing with block.nHeight as-is");
-                    }
-                    else
-                    {
-                        m_logger->info("[Solo Stateless] ✅ Height verified: block.nHeight={} == metadata unified+1={} ✓",
-                            tmpl->block.nHeight, expected_block_height);
-                    }
-                    
-                    // Log hashPrevBlock (primary staleness anchor per StakeMinter pattern)
-                    auto prev_bytes = tmpl->block.hashPrevBlock.GetBytes();
-                    std::string prev_hex;
-                    for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i)
-                    {
-                        char buf[3];
-                        snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
-                        prev_hex += buf;
-                    }
-                    m_logger->info("[Solo Stateless] hashPrevBlock = {}... (tip anchor; request new template on tip_moved)",
-                        prev_hex);
-
-                    // hashPrevBlock change detector (push-driven era):
-                    // Compare new template's hashPrevBlock against the stored value to confirm
-                    // each push reflects an actual tip advance (or same tip for non-tip-advance pushes).
-                    if (m_last_known_hash_prev_block != uint1024_t(0) &&
-                        tmpl->block.hashPrevBlock != m_last_known_hash_prev_block)
-                    {
-                        auto old_bytes = m_last_known_hash_prev_block.GetBytes();
-                        std::string old_hex;
-                        for (size_t i = 0; i < std::min(old_bytes.size(), size_t(8)); ++i)
-                        {
-                            char buf2[3];
-                            snprintf(buf2, sizeof(buf2), "%02x", old_bytes[i]);
-                            old_hex += buf2;
-                        }
-                        m_logger->info("[TEMPLATE DELTA] Tip moved: hashPrevBlock changed \u2192 new tip anchored");
-                        m_logger->info("[TEMPLATE DELTA] Old: {}...", old_hex);
-                        m_logger->info("[TEMPLATE DELTA] New: {}...", prev_hex);
-                    }
-                    else if (m_last_known_hash_prev_block == tmpl->block.hashPrevBlock)
-                    {
-                        m_logger->debug("[TEMPLATE DELTA] Tip unchanged \u2014 same hashPrevBlock (height still valid)");
-                    }
-                    m_last_known_hash_prev_block = tmpl->block.hashPrevBlock;
+                auto old_bytes = m_last_known_hash_prev_block.GetBytes();
+                auto new_bytes = decoded.block.hashPrevBlock.GetBytes();
+                std::string old_hex, new_hex;
+                for (size_t i = 0; i < std::min(old_bytes.size(), size_t(8)); ++i) {
+                    char buf[3]; snprintf(buf, sizeof(buf), "%02x", old_bytes[i]); old_hex += buf;
                 }
+                for (size_t i = 0; i < std::min(new_bytes.size(), size_t(8)); ++i) {
+                    char buf[3]; snprintf(buf, sizeof(buf), "%02x", new_bytes[i]); new_hex += buf;
+                }
+                m_logger->info("[TEMPLATE DELTA] Tip moved: hashPrevBlock changed \u2192 new tip anchored");
+                m_logger->info("[TEMPLATE DELTA] Old: {}...", old_hex);
+                m_logger->info("[TEMPLATE DELTA] New: {}...", new_hex);
             }
-            
-            // Update diagnostic height reference (unified_height from packet metadata)
-            m_current_height = unified_height;  // diagnostic only
+            else
+            {
+                m_logger->debug("[TEMPLATE DELTA] Tip unchanged \u2014 same hashPrevBlock");
+            }
+            m_last_known_hash_prev_block = decoded.block.hashPrevBlock;
+        }
 
-            // HeightTracker: Use effectiveChannelHeight (max of metadata and tracker)
-            // so that a stale GET_BLOCK response does not set nChannelHeight below
-            // what push notifications have already established.
-            if (effectiveChannelHeight > 0) {
-                m_template_interface->set_channel_height(effectiveChannelHeight + 1);
-                m_logger->info("[Solo Stateless] ✓ HeightTracker updated: channel_height+1={} (effective tip={}, template targets next block)",
-                    effectiveChannelHeight + 1, effectiveChannelHeight);
-            } else {
-                m_logger->warn("[Solo Stateless] ⚠️  channel_height==0 in metadata — skipping set_channel_height()");
-            }
-            
-            // Template is now ready for mining!
-            m_logger->info("[Solo Stateless] 🎯 Template ready for mining!");
-            m_logger->info("[Solo Stateless] Mining for block height: {} (channel: {})",
-                          unified_height, channel_height);
+        // ── Update diagnostic height reference ────────────────────────────────────
+        m_current_height = unified_height;  // diagnostic only
+
+        // ── Finalize channel height in template interface ─────────────────────────
+        if (effectiveChannelHeight > 0) {
+            m_template_interface->set_channel_height(effectiveChannelHeight + 1);
+            m_logger->info("[Solo Stateless] ✓ channel_height+1={} set (effective tip={}, targets next block)",
+                effectiveChannelHeight + 1, effectiveChannelHeight);
+        } else {
+            m_logger->warn("[Solo Stateless] ⚠️  channel_height==0 in metadata — skipping set_channel_height()");
         }
-        else {
-            m_logger->error("[Solo Stateless] No template interface available!");
-        }
+
+        m_logger->info("[Solo Stateless] 🎯 Template ready! Mining for height {} (channel {})",
+                       unified_height, channel_height);
     }
     // ═══════════════════════════════════════════════════════════════════════
     // COLIN AI DIAGNOSTIC PING/PONG (opcode 0xD0E0 stateless-only)

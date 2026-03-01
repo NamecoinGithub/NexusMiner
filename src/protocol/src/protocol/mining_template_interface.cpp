@@ -295,10 +295,13 @@ MiningTemplateInterface::read_stateless_payload(const network::Payload& payload2
         std::lock_guard<std::mutex> lock(m_template_mutex);
         m_current_template.nUnifiedHeightMeta = nUnifiedHeightMeta;
         m_current_template.nChannelHeightMeta = nChannelHeightMeta;
-        // m_last_unified_height is already set by read_template() from block.nHeight;
-        // override with the metadata value so staleness heuristics see the node's
-        // declared unified height (not block.nHeight which is the NEXT unified height).
-        m_last_unified_height = nUnifiedHeightMeta;
+        // NOTE: m_last_unified_height is intentionally kept as block.nHeight (set by
+        // read_template() above).  block.nHeight is the NEXT unified block height
+        // (tStateBest.nHeight + 1), which is what the set_channel_height() corruption
+        // guard compares against m_current_template.block.nHeight.  Overriding
+        // m_last_unified_height with nUnifiedHeightMeta (the CURRENT tip, i.e. one less)
+        // would cause the guard to always fire for stateless templates, silently
+        // discarding every template received via read_stateless_payload().
     }
 
     return result;
@@ -1076,8 +1079,10 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
     
     // DEFENSIVE: Verify block.nHeight was NOT corrupted (must remain unified height).
     // set_channel_height() must ONLY update metadata — never block.nHeight.
-    // Note: m_last_unified_height is set to tmpl.block.nHeight in read_template(),
-    // which is already the unified blockchain height (tStateBest.nHeight + 1).
+    // m_last_unified_height is always set to tmpl.block.nHeight in read_template()
+    // (read_stateless_payload() deliberately does NOT override it).  For stateless
+    // templates, nUnifiedHeightMeta is the current chain tip (block.nHeight - 1);
+    // using it here would cause a false mismatch on every stateless template.
     // So both should be identical; any difference indicates in-flight corruption.
     if (m_last_unified_height > 0 && m_current_template.block.nHeight != m_last_unified_height) {
         m_logger->error("[TemplateInterface] ❌ CRITICAL: block.nHeight ({}) != last_unified_height ({})!",

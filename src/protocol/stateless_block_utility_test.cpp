@@ -364,7 +364,34 @@ static void test_encode_prime_voffsets_appended() {
                  "(Prime payload > Hash payload by vOffsets.size())", ok);
 }
 
-// ── main ─────────────────────────────────────────────────────────────────────
+// Test 15 -- read_stateless_payload() + set_channel_height() does not trigger
+// the corruption guard.  The guard fires when block.nHeight != m_last_unified_height.
+// read_stateless_payload() must NOT override m_last_unified_height with the
+// metadata's nUnifiedHeightMeta (which is one less than block.nHeight).
+static void test_set_channel_height_no_corruption_guard() {
+    MiningTemplateInterface mti(2, 0);
+    // unified_height = 6000000 (metadata/chain tip)
+    // block.nHeight  = 6000001 (NEXT block = unified_height + 1)
+    // make_template_payload(unified_height, channel_height, difficulty,
+    //                        nVersion, nChannel, nHeight,  nBits,             nNonce)
+    auto payload = make_template_payload(6000000, 2000000, DEFAULT_DIFFICULTY,
+                                         8,       2,       6000001, DEFAULT_DIFFICULTY, 0);
+    auto result = mti.read_stateless_payload(payload, "test");
+    bool template_valid = result.is_valid;
+
+    // Now call set_channel_height() — should NOT discard the template via the
+    // block.nHeight != m_last_unified_height corruption guard.
+    mti.set_channel_height(2000001);  // channel_target = channel_height + 1
+
+    // Template must still be valid after set_channel_height().
+    bool still_valid = mti.has_valid_template();
+
+    print_result("read_stateless_payload() + set_channel_height(): corruption guard "
+                 "does NOT falsely fire (m_last_unified_height is NOT overridden)",
+                 template_valid && still_valid);
+}
+
+
 
 int main() {
     std::cout << "\n";
@@ -386,6 +413,7 @@ int main() {
     test_decode_channel_consistent();
     test_encode_stale_does_not_block();
     test_encode_prime_voffsets_appended();
+    test_set_channel_height_no_corruption_guard();
 
     std::cout << "\n";
     std::cout << "========================================\n";
