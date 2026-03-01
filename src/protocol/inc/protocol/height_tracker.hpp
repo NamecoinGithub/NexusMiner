@@ -31,8 +31,8 @@ namespace protocol {
  * DiagnosticObserverState only.
  *
  * GetSnapshot() backward-compat composition:
- *   channel_height = max(canonical, push)
- *   unified_height = max(canonical, push)
+ *   channel_height = max(canonical, push, round)
+ *   unified_height = max(canonical, push, round)
  * This preserves push-driven staleness detection while keepalive can never
  * regress the heights used for mining decisions.
  *
@@ -190,13 +190,15 @@ public:
         bool is_fork_active() const { return peak_fork_score > 0; }
 
         /**
-         * @brief Compute how far the diagnostic push heights have drifted from
+         * @brief Compute how far the composed snapshot heights have drifted from
          *        canonical heights.
          *
-         * Returns the signed difference (push_unified_height − canonical_unified_height).
-         * Callers can use this to assess keepalive/push freshness relative to the
-         * canonical block-data path.  A large positive value means pushes are ahead
-         * (normal during slow BLOCK_DATA); a large negative value would be anomalous.
+         * Returns the signed difference (unified_height − canonical_unified_height),
+         * where unified_height is max(canonical, push, round).
+         * Callers can use this to assess push/round freshness relative to the
+         * canonical block-data path.  A large positive value means push/round
+         * data is ahead (normal during slow BLOCK_DATA); zero means canonical
+         * is caught up.
          */
         int32_t height_drift_from_canonical() const {
             return static_cast<int32_t>(unified_height) -

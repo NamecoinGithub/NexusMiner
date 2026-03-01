@@ -107,7 +107,7 @@ void HeightTracker::OnTemplateReceived(uint32_t channel,
         m_diagnostic.fork_score = 0;
         m_diagnostic.peak_fork_score = 0;
     }
-    // Capture tip at template receipt — use max(canonical, push) for consistency
+    // Capture tip at template receipt — use max(canonical, push, round) for consistency
     auto snap = build_snapshot_locked();
     m_template_unified_height = snap.unified_height;
     m_last_update_source = UpdateSource::TEMPLATE;
