@@ -9,6 +9,7 @@
 #include "LLP/block_utils.hpp"
 #include "LLP/llp_logging.hpp"
 #include "LLP/utils.hpp"
+#include "include/stateless_block_utility.hpp"
 #include "../miner_keys.hpp"
 #include "hex_utils.h"
 #include <openssl/sha.h>
@@ -612,6 +613,16 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // Enhanced diagnostics: Validate block_data before submission
     if (block_data.empty()) {
         m_logger->error("[Solo Submit] CRITICAL: block_data is empty! Cannot submit block.");
+        return network::Shared_payload{};
+    }
+
+    // ── StatelessBlockUtility pre-check: nonce sanity ──────────────────────
+    // Mirrors StatelessBlockUtility::encode_submit() pre-check 1 (nonce == 0
+    // means the worker has not yet solved the block).
+    if (nonce == 0) {
+        m_logger->error("[Solo Submit] CRITICAL: nonce is zero — "
+                        "block not yet solved (uninitialized template). "
+                        "Refusing submission.");
         return network::Shared_payload{};
     }
     
