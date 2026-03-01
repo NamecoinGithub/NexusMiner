@@ -155,7 +155,7 @@ public:
      *  3. Height validity:  solved_block.nHeight > 0
      *  4. Staleness (warn, do not block — node is authoritative)
      *  5. Tip-moved  (warn, do not block)
-     *  6. Falcon sign: if falcon != nullptr, sign serialised block and append
+     *  6. Falcon sign: if falcon != nullptr, sign serialized block and append
      *                  signature; if signing fails, return valid=false.
      *  7. Wire encode: PacketBuilder::build(lane, SUBMIT_BLOCK, payload).
      *

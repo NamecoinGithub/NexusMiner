@@ -193,7 +193,7 @@ SubmitResult StatelessBlockUtility::encode_submit(
                                                         /*is_tritium=*/true);
     if (block_bytes.size() != BLOCK_BODY_SIZE) {
         result.rejection_reason =
-            "serialised block size " + std::to_string(block_bytes.size()) +
+            "serialized block size " + std::to_string(block_bytes.size()) +
             " != " + std::to_string(BLOCK_BODY_SIZE) + " (expected Tritium)";
         if (logger)
             logger->error("[StatelessBlockUtility::encode_submit] {}",
@@ -244,7 +244,7 @@ SubmitResult StatelessBlockUtility::encode_submit(
                           "signed: block({})+ts(8)+siglen(2)+sig({}) = {} bytes",
                           block_bytes.size(), sig_len, plaintext.size());
     } else {
-        // No signing — payload is just the serialised block bytes
+        // No signing — payload is just the serialized block bytes
         plaintext = std::move(block_bytes);
         if (logger)
             logger->debug("[StatelessBlockUtility::encode_submit] "

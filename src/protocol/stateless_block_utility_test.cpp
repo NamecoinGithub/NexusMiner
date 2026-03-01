@@ -53,6 +53,9 @@ static uint8_t be_byte(uint32_t v, int i) {
     return static_cast<uint8_t>((v >> (24 - 8 * i)) & 0xFF);
 }
 
+// Default difficulty / nBits used across test helper functions
+static constexpr uint32_t DEFAULT_DIFFICULTY = 0x4308519;
+
 /**
  * Build a valid 228-byte STATELESS_GET_BLOCK payload:
  *   [0-3]   unified_height (BE)
@@ -72,11 +75,11 @@ static uint8_t be_byte(uint32_t v, int i) {
 static network::Payload make_template_payload(
     uint32_t unified_h = 6000000,
     uint32_t channel_h = 2000000,
-    uint32_t difficulty = 0x4308519,
+    uint32_t difficulty = DEFAULT_DIFFICULTY,
     uint32_t nVersion   = 8,
     uint32_t nChannel   = 2,        // Hash
     uint32_t nHeight    = 6000001,  // unified_h + 1
-    uint32_t nBits      = 0x4308519,
+    uint32_t nBits      = DEFAULT_DIFFICULTY,
     uint64_t nNonce     = 0)
 {
     network::Payload buf(228, 0x00);
@@ -122,7 +125,7 @@ static network::Payload make_template_payload(
 static ::LLP::CBlock make_solved_block(uint32_t nChannel = 2,
                                        uint32_t nHeight  = 6000001,
                                        uint64_t nNonce   = 0xDEADBEEFCAFEBABEULL,
-                                       uint32_t nBits    = 0x4308519) {
+                                       uint32_t nBits    = DEFAULT_DIFFICULTY) {
     ::LLP::CBlock blk;
     blk.nVersion = 8;
     blk.nChannel = nChannel;
@@ -265,15 +268,15 @@ static void test_decode_metadata_fields() {
 // Test 11 — decode_template(): canonical block fields from 216-byte body
 static void test_decode_block_fields() {
     auto payload = make_template_payload(
-        /*unified_h=*/6000000, /*channel_h=*/2000000, /*difficulty=*/0x4308519,
+        /*unified_h=*/6000000, /*channel_h=*/2000000, /*difficulty=*/DEFAULT_DIFFICULTY,
         /*nVersion=*/8, /*nChannel=*/2, /*nHeight=*/6000001,
-        /*nBits=*/0x4308519, /*nNonce=*/0);
+        /*nBits=*/DEFAULT_DIFFICULTY, /*nNonce=*/0);
     auto result = StatelessBlockUtility::decode_template(payload, 2, nullptr);
     bool ok = result.valid &&
               result.block.nVersion == 8    &&
               result.block.nChannel == 2    &&
               result.block.nHeight  == 6000001 &&
-              result.block.nBits    == 0x4308519;
+              result.block.nBits    == DEFAULT_DIFFICULTY;
     print_result("decode_template(): canonical block fields from 216-byte body",
                  ok);
 }
