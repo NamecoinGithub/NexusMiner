@@ -35,16 +35,20 @@ The three new hooks give Colin precise visibility into each category:
 static std::string ColinAgent::check_canonical_drift(int32_t drift);
 ```
 
-Wraps `CanonicalChainState::height_drift_from_canonical()`.
+Wraps `Snapshot::height_drift_from_canonical()` — **not** `CanonicalChainState::height_drift_from_canonical()`.
 
-**When it fires:** `|drift| > WARN_CANONICAL_DRIFT_THRESHOLD` (500 blocks).
+**Important distinction:**
+- `Snapshot::height_drift_from_canonical()` = `unified_height − canonical_unified_height`
+  (measures how far push/round heights are ahead of BLOCK_DATA canonical — a legitimate health signal)
+- `CanonicalChainState::height_drift_from_canonical()` = `canonical_unified_height − canonical_channel_target`
+  (measures a cross-dimension structural difference; on a 3-channel chain this is always ~4M and
+  is NOT a health signal — it is logged as pure info in the Canonical Chain State section)
 
-In a healthy multi-channel blockchain, `canonical_unified_height` and `canonical_channel_target`
-represent _different height dimensions_ — a non-zero drift is normal. The threshold of 500 is
-chosen to be far outside any real inter-channel skew, so a warning only fires on a genuine
-misconfiguration or BLOCK_DATA parsing anomaly.
+**When it fires:** `|drift| > WARN_CANONICAL_DRIFT_THRESHOLD` (500 blocks), applied **only** to
+`Snapshot::height_drift_from_canonical()` (push vs canonical). A push running 500+ blocks ahead
+of BLOCK_DATA indicates a real BLOCK_DATA delivery failure.
 
-**Warning example:**
+**Warning example (Snapshot drift):**
 ```
 Canonical height drift=720 (|drift|>500) — unified vs channel_target skew outside expected range
 ```
@@ -52,6 +56,11 @@ Canonical height drift=720 (|drift|>500) — unified vs channel_target skew outs
 **Recommendation added to report:**
 ```
 Verify node is on the expected channel; check BLOCK_DATA feed
+```
+
+**Normal Canonical Chain State output (always info, never warning):**
+```
+[Colin]    Canonical │ height_drift_from_canonical=4279910 (inter-channel structural skew — normal on multi-channel chain)
 ```
 
 ---
@@ -155,8 +164,7 @@ then logged in `emit_report()`.
 ```
 run_diagnostics()
 ├── GetSnapshot()               → fork_score, hash_tip_lo32, keepalive age  (existing)
-├── GetCanonicalSnapshot()      → height_drift_from_canonical()              (NEW)
-│       └── check_canonical_drift(drift)
+├── GetCanonicalSnapshot()      → logged as pure info in emit_report()        (structural skew)
 └── GetDiagnosticSnapshot()     → is_initialized(), latest_received_at()     (NEW)
         ├── check_diagnostic_initialized(is_init, elapsed_s)
         └── check_diagnostic_freshness(age_s, is_init)
@@ -168,7 +176,7 @@ run_diagnostics()
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `WARN_CANONICAL_DRIFT_THRESHOLD` | 500 | Max expected `|height_drift_from_canonical()|` before warning |
+| `WARN_CANONICAL_DRIFT_THRESHOLD` | 500 | Max expected `|Snapshot::height_drift_from_canonical()|` (push vs canonical) before warning. Not applicable to `CanonicalChainState::height_drift_from_canonical()` (cross-dimension skew, always large on multi-channel chain). |
 | `WARN_DIAGNOSTIC_STALE_SECONDS` | 180 | Max age of `latest_received_at()` before "silent observer" warning |
 | `WARN_DIAGNOSTIC_INIT_GRACE_SECONDS` | 30 | Grace period before "not yet initialized" warning fires |
 

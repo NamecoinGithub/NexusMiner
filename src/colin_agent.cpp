@@ -247,18 +247,7 @@ void ColinAgent::run_diagnostics()
             if (!w.empty()) warnings.push_back(w);
         }
 
-        // ── New hooks: canonical drift + diagnostic observer health ───────────
-        {
-            auto canonical = m_height_tracker->GetCanonicalSnapshot();
-            if (canonical.is_initialized()) {
-                auto w = check_canonical_drift(canonical.height_drift_from_canonical());
-                if (!w.empty()) {
-                    warnings.push_back(w);
-                    recommendations.push_back(
-                        "Verify node is on the expected channel; check BLOCK_DATA feed");
-                }
-            }
-        }
+        // ── New hooks: diagnostic observer health ─────────────────────────────
         {
             auto diag = m_height_tracker->GetDiagnosticSnapshot();
             uint64_t elapsed_s = static_cast<uint64_t>(
@@ -372,15 +361,11 @@ void ColinAgent::emit_report(
                 canonical.canonical_difficulty_nbits);
 
             int32_t drift = canonical.height_drift_from_canonical();
-            if (drift == 0) {
-                m_logger->info("[Colin]    Canonical │ height_drift_from_canonical=0 ✓ (unified == channel_target)");
-            } else if (!check_canonical_drift(drift).empty()) {
-                m_logger->warn("[Colin]    Canonical │ ⚠ height_drift_from_canonical={} (|drift|>{} — investigate)",
-                    drift, WARN_CANONICAL_DRIFT_THRESHOLD);
-            } else {
-                m_logger->info("[Colin]    Canonical │ height_drift_from_canonical={} (inter-channel skew, normal)",
-                    drift);
-            }
+            // On a 3-channel Nexus blockchain, canonical_unified_height ≈ 3 × channel_height,
+            // so this cross-dimension difference is always large (~4M) and reflects normal
+            // structural skew — NOT an anomaly. Always log as pure info.
+            m_logger->info("[Colin]    Canonical │ height_drift_from_canonical={} (inter-channel structural skew — normal on multi-channel chain)",
+                drift);
         } else {
             m_logger->info("[Colin]    Canonical │ not yet initialized (no BLOCK_DATA received)");
         }
@@ -619,7 +604,9 @@ void ColinAgent::emit_report(
 
             // Cross-check: compare template unified height with HeightTracker snapshot.
             // By design, template.block.nHeight == HeightTracker.unified_height + 1 (template
-            // mines the NEXT block). A drift of exactly +1 is normal — only warn on drift != 0.
+            // mines the NEXT block). A drift of 0 is expected.
+            // A drift of -1 is normal during the inter-push interval (push advances unified_height
+            // before the new template arrives). Only warn on |drift| > 1.
             if (m_height_tracker)
             {
                 auto ht = m_height_tracker->GetSnapshot();
@@ -627,15 +614,20 @@ void ColinAgent::emit_report(
                 {
                     int64_t height_drift = static_cast<int64_t>(ts.unified_height)
                                          - static_cast<int64_t>(ht.unified_height + 1);
-                    if (height_drift != 0)
-                    {
-                        m_logger->warn("[Colin]    ⚠ HEIGHT_DRIFT: HeightTracker.unified={} vs template.block.nHeight={} (drift={}; expected 0)",
-                            ht.unified_height, ts.unified_height, height_drift);
-                    }
-                    else
+                    if (height_drift == 0)
                     {
                         m_logger->debug("[Colin]    HEIGHT_DRIFT: none (unified={} + 1 == template.nHeight={})",
                             ht.unified_height, ts.unified_height);
+                    }
+                    else if (height_drift == -1)
+                    {
+                        m_logger->info("[Colin]    HEIGHT_DRIFT: -1 (HeightTracker.unified={} vs template.block.nHeight={} — template slightly behind push, normal during inter-push interval)",
+                            ht.unified_height, ts.unified_height);
+                    }
+                    else
+                    {
+                        m_logger->warn("[Colin]    ⚠ HEIGHT_DRIFT: HeightTracker.unified={} vs template.block.nHeight={} (drift={}; expected 0 or -1)",
+                            ht.unified_height, ts.unified_height, height_drift);
                     }
                 }
             }
