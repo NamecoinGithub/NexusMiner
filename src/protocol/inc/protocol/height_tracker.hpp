@@ -148,6 +148,27 @@ public:
                     uint32_t nbits);
 
     /**
+     * @brief Monotonic height update from BLOCK_DATA / STATELESS_GET_BLOCK metadata
+     *
+     * Called by update_height_state() when the source is TEMPLATE.  Unlike
+     * OnGetRound() / OnPushNotification(), this method only **advances**
+     * unified_height and channel_height — it never regresses them.
+     *
+     * Rationale: A BLOCK_DATA response may arrive after several push
+     * notifications have already advanced the tracker to a higher height.
+     * Unconditionally overwriting with the (now-stale) template metadata
+     * regresses the tracker, hiding true staleness from is_template_stale()
+     * and is_tip_moved(), causing the miner to mine a dead template for
+     * hundreds of seconds.
+     *
+     * @param unified_height  Unified height from template metadata
+     * @param channel_height  Channel height from template metadata
+     * @param nbits           Difficulty from template metadata
+     */
+    void OnTemplateMetadata(uint32_t unified_height, uint32_t channel_height,
+                            uint32_t nbits);
+
+    /**
      * @brief Record that a new mining template has been received
      *
      * channel_target is only advanced, never regressed — a stale GET_BLOCK
