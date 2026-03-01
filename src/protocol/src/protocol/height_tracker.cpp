@@ -90,6 +90,12 @@ void HeightTracker::OnTemplateReceived(uint32_t channel,
     // undo a push-derived advancement set by AdvanceChannelTarget().
     if (template_channel_target > m_state.channel_target) {
         m_state.channel_target = template_channel_target;
+        // Clear fork scores after successful recovery — a fresh template
+        // that advances the target means the fork is resolved.
+        if (m_state.peak_fork_score > 0) {
+            m_state.fork_score = 0;
+            m_state.peak_fork_score = 0;
+        }
     }
     m_state.template_unified_height = m_state.unified_height;  // capture tip at template receipt
     m_state.last_update_source = UpdateSource::TEMPLATE;
