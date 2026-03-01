@@ -1835,12 +1835,17 @@ void Worker_manager::check_template_health()
     {
         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
 
-        auto keepalive_age = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count();
-        bool keepalive_fresh = (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{}) &&
-                               (keepalive_age < KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS);
+        bool has_keepalive = (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+        bool keepalive_fresh = has_keepalive &&
+            (std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count()
+             < KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS);
 
-        if (ht_snap.fork_score > 0 && ht_snap.hash_tip_lo32 != 0 && keepalive_fresh)
+        bool should_check_fork = ht_snap.fork_score > 0
+                              && ht_snap.hash_tip_lo32 != 0
+                              && keepalive_fresh;
+
+        if (should_check_fork)
         {
             // Extract lo32 from the template's hashPrevBlock stored in the tracker.
             auto prev_bytes = ht_snap.hash_prev_block.GetBytes();
