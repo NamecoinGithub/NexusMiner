@@ -179,6 +179,15 @@ public:
                                                       uint32_t channel, uint64_t nonce)>;
     void set_block_accepted_handler(Block_accepted_handler h) { m_block_accepted_handler = std::move(h); }
 
+    // Node shutdown callback: invoked when NODE_SHUTDOWN (0xD0FF) is received.
+    // Worker_manager registers this to stop workers and set reconnect backoff.
+    // Parameter: shutdown reason (GRACEFUL=0x01, MAINTENANCE=0x02).
+    using Node_shutdown_handler = std::function<void(uint8_t reason)>;
+    void set_node_shutdown_handler(Node_shutdown_handler h) { m_node_shutdown_handler = std::move(h); }
+
+    // Reconnect backoff (seconds) after receiving NODE_SHUTDOWN from the node.
+    static constexpr uint32_t NODE_SHUTDOWN_BACKOFF_S = 60;
+
     // Colin AI Diagnostic PING/PONG handler
     const ::LLP::ReceivedPingFrame& last_received_ping() const
     {
@@ -360,6 +369,10 @@ private:
 
     // Block-accepted callback — invoked on BLOCK_ACCEPTED to record the mined block.
     Block_accepted_handler m_block_accepted_handler;
+
+    // Node-shutdown callback — invoked on NODE_SHUTDOWN (0xD0FF) to stop workers
+    // and set reconnect backoff.
+    Node_shutdown_handler m_node_shutdown_handler;
 
     // Last submitted block state — carried forward from submit_block() so the
     // ACCEPT/GOOD_BLOCK handler uses the actual submitted values rather than

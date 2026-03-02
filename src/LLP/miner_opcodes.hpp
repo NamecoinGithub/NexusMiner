@@ -306,7 +306,20 @@ enum MinerOpcodes : std::uint8_t
     PING = 253,
     
     /** Close connection */
-    CLOSE = 254
+    CLOSE = 254,
+
+    /**
+     * NODE_SHUTDOWN: Node sends graceful shutdown notice to miner
+     * Direction: Node -> Miner
+     * Payload: 1 byte (shutdown reason)
+     *   [0] uint8_t reason:
+     *     0x01 = GRACEFUL   (normal shutdown)
+     *     0x02 = MAINTENANCE (planned maintenance window)
+     * Miner action:
+     *   - Stop all workers cleanly
+     *   - Wait NODE_SHUTDOWN_BACKOFF_S (60s) before reconnecting
+     */
+    NODE_SHUTDOWN = 255
 };
 
 // ============================================================================
@@ -546,6 +559,11 @@ namespace StatelessMining {
     /** SESSION_KEEPALIVE: Mirror-mapped from legacy 212 → 0xD0D4 */
     constexpr uint16_t SESSION_KEEPALIVE = MirrorOpcode(LLP::SESSION_KEEPALIVE);  // 0xD0D4
     
+    /** NODE_SHUTDOWN: Mirror-mapped from legacy 255 → 0xD0FF
+     *  Node sends graceful shutdown notice to miner.
+     *  Payload: 1 byte (shutdown reason: GRACEFUL=0x01, MAINTENANCE=0x02) */
+    constexpr uint16_t NODE_SHUTDOWN = MirrorOpcode(LLP::NODE_SHUTDOWN);  // 0xD0FF
+    
     // NOTE: NEW_BLOCK has been removed - the node now reuses GET_BLOCK for both
     // initial template delivery and push notifications when blockchain advances.
     
@@ -559,6 +577,15 @@ namespace StatelessMining {
         INVALID_SIG = 0x03,  // Falcon signature verification failed
         DUPLICATE   = 0x04,  // Duplicate block submission
         FORK        = 0x05,  // Blockchain forked, block invalid
+    };
+    
+    /**
+     * @enum ShutdownReason
+     * @brief Reasons why the node is shutting down (NODE_SHUTDOWN payload byte)
+     */
+    enum ShutdownReason : uint8_t {
+        GRACEFUL    = 0x01,  // Normal shutdown
+        MAINTENANCE = 0x02,  // Planned maintenance window
     };
     
 } // namespace StatelessMining

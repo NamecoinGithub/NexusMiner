@@ -527,6 +527,25 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             }
         );
         m_logger->info("[Worker_manager] Block accepted handler registered");
+
+        /* ========== REGISTER NODE SHUTDOWN HANDLER ========== */
+        /* Called by Solo when NODE_SHUTDOWN (0xD0FF) is received from the node.    */
+        /* Stops all workers cleanly and sets reconnect backoff to prevent the      */
+        /* miner from hammering a shutting-down node.                               */
+        solo_protocol->set_node_shutdown_handler(
+            [this](uint8_t reason) {
+                m_logger->warn("[Worker_manager] NODE_SHUTDOWN received (reason=0x{:02x}) — stopping workers", reason);
+                stop_all_workers();
+
+                // Override the retry delay to NODE_SHUTDOWN_BACKOFF_S so the next
+                // retry_connect() call uses this floor instead of the normal
+                // exponential backoff (which starts much lower).
+                m_current_retry_delay_seconds = protocol::Solo::NODE_SHUTDOWN_BACKOFF_S;
+                m_logger->info("[Worker_manager] Reconnect backoff set to {}s (NODE_SHUTDOWN)",
+                    m_current_retry_delay_seconds);
+            }
+        );
+        m_logger->info("[Worker_manager] Node shutdown handler registered");
         
         m_miner_protocol = solo_protocol;
   

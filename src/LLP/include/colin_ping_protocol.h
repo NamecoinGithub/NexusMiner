@@ -606,6 +606,39 @@ namespace LLP
             || opcode == SessionStatusOpcodes::SESSION_STATUS_ACK;
     }
 
+    //=========================================================================
+    // NODE_SHUTDOWN frame — 1-byte payload from node → miner (0xD0FF / legacy 0xFF)
+    //=========================================================================
+
+    /** NodeShutdownFrame — parsed representation of the 1-byte NODE_SHUTDOWN payload **/
+    struct NodeShutdownFrame
+    {
+        uint8_t reason{0};
+
+        static constexpr uint8_t REASON_GRACEFUL    = 0x01;
+        static constexpr uint8_t REASON_MAINTENANCE = 0x02;
+
+        /** Parse from wire bytes. Returns true on success. **/
+        bool Parse(const std::vector<uint8_t>& data)
+        {
+            if (data.size() < 1)
+                return false;
+            reason = data[0];
+            return true;
+        }
+
+        /** Human-readable reason string **/
+        const char* ReasonString() const
+        {
+            switch (reason)
+            {
+                case REASON_GRACEFUL:    return "GRACEFUL";
+                case REASON_MAINTENANCE: return "MAINTENANCE";
+                default:                 return "UNKNOWN";
+            }
+        }
+    };
+
 } // namespace LLP
 
 #endif
