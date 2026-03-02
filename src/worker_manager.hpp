@@ -104,6 +104,13 @@ private:
     // Degraded mode flag - set when mining is stopped due to invalid template
     bool m_degraded_mode;
 
+    // Soft-pause flag (Priority 1 — "Pause not Destroy" for Prime recovery):
+    // When true, workers keep running their sieve but block submissions are
+    // suppressed.  Set on push_staleness instead of calling stop_all_workers().
+    // Cleared when a fresh template arrives.  Only escalated to full worker stop
+    // if the recovery window expires without a fresh template.
+    bool m_template_withheld{false};
+
     // ── Recovery state (doom-loop prevention) ────────────────────────────────
     // Set when a channel-stale GET_BLOCK recovery has been initiated (from push
     // handler or health monitor) and no fresh template has arrived yet.

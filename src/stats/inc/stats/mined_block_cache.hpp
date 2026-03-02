@@ -101,9 +101,15 @@ public:
     }
 
     /// Update confirmation counts using the current chain height.
-    /// Call this on every new template arrival (the chain has advanced).
+    /// Height-gated: only recalculates when the chain has actually advanced
+    /// past the last known height, preventing redundant updates when multiple
+    /// templates arrive at the same height (e.g. GET_BLOCK retries).
     void update_confirmations(uint32_t current_chain_height)
     {
+        if (current_chain_height <= m_last_confirmation_height)
+            return;
+        m_last_confirmation_height = current_chain_height;
+
         for (auto& rec : m_tier1) {
             if (current_chain_height >= rec.height)
                 rec.confirmations = current_chain_height - rec.height + 1;
@@ -193,6 +199,7 @@ private:
     std::deque<MinedBlockRecord> m_tier1;  // Hot:    ≤5  blocks
     std::deque<MinedBlockRecord> m_tier2;  // Warm:   ≤100 blocks
     std::deque<MinedBlockRecord> m_tier3;  // Archive: unbounded
+    uint32_t m_last_confirmation_height{0};  // Height-gate for update_confirmations()
 };
 
 }  // namespace stats

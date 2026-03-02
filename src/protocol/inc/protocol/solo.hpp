@@ -360,6 +360,15 @@ private:
 
     // Block-accepted callback — invoked on BLOCK_ACCEPTED to record the mined block.
     Block_accepted_handler m_block_accepted_handler;
+
+    // Last submitted block state — carried forward from submit_block() so the
+    // ACCEPT/GOOD_BLOCK handler uses the actual submitted values rather than
+    // re-reading from a potentially-replaced template (Priority 2 fix).
+    bool      m_last_submitted_valid{false};
+    uint64_t  m_last_submitted_nonce{0};
+    uint1024_t m_last_submitted_prev_hash{0};
+    uint32_t  m_last_submitted_height{0};
+    uint32_t  m_last_submitted_channel{0};
     
     // GET_ROUND status tracking (Template Staleness Prevention - LLL-TAO PR #131)
     RoundStatus m_last_round_status;  // Last received round status

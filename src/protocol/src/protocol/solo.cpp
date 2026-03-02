@@ -635,6 +635,14 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     ::LLP::CBlock block_to_submit = tmpl->block;
     block_to_submit.nNonce = nonce;
 
+    // Snapshot submitted block state for the ACCEPT/GOOD_BLOCK handler
+    // so it doesn't need to re-read from a potentially-replaced template.
+    m_last_submitted_valid     = true;
+    m_last_submitted_nonce     = nonce;
+    m_last_submitted_prev_hash = tmpl->block.hashPrevBlock;
+    m_last_submitted_height    = tmpl->block.nHeight;
+    m_last_submitted_channel   = tmpl->block.nChannel;
+
     // Extract Prime channel vOffsets from block_data (bytes after 216-byte Tritium body).
     // For Hash channel block_data is exactly 216 bytes so this is always empty.
     std::vector<uint8_t> vOffsets;
@@ -1290,31 +1298,28 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_stats_collector->update_global_stats(global_stats);
         ++m_blocks_accepted;
 
-        // Retrieve height and channel from last template for the diagnostic log.
-        uint32_t accepted_height = 0;
-        uint32_t accepted_channel = m_channel;
-        if (m_template_interface) {
-            auto const* tmpl = m_template_interface->get_current_template();
-            if (tmpl) {
-                accepted_height = tmpl->block.nHeight;
-                accepted_channel = tmpl->block.nChannel;
+        // Use submitted block state (snapshotted at submit_block time) so we
+        // don't depend on a template that may have been replaced since submission.
+        uint32_t accepted_height  = m_last_submitted_height;
+        uint32_t accepted_channel = m_last_submitted_channel;
+        if (!m_last_submitted_valid) {
+            // Fallback: submission state not populated (e.g. legacy path).
+            if (m_template_interface) {
+                auto const* tmpl = m_template_interface->get_current_template();
+                if (tmpl) {
+                    accepted_height  = tmpl->block.nHeight;
+                    accepted_channel = tmpl->block.nChannel;
+                }
             }
         }
         m_logger->info("✅ BLOCK ACCEPTED by node — height={} channel={}", accepted_height, accepted_channel);
         m_logger->info("Block Accepted By Nexus Network.");
 
         // Notify Worker_manager to record in the mined-block cache.
+        // Use submitted prev_hash and nonce rather than re-reading from template.
         if (m_block_accepted_handler) {
-            uint1024_t accepted_prev_hash{0};
-            uint64_t accepted_nonce{0};
-            if (m_template_interface) {
-                auto const* tmpl = m_template_interface->get_current_template();
-                if (tmpl) {
-                    accepted_prev_hash = tmpl->block.hashPrevBlock;
-                    accepted_nonce = tmpl->block.nNonce;
-                }
-            }
-            m_block_accepted_handler(accepted_height, accepted_prev_hash, accepted_channel, accepted_nonce);
+            m_block_accepted_handler(accepted_height, m_last_submitted_prev_hash,
+                                     accepted_channel, m_last_submitted_nonce);
         }
         
         // Enhanced diagnostics: Log connection info for accepted block
@@ -1418,30 +1423,26 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_stats_collector->update_global_stats(global_stats);
         ++m_blocks_accepted;
 
-        uint32_t accepted_height = 0;
-        uint32_t accepted_channel = m_channel;
-        if (m_template_interface) {
-            auto const* tmpl = m_template_interface->get_current_template();
-            if (tmpl) {
-                accepted_height = tmpl->block.nHeight;
-                accepted_channel = tmpl->block.nChannel;
+        // Use submitted block state (snapshotted at submit_block time).
+        uint32_t accepted_height  = m_last_submitted_height;
+        uint32_t accepted_channel = m_last_submitted_channel;
+        if (!m_last_submitted_valid) {
+            if (m_template_interface) {
+                auto const* tmpl = m_template_interface->get_current_template();
+                if (tmpl) {
+                    accepted_height  = tmpl->block.nHeight;
+                    accepted_channel = tmpl->block.nChannel;
+                }
             }
         }
         m_logger->info("✅ BLOCK ACCEPTED by node (Legacy Lane, GOOD_BLOCK) — height={} channel={}",
             accepted_height, accepted_channel);
 
         // Notify Worker_manager to record in the mined-block cache.
+        // Use submitted prev_hash and nonce rather than re-reading from template.
         if (m_block_accepted_handler) {
-            uint1024_t accepted_prev_hash{0};
-            uint64_t accepted_nonce{0};
-            if (m_template_interface) {
-                auto const* tmpl = m_template_interface->get_current_template();
-                if (tmpl) {
-                    accepted_prev_hash = tmpl->block.hashPrevBlock;
-                    accepted_nonce = tmpl->block.nNonce;
-                }
-            }
-            m_block_accepted_handler(accepted_height, accepted_prev_hash, accepted_channel, accepted_nonce);
+            m_block_accepted_handler(accepted_height, m_last_submitted_prev_hash,
+                                     accepted_channel, m_last_submitted_nonce);
         }
 
         auto work_payload = get_work();
