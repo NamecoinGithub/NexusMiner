@@ -199,25 +199,13 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // by stop_all_workers().  Restart them now so set_block() below actually
                 // starts mining threads; without this the template is silently dropped and
                 // workers_fed falsely reads 0 keeping the miner in a doom loop.
-                //
-                // Recovery gate: m_recovery_workers_spawned prevents duplicate worker
-                // creation when set_block_handler fires twice in rapid succession (e.g.
-                // SendChannelNotification push + GET_BLOCK response arriving together).
-                // m_worker_mutex serialises with stop_all_workers() so the create and
-                // clear paths cannot interleave on m_workers.
-                {
-                    std::lock_guard<std::mutex> lock(m_worker_mutex);
-                    if (m_degraded_mode && !m_recovery_workers_spawned) {
-                        bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
-                            [](const auto& w) { return bool(w); });
-                        if (!has_alive_workers) {
-                            m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
-                            m_workers.clear();  // prevent duplication if any stale null entries remain
-                            create_workers();
-                            // Set AFTER successful creation so a failure leaves the flag
-                            // false, allowing the next set_block_handler call to retry.
-                            m_recovery_workers_spawned = true;
-                        }
+                if (m_degraded_mode) {
+                    bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
+                        [](const auto& w) { return bool(w); });
+                    if (!has_alive_workers) {
+                        m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
+                        m_workers.clear();  // prevent duplication if any stale null entries remain
+                        create_workers();
                     }
                 }
 
@@ -1499,7 +1487,6 @@ void Worker_manager::clear_recovery_state()
     m_recovery_last_get_block_sent_at = {};
     m_recovery_last_get_block_transmitted_at = {};
     m_recovery_get_block_transmitted = false;
-    m_recovery_workers_spawned = false;
 
     auto global_stats = m_stats_collector->get_global_stats();
     global_stats.m_degraded_mode = false;
@@ -1513,29 +1500,21 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
     
+    // Set degraded mode flag
+    m_degraded_mode = true;
+    
     // Update stats to reflect degraded mode
     auto global_stats = m_stats_collector->get_global_stats();
     global_stats.m_degraded_mode = true;
     m_stats_collector->update_global_stats(global_stats);
     
-    {
-        std::lock_guard<std::mutex> lock(m_worker_mutex);
-
-        // Set degraded mode flag
-        m_degraded_mode = true;
-
-        // Reset recovery-workers-spawned so the next set_block_handler call
-        // in the new recovery epoch is allowed to re-create workers.
-        m_recovery_workers_spawned = false;
-
-        // Reset all worker instances so that the next create_workers() call starts fresh
-        // without duplicating existing workers.  The shared_ptr reset() destroys the Worker
-        // object (and joins its mining thread in the destructor), effectively stopping it.
-        for (auto& worker : m_workers) {
-            worker.reset();
-        }
-        m_workers.clear();
+    // Reset all worker instances so that the next create_workers() call starts fresh
+    // without duplicating existing workers.  The shared_ptr reset() destroys the Worker
+    // object (and joins its mining thread in the destructor), effectively stopping it.
+    for (auto& worker : m_workers) {
+        worker.reset();
     }
+    m_workers.clear();
 
     m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
     m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
