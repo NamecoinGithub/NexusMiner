@@ -210,6 +210,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     m_last_worker_feed_height = block.nHeight;
                     m_last_worker_feed_prev_hash = block.hashPrevBlock;
                 }
+
+                // Update mined-block cache confirmations based on new chain height.
+                m_mined_block_cache.update_confirmations(block.nHeight);
                 
                 // ═══════════════════════════════════════════════════════════════
                 // Recovery state is cleared AFTER successful template distribution
@@ -221,13 +224,17 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // by stop_all_workers().  Restart them now so set_block() below actually
                 // starts mining threads; without this the template is silently dropped and
                 // workers_fed falsely reads 0 keeping the miner in a doom loop.
-                if (m_degraded_mode) {
-                    bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
-                        [](const auto& w) { return bool(w); });
-                    if (!has_alive_workers) {
-                        m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
-                        m_workers.clear();  // prevent duplication if any stale null entries remain
-                        create_workers();
+                {
+                    std::lock_guard<std::mutex> lock(m_worker_mutex);
+                    if (m_degraded_mode && !m_recovery_workers_spawned) {
+                        bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
+                            [](const auto& w) { return bool(w); });
+                        if (!has_alive_workers) {
+                            m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
+                            m_workers.clear();  // prevent duplication if any stale null entries remain
+                            create_workers();
+                            m_recovery_workers_spawned = true;  // set AFTER success for exception safety
+                        }
                     }
                 }
 
@@ -508,6 +515,18 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             }
         );
         m_logger->info("[Worker_manager] Session expired handler registered");
+
+        /* ========== REGISTER BLOCK ACCEPTED HANDLER ========== */
+        /* Records accepted blocks into the three-tier mined-block cache. */
+        solo_protocol->set_block_accepted_handler(
+            [this](uint32_t height, uint1024_t hash_prev_block, uint32_t channel, uint64_t nonce) {
+                m_mined_block_cache.record_accepted_block(height, hash_prev_block, channel, nonce);
+                m_logger->info("[Worker_manager] ⛏ Block recorded in mined-block cache — height={} ch={} total={}",
+                    height, channel == 1 ? "Prime" : "Hash", m_mined_block_cache.total_blocks());
+                log_mined_block_cache();
+            }
+        );
+        m_logger->info("[Worker_manager] Block accepted handler registered");
         
         m_miner_protocol = solo_protocol;
   
@@ -923,6 +942,37 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                                 });
                             self->m_logger->info("[Worker_manager] Colin pong telemetry source wired");
                         }
+
+                        // Wire MinedBlockCache → Colin mined block history source (Top 5)
+                        std::weak_ptr<Worker_manager> weak_wm = self->shared_from_this();
+                        self->m_colin_agent->set_mined_block_cache_source(
+                            [weak_wm]() -> std::vector<ColinAgent::MinedBlockSnapshot> {
+                                std::vector<ColinAgent::MinedBlockSnapshot> result;
+                                auto wm = weak_wm.lock();
+                                if (!wm) return result;
+                                const auto& tier1 = wm->m_mined_block_cache.tier1();
+                                result.reserve(tier1.size());
+                                for (const auto& rec : tier1) {
+                                    ColinAgent::MinedBlockSnapshot snap;
+                                    snap.height = rec.height;
+                                    snap.channel = rec.channel;
+                                    snap.confirmations = rec.confirmations;
+                                    snap.status_emoji = rec.status_emoji();
+                                    snap.channel_name = rec.channel_name();
+                                    // First 32 hex chars of the 128-byte hashPrevBlock
+                                    auto prev_bytes = rec.hash_prev_block.GetBytes();
+                                    snap.hash_prev_block_hex.reserve(32);
+                                    for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(16)); ++i) {
+                                        char buf[3];
+                                        snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
+                                        snap.hash_prev_block_hex += buf;
+                                    }
+                                    result.push_back(std::move(snap));
+                                }
+                                return result;
+                            });
+                        self->m_logger->info("[Worker_manager] Colin mined block cache source wired");
+
                         self->m_colin_agent->start();
                     }
 
@@ -1033,6 +1083,16 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                 });
             }
         });
+
+    // Register block accepted handler on secondary lane too (same cache).
+    secondary_solo->set_block_accepted_handler(
+        [this](uint32_t height, uint1024_t hash_prev_block, uint32_t channel, uint64_t nonce) {
+            m_mined_block_cache.record_accepted_block(height, hash_prev_block, channel, nonce);
+            m_logger->info("[SIM Link] ⛏ Block recorded in mined-block cache — height={} ch={} total={}",
+                height, channel == 1 ? "Prime" : "Hash", m_mined_block_cache.total_blocks());
+            log_mined_block_cache();
+        }
+    );
 
     m_secondary_protocol = secondary_solo;
 
@@ -1526,6 +1586,7 @@ void Worker_manager::clear_recovery_state()
     m_recovery_last_get_block_sent_at = {};
     m_recovery_last_get_block_transmitted_at = {};
     m_recovery_get_block_transmitted = false;
+    m_recovery_workers_spawned = false;
 
     auto global_stats = m_stats_collector->get_global_stats();
     global_stats.m_degraded_mode = false;
@@ -1535,6 +1596,8 @@ void Worker_manager::clear_recovery_state()
 
 void Worker_manager::stop_all_workers()
 {
+    std::lock_guard<std::mutex> lock(m_worker_mutex);
+
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
     m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
@@ -1554,6 +1617,9 @@ void Worker_manager::stop_all_workers()
         worker.reset();
     }
     m_workers.clear();
+
+    // Clear the recovery gate so the next epoch can re-create workers
+    m_recovery_workers_spawned = false;
 
     m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
     m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
@@ -1996,6 +2062,18 @@ void Worker_manager::check_template_health()
         // and ready to receive the incoming template from retry_template_request().
         create_workers();
         retry_template_request(true);
+    }
+}
+
+void Worker_manager::log_mined_block_cache() const
+{
+    auto summary = m_mined_block_cache.format_cache_summary();
+    // Log each line individually for proper formatting
+    std::istringstream iss(summary);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty())
+            m_logger->info("[MinedBlockCache] {}", line);
     }
 }
 

@@ -10,9 +10,11 @@
 #include "stats/stats_printer.hpp"
 #include "dual_connection_manager.hpp"
 #include "LLC/types/uint1024.h"
+#include "stats/mined_block_cache.hpp"
 
 #include <memory>
 #include <deque>
+#include <mutex>
 
 namespace asio { class io_context; }
 
@@ -50,6 +52,9 @@ public:
 
     // SIM Link: send SESSION_STATUS on each live lane if 60-second interval has elapsed
     void send_session_status_if_due();
+
+    /// Log the three-tier mined-block cache summary.
+    void log_mined_block_cache() const;
 
 private:
 
@@ -170,6 +175,22 @@ private:
     uint32_t m_last_worker_feed_height{0};
     uint1024_t m_last_worker_feed_prev_hash{0};
     static constexpr int64_t WORKER_FEED_DEBOUNCE_MS = 2000;  // 2s — wider than solo.cpp's 1.5s ANCHOR debounce
+
+    // ── Mutex-based recovery gate (defense-in-depth) ─────────────────────────
+    // Serialises the creation path in set_block_handler with the destruction
+    // path in stop_all_workers() so they cannot interleave on m_workers.
+    std::mutex m_worker_mutex;
+
+    // Per-epoch idempotency key: set after create_workers() succeeds in the
+    // degraded-mode guard; checked before every subsequent creation attempt.
+    // Reset in stop_all_workers() and clear_recovery_state().
+    bool m_recovery_workers_spawned{false};
+
+    // ── Three-tier mined-block confirmation cache ────────────────────────────
+    // Tier 1: last 5 mined blocks (confirmation tracking active)
+    // Tier 2: up to 100 confirmed blocks (hashPrevBlock + nHeight + channel)
+    // Tier 3: archive overflow from Tier 2
+    stats::MinedBlockCache m_mined_block_cache;
 };
 }
 
