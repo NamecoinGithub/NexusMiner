@@ -207,19 +207,24 @@ static void test_height_gated_confirmations()
     check("height=100 conf==3 after chain at 102",
           cache.tier1().front().confirmations == 3);
 
-    // Manually set confirmations to 0 to prove a second call at the same
-    // height is a no-op (the height-gate prevents recalculation).
-    // (Normally confirmations wouldn't be touched externally; this is a
-    // test-only technique to prove the guard works.)
-    const_cast<MinedBlockRecord&>(cache.tier1().front()).confirmations = 0;
-    cache.update_confirmations(102);  // same height — should be skipped
-    check("same-height call is no-op (conf still 0)",
+    // Add a new block at height 101 — it starts with conf=0
+    cache.record_accepted_block(101, prev, 2, 2);
+    check("new block at height 101 starts with conf=0",
           cache.tier1().front().confirmations == 0);
 
-    // Advancing height to 103 should recalculate: 103 - 100 + 1 = 4
+    // Call update_confirmations(102) again — same height as before.
+    // The height-gate should skip recalculation, so the new block
+    // at height=101 should still have conf=0.
+    cache.update_confirmations(102);
+    check("same-height call is no-op (new block conf still 0)",
+          cache.tier1().front().confirmations == 0);
+
+    // Advancing height to 103 should recalculate:
+    // height=101: conf = 103 - 101 + 1 = 3
+    // height=100: conf = 103 - 100 + 1 = 4
     cache.update_confirmations(103);
-    check("higher height recalculates (conf==4)",
-          cache.tier1().front().confirmations == 4);
+    check("higher height recalculates (h=101 conf==3)",
+          cache.tier1().front().confirmations == 3);
 }
 
 // ── Test 6: tier1() returns at most 5 records, newest-first ────────────────

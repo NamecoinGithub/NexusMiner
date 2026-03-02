@@ -364,6 +364,7 @@ private:
     // Last submitted block state — carried forward from submit_block() so the
     // ACCEPT/GOOD_BLOCK handler uses the actual submitted values rather than
     // re-reading from a potentially-replaced template (Priority 2 fix).
+    bool      m_last_submitted_valid{false};
     uint64_t  m_last_submitted_nonce{0};
     uint1024_t m_last_submitted_prev_hash{0};
     uint32_t  m_last_submitted_height{0};

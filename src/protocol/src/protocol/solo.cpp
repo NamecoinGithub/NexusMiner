@@ -637,6 +637,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
 
     // Snapshot submitted block state for the ACCEPT/GOOD_BLOCK handler
     // so it doesn't need to re-read from a potentially-replaced template.
+    m_last_submitted_valid     = true;
     m_last_submitted_nonce     = nonce;
     m_last_submitted_prev_hash = tmpl->block.hashPrevBlock;
     m_last_submitted_height    = tmpl->block.nHeight;
@@ -1301,7 +1302,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // don't depend on a template that may have been replaced since submission.
         uint32_t accepted_height  = m_last_submitted_height;
         uint32_t accepted_channel = m_last_submitted_channel;
-        if (accepted_height == 0) {
+        if (!m_last_submitted_valid) {
             // Fallback: submission state not populated (e.g. legacy path).
             if (m_template_interface) {
                 auto const* tmpl = m_template_interface->get_current_template();
@@ -1425,7 +1426,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Use submitted block state (snapshotted at submit_block time).
         uint32_t accepted_height  = m_last_submitted_height;
         uint32_t accepted_channel = m_last_submitted_channel;
-        if (accepted_height == 0) {
+        if (!m_last_submitted_valid) {
             if (m_template_interface) {
                 auto const* tmpl = m_template_interface->get_current_template();
                 if (tmpl) {
