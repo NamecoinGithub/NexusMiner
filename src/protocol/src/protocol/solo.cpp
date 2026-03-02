@@ -1302,6 +1302,20 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         m_logger->info("✅ BLOCK ACCEPTED by node — height={} channel={}", accepted_height, accepted_channel);
         m_logger->info("Block Accepted By Nexus Network.");
+
+        // Notify Worker_manager to record in the mined-block cache.
+        if (m_block_accepted_handler) {
+            uint1024_t accepted_prev_hash{0};
+            uint64_t accepted_nonce{0};
+            if (m_template_interface) {
+                auto const* tmpl = m_template_interface->get_current_template();
+                if (tmpl) {
+                    accepted_prev_hash = tmpl->block.hashPrevBlock;
+                    accepted_nonce = tmpl->block.nNonce;
+                }
+            }
+            m_block_accepted_handler(accepted_height, accepted_prev_hash, accepted_channel, accepted_nonce);
+        }
         
         // Enhanced diagnostics: Log connection info for accepted block
         if (connection) {
@@ -1415,6 +1429,20 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         m_logger->info("✅ BLOCK ACCEPTED by node (Legacy Lane, GOOD_BLOCK) — height={} channel={}",
             accepted_height, accepted_channel);
+
+        // Notify Worker_manager to record in the mined-block cache.
+        if (m_block_accepted_handler) {
+            uint1024_t accepted_prev_hash{0};
+            uint64_t accepted_nonce{0};
+            if (m_template_interface) {
+                auto const* tmpl = m_template_interface->get_current_template();
+                if (tmpl) {
+                    accepted_prev_hash = tmpl->block.hashPrevBlock;
+                    accepted_nonce = tmpl->block.nNonce;
+                }
+            }
+            m_block_accepted_handler(accepted_height, accepted_prev_hash, accepted_channel, accepted_nonce);
+        }
 
         auto work_payload = get_work();
         if (work_payload && !work_payload->empty()) {

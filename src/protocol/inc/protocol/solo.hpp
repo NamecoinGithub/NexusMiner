@@ -173,6 +173,12 @@ public:
     uint32_t get_blocks_accepted() const { return m_blocks_accepted.load(); }
     uint32_t get_blocks_rejected() const { return m_blocks_rejected.load(); }
 
+    // Block-result callback: invoked on BLOCK_ACCEPTED with (height, hashPrevBlock, channel, nonce).
+    // Worker_manager registers this to record accepted blocks in the mined-block cache.
+    using Block_accepted_handler = std::function<void(uint32_t height, uint1024_t hash_prev_block,
+                                                      uint32_t channel, uint64_t nonce)>;
+    void set_block_accepted_handler(Block_accepted_handler h) { m_block_accepted_handler = std::move(h); }
+
     // Colin AI Diagnostic PING/PONG handler
     const ::LLP::ReceivedPingFrame& last_received_ping() const
     {
@@ -351,6 +357,9 @@ private:
     // Session-expired callback — invoked when a keepalive ACK carries a mismatched session_id,
     // signalling Worker_manager to trigger recovery for the stale session.
     Session_expired_handler m_session_expired_handler;
+
+    // Block-accepted callback — invoked on BLOCK_ACCEPTED to record the mined block.
+    Block_accepted_handler m_block_accepted_handler;
     
     // GET_ROUND status tracking (Template Staleness Prevention - LLL-TAO PR #131)
     RoundStatus m_last_round_status;  // Last received round status

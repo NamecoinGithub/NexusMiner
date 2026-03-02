@@ -10,6 +10,7 @@
 #include "stats/stats_printer.hpp"
 #include "dual_connection_manager.hpp"
 #include "LLC/types/uint1024.h"
+#include "stats/mined_block_cache.hpp"
 
 #include <memory>
 #include <deque>
@@ -51,6 +52,9 @@ public:
 
     // SIM Link: send SESSION_STATUS on each live lane if 60-second interval has elapsed
     void send_session_status_if_due();
+
+    /// Log the three-tier mined-block cache summary.
+    void log_mined_block_cache() const;
 
 private:
 
@@ -181,6 +185,12 @@ private:
     // degraded-mode guard; checked before every subsequent creation attempt.
     // Reset in stop_all_workers() and clear_recovery_state().
     bool m_recovery_workers_spawned{false};
+
+    // ── Three-tier mined-block confirmation cache ────────────────────────────
+    // Tier 1: last 5 mined blocks (confirmation tracking active)
+    // Tier 2: up to 100 confirmed blocks (hashPrevBlock + nHeight + channel)
+    // Tier 3: archive overflow from Tier 2
+    stats::MinedBlockCache m_mined_block_cache;
 };
 }
 

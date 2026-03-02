@@ -210,6 +210,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     m_last_worker_feed_height = block.nHeight;
                     m_last_worker_feed_prev_hash = block.hashPrevBlock;
                 }
+
+                // Update mined-block cache confirmations based on new chain height.
+                m_mined_block_cache.update_confirmations(block.nHeight);
                 
                 // ═══════════════════════════════════════════════════════════════
                 // Recovery state is cleared AFTER successful template distribution
@@ -512,6 +515,18 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             }
         );
         m_logger->info("[Worker_manager] Session expired handler registered");
+
+        /* ========== REGISTER BLOCK ACCEPTED HANDLER ========== */
+        /* Records accepted blocks into the three-tier mined-block cache. */
+        solo_protocol->set_block_accepted_handler(
+            [this](uint32_t height, uint1024_t hash_prev_block, uint32_t channel, uint64_t nonce) {
+                m_mined_block_cache.record_accepted_block(height, hash_prev_block, channel, nonce);
+                m_logger->info("[Worker_manager] ⛏ Block recorded in mined-block cache — height={} ch={} total={}",
+                    height, channel == 1 ? "Prime" : "Hash", m_mined_block_cache.total_blocks());
+                log_mined_block_cache();
+            }
+        );
+        m_logger->info("[Worker_manager] Block accepted handler registered");
         
         m_miner_protocol = solo_protocol;
   
@@ -1037,6 +1052,16 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                 });
             }
         });
+
+    // Register block accepted handler on secondary lane too (same cache).
+    secondary_solo->set_block_accepted_handler(
+        [this](uint32_t height, uint1024_t hash_prev_block, uint32_t channel, uint64_t nonce) {
+            m_mined_block_cache.record_accepted_block(height, hash_prev_block, channel, nonce);
+            m_logger->info("[SIM Link] ⛏ Block recorded in mined-block cache — height={} ch={} total={}",
+                height, channel == 1 ? "Prime" : "Hash", m_mined_block_cache.total_blocks());
+            log_mined_block_cache();
+        }
+    );
 
     m_secondary_protocol = secondary_solo;
 
@@ -2006,6 +2031,18 @@ void Worker_manager::check_template_health()
         // and ready to receive the incoming template from retry_template_request().
         create_workers();
         retry_template_request(true);
+    }
+}
+
+void Worker_manager::log_mined_block_cache() const
+{
+    auto summary = m_mined_block_cache.format_cache_summary();
+    // Log each line individually for proper formatting
+    std::istringstream iss(summary);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty())
+            m_logger->info("[MinedBlockCache] {}", line);
     }
 }
 
