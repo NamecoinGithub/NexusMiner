@@ -312,7 +312,8 @@ static void test_full_promotion_lifecycle()
           cache.tier1().size() == 1 && cache.tier1().front().height == 200);
 
     // Phase 3: Fill Tier 2 to max via bulk inserts (overflow older ones out of Tier 1)
-    for (uint32_t h = 300; h < 300 + MinedBlockCache::TIER2_MAX + MinedBlockCache::TIER1_MAX; ++h)
+    uint32_t const fill_count = MinedBlockCache::TIER2_MAX + MinedBlockCache::TIER1_MAX;
+    for (uint32_t h = 300; h < 300 + fill_count; ++h)
         cache.record_accepted_block(h, prev, 1, h);
 
     check("Phase 3: Tier 2 at capacity", cache.tier2().size() == MinedBlockCache::TIER2_MAX);
