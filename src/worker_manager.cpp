@@ -1627,6 +1627,9 @@ void Worker_manager::clear_recovery_state()
     global_stats.m_degraded_mode = false;
     m_stats_collector->update_global_stats(global_stats);
     m_last_escalation_at = {};
+
+    // Reset start time so GISPS/hashrate calculation excludes the degraded-mode idle period
+    m_stats_collector->reset_start_time();
 }
 
 void Worker_manager::stop_all_workers()
@@ -1665,12 +1668,18 @@ void Worker_manager::stop_all_workers()
 void Worker_manager::retry_template_request(bool bForce)
 {
     m_logger->info("[Worker_manager] Requesting fresh template...");
-    
+
     if (!m_connection) {
         m_logger->error("[Worker_manager] No connection available to request template");
+        // Reconstruct wallet endpoint from config and retry connection
+        auto const ip_address = m_config.get_wallet_ip();
+        auto const port = m_config.get_port();
+        network::Endpoint wallet_endpoint{network::Transport_protocol::tcp, ip_address, port};
+        m_logger->info("[Worker_manager] Attempting to reconnect to {}:{}", ip_address, port);
+        retry_connect(wallet_endpoint);
         return;
     }
-    
+
     auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
     if (!solo_protocol) {
         m_logger->error("[Worker_manager] Failed to cast protocol to Solo protocol");
