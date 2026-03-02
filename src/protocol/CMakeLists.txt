@@ -112,6 +112,20 @@ target_include_directories(stateless_block_utility_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+# End-to-End Block Submission Test (encode_submit → ChaCha20 → SUBMIT_BLOCK)
+add_executable(e2e_block_submission_test
+    e2e_block_submission_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp)
+target_link_libraries(e2e_block_submission_test PRIVATE protocol LLP spdlog ${OPENSSL_LIBRARIES})
+target_include_directories(e2e_block_submission_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src/LLP/include
+    ${CMAKE_SOURCE_DIR}/src/LLC/inc
+    ${CMAKE_SOURCE_DIR}/src
+)
+
 # MinedBlockCache + worker-feed dedup guard unit tests
 add_executable(mined_block_cache_dedup_test
     ${CMAKE_SOURCE_DIR}/src/stats/mined_block_cache_test.cpp)
