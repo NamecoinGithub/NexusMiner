@@ -111,3 +111,16 @@ target_include_directories(stateless_block_utility_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/LLC/inc
     ${CMAKE_SOURCE_DIR}/src
 )
+
+# MinedBlockCache + worker-feed dedup guard unit tests
+add_executable(mined_block_cache_dedup_test
+    ${CMAKE_SOURCE_DIR}/src/stats/mined_block_cache_test.cpp)
+target_link_libraries(mined_block_cache_dedup_test PRIVATE protocol LLP stats spdlog)
+target_include_directories(mined_block_cache_dedup_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src/stats/inc
+    ${CMAKE_SOURCE_DIR}/src/LLC/inc
+    ${CMAKE_SOURCE_DIR}/src
+)
