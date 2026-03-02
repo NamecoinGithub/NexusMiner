@@ -2703,6 +2703,33 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->warn("[Solo] SESSION_STATUS_ACK: malformed payload (size={})", data.size());
         }
     }
+    // ═══════════════════════════════════════════════════════════════════════
+    // NODE_SHUTDOWN (0xD0FF / legacy 0xFF) — graceful shutdown notice from node
+    // ═══════════════════════════════════════════════════════════════════════
+    else if(matches_opcode(Packet::NODE_SHUTDOWN))
+    {
+        ::LLP::NodeShutdownFrame frame;
+        std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
+        if(frame.Parse(payload))
+        {
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason={}) — stopping workers",
+                frame.ReasonString());
+            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+        }
+        else
+        {
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason=UNKNOWN, no payload) — stopping workers");
+            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+        }
+
+        // Notify Worker_manager to stop workers and set reconnect backoff
+        if(m_node_shutdown_handler)
+            m_node_shutdown_handler(frame.reason);
+    }
     else
     {
         m_logger->debug("Invalid header received: 0x{:04x}", packet.m_header);

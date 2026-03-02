@@ -124,3 +124,13 @@ target_include_directories(mined_block_cache_dedup_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/LLC/inc
     ${CMAKE_SOURCE_DIR}/src
 )
+
+# NODE_SHUTDOWN (0xD0FF) wire protocol unit tests
+add_executable(node_shutdown_wire_test node_shutdown_wire_test.cpp)
+target_link_libraries(node_shutdown_wire_test PRIVATE protocol LLP spdlog)
+target_include_directories(node_shutdown_wire_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src
+)

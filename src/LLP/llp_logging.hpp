@@ -98,7 +98,10 @@ namespace nexusminer
 
 			/** GENERIC **/
 			PING = LLP::PING,
-			CLOSE = LLP::CLOSE
+			CLOSE = LLP::CLOSE,
+
+			/** NODE SHUTDOWN (LLL-TAO PR #326) **/
+			NODE_SHUTDOWN = LLP::NODE_SHUTDOWN
 		};
 	}
 
@@ -152,6 +155,7 @@ namespace nexusminer
 			case LLP_Headers::SESSION_STATUS_ACK: return "SESSION_STATUS_ACK";
 			case LLP_Headers::PING: return "PING";
 			case LLP_Headers::CLOSE: return "CLOSE";
+			case LLP_Headers::NODE_SHUTDOWN: return "NODE_SHUTDOWN";
 			default: return "UNKNOWN";
 		}
 	}
@@ -190,6 +194,7 @@ namespace nexusminer
 				case LLP::HASH_BLOCK_AVAILABLE: return "STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)";
 				case ::LLP::SessionStatusOpcodes::SESSION_STATUS_LEGACY:     return "STATELESS_SESSION_STATUS (0xD0DB)";
 				case ::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY: return "STATELESS_SESSION_STATUS_ACK (0xD0DC)";
+				case LLP::NODE_SHUTDOWN: return "STATELESS_NODE_SHUTDOWN (0xD0FF)";
 				default:
 					{
 						// Thread-safe: use ostringstream instead of static buffer

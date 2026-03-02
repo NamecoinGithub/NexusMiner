@@ -218,7 +218,11 @@ namespace nexusminer
 
 			/** GENERIC **/
 			PING = LLP::PING,
-			CLOSE = LLP::CLOSE
+			CLOSE = LLP::CLOSE,
+
+			/** NODE SHUTDOWN (LLL-TAO PR #326) **/
+			NODE_SHUTDOWN = LLP::NODE_SHUTDOWN,
+			STATELESS_NODE_SHUTDOWN = LLP::StatelessMining::NODE_SHUTDOWN    // 0xD0FF
 		};
 
 		Packet()
