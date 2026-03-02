@@ -523,7 +523,7 @@ network::Shared_payload Solo::get_work()
     /* Validate prerequisites */
     if (!m_authenticated) {
         m_logger->error("[Solo] Cannot request work - not authenticated");
-        m_logger->error("[Solo]   Current auth state: {}", 
+        m_logger->error("[Solo]   Current auth state: {}",
             m_auth_state == AuthState::NOT_AUTHENTICATED ? "NOT_AUTHENTICATED" :
             m_auth_state == AuthState::WAITING_FOR_CHALLENGE ? "WAITING_FOR_CHALLENGE" :
             m_auth_state == AuthState::WAITING_FOR_RESULT ? "WAITING_FOR_RESULT" :
@@ -531,14 +531,30 @@ network::Shared_payload Solo::get_work()
         m_logger->error("[Solo]   Waiting for Falcon authentication to complete");
         return nullptr;
     }
-    
+
     // Only validate reward binding if a reward address was configured
     // (Reward binding is optional for localhost/testing, but required for production)
     if (!m_reward_address.empty() && !m_reward_bound) {
         m_logger->error("[Solo] Cannot request work - reward address not bound");
         return nullptr;
     }
-    
+
+    // ── GET_BLOCK deduplication guard ────────────────────────────────────────
+    // Prevent duplicate GET_BLOCK requests from push_notification_handler and
+    // Worker_manager when both independently respond to the same staleness event.
+    // Deduplicate within GET_BLOCK_DEDUP_MS (100ms) window.
+    auto now_tp = std::chrono::steady_clock::now();
+    if (m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now_tp - m_last_get_block_transmitted_tp).count();
+        if (elapsed_ms < GET_BLOCK_DEDUP_MS) {
+            m_logger->info("[Solo] GET_BLOCK deduplication: suppressing duplicate request "
+                          "({}ms since last transmission, threshold {}ms)",
+                          elapsed_ms, GET_BLOCK_DEDUP_MS);
+            return nullptr;  // Suppress duplicate
+        }
+    }
+
     m_logger->info("[Solo] Requesting mining template via GET_BLOCK");
     m_logger->info("[Solo]   Session ID: 0x{:08x}", m_session_id);
     m_logger->info("[Solo]   Authenticated: {}", m_authenticated ? "YES" : "NO");
@@ -546,8 +562,11 @@ network::Shared_payload Solo::get_work()
 
     /* Build GET_BLOCK packet via PacketBuilder (header-only, no payload) */
     auto payload = PacketBuilder::build(m_protocol_lane, LLP::GET_BLOCK);
-    
+
     if (payload && !payload->empty()) {
+        // Record transmission timestamp for deduplication
+        m_last_get_block_transmitted_tp = now_tp;
+
         m_logger->debug("[Solo] GET_BLOCK encoded payload size: {} bytes", payload->size());
         // TRAINING WHEELS: Show GET_BLOCK packet (should be just header byte)
         m_logger->info("[Solo] GET_BLOCK packet hex dump:");
@@ -555,8 +574,8 @@ network::Shared_payload Solo::get_work()
     } else {
         m_logger->error("[Solo] GET_BLOCK PacketBuilder::build returned null or empty payload!");
     }
-    
-    return payload;     
+
+    return payload;
 }
 
 network::Shared_payload Solo::send_get_round()
@@ -927,7 +946,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Enhanced diagnostics: Check payload is non-null
         if (!packet.m_data) {
             m_logger->error("[Solo] CRITICAL: BLOCK_DATA received with null payload");
-            m_logger->error("[Solo] Recovery: Requesting new work to recover from empty payload scenario");
+            m_logger->error("[Solo] Recovery: Empty BLOCK_DATA indicates node issue — exiting recovery and retrying");
+
+            // Notify Worker_manager to re-initiate recovery (exit current recovery epoch
+            // and start a new one with backoff). This prevents staying stuck in recovery
+            // mode indefinitely when the node sends empty responses.
+            if (m_recovery_handler) {
+                m_logger->info("[Solo] Invoking recovery handler to retry GET_BLOCK after backoff");
+                m_recovery_handler();
+            }
+
+            // Immediate retry after notifying recovery handler
             if (connection) {
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
@@ -964,10 +993,18 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         
         // Validate packet has minimum required data
         if (packet.m_length < MIN_BLOCK_HEADER_SIZE) {
-            m_logger->error("[Solo] CRITICAL: BLOCK_DATA packet has invalid length {} < minimum {}", 
+            m_logger->error("[Solo] CRITICAL: BLOCK_DATA packet has invalid length {} < minimum {}",
                 packet.m_length, MIN_BLOCK_HEADER_SIZE);
             m_logger->error("[Solo]   - This indicates corrupted or incomplete block data");
-            m_logger->error("[Solo] Recovery: Requesting new work to recover from invalid payload");
+            m_logger->error("[Solo] Recovery: Invalid BLOCK_DATA — exiting recovery and retrying");
+
+            // Notify Worker_manager to re-initiate recovery (same as null payload case)
+            if (m_recovery_handler) {
+                m_logger->info("[Solo] Invoking recovery handler to retry GET_BLOCK after backoff");
+                m_recovery_handler();
+            }
+
+            // Immediate retry after notifying recovery handler
             if (connection) {
                 auto work_payload = get_work();
                 if (work_payload && !work_payload->empty()) {
@@ -2496,7 +2533,24 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // MiningTemplateInterface::read_stateless_payload().  All canonical mining
         // state (nHeight, nChannel, nBits, hashPrevBlock) comes from the block body.
         if (!packet.m_data) {
-            m_logger->error("[Solo Stateless] Null packet data");
+            m_logger->error("[Solo Stateless] Null packet data — empty STATELESS_GET_BLOCK response");
+            m_logger->error("[Solo Stateless] Recovery: Exiting recovery and retrying GET_BLOCK");
+
+            // Notify Worker_manager to re-initiate recovery (same pattern as BLOCK_DATA)
+            if (m_recovery_handler) {
+                m_logger->info("[Solo Stateless] Invoking recovery handler to retry GET_BLOCK after backoff");
+                m_recovery_handler();
+            }
+
+            // Immediate retry after notifying recovery handler
+            if (connection) {
+                auto work_payload = get_work();
+                if (work_payload && !work_payload->empty()) {
+                    connection->transmit(work_payload);
+                } else {
+                    m_logger->error("[Solo Stateless] Recovery failed - GET_BLOCK returned empty payload");
+                }
+            }
             return;
         }
         auto decoded = StatelessBlockUtility::decode_template(
@@ -2504,6 +2558,23 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
 
         if (!decoded.valid) {
             m_logger->error("[Solo Stateless] Template decode failed: {}", decoded.error_message);
+            m_logger->error("[Solo Stateless] Recovery: Invalid template — exiting recovery and retrying");
+
+            // Notify Worker_manager to re-initiate recovery
+            if (m_recovery_handler) {
+                m_logger->info("[Solo Stateless] Invoking recovery handler to retry GET_BLOCK after backoff");
+                m_recovery_handler();
+            }
+
+            // Immediate retry after notifying recovery handler
+            if (connection) {
+                auto work_payload = get_work();
+                if (work_payload && !work_payload->empty()) {
+                    connection->transmit(work_payload);
+                } else {
+                    m_logger->error("[Solo Stateless] Recovery failed - GET_BLOCK returned empty payload");
+                }
+            }
             return;
         }
 

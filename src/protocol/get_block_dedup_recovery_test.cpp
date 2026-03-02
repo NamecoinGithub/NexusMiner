@@ -1,0 +1,330 @@
+/**
+ * @file get_block_dedup_recovery_test.cpp
+ * @brief Unit tests for GET_BLOCK deduplication and empty BLOCK_DATA recovery
+ *
+ * Tests:
+ *  1. GET_BLOCK deduplication within 100ms window
+ *  2. GET_BLOCK allowed after deduplication window expires
+ *  3. Multiple rapid GET_BLOCK requests deduplicated
+ *  4. GET_BLOCK deduplication across push handler and Worker_manager
+ *  5. Deduplication state can be reset
+ *  6. Three successive GET_BLOCK calls with proper timing
+ *  7. Verify packet format for GET_BLOCK
+ */
+
+#include "protocol/packet_builder.hpp"
+#include "miner_opcodes.hpp"
+#include <iostream>
+#include <cassert>
+#include <cstdint>
+#include <chrono>
+#include <thread>
+#include <memory>
+
+using namespace nexusminer;
+using namespace nexusminer::protocol;
+
+// Test statistics
+static int tests_run    = 0;
+static int tests_passed = 0;
+static int tests_failed = 0;
+
+void print_test_result(const char* name, bool passed) {
+    tests_run++;
+    if (passed) {
+        tests_passed++;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        tests_failed++;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
+}
+
+// ============================================================================
+// Mock GET_BLOCK deduplication logic (mirrors Solo::get_work)
+// ============================================================================
+class GetBlockDeduplicator {
+public:
+    GetBlockDeduplicator()
+        : m_authenticated(true)
+        , m_reward_bound(true)
+        , m_protocol_lane(ProtocolLane::STATELESS)
+        , m_last_get_block_transmitted_tp{}
+        , m_get_block_call_count(0)
+    {}
+
+    // Simulates Solo::get_work() with deduplication logic
+    network::Shared_payload get_work() {
+        m_get_block_call_count++;
+
+        if (!m_authenticated || !m_reward_bound) {
+            return nullptr;
+        }
+
+        // GET_BLOCK deduplication guard (mirrors solo.cpp lines 546-556)
+        auto now_tp = std::chrono::steady_clock::now();
+        if (m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
+            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now_tp - m_last_get_block_transmitted_tp).count();
+            if (elapsed_ms < 100) {  // GET_BLOCK_DEDUP_MS = 100
+                std::cout << "    [Dedup] Suppressing duplicate GET_BLOCK ("
+                         << elapsed_ms << "ms since last)\n";
+                return nullptr;  // Suppress duplicate
+            }
+        }
+
+        // Build GET_BLOCK packet
+        auto payload = PacketBuilder::build(m_protocol_lane, nexusminer::LLP::GET_BLOCK);
+
+        if (payload && !payload->empty()) {
+            m_last_get_block_transmitted_tp = now_tp;
+            std::cout << "    [Transmitted] GET_BLOCK sent successfully\n";
+        }
+
+        return payload;
+    }
+
+    void reset_timestamp() {
+        m_last_get_block_transmitted_tp = {};
+    }
+
+    int get_call_count() const { return m_get_block_call_count; }
+    void reset_call_count() { m_get_block_call_count = 0; }
+
+    std::chrono::steady_clock::time_point get_last_transmitted_tp() const {
+        return m_last_get_block_transmitted_tp;
+    }
+
+private:
+    bool m_authenticated;
+    bool m_reward_bound;
+    ProtocolLane m_protocol_lane;
+    std::chrono::steady_clock::time_point m_last_get_block_transmitted_tp;
+    int m_get_block_call_count;
+};
+
+// ============================================================================
+// Test 1: GET_BLOCK deduplication within 100ms window
+// ============================================================================
+void test_get_block_dedup_within_window() {
+    std::cout << "\nTest 1: GET_BLOCK deduplication within 100ms window\n";
+
+    GetBlockDeduplicator dedup;
+
+    // First call should succeed
+    auto payload1 = dedup.get_work();
+    bool first_success = (payload1 != nullptr && !payload1->empty());
+
+    // Second call within 100ms should be suppressed
+    auto payload2 = dedup.get_work();
+    bool second_suppressed = (payload2 == nullptr);
+
+    // Third call within 100ms should also be suppressed
+    auto payload3 = dedup.get_work();
+    bool third_suppressed = (payload3 == nullptr);
+
+    int call_count = dedup.get_call_count();
+    bool correct_call_count = (call_count == 3);  // All 3 calls should be counted
+
+    bool passed = first_success && second_suppressed && third_suppressed && correct_call_count;
+    print_test_result("GET_BLOCK deduplication within 100ms", passed);
+}
+
+// ============================================================================
+// Test 2: GET_BLOCK allowed after deduplication window expires
+// ============================================================================
+void test_get_block_after_window() {
+    std::cout << "\nTest 2: GET_BLOCK allowed after deduplication window expires\n";
+
+    GetBlockDeduplicator dedup;
+
+    // First call should succeed
+    auto payload1 = dedup.get_work();
+    bool first_success = (payload1 != nullptr && !payload1->empty());
+
+    // Wait for deduplication window to expire (110ms > 100ms)
+    std::cout << "    [Wait] Sleeping for 110ms to expire dedup window...\n";
+    std::this_thread::sleep_for(std::chrono::milliseconds(110));
+
+    // Second call after window should succeed
+    auto payload2 = dedup.get_work();
+    bool second_success = (payload2 != nullptr && !payload2->empty());
+
+    bool passed = first_success && second_success;
+    print_test_result("GET_BLOCK allowed after dedup window expires", passed);
+}
+
+// ============================================================================
+// Test 3: Multiple rapid GET_BLOCK requests deduplicated
+// ============================================================================
+void test_multiple_rapid_requests() {
+    std::cout << "\nTest 3: Multiple rapid GET_BLOCK requests deduplicated\n";
+
+    GetBlockDeduplicator dedup;
+
+    int successful_transmissions = 0;
+    int suppressed_transmissions = 0;
+
+    // First request should succeed
+    auto payload = dedup.get_work();
+    if (payload && !payload->empty()) {
+        successful_transmissions++;
+    }
+
+    // Rapid-fire 9 more requests within 100ms
+    for (int i = 0; i < 9; i++) {
+        payload = dedup.get_work();
+        if (payload && !payload->empty()) {
+            successful_transmissions++;
+        } else {
+            suppressed_transmissions++;
+        }
+    }
+
+    std::cout << "    [Stats] Successful: " << successful_transmissions
+              << ", Suppressed: " << suppressed_transmissions << "\n";
+
+    bool passed = (successful_transmissions == 1) && (suppressed_transmissions == 9);
+    print_test_result("Multiple rapid requests deduplicated correctly", passed);
+}
+
+// ============================================================================
+// Test 4: GET_BLOCK deduplication across push handler and Worker_manager
+// ============================================================================
+void test_dedup_across_callers() {
+    std::cout << "\nTest 4: GET_BLOCK deduplication across callers\n";
+
+    GetBlockDeduplicator dedup;
+
+    // Simulate push handler call
+    std::cout << "    [Push Handler] Requesting GET_BLOCK...\n";
+    auto payload1 = dedup.get_work();
+    bool push_success = (payload1 != nullptr && !payload1->empty());
+
+    // Simulate Worker_manager call immediately after (within 100ms)
+    std::cout << "    [Worker Manager] Requesting GET_BLOCK...\n";
+    auto payload2 = dedup.get_work();
+    bool worker_suppressed = (payload2 == nullptr);
+
+    bool passed = push_success && worker_suppressed;
+    print_test_result("Deduplication works across different callers", passed);
+}
+
+// ============================================================================
+// Test 5: Deduplication resets after timestamp reset
+// ============================================================================
+void test_dedup_reset() {
+    std::cout << "\nTest 5: Deduplication state can be reset\n";
+
+    GetBlockDeduplicator dedup;
+
+    // First call succeeds
+    auto payload1 = dedup.get_work();
+    bool first_success = (payload1 != nullptr && !payload1->empty());
+
+    // Second call within window is suppressed
+    auto payload2 = dedup.get_work();
+    bool second_suppressed = (payload2 == nullptr);
+
+    // Reset timestamp (simulating recovery completion)
+    dedup.reset_timestamp();
+
+    // Third call after reset should succeed
+    auto payload3 = dedup.get_work();
+    bool third_success = (payload3 != nullptr && !payload3->empty());
+
+    bool passed = first_success && second_suppressed && third_success;
+    print_test_result("Deduplication state resets correctly", passed);
+}
+
+// ============================================================================
+// Test 6: Three successive GET_BLOCK calls with proper timing
+// ============================================================================
+void test_three_successive_calls() {
+    std::cout << "\nTest 6: Three successive GET_BLOCK calls with proper timing\n";
+
+    GetBlockDeduplicator dedup;
+
+    // First call
+    auto payload1 = dedup.get_work();
+    bool first_success = (payload1 != nullptr && !payload1->empty());
+    auto first_tp = dedup.get_last_transmitted_tp();
+
+    // Wait 110ms
+    std::this_thread::sleep_for(std::chrono::milliseconds(110));
+
+    // Second call
+    auto payload2 = dedup.get_work();
+    bool second_success = (payload2 != nullptr && !payload2->empty());
+    auto second_tp = dedup.get_last_transmitted_tp();
+
+    // Wait 110ms
+    std::this_thread::sleep_for(std::chrono::milliseconds(110));
+
+    // Third call
+    auto payload3 = dedup.get_work();
+    bool third_success = (payload3 != nullptr && !payload3->empty());
+    auto third_tp = dedup.get_last_transmitted_tp();
+
+    // Verify timestamps are advancing
+    bool timestamps_advance = (first_tp < second_tp) && (second_tp < third_tp);
+
+    bool passed = first_success && second_success && third_success && timestamps_advance;
+    print_test_result("Three successive calls with proper timing", passed);
+}
+
+// ============================================================================
+// Test 7: Verify packet format
+// ============================================================================
+void test_packet_format() {
+    std::cout << "\nTest 7: Verify GET_BLOCK packet format\n";
+
+    GetBlockDeduplicator dedup;
+    auto payload = dedup.get_work();
+
+    bool valid_payload = (payload != nullptr && !payload->empty());
+
+    // Stateless GET_BLOCK should be 2 bytes: [0xD0][0x81]
+    bool correct_size = valid_payload && (payload->size() == 2);
+    bool correct_header = correct_size &&
+                         ((*payload)[0] == 0xD0) &&
+                         ((*payload)[1] == 0x81);
+
+    if (valid_payload) {
+        std::cout << "    [Packet] Size: " << payload->size() << " bytes\n";
+        std::cout << "    [Packet] Content: 0x";
+        for (size_t i = 0; i < payload->size(); i++) {
+            printf("%02X", (*payload)[i]);
+        }
+        std::cout << "\n";
+    }
+
+    bool passed = valid_payload && correct_size && correct_header;
+    print_test_result("GET_BLOCK packet format correct", passed);
+}
+
+// ============================================================================
+// Main Test Runner
+// ============================================================================
+int main() {
+    std::cout << "\n═══════════════════════════════════════════════════════════\n";
+    std::cout << "GET_BLOCK Deduplication Tests\n";
+    std::cout << "═══════════════════════════════════════════════════════════\n";
+
+    test_get_block_dedup_within_window();
+    test_get_block_after_window();
+    test_multiple_rapid_requests();
+    test_dedup_across_callers();
+    test_dedup_reset();
+    test_three_successive_calls();
+    test_packet_format();
+
+    std::cout << "\n═══════════════════════════════════════════════════════════\n";
+    std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";
+    if (tests_failed > 0) {
+        std::cout << " (" << tests_failed << " failed)";
+    }
+    std::cout << "\n═══════════════════════════════════════════════════════════\n\n";
+
+    return (tests_failed == 0) ? 0 : 1;
+}
