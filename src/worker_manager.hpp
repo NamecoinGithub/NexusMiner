@@ -53,9 +53,6 @@ public:
     // SIM Link: send SESSION_STATUS on each live lane if 60-second interval has elapsed
     void send_session_status_if_due();
 
-    /// Log the three-tier mined-block cache summary.
-    void log_mined_block_cache() const;
-
 private:
 
     void process_data(network::Shared_payload&& receive_buffer);
@@ -63,6 +60,9 @@ private:
 
     void create_stats_printers();
     void create_workers();
+
+    /// Log the three-tier mined-block cache summary.
+    void log_mined_block_cache() const;
     
     // Worker control methods for degraded mode
     void stop_all_workers();
