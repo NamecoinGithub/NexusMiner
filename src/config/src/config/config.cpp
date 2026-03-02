@@ -115,6 +115,18 @@ namespace config
 			{
 				j.at("local_ip").get_to(m_local_ip);
 			}
+			if (j.count("failover_wallet_ip") != 0)
+			{
+				j.at("failover_wallet_ip").get_to(m_failover_wallet_ip);
+			}
+			if (j.count("failover_port") != 0)
+			{
+				j.at("failover_port").get_to(m_failover_port);
+			}
+			if (j.count("failover_max_retries") != 0)
+			{
+				j.at("failover_max_retries").get_to(m_failover_max_retries);
+			}
 
 			std::string mining_mode = j["mining_mode"];
 			std::for_each(mining_mode.begin(), mining_mode.end(), [](char& c) {

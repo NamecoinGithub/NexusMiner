@@ -87,6 +87,18 @@ namespace config
                     {
                         config.set_port(static_cast<std::uint16_t>(parse_int_value(value)));
                     }
+                    else if (key == "failover_wallet_ip")
+                    {
+                        config.set_failover_wallet_ip(parse_string_value(value));
+                    }
+                    else if (key == "failover_port")
+                    {
+                        config.set_failover_port(static_cast<std::uint16_t>(parse_int_value(value)));
+                    }
+                    else if (key == "failover_max_retries")
+                    {
+                        config.set_failover_max_retries(static_cast<uint32_t>(parse_int_value(value)));
+                    }
                 }
                 else if (current_section == "mining")
                 {

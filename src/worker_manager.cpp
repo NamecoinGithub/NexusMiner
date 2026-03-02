@@ -708,6 +708,45 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
     else
         m_current_retry_delay_seconds = std::min(m_current_retry_delay_seconds * 2, MAX_RETRY_DELAY_SECONDS);
 
+    // ── Failover switchover logic ─────────────────────────────────────────────
+    network::Endpoint effective_endpoint = wallet_endpoint;
+
+    if (m_config.has_failover())
+    {
+        if (!m_using_failover)
+        {
+            ++m_primary_fail_count;
+            if (m_primary_fail_count >= m_config.get_failover_max_retries())
+            {
+                m_using_failover = true;
+                m_primary_fail_count = 0;
+                m_current_retry_delay_seconds = 0;  // reset backoff for failover attempt
+                m_logger->warn("[Failover] Primary {} failed {} times — switching to failover {}",
+                    m_primary_endpoint.to_string(),
+                    m_config.get_failover_max_retries(),
+                    m_failover_endpoint.to_string());
+                effective_endpoint = m_failover_endpoint;
+            }
+        }
+        else
+        {
+            ++m_primary_fail_count;
+            if (m_primary_fail_count >= m_config.get_failover_max_retries())
+            {
+                m_using_failover = false;
+                m_primary_fail_count = 0;
+                m_current_retry_delay_seconds = 0;
+                m_logger->info("[Failover] Retrying primary {} after failover failures",
+                    m_primary_endpoint.to_string());
+                effective_endpoint = m_primary_endpoint;
+            }
+            else
+            {
+                effective_endpoint = m_failover_endpoint;
+            }
+        }
+    }
+
     if (m_connection_retry_count > 10)
         m_logger->error("Connection retry #{} - {} consecutive failures", 
                         m_connection_retry_count, m_connection_retry_count);
@@ -715,11 +754,27 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
         m_logger->info("Connection retry {} seconds (attempt #{})", 
                        m_current_retry_delay_seconds, m_connection_retry_count);
 
-    m_timer_manager.start_connection_retry_timer(m_current_retry_delay_seconds, shared_from_this(), wallet_endpoint);
+    m_timer_manager.start_connection_retry_timer(m_current_retry_delay_seconds, shared_from_this(), effective_endpoint);
 }
 
 bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 {
+    // Save the primary endpoint on the very first connect() call from Miner::run()
+    if (!m_primary_endpoint.is_valid())
+    {
+        m_primary_endpoint = wallet_endpoint;
+        if (m_config.has_failover())
+        {
+            auto const fo_ip   = m_config.get_failover_wallet_ip();
+            auto const fo_port = m_config.get_failover_port() != 0
+                                     ? m_config.get_failover_port()
+                                     : m_config.get_port();
+            m_failover_endpoint = network::Endpoint{network::Transport_protocol::tcp, fo_ip, fo_port};
+            m_logger->info("[Failover] Configured: {}:{} (switch after {} primary failures)",
+                           fo_ip, fo_port, m_config.get_failover_max_retries());
+        }
+    }
+
     std::string wallet_addr;
     wallet_endpoint.address(wallet_addr);
     uint16_t configured_port = wallet_endpoint.port();
@@ -809,6 +864,20 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                 // Reset exponential backoff state on successful TCP connection
                 self->m_connection_retry_count = 0;
                 self->m_current_retry_delay_seconds = 0;
+
+                // Reset failover failure counter; also clear failover mode if we connected to primary
+                self->m_primary_fail_count = 0;
+                if (self->m_config.has_failover())
+                {
+                    if (self->m_using_failover)
+                    {
+                        self->m_logger->info("[Failover] Connected to failover node — will retry primary on next disconnect");
+                    }
+                    else
+                    {
+                        self->m_logger->info("[Failover] Connected to primary node — failover mode cleared");
+                    }
+                }
 
                 // login
                 if (auto solo_protocol = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol))

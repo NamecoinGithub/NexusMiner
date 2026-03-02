@@ -183,6 +183,11 @@ bool create_falcon_config(const std::string& config_filename,
         config_json << "    \"get_height_interval\": 2,\n";
         config_json << "    \"ping_interval\": 10,\n";
         config_json << "    \n";
+        config_json << "    \"_comment_failover\": \"=== FAILOVER (optional, for cluster HA) ===\",\n";
+        config_json << "    \"failover_wallet_ip\": \"\",\n";
+        config_json << "    \"failover_port\": 0,\n";
+        config_json << "    \"failover_max_retries\": 5,\n";
+        config_json << "    \n";
         config_json << "    \"_comment_logging\": \"=== LOGGING SETTINGS ===\",\n";
         config_json << "    \"log_level\": 2,\n";
         config_json << "    \"logfile\": \"miner.log\",\n";
