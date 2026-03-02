@@ -9,9 +9,11 @@
 #include "timer_manager.hpp"
 #include "stats/stats_printer.hpp"
 #include "dual_connection_manager.hpp"
+#include "LLC/types/uint1024.h"
 
 #include <memory>
 #include <deque>
+#include <mutex>
 
 namespace asio { class io_context; }
 
@@ -160,6 +162,25 @@ private:
     // Time of the most recent SESSION_STATUS sent on any lane.
     // Used to gate send_session_status_if_due() to at most once per 60 seconds.
     std::chrono::steady_clock::time_point m_last_session_status_sent{};
+
+    // ── Worker-feed deduplication (PR #324 double-fire prevention) ────────────
+    // Tracks the last template fed to workers so that a duplicate template
+    // arriving within the debounce window (e.g. push + GET_BLOCK response for
+    // the same block) is suppressed instead of restarting workers mid-sieve.
+    std::chrono::steady_clock::time_point m_last_worker_feed_tp{};
+    uint32_t m_last_worker_feed_height{0};
+    uint1024_t m_last_worker_feed_prev_hash{0};
+    static constexpr int64_t WORKER_FEED_DEBOUNCE_MS = 2000;  // 2s — wider than solo.cpp's 1.5s ANCHOR debounce
+
+    // ── Mutex-based recovery gate (defense-in-depth) ─────────────────────────
+    // Serialises the creation path in set_block_handler with the destruction
+    // path in stop_all_workers() so they cannot interleave on m_workers.
+    std::mutex m_worker_mutex;
+
+    // Per-epoch idempotency key: set after create_workers() succeeds in the
+    // degraded-mode guard; checked before every subsequent creation attempt.
+    // Reset in stop_all_workers() and clear_recovery_state().
+    bool m_recovery_workers_spawned{false};
 };
 }
 

@@ -188,6 +188,28 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 m_logger->info("[Worker_manager]   PrevHash:   {}...",
                               block.hashPrevBlock.ToString().substr(0, 20));
                 m_logger->info("[Worker_manager] ═══════════════════════════════════════");
+
+                // ── Worker-feed deduplication (PR #324 double-fire prevention) ────
+                // SendChannelNotification() now pushes a template AND triggers a
+                // GET_BLOCK response almost simultaneously.  Without this guard the
+                // second arrival restarts every worker mid-sieve.
+                {
+                    auto now = std::chrono::steady_clock::now();
+                    auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - m_last_worker_feed_tp).count();
+                    bool same_template = (block.nHeight == m_last_worker_feed_height &&
+                                          block.hashPrevBlock == m_last_worker_feed_prev_hash);
+                    if (same_template && ms_since_last < WORKER_FEED_DEBOUNCE_MS) {
+                        m_logger->info("[Worker_manager] ⏱ Duplicate template suppressed "
+                                       "(height {} already fed {}ms ago, debounce {}ms)",
+                                       block.nHeight, ms_since_last, WORKER_FEED_DEBOUNCE_MS);
+                        return;
+                    }
+                    // Record this feed so the next duplicate is caught
+                    m_last_worker_feed_tp = now;
+                    m_last_worker_feed_height = block.nHeight;
+                    m_last_worker_feed_prev_hash = block.hashPrevBlock;
+                }
                 
                 // ═══════════════════════════════════════════════════════════════
                 // Recovery state is cleared AFTER successful template distribution
@@ -199,13 +221,17 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // by stop_all_workers().  Restart them now so set_block() below actually
                 // starts mining threads; without this the template is silently dropped and
                 // workers_fed falsely reads 0 keeping the miner in a doom loop.
-                if (m_degraded_mode) {
-                    bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
-                        [](const auto& w) { return bool(w); });
-                    if (!has_alive_workers) {
-                        m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
-                        m_workers.clear();  // prevent duplication if any stale null entries remain
-                        create_workers();
+                {
+                    std::lock_guard<std::mutex> lock(m_worker_mutex);
+                    if (m_degraded_mode && !m_recovery_workers_spawned) {
+                        bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
+                            [](const auto& w) { return bool(w); });
+                        if (!has_alive_workers) {
+                            m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
+                            m_workers.clear();  // prevent duplication if any stale null entries remain
+                            create_workers();
+                            m_recovery_workers_spawned = true;  // set AFTER success for exception safety
+                        }
                     }
                 }
 
@@ -967,6 +993,23 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
     // Block-found callback uses submit_solution() which selects the live lane.
     secondary_solo->set_block_handler(
         [this](const ::LLP::CBlock& block, std::uint32_t nBits) {
+            // ── Worker-feed deduplication (same guard as primary lane) ────
+            {
+                auto now = std::chrono::steady_clock::now();
+                auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - m_last_worker_feed_tp).count();
+                bool same_template = (block.nHeight == m_last_worker_feed_height &&
+                                      block.hashPrevBlock == m_last_worker_feed_prev_hash);
+                if (same_template && ms_since_last < WORKER_FEED_DEBOUNCE_MS) {
+                    m_logger->info("[SIM Link] ⏱ Duplicate template suppressed on secondary lane "
+                                   "(height {} already fed {}ms ago)", block.nHeight, ms_since_last);
+                    return;
+                }
+                m_last_worker_feed_tp = now;
+                m_last_worker_feed_height = block.nHeight;
+                m_last_worker_feed_prev_hash = block.hashPrevBlock;
+            }
+
             m_logger->info("[SIM Link] Template received on secondary lane — distributing to {} workers",
                 m_workers.size());
             // Distribute to workers. Workers mine on whichever template arrived last
@@ -1487,6 +1530,7 @@ void Worker_manager::clear_recovery_state()
     m_recovery_last_get_block_sent_at = {};
     m_recovery_last_get_block_transmitted_at = {};
     m_recovery_get_block_transmitted = false;
+    m_recovery_workers_spawned = false;
 
     auto global_stats = m_stats_collector->get_global_stats();
     global_stats.m_degraded_mode = false;
@@ -1496,6 +1540,8 @@ void Worker_manager::clear_recovery_state()
 
 void Worker_manager::stop_all_workers()
 {
+    std::lock_guard<std::mutex> lock(m_worker_mutex);
+
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
     m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
@@ -1515,6 +1561,9 @@ void Worker_manager::stop_all_workers()
         worker.reset();
     }
     m_workers.clear();
+
+    // Clear the recovery gate so the next epoch can re-create workers
+    m_recovery_workers_spawned = false;
 
     m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
     m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
