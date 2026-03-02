@@ -213,6 +213,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                 // Update mined-block cache confirmations based on new chain height.
                 m_mined_block_cache.update_confirmations(block.nHeight);
+
+                // Clear soft-pause: a fresh template has arrived, so
+                // submissions are safe again.  Cleared unconditionally
+                // (cheap no-op when already false).
+                m_template_withheld = false;
                 
                 // ═══════════════════════════════════════════════════════════════
                 // Recovery state is cleared AFTER successful template distribution
@@ -462,30 +467,25 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         }
 
         /* ========== REGISTER RECOVERY INITIATED HANDLER ========== */
-        /* Called by Solo push handler when a channel-stale GET_BLOCK recovery fires. */
-        /* Must stop workers now — they are still running on stale nonces. If we only */
-        /* set m_recovery_pending, workers stay busy and will not accept the recovery  */
-        /* template (set_block returns is_running()=false, workers_fed=0, doom loop).  */
-        /* Workers are recreated just-in-time by the set_block_handler degraded-mode  */
-        /* guard when the recovery template actually arrives. Pre-spawning here races  */
-        /* with set_block_handler on back-to-back push notifications, causing 16       */
-        /* workers instead of 8.                                                       */
+        /* Priority 1 — "Pause not Destroy": Instead of stop_all_workers() on    */
+        /* push staleness, enter soft-pause (m_template_withheld). Workers keep   */
+        /* running their sieve — they just won't submit stale solutions. When a   */
+        /* fresh template arrives the set_block_handler clears the flag and       */
+        /* distributes the template in-place (no thread teardown/restart).        */
+        /* Escalation to stop_all_workers() only happens if the recovery window   */
+        /* expires without a fresh template (handled in check_template_health()). */
         solo_protocol->set_recovery_initiated_handler(
             [this]() {
-                // Only stop workers if this is a NEW recovery epoch.
-                // When recovery is already pending (e.g. from a prior push),
-                // re-stopping workers would kill workers that were just
-                // restarted by a GET_BLOCK response, causing a doom-loop.
                 bool was_pending = m_recovery_pending;
                 mark_recovery_initiated("push_staleness");
 
                 if (!was_pending) {
-                    // Stop stale workers. They will be recreated just-in-time by the
-                    // set_block_handler degraded-mode guard when the recovery template arrives.
-                    // Do NOT call create_workers() here — it races with set_block_handler when
-                    // push notifications arrive during the recovery window, causing double-spawn
-                    // (16 workers instead of 8).
-                    stop_all_workers();
+                    // Soft-pause: suppress block submissions while keeping
+                    // workers running.  This eliminates the 2-5 second mining
+                    // gap caused by the old stop_all_workers() + recreate cycle.
+                    m_template_withheld = true;
+                    m_logger->info("[Worker_manager] Soft-pause: template withheld "
+                                   "(workers keep mining, submissions suppressed)");
                 }
 
                 // Request a fresh template
@@ -1214,6 +1214,14 @@ void Worker_manager::retry_secondary_connect(network::Endpoint const& secondary_
 
 void Worker_manager::submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce)
 {
+    // Soft-pause guard: suppress submissions while the template is withheld
+    // (push_staleness recovery in progress — workers keep running but solutions
+    // found on the stale template must not be sent to the node).
+    if (m_template_withheld) {
+        m_logger->info("[Worker_manager] Submission suppressed — template withheld (soft-pause)");
+        return;
+    }
+
     // SIM Link block submission: try primary lane first, fall back to secondary.
     //
     // The packet format (stateless vs. legacy opcodes) differs per lane, so we
@@ -1581,6 +1589,7 @@ void Worker_manager::clear_recovery_state()
     m_logger->info("[Worker_manager] ✅ Recovery complete — clearing degraded mode");
     m_degraded_mode = false;
     m_recovery_pending = false;
+    m_template_withheld = false;
     m_recovery_epoch = 0;
     m_recovery_started_at = {};
     m_recovery_last_get_block_sent_at = {};
@@ -1604,6 +1613,7 @@ void Worker_manager::stop_all_workers()
     
     // Set degraded mode flag
     m_degraded_mode = true;
+    m_template_withheld = false;  // Full stop supersedes soft-pause
     
     // Update stats to reflect degraded mode
     auto global_stats = m_stats_collector->get_global_stats();
@@ -1897,6 +1907,7 @@ void Worker_manager::check_template_health()
                 channel_name, m_recovery_epoch, effective_recovery_window, recovery_elapsed_s);
             m_logger->warn("[Worker_manager]    Escalating: stop workers + discard template + GET_BLOCK");
             m_recovery_pending = false;  // Reset so next staleness detection starts a fresh epoch
+            m_template_withheld = false;  // Clear soft-pause — full escalation takes over
             template_interface->discard_template("Recovery timeout: " + std::to_string(recovery_elapsed_s) +
                                                  "s > " + std::to_string(effective_recovery_window) + "s window");
             stop_all_workers();

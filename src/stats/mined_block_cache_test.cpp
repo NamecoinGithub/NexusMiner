@@ -193,6 +193,35 @@ static void test_confirmation_threshold_promotion()
                                            cache.tier1().front().height == 20);
 }
 
+// ── Test 5b: height-gated update_confirmations skips same-height calls ────────
+static void test_height_gated_confirmations()
+{
+    std::cout << "\nTest 5b: update_confirmations is height-gated (same height = no-op)\n";
+
+    MinedBlockCache cache;
+    uint1024_t prev{0};
+    cache.record_accepted_block(100, prev, 1, 1);
+
+    // First call at height 102: confirmations = 102 - 100 + 1 = 3
+    cache.update_confirmations(102);
+    check("height=100 conf==3 after chain at 102",
+          cache.tier1().front().confirmations == 3);
+
+    // Manually set confirmations to 0 to prove a second call at the same
+    // height is a no-op (the height-gate prevents recalculation).
+    // (Normally confirmations wouldn't be touched externally; this is a
+    // test-only technique to prove the guard works.)
+    const_cast<MinedBlockRecord&>(cache.tier1().front()).confirmations = 0;
+    cache.update_confirmations(102);  // same height — should be skipped
+    check("same-height call is no-op (conf still 0)",
+          cache.tier1().front().confirmations == 0);
+
+    // Advancing height to 103 should recalculate: 103 - 100 + 1 = 4
+    cache.update_confirmations(103);
+    check("higher height recalculates (conf==4)",
+          cache.tier1().front().confirmations == 4);
+}
+
 // ── Test 6: tier1() returns at most 5 records, newest-first ────────────────
 static void test_tier1_newest_first()
 {
@@ -371,6 +400,7 @@ int main()
     test_tier2_overflow_to_tier3();
     test_update_confirmations();
     test_confirmation_threshold_promotion();
+    test_height_gated_confirmations();
     test_tier1_newest_first();
     test_channel_name();
     test_status_emoji();
