@@ -148,3 +148,13 @@ target_include_directories(node_shutdown_wire_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/LLP
     ${CMAKE_SOURCE_DIR}/src
 )
+
+# GET_BLOCK deduplication and recovery unit tests
+add_executable(get_block_dedup_recovery_test get_block_dedup_recovery_test.cpp)
+target_link_libraries(get_block_dedup_recovery_test PRIVATE protocol LLP spdlog)
+target_include_directories(get_block_dedup_recovery_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src
+)

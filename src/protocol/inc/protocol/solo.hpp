@@ -471,6 +471,12 @@ private:
     std::chrono::steady_clock::time_point m_last_template_feed_tp{};
     uint32_t m_last_template_feed_height{0};
     static constexpr int64_t ANCHOR_REPUSH_DEBOUNCE_MS = 1500;
+
+    // ── GET_BLOCK deduplication ──────────────────────────────────────────────
+    // Tracks the last GET_BLOCK transmission time to prevent duplicate requests
+    // from push_notification_handler and Worker_manager within the same millisecond.
+    std::chrono::steady_clock::time_point m_last_get_block_transmitted_tp{};
+    static constexpr int64_t GET_BLOCK_DEDUP_MS = 100;  // 100ms deduplication window
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION
