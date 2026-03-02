@@ -942,6 +942,37 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                                 });
                             self->m_logger->info("[Worker_manager] Colin pong telemetry source wired");
                         }
+
+                        // Wire MinedBlockCache → Colin mined block history source (Top 5)
+                        std::weak_ptr<Worker_manager> weak_wm = self->shared_from_this();
+                        self->m_colin_agent->set_mined_block_cache_source(
+                            [weak_wm]() -> std::vector<ColinAgent::MinedBlockSnapshot> {
+                                std::vector<ColinAgent::MinedBlockSnapshot> result;
+                                auto wm = weak_wm.lock();
+                                if (!wm) return result;
+                                const auto& tier1 = wm->m_mined_block_cache.tier1();
+                                result.reserve(tier1.size());
+                                for (const auto& rec : tier1) {
+                                    ColinAgent::MinedBlockSnapshot snap;
+                                    snap.height = rec.height;
+                                    snap.channel = rec.channel;
+                                    snap.confirmations = rec.confirmations;
+                                    snap.status_emoji = rec.status_emoji();
+                                    snap.channel_name = rec.channel_name();
+                                    // First 32 hex chars of the 128-byte hashPrevBlock
+                                    auto prev_bytes = rec.hash_prev_block.GetBytes();
+                                    snap.hash_prev_block_hex.reserve(32);
+                                    for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(16)); ++i) {
+                                        char buf[3];
+                                        snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
+                                        snap.hash_prev_block_hex += buf;
+                                    }
+                                    result.push_back(std::move(snap));
+                                }
+                                return result;
+                            });
+                        self->m_logger->info("[Worker_manager] Colin mined block cache source wired");
+
                         self->m_colin_agent->start();
                     }
 

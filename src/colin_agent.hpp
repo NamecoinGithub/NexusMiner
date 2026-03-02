@@ -111,6 +111,21 @@ public:
     using PongTelemetrySource = std::function<PongTelemetrySnapshot()>;
     void set_pong_telemetry_source(PongTelemetrySource fn) { m_pong_telemetry_source = std::move(fn); }
 
+    // ── Mined Block Cache Source (Top 5 hashPrevBlock history) ──────────
+    // Optional: supplies the Tier 1 (hot) mined block records from MinedBlockCache
+    // so the diagnostic report can display the Top 5 most recent blocks with
+    // confirmation status, channel, and hashPrevBlock.
+    struct MinedBlockSnapshot {
+        uint32_t height{0};
+        uint32_t channel{0};           // 1=Prime, 2=Hash
+        uint32_t confirmations{0};
+        std::string hash_prev_block_hex;  // first 32 hex chars of 128-byte hash
+        std::string status_emoji;         // ⛏ or ✅
+        std::string channel_name;         // "Prime" or "Hash"
+    };
+    using MinedBlockCacheSource = std::function<std::vector<MinedBlockSnapshot>()>;
+    void set_mined_block_cache_source(MinedBlockCacheSource fn) { m_mined_block_cache_source = std::move(fn); }
+
     // ── Warning catalog ────────────────────────────────────────────────────
     // Returns a non-empty string if the pattern matches, empty string otherwise.
     // Used by tests to verify each warning pattern triggers the right text.
@@ -181,6 +196,7 @@ private:
     const nexusminer::protocol::HeightTracker* m_height_tracker{nullptr};  // Optional: HeightTracker owned by Solo
     TemplateSource      m_template_source;       // Optional: supplies TemplateSnapshot from MiningTemplateInterface
     PongTelemetrySource m_pong_telemetry_source; // Optional: supplies PongTelemetrySnapshot from ColinPingHandler
+    MinedBlockCacheSource m_mined_block_cache_source; // Optional: supplies Top 5 mined blocks from MinedBlockCache
 
     uint32_t m_last_miner_prevhash_lo32{0};
     uint32_t m_last_node_tip_lo32{0};
