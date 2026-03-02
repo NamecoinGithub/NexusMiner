@@ -204,6 +204,7 @@ private:
     std::chrono::steady_clock::time_point m_start_time{std::chrono::steady_clock::now()};
 
     std::deque<DiagSnapshot> m_history; // last 10 snapshots
+    std::deque<std::string> m_prev_hash_history; // last 5 canonical hashPrevBlock values (newest at back)
 };
 
 } // namespace nexusminer

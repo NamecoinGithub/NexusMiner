@@ -195,6 +195,18 @@ void ColinAgent::run_diagnostics()
     m_history.push_back(snap);
     if (m_history.size() > 10) m_history.pop_front();
 
+    // Update hashPrevBlock history ring buffer (max 5, dedup consecutive duplicates)
+    if (m_height_tracker) {
+        auto canonical = m_height_tracker->GetCanonicalSnapshot();
+        if (canonical.canonical_hash_prev_block != uint1024_t{}) {
+            std::string hex = canonical.canonical_hash_prev_block.GetHex();
+            if (m_prev_hash_history.empty() || m_prev_hash_history.back() != hex) {
+                m_prev_hash_history.push_back(hex);
+                if (m_prev_hash_history.size() > 5) m_prev_hash_history.pop_front();
+            }
+        }
+    }
+
     // Build warnings list
     std::vector<std::string> warnings;
     std::vector<std::string> recommendations;
@@ -293,10 +305,43 @@ void ColinAgent::emit_report(
     std::strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M:%S", std::localtime(&now_c));
 
     m_logger->info("[Colin] ════ DIAGNOSTIC REPORT [{}] ════", ts_buf);
-    m_logger->info("[Colin]  PRIMARY   (stateless:9323): {}", assess_primary_lane());
-    m_logger->info("[Colin]  SECONDARY (legacy:8323):    {}", assess_secondary_lane());
     m_logger->info("[Colin]  BLOCKS  Accepted: {}  Rejected: {}  Retries: {}",
         gs.m_accepted_blocks, gs.m_rejected_blocks, gs.m_connection_retries);
+
+    /* hashPrevBlock History — last 5 canonical templates */
+    m_logger->info("[Colin]  ── hashPrevBlock History (last 5 templates) ──────");
+    if (m_prev_hash_history.empty()) {
+        m_logger->info("[Colin]    (no templates received yet)");
+    } else {
+        for (size_t i = 0; i < m_prev_hash_history.size(); ++i) {
+            size_t idx = m_prev_hash_history.size() - 1 - i; // newest first
+            if (i == 0)
+                m_logger->info("[Colin]    [{}] (most recent) {}", i + 1, m_prev_hash_history[idx]);
+            else
+                m_logger->info("[Colin]    [{}] {}", i + 1, m_prev_hash_history[idx]);
+        }
+    }
+
+    /* SESSION_STATUS_ACK section — node lane-health report */
+    if (m_status_source)
+    {
+        auto [ack, ack_time] = m_status_source();
+        if (ack.session_id != 0)
+        {
+            auto age_s = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - ack_time).count();
+            m_logger->info("[Colin]  ── Node Lane Health (SESSION_STATUS_ACK, {}s ago) ──", age_s);
+            m_logger->info("[Colin]    Primary alive:   {}", ack.IsPrimaryAlive()   ? "✅" : "❌");
+            m_logger->info("[Colin]    Secondary alive: {}", ack.IsSecondaryAlive() ? "✅" : "❌");
+            m_logger->info("[Colin]    SIM Link active: {}", ack.IsSimLinkActive()  ? "✅" : "❌");
+            m_logger->info("[Colin]    Authenticated:   {}", ack.IsAuthenticated()  ? "✅" : "❌");
+            m_logger->info("[Colin]    Node uptime:     {}s", ack.uptime_seconds);
+            if (age_s > 120)
+                warnings.push_back("No SESSION_STATUS_ACK for >" + std::to_string(age_s) +
+                                   "s — node may have dropped session or lane is silent");
+        }
+    }
+
     if (gs.m_degraded_mode)
         m_logger->warn("[Colin]  ⚠️  MINING STOPPED — workers in degraded mode");
     if (m_height_tracker)
@@ -359,6 +404,10 @@ void ColinAgent::emit_report(
                 canonical.canonical_channel_height,
                 canonical.canonical_channel_target,
                 canonical.canonical_difficulty_nbits);
+            if (canonical.canonical_hash_prev_block != uint1024_t{}) {
+                m_logger->info("[Colin]    Canonical │ hashPrevBlock={}",
+                    canonical.canonical_hash_prev_block.GetHex());
+            }
 
             int32_t drift = canonical.height_drift_from_canonical();
             // On a 3-channel Nexus blockchain, canonical_unified_height ≈ 3 × channel_height,
@@ -481,26 +530,6 @@ void ColinAgent::emit_report(
                 m_logger->warn("[Colin]    DiagStale │ ⚠ no diagnostic update for {}s", diag_age_s);
                 warnings.push_back(w);
             }
-        }
-    }
-
-    /* SESSION_STATUS_ACK section — node lane-health report */
-    if (m_status_source)
-    {
-        auto [ack, ack_time] = m_status_source();
-        if (ack.session_id != 0)
-        {
-            auto age_s = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - ack_time).count();
-            m_logger->info("[Colin]  ── Node Lane Health (SESSION_STATUS_ACK, {}s ago) ──", age_s);
-            m_logger->info("[Colin]    Primary alive:   {}", ack.IsPrimaryAlive()   ? "✅" : "❌");
-            m_logger->info("[Colin]    Secondary alive: {}", ack.IsSecondaryAlive() ? "✅" : "❌");
-            m_logger->info("[Colin]    SIM Link active: {}", ack.IsSimLinkActive()  ? "✅" : "❌");
-            m_logger->info("[Colin]    Authenticated:   {}", ack.IsAuthenticated()  ? "✅" : "❌");
-            m_logger->info("[Colin]    Node uptime:     {}s", ack.uptime_seconds);
-            if (age_s > 120)
-                warnings.push_back("No SESSION_STATUS_ACK for >" + std::to_string(age_s) +
-                                   "s — node may have dropped session or lane is silent");
         }
     }
 
