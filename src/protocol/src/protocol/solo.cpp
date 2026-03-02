@@ -1304,6 +1304,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         uint32_t accepted_channel = m_last_submitted_channel;
         if (!m_last_submitted_valid) {
             // Fallback: submission state not populated (e.g. legacy path).
+            // Warning: template may have been replaced since submission.
+            m_logger->warn("BLOCK_ACCEPTED fallback: m_last_submitted_valid=false — "
+                           "reading height/channel from current template (may reflect a newer block)");
             if (m_template_interface) {
                 auto const* tmpl = m_template_interface->get_current_template();
                 if (tmpl) {
@@ -1427,6 +1430,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         uint32_t accepted_height  = m_last_submitted_height;
         uint32_t accepted_channel = m_last_submitted_channel;
         if (!m_last_submitted_valid) {
+            m_logger->warn("GOOD_BLOCK fallback: m_last_submitted_valid=false — "
+                           "reading height/channel from current template (may reflect a newer block)");
             if (m_template_interface) {
                 auto const* tmpl = m_template_interface->get_current_template();
                 if (tmpl) {

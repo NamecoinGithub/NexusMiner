@@ -10,6 +10,10 @@
  *    3.  After TIER2_MAX records in Tier 2, overflow moves to Tier 3
  *    4.  update_confirmations() increments confirmations for all Tier 1 records
  *    5.  A record reaching CONFIRMATION_THRESHOLD is promoted from Tier 1 to Tier 2
+ *   5b.  Height-gated update_confirmations skips same-height calls
+ *   5c.  Sole record in Tier 1 is NOT promoted even when confirmed
+ *   5d.  Promotion-driven Tier 2 overflow cascades to Tier 3
+ *   5e.  Full lifecycle: Tier 1 → Tier 2 (confirm) → Tier 3 (overflow)
  *    6.  tier1() returns at most 5 records in newest-first order
  *    7.  channel_name() returns correct strings
  *    8.  status_emoji() returns correct emoji below and at threshold
@@ -227,6 +231,102 @@ static void test_height_gated_confirmations()
           cache.tier1().front().confirmations == 3);
 }
 
+// ── Test 5c: sole record in Tier 1 is NOT promoted even when confirmed ────────
+static void test_sole_record_stays_in_tier1()
+{
+    std::cout << "\nTest 5c: Sole record in Tier 1 is NOT promoted even when confirmed\n";
+
+    MinedBlockCache cache;
+    uint1024_t prev{0};
+    // Add only 1 record — it is both front and back
+    cache.record_accepted_block(50, prev, 2, 0xAAAA);
+
+    // Advance chain far past confirmation threshold
+    cache.update_confirmations(50 + MinedBlockCache::CONFIRMATION_THRESHOLD + 10);
+
+    check("tier1() still has 1 entry", cache.tier1().size() == 1);
+    check("tier2() is empty",          cache.tier2().empty());
+    check("sole record stays in Tier 1 (height=50)",
+          cache.tier1().front().height == 50);
+    check("sole record has correct confirmations",
+          cache.tier1().front().confirmations ==
+              MinedBlockCache::CONFIRMATION_THRESHOLD + 10 + 1);
+}
+
+// ── Test 5d: promotion-driven Tier 2 overflow cascades to Tier 3 ─────────────
+static void test_promotion_driven_tier2_overflow()
+{
+    std::cout << "\nTest 5d: Promotion-driven Tier 2 overflow cascades to Tier 3\n";
+
+    MinedBlockCache cache;
+    uint1024_t prev{0};
+    // Fill Tier 2 to capacity via record_accepted_block overflow:
+    // Insert TIER1_MAX + TIER2_MAX blocks so that Tier 2 is exactly full.
+    size_t total = MinedBlockCache::TIER1_MAX + MinedBlockCache::TIER2_MAX;
+    for (uint32_t h = 1; h <= static_cast<uint32_t>(total); ++h)
+        cache.record_accepted_block(h, prev, 1, h);
+
+    check("tier2 is full (== TIER2_MAX)",
+          cache.tier2().size() == MinedBlockCache::TIER2_MAX);
+    check("tier3 is empty before promotion", cache.tier3().empty());
+
+    // Now add one more block so we have 2 in Tier 1 (needed for promotion)
+    uint32_t newest_height = static_cast<uint32_t>(total) + 1;
+    cache.record_accepted_block(newest_height, prev, 2, newest_height);
+    // Tier 1 still has TIER1_MAX entries; the overflow went to Tier 2 which
+    // itself overflowed 1 to Tier 3.
+    // But let's now trigger confirmation-based promotion:
+
+    // Advance chain so older Tier 1 blocks (but not the newest) reach threshold.
+    // Tier 1 has blocks from (total - TIER1_MAX + 2) to (total + 1).
+    // The oldest block in Tier 1 is at height (total - TIER1_MAX + 2).
+    uint32_t oldest_in_tier1 = cache.tier1().back().height;
+    uint32_t confirm_height = oldest_in_tier1 + MinedBlockCache::CONFIRMATION_THRESHOLD;
+    cache.update_confirmations(confirm_height);
+
+    // Oldest Tier 1 block should be promoted to Tier 2, which should overflow to Tier 3
+    size_t total_blocks = cache.tier1().size() + cache.tier2().size() + cache.tier3().size();
+    check("total blocks preserved after promotion",
+          total_blocks == MinedBlockCache::TIER1_MAX + MinedBlockCache::TIER2_MAX + 1);
+    check("tier3 has overflow after promotion-driven cascade",
+          cache.tier3().size() >= 1);
+}
+
+// ── Test 5e: full lifecycle Tier 1 → Tier 2 (confirm) → Tier 3 (overflow) ──
+static void test_full_promotion_lifecycle()
+{
+    std::cout << "\nTest 5e: Full lifecycle: Tier 1 → Tier 2 (confirm) → Tier 3 (overflow)\n";
+
+    MinedBlockCache cache;
+    uint1024_t prev{0};
+
+    // Phase 1: Add 2 blocks to Tier 1
+    cache.record_accepted_block(100, prev, 1, 1);
+    cache.record_accepted_block(200, prev, 2, 2);
+    check("Phase 1: 2 blocks in Tier 1", cache.tier1().size() == 2);
+
+    // Phase 2: Confirm h=100 → promote to Tier 2
+    cache.update_confirmations(100 + MinedBlockCache::CONFIRMATION_THRESHOLD);
+    check("Phase 2: h=100 promoted to Tier 2", cache.tier2().size() == 1);
+    check("Phase 2: h=200 stays in Tier 1",
+          cache.tier1().size() == 1 && cache.tier1().front().height == 200);
+
+    // Phase 3: Fill Tier 2 to max via bulk inserts (overflow older ones out of Tier 1)
+    uint32_t const fill_count = MinedBlockCache::TIER2_MAX + MinedBlockCache::TIER1_MAX;
+    for (uint32_t h = 300; h < 300 + fill_count; ++h)
+        cache.record_accepted_block(h, prev, 1, h);
+
+    check("Phase 3: Tier 2 at capacity", cache.tier2().size() == MinedBlockCache::TIER2_MAX);
+    check("Phase 3: Tier 3 has overflow (includes h=100)",
+          cache.tier3().size() >= 1);
+
+    // Verify h=100 ended up in Tier 3 (archived)
+    bool found_in_t3 = false;
+    for (auto const& r : cache.tier3())
+        if (r.height == 100) found_in_t3 = true;
+    check("Phase 3: h=100 is in Tier 3 (archive)", found_in_t3);
+}
+
 // ── Test 6: tier1() returns at most 5 records, newest-first ────────────────
 static void test_tier1_newest_first()
 {
@@ -406,6 +506,9 @@ int main()
     test_update_confirmations();
     test_confirmation_threshold_promotion();
     test_height_gated_confirmations();
+    test_sole_record_stays_in_tier1();
+    test_promotion_driven_tier2_overflow();
+    test_full_promotion_lifecycle();
     test_tier1_newest_first();
     test_channel_name();
     test_status_emoji();

@@ -519,11 +519,13 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* ========== REGISTER BLOCK ACCEPTED HANDLER ========== */
         /* Records accepted blocks into the three-tier mined-block cache. */
         solo_protocol->set_block_accepted_handler(
-            [this](uint32_t height, uint1024_t hash_prev_block, uint32_t channel, uint64_t nonce) {
-                m_mined_block_cache.record_accepted_block(height, hash_prev_block, channel, nonce);
-                m_logger->info("[Worker_manager] ⛏ Block recorded in mined-block cache — height={} ch={} total={}",
-                    height, channel == 1 ? "Prime" : "Hash", m_mined_block_cache.total_blocks());
-                log_mined_block_cache();
+            [weak_self = weak_from_this()](uint32_t height, uint1024_t hash_prev_block, uint32_t channel, uint64_t nonce) {
+                auto self = weak_self.lock();
+                if (!self) return;
+                self->m_mined_block_cache.record_accepted_block(height, hash_prev_block, channel, nonce);
+                self->m_logger->info("[Worker_manager] ⛏ Block recorded in mined-block cache — height={} ch={} total={}",
+                    height, channel == 1 ? "Prime" : "Hash", self->m_mined_block_cache.total_blocks());
+                self->log_mined_block_cache();
             }
         );
         m_logger->info("[Worker_manager] Block accepted handler registered");
@@ -1105,11 +1107,13 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
 
     // Register block accepted handler on secondary lane too (same cache).
     secondary_solo->set_block_accepted_handler(
-        [this](uint32_t height, uint1024_t hash_prev_block, uint32_t channel, uint64_t nonce) {
-            m_mined_block_cache.record_accepted_block(height, hash_prev_block, channel, nonce);
-            m_logger->info("[SIM Link] ⛏ Block recorded in mined-block cache — height={} ch={} total={}",
-                height, channel == 1 ? "Prime" : "Hash", m_mined_block_cache.total_blocks());
-            log_mined_block_cache();
+        [weak_self = weak_from_this()](uint32_t height, uint1024_t hash_prev_block, uint32_t channel, uint64_t nonce) {
+            auto self = weak_self.lock();
+            if (!self) return;
+            self->m_mined_block_cache.record_accepted_block(height, hash_prev_block, channel, nonce);
+            self->m_logger->info("[SIM Link] ⛏ Block recorded in mined-block cache — height={} ch={} total={}",
+                height, channel == 1 ? "Prime" : "Hash", self->m_mined_block_cache.total_blocks());
+            self->log_mined_block_cache();
         }
     );
 
@@ -1614,7 +1618,10 @@ void Worker_manager::clear_recovery_state()
     m_recovery_last_get_block_sent_at = {};
     m_recovery_last_get_block_transmitted_at = {};
     m_recovery_get_block_transmitted = false;
-    m_recovery_workers_spawned = false;
+    // Note: m_recovery_workers_spawned is intentionally NOT reset here.
+    // It is only reset in stop_all_workers() which actually destroys workers,
+    // preventing a mid-recovery clear_recovery_state() call (e.g. from a
+    // different epoch's template feed) from allowing duplicate worker creation.
 
     auto global_stats = m_stats_collector->get_global_stats();
     global_stats.m_degraded_mode = false;
