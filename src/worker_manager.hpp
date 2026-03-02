@@ -153,6 +153,12 @@ private:
     uint32_t m_connection_retry_count{0};
     uint32_t m_current_retry_delay_seconds{0};  // 0 = use config default on first retry
 
+    // ── Failover state ────────────────────────────────────────────────────────
+    network::Endpoint m_primary_endpoint;      // saved on first connect()
+    network::Endpoint m_failover_endpoint;     // built from config if has_failover()
+    bool              m_using_failover{false}; // currently retrying on failover?
+    uint32_t          m_primary_fail_count{0}; // consecutive failures on the active side
+
     // Time of the most recent escalation (epoch N → epoch N+1: stop workers + hard recovery).
     // Used to prevent re-escalation within MIN_ESCALATION_INTERVAL_SECONDS of the previous
     // escalation, giving the new GET_BLOCK time to be answered before workers are stopped again.

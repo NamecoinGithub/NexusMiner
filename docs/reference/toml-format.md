@@ -29,8 +29,11 @@ boolean = true
 Connection settings for your Nexus node:
 ```toml
 [wallet]
-ip = "127.0.0.1"    # Node IP address
-port = 8323          # Mining port (default: 8323)
+ip = "127.0.0.1"                # Node IP address
+port = 8323                     # Mining port (default: 8323)
+failover_wallet_ip = ""         # (optional) Failover node IP — leave empty to disable
+failover_port = 0               # (optional) Failover port — 0 = same as primary port
+failover_max_retries = 5        # Switch to failover after this many consecutive primary failures
 ```
 
 #### [network]

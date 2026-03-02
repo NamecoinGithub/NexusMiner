@@ -97,7 +97,13 @@ public:
 	// Colin AI diagnostic agent
 	bool get_colin_enabled() const { return m_colin_enabled; }
 	uint32_t get_colin_report_interval_seconds() const { return m_colin_report_interval_seconds; }
-	
+
+	// Failover node configuration
+	std::string const& get_failover_wallet_ip() const { return m_failover_wallet_ip; }
+	std::uint16_t get_failover_port() const { return m_failover_port; }
+	uint32_t get_failover_max_retries() const { return m_failover_max_retries; }
+	bool has_failover() const { return !m_failover_wallet_ip.empty(); }
+
 	// Setters for TOML parser
 	void set_wallet_ip(const std::string& ip) { m_wallet_ip = ip; }
 	void set_port(std::uint16_t port) { m_port = port; }
@@ -130,6 +136,9 @@ public:
 	void set_get_block_interval_ms(uint32_t ms) { m_get_block_interval_ms = ms; }
 	void set_colin_enabled(bool enabled) { m_colin_enabled = enabled; }
 	void set_colin_report_interval_seconds(uint32_t secs) { m_colin_report_interval_seconds = secs; }
+	void set_failover_wallet_ip(const std::string& ip) { m_failover_wallet_ip = ip; }
+	void set_failover_port(std::uint16_t port) { m_failover_port = port; }
+	void set_failover_max_retries(uint32_t n) { m_failover_max_retries = n; }
 	void set_tls_ca_cert_path(const std::string& path) { m_tls_ca_cert_path = path; }
 	void set_tls_verify_peer(bool verify) { m_tls_verify_peer = verify; }
 	void set_tls_server_name(const std::string& name) { m_tls_server_name = name; }
@@ -200,6 +209,11 @@ private:
 	// Colin AI diagnostic agent configuration
 	bool m_colin_enabled;
 	uint32_t m_colin_report_interval_seconds;
+
+	// Failover node configuration (optional, for cluster HA)
+	std::string  m_failover_wallet_ip;          // empty = disabled
+	std::uint16_t m_failover_port{0};           // 0 = use same port as primary
+	uint32_t m_failover_max_retries{5};         // switch after this many consecutive primary failures
 
 };
 }
