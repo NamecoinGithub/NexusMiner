@@ -188,6 +188,28 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 m_logger->info("[Worker_manager]   PrevHash:   {}...",
                               block.hashPrevBlock.ToString().substr(0, 20));
                 m_logger->info("[Worker_manager] ═══════════════════════════════════════");
+
+                // ── Worker-feed deduplication (PR #324 double-fire prevention) ────
+                // SendChannelNotification() now pushes a template AND triggers a
+                // GET_BLOCK response almost simultaneously.  Without this guard the
+                // second arrival restarts every worker mid-sieve.
+                {
+                    auto now = std::chrono::steady_clock::now();
+                    auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - m_last_worker_feed_tp).count();
+                    bool same_template = (block.nHeight == m_last_worker_feed_height &&
+                                          block.hashPrevBlock == m_last_worker_feed_prev_hash);
+                    if (same_template && ms_since_last < WORKER_FEED_DEBOUNCE_MS) {
+                        m_logger->info("[Worker_manager] ⏱ Duplicate template suppressed "
+                                       "(height {} already fed {}ms ago, debounce {}ms)",
+                                       block.nHeight, ms_since_last, WORKER_FEED_DEBOUNCE_MS);
+                        return;
+                    }
+                    // Record this feed so the next duplicate is caught
+                    m_last_worker_feed_tp = now;
+                    m_last_worker_feed_height = block.nHeight;
+                    m_last_worker_feed_prev_hash = block.hashPrevBlock;
+                }
                 
                 // ═══════════════════════════════════════════════════════════════
                 // Recovery state is cleared AFTER successful template distribution
@@ -967,6 +989,23 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
     // Block-found callback uses submit_solution() which selects the live lane.
     secondary_solo->set_block_handler(
         [this](const ::LLP::CBlock& block, std::uint32_t nBits) {
+            // ── Worker-feed deduplication (same guard as primary lane) ────
+            {
+                auto now = std::chrono::steady_clock::now();
+                auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - m_last_worker_feed_tp).count();
+                bool same_template = (block.nHeight == m_last_worker_feed_height &&
+                                      block.hashPrevBlock == m_last_worker_feed_prev_hash);
+                if (same_template && ms_since_last < WORKER_FEED_DEBOUNCE_MS) {
+                    m_logger->info("[SIM Link] ⏱ Duplicate template suppressed on secondary lane "
+                                   "(height {} already fed {}ms ago)", block.nHeight, ms_since_last);
+                    return;
+                }
+                m_last_worker_feed_tp = now;
+                m_last_worker_feed_height = block.nHeight;
+                m_last_worker_feed_prev_hash = block.hashPrevBlock;
+            }
+
             m_logger->info("[SIM Link] Template received on secondary lane — distributing to {} workers",
                 m_workers.size());
             // Distribute to workers. Workers mine on whichever template arrived last
