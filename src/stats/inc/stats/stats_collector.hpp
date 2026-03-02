@@ -28,7 +28,10 @@ public:
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - m_start_time); }
 
     Global get_global_stats() const { return m_global_stats; }
-    
+
+    // Reset start time for elapsed time calculation (e.g., after recovery from degraded mode)
+    void reset_start_time() { m_start_time = std::chrono::steady_clock::now(); }
+
     // Log summary of all worker statistics
     void log_summary();
 
