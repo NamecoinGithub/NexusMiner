@@ -60,7 +60,7 @@ struct MinedBlockRecord
  * Three-tier block confirmation cache.
  *
  * Tier 1 (Hot):     Last 5 mined blocks — confirmation tracking active.
- * Tier 2 (Warm):    Up to 100 confirmed blocks — hashPrevBlock + nHeight + channel.
+ * Tier 2 (Warm):    Up to 100 confirmed blocks — hash_prev_block + height + channel.
  * Tier 3 (Archive): Overflow from Tier 2 — accumulated, no size limit.
  *
  * Thread safety: all methods must be called on the asio I/O thread
