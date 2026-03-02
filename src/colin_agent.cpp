@@ -164,6 +164,15 @@ std::string ColinAgent::check_diagnostic_freshness(uint64_t latest_age_seconds,
            " or push notifications have stopped";
 }
 
+std::string ColinAgent::check_failover_active(bool using_failover, uint64_t active_seconds,
+                                              const std::string& active_ep,
+                                              const std::string& standby_ep)
+{
+    if (!using_failover) return {};
+    return "Failover active for " + std::to_string(active_seconds) + "s on " + active_ep +
+           " — primary " + standby_ep + " unreachable";
+}
+
 // ── Lane assessment ───────────────────────────────────────────────────────────
 
 std::string ColinAgent::assess_primary_lane() const
@@ -291,11 +300,27 @@ void ColinAgent::run_diagnostics()
         }
     }
 
+    if (m_failover_source) {
+        auto fs = m_failover_source();
+        if (fs.has_failover_configured) {
+            auto w = check_failover_active(fs.using_failover, fs.failover_active_seconds,
+                                           fs.active_endpoint_str, fs.standby_endpoint_str);
+            if (!w.empty()) {
+                warnings.push_back(w);
+                if (fs.failover_active_seconds > 300) {
+                    warnings.push_back("Extended failover: primary has been unreachable for " +
+                                       std::to_string(fs.failover_active_seconds / 60) + " min — check primary node");
+                    recommendations.push_back("Inspect primary node " + fs.standby_endpoint_str + " — restart or check network");
+                }
+            }
+        }
+    }
+
     emit_report(warnings, recommendations, gs);
 }
 void ColinAgent::emit_report(
     std::vector<std::string>& warnings,
-    const std::vector<std::string>& recommendations,
+    std::vector<std::string>& recommendations,
     const stats::Global& gs)
 {
     // Timestamp
@@ -388,6 +413,27 @@ void ColinAgent::emit_report(
             }
         } else {
             m_logger->info("[Colin]  Keepalive │ no ACK received yet (session just started or legacy node)");
+        }
+    }
+
+    // ── Failover Node Status ──────────────────────────────────────────────────
+    if (m_failover_source) {
+        auto fs = m_failover_source();
+        if (fs.has_failover_configured) {
+            if (!fs.using_failover) {
+                m_logger->info("[Colin]  FailoverNode │ ✅ PRIMARY active: {}  │  standby: {}  │  fails: {}/{}",
+                    fs.active_endpoint_str, fs.standby_endpoint_str,
+                    fs.primary_fail_count, fs.failover_max_retries);
+            } else {
+                m_logger->warn("[Colin]  FailoverNode │ ⚠️  FAILOVER ACTIVE: {}  │  primary DOWN: {}  │  active for: {}s",
+                    fs.active_endpoint_str, fs.standby_endpoint_str,
+                    fs.failover_active_seconds);
+                if (fs.failover_active_seconds > 300)
+                    m_logger->warn("[Colin]  FailoverNode │ Extended failover: primary unreachable for {}min",
+                        fs.failover_active_seconds / 60);
+            }
+        } else {
+            m_logger->debug("[Colin]  FailoverNode │ not configured (single-node mode)");
         }
     }
 
