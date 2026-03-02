@@ -12,6 +12,7 @@
 
 #include <memory>
 #include <deque>
+#include <mutex>
 
 namespace asio { class io_context; }
 
@@ -131,7 +132,17 @@ private:
     // Used by check_template_health() to detect the doom-loop symptom where every
     // GET_BLOCK attempt is rate-limited and the node never receives the request.
     bool m_recovery_get_block_transmitted{false};
-    
+
+    // True once workers have been spawned during the current degraded-mode recovery.
+    // Prevents duplicate worker creation when set_block_handler fires twice in rapid
+    // succession (e.g. push notification + GET_BLOCK response arriving together).
+    // Reset by clear_recovery_state() and stop_all_workers().
+    bool m_recovery_workers_spawned{false};
+
+    // Protects m_workers, m_degraded_mode, and m_recovery_workers_spawned against
+    // concurrent modification by set_block_handler and stop_all_workers.
+    mutable std::mutex m_worker_mutex;
+
     // Persistent receive accumulator for TCP stream reassembly
     // Using deque for O(1) front removal when consuming packets
     std::deque<uint8_t> m_rx_accumulator;
