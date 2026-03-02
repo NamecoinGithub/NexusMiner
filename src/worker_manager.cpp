@@ -211,10 +211,12 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
                             [](const auto& w) { return bool(w); });
                         if (!has_alive_workers) {
-                            m_recovery_workers_spawned = true;
                             m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
                             m_workers.clear();  // prevent duplication if any stale null entries remain
                             create_workers();
+                            // Set AFTER successful creation so a failure leaves the flag
+                            // false, allowing the next set_block_handler call to retry.
+                            m_recovery_workers_spawned = true;
                         }
                     }
                 }
