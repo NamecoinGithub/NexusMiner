@@ -165,6 +165,15 @@ private:
     uint32_t m_connection_retry_count{0};
     uint32_t m_current_retry_delay_seconds{0};  // 0 = use config default on first retry
 
+    // ── Session authentication retry state (infinite loop prevention) ─────────
+    uint32_t m_session_auth_fail_count{0};          // consecutive session_id=0 failures on primary
+    uint32_t m_secondary_session_auth_fail_count{0}; // consecutive session_id=0 failures on secondary
+
+    // Constants for session auth retry limits (shared between primary and secondary)
+    static constexpr uint32_t MAX_SESSION_AUTH_RETRIES = 10;  // Hard limit before halting
+    static constexpr uint32_t BASE_SESSION_RETRY_MS = 1000;   // 1 second base delay
+    static constexpr uint32_t MAX_SESSION_RETRY_MS = 60000;   // 60 second cap
+
     // ── Failover state ────────────────────────────────────────────────────────
     network::Endpoint m_primary_endpoint;      // saved on first connect()
     network::Endpoint m_failover_endpoint;     // built from config if has_failover()
