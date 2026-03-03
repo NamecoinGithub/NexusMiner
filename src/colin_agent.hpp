@@ -154,12 +154,6 @@ public:
     static std::string check_mining_stopped(bool degraded_mode);
     static std::string check_fork_score(uint32_t fork_score, uint32_t peak_fork_score);
 
-    // Check for tip sync mismatch between miner's template prevhash_lo32
-    // and node's keepalive-reported hash_tip_lo32.
-    // Returns empty string if in sync, ok-to-skip, or insufficient data.
-    // Returns warning string only on actual mismatch.
-    static std::string check_tip_sync(uint32_t miner_prevhash_lo32, uint32_t node_tip_lo32);
-
     // ── New hooks using canonical / diagnostic split ──────────────────────────
 
     // Check canonical height drift (CanonicalChainState::height_drift_from_canonical()).
@@ -220,9 +214,6 @@ private:
     PongTelemetrySource m_pong_telemetry_source; // Optional: supplies PongTelemetrySnapshot from ColinPingHandler
     MinedBlockCacheSource m_mined_block_cache_source; // Optional: supplies Top 5 mined blocks from MinedBlockCache
     FailoverSource      m_failover_source;       // Optional: supplies FailoverSnapshot from Worker_manager
-
-    uint32_t m_last_miner_prevhash_lo32{0};
-    uint32_t m_last_node_tip_lo32{0};
 
     std::chrono::steady_clock::time_point m_start_time{std::chrono::steady_clock::now()};
 
