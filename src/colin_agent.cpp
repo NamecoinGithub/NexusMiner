@@ -18,6 +18,21 @@ namespace {
     static const char* const ANSI_BOLD  = "\033[1m";
 } // anonymous namespace
 
+// Returns first 8 bytes of a uint1024_t as "aabbccdd..." hex preview (Template Anchor style)
+static std::string format_hash_anchor(const uint1024_t& h)
+{
+    auto bytes = h.GetBytes();
+    std::string s;
+    s.reserve(19);
+    for (size_t i = 0; i < std::min(bytes.size(), size_t(8)); ++i) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02x", bytes[i]);
+        s += buf;
+    }
+    s += "...";
+    return s;
+}
+
 namespace nexusminer
 {
 
@@ -457,6 +472,34 @@ void ColinAgent::emit_report(
             m_logger->info("[Colin]    ✅ Canonical │ nBits=0x{:08x}", canonical.canonical_difficulty_nbits);
         } else {
             m_logger->info("[Colin]    💤 Canonical │ not yet initialized (no BLOCK_DATA received)");
+        }
+    }
+
+    // ── Tip Hash Anchor ──────────────────────────────────────────────────────
+    // Full 128-byte hashPrevBlock comparison: canonical (BLOCK_DATA anchor) vs
+    // template snapshot. These must agree for the miner to be on the correct tip.
+    // This is the initial implementation — full fork resolution to follow.
+    if (m_height_tracker) {
+        m_logger->info("[Colin]  ⚓ ── Tip Hash Anchor ────────────────────────────");
+        if (!canonical.is_initialized()) {
+            m_logger->info("[Colin]    💤 Tip Hash Anchor │ canonical not yet initialized (no BLOCK_DATA received)");
+        } else if (ht_snap.hash_prev_block == uint1024_t{}) {
+            m_logger->info("[Colin]    💤 Tip Hash Anchor │ no template hashPrevBlock yet (waiting for first BLOCK_DATA)");
+        } else {
+            // Show both anchors (short preview only — full hash in Canonical Chain State section)
+            m_logger->info("[Colin]    ⚓ Canonical │ {}  (unified={}, from BLOCK_DATA)",
+                format_hash_anchor(canonical.canonical_hash_prev_block),
+                canonical.canonical_unified_height);
+            m_logger->info("[Colin]    ⚓ Template  │ {}  (from last template)",
+                format_hash_anchor(ht_snap.hash_prev_block));
+
+            if (canonical.canonical_hash_prev_block == ht_snap.hash_prev_block) {
+                m_logger->info("[Colin]    ✅ Tip Hash Anchor │ in sync — template and canonical agree on chain tip");
+            } else {
+                m_logger->warn("[Colin]    ⚠️  Tip Hash Anchor │ TIP DIVERGED — template hashPrevBlock != canonical (full 128-byte mismatch)");
+                m_logger->warn("[Colin]    ⚠️  Tip Hash Anchor │ Fork resolution needed — miner template is behind the canonical tip");
+                warnings.push_back("Tip Hash Anchor: template hashPrevBlock != canonical — miner may be on stale/forked tip");
+            }
         }
     }
 
