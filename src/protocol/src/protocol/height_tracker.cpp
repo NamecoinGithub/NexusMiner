@@ -130,7 +130,21 @@ void HeightTracker::AdvanceChannelTarget(uint32_t new_target)
 void HeightTracker::UpdateWithHashPrevBlock(const uint1024_t& h)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+
+    // Clear fork scores when hashPrevBlock changes (tip has moved).
+    // This resolves persistent fork_score=1 when the miner receives a new
+    // template that syncs to the current chain tip, even if channel_target
+    // hasn't advanced (e.g., when another channel found a block).
+    bool tip_changed = (m_canonical.canonical_hash_prev_block != uint1024_t(0) &&
+                        m_canonical.canonical_hash_prev_block != h);
+
     m_canonical.canonical_hash_prev_block = h;
+
+    if (tip_changed) {
+        // Template with new hashPrevBlock means we've synced to the new tip
+        m_diagnostic.keepalive_fork_score = 0;
+        m_diagnostic.keepalive_peak_fork_score = 0;
+    }
 }
 
 // ── OnKeepaliveResponse: updates DiagnosticObserverState keepalive fields ONLY ─
