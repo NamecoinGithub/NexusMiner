@@ -169,6 +169,12 @@ public:
     using Session_expired_handler = std::function<void()>;
     void set_session_expired_handler(Session_expired_handler h) { m_session_expired_handler = std::move(h); }
 
+    // Session-authenticated callback: called after MINER_AUTH_RESULT is fully processed and session_id is set.
+    // Worker_manager registers this to check session_id=0 and trigger retry if needed.
+    // Parameter: session_id (0 if node rejected authentication).
+    using Session_authenticated_handler = std::function<void(uint32_t session_id)>;
+    void set_session_authenticated_handler(Session_authenticated_handler h) { m_session_authenticated_handler = std::move(h); }
+
     // Block-result counters (Gap 3)
     uint32_t get_blocks_accepted() const { return m_blocks_accepted.load(); }
     uint32_t get_blocks_rejected() const { return m_blocks_rejected.load(); }
@@ -366,6 +372,10 @@ private:
     // Session-expired callback — invoked when a keepalive ACK carries a mismatched session_id,
     // signalling Worker_manager to trigger recovery for the stale session.
     Session_expired_handler m_session_expired_handler;
+
+    // Session-authenticated callback — invoked after MINER_AUTH_RESULT processing is complete.
+    // Worker_manager uses this to check session_id=0 and trigger retry if needed.
+    Session_authenticated_handler m_session_authenticated_handler;
 
     // Block-accepted callback — invoked on BLOCK_ACCEPTED to record the mined block.
     Block_accepted_handler m_block_accepted_handler;

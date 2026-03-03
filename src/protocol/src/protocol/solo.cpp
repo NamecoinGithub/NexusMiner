@@ -1154,14 +1154,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->info("[TEMPLATE ANCHOR] block.nHeight = {} (unified blockchain height)", tmpl->block.nHeight);
             }
 
-            // Update keepalive v2 suffix: last 4 bytes of hashPrevBlock (bytes[124..127] of GetBytes()).
+            // Update keepalive v2 suffix: first 4 bytes of hashPrevBlock (bytes[0..3] of GetBytes()).
             // This suffix is appended to every outgoing SESSION_KEEPALIVE so the node can detect
             // whether the miner is anchored to the current chain tip.
             if (m_session_manager) {
                 auto prev_bytes = tmpl->block.hashPrevBlock.GetBytes();
                 std::array<uint8_t, 4> suffix{};
-                if (prev_bytes.size() >= 128) {
-                    suffix = { prev_bytes[124], prev_bytes[125], prev_bytes[126], prev_bytes[127] };
+                if (prev_bytes.size() >= 4) {
+                    // BUG FIX: Use bytes 0-3 (same as node's hash_tip_lo32) for fork canary alignment
+                    suffix = { prev_bytes[0], prev_bytes[1], prev_bytes[2], prev_bytes[3] };
                 }
                 m_session_manager->set_prevblock_suffix(suffix);
                 m_logger->debug("[Solo Keepalive v2] prevblock_suffix set to {:02x}{:02x}{:02x}{:02x}",
@@ -1973,10 +1974,22 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     m_template_interface->clear_template_channel_height_snapshot();
                     m_logger->info("[Solo Phase 2] FALCON tunnel established - Template interface bound to session");
                 }
+
+                // BUG FIX (Bug 2): Invoke session_authenticated handler AFTER session_id is fully set.
+                // This allows Worker_manager to check session_id=0 and trigger retry at the correct time
+                // (after MINER_AUTH_RESULT processing, not at login callback which fires too early).
+                if (m_session_authenticated_handler) {
+                    m_session_authenticated_handler(m_session_id);
+                }
             } else {
                 m_logger->info("[Solo Phase 2] ✓ Authentication SUCCEEDED");
-                m_logger->warn("[Solo Auth]   - WARNING: No session ID provided by node (expected 5 bytes, got {})", 
+                m_logger->warn("[Solo Auth]   - WARNING: No session ID provided by node (expected 5 bytes, got {})",
                     packet.m_length);
+
+                // BUG FIX (Bug 2): Invoke handler even when no session ID provided (session_id will be 0).
+                if (m_session_authenticated_handler) {
+                    m_session_authenticated_handler(m_session_id);
+                }
             }
             
             // Log port information for authenticated session
@@ -3264,8 +3277,9 @@ bool Solo::finalize_template_with_channel_height(uint32_t node_channel_height, c
             if (m_session_manager) {
                 auto suffix_bytes = m_last_known_hash_prev_block.GetBytes();
                 std::array<uint8_t, 4> suffix{};
-                if (suffix_bytes.size() >= 128) {
-                    suffix = { suffix_bytes[124], suffix_bytes[125], suffix_bytes[126], suffix_bytes[127] };
+                if (suffix_bytes.size() >= 4) {
+                    // BUG FIX: Use bytes 0-3 (same as node's hash_tip_lo32) for fork canary alignment
+                    suffix = { suffix_bytes[0], suffix_bytes[1], suffix_bytes[2], suffix_bytes[3] };
                 }
                 m_session_manager->set_prevblock_suffix(suffix);
                 m_last_keepalive_prevhash_lo32 =
