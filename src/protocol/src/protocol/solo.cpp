@@ -2380,28 +2380,12 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     return;
 
                 // Fork canary cross-check (legacy path: hash_tip_lo32 and fork_score will be 0)
+                // Diagnostic-only: PUSH notification system handles real chain tip advances.
                 if (unified.IsForkDetected(m_last_keepalive_prevhash_lo32))
                 {
                     m_logger->warn("[SESSION_KEEPALIVE] Fork canary triggered:"
                                    " miner_prevHash_lo32=0x{:08x} node_tip_lo32=0x{:08x} fork_score={}",
                         m_last_keepalive_prevhash_lo32, unified.hash_tip_lo32, unified.fork_score);
-
-                    // Request a fresh template immediately to resolve the fork.
-                    // Node's 2-second AutoCoolDown is the sole rate limiter.
-                    if (connection)
-                    {
-                        auto work_payload = get_work();
-                        if (work_payload && !work_payload->empty())
-                        {
-                            connection->transmit(work_payload);
-                            m_logger->info("[SESSION_KEEPALIVE] Fresh template requested for fork recovery");
-                        }
-                        else
-                        {
-                            m_logger->warn("[SESSION_KEEPALIVE] GET_BLOCK unavailable for fork recovery"
-                                           " — will retry on next keepalive");
-                        }
-                    }
                 }
 
                 if (m_session_manager) {
