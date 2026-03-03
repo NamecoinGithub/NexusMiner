@@ -745,7 +745,7 @@ void ColinAgent::emit_report(
     if (m_mined_block_cache_source)
     {
         auto blocks = m_mined_block_cache_source();
-        m_logger->info("[Colin]  ── Mined Block History (Top 5) ─────────────────");
+        m_logger->info("[Colin]  ── Mined Block hashPrevBlock History (Top 5) ─────");
         if (blocks.empty())
         {
             m_logger->info("[Colin]    (no blocks mined yet)");
@@ -755,9 +755,9 @@ void ColinAgent::emit_report(
             for (size_t i = 0; i < blocks.size(); ++i)
             {
                 const auto& b = blocks[i];
-                m_logger->info("[Colin]    {} #{} height={} channel={} confirmations={} prev={}...",
-                    b.status_emoji, i + 1, b.height, b.channel_name,
-                    b.confirmations, b.hash_prev_block_hex);
+                m_logger->info("[Colin]    {} #{} height={} channel={} confirmations={}",
+                    b.status_emoji, i + 1, b.height, b.channel_name, b.confirmations);
+                m_logger->info("[Colin]       hashPrevBlock={}", b.hash_prev_block_hex);
             }
         }
     }

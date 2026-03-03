@@ -119,7 +119,7 @@ public:
         uint32_t height{0};
         uint32_t channel{0};           // 1=Prime, 2=Hash
         uint32_t confirmations{0};
-        std::string hash_prev_block_hex;  // first 32 hex chars of 128-byte hash
+        std::string hash_prev_block_hex;  // full 256 hex chars of 128-byte hash
         std::string status_emoji;         // ⛏ or ✅
         std::string channel_name;         // "Prime" or "Hash"
     };
