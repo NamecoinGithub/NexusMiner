@@ -516,6 +516,66 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         );
         m_logger->info("[Worker_manager] Session expired handler registered");
 
+        /* ========== REGISTER SESSION AUTHENTICATED HANDLER (BUG FIX #2) ========== */
+        /* Called by Solo after MINER_AUTH_RESULT is fully processed and session_id is set. */
+        /* This is the correct place to check session_id=0 (not in the login callback which */
+        /* fires before MINER_AUTH_RESULT arrives). Triggers retry with exponential backoff. */
+        solo_protocol->set_session_authenticated_handler(
+            [this](uint32_t session_id) {
+                // CRITICAL: If session_id = 0, the node rejected authentication or didn't provide a session.
+                // Mining cannot proceed without a valid session_id (work submissions will be silently rejected).
+                // Use exponential backoff with max retry limit to prevent infinite tight retry loops.
+                if (session_id == 0)
+                {
+                    ++m_session_auth_fail_count;
+                    m_logger->error("[Session] CRITICAL: Node returned session_id=0x00000000 after authentication (attempt #{}/{})",
+                        m_session_auth_fail_count, MAX_SESSION_AUTH_RETRIES);
+                    m_logger->error("[Session] This indicates the node rejected the session or is misconfigured");
+                    m_logger->error("[Session] Work submissions cannot proceed without a valid session ID");
+
+                    // Hard limit: if we've exceeded max retries, halt reconnection to prevent infinite loop
+                    if (m_session_auth_fail_count > MAX_SESSION_AUTH_RETRIES)
+                    {
+                        m_logger->error("[Session] Max authentication retries ({}) exceeded — halting reconnection",
+                            MAX_SESSION_AUTH_RETRIES);
+                        m_logger->error("[Session] Node appears to be persistently rejecting authentication");
+                        m_logger->error("[Session] Check node logs, miner_auth handler, and mining account configuration");
+                        return;
+                    }
+
+                    // Exponential backoff: 1s, 2s, 4s, 8s, ..., capped at 60s
+                    auto delay_ms = std::min(BASE_SESSION_RETRY_MS * (1u << (m_session_auth_fail_count - 1)),
+                                             MAX_SESSION_RETRY_MS);
+                    auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
+
+                    m_logger->warn("[Session] Scheduling reconnection retry in {}s (exponential backoff)",
+                        delay_seconds);
+
+                    // Get the endpoint from the current connection
+                    network::Endpoint wallet_endpoint = m_connection ? m_connection->remote_endpoint() : m_primary_endpoint;
+
+                    // Schedule delayed retry using the existing connection retry timer infrastructure
+                    m_timer_manager.start_connection_retry_timer(delay_seconds, shared_from_this(), wallet_endpoint);
+                    return;
+                }
+
+                // Successful authentication: reset session auth failure counter
+                m_session_auth_fail_count = 0;
+
+                if (m_using_failover)
+                {
+                    m_logger->info("[Failover] Fresh session established on failover node: session_id=0x{:08x}",
+                        session_id);
+                }
+                else
+                {
+                    m_logger->info("[Primary] Fresh session established on primary node: session_id=0x{:08x}",
+                        session_id);
+                }
+            }
+        );
+        m_logger->info("[Worker_manager] Session authenticated handler registered");
+
         /* ========== REGISTER BLOCK ACCEPTED HANDLER ========== */
         /* Records accepted blocks into the three-tier mined-block cache. */
         solo_protocol->set_block_accepted_handler(
@@ -958,69 +1018,10 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                         return;
                     }
 
-                    // Log fresh session ID when connecting to any node (symmetric logging for primary/failover).
-                    // Cast to Solo is safe here: NexusMiner exclusively uses the Solo protocol.
-                    if (auto solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol))
-                    {
-                        uint32_t session_id = solo->get_session_id();
-
-                        // CRITICAL: If session_id = 0, the node rejected authentication or didn't provide a session.
-                        // Mining cannot proceed without a valid session_id (work submissions will be silently rejected).
-                        // Use exponential backoff with max retry limit to prevent infinite tight retry loops.
-                        if (session_id == 0)
-                        {
-                            ++self->m_session_auth_fail_count;
-                            self->m_logger->error("[Session] CRITICAL: Node returned session_id=0x00000000 after authentication (attempt #{}/{})",
-                                self->m_session_auth_fail_count, MAX_SESSION_AUTH_RETRIES);
-                            self->m_logger->error("[Session] This indicates the node rejected the session or is misconfigured");
-                            self->m_logger->error("[Session] Work submissions cannot proceed without a valid session ID");
-
-                            // Hard limit: if we've exceeded max retries, halt reconnection to prevent infinite loop
-                            if (self->m_session_auth_fail_count > MAX_SESSION_AUTH_RETRIES)
-                            {
-                                self->m_logger->error("[Session] Max authentication retries ({}) exceeded — halting reconnection",
-                                    MAX_SESSION_AUTH_RETRIES);
-                                self->m_logger->error("[Session] Node appears to be persistently rejecting authentication");
-                                self->m_logger->error("[Session] Check node logs, miner_auth handler, and mining account configuration");
-                                return;
-                            }
-
-                            // Exponential backoff: 1s, 2s, 4s, 8s, ..., capped at 60s
-                            auto delay_ms = std::min(BASE_SESSION_RETRY_MS * (1u << (self->m_session_auth_fail_count - 1)),
-                                                     MAX_SESSION_RETRY_MS);
-                            auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
-
-                            self->m_logger->warn("[Session] Scheduling reconnection retry in {}s (exponential backoff)",
-                                delay_seconds);
-
-                            // Schedule delayed retry using the existing connection retry timer infrastructure
-                            self->m_timer_manager.start_connection_retry_timer(delay_seconds, self, wallet_endpoint);
-                            return;
-                        }
-
-                        // Successful authentication: reset session auth failure counter
-                        self->m_session_auth_fail_count = 0;
-
-                        // NOTE: Known Limitation (Issue #3 — Missing Re-Auth Guard)
-                        // This code detects session_id=0 but doesn't verify that a non-zero session ID
-                        // is still valid after reconnection (e.g., the session may have expired on the
-                        // node side during a TCP drop). The node-side fix (LLL-TAO PR #324) addresses
-                        // this by rejecting stale sessions on first GET_BLOCK after reconnect. This is
-                        // an acceptable gap — the miner will detect rejection via BLOCK_DATA errors and
-                        // trigger recovery. Defensive verification could be added in the future via a
-                        // dedicated SESSION_VERIFY opcode or by checking the first GET_BLOCK response code.
-
-                        if (self->m_using_failover)
-                        {
-                            self->m_logger->info("[Failover] Fresh session established on failover node: session_id=0x{:08x}",
-                                session_id);
-                        }
-                        else
-                        {
-                            self->m_logger->info("[Primary] Fresh session established on primary node: session_id=0x{:08x}",
-                                session_id);
-                        }
-                    }
+                    // BUG FIX (Bug 2): Removed old session_id=0 check from here.
+                    // Session ID check now happens in the session_authenticated_handler
+                    // which is invoked AFTER MINER_AUTH_RESULT processing is complete.
+                    // The login callback fires too early (before MINER_AUTH_RESULT arrives).
 
                     auto const print_statistics_interval = self->m_config.get_print_statistics_interval();
                     self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
@@ -1333,6 +1334,57 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
         }
     );
 
+    // Register session_authenticated handler for secondary lane (BUG FIX #2)
+    secondary_solo->set_session_authenticated_handler(
+        [weak_self = weak_from_this(), secondary_endpoint](uint32_t session_id) {
+            auto self = weak_self.lock();
+            if (!self) return;
+
+            // CRITICAL: If session_id = 0, the node rejected authentication.
+            // Secondary lane mining cannot proceed without a valid session_id.
+            if (session_id == 0)
+            {
+                ++self->m_secondary_session_auth_fail_count;
+                self->m_logger->error("[SIM Link] CRITICAL: Node returned session_id=0x00000000 after secondary authentication (attempt #{}/{})",
+                    self->m_secondary_session_auth_fail_count, MAX_SESSION_AUTH_RETRIES);
+                self->m_logger->error("[SIM Link] This indicates the node rejected the session or is misconfigured");
+                self->m_logger->error("[SIM Link] Secondary lane cannot proceed without a valid session ID");
+
+                // Hard limit: if we've exceeded max retries, halt reconnection to prevent infinite loop
+                if (self->m_secondary_session_auth_fail_count > MAX_SESSION_AUTH_RETRIES)
+                {
+                    self->m_logger->error("[SIM Link] Max authentication retries ({}) exceeded — halting secondary reconnection",
+                        MAX_SESSION_AUTH_RETRIES);
+                    self->m_logger->error("[SIM Link] Node appears to be persistently rejecting secondary authentication");
+                    self->m_logger->error("[SIM Link] Check node logs and SIM Link configuration");
+                    return;
+                }
+
+                // Exponential backoff: 1s, 2s, 4s, 8s, ..., capped at 60s
+                auto delay_ms = std::min(BASE_SESSION_RETRY_MS * (1u << (self->m_secondary_session_auth_fail_count - 1)),
+                                         MAX_SESSION_RETRY_MS);
+                auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
+
+                self->m_logger->warn("[SIM Link] Scheduling secondary reconnection retry in {}s (exponential backoff)",
+                    delay_seconds);
+
+                // Schedule delayed retry using the secondary connection retry timer
+                self->m_timer_manager.start_secondary_connection_retry_timer(delay_seconds, self, secondary_endpoint);
+                return;
+            }
+
+            // Successful authentication: reset secondary session auth failure counter
+            self->m_secondary_session_auth_fail_count = 0;
+
+            if (self->m_using_failover)
+                self->m_logger->info("[SIM Link][Failover] Secondary lane session established on failover node: session_id=0x{:08x}",
+                    session_id);
+            else
+                self->m_logger->info("[SIM Link][Primary] Secondary lane session established on primary node: session_id=0x{:08x}",
+                    session_id);
+        }
+    );
+
     m_secondary_protocol = secondary_solo;
 
     std::weak_ptr<Worker_manager> weak_self = shared_from_this();
@@ -1393,55 +1445,9 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                             ProtocolLane sec_lane = self->m_secondary_connection->get_protocol_lane();
                             self->m_sim_link.on_lane_recovered(sec_lane);
 
-                            // Log secondary session ID symmetrically (mirrors primary lane logging from PR #277)
-                            if (auto sec_solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_secondary_protocol))
-                            {
-                                uint32_t session_id = sec_solo->get_session_id();
-
-                                // CRITICAL: If session_id = 0, the node rejected authentication or didn't provide a session.
-                                // Secondary lane mining cannot proceed without a valid session_id.
-                                // Use exponential backoff with max retry limit to prevent infinite tight retry loops.
-                                if (session_id == 0)
-                                {
-                                    ++self->m_secondary_session_auth_fail_count;
-                                    self->m_logger->error("[SIM Link] CRITICAL: Node returned session_id=0x00000000 after secondary authentication (attempt #{}/{})",
-                                        self->m_secondary_session_auth_fail_count, MAX_SESSION_AUTH_RETRIES);
-                                    self->m_logger->error("[SIM Link] This indicates the node rejected the session or is misconfigured");
-                                    self->m_logger->error("[SIM Link] Secondary lane cannot proceed without a valid session ID");
-
-                                    // Hard limit: if we've exceeded max retries, halt reconnection to prevent infinite loop
-                                    if (self->m_secondary_session_auth_fail_count > MAX_SESSION_AUTH_RETRIES)
-                                    {
-                                        self->m_logger->error("[SIM Link] Max authentication retries ({}) exceeded — halting secondary reconnection",
-                                            MAX_SESSION_AUTH_RETRIES);
-                                        self->m_logger->error("[SIM Link] Node appears to be persistently rejecting secondary authentication");
-                                        self->m_logger->error("[SIM Link] Check node logs and SIM Link configuration");
-                                        return;
-                                    }
-
-                                    // Exponential backoff: 1s, 2s, 4s, 8s, ..., capped at 60s
-                                    auto delay_ms = std::min(BASE_SESSION_RETRY_MS * (1u << (self->m_secondary_session_auth_fail_count - 1)),
-                                                             MAX_SESSION_RETRY_MS);
-                                    auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
-
-                                    self->m_logger->warn("[SIM Link] Scheduling secondary reconnection retry in {}s (exponential backoff)",
-                                        delay_seconds);
-
-                                    // Schedule delayed retry using the secondary connection retry timer
-                                    self->m_timer_manager.start_secondary_connection_retry_timer(delay_seconds, self, secondary_endpoint);
-                                    return;
-                                }
-
-                                // Successful authentication: reset secondary session auth failure counter
-                                self->m_secondary_session_auth_fail_count = 0;
-
-                                if (self->m_using_failover)
-                                    self->m_logger->info("[SIM Link][Failover] Secondary lane session established on failover node: session_id=0x{:08x}",
-                                        session_id);
-                                else
-                                    self->m_logger->info("[SIM Link][Primary] Secondary lane session established on primary node: session_id=0x{:08x}",
-                                        session_id);
-                            }
+                            // BUG FIX (Bug 2): Removed old session_id=0 check from here.
+                            // Session ID check now happens in the session_authenticated_handler
+                            // which is invoked AFTER MINER_AUTH_RESULT processing is complete.
 
                             // If a bypass was armed (primary failed before secondary connected),
                             // request work immediately on the secondary lane.
