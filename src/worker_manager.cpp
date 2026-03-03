@@ -758,6 +758,8 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
         }
 
         // Notify DualConnectionManager about failover state and trigger secondary reconnection
+        // Note: This block only runs when failover is configured (parent if condition)
+        // AND when we've actually switched nodes AND SIM Link is enabled.
         if (failover_switched && m_config.get_enable_sim_link())
         {
             std::string active_ip;
@@ -960,15 +962,30 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     // Cast to Solo is safe here: NexusMiner exclusively uses the Solo protocol.
                     if (auto solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol))
                     {
+                        uint32_t session_id = solo->get_session_id();
+
+                        // CRITICAL: If session_id = 0, the node rejected authentication or didn't provide a session.
+                        // Mining cannot proceed without a valid session_id (work submissions will be silently rejected).
+                        // Immediately trigger reconnection to retry the Falcon handshake.
+                        if (session_id == 0)
+                        {
+                            self->m_logger->error("[Session] CRITICAL: Node returned session_id=0x00000000 after authentication");
+                            self->m_logger->error("[Session] This indicates the node rejected the session or is misconfigured");
+                            self->m_logger->error("[Session] Work submissions cannot proceed without a valid session ID");
+                            self->m_logger->warn("[Session] Triggering immediate reconnection to retry Falcon handshake");
+                            self->retry_connect(wallet_endpoint);
+                            return;
+                        }
+
                         if (self->m_using_failover)
                         {
-                            self->m_logger->info("[Failover] Fresh session established on failover node: session_id={}",
-                                solo->get_session_id());
+                            self->m_logger->info("[Failover] Fresh session established on failover node: session_id=0x{:08x}",
+                                session_id);
                         }
                         else
                         {
-                            self->m_logger->info("[Primary] Fresh session established on primary node: session_id={}",
-                                solo->get_session_id());
+                            self->m_logger->info("[Primary] Fresh session established on primary node: session_id=0x{:08x}",
+                                session_id);
                         }
                     }
 
@@ -1346,12 +1363,27 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                             // Log secondary session ID symmetrically (mirrors primary lane logging from PR #277)
                             if (auto sec_solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_secondary_protocol))
                             {
+                                uint32_t session_id = sec_solo->get_session_id();
+
+                                // CRITICAL: If session_id = 0, the node rejected authentication or didn't provide a session.
+                                // Secondary lane mining cannot proceed without a valid session_id.
+                                // Immediately trigger reconnection to retry the Falcon handshake.
+                                if (session_id == 0)
+                                {
+                                    self->m_logger->error("[SIM Link] CRITICAL: Node returned session_id=0x00000000 after secondary authentication");
+                                    self->m_logger->error("[SIM Link] This indicates the node rejected the session or is misconfigured");
+                                    self->m_logger->error("[SIM Link] Secondary lane cannot proceed without a valid session ID");
+                                    self->m_logger->warn("[SIM Link] Triggering immediate secondary reconnection to retry Falcon handshake");
+                                    self->retry_secondary_connect(secondary_endpoint);
+                                    return;
+                                }
+
                                 if (self->m_using_failover)
-                                    self->m_logger->info("[SIM Link][Failover] Secondary lane session established on failover node: session_id={}",
-                                        sec_solo->get_session_id());
+                                    self->m_logger->info("[SIM Link][Failover] Secondary lane session established on failover node: session_id=0x{:08x}",
+                                        session_id);
                                 else
-                                    self->m_logger->info("[SIM Link][Primary] Secondary lane session established on primary node: session_id={}",
-                                        sec_solo->get_session_id());
+                                    self->m_logger->info("[SIM Link][Primary] Secondary lane session established on primary node: session_id=0x{:08x}",
+                                        session_id);
                             }
 
                             // If a bypass was armed (primary failed before secondary connected),
