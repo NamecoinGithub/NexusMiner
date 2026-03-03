@@ -5,6 +5,19 @@
 #include <cstdlib>
 #include <ctime>
 
+namespace {
+    // ANSI color palette for hashPrevBlock history (5 slots)
+    static const char* const HASH_COLORS[5] = {
+        "\033[36m",   // 0 → Cyan      (most recent)
+        "\033[33m",   // 1 → Yellow
+        "\033[35m",   // 2 → Magenta
+        "\033[32m",   // 3 → Green
+        "\033[94m",   // 4 → Bright Blue
+    };
+    static const char* const ANSI_RESET = "\033[0m";
+    static const char* const ANSI_BOLD  = "\033[1m";
+} // anonymous namespace
+
 namespace nexusminer
 {
 
@@ -329,7 +342,17 @@ void ColinAgent::emit_report(
     char ts_buf[32];
     std::strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M:%S", std::localtime(&now_c));
 
-    m_logger->info("[Colin] ════ DIAGNOSTIC REPORT [{}] ════", ts_buf);
+    // Fetch all HeightTracker snapshots once; reused throughout emit_report()
+    nexusminer::protocol::HeightTracker::Snapshot            ht_snap{};
+    nexusminer::protocol::HeightTracker::CanonicalChainState canonical{};
+    nexusminer::protocol::HeightTracker::DiagnosticObserverState diag{};
+    if (m_height_tracker) {
+        ht_snap   = m_height_tracker->GetSnapshot();
+        canonical = m_height_tracker->GetCanonicalSnapshot();
+        diag      = m_height_tracker->GetDiagnosticSnapshot();
+    }
+
+    m_logger->info("{}[Colin] ════ DIAGNOSTIC REPORT [{}] ════{}", ANSI_BOLD, ts_buf, ANSI_RESET);
     m_logger->info("[Colin]  BLOCKS  Accepted: {}  Rejected: {}  Retries: {}",
         gs.m_accepted_blocks, gs.m_rejected_blocks, gs.m_connection_retries);
 
@@ -341,9 +364,9 @@ void ColinAgent::emit_report(
         for (size_t i = 0; i < m_prev_hash_history.size(); ++i) {
             size_t idx = m_prev_hash_history.size() - 1 - i; // newest first
             if (i == 0)
-                m_logger->info("[Colin]    [{}] (most recent) {}", i + 1, m_prev_hash_history[idx]);
+                m_logger->info("[Colin]    [{}] (most recent) {}{}{}", i + 1, HASH_COLORS[i], m_prev_hash_history[idx], ANSI_RESET);
             else
-                m_logger->info("[Colin]    [{}] {}", i + 1, m_prev_hash_history[idx]);
+                m_logger->info("[Colin]    [{}] {}{}{}", i + 1, HASH_COLORS[i], m_prev_hash_history[idx], ANSI_RESET);
         }
     }
 
@@ -371,20 +394,19 @@ void ColinAgent::emit_report(
         m_logger->warn("[Colin]  ⚠️  MINING STOPPED — workers in degraded mode");
     if (m_height_tracker)
     {
-        auto snap = m_height_tracker->GetSnapshot();
         m_logger->info("[Colin]  Heights │ unified={} prime={} hash={} stake={}  (channel_height={})",
-            snap.unified_height, snap.prime_height,
-            snap.hash_height,    snap.stake_height,
-            snap.channel_height);
-        if (snap.peak_fork_score > 0)
+            ht_snap.unified_height, ht_snap.prime_height,
+            ht_snap.hash_height,    ht_snap.stake_height,
+            ht_snap.channel_height);
+        if (ht_snap.peak_fork_score > 0)
             m_logger->warn("[Colin]  ⚠️  FORK CANARY active: peak_fork_score={} current_fork_score={}",
-                snap.peak_fork_score, snap.fork_score);
+                ht_snap.peak_fork_score, ht_snap.fork_score);
 
         // Template feed source: confirms whether BLOCK_DATA metadata feed is working
-        if (snap.channel_target > 0) {
+        if (ht_snap.channel_target > 0) {
             const char* src = "NONE";
             const char* label = "";
-            switch (snap.last_update_source) {
+            switch (ht_snap.last_update_source) {
                 case nexusminer::protocol::HeightTracker::UpdateSource::PUSH:
                     src = "PUSH"; label = " (BLOCK_DATA metadata)"; break;
                 case nexusminer::protocol::HeightTracker::UpdateSource::GET_ROUND:
@@ -396,16 +418,15 @@ void ColinAgent::emit_report(
                 default: break;
             }
             m_logger->info("[Colin]  Template Feed │ last_update_source={}{} channel_target={}",
-                src, label, snap.channel_target);
+                src, label, ht_snap.channel_target);
         }
     }
 
     // Keepalive ACK health (Gap 4 — visibility into silent-death scenario)
     if (m_height_tracker) {
-        auto snap = m_height_tracker->GetSnapshot();
-        if (snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{}) {
+        if (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{}) {
             auto keepalive_age_s = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - snap.last_keepalive_ack_at).count();
+                std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count();
             if (keepalive_age_s < 300) {
                 m_logger->info("[Colin]  Keepalive │ last ACK {}s ago ✓", keepalive_age_s);
             } else {
@@ -443,59 +464,26 @@ void ColinAgent::emit_report(
         }
     }
 
-    // ── Canonical Chain State section ──────────────────────────────────────────
-    // Uses GetCanonicalSnapshot() and GetDiagnosticSnapshot() directly.
+    // ── Canonical Chain State section (collapsed: hashPrevBlock + nBits only) ──
     if (m_height_tracker) {
-        auto canonical = m_height_tracker->GetCanonicalSnapshot();
-        auto diag      = m_height_tracker->GetDiagnosticSnapshot();
-
         m_logger->info("[Colin]  ── Canonical Chain State ────────────────────────");
         if (canonical.is_initialized()) {
-            m_logger->info("[Colin]    Canonical │ unified={} channel={} channel_target={} nbits=0x{:08x}",
-                canonical.canonical_unified_height,
-                canonical.canonical_channel_height,
-                canonical.canonical_channel_target,
-                canonical.canonical_difficulty_nbits);
             if (canonical.canonical_hash_prev_block != uint1024_t{}) {
-                m_logger->info("[Colin]    Canonical │ hashPrevBlock={}",
-                    canonical.canonical_hash_prev_block.GetHex());
+                std::string canonical_hex = canonical.canonical_hash_prev_block.GetHex();
+                const char* canon_color = ANSI_RESET;
+                for (size_t i = 0; i < m_prev_hash_history.size(); ++i) {
+                    size_t idx = m_prev_hash_history.size() - 1 - i;  // newest first
+                    if (m_prev_hash_history[idx] == canonical_hex) {
+                        canon_color = HASH_COLORS[i];
+                        break;
+                    }
+                }
+                m_logger->info("[Colin]    Canonical │ hashPrevBlock={}{}{}",
+                    canon_color, canonical_hex, ANSI_RESET);
             }
-
-            int32_t drift = canonical.height_drift_from_canonical();
-            // On a 3-channel Nexus blockchain, canonical_unified_height ≈ 3 × channel_height,
-            // so this cross-dimension difference is always large (~4M) and reflects normal
-            // structural skew — NOT an anomaly. Always log as pure info.
-            m_logger->info("[Colin]    Canonical │ height_drift_from_canonical={} (inter-channel structural skew — normal on multi-channel chain)",
-                drift);
+            m_logger->info("[Colin]    Canonical │ nBits=0x{:08x}", canonical.canonical_difficulty_nbits);
         } else {
             m_logger->info("[Colin]    Canonical │ not yet initialized (no BLOCK_DATA received)");
-        }
-
-        m_logger->info("[Colin]  ── Diagnostic Observer State ─────────────────────");
-        if (diag.is_initialized()) {
-            auto latest = diag.latest_received_at();
-            uint64_t age_s = 0;
-            if (latest != std::chrono::steady_clock::time_point{}) {
-                age_s = static_cast<uint64_t>(
-                    std::chrono::duration_cast<std::chrono::seconds>(
-                        std::chrono::steady_clock::now() - latest).count());
-            }
-            const char* freshness_marker = (age_s <= WARN_DIAGNOSTIC_STALE_SECONDS) ? "✓" : "⚠";
-            m_logger->info("[Colin]    Diagnostic │ latest_received_at={}s ago {} push_unified={} round_unified={} keepalive_unified={}",
-                age_s, freshness_marker,
-                diag.push_unified_height,
-                diag.round_unified_height,
-                diag.keepalive_unified_height);
-            if (age_s > WARN_DIAGNOSTIC_STALE_SECONDS)
-                m_logger->warn("[Colin]    Diagnostic │ ⚠ observer silent for {}s — no push/GET_ROUND/keepalive", age_s);
-        } else {
-            uint64_t elapsed_s = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::steady_clock::now() - m_start_time).count());
-            if (elapsed_s >= WARN_DIAGNOSTIC_INIT_GRACE_SECONDS)
-                m_logger->warn("[Colin]    Diagnostic │ ⚠ uninitialized after {}s (no push/GET_ROUND/keepalive yet)", elapsed_s);
-            else
-                m_logger->info("[Colin]    Diagnostic │ not yet initialized ({}s elapsed — within grace period)", elapsed_s);
         }
     }
 
@@ -506,17 +494,17 @@ void ColinAgent::emit_report(
         bool have_both = (miner_prevhash_lo32 != 0 && node_tip_lo32 != 0);
         if (have_both) {
             if (miner_prevhash_lo32 == node_tip_lo32) {
-                m_logger->info("[Colin]  TipSync  │ ✓ miner prevhash_lo32 0x{:08x} == node tip_lo32 0x{:08x}  (in sync)",
+                m_logger->info("[Colin]  TipSync │ ✓ miner prevhash_lo32 0x{:08x} == node tip_lo32 0x{:08x}  (in sync)",
                     miner_prevhash_lo32, node_tip_lo32);
             } else {
-                m_logger->warn("[Colin]  TipSync  │ ⚠ MISMATCH miner_prevhash_lo32=0x{:08x}  node_tip_lo32=0x{:08x}",
+                m_logger->warn("[Colin]  TipSync │ ⚠ MISMATCH miner_prevhash_lo32=0x{:08x}  node_tip_lo32=0x{:08x}",
                     miner_prevhash_lo32, node_tip_lo32);
-                m_logger->warn("[Colin]  TipSync  │   Miner may be on a stale or forked tip — watch for next keepalive update");
+                m_logger->warn("[Colin]  TipSync │   Miner may be on a stale or forked tip — watch for next keepalive update");
             }
         } else if (miner_prevhash_lo32 != 0 && node_tip_lo32 == 0) {
-            m_logger->info("[Colin]  TipSync  │ node tip_lo32=0 (legacy path or no keepalive ACK yet — skip cross-check)");
+            m_logger->info("[Colin]  TipSync │ node tip_lo32=0 (legacy path or no keepalive ACK yet — skip cross-check)");
         } else {
-            m_logger->info("[Colin]  TipSync  │ waiting for template + keepalive ACK data");
+            m_logger->info("[Colin]  TipSync │ waiting for template + keepalive ACK data");
         }
     }
 
@@ -526,10 +514,6 @@ void ColinAgent::emit_report(
      * so operators can see whether all three diagnostic sources are feeding data. */
     if (m_height_tracker)
     {
-        auto snap = m_height_tracker->GetSnapshot();
-        auto diag = m_height_tracker->GetDiagnosticSnapshot();
-        auto canonical = m_height_tracker->GetCanonicalSnapshot();
-
         m_logger->info("[Colin]  ── Canonical vs Diagnostic State ──────────────");
 
         // Canonical initialization status
@@ -557,7 +541,7 @@ void ColinAgent::emit_report(
 
         // Height drift: how far composed snapshot heights have drifted from canonical
         if (canonical.is_initialized()) {
-            int32_t drift = snap.height_drift_from_canonical();
+            int32_t drift = ht_snap.height_drift_from_canonical();
             if (drift == 0) {
                 m_logger->info("[Colin]    HeightDrift │ ✓ 0 (canonical caught up with push/round)");
             } else if (drift > 0 && drift <= WARN_CANONICAL_DRIFT_THRESHOLD) {
@@ -690,25 +674,24 @@ void ColinAgent::emit_report(
             // before the new template arrives). Only warn on |drift| > 1.
             if (m_height_tracker)
             {
-                auto ht = m_height_tracker->GetSnapshot();
-                if (ht.unified_height != 0 && ts.unified_height != 0)
+                if (ht_snap.unified_height != 0 && ts.unified_height != 0)
                 {
                     int64_t height_drift = static_cast<int64_t>(ts.unified_height)
-                                         - static_cast<int64_t>(ht.unified_height + 1);
+                                         - static_cast<int64_t>(ht_snap.unified_height + 1);
                     if (height_drift == 0)
                     {
                         m_logger->debug("[Colin]    HEIGHT_DRIFT: none (unified={} + 1 == template.nHeight={})",
-                            ht.unified_height, ts.unified_height);
+                            ht_snap.unified_height, ts.unified_height);
                     }
                     else if (height_drift == -1)
                     {
                         m_logger->info("[Colin]    HEIGHT_DRIFT: -1 (HeightTracker.unified={} vs template.block.nHeight={} — template slightly behind push, normal during inter-push interval)",
-                            ht.unified_height, ts.unified_height);
+                            ht_snap.unified_height, ts.unified_height);
                     }
                     else
                     {
                         m_logger->warn("[Colin]    ⚠ HEIGHT_DRIFT: HeightTracker.unified={} vs template.block.nHeight={} (drift={}; expected 0 or -1)",
-                            ht.unified_height, ts.unified_height, height_drift);
+                            ht_snap.unified_height, ts.unified_height, height_drift);
                     }
                 }
             }
@@ -757,12 +740,21 @@ void ColinAgent::emit_report(
                 const auto& b = blocks[i];
                 m_logger->info("[Colin]    {} #{} height={} channel={} confirmations={}",
                     b.status_emoji, i + 1, b.height, b.channel_name, b.confirmations);
-                m_logger->info("[Colin]       hashPrevBlock={}", b.hash_prev_block_hex);
+                const char* blk_color = ANSI_RESET;
+                for (size_t j = 0; j < m_prev_hash_history.size(); ++j) {
+                    size_t history_idx = m_prev_hash_history.size() - 1 - j;
+                    if (m_prev_hash_history[history_idx] == b.hash_prev_block_hex) {
+                        blk_color = HASH_COLORS[j];
+                        break;
+                    }
+                }
+                m_logger->info("[Colin]       hashPrevBlock={}{}{}",
+                    blk_color, b.hash_prev_block_hex, ANSI_RESET);
             }
         }
     }
 
-    m_logger->info("[Colin] ═══════════════════════════════════════════════════");
+    m_logger->info("{}[Colin] ═══════════════════════════════════════════════════{}", ANSI_BOLD, ANSI_RESET);
 }
 
 } // namespace nexusminer
