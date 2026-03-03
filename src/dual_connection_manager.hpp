@@ -4,6 +4,8 @@
 #include "protocol_lane.hpp"
 #include <chrono>
 #include <cstdint>
+#include <string>
+#include <utility>
 
 namespace nexusminer
 {
@@ -79,6 +81,19 @@ public:
             m_legacy_alive = true;
     }
 
+    // ── Failover tracking ────────────────────────────────────────────────────
+    /// Update the current failover state and active node endpoint.
+    /// @param active True if failover is active, false if primary is active
+    /// @param endpoint The current active node IP address (e.g., "192.168.1.10")
+    void set_failover_active(bool active, std::string endpoint)
+    {
+        m_using_failover = active;
+        m_active_node_ip = std::move(endpoint);
+    }
+
+    bool is_using_failover() const { return m_using_failover; }
+    std::string const& get_active_node_ip() const { return m_active_node_ip; }
+
 private:
     bool m_stateless_alive{false};
     bool m_legacy_alive{false};
@@ -86,6 +101,10 @@ private:
     // One-shot bypass flags
     bool m_stateless_bypass_armed{false};
     bool m_legacy_bypass_armed{false};
+
+    // Failover state
+    bool m_using_failover{false};
+    std::string m_active_node_ip;
 };
 
 } // namespace nexusminer

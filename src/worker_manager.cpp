@@ -710,6 +710,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
 
     // ── Failover switchover logic ─────────────────────────────────────────────
     network::Endpoint effective_endpoint = wallet_endpoint;
+    bool failover_switched = false;  // Track if we're switching nodes
 
     if (m_config.has_failover())
     {
@@ -727,6 +728,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                     m_config.get_failover_max_retries(),
                     m_failover_endpoint.to_string());
                 effective_endpoint = m_failover_endpoint;
+                failover_switched = true;
             }
         }
         else
@@ -740,11 +742,43 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                 m_logger->info("[Failover] Retrying primary {} after failover failures",
                     m_primary_endpoint.to_string());
                 effective_endpoint = m_primary_endpoint;
+                failover_switched = true;
             }
             else
             {
                 effective_endpoint = m_failover_endpoint;
             }
+        }
+
+        // Notify DualConnectionManager about failover state and trigger secondary reconnection
+        if (failover_switched && m_config.get_enable_sim_link())
+        {
+            std::string active_ip;
+            effective_endpoint.address(active_ip);
+            m_sim_link.set_failover_active(m_using_failover, active_ip);
+
+            // Close secondary connection to force reconnect on the new node
+            if (m_secondary_connection)
+            {
+                m_logger->info("[SIM Link] Failover switch detected — closing secondary lane to re-establish on {}",
+                               effective_endpoint.to_string());
+                m_secondary_connection = nullptr;
+                if (m_secondary_protocol)
+                    m_secondary_protocol->reset();
+            }
+
+            // Derive secondary port from the effective primary port
+            uint16_t effective_primary_port = 0;
+            effective_endpoint.port(effective_primary_port);
+            constexpr uint16_t STATELESS_PORT = 9323;
+            constexpr uint16_t LEGACY_PORT = 8323;
+            uint16_t secondary_port = (effective_primary_port == STATELESS_PORT) ? LEGACY_PORT : STATELESS_PORT;
+
+            // Schedule secondary reconnection with the new failover IP
+            network::Endpoint secondary_endpoint{
+                network::Transport_protocol::tcp, active_ip, secondary_port};
+            m_secondary_retry_delay_seconds = 0;  // Reset backoff for failover attempt
+            retry_secondary_connect(secondary_endpoint);
         }
     }
 
@@ -890,6 +924,14 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     else
                     {
                         self->m_logger->info("[Failover] Connected to primary node — failover mode cleared");
+                    }
+
+                    // Initialize DualConnectionManager with current failover state
+                    if (self->m_config.get_enable_sim_link())
+                    {
+                        std::string active_ip;
+                        remote_ep.address(active_ip);
+                        self->m_sim_link.set_failover_active(self->m_using_failover, active_ip);
                     }
                 }
 
@@ -1095,6 +1137,8 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                                         std::chrono::duration_cast<std::chrono::seconds>(
                                             std::chrono::steady_clock::now() - fs.failover_activated_at).count());
                                 }
+                                // Include SIM Link secondary IP from DualConnectionManager
+                                snap.secondary_ip = wm->m_sim_link.get_active_node_ip();
                                 return snap;
                             });
                         self->m_logger->info("[Worker_manager] Colin failover source wired");
