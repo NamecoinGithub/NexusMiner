@@ -750,6 +750,13 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
             }
         }
 
+        // Log protocol reset for failover switch (reset already occurred at top of retry_connect)
+        if (failover_switched)
+        {
+            m_logger->info("[Failover] Resetting protocol state for fresh Falcon re-authentication on {}",
+                effective_endpoint.to_string());
+        }
+
         // Notify DualConnectionManager about failover state and trigger secondary reconnection
         if (failover_switched && m_config.get_enable_sim_link())
         {
@@ -949,6 +956,17 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                         return;
                     }
 
+                    // Log fresh session ID when connecting to failover node.
+                    // Cast to Solo is safe here: NexusMiner exclusively uses the Solo protocol.
+                    if (self->m_using_failover)
+                    {
+                        if (auto solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol))
+                        {
+                            self->m_logger->info("[Failover] Fresh session established on failover node: session_id={}",
+                                solo->get_session_id());
+                        }
+                    }
+
                     auto const print_statistics_interval = self->m_config.get_print_statistics_interval();
                     self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
                     self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
@@ -1105,14 +1123,8 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                                     snap.confirmations = rec.confirmations;
                                     snap.status_emoji = rec.status_emoji();
                                     snap.channel_name = rec.channel_name();
-                                    // First 32 hex chars of the 128-byte hashPrevBlock
-                                    auto prev_bytes = rec.hash_prev_block.GetBytes();
-                                    snap.hash_prev_block_hex.reserve(32);
-                                    for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(16)); ++i) {
-                                        char buf[3];
-                                        snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
-                                        snap.hash_prev_block_hex += buf;
-                                    }
+                                    // Full 256 hex chars of the 128-byte hashPrevBlock
+                                    snap.hash_prev_block_hex = rec.hash_prev_block.GetHex();
                                     result.push_back(std::move(snap));
                                 }
                                 return result;
