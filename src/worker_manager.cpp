@@ -956,13 +956,18 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                         return;
                     }
 
-                    // Log fresh session ID when connecting to failover node.
+                    // Log fresh session ID when connecting to any node (symmetric logging for primary/failover).
                     // Cast to Solo is safe here: NexusMiner exclusively uses the Solo protocol.
-                    if (self->m_using_failover)
+                    if (auto solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol))
                     {
-                        if (auto solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol))
+                        if (self->m_using_failover)
                         {
                             self->m_logger->info("[Failover] Fresh session established on failover node: session_id={}",
+                                solo->get_session_id());
+                        }
+                        else
+                        {
+                            self->m_logger->info("[Primary] Fresh session established on primary node: session_id={}",
                                 solo->get_session_id());
                         }
                     }
