@@ -53,6 +53,18 @@ public:
     // SIM Link: send SESSION_STATUS on each live lane if 60-second interval has elapsed
     void send_session_status_if_due();
 
+    // ── Failover state accessor ────────────────────────────────────────────────
+    struct FailoverStatus {
+        bool has_failover_configured{false};
+        bool using_failover{false};
+        uint32_t primary_fail_count{0};
+        uint32_t failover_max_retries{0};
+        std::string primary_endpoint_str;   // e.g. "192.168.1.10:9323"
+        std::string failover_endpoint_str;  // e.g. "192.168.1.11:9323" or ""
+        std::chrono::steady_clock::time_point failover_activated_at{};
+    };
+    FailoverStatus get_failover_status() const;
+
 private:
 
     void process_data(network::Shared_payload&& receive_buffer);
@@ -158,6 +170,7 @@ private:
     network::Endpoint m_failover_endpoint;     // built from config if has_failover()
     bool              m_using_failover{false}; // currently retrying on failover?
     uint32_t          m_primary_fail_count{0}; // consecutive failures on the active side
+    std::chrono::steady_clock::time_point m_failover_activated_at{}; // when failover last became active
 
     // Time of the most recent escalation (epoch N → epoch N+1: stop workers + hard recovery).
     // Used to prevent re-escalation within MIN_ESCALATION_INTERVAL_SECONDS of the previous

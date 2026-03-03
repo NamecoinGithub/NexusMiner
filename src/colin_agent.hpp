@@ -126,6 +126,21 @@ public:
     using MinedBlockCacheSource = std::function<std::vector<MinedBlockSnapshot>()>;
     void set_mined_block_cache_source(MinedBlockCacheSource fn) { m_mined_block_cache_source = std::move(fn); }
 
+    // ── Failover State Source ─────────────────────────────────────────────────
+    // Optional: supplies current failover state from Worker_manager so the diagnostic
+    // report can show which node is active and warn operators when failover is engaged.
+    struct FailoverSnapshot {
+        bool has_failover_configured{false};
+        bool using_failover{false};
+        uint32_t primary_fail_count{0};
+        uint32_t failover_max_retries{0};
+        std::string active_endpoint_str;      // which endpoint is currently in use
+        std::string standby_endpoint_str;     // the one NOT in use
+        uint64_t failover_active_seconds{0};  // how long we've been on failover (0 if not using failover)
+    };
+    using FailoverSource = std::function<FailoverSnapshot()>;
+    void set_failover_source(FailoverSource fn) { m_failover_source = std::move(fn); }
+
     // ── Warning catalog ────────────────────────────────────────────────────
     // Returns a non-empty string if the pattern matches, empty string otherwise.
     // Used by tests to verify each warning pattern triggers the right text.
@@ -165,6 +180,12 @@ public:
     static std::string check_diagnostic_freshness(uint64_t latest_age_seconds,
                                                   bool is_initialized);
 
+    // Check whether failover is currently active.
+    // Returns a non-empty warning string when using_failover is true, empty otherwise.
+    static std::string check_failover_active(bool using_failover, uint64_t active_seconds,
+                                             const std::string& active_ep,
+                                             const std::string& standby_ep);
+
 private:
     void schedule_next();
     void run_diagnostics();
@@ -172,7 +193,7 @@ private:
     std::string assess_primary_lane() const;
     std::string assess_secondary_lane() const;
     void emit_report(std::vector<std::string>& warnings,
-                     const std::vector<std::string>& recommendations,
+                     std::vector<std::string>& recommendations,
                      const stats::Global& gs);
 
     struct DiagSnapshot
@@ -197,6 +218,7 @@ private:
     TemplateSource      m_template_source;       // Optional: supplies TemplateSnapshot from MiningTemplateInterface
     PongTelemetrySource m_pong_telemetry_source; // Optional: supplies PongTelemetrySnapshot from ColinPingHandler
     MinedBlockCacheSource m_mined_block_cache_source; // Optional: supplies Top 5 mined blocks from MinedBlockCache
+    FailoverSource      m_failover_source;       // Optional: supplies FailoverSnapshot from Worker_manager
 
     uint32_t m_last_miner_prevhash_lo32{0};
     uint32_t m_last_node_tip_lo32{0};

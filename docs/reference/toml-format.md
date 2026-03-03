@@ -36,6 +36,31 @@ failover_port = 0               # (optional) Failover port — 0 = same as prima
 failover_max_retries = 5        # Switch to failover after this many consecutive primary failures
 ```
 
+##### Failover: cycling behaviour
+
+When the primary node fails `failover_max_retries` consecutive times the miner automatically
+switches to the failover node.  If the failover node also fails `failover_max_retries` times,
+the miner cycles back to the primary.  This alternation continues until one of the nodes answers.
+
+##### Failover: Colin visibility
+
+Colin reports the current failover state in every periodic diagnostic report.  Example output:
+
+**Primary active (healthy):**
+```
+[Colin]  FailoverNode │ ✅ PRIMARY active: 192.168.1.10:9323  │  standby: 192.168.1.11:9323  │  fails: 0/5
+```
+
+**Failover active (primary down):**
+```
+[Colin]  FailoverNode │ ⚠️  FAILOVER ACTIVE: 192.168.1.11:9323  │  primary DOWN: 192.168.1.10:9323  │  active for: 142s
+[Colin]  ── Warnings ──────────────────────────────────────────
+[Colin]    • FAILOVER NODE ACTIVE for 142s — primary node 192.168.1.10:9323 appears down
+```
+
+After 300 s (5 min) on failover an extended-failover warning and a remediation recommendation are added.
+See [docs/current/failover.md](../current/failover.md) for the full tuning guide.
+
 #### [network]
 Network configuration:
 ```toml

@@ -721,6 +721,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                 m_using_failover = true;
                 m_primary_fail_count = 0;
                 m_current_retry_delay_seconds = 0;  // reset backoff for failover attempt
+                m_failover_activated_at = std::chrono::steady_clock::now();
                 m_logger->warn("[Failover] Primary {} failed {} times — switching to failover {}",
                     m_primary_endpoint.to_string(),
                     m_config.get_failover_max_retries(),
@@ -755,6 +756,19 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                        m_current_retry_delay_seconds, m_connection_retry_count);
 
     m_timer_manager.start_connection_retry_timer(m_current_retry_delay_seconds, shared_from_this(), effective_endpoint);
+}
+
+Worker_manager::FailoverStatus Worker_manager::get_failover_status() const
+{
+    FailoverStatus fs;
+    fs.has_failover_configured = m_config.has_failover();
+    fs.using_failover          = m_using_failover;
+    fs.primary_fail_count      = m_primary_fail_count;
+    fs.failover_max_retries    = m_config.get_failover_max_retries();
+    fs.primary_endpoint_str    = m_primary_endpoint.is_valid()  ? m_primary_endpoint.to_string()  : "";
+    fs.failover_endpoint_str   = m_failover_endpoint.is_valid() ? m_failover_endpoint.to_string() : "";
+    fs.failover_activated_at   = m_failover_activated_at;
+    return fs;
 }
 
 bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
@@ -1062,6 +1076,28 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                                 return result;
                             });
                         self->m_logger->info("[Worker_manager] Colin mined block cache source wired");
+
+                        // Wire failover state → Colin failover source
+                        self->m_colin_agent->set_failover_source(
+                            [weak_wm]() -> ColinAgent::FailoverSnapshot {
+                                ColinAgent::FailoverSnapshot snap;
+                                auto wm = weak_wm.lock();
+                                if (!wm) return snap;
+                                auto fs = wm->get_failover_status();
+                                snap.has_failover_configured = fs.has_failover_configured;
+                                snap.using_failover          = fs.using_failover;
+                                snap.primary_fail_count      = fs.primary_fail_count;
+                                snap.failover_max_retries    = fs.failover_max_retries;
+                                snap.active_endpoint_str  = fs.using_failover ? fs.failover_endpoint_str : fs.primary_endpoint_str;
+                                snap.standby_endpoint_str = fs.using_failover ? fs.primary_endpoint_str  : fs.failover_endpoint_str;
+                                if (fs.using_failover && fs.failover_activated_at != std::chrono::steady_clock::time_point{}) {
+                                    snap.failover_active_seconds = static_cast<uint64_t>(
+                                        std::chrono::duration_cast<std::chrono::seconds>(
+                                            std::chrono::steady_clock::now() - fs.failover_activated_at).count());
+                                }
+                                return snap;
+                            });
+                        self->m_logger->info("[Worker_manager] Colin failover source wired");
 
                         self->m_colin_agent->start();
                     }
