@@ -1343,6 +1343,17 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                             ProtocolLane sec_lane = self->m_secondary_connection->get_protocol_lane();
                             self->m_sim_link.on_lane_recovered(sec_lane);
 
+                            // Log secondary session ID symmetrically (mirrors primary lane logging from PR #277)
+                            if (auto sec_solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_secondary_protocol))
+                            {
+                                if (self->m_using_failover)
+                                    self->m_logger->info("[SIM Link][Failover] Secondary lane session established on failover node: session_id={}",
+                                        sec_solo->get_session_id());
+                                else
+                                    self->m_logger->info("[SIM Link][Primary] Secondary lane session established on primary node: session_id={}",
+                                        sec_solo->get_session_id());
+                            }
+
                             // If a bypass was armed (primary failed before secondary connected),
                             // request work immediately on the secondary lane.
                             if (self->m_sim_link.consume_bypass(sec_lane)) {
@@ -1382,7 +1393,16 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
 void Worker_manager::retry_secondary_connect(network::Endpoint const& secondary_endpoint)
 {
     m_secondary_connection = nullptr;
-    if (m_secondary_protocol) m_secondary_protocol->reset();
+    if (m_secondary_protocol)
+    {
+        // Log secondary protocol reset (mirrors primary lane's retry_connect logging)
+        if (auto sec_solo = std::dynamic_pointer_cast<protocol::Solo>(m_secondary_protocol))
+        {
+            m_logger->info("[SIM Link] Secondary protocol reset — old session_id={} cleared",
+                sec_solo->get_session_id());
+        }
+        m_secondary_protocol->reset();
+    }
 
     ++m_secondary_retry_count;
 
