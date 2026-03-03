@@ -424,10 +424,16 @@ void ColinAgent::emit_report(
                 m_logger->info("[Colin]  FailoverNode │ ✅ PRIMARY active: {}  │  standby: {}  │  fails: {}/{}",
                     fs.active_endpoint_str, fs.standby_endpoint_str,
                     fs.primary_fail_count, fs.failover_max_retries);
+                if (!fs.secondary_ip.empty()) {
+                    m_logger->info("[Colin]  SIM Link    │ Secondary lane IP: {}", fs.secondary_ip);
+                }
             } else {
                 m_logger->warn("[Colin]  FailoverNode │ ⚠️  FAILOVER ACTIVE: {}  │  primary DOWN: {}  │  active for: {}s",
                     fs.active_endpoint_str, fs.standby_endpoint_str,
                     fs.failover_active_seconds);
+                if (!fs.secondary_ip.empty()) {
+                    m_logger->info("[Colin]  SIM Link    │ Secondary lane IP: {}", fs.secondary_ip);
+                }
                 if (fs.failover_active_seconds > 300)
                     m_logger->warn("[Colin]  FailoverNode │ Extended failover: primary unreachable for {}min",
                         fs.failover_active_seconds / 60);

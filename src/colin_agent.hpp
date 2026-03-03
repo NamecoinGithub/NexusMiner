@@ -137,6 +137,7 @@ public:
         std::string active_endpoint_str;      // which endpoint is currently in use
         std::string standby_endpoint_str;     // the one NOT in use
         uint64_t failover_active_seconds{0};  // how long we've been on failover (0 if not using failover)
+        std::string secondary_ip;             // IP the SIM Link secondary is connected to (empty if not SIM Link)
     };
     using FailoverSource = std::function<FailoverSnapshot()>;
     void set_failover_source(FailoverSource fn) { m_failover_source = std::move(fn); }
