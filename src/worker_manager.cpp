@@ -1023,8 +1023,12 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     }
 
                     auto const print_statistics_interval = self->m_config.get_print_statistics_interval();
-                    self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
-                    self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
+                    if (!self->m_stats_timers_started)
+                    {
+                        self->m_stats_timers_started = true;
+                        self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
+                        self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
+                    }
                     // Solo mining uses stateless protocol with mandatory Falcon authentication (no GET_HEIGHT)
                     self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
                     self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
@@ -1047,10 +1051,13 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                         constexpr uint16_t GET_ROUND_TIMER_INTERVAL = 1;  // Wake up every 1 second to check
                         auto solo_protocol_ptr = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol);
                         if (solo_protocol_ptr) {
-                            self->m_timer_manager.start_get_round_timer(GET_ROUND_TIMER_INTERVAL, self->m_connection, solo_protocol_ptr);
-                            self->m_logger->info("[Solo Poll] ✓ GET_ROUND timer started on {} lane (port {})",
-                                get_lane_name(lane), remote_port);
-                            self->m_logger->info("[Solo Poll]   Polling: disabled (push notifications are primary, health monitor is safety net)");
+                            if (!self->m_get_round_timer_started) {
+                                self->m_get_round_timer_started = true;
+                                self->m_timer_manager.start_get_round_timer(GET_ROUND_TIMER_INTERVAL, self->m_connection, solo_protocol_ptr);
+                                self->m_logger->info("[Solo Poll] ✓ GET_ROUND timer started on {} lane (port {})",
+                                    get_lane_name(lane), remote_port);
+                                self->m_logger->info("[Solo Poll]   Polling: disabled (push notifications are primary, health monitor is safety net)");
+                            }
                         } else {
                             self->m_logger->error("[Solo Poll] Failed to cast protocol to Solo - polling timer not started");
                         }
@@ -1059,8 +1066,12 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                     // ====== START TEMPLATE HEALTH MONITOR ======
                     // Periodic check for template age timeout (every 30 seconds)
                     constexpr uint16_t TEMPLATE_HEALTH_INTERVAL = 30;
-                    self->m_timer_manager.start_template_health_timer(TEMPLATE_HEALTH_INTERVAL, self);
-                    self->m_logger->info("[Worker_manager] Template health monitor started (30s interval)");
+                    if (!self->m_template_health_timer_started)
+                    {
+                        self->m_template_health_timer_started = true;
+                        self->m_timer_manager.start_template_health_timer(TEMPLATE_HEALTH_INTERVAL, self);
+                        self->m_logger->info("[Worker_manager] Template health monitor started (30s interval)");
+                    }
 
                     // ====== SIM LINK: mark primary lane alive + start health check ======
                     {
@@ -1068,7 +1079,11 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                         self->m_sim_link.on_lane_recovered(primary_lane);
 
                         constexpr uint16_t LANE_HEALTH_INTERVAL = 30;  // log every 30s
-                        self->m_timer_manager.start_lane_health_check_timer(LANE_HEALTH_INTERVAL, self);
+                        if (!self->m_lane_health_timer_started)
+                        {
+                            self->m_lane_health_timer_started = true;
+                            self->m_timer_manager.start_lane_health_check_timer(LANE_HEALTH_INTERVAL, self);
+                        }
                     }
 
                     // ====== COLIN: start diagnostic agent on first successful connect ======

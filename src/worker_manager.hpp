@@ -174,6 +174,12 @@ private:
     static constexpr uint32_t BASE_SESSION_RETRY_MS = 1000;   // 1 second base delay
     static constexpr uint32_t MAX_SESSION_RETRY_MS = 60000;   // 60 second cap
 
+    // ── Timer guards: start timers once only (prevent restart on reconnect) ───
+    bool m_stats_timers_started{false};
+    bool m_template_health_timer_started{false};
+    bool m_get_round_timer_started{false};
+    bool m_lane_health_timer_started{false};
+
     // ── Failover state ────────────────────────────────────────────────────────
     network::Endpoint m_primary_endpoint;      // saved on first connect()
     network::Endpoint m_failover_endpoint;     // built from config if has_failover()
