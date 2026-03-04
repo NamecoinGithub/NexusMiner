@@ -562,6 +562,16 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // Successful authentication: reset session auth failure counter
                 m_session_auth_fail_count = 0;
 
+                // Clear reconnect guard - connection is now fully authenticated
+                m_reconnect_in_progress = false;
+
+                // Synchronize DCM state: mark the primary lane as recovered
+                ProtocolLane primary_lane = m_connection
+                    ? m_connection->get_protocol_lane()
+                    : ProtocolLane::STATELESS;  // Default to stateless
+                m_sim_link.on_lane_recovered(primary_lane);
+                m_sim_link.set_stateless_alive(true);  // Stateless is typically primary on port 9323
+
                 if (m_using_failover)
                 {
                     m_logger->info("[Failover] Fresh session established on failover node: session_id=0x{:08x}",
@@ -751,7 +761,17 @@ void Worker_manager::stop()
 }
 
 void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
-{           
+{
+    // Set reconnect guard to prevent stale callbacks from processing data
+    m_reconnect_in_progress = true;
+
+    // Synchronize DCM state: mark the current primary lane as failed
+    ProtocolLane primary_lane = m_connection
+        ? m_connection->get_protocol_lane()
+        : ProtocolLane::STATELESS;  // Default to stateless if connection already gone
+    m_sim_link.on_lane_failed(primary_lane);
+    m_sim_link.set_stateless_alive(false);  // Stateless is typically primary on port 9323
+
     m_connection = nullptr;		// close connection (socket etc)
     m_miner_protocol->reset();
     stats::Global global_stats{};
@@ -1007,7 +1027,10 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                 // login
                 if (auto solo_protocol = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol))
                 {
-                    solo_protocol->set_protocol_lane(self->m_connection->get_protocol_lane());
+                    ProtocolLane lane = self->m_connection->get_protocol_lane();
+                    solo_protocol->set_protocol_lane(lane);
+                    self->m_logger->info("[Lane] Primary lane set to {} from port {}",
+                        get_lane_name(lane), self->m_connection->remote_endpoint().port());
                 }
 
                 self->m_connection->transmit(self->m_miner_protocol->login([self, wallet_endpoint](bool login_result)
@@ -1391,6 +1414,16 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
             // Successful authentication: reset secondary session auth failure counter
             self->m_secondary_session_auth_fail_count = 0;
 
+            // Synchronize DCM state: mark the secondary lane as recovered
+            ProtocolLane sec_lane = self->m_secondary_connection
+                ? self->m_secondary_connection->get_protocol_lane()
+                : ProtocolLane::LEGACY;  // Secondary typically uses legacy port 8323
+            self->m_sim_link.on_lane_recovered(sec_lane);
+            if (sec_lane == ProtocolLane::LEGACY)
+                self->m_sim_link.set_legacy_alive(true);
+            else
+                self->m_sim_link.set_stateless_alive(true);
+
             if (self->m_using_failover)
                 self->m_logger->info("[SIM Link][Failover] Secondary lane session established on failover node: session_id=0x{:08x}",
                     session_id);
@@ -1446,6 +1479,8 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                 if (auto sec_solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_secondary_protocol))
                 {
                     sec_solo->set_protocol_lane(sec_lane);
+                    self->m_logger->info("[Lane] Secondary lane set to {} from port {}",
+                        get_lane_name(sec_lane), sec_port);
                 }
 
                 self->m_secondary_connection->transmit(
@@ -1624,6 +1659,15 @@ void Worker_manager::send_session_status_if_due()
 
 void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
 {
+    // HARDENING: Belt-and-suspenders guard — ignore data during reconnect
+    if (m_reconnect_in_progress)
+    {
+        m_logger->debug("[RX] Ignoring {} bytes during reconnect",
+            receive_buffer ? receive_buffer->size() : 0);
+        m_rx_accumulator.clear();
+        return;
+    }
+
     // Append newly received data to accumulator
     if (receive_buffer && !receive_buffer->empty())
     {
@@ -1646,18 +1690,15 @@ void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
     
     // Get protocol lane from connection
     ProtocolLane lane = m_connection ? m_connection->get_protocol_lane() : ProtocolLane::UNKNOWN;
-    
+
     if (lane == ProtocolLane::UNKNOWN)
     {
-        m_logger->error("[RX] FATAL: Protocol lane is UNKNOWN - cannot parse packets");
-        m_logger->error("[RX] Remote endpoint: {}", 
-                       m_connection ? m_connection->remote_endpoint().to_string() : "no connection");
-        m_logger->error("[RX] Disconnecting due to unknown protocol lane");
-        if (m_connection)
-        {
-            m_connection->close();
-        }
+        // HARDENING: Don't close again — connection is already being torn down.
+        // Just drain the accumulator silently and return.
+        m_logger->warn("[RX] Dropped {} bytes — lane UNKNOWN (connection closing race)",
+            m_rx_accumulator.size());
         m_rx_accumulator.clear();
+        // DO NOT call m_connection->close() here — it may already be null/closing
         return;
     }
     
@@ -1805,8 +1846,15 @@ void Worker_manager::process_secondary_data(network::Shared_payload&& receive_bu
 
     if (lane == ProtocolLane::UNKNOWN)
     {
-        m_logger->error("[SIM Link RX] Secondary lane UNKNOWN — clearing accumulator");
+        m_logger->warn("[SIM Link RX] Secondary lane UNKNOWN — clearing accumulator, marking secondary dead");
         m_secondary_rx_accumulator.clear();
+        // Determine which lane to fail based on the configured secondary port
+        // If we don't have a connection, we need to infer the lane from the endpoint
+        // For now, we'll mark both LEGACY and STATELESS as failed since we can't determine
+        // which one was being used. In practice, the secondary connection should always
+        // be available when process_secondary_data is called, so this is defensive.
+        m_sim_link.on_lane_failed(ProtocolLane::LEGACY);  // Secondary typically uses legacy port
+        m_sim_link.on_lane_failed(ProtocolLane::STATELESS);  // But could be stateless
         return;
     }
 

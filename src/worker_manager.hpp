@@ -180,6 +180,9 @@ private:
     bool m_get_round_timer_started{false};
     bool m_lane_health_timer_started{false};
 
+    // ── Reconnect guard: prevent stale callback processing during reconnect ──
+    bool m_reconnect_in_progress{false};
+
     // ── Failover state ────────────────────────────────────────────────────────
     network::Endpoint m_primary_endpoint;      // saved on first connect()
     network::Endpoint m_failover_endpoint;     // built from config if has_failover()
