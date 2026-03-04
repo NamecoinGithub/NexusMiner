@@ -298,7 +298,11 @@ std::vector<uint8_t> Solo::load_tritium_genesis()
             m_session_manager->set_tritium_genesis(genesis);
         }
         
-        m_logger->info("[Solo Auth] Reloaded tritium_genesis from persistent storage ({} bytes)", genesis.size());
+        if (genesis.size() >= 4)
+            m_logger->info("[Solo Auth] Reloaded tritium_genesis from persistent storage ({} bytes), first 4 bytes: {:02x}{:02x}{:02x}{:02x}",
+                genesis.size(), genesis[0], genesis[1], genesis[2], genesis[3]);
+        else
+            m_logger->info("[Solo Auth] Reloaded tritium_genesis from persistent storage ({} bytes)", genesis.size());
         return genesis;
     }
     
@@ -334,7 +338,9 @@ void Solo::reset()
     m_reward_bound = false;  // Reset reward binding for new session
     m_subscribed_to_notifications = false;  // Reset push notification subscription
 
-    // Clear cached ChaCha20 session key on session expiry
+    // Note: m_chacha20_wrapper is intentionally NOT cleared here — the wrapper object
+    // is stateless (no per-session state) and can be reused across reconnects.
+    // m_chacha20_session_key IS cleared so the new login() derives a fresh key.
     m_chacha20_session_key.clear();
 
     // Reset session manager
@@ -3163,8 +3169,13 @@ network::Shared_payload Solo::send_set_reward()
     m_logger->info("[Solo Reward] Hash size: {} bytes", vHash.size());
     
     // If ChaCha20 encryption is enabled, encrypt the address
-    if (m_enable_chacha20 && m_chacha20_wrapper)
+    if (m_enable_chacha20)
     {
+        if (!m_chacha20_wrapper)
+        {
+            m_logger->error("[Solo Reward] ChaCha20 enabled but wrapper not initialized — cannot send reward unencrypted");
+            return nullptr;  // hard fail — do NOT send unencrypted
+        }
         // Use cached session key from login() — no re-derivation
         if (m_chacha20_session_key.empty())
         {
