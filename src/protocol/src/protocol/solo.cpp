@@ -333,12 +333,15 @@ void Solo::reset()
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_reward_bound = false;  // Reset reward binding for new session
     m_subscribed_to_notifications = false;  // Reset push notification subscription
-    
+
+    // Clear cached ChaCha20 session key on session expiry
+    m_chacha20_session_key.clear();
+
     // Reset session manager
     if (m_session_manager) {
         m_session_manager->end_session();
     }
-    
+
     // Reset template interface for new session
     if (m_template_interface) {
         m_template_interface->set_session_id(0);
@@ -417,24 +420,29 @@ network::Shared_payload Solo::login(Login_handler handler)
             // Derive session key from genesis
             auto session_key = derive_chacha20_session_key(tritium_genesis);
             auto nonce = ChaCha20Wrapper::generate_nonce();  // Random 12 bytes
-            
+
             // Log the nonce being used for encryption
             m_logger->info("[Solo Auth] ChaCha20 nonce (12 bytes): {}", nexusminer::keys::to_hex(nonce));
-            
+
             if (!m_chacha20_wrapper)
                 m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
-            
+
             // Use AAD for domain separation
             auto wrap_result = m_chacha20_wrapper->encrypt(m_miner_pubkey, session_key, nonce, AAD_DOMAIN_VEC);
-            
+
             if (wrap_result.success)
             {
                 // Build wrapped format: nonce(12) + ciphertext+tag(897+16)
                 pubkey_to_send.clear();
                 pubkey_to_send.insert(pubkey_to_send.end(), nonce.begin(), nonce.end());
                 pubkey_to_send.insert(pubkey_to_send.end(), wrap_result.data.begin(), wrap_result.data.end());
-                
+
                 wrapped = true;
+
+                // Cache the session key for reuse in submit_block() and send_set_reward()
+                m_chacha20_session_key = session_key;
+                m_logger->info("[Solo Auth] ✓ Session key cached for this session");
+
                 m_logger->info("[Solo Auth] ✓ Pubkey wrapped: {} → {} bytes (genesis-derived key)",
                                m_miner_pubkey.size(), pubkey_to_send.size());
             }
@@ -696,10 +704,14 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
                    plaintextPayload.size());
 
     // ── ChaCha20-Poly1305 encryption ─────────────────────────────────────────
-    std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
-    if (!m_enable_chacha20 || !is_valid_genesis(tritium_genesis)) {
-        m_logger->error("[Solo Submit] ChaCha20 not ready (enabled={}, genesis={})",
-                        m_enable_chacha20, is_valid_genesis(tritium_genesis));
+    if (!m_enable_chacha20) {
+        m_logger->error("[Solo Submit] ChaCha20 not enabled");
+        return network::Shared_payload{};
+    }
+
+    // Use cached session key from login() — no re-derivation
+    if (m_chacha20_session_key.empty()) {
+        m_logger->error("[Solo Submit] No cached session key (was login() successful?)");
         return network::Shared_payload{};
     }
 
@@ -707,10 +719,9 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         if (!m_chacha20_wrapper)
             m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
 
-        auto session_key   = derive_chacha20_session_key(tritium_genesis);
         auto enc_nonce     = ChaCha20Wrapper::generate_nonce();
         auto encrypt_result = m_chacha20_wrapper->encrypt(
-            plaintextPayload, session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
+            plaintextPayload, m_chacha20_session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
 
         if (!encrypt_result.success || encrypt_result.data.empty()) {
             m_logger->error("[Solo Submit] ChaCha20 encryption failed: {}",
@@ -725,7 +736,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         encryptedPayload.insert(encryptedPayload.end(),
                                 encrypt_result.data.begin(), encrypt_result.data.end());
 
-        m_logger->info("[Solo Submit] Encrypted payload: {} bytes → SUBMIT_BLOCK",
+        m_logger->info("[Solo Submit] Encrypted payload: {} bytes → SUBMIT_BLOCK (using cached session key)",
                        encryptedPayload.size());
 
         auto result = PacketBuilder::build(m_protocol_lane, LLP::SUBMIT_BLOCK, encryptedPayload);
@@ -3154,43 +3165,37 @@ network::Shared_payload Solo::send_set_reward()
     // If ChaCha20 encryption is enabled, encrypt the address
     if (m_enable_chacha20 && m_chacha20_wrapper)
     {
-        // Load tritium genesis for key derivation
-        std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
-        bool has_valid_genesis = is_valid_genesis(tritium_genesis);
-        
-        if (has_valid_genesis)
+        // Use cached session key from login() — no re-derivation
+        if (m_chacha20_session_key.empty())
         {
-            try {
-                auto session_key = derive_chacha20_session_key(tritium_genesis);
-                auto nonce = ChaCha20Wrapper::generate_nonce();
-                
-                // Encrypt the 32-byte hash (NOT the 37-byte address!)
-                auto encrypt_result = m_chacha20_wrapper->encrypt(vHash, session_key, nonce, AAD_REWARD_ADDRESS);
-                
-                if (encrypt_result.success)
-                {
-                    // Build encrypted format: nonce(12) + ciphertext+tag
-                    payload_data.insert(payload_data.end(), nonce.begin(), nonce.end());
-                    payload_data.insert(payload_data.end(), encrypt_result.data.begin(), encrypt_result.data.end());
-                    
-                    m_logger->info("[Solo Reward] Address encrypted: {} → {} bytes",
-                                   vHash.size(), payload_data.size());
-                    m_logger->debug("[Solo Reward] Encrypted with AAD: REWARD_ADDRESS ({} bytes)", AAD_REWARD_ADDRESS.size());
-                }
-                else
-                {
-                    m_logger->error("[Solo Reward] ChaCha20 encryption failed: {}", encrypt_result.error_message);
-                    return nullptr;
-                }
+            m_logger->error("[Solo Reward] No cached session key (was login() successful?)");
+            return nullptr;
+        }
+
+        try {
+            auto nonce = ChaCha20Wrapper::generate_nonce();
+
+            // Encrypt the 32-byte hash (NOT the 37-byte address!)
+            auto encrypt_result = m_chacha20_wrapper->encrypt(vHash, m_chacha20_session_key, nonce, AAD_REWARD_ADDRESS);
+
+            if (encrypt_result.success)
+            {
+                // Build encrypted format: nonce(12) + ciphertext+tag
+                payload_data.insert(payload_data.end(), nonce.begin(), nonce.end());
+                payload_data.insert(payload_data.end(), encrypt_result.data.begin(), encrypt_result.data.end());
+
+                m_logger->info("[Solo Reward] Address encrypted: {} → {} bytes (using cached session key)",
+                               vHash.size(), payload_data.size());
+                m_logger->debug("[Solo Reward] Encrypted with AAD: REWARD_ADDRESS ({} bytes)", AAD_REWARD_ADDRESS.size());
             }
-            catch (const std::exception& e) {
-                m_logger->error("[Solo Reward] Encryption failed: {}", e.what());
+            else
+            {
+                m_logger->error("[Solo Reward] ChaCha20 encryption failed: {}", encrypt_result.error_message);
                 return nullptr;
             }
         }
-        else
-        {
-            m_logger->error("[Solo Reward] ChaCha20 enabled but no valid genesis for key derivation");
+        catch (const std::exception& e) {
+            m_logger->error("[Solo Reward] Encryption failed: {}", e.what());
             return nullptr;
         }
     }
