@@ -357,7 +357,13 @@ private:
     
     // Persistent tritium genesis (preserved across reconnections)
     std::vector<uint8_t> m_persistent_tritium_genesis;
-    
+
+    // Cached ChaCha20 session key — derived once at auth time, reused for all
+    // subsequent encrypted packets (MINER_SET_REWARD, SUBMIT_BLOCK) within this
+    // session.  Cleared on reset() / session expiry so a new session always
+    // re-derives from the fresh genesis bytes.
+    std::vector<uint8_t> m_chacha20_session_key;
+
     // Stateless mining reward address binding (MINER_SET_REWARD protocol)
     std::string m_reward_address;  // NXS account address for mining rewards
     bool m_reward_bound;  // True after successful MINER_REWARD_RESULT
