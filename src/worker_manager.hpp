@@ -165,6 +165,11 @@ private:
     uint32_t m_connection_retry_count{0};
     uint32_t m_current_retry_delay_seconds{0};  // 0 = use config default on first retry
 
+    // ── Reconnect guard (belt-and-suspenders race prevention) ────────────────
+    // Set to true at the start of retry_connect(), cleared when new connection is authenticated.
+    // Guards process_data() from processing stale callbacks during reconnect window.
+    bool m_reconnect_in_progress{false};
+
     // ── Session authentication retry state (infinite loop prevention) ─────────
     uint32_t m_session_auth_fail_count{0};          // consecutive session_id=0 failures on primary
     uint32_t m_secondary_session_auth_fail_count{0}; // consecutive session_id=0 failures on secondary
