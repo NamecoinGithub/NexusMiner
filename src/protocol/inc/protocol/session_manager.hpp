@@ -7,6 +7,7 @@
 #include <memory>
 #include <chrono>
 #include <atomic>
+#include <mutex>
 #include <array>
 #include <functional>
 #include "asio/io_context.hpp"
@@ -173,38 +174,38 @@ public:
     
     /**
      * @brief Get current session state
-     * 
+     *
      * @return Current SessionState
      */
-    SessionState get_state() const { return m_session.state; }
-    
+    SessionState get_state() const;
+
     /**
      * @brief Check if session is active
-     * 
+     *
      * @return true if session is in AUTHENTICATED or ACTIVE state
      */
     bool is_active() const;
-    
+
     /**
      * @brief Get session ID
-     * 
+     *
      * @return Current session ID (0 if no session)
      */
-    uint32_t get_session_id() const { return m_session.session_id; }
-    
+    uint32_t get_session_id() const;
+
     /**
      * @brief Get session key
-     * 
+     *
      * @return Reference to session key
      */
-    const std::vector<uint8_t>& get_session_key() const { return m_session.session_key; }
-    
+    std::vector<uint8_t> get_session_key() const;
+
     /**
      * @brief Get Tritium genesis hash
-     * 
+     *
      * @return Reference to genesis hash
      */
-    const std::vector<uint8_t>& get_tritium_genesis() const { return m_session.tritium_genesis; }
+    std::vector<uint8_t> get_tritium_genesis() const;
     
     /**
      * @brief Set Tritium genesis hash
@@ -229,10 +230,10 @@ public:
     
     /**
      * @brief Get session statistics
-     * 
+     *
      * @return SessionInfo structure with current session data
      */
-    SessionInfo get_session_info() const { return m_session; }
+    SessionInfo get_session_info() const;
     
     /**
      * @brief Set the miner's current template anchor suffix for v2 keepalives.
@@ -282,9 +283,12 @@ private:
 
     void schedule_regular_keepalives(const std::shared_ptr<SessionManager>& self);
     void send_keepalive(const char* cadence);
-    
+    // Internal helper: get session uptime without locking (caller must hold m_session_mutex)
+    std::chrono::seconds get_session_uptime_locked() const;
+
     // Session information
-    SessionInfo m_session;
+    mutable std::mutex m_session_mutex;  // guards m_session struct
+    SessionInfo m_session;  // protected by m_session_mutex
     
     // Configuration
     uint16_t m_keepalive_interval_hours;
@@ -295,6 +299,10 @@ private:
     std::shared_ptr<asio::io_context> m_io_context;
     std::shared_ptr<asio::steady_timer> m_keepalive_timer;
     std::atomic_bool m_keepalive_active;
+    // Generation counter: incremented each time stop_keepalive_timer() is called.
+    // Timer lambdas capture the generation at scheduling time; if it doesn't match
+    // the current generation when they fire, they are stale and return immediately.
+    std::atomic<uint64_t> m_keepalive_generation{0};
     std::weak_ptr<network::Connection> m_connection;
     
     // Logger
