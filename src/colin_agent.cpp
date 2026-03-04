@@ -721,36 +721,6 @@ void ColinAgent::emit_report(
             m_logger->warn("[Colin]    Health flags: 0x{:02x}", pt.health_flags);
     }
 
-    /* Mined Block History — Top 5 hashPrevBlock cache (Tier 1) */
-    if (m_mined_block_cache_source)
-    {
-        auto blocks = m_mined_block_cache_source();
-        m_logger->info("[Colin]  🏆 ── Mined Block hashPrevBlock History (Top 5) ─────");
-        if (blocks.empty())
-        {
-            m_logger->info("[Colin]  💤   (no blocks mined yet)");
-        }
-        else
-        {
-            for (size_t i = 0; i < blocks.size(); ++i)
-            {
-                const auto& b = blocks[i];
-                m_logger->info("[Colin]    {} #{} height={} channel={} confirmations={}",
-                    b.status_emoji, i + 1, b.height, b.channel_name, b.confirmations);
-                const char* blk_color = ANSI_RESET;
-                for (size_t j = 0; j < m_prev_hash_history.size(); ++j) {
-                    size_t history_idx = m_prev_hash_history.size() - 1 - j;
-                    if (m_prev_hash_history[history_idx] == b.hash_prev_block_hex) {
-                        blk_color = HASH_COLORS[j];
-                        break;
-                    }
-                }
-                m_logger->info("[Colin]       hashPrevBlock={}{}{}",
-                    blk_color, b.hash_prev_block_hex, ANSI_RESET);
-            }
-        }
-    }
-
     m_logger->info("{}[Colin] ⛏️  ═══════════════════════════════════════════════════ ⛏️{}", ANSI_BOLD, ANSI_RESET);
 }
 
