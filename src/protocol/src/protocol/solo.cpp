@@ -243,9 +243,14 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 
 std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t>& genesis)
 {
+    // The node uses uint256_t::GetBytes() (big-endian) for this KDF.
+    // genesis bytes are stored in LE order (as decoded from hex config by from_hex()).
+    // Reverse to BE here so the derived key matches the node's derivation.
+    std::vector<uint8_t> genesis_be(genesis.rbegin(), genesis.rend());
+
     std::vector<uint8_t> preimage;
     preimage.insert(preimage.end(), KDF_DOMAIN.begin(), KDF_DOMAIN.end());
-    preimage.insert(preimage.end(), genesis.begin(), genesis.end());
+    preimage.insert(preimage.end(), genesis_be.begin(), genesis_be.end());
     
     // Use OpenSSL SHA256 - output is always SHA256_DIGEST_LENGTH (32) bytes
     std::vector<uint8_t> key(SHA256_DIGEST_LENGTH);
@@ -261,14 +266,14 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
     m_logger->info("║  ChaCha20 KEY DERIVATION DIAGNOSTIC (Miner Side)          ║");
     m_logger->info("╠═══════════════════════════════════════════════════════════╣");
     m_logger->info("║ Domain: {}", KDF_DOMAIN);
-    m_logger->info("║ Genesis size: {} bytes", genesis.size());
+    m_logger->info("║ Genesis size: {} bytes", genesis_be.size());
     
     // Log genesis bytes for comparison (sanity check: only if we have a reasonable amount)
-    if (genesis.size() >= MIN_GENESIS_LOG_SIZE) {
+    if (genesis_be.size() >= MIN_GENESIS_LOG_SIZE) {
         // Use existing keys::to_hex with truncated vector to limit log output
-        size_t log_length = std::min(genesis.size(), MAX_GENESIS_LOG_BYTES);
-        std::vector<uint8_t> genesis_truncated(genesis.begin(), genesis.begin() + log_length);
-        m_logger->info("║ Genesis (hex): {}", nexusminer::keys::to_hex(genesis_truncated));
+        size_t log_length = std::min(genesis_be.size(), MAX_GENESIS_LOG_BYTES);
+        std::vector<uint8_t> genesis_truncated(genesis_be.begin(), genesis_be.begin() + log_length);
+        m_logger->info("║ Genesis (hex, BE): {}", nexusminer::keys::to_hex(genesis_truncated));
     }
     
     // Log derived key for comparison with node's "Derived Key (32 bytes):" log
@@ -392,6 +397,12 @@ network::Shared_payload Solo::login(Login_handler handler)
     // Build MINER_AUTH_INIT payload
     network::Payload auth_payload;
     
+    // NOTE: genesis bytes stored in m_persistent_tritium_genesis are in LE order
+    // (as decoded from the hex config string by from_hex()).
+    // - Auth packet payload: LE bytes (node reads hashGenesis as-is for account lookup)
+    // - ChaCha20 KDF: BE bytes (node uses uint256_t::GetBytes() which is big-endian)
+    // The reversal is applied only inside derive_chacha20_session_key(), on a local copy.
+
     // ═══════════════════════════════════════════════════════════
     // STEP 1: hashGenesis FIRST (32 bytes) - enables key derivation
     // ═══════════════════════════════════════════════════════════
