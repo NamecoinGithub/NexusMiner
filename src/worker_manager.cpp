@@ -2035,6 +2035,16 @@ void Worker_manager::retry_template_request(bool bForce)
         mark_recovery_initiated("health_monitor_or_validation");
     }
 
+    // Early-exit if not yet authenticated — the channel-advanced staleness detector
+    // can fire during the brief window after a push increments channel_height but
+    // before MINER_AUTH_RESULT has set m_authenticated.  This is a normal transient
+    // startup/reconnect condition; the health monitor will retry at the next tick.
+    if (!solo_protocol->is_authenticated()) {
+        m_logger->info("[Worker_manager] GET_BLOCK deferred — not yet authenticated (auth in progress); "
+                       "health monitor will retry when session is established");
+        return;
+    }
+
     // Get protocol lane from connection
     ProtocolLane lane = m_connection->get_protocol_lane();
     uint16_t remote_port = m_connection->remote_endpoint().port();
@@ -2053,7 +2063,7 @@ void Worker_manager::retry_template_request(bool bForce)
             m_recovery_get_block_transmitted = true;
             m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
         } else {
-            m_logger->warn("[Worker_manager]   GET_BLOCK not sent (not authenticated) — recovery may be delayed");
+            m_logger->info("[Worker_manager]   GET_BLOCK not sent — get_work() returned empty (unexpected)");
         }
     } else if (lane == ProtocolLane::STATELESS) {
         // Stateless lane: Request fresh template via GET_BLOCK (0xD081).
@@ -2068,7 +2078,7 @@ void Worker_manager::retry_template_request(bool bForce)
             m_recovery_get_block_transmitted = true;
             m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
         } else {
-            m_logger->warn("[Worker_manager]   GET_BLOCK not sent (not authenticated) — recovery may be delayed");
+            m_logger->info("[Worker_manager]   GET_BLOCK not sent — get_work() returned empty (unexpected)");
         }
     } else {
         m_logger->error("[Worker_manager] → Unknown protocol lane - cannot request template");

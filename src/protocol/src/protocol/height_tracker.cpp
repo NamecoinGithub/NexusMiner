@@ -195,9 +195,10 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     s.hash_prev_block = m_canonical.canonical_hash_prev_block;
     s.last_update_source = m_last_update_source;
 
-    // Per-channel heights: canonical only (push/round per-channel fields removed in PR #256)
-    s.prime_height = m_canonical.canonical_prime_height;
-    s.hash_height  = m_canonical.canonical_hash_height;
+    // Per-channel heights: sourced from keepalive ACKs (canonical per-channel fields are
+    // never populated by OnBlockDataReceived — keepalive is the only writer for these).
+    s.prime_height = m_diagnostic.keepalive_prime_height;
+    s.hash_height  = m_diagnostic.keepalive_hash_height;
     s.stake_height = m_diagnostic.keepalive_stake_height;
 
     // Fork detection fields — diagnostic only
