@@ -140,10 +140,30 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         if (m_config.has_tritium_genesis()) {
             std::vector<uint8_t> genesis;
             if (keys::from_hex(m_config.get_tritium_genesis(), genesis)) {
+                // CRITICAL FIX: Reverse byte order to match node's uint256_t::GetBytes() format
+                //
+                // The node stores genesis as uint256_t and calls GetBytes() which returns big-endian bytes.
+                // However, GetHex() returns little-endian hex (reversed byte order).
+                // Since from_hex() converts hex pairs directly to bytes, we get little-endian bytes.
+                // We must reverse them to match the node's big-endian GetBytes() output for key derivation.
+                //
+                // Example:
+                //   Node uint256_t: a174011c93ca1c80bca5388382b167cacd33d3154395ea8f45ac99a8308cd122
+                //   GetHex() output (LE): 22d18c30a899ac458fea954315d333cdca67b1828338a5bc801cca931c0174a1
+                //   from_hex() result:    [0x22, 0xd1, 0x8c, 0x30, ...] (little-endian)
+                //   GetBytes() output:    [0xa1, 0x74, 0x01, 0x1c, ...] (big-endian)
+                //   After reverse:        [0xa1, 0x74, 0x01, 0x1c, ...] ✓ MATCHES node
+
+                // Log genesis bytes before and after reversal for verification
+                std::string before_hex = keys::to_hex(std::vector<uint8_t>(genesis.begin(), genesis.begin() + std::min(genesis.size(), size_t(8))));
+                std::reverse(genesis.begin(), genesis.end());
+                std::string after_hex = keys::to_hex(std::vector<uint8_t>(genesis.begin(), genesis.begin() + std::min(genesis.size(), size_t(8))));
+                m_logger->info("[Worker_manager] Genesis byte order: before=[{}...] after=[{}...] (reversed to match node GetBytes())", before_hex, after_hex);
+
                 solo_protocol->set_tritium_genesis(genesis);
                 m_logger->info("[Worker_manager] Tritium GenesisHash configured for reward binding");
             } else {
-                m_logger->warn("[Worker_manager] Failed to parse tritium_genesis hex - invalid hex format");
+                m_logger->warn("[Worker_manager] Failed to parse Tritium GenesisHash - invalid hex format");
             }
         }
         
@@ -1302,8 +1322,11 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
         secondary_solo->set_address(m_config.get_local_ip());
         if (m_config.has_tritium_genesis()) {
             std::vector<uint8_t> genesis;
-            if (keys::from_hex(m_config.get_tritium_genesis(), genesis))
+            if (keys::from_hex(m_config.get_tritium_genesis(), genesis)) {
+                // Reverse byte order to match node's uint256_t::GetBytes() format (see primary connection setup for detailed explanation)
+                std::reverse(genesis.begin(), genesis.end());
                 secondary_solo->set_tritium_genesis(genesis);
+            }
         }
         secondary_solo->set_keepalive_interval(m_config.get_keepalive_interval());
         secondary_solo->enable_chacha20_wrapping(true);
