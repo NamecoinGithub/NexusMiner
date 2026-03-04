@@ -60,48 +60,72 @@ void SessionManager::start_session(uint32_t session_id,
                                    const std::vector<uint8_t>& tritium_genesis)
 {
     stop_keepalive_timer();
-    m_session.session_id = session_id;
-    m_session.session_key = session_key;
-    m_session.tritium_genesis = tritium_genesis;
-    m_session.state = SessionState::AUTHENTICATED;
-    m_session.session_start = std::chrono::system_clock::now();
-    m_session.last_keepalive = m_session.session_start;
-    m_session.keepalive_count = 0;
-    
+
+    {
+        std::lock_guard<std::mutex> lock(m_session_mutex);
+        m_session.session_id = session_id;
+        m_session.session_key = session_key;
+        m_session.tritium_genesis = tritium_genesis;
+        m_session.state = SessionState::AUTHENTICATED;
+        m_session.session_start = std::chrono::system_clock::now();
+        m_session.last_keepalive = m_session.session_start;
+        m_session.keepalive_count = 0;
+    }
+
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}", session_id);
-    
+
     if (!session_key.empty()) {
         m_logger->info("[SessionManager] Session key received: {} bytes", session_key.size());
     }
-    
+
     if (!tritium_genesis.empty()) {
-        m_logger->info("[SessionManager] Tritium genesis bound to session: {} bytes", 
+        m_logger->info("[SessionManager] Tritium genesis bound to session: {} bytes",
                       tritium_genesis.size());
     }
 }
 
 void SessionManager::end_session()
 {
-    if (m_session.state != SessionState::DISCONNECTED) {
-        auto uptime = get_session_uptime();
-        m_logger->info("[SessionManager] Session ended - ID: 0x{:08X}, Uptime: {}s, Keepalives: {}",
-                      m_session.session_id, uptime.count(), m_session.keepalive_count);
+    std::chrono::seconds uptime;
+    uint32_t session_id;
+    uint32_t keepalive_count;
+    SessionState prev_state;
+    size_t genesis_size;
+
+    {
+        std::lock_guard<std::mutex> lock(m_session_mutex);
+        prev_state = m_session.state;
+        session_id = m_session.session_id;
+        keepalive_count = m_session.keepalive_count;
+
+        if (prev_state != SessionState::DISCONNECTED) {
+            uptime = get_session_uptime_locked();
+        }
+
+        m_session.session_id = 0;
+        m_session.session_key.clear();
+
+        // Preserve tritium_genesis if configured (enables reconnection without reconfiguration)
+        if (!m_preserve_genesis_on_disconnect) {
+            m_session.tritium_genesis.clear();
+        }
+        genesis_size = m_session.tritium_genesis.size();
+
+        m_session.state = SessionState::DISCONNECTED;
+        m_session.keepalive_count = 0;
     }
-    
-    m_session.session_id = 0;
-    m_session.session_key.clear();
+
     stop_keepalive_timer();
-    
-    // Preserve tritium_genesis if configured (enables reconnection without reconfiguration)
-    if (!m_preserve_genesis_on_disconnect) {
-        m_session.tritium_genesis.clear();
-    } else {
-        m_logger->debug("[SessionManager] Preserving tritium_genesis for reconnection ({} bytes)", 
-                       m_session.tritium_genesis.size());
+
+    if (prev_state != SessionState::DISCONNECTED) {
+        m_logger->info("[SessionManager] Session ended - ID: 0x{:08X}, Uptime: {}s, Keepalives: {}",
+                      session_id, uptime.count(), keepalive_count);
     }
-    
-    m_session.state = SessionState::DISCONNECTED;
-    m_session.keepalive_count = 0;
+
+    if (m_preserve_genesis_on_disconnect && genesis_size > 0) {
+        m_logger->debug("[SessionManager] Preserving tritium_genesis for reconnection ({} bytes)",
+                       genesis_size);
+    }
 }
 
 void SessionManager::set_connection(std::shared_ptr<network::Connection> connection)
@@ -123,9 +147,14 @@ void SessionManager::start_keepalive_timer()
     m_keepalive_active = true;
 
     auto self = shared_from_this();
+    uint64_t generation = m_keepalive_generation.load();
     m_keepalive_timer->expires_after(KEEPALIVE_EARLY_INTERVAL);
-    m_keepalive_timer->async_wait([self](const asio::error_code& error) {
+    m_keepalive_timer->async_wait([self, generation](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) {
+            return;
+        }
+        // Check if this timer callback is stale
+        if (generation != self->m_keepalive_generation.load()) {
             return;
         }
 
@@ -140,6 +169,7 @@ void SessionManager::start_keepalive_timer()
 void SessionManager::stop_keepalive_timer()
 {
     m_keepalive_active = false;
+    ++m_keepalive_generation;  // invalidate all pending timer lambdas
     if (m_keepalive_timer) {
         m_keepalive_timer->cancel();
     }
@@ -157,9 +187,14 @@ void SessionManager::schedule_regular_keepalives(const std::shared_ptr<SessionMa
     // Note: m_keepalive_interval_hours is a config-driven session cache concept
     // retained for potential future use (e.g., session expiry checks), but it
     // does NOT control the TCP ping cadence which must be fixed at 45s.
+    uint64_t generation = m_keepalive_generation.load();
     m_keepalive_timer->expires_after(KEEPALIVE_TCP_INTERVAL);
-    m_keepalive_timer->async_wait([self](const asio::error_code& error) {
+    m_keepalive_timer->async_wait([self, generation](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) {
+            return;
+        }
+        // Check if this timer callback is stale
+        if (generation != self->m_keepalive_generation.load()) {
             return;
         }
 
@@ -183,17 +218,29 @@ void SessionManager::send_keepalive(const char* cadence)
         return;
     }
 
+    uint32_t session_id;
+    {
+        std::lock_guard<std::mutex> lock(m_session_mutex);
+        session_id = m_session.session_id;
+    }
+
     connection->transmit(payload);
     m_logger->info("[SessionManager] Keepalive sent ({}) for session 0x{:08X}",
-                  cadence, m_session.session_id);
+                  cadence, session_id);
 }
 
 network::Shared_payload SessionManager::build_keepalive_packet() const
 {
-    if (m_session.session_id == 0) {
+    uint32_t session_id;
+    {
+        std::lock_guard<std::mutex> lock(m_session_mutex);
+        session_id = m_session.session_id;
+    }
+
+    if (session_id == 0) {
         return network::Shared_payload{};
     }
-    
+
     // Validate protocol lane is set - UNKNOWN lane is not allowed
     if (m_protocol_lane == ProtocolLane::UNKNOWN) {
         m_logger->error("[SessionManager] build_keepalive_packet() called with UNKNOWN protocol lane");
@@ -204,20 +251,20 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
 
     // v2 keepalive payload: [session_id(4 LE)][miner_prevblock_suffix(4 raw bytes)]
     std::vector<uint8_t> payload;
-    append_uint32_le(payload, m_session.session_id);
+    append_uint32_le(payload, session_id);
     payload.insert(payload.end(), m_prevblock_suffix.begin(), m_prevblock_suffix.end());
 
     // Build lane-aware packet based on protocol lane
     // On stateless lane, use mirror-mapped SESSION_KEEPALIVE (0xD0D4)
     // On legacy lane, use legacy SESSION_KEEPALIVE (212)
     bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
-    
+
     Packet packet = use_stateless_opcode
         ? Packet{ LLP::StatelessMining::SESSION_KEEPALIVE,  // already uint16_t
                   std::make_shared<network::Payload>(payload) }
         : Packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE),
                   std::make_shared<network::Payload>(payload) };
-    
+
     return packet.get_bytes();
 }
 
@@ -226,7 +273,13 @@ network::Shared_payload SessionManager::build_session_status_packet(
 {
     using namespace ::LLP::SessionStatusOpcodes;
 
-    if (m_session.session_id == 0)
+    uint32_t session_id;
+    {
+        std::lock_guard<std::mutex> lock(m_session_mutex);
+        session_id = m_session.session_id;
+    }
+
+    if (session_id == 0)
         return network::Shared_payload{};
 
     if (m_protocol_lane == ProtocolLane::UNKNOWN) {
@@ -241,7 +294,7 @@ network::Shared_payload SessionManager::build_session_status_packet(
     if (secondary_up)    status_flags |= MINER_SECONDARY_UP;
 
     ::LLP::SessionStatusFrame frame;
-    frame.session_id   = m_session.session_id;
+    frame.session_id   = session_id;
     frame.status_flags = status_flags;
     auto payload = frame.Serialize();
 
@@ -259,43 +312,47 @@ network::Shared_payload SessionManager::build_session_status_packet(
 
 bool SessionManager::is_keepalive_due() const
 {
-    if (!is_active()) {
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    if (m_session.state != SessionState::AUTHENTICATED &&
+        m_session.state != SessionState::ACTIVE) {
         return false;
     }
-    
+
     auto now = std::chrono::system_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::hours>(
         now - m_session.last_keepalive);
-    
+
     return elapsed.count() >= m_keepalive_interval_hours;
 }
 
 void SessionManager::record_keepalive()
 {
+    std::lock_guard<std::mutex> lock(m_session_mutex);
     m_session.last_keepalive = std::chrono::system_clock::now();
     m_session.keepalive_count++;
-    
+
     // Transition to ACTIVE state after first keepalive
     if (m_session.state == SessionState::AUTHENTICATED) {
         m_session.state = SessionState::ACTIVE;
     }
-    
-    auto uptime = get_session_uptime();
+
+    auto uptime = get_session_uptime_locked();
     m_logger->info("[SessionManager] Keepalive #{} sent - Session uptime: {}h",
                   m_session.keepalive_count, uptime.count() / 3600);
 }
 
 void SessionManager::set_state(SessionState state)
 {
+    std::lock_guard<std::mutex> lock(m_session_mutex);
     if (m_session.state != state) {
         const char* state_names[] = {
             "DISCONNECTED", "AUTHENTICATING", "AUTHENTICATED", "ACTIVE", "EXPIRED"
         };
-        
+
         m_logger->info("[SessionManager] State transition: {} -> {}",
                       state_names[static_cast<int>(m_session.state)],
                       state_names[static_cast<int>(state)]);
-        
+
         m_session.state = state;
 
         if (state == SessionState::EXPIRED && m_session_expired_handler)
@@ -305,8 +362,33 @@ void SessionManager::set_state(SessionState state)
 
 bool SessionManager::is_active() const
 {
-    return (m_session.state == SessionState::AUTHENTICATED || 
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    return (m_session.state == SessionState::AUTHENTICATED ||
             m_session.state == SessionState::ACTIVE);
+}
+
+SessionManager::SessionState SessionManager::get_state() const
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    return m_session.state;
+}
+
+uint32_t SessionManager::get_session_id() const
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    return m_session.session_id;
+}
+
+std::vector<uint8_t> SessionManager::get_session_key() const
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    return m_session.session_key;
+}
+
+std::vector<uint8_t> SessionManager::get_tritium_genesis() const
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    return m_session.tritium_genesis;
 }
 
 void SessionManager::set_tritium_genesis(const std::vector<uint8_t>& genesis)
@@ -316,36 +398,51 @@ void SessionManager::set_tritium_genesis(const std::vector<uint8_t>& genesis)
                       genesis.size());
         return;
     }
-    
+
+    std::lock_guard<std::mutex> lock(m_session_mutex);
     m_session.tritium_genesis = genesis;
     m_logger->info("[SessionManager] Tritium genesis set: {} bytes", genesis.size());
 }
 
-std::chrono::seconds SessionManager::get_session_uptime() const
+std::chrono::seconds SessionManager::get_session_uptime_locked() const
 {
     if (m_session.state == SessionState::DISCONNECTED) {
         return std::chrono::seconds(0);
     }
-    
+
     auto now = std::chrono::system_clock::now();
     return std::chrono::duration_cast<std::chrono::seconds>(
         now - m_session.session_start);
 }
 
+std::chrono::seconds SessionManager::get_session_uptime() const
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    return get_session_uptime_locked();
+}
+
 std::chrono::seconds SessionManager::get_time_until_keepalive() const
 {
-    if (!is_active()) {
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    if (m_session.state != SessionState::AUTHENTICATED &&
+        m_session.state != SessionState::ACTIVE) {
         return std::chrono::seconds(0);
     }
-    
+
     auto now = std::chrono::system_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
         now - m_session.last_keepalive);
-    
+
     auto interval_seconds = std::chrono::hours(m_keepalive_interval_hours);
     auto remaining = interval_seconds - elapsed;
-    
+
     return std::max(remaining, std::chrono::seconds(0));
+}
+
+SessionManager::SessionInfo SessionManager::get_session_info() const
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    return m_session;
 }
 
 void SessionManager::set_prevblock_suffix(const std::array<uint8_t, 4>& suffix)
