@@ -1307,6 +1307,8 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
         secondary_solo->set_keepalive_interval(m_config.get_keepalive_interval());
         secondary_solo->enable_chacha20_wrapping(true);
         secondary_solo->enable_disposable_falcon(true);
+        m_logger->info("[SIM Link] Secondary lane: ChaCha20 ENABLED, genesis configured ({} bytes)",
+            m_config.has_tritium_genesis() ? m_config.get_tritium_genesis().size() / 2 : 0);  // hex string → byte count
         if (m_config.has_reward_address())
             secondary_solo->set_reward_address(m_config.get_reward_address());
     }
