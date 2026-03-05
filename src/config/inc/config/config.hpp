@@ -7,6 +7,7 @@
 #include "config/worker_config.hpp"
 #include "config/stats_printer_config.hpp"
 #include "config/types.hpp"
+#include "protocol_lane.hpp"
 
 namespace spdlog { class logger; }
 namespace nexusminer
@@ -86,9 +87,7 @@ public:
 	/// Primary 9323 → secondary 8323 (legacy); primary 8323 → secondary 9323 (stateless).
 	std::uint16_t get_secondary_port() const
 	{
-		constexpr std::uint16_t STATELESS_PORT = 9323;
-		constexpr std::uint16_t LEGACY_PORT    = 8323;
-		return (m_port == STATELESS_PORT) ? LEGACY_PORT : STATELESS_PORT;
+		return (m_port == ProtocolPorts::STATELESS_PORT) ? ProtocolPorts::LEGACY_PORT : ProtocolPorts::STATELESS_PORT;
 	}
 
 	// GET_BLOCK miner-side rate limit (milliseconds, default 2000)

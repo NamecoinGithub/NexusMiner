@@ -853,9 +853,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
             // Derive secondary port from the effective primary port
             uint16_t effective_primary_port = 0;
             effective_endpoint.port(effective_primary_port);
-            constexpr uint16_t STATELESS_PORT = 9323;
-            constexpr uint16_t LEGACY_PORT = 8323;
-            uint16_t secondary_port = (effective_primary_port == STATELESS_PORT) ? LEGACY_PORT : STATELESS_PORT;
+            uint16_t secondary_port = (effective_primary_port == ProtocolPorts::STATELESS_PORT) ? ProtocolPorts::LEGACY_PORT : ProtocolPorts::STATELESS_PORT;
 
             // Schedule secondary reconnection with the new failover IP
             network::Endpoint secondary_endpoint{
@@ -1443,7 +1441,7 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                 self->m_logger->warn("[SIM Link] Secondary lane connection dropped ({}). Scheduling retry.",
                     network::Result::code_to_string(result));
                 self->m_sim_link.on_lane_failed(
-                    secondary_endpoint.port() == 9323 ? ProtocolLane::STATELESS : ProtocolLane::LEGACY);
+                    secondary_endpoint.port() == ProtocolPorts::STATELESS_PORT ? ProtocolLane::STATELESS : ProtocolLane::LEGACY);
                 self->retry_secondary_connect(secondary_endpoint);
             }
             else if (result == network::Result::connection_ok)
