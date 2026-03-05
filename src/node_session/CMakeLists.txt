@@ -22,13 +22,15 @@ target_link_libraries(node_session
 
 # Unit tests for NodeSession
 add_executable(node_session_test node_session_test.cpp)
-target_link_libraries(node_session_test PRIVATE node_session protocol network config spdlog)
+target_link_libraries(node_session_test PRIVATE node_session protocol network config stats spdlog)
 target_include_directories(node_session_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src/LLP/include
     ${CMAKE_SOURCE_DIR}/src/protocol/inc
     ${CMAKE_SOURCE_DIR}/src/network/inc
     ${CMAKE_SOURCE_DIR}/src/config/inc
+    ${CMAKE_SOURCE_DIR}/src/stats/inc
     ${CMAKE_SOURCE_DIR}/src
 )
 
