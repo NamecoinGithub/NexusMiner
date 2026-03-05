@@ -1,6 +1,7 @@
 #include "protocol/solo.hpp"
 #include "protocol/protocol.hpp"
 #include "protocol/falcon_constants.hpp"
+#include "protocol/protocol_constants.hpp"
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/packet_builder.hpp"
 #include "packet.hpp"
@@ -2362,16 +2363,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                                                m_session_manager->get_tritium_genesis());
                 m_logger->info("[Solo Session] Session updated with Falcon Session Key");
             }
-            
-            // Adjust keepalive interval based on timeout (ping at 1/2 of timeout = 2 pings per window)
-            // Using /2 ensures 2 keepalives per node timeout window (vs /3 which gives 3).
+
+            // Adjust keepalive interval based on timeout (ping at 1/N of timeout)
+            // Using KEEPALIVE_SAFETY_DIVISOR=2 ensures 2 keepalives per node timeout window.
             // Division by 2 is safer: less timer load, larger per-ping safety margin.
             // Example: 24h node timeout → keepalive every 12h (2 pings/window)
             if (session_timeout > 0 && m_session_manager) {
-                uint16_t keepalive_hours = static_cast<uint16_t>(std::max(1u, session_timeout / (2u * 3600u)));
+                uint16_t keepalive_hours = static_cast<uint16_t>(
+                    std::max(1u, session_timeout / (ProtocolConstants::KEEPALIVE_SAFETY_DIVISOR * 3600u)));
                 m_session_manager->set_keepalive_interval(keepalive_hours);
-                m_logger->info("[Solo Session] Keepalive interval adjusted to {} hours (node timeout={}s, 2 pings/window)",
-                              keepalive_hours, session_timeout);
+                m_logger->info("[Solo Session] Keepalive interval adjusted to {} hours (node timeout={}s, {} pings/window)",
+                              keepalive_hours, session_timeout, ProtocolConstants::KEEPALIVE_SAFETY_DIVISOR);
                 if (m_session_start_handler) {
                     m_session_start_handler(keepalive_hours);
                 }

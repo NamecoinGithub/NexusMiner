@@ -1,11 +1,13 @@
 #include <iostream>
 #include <algorithm>
 #include <cstdint>
+#include "Util/include/exponential_backoff.h"
+#include "protocol/inc/protocol/protocol_constants.hpp"
 
-// Constants matching worker_manager.hpp
-constexpr uint32_t MAX_SESSION_AUTH_RETRIES = 10;
-constexpr uint32_t BASE_SESSION_RETRY_MS = 1000;
-constexpr uint32_t MAX_SESSION_RETRY_MS = 60000;
+// Use constants from protocol_constants.hpp
+using nexusminer::protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES;
+using nexusminer::protocol::ProtocolConstants::BASE_SESSION_RETRY_MS;
+using nexusminer::protocol::ProtocolConstants::MAX_SESSION_RETRY_MS;
 
 namespace
 {
@@ -20,10 +22,11 @@ bool expect(bool condition, const char* message)
     return true;
 }
 
-// Simulate exponential backoff calculation from worker_manager.cpp:989-990
+// Test helper using the new utility
 uint32_t calculate_backoff_delay_ms(uint32_t attempt_count)
 {
-    return std::min(BASE_SESSION_RETRY_MS * (1u << (attempt_count - 1)), MAX_SESSION_RETRY_MS);
+    nexusminer::util::ExponentialBackoff backoff{BASE_SESSION_RETRY_MS, MAX_SESSION_RETRY_MS};
+    return backoff.calculate_delay_ms(attempt_count);
 }
 }
 
