@@ -182,38 +182,11 @@ chrono::Timer::Handler Timer_manager::template_health_handler(std::uint16_t heal
     }; 
 }
 
-void Timer_manager::start_secondary_connection_retry_timer(std::uint16_t timer_interval,
-    std::weak_ptr<Worker_manager> worker_manager,
-    network::Endpoint const& secondary_endpoint)
-{
-    m_secondary_connection_retry_timer->start(chrono::Seconds(timer_interval),
-        secondary_connection_retry_handler(std::move(worker_manager), secondary_endpoint));
-}
-
 void Timer_manager::start_lane_health_check_timer(std::uint16_t timer_interval,
     std::weak_ptr<Worker_manager> worker_manager)
 {
     m_lane_health_check_timer->start(chrono::Seconds(timer_interval),
         lane_health_check_handler(timer_interval, std::move(worker_manager)));
-}
-
-chrono::Timer::Handler Timer_manager::secondary_connection_retry_handler(
-    std::weak_ptr<Worker_manager> worker_manager,
-    network::Endpoint const& secondary_endpoint)
-{
-    return [worker_manager, secondary_endpoint](bool canceled)
-    {
-        if (canceled)
-        {
-            return;
-        }
-
-        auto wm = worker_manager.lock();
-        if (wm)
-        {
-            wm->connect_secondary(secondary_endpoint);
-        }
-    };
 }
 
 chrono::Timer::Handler Timer_manager::lane_health_check_handler(std::uint16_t health_check_interval,

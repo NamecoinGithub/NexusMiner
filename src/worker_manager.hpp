@@ -13,7 +13,7 @@
 #include "stats/mined_block_cache.hpp"
 #include "Util/include/exponential_backoff.h"
 #include "protocol/inc/protocol/protocol_constants.hpp"
-#include "node_session/node_session.hpp"
+#include "node_session/inc/node_session/node_session.hpp"
 
 #include <memory>
 #include <deque>

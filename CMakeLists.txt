@@ -235,7 +235,7 @@ endif()
               
 
 target_include_directories(NexusMiner PUBLIC "${PROJECT_BINARY_DIR}")
-target_link_libraries(NexusMiner NexusMiner_platform chrono network config stats protocol cpu fpga LLP worker TAO asio spdlog::spdlog)
+target_link_libraries(NexusMiner NexusMiner_platform chrono network config stats protocol node_session cpu fpga LLP worker TAO asio spdlog::spdlog)
 if(WITH_GPU_CUDA)
     target_link_libraries(NexusMiner gpu)
 endif()

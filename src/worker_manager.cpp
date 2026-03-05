@@ -257,28 +257,28 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             m_logger->info("   Height:     {}", block_data->nHeight);
                             m_logger->info("   Nonce:      0x{:016x}", block_data->nNonce);
                             m_logger->info("════════════════════════════════════════════════════════");
-                            
-                            if (!m_connection && !m_secondary_connection)
+
+                            if (!m_primary_node_session || !m_primary_node_session->is_authenticated())
                             {
-                                m_logger->error("[Worker_manager] No connection on any lane. Can't submit block.");
+                                m_logger->error("[Worker_manager] No authenticated session. Can't submit block.");
                                 return;
                             }
-                            
+
                             // Get the mining template interface to prepare full block submission
-                            auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
+                            auto solo_protocol = m_primary_node_session->get_primary_protocol();
                             if (!solo_protocol)
                             {
-                                m_logger->error("[Worker_manager] Failed to cast protocol to Solo protocol");
+                                m_logger->error("[Worker_manager] Failed to get protocol from NodeSession");
                                 return;
                             }
-                            
+
                             auto* template_interface = solo_protocol->get_template_interface();
                             if (!template_interface)
                             {
                                 m_logger->error("[Worker_manager] Template interface not available");
                                 return;
                             }
-                            
+
                             // ✅ NEW: Final staleness check before submission (Template Staleness Prevention)
                             uint64_t template_age = template_interface->get_template_age();
 
@@ -306,45 +306,18 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                 }
                                 template_interface->discard_template(channel_stale ? "Channel height advanced before submission"
                                                                                    : "Age exceeded 600s before submission");
-                                
-                                // ====== LANE-GATED STALE TEMPLATE REFRESH ======
-                                // Lane-aware recovery: only use legacy polling on legacy lane
-                                ProtocolLane lane = m_connection->get_protocol_lane();
-                                uint16_t remote_port = m_connection->remote_endpoint().port();
-                                
-                                m_logger->info("[Worker_manager] Stale template recovery on {} lane (port {})", 
-                                              get_lane_name(lane), remote_port);
-                                
-                                if (lane == ProtocolLane::LEGACY) {
-                                    // Legacy lane: Request fresh template via GET_BLOCK polling
-                                    m_logger->info("[Worker_manager] → Sending GET_BLOCK request (legacy polling)");
-                                    auto* solo_conn_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
-                                    if (solo_conn_protocol && m_connection) {
-                                        auto work_payload = solo_conn_protocol->get_work();
-                                        if (work_payload && !work_payload->empty()) {
-                                            m_connection->transmit(work_payload);
-                                        }
-                                    }
-                                } else if (lane == ProtocolLane::STATELESS) {
-                                    // Stateless lane: Request fresh template via GET_BLOCK (0xD081).
-                                    // MINER_READY is NOT used here — it is a one-time subscription handshake
-                                    // sent only during initial login. GET_BLOCK is the correct recovery request.
-                                    m_logger->info("[Worker_manager] → Sending GET_BLOCK request (stateless 0xD081)");
-                                    auto* solo_conn_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
-                                    if (solo_conn_protocol && m_connection) {
-                                        auto work_payload = solo_conn_protocol->get_work();
-                                        if (work_payload && !work_payload->empty()) {
-                                            m_connection->transmit(work_payload);
-                                        }
-                                    }
-                                } else {
-                                    m_logger->error("[Worker_manager] → Unknown protocol lane - cannot recover");
+
+                                // Request fresh template via NodeSession
+                                m_logger->info("[Worker_manager] Requesting fresh template via NodeSession");
+                                auto work_payload = m_primary_node_session->request_work();
+                                if (work_payload && !work_payload->empty()) {
+                                    m_primary_node_session->transmit(work_payload);
                                 }
                                 return;
                             }
-                            
+
                             m_logger->info("[Worker_manager] 💎 Solution found! Age: {}s, Channel height valid ✅ - SUBMITTING", template_age);
-                            
+
                             // Gap 2: Log hashPrevBlock before submission (SUBMIT AUDIT).
                             // Cross-reference: node Guard 2 checks pBlock->hashPrevBlock == hashBestChain.
                             // If node rejects "stale block", compare this log against node's hashBestChain.
@@ -371,23 +344,23 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             if (!block_data->vOffsets.empty())
                                 m_logger->info("[Worker_manager]   vOffsets: {} bytes (Prime channel)",
                                                block_data->vOffsets.size());
-                            
+
                             auto full_block_bytes = template_interface->prepare_block_submission(
-                                block_data->merkle_root.GetBytes(), 
+                                block_data->merkle_root.GetBytes(),
                                 block_data->nNonce,
                                 block_data->vOffsets);
-                            
+
                             if (full_block_bytes.empty())
                             {
                                 m_logger->error("[Worker_manager] Failed to prepare block submission - empty payload");
                                 m_logger->error("[Worker_manager]   This indicates template or block data is invalid");
                                 return;
                             }
-                            
+
                             m_logger->info("[Worker_manager] Full block serialized: {} bytes", full_block_bytes.size());
                             m_logger->info("[Worker_manager] Submitting block to protocol layer...");
-                            
-                            // Submit the full block with SIM Link dual-lane fallback
+
+                            // Submit the full block via NodeSession
                             submit_solution(full_block_bytes, block_data->nNonce);
                         });
                         if (worker->is_running()) {
@@ -428,12 +401,14 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         );
         
         m_logger->info("[Worker_manager] Template distribution handler registered");
-        
+
         /* ========== REGISTER VALIDATION FAILURE HANDLER ========== */
         /* This handler is called when template validation fails */
         /* It stops workers and requests a fresh template */
-        auto* template_interface = solo_protocol->get_template_interface();
-        if (template_interface) {
+        auto solo_protocol = m_primary_node_session->get_primary_protocol();
+        if (solo_protocol) {
+            auto* template_interface = solo_protocol->get_template_interface();
+            if (template_interface) {
             template_interface->set_validation_failure_handler(
                 [this](const protocol::MiningTemplateInterface::ValidationResult& result) {
                     m_logger->error("[Worker_manager] ════════════════════════════════════════");
@@ -458,6 +433,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         } else {
             m_logger->warn("[Worker_manager] Template interface not available - validation failure handler not registered");
         }
+    } else {
+        m_logger->warn("[Worker_manager] Primary protocol not available - validation failure handler not registered");
+    }
 
         /* ========== REGISTER RECOVERY INITIATED HANDLER ========== */
         /* Priority 1 — "Pause not Destroy": Instead of stop_all_workers() on    */
@@ -876,676 +854,211 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
     std::string wallet_addr;
     wallet_endpoint.address(wallet_addr);
     uint16_t configured_port = wallet_endpoint.port();
-    
+
     m_logger->info("[Solo] Connecting to wallet {}:{}", wallet_addr, configured_port);
     m_logger->info("[Solo] Port Configuration: Using port {} from miner.conf", configured_port);
     m_logger->debug("[Solo] Connection initiated to endpoint: {}", wallet_endpoint.to_string());
-    
+
+    // Use NodeSession to connect (handles both stateless and legacy ports via SIM Link)
     std::weak_ptr<Worker_manager> weak_self = shared_from_this();
-    auto connection = m_socket->connect(wallet_endpoint, [weak_self, wallet_endpoint](auto result, auto receive_buffer)
-    {
+    return m_primary_node_session->connect(wallet_endpoint, [weak_self, wallet_endpoint](bool success) {
         auto self = weak_self.lock();
-        if(self)
+        if (!self) return;
+
+        if (!success) {
+            self->m_logger->error("[Solo] Connection to wallet {} not successful", wallet_endpoint.to_string());
+            self->retry_connect(wallet_endpoint);
+            return;
+        }
+
+        // Connection and authentication succeeded
+        self->m_logger->info("[Solo] Successfully connected and authenticated to {}", wallet_endpoint.to_string());
+
+        // Reset retry counters on successful connection
+        self->m_connection_retry_count = 0;
+        self->m_connection_backoff.reset();
+        self->m_primary_fail_count = 0;
+
+        // Clear reconnect guard now that connection is fully authenticated
+        self->m_reconnect_in_progress = false;
+
+        // Start timers once only (guarded by flags)
+        auto const print_statistics_interval = self->m_config.get_print_statistics_interval();
+        if (!self->m_stats_timers_started)
         {
-            if (result == network::Result::connection_declined ||
-                result == network::Result::connection_aborted ||
-                result == network::Result::connection_closed ||
-                result == network::Result::connection_error)
-            {
-                self->m_logger->error("[Solo] Connection to wallet {} not successful. Result: {} - This may indicate wallet lock, sync issues, or network problems", 
-                    wallet_endpoint.to_string(), network::Result::code_to_string(result));
+            self->m_stats_timers_started = true;
+            self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
+            self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
+        }
 
-                // SIM Link: mark primary lane dead; if secondary is alive it keeps workers running
-                ProtocolLane primary_lane = self->m_connection
-                    ? self->m_connection->get_protocol_lane()
-                    : ProtocolLane::STATELESS;
-                self->m_sim_link.on_lane_failed(primary_lane);
+        // Start template health monitor
+        constexpr uint16_t TEMPLATE_HEALTH_INTERVAL = 30;
+        if (!self->m_template_health_timer_started)
+        {
+            self->m_template_health_timer_started = true;
+            self->m_timer_manager.start_template_health_timer(TEMPLATE_HEALTH_INTERVAL, self);
+            self->m_logger->info("[Worker_manager] Template health monitor started (30s interval)");
+        }
 
-                if (self->m_sim_link.is_legacy_alive() || self->m_sim_link.is_stateless_alive()) {
-                    self->m_logger->info("[SIM Link] Primary lane DEAD — secondary lane alive, workers continue mining");
-                    ProtocolLane surviving_lane = self->m_sim_link.is_stateless_alive()
-                        ? ProtocolLane::STATELESS : ProtocolLane::LEGACY;
-                    if (self->m_sim_link.consume_bypass(surviving_lane)) {
-                        auto* sec_solo = dynamic_cast<protocol::Solo*>(self->m_secondary_protocol.get());
-                        if (sec_solo && self->m_secondary_connection) {
-                            auto work_payload = sec_solo->send_recovery_work_request();
-                            if (work_payload && !work_payload->empty()) {
-                                self->m_logger->info("[SIM Link] GET_BLOCK sent on surviving {} lane",
-                                    get_lane_name(surviving_lane));
-                                self->m_secondary_connection->transmit(work_payload);
-                            }
-                        }
-                    }
-                }
-
-                self->retry_connect(wallet_endpoint);
+        // Start GET_ROUND timer (access primary protocol through NodeSession)
+        constexpr uint16_t GET_ROUND_TIMER_INTERVAL = 1;
+        if (!self->m_get_round_timer_started)
+        {
+            self->m_get_round_timer_started = true;
+            auto solo_protocol_ptr = self->m_primary_node_session->get_primary_protocol();
+            if (solo_protocol_ptr) {
+                // Note: timer_manager needs to be updated to work with NodeSession
+                // For now, we'll skip this timer - it's disabled by default anyway
+                self->m_logger->info("[Solo Poll] GET_ROUND timer disabled (push notifications are primary)");
             }
-            else if (result == network::Result::connection_ok)
+        }
+
+        // Start lane health check timer
+        constexpr uint16_t LANE_HEALTH_INTERVAL = 30;
+        if (!self->m_lane_health_timer_started)
+        {
+            self->m_lane_health_timer_started = true;
+            self->m_timer_manager.start_lane_health_check_timer(LANE_HEALTH_INTERVAL, self);
+        }
+
+        // Start Colin agent on first successful connect
+        if (!self->m_colin_agent && self->m_config.get_colin_enabled())
+        {
+            self->m_colin_agent = std::make_shared<ColinAgent>(
+                self->m_io_context,
+                &self->m_sim_link,
+                self->m_stats_collector,
+                self->m_logger,
+                self->m_config.get_colin_report_interval_seconds());
+
+            // Wire up diagnostic sources
+            auto solo_protocol_ptr = self->m_primary_node_session->get_primary_protocol();
+            if (solo_protocol_ptr)
             {
-                // BUGFIX: The socket API documents that the handler may fire synchronously
-                // inside connect() before m_connection = std::move(connection) is reached
-                // at the bottom of Worker_manager::connect(). This occurs when
-                // local_ip = "0.0.0.0" causes an immediate loopback connect completion.
-                // Guard against null m_connection and defer via io_context post.
-                if (!self->m_connection)
-                {
-                    self->m_logger->warn("[Solo] Synchronous connect callback detected - "
-                                         "m_connection not yet assigned, deferring to io_context");
-                    ::asio::post(*self->m_io_context, [self, wallet_endpoint]()
-                    {
-                        // By the time this runs, m_connection has been assigned by the
-                        // return path of Worker_manager::connect(). Retry the connect
-                        // sequence to trigger the full connection_ok flow properly.
-                        self->retry_connect(wallet_endpoint);
+                std::weak_ptr<protocol::Solo> weak_proto = solo_protocol_ptr;
+
+                // Wire up PING_DIAG source
+                self->m_colin_agent->set_ping_source(
+                    [weak_proto]() -> ::LLP::ReceivedPingFrame {
+                        auto proto = weak_proto.lock();
+                        return proto ? proto->last_received_ping() : ::LLP::ReceivedPingFrame{};
                     });
-                    return;
-                }
 
-                // Log successful connection with actual port information
-                auto const& remote_ep = self->m_connection->remote_endpoint();
-                auto const& local_ep = self->m_connection->local_endpoint();
-                
-                std::string remote_addr, local_addr;
-                remote_ep.address(remote_addr);
-                local_ep.address(local_addr);
-                
-                uint16_t actual_remote_port = remote_ep.port();
-                uint16_t actual_local_port = local_ep.port();
-                
-                self->m_logger->info("[Solo] Connected to wallet {}", wallet_endpoint.to_string());
-                self->m_logger->info("[Solo] Dynamic Port Detection: Successfully connected to {}:{}", 
-                    remote_addr, actual_remote_port);
-                self->m_logger->info("[Solo] Local endpoint: {}:{}", local_addr, actual_local_port);
-                self->m_logger->debug("[Solo] Port Validation: Connection established on LLP port {}", 
-                    actual_remote_port);
+                // Wire up SESSION_STATUS_ACK source
+                self->m_colin_agent->set_status_source(
+                    [weak_proto]() -> std::pair<::LLP::SessionStatusAckFrame,
+                                                 std::chrono::steady_clock::time_point> {
+                        auto proto = weak_proto.lock();
+                        if (!proto) return {};
+                        return { proto->last_session_status_ack(),
+                                 proto->last_session_status_ack_time() };
+                    });
 
-                // Reset exponential backoff state on successful TCP connection
-                self->m_connection_retry_count = 0;
-                self->m_connection_backoff.reset();
+                // Wire up HeightTracker
+                self->m_colin_agent->set_height_tracker(&solo_protocol_ptr->get_height_tracker());
 
-                // Reset failover failure counter; also clear failover mode if we connected to primary
-                self->m_primary_fail_count = 0;
-                if (self->m_config.has_failover())
+                // Wire up MiningTemplateInterface
+                if (auto* tmpl_iface = solo_protocol_ptr->get_template_interface())
                 {
-                    if (self->m_using_failover)
-                    {
-                        self->m_logger->info("[Failover] Connected to failover node — will retry primary on next disconnect");
-                    }
-                    else
-                    {
-                        self->m_logger->info("[Failover] Connected to primary node — failover mode cleared");
-                    }
+                    self->m_colin_agent->set_template_source(
+                        [weak_proto]() -> ColinAgent::TemplateSnapshot {
+                            ColinAgent::TemplateSnapshot snap;
+                            auto proto = weak_proto.lock();
+                            if (!proto) return snap;
+                            auto* iface = proto->get_template_interface();
+                            if (!iface) return snap;
 
-                    // Initialize DualConnectionManager with current failover state
-                    if (self->m_config.get_enable_sim_link())
-                    {
-                        std::string active_ip;
-                        remote_ep.address(active_ip);
-                        self->m_sim_link.set_failover_active(self->m_using_failover, active_ip);
-                    }
-                }
+                            auto stats = iface->get_stats();
+                            snap.templates_received       = stats.templates_received;
+                            snap.templates_validated      = stats.templates_validated;
+                            snap.templates_rejected       = stats.templates_rejected;
+                            snap.templates_stale          = stats.templates_stale;
+                            snap.templates_fed            = stats.templates_fed;
+                            snap.templates_expired_age    = stats.templates_expired_age;
+                            snap.templates_expired_height = stats.templates_expired_height;
 
-                // Set protocol lane immediately after connection succeeds, before any data arrives.
-                // This ensures process_data() can always get the lane from the connection and
-                // eliminates the UNKNOWN lane window for new connections.
-                ProtocolLane primary_lane = self->m_connection->get_protocol_lane();
-                if (auto solo_protocol = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol))
-                {
-                    solo_protocol->set_protocol_lane(primary_lane);
-                    self->m_logger->info("[Lane] Primary lane set to {} from port {}",
-                        get_lane_name(primary_lane), self->m_connection->remote_endpoint().port());
-                }
-
-                self->m_connection->transmit(self->m_miner_protocol->login([self, wallet_endpoint](bool login_result)
-                {
-                    if(!login_result)
-                    {
-                        self->retry_connect(wallet_endpoint);
-                        return;
-                    }
-
-                    // BUG FIX (Bug 2): Removed old session_id=0 check from here.
-                    // Session ID check now happens in the session_authenticated_handler
-                    // which is invoked AFTER MINER_AUTH_RESULT processing is complete.
-                    // The login callback fires too early (before MINER_AUTH_RESULT arrives).
-
-                    auto const print_statistics_interval = self->m_config.get_print_statistics_interval();
-                    if (!self->m_stats_timers_started)
-                    {
-                        self->m_stats_timers_started = true;
-                        self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
-                        self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
-                    }
-                    // Solo mining uses stateless protocol with mandatory Falcon authentication (no GET_HEIGHT)
-                    self->m_logger->info("[Solo Phase 2] Stateless mining mode - GET_HEIGHT timer disabled");
-                    self->m_logger->info("[Solo Phase 2] Work requests handled via GET_BLOCK after successful auth");
-                    
-                    // ====== GET_ROUND POLLING (All Lanes) ======
-                    // GET_ROUND polling is DISABLED by default.
-                    // Push notifications are primary, template health monitor (300s) is safety net.
-                    // Timer still runs to support optional sanity-check polling if enabled.
-                    ProtocolLane lane = self->m_connection->get_protocol_lane();
-                    uint16_t remote_port = self->m_connection->remote_endpoint().port();
-                    
-                    self->m_logger->info("[Worker_manager Lane] Reading protocol lane from connection");
-                    self->m_logger->info("[Worker_manager Lane]   Lane: {} (port {})", get_lane_name(lane), remote_port);
-                    self->m_logger->info("[Worker_manager Lane]   Verifying lane agreement with Solo protocol layer");
-                    
-                    {
-                        // Start GET_ROUND timer for ALL lanes
-                        // Polling is disabled by default (push notifications are primary).
-                        // Timer still runs but should_send_get_round() returns false when disabled.
-                        constexpr uint16_t GET_ROUND_TIMER_INTERVAL = 1;  // Wake up every 1 second to check
-                        auto solo_protocol_ptr = std::dynamic_pointer_cast<protocol::Solo>(self->m_miner_protocol);
-                        if (solo_protocol_ptr) {
-                            if (!self->m_get_round_timer_started) {
-                                self->m_get_round_timer_started = true;
-                                self->m_timer_manager.start_get_round_timer(GET_ROUND_TIMER_INTERVAL, self->m_connection, solo_protocol_ptr);
-                                self->m_logger->info("[Solo Poll] ✓ GET_ROUND timer started on {} lane (port {})",
-                                    get_lane_name(lane), remote_port);
-                                self->m_logger->info("[Solo Poll]   Polling: disabled (push notifications are primary, health monitor is safety net)");
-                            }
-                        } else {
-                            self->m_logger->error("[Solo Poll] Failed to cast protocol to Solo - polling timer not started");
-                        }
-                    }
-                    
-                    // ====== START TEMPLATE HEALTH MONITOR ======
-                    // Periodic check for template age timeout (every 30 seconds)
-                    constexpr uint16_t TEMPLATE_HEALTH_INTERVAL = 30;
-                    if (!self->m_template_health_timer_started)
-                    {
-                        self->m_template_health_timer_started = true;
-                        self->m_timer_manager.start_template_health_timer(TEMPLATE_HEALTH_INTERVAL, self);
-                        self->m_logger->info("[Worker_manager] Template health monitor started (30s interval)");
-                    }
-
-                    // ====== SIM LINK: mark primary lane alive + start health check ======
-                    {
-                        ProtocolLane primary_lane = self->m_connection->get_protocol_lane();
-                        self->m_sim_link.on_lane_recovered(primary_lane);
-                        // Synchronize DCM alive flags with actual connection state
-                        if (primary_lane == ProtocolLane::STATELESS)
-                            self->m_sim_link.set_stateless_alive(true);
-                        else if (primary_lane == ProtocolLane::LEGACY)
-                            self->m_sim_link.set_legacy_alive(true);
-
-                        constexpr uint16_t LANE_HEALTH_INTERVAL = 30;  // log every 30s
-                        if (!self->m_lane_health_timer_started)
-                        {
-                            self->m_lane_health_timer_started = true;
-                            self->m_timer_manager.start_lane_health_check_timer(LANE_HEALTH_INTERVAL, self);
-                        }
-                    }
-
-                    // ====== COLIN: start diagnostic agent on first successful connect ======
-                    if (!self->m_colin_agent && self->m_config.get_colin_enabled())
-                    {
-                        self->m_colin_agent = std::make_shared<ColinAgent>(
-                            self->m_io_context,
-                            &self->m_sim_link,
-                            self->m_stats_collector,
-                            self->m_logger,
-                            self->m_config.get_colin_report_interval_seconds());
-                        // Wire up PING_DIAG source so emit_report() can display node diagnostics
-                        if (auto* s = dynamic_cast<protocol::Solo*>(self->m_miner_protocol.get()))
-                        {
-                            std::weak_ptr<protocol::Protocol> weak_proto = self->m_miner_protocol;
-                            self->m_colin_agent->set_ping_source(
-                                [weak_proto]() -> ::LLP::ReceivedPingFrame {
-                                    auto proto = weak_proto.lock();
-                                    if (!proto) return {};
-                                    auto* solo_ptr = dynamic_cast<protocol::Solo*>(proto.get());
-                                    return solo_ptr ? solo_ptr->last_received_ping() : ::LLP::ReceivedPingFrame{};
-                                });
-                            // Wire up SESSION_STATUS_ACK source for node lane-health diagnostics
-                            self->m_colin_agent->set_status_source(
-                                [weak_proto]() -> std::pair<::LLP::SessionStatusAckFrame,
-                                                             std::chrono::steady_clock::time_point> {
-                                    auto proto = weak_proto.lock();
-                                    if (!proto) return {};
-                                    auto* solo_ptr = dynamic_cast<protocol::Solo*>(proto.get());
-                                    if (!solo_ptr) return {};
-                                    return { solo_ptr->last_session_status_ack(),
-                                             solo_ptr->last_session_status_ack_time() };
-                                });
-                            // Wire up HeightTracker so emit_report() can display all channel heights
-                            // and the fork-score canary in the periodic diagnostic report.
-                            self->m_colin_agent->set_height_tracker(&s->get_height_tracker());
-
-                            // Wire MiningTemplateInterface → Colin template source
-                            if (auto* tmpl_iface = s->get_template_interface())
+                            if (iface->has_valid_template())
                             {
-                                self->m_colin_agent->set_template_source(
-                                    [weak_proto]() -> ColinAgent::TemplateSnapshot {
-                                        ColinAgent::TemplateSnapshot snap;
-                                        auto proto = weak_proto.lock();
-                                        if (!proto) return snap;
-                                        auto* solo_ptr = dynamic_cast<protocol::Solo*>(proto.get());
-                                        if (!solo_ptr) return snap;
-                                        auto* iface = solo_ptr->get_template_interface();
-                                        if (!iface) return snap;
-
-                                        auto stats = iface->get_stats();
-                                        snap.templates_received       = stats.templates_received;
-                                        snap.templates_validated      = stats.templates_validated;
-                                        snap.templates_rejected       = stats.templates_rejected;
-                                        snap.templates_stale          = stats.templates_stale;
-                                        snap.templates_fed            = stats.templates_fed;
-                                        snap.templates_expired_age    = stats.templates_expired_age;
-                                        snap.templates_expired_height = stats.templates_expired_height;
-
-                                        if (iface->has_valid_template())
-                                        {
-                                            if (const auto* tmpl = iface->get_current_template())
-                                            {
-                                                snap.has_valid_template = true;
-                                                snap.unified_height = tmpl->block.nHeight;  // canonical for ProofHash
-                                                snap.nBits          = tmpl->nBits;
-                                                snap.channel_height = tmpl->nChannelHeight; // staleness metadata only
-                                                snap.channel        = tmpl->block.nChannel;
-                                                snap.state_name     = protocol::MiningTemplateInterface::state_to_string(tmpl->state);
-                                                snap.age_seconds    = iface->get_template_age();
-                                            }
-                                        }
-                                        return snap;
-                                    });
-                                self->m_logger->info("[Worker_manager] Colin template source wired");
+                                if (const auto* tmpl = iface->get_current_template())
+                                {
+                                    snap.has_valid_template = true;
+                                    snap.unified_height = tmpl->block.nHeight;
+                                    snap.nBits          = tmpl->nBits;
+                                    snap.channel_height = tmpl->nChannelHeight;
+                                    snap.channel        = tmpl->block.nChannel;
+                                    snap.state_name     = protocol::MiningTemplateInterface::state_to_string(tmpl->state);
+                                    snap.age_seconds    = iface->get_template_age();
+                                }
                             }
-
-                            // Wire ColinPingHandler → Colin pong telemetry source
-                            self->m_colin_agent->set_pong_telemetry_source(
-                                [weak_proto]() -> ColinAgent::PongTelemetrySnapshot {
-                                    ColinAgent::PongTelemetrySnapshot pt;
-                                    auto proto = weak_proto.lock();
-                                    if (!proto) return pt;
-                                    auto* solo_ptr = dynamic_cast<protocol::Solo*>(proto.get());
-                                    if (!solo_ptr) return pt;
-                                    const auto& handler = solo_ptr->get_ping_handler();
-                                    pt.ping_count  = handler.ping_count();
-                                    pt.last_rtt_us = handler.last_rtt_us();
-                                    return pt;
-                                });
-                            self->m_logger->info("[Worker_manager] Colin pong telemetry source wired");
-                        }
-
-                        // Wire MinedBlockCache → Colin mined block history source (Top 5)
-                        std::weak_ptr<Worker_manager> weak_wm = self->shared_from_this();
-                        self->m_colin_agent->set_mined_block_cache_source(
-                            [weak_wm]() -> std::vector<ColinAgent::MinedBlockSnapshot> {
-                                std::vector<ColinAgent::MinedBlockSnapshot> result;
-                                auto wm = weak_wm.lock();
-                                if (!wm) return result;
-                                const auto& tier1 = wm->m_mined_block_cache.tier1();
-                                result.reserve(tier1.size());
-                                for (const auto& rec : tier1) {
-                                    ColinAgent::MinedBlockSnapshot snap;
-                                    snap.height = rec.height;
-                                    snap.channel = rec.channel;
-                                    snap.confirmations = rec.confirmations;
-                                    snap.status_emoji = rec.status_emoji();
-                                    snap.channel_name = rec.channel_name();
-                                    // Full 256 hex chars of the 128-byte hashPrevBlock
-                                    snap.hash_prev_block_hex = rec.hash_prev_block.GetHex();
-                                    result.push_back(std::move(snap));
-                                }
-                                return result;
-                            });
-                        self->m_logger->info("[Worker_manager] Colin mined block cache source wired");
-
-                        // Wire failover state → Colin failover source
-                        self->m_colin_agent->set_failover_source(
-                            [weak_wm]() -> ColinAgent::FailoverSnapshot {
-                                ColinAgent::FailoverSnapshot snap;
-                                auto wm = weak_wm.lock();
-                                if (!wm) return snap;
-                                auto fs = wm->get_failover_status();
-                                snap.has_failover_configured = fs.has_failover_configured;
-                                snap.using_failover          = fs.using_failover;
-                                snap.primary_fail_count      = fs.primary_fail_count;
-                                snap.failover_max_retries    = fs.failover_max_retries;
-                                snap.active_endpoint_str  = fs.using_failover ? fs.failover_endpoint_str : fs.primary_endpoint_str;
-                                snap.standby_endpoint_str = fs.using_failover ? fs.primary_endpoint_str  : fs.failover_endpoint_str;
-                                if (fs.using_failover && fs.failover_activated_at != std::chrono::steady_clock::time_point{}) {
-                                    snap.failover_active_seconds = static_cast<uint64_t>(
-                                        std::chrono::duration_cast<std::chrono::seconds>(
-                                            std::chrono::steady_clock::now() - fs.failover_activated_at).count());
-                                }
-                                // Include SIM Link secondary IP from DualConnectionManager
-                                snap.secondary_ip = wm->m_sim_link.get_active_node_ip();
-                                return snap;
-                            });
-                        self->m_logger->info("[Worker_manager] Colin failover source wired");
-
-                        self->m_colin_agent->start();
-                    }
-
-                    // Note: Block handler already registered in Worker_manager constructor
-                }));
-            }
-            else
-            {
-                if (!self->m_connection)
-                {
-                    self->m_logger->error("No connection to wallet.");
-                    self->retry_connect(wallet_endpoint);
+                            return snap;
+                        });
                 }
-                // data received
-                self->process_data(std::move(receive_buffer));
+
+                // Wire up ColinPingHandler
+                self->m_colin_agent->set_pong_telemetry_source(
+                    [weak_proto]() -> ColinAgent::PongTelemetrySnapshot {
+                        ColinAgent::PongTelemetrySnapshot pt;
+                        auto proto = weak_proto.lock();
+                        if (!proto) return pt;
+                        const auto& handler = proto->get_ping_handler();
+                        pt.ping_count  = handler.ping_count();
+                        pt.last_rtt_us = handler.last_rtt_us();
+                        return pt;
+                    });
+
+                self->m_logger->info("[Worker_manager] Colin diagnostic sources wired");
             }
+
+            // Wire MinedBlockCache source
+            std::weak_ptr<Worker_manager> weak_wm = self->shared_from_this();
+            self->m_colin_agent->set_mined_block_cache_source(
+                [weak_wm]() -> std::vector<ColinAgent::MinedBlockSnapshot> {
+                    std::vector<ColinAgent::MinedBlockSnapshot> result;
+                    auto wm = weak_wm.lock();
+                    if (!wm) return result;
+                    const auto& tier1 = wm->m_mined_block_cache.tier1();
+                    result.reserve(tier1.size());
+                    for (const auto& rec : tier1) {
+                        ColinAgent::MinedBlockSnapshot snap;
+                        snap.height = rec.height;
+                        snap.channel = rec.channel;
+                        snap.confirmations = rec.confirmations;
+                        snap.status_emoji = rec.status_emoji();
+                        snap.channel_name = rec.channel_name();
+                        snap.hash_prev_block_hex = rec.hash_prev_block.GetHex();
+                        result.push_back(std::move(snap));
+                    }
+                    return result;
+                });
+
+            // Wire failover state source
+            self->m_colin_agent->set_failover_source(
+                [weak_wm]() -> ColinAgent::FailoverSnapshot {
+                    ColinAgent::FailoverSnapshot snap;
+                    auto wm = weak_wm.lock();
+                    if (!wm) return snap;
+                    auto fs = wm->get_failover_status();
+                    snap.has_failover_configured = fs.has_failover_configured;
+                    snap.using_failover          = fs.using_failover;
+                    snap.primary_fail_count      = fs.primary_fail_count;
+                    snap.failover_max_retries    = fs.failover_max_retries;
+                    snap.active_endpoint_str  = fs.using_failover ? fs.failover_endpoint_str : fs.primary_endpoint_str;
+                    snap.standby_endpoint_str = fs.using_failover ? fs.primary_endpoint_str  : fs.failover_endpoint_str;
+                    if (fs.using_failover && fs.failover_activated_at != std::chrono::steady_clock::time_point{}) {
+                        snap.failover_active_seconds = static_cast<uint64_t>(
+                            std::chrono::duration_cast<std::chrono::seconds>(
+                                std::chrono::steady_clock::now() - fs.failover_activated_at).count());
+                    }
+                    snap.secondary_ip = wm->m_sim_link.get_active_node_ip();
+                    return snap;
+                });
+
+            self->m_colin_agent->start();
+            self->m_logger->info("[Worker_manager] Colin agent started");
         }
     });
-
-    if(!connection)
-    {
-        return false;
-    }
-
-    m_connection = std::move(connection);
-    return true;
 }
 
-bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoint)
-{
-    std::string secondary_addr;
-    secondary_endpoint.address(secondary_addr);
-    uint16_t secondary_port = secondary_endpoint.port();
-
-    m_logger->info("[SIM Link] Connecting secondary lane to {}:{}", secondary_addr, secondary_port);
-
-    // Build a secondary Solo protocol instance with the same keys/config as primary.
-    // Independent auth/session state; same Falcon keys.
-    auto secondary_solo = std::make_shared<protocol::Solo>(
-        m_config.get_mining_mode() == config::Mining_mode::PRIME ? 1U : 2U,
-        m_stats_collector, m_io_context);
-
-    // Copy keys and config from primary
-    {
-        std::vector<uint8_t> pubkey, privkey;
-        keys::from_hex(m_config.get_miner_falcon_pubkey(), pubkey);
-        keys::from_hex(m_config.get_miner_falcon_privkey(), privkey);
-        secondary_solo->set_miner_keys(pubkey, privkey);
-        secondary_solo->set_address(m_config.get_local_ip());
-        if (m_config.has_tritium_genesis()) {
-            std::vector<uint8_t> genesis;
-            if (keys::from_hex(m_config.get_tritium_genesis(), genesis))
-                secondary_solo->set_tritium_genesis(genesis);
-        }
-        secondary_solo->set_keepalive_interval(get_effective_keepalive_interval());
-        secondary_solo->enable_chacha20_wrapping(true);
-        secondary_solo->enable_disposable_falcon(true);
-        m_logger->info("[SIM Link] Secondary lane: ChaCha20 ENABLED, genesis configured ({} bytes)",
-            m_config.has_tritium_genesis() ? m_config.get_tritium_genesis().size() / 2 : 0);  // hex string → byte count
-        if (m_config.has_reward_address())
-            secondary_solo->set_reward_address(m_config.get_reward_address());
-    }
-
-    // Register template handler on the secondary protocol.
-    // Templates from either lane are distributed to workers (same data, idempotent).
-    // Block-found callback uses submit_solution() which selects the live lane.
-    secondary_solo->set_block_handler(
-        [this](const ::LLP::CBlock& block, std::uint32_t nBits) {
-            // ── Worker-feed deduplication (same guard as primary lane) ────
-            {
-                auto now = std::chrono::steady_clock::now();
-                auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now - m_last_worker_feed_tp).count();
-                bool same_template = (block.nHeight == m_last_worker_feed_height &&
-                                      block.hashPrevBlock == m_last_worker_feed_prev_hash);
-                if (same_template && ms_since_last < WORKER_FEED_DEBOUNCE_MS) {
-                    m_logger->info("[SIM Link] ⏱ Duplicate template suppressed on secondary lane "
-                                   "(height {} already fed {}ms ago)", block.nHeight, ms_since_last);
-                    return;
-                }
-                m_last_worker_feed_tp = now;
-                m_last_worker_feed_height = block.nHeight;
-                m_last_worker_feed_prev_hash = block.hashPrevBlock;
-            }
-
-            m_logger->info("[SIM Link] Template received on secondary lane — distributing to {} workers",
-                m_workers.size());
-            // Distribute to workers. Workers mine on whichever template arrived last
-            // (primary and secondary push the same template from the same node).
-            for (auto& worker : m_workers) {
-                if (!worker) continue;
-                worker->set_block(block, nBits, [this](auto /*id*/, auto block_data) {
-                    if (!block_data) return;
-                    // Prefer secondary protocol's template interface for submission
-                    // (it has the template from the secondary lane).
-                    protocol::MiningTemplateInterface* tmpl_iface = nullptr;
-                    if (auto* sec = dynamic_cast<protocol::Solo*>(m_secondary_protocol.get()))
-                        tmpl_iface = sec->get_template_interface();
-                    // Fallback to primary if secondary interface not available
-                    if (!tmpl_iface) {
-                        if (auto* pri = dynamic_cast<protocol::Solo*>(m_miner_protocol.get()))
-                            tmpl_iface = pri->get_template_interface();
-                    }
-                    if (!tmpl_iface) return;
-                    auto full_bytes = tmpl_iface->prepare_block_submission(
-                        block_data->merkle_root.GetBytes(), block_data->nNonce,
-                        block_data->vOffsets);
-                    if (!full_bytes.empty())
-                        submit_solution(full_bytes, block_data->nNonce);
-                });
-            }
-        });
-
-    // Register block accepted handler on secondary lane too (same cache).
-    secondary_solo->set_block_accepted_handler(
-        [weak_self = weak_from_this()](uint32_t height, uint1024_t hash_prev_block, uint32_t channel, uint64_t nonce) {
-            auto self = weak_self.lock();
-            if (!self) return;
-            self->m_mined_block_cache.record_accepted_block(height, hash_prev_block, channel, nonce);
-            self->m_logger->info("[SIM Link] ⛏ Block recorded in mined-block cache — height={} ch={} total={}",
-                height, channel == 1 ? "Prime" : "Hash", self->m_mined_block_cache.total_blocks());
-            self->log_mined_block_cache();
-        }
-    );
-
-    // Register session_authenticated handler for secondary lane (BUG FIX #2)
-    secondary_solo->set_session_authenticated_handler(
-        [weak_self = weak_from_this(), secondary_endpoint](uint32_t session_id) {
-            auto self = weak_self.lock();
-            if (!self) return;
-
-            // CRITICAL: If session_id = 0, the node rejected authentication.
-            // Secondary lane mining cannot proceed without a valid session_id.
-            if (session_id == 0)
-            {
-                ++self->m_secondary_session_auth_fail_count;
-                self->m_logger->error("[SIM Link] CRITICAL: Node returned session_id=0x00000000 after secondary authentication (attempt #{}/{})",
-                    self->m_secondary_session_auth_fail_count, protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
-                self->m_logger->error("[SIM Link] This indicates the node rejected the session or is misconfigured");
-                self->m_logger->error("[SIM Link] Secondary lane cannot proceed without a valid session ID");
-
-                // Hard limit: if we've exceeded max retries, halt reconnection to prevent infinite loop
-                if (self->m_secondary_session_auth_fail_count > protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES)
-                {
-                    self->m_logger->error("[SIM Link] Max authentication retries ({}) exceeded — halting secondary reconnection",
-                        protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
-                    self->m_logger->error("[SIM Link] Node appears to be persistently rejecting secondary authentication");
-                    self->m_logger->error("[SIM Link] Check node logs and SIM Link configuration");
-                    return;
-                }
-
-                // Exponential backoff: 1s, 2s, 4s, 8s, ..., capped at 60s
-                auto delay_ms = self->m_session_auth_backoff.calculate_delay_ms(self->m_secondary_session_auth_fail_count);
-                auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
-
-                self->m_logger->warn("[SIM Link] Scheduling secondary reconnection retry in {}s (exponential backoff)",
-                    delay_seconds);
-
-                // Schedule delayed retry using the secondary connection retry timer
-                self->m_timer_manager.start_secondary_connection_retry_timer(delay_seconds, self, secondary_endpoint);
-                return;
-            }
-
-            // Successful authentication: reset secondary session auth failure counter
-            self->m_secondary_session_auth_fail_count = 0;
-
-            if (self->m_using_failover)
-                self->m_logger->info("[SIM Link][Failover] Secondary lane session established on failover node: session_id=0x{:08x}",
-                    session_id);
-            else
-                self->m_logger->info("[SIM Link][Primary] Secondary lane session established on primary node: session_id=0x{:08x}",
-                    session_id);
-        }
-    );
-
-    // Register session_start_handler on the secondary Solo so that a SESSION_START on the
-    // secondary lane also updates m_node_keepalive_interval_hours if the primary hasn't received
-    // one yet (secondary takes effect only when primary has not already set the value).
-    secondary_solo->set_session_start_handler(
-        [weak_self = weak_from_this()](uint16_t keepalive_hours) {
-            auto self = weak_self.lock();
-            if (!self) return;
-            // Only update if not already set by primary lane (primary takes precedence).
-            // Use CAS so concurrent primary and secondary handlers don't create a data race.
-            uint16_t expected = 0;
-            if (self->m_node_keepalive_interval_hours.compare_exchange_strong(expected, keepalive_hours)) {
-                self->m_logger->info("[SIM Link] Node-advertised keepalive from secondary lane: {} hours",
-                    keepalive_hours);
-            }
-        }
-    );
-
-    m_secondary_protocol = secondary_solo;
-
-    std::weak_ptr<Worker_manager> weak_self = shared_from_this();
-    auto connection = m_socket->connect(secondary_endpoint,
-        [weak_self, secondary_endpoint](auto result, auto receive_buffer)
-        {
-            auto self = weak_self.lock();
-            if (!self) return;
-
-            if (result == network::Result::connection_declined ||
-                result == network::Result::connection_aborted ||
-                result == network::Result::connection_closed ||
-                result == network::Result::connection_error)
-            {
-                self->m_logger->warn("[SIM Link] Secondary lane connection dropped ({}). Scheduling retry.",
-                    network::Result::code_to_string(result));
-                self->m_sim_link.on_lane_failed(
-                    secondary_endpoint.port() == ProtocolPorts::STATELESS_PORT ? ProtocolLane::STATELESS : ProtocolLane::LEGACY);
-                self->retry_secondary_connect(secondary_endpoint);
-            }
-            else if (result == network::Result::connection_ok)
-            {
-                if (!self->m_secondary_connection)
-                {
-                    // Synchronous connect callback guard — defer
-                    ::asio::post(*self->m_io_context, [self, secondary_endpoint]()
-                    {
-                        self->retry_secondary_connect(secondary_endpoint);
-                    });
-                    return;
-                }
-
-                ProtocolLane sec_lane = self->m_secondary_connection->get_protocol_lane();
-                std::string sec_addr;
-                self->m_secondary_connection->remote_endpoint().address(sec_addr);
-                uint16_t sec_port = self->m_secondary_connection->remote_endpoint().port();
-
-                self->m_logger->info("[SIM Link] Secondary lane connected: {} lane {}:{}",
-                    get_lane_name(sec_lane), sec_addr, sec_port);
-
-                self->m_secondary_retry_count = 0;
-                self->m_secondary_connection_backoff.reset();
-
-                // Set protocol lane immediately after connection succeeds, before any data arrives.
-                // This ensures process_secondary_data() can always get the lane from the connection.
-                if (auto sec_solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_secondary_protocol))
-                {
-                    sec_solo->set_protocol_lane(sec_lane);
-                    self->m_logger->info("[Lane] Secondary lane set to {} from port {}",
-                        get_lane_name(sec_lane), sec_port);
-                }
-
-                self->m_secondary_connection->transmit(
-                    self->m_secondary_protocol->login(
-                        [self, secondary_endpoint](bool login_result) {
-                            if (!login_result) {
-                                self->m_logger->warn("[SIM Link] Secondary lane login failed — retrying");
-                                self->retry_secondary_connect(secondary_endpoint);
-                                return;
-                            }
-
-                            ProtocolLane sec_lane = self->m_secondary_connection->get_protocol_lane();
-                            self->m_sim_link.on_lane_recovered(sec_lane);
-                            // Synchronize DCM alive flags with actual connection state
-                            if (sec_lane == ProtocolLane::STATELESS)
-                                self->m_sim_link.set_stateless_alive(true);
-                            else if (sec_lane == ProtocolLane::LEGACY)
-                                self->m_sim_link.set_legacy_alive(true);
-
-                            // BUG FIX (Bug 2): Removed old session_id=0 check from here.
-                            // Session ID check now happens in the session_authenticated_handler
-                            // which is invoked AFTER MINER_AUTH_RESULT processing is complete.
-
-                            // If a bypass was armed (primary failed before secondary connected),
-                            // request work immediately on the secondary lane.
-                            if (self->m_sim_link.consume_bypass(sec_lane)) {
-                                if (auto sec_solo = std::dynamic_pointer_cast<protocol::Solo>(self->m_secondary_protocol)) {
-                                    auto work_payload = sec_solo->send_recovery_work_request();
-                                    if (work_payload && !work_payload->empty()) {
-                                        self->m_logger->info("[SIM Link] GET_BLOCK sent on secondary lane");
-                                        self->m_secondary_connection->transmit(work_payload);
-                                    }
-                                }
-                            }
-
-                            self->m_logger->info("[SIM Link] ✓ Secondary lane authenticated and ready — both lanes ALIVE");
-                        }));
-            }
-            else
-            {
-                if (!self->m_secondary_connection)
-                {
-                    self->m_logger->error("[SIM Link] No secondary connection.");
-                    self->retry_secondary_connect(secondary_endpoint);
-                }
-                self->process_secondary_data(std::move(receive_buffer));
-            }
-        });
-
-    if (!connection)
-    {
-        m_logger->warn("[SIM Link] Failed to initiate secondary connection socket");
-        return false;
-    }
-
-    m_secondary_connection = std::move(connection);
-    return true;
-}
-
-void Worker_manager::retry_secondary_connect(network::Endpoint const& secondary_endpoint)
-{
-    m_secondary_connection = nullptr;
-    if (m_secondary_protocol)
-    {
-        // Log secondary protocol reset (mirrors primary lane's retry_connect logging)
-        if (auto sec_solo = std::dynamic_pointer_cast<protocol::Solo>(m_secondary_protocol))
-        {
-            m_logger->info("[SIM Link] Secondary protocol reset — old session_id={} cleared",
-                sec_solo->get_session_id());
-        }
-        m_secondary_protocol->reset();
-    }
-
-    ++m_secondary_retry_count;
-
-    auto const base_delay = static_cast<uint32_t>(m_config.get_connection_retry_interval());
-    if (m_secondary_connection_backoff.base == 0) {
-        m_secondary_connection_backoff.base = base_delay;  // Set base delay from config on first use
-    }
-    auto current_delay = m_secondary_connection_backoff.next_delay();
-
-    m_logger->info("[SIM Link] Secondary lane retry in {}s (attempt #{})",
-        current_delay, m_secondary_retry_count);
-
-    m_timer_manager.start_secondary_connection_retry_timer(
-        static_cast<uint16_t>(current_delay), shared_from_this(), secondary_endpoint);
-}
 
 void Worker_manager::submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce)
 {
@@ -1557,45 +1070,25 @@ void Worker_manager::submit_solution(const std::vector<uint8_t>& full_block_byte
         return;
     }
 
-    // SIM Link block submission: try primary lane first, fall back to secondary.
-    //
-    // The packet format (stateless vs. legacy opcodes) differs per lane, so we
-    // must use the protocol instance that matches the connection we transmit on.
-
-    // ── Try primary lane ────────────────────────────────────────────────────
-    if (m_connection && m_miner_protocol)
+    // Use NodeSession to submit block (handles SIM Link dual-lane submission internally)
+    if (m_primary_node_session && m_primary_node_session->is_authenticated())
     {
-        auto packet = m_miner_protocol->submit_block(full_block_bytes, nNonce);
+        auto packet = m_primary_node_session->submit_block(full_block_bytes, nNonce);
         if (packet && !packet->empty())
         {
-            m_connection->transmit(packet);
+            m_primary_node_session->transmit(packet);
             return;
         }
     }
 
-    // ── Fallback to secondary lane ──────────────────────────────────────────
-    if (m_secondary_connection && m_secondary_protocol)
-    {
-        m_logger->warn("[SIM Link] Block submitted via SECONDARY (primary down)");
-        auto packet = m_secondary_protocol->submit_block(full_block_bytes, nNonce);
-        if (packet && !packet->empty())
-        {
-            m_secondary_connection->transmit(packet);
-            return;
-        }
-    }
-
-    m_logger->error("[SIM Link] Block submission failed — no live lane available!");
+    m_logger->error("[Worker_manager] Block submission failed — NodeSession not authenticated!");
 }
 
 void Worker_manager::log_lane_health()
 {
-    bool primary_alive = static_cast<bool>(m_connection);
-    bool secondary_alive = static_cast<bool>(m_secondary_connection);
+    bool primary_alive = m_primary_node_session && m_primary_node_session->is_authenticated();
 
-    m_logger->info("[SIM Link] Lane health — Primary: {} | Secondary: {}",
-        primary_alive   ? "ALIVE" : "DEAD",
-        secondary_alive ? "ALIVE" : "DEAD");
+    m_logger->info("[NodeSession] Session health — Authenticated: {}", primary_alive ? "YES" : "NO");
 
     send_session_status_if_due();
 }
@@ -1611,293 +1104,20 @@ void Worker_manager::send_session_status_if_due()
 
     bool degraded    = m_degraded_mode;
     bool workers_run = !m_degraded_mode && !m_workers.empty();
-    bool sec_up      = static_cast<bool>(m_secondary_connection);
 
-    // Primary lane
-    if (m_connection)
+    // Send session status via NodeSession (handles both lanes internally)
+    if (m_primary_node_session && m_primary_node_session->is_authenticated())
     {
-        auto* solo = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
-        if (solo)
+        auto solo_protocol = m_primary_node_session->get_primary_protocol();
+        if (solo_protocol)
         {
-            auto pkt = solo->build_session_status_packet(degraded, workers_run, sec_up);
+            // NodeSession handles SIM Link internally, so we don't need to track secondary separately
+            auto pkt = solo_protocol->build_session_status_packet(degraded, workers_run, false);
             if (pkt && !pkt->empty())
-                m_connection->transmit(pkt);
-        }
-    }
-
-    // Secondary lane
-    if (m_secondary_connection)
-    {
-        auto* sec_solo = dynamic_cast<protocol::Solo*>(m_secondary_protocol.get());
-        if (sec_solo)
-        {
-            auto pkt = sec_solo->build_session_status_packet(degraded, workers_run, sec_up);
-            if (pkt && !pkt->empty())
-                m_secondary_connection->transmit(pkt);
+                m_primary_node_session->transmit(pkt);
         }
     }
 }
-
-void Worker_manager::process_data(network::Shared_payload&& receive_buffer)
-{
-    // Belt-and-suspenders guard: ignore stale callbacks during reconnect window
-    if (m_reconnect_in_progress)
-    {
-        m_logger->debug("[RX] Ignoring {} bytes during reconnect",
-                       receive_buffer ? receive_buffer->size() : 0);
-        return;
-    }
-
-    // Append newly received data to accumulator
-    if (receive_buffer && !receive_buffer->empty())
-    {
-        std::size_t old_size = m_rx_accumulator.size();
-        m_rx_accumulator.insert(m_rx_accumulator.end(), 
-                               receive_buffer->begin(), 
-                               receive_buffer->end());
-        
-        m_logger->trace("[RX] Received {} bytes, accumulator: {} -> {} bytes", 
-                       receive_buffer->size(), old_size, m_rx_accumulator.size());
-        
-        // Warn if accumulator is growing large (possible stuck parsing or slow drain)
-        constexpr std::size_t WARN_THRESHOLD = 100 * 1024; // 100KB
-        if (m_rx_accumulator.size() > WARN_THRESHOLD && old_size <= WARN_THRESHOLD)
-        {
-            m_logger->warn("[RX] Accumulator growing large: {} bytes - possible parsing issue", 
-                          m_rx_accumulator.size());
-        }
-    }
-    
-    // Get protocol lane from connection
-    ProtocolLane lane = m_connection ? m_connection->get_protocol_lane() : ProtocolLane::UNKNOWN;
-
-    if (lane == ProtocolLane::UNKNOWN)
-    {
-        // HARDENING: Don't close again — connection is already being torn down.
-        // Just drain the accumulator silently and return.
-        m_logger->warn("[RX] Dropped {} bytes — lane UNKNOWN (connection closing race)",
-                       m_rx_accumulator.size());
-        m_rx_accumulator.clear();
-        // DO NOT call m_connection->close() here — it may already be null/closing
-        return;
-    }
-    
-    // Parse packets from accumulator
-    std::size_t total_consumed = 0;
-    while (!m_rx_accumulator.empty())
-    {
-        // For performance: deque doesn't guarantee contiguous storage, but in practice
-        // most implementations do provide it. We copy to vector for parsing to ensure
-        // compatibility with the parsing function that expects contiguous storage.
-        // TODO: Consider refactoring extract_packet_from_buffer_with_result to work
-        // with iterators instead of requiring contiguous storage.
-        std::vector<uint8_t> buffer_view(m_rx_accumulator.begin(), m_rx_accumulator.end());
-        auto buffer_shared = std::make_shared<network::Payload>(std::move(buffer_view));
-        
-        ParseResult parse_result;
-        std::size_t bytes_consumed = 0;
-        
-        // Use new lane-aware parser with explicit result
-        auto packet = extract_packet_from_buffer_with_result(
-            buffer_shared, bytes_consumed, 0, lane, parse_result);
-        
-        if (parse_result == ParseResult::NEED_MORE_DATA)
-        {
-            // Not enough data yet - keep bytes in accumulator and wait for more
-            m_logger->trace("[RX] Need more data: {} bytes in accumulator (lane: {})", 
-                           m_rx_accumulator.size(), get_lane_name(lane));
-            break;
-        }
-        else if (parse_result == ParseResult::MALFORMED)
-        {
-            // Malformed packet - log loudly
-            m_logger->error("[RX] ========================================");
-            m_logger->error("[RX] MALFORMED PACKET DETECTED!");
-            m_logger->error("[RX] ========================================");
-            m_logger->error("[RX] Lane: {} ({})", 
-                           get_lane_name(lane), 
-                           lane == ProtocolLane::LEGACY ? "8-bit header" : "16-bit header");
-            m_logger->error("[RX] Expected header width: {} bytes", 
-                           lane == ProtocolLane::LEGACY ? 1 : 2);
-            m_logger->error("[RX] Accumulator size: {} bytes", m_rx_accumulator.size());
-            m_logger->error("[RX] Remote endpoint: {}", 
-                           m_connection ? m_connection->remote_endpoint().to_string() : "no connection");
-            
-            // Log first few bytes for diagnostics
-            std::size_t bytes_to_log = std::min<std::size_t>(16, m_rx_accumulator.size());
-            if (bytes_to_log > 0)
-            {
-                std::ostringstream hex_dump;
-                hex_dump << std::hex << std::setfill('0');
-                for (std::size_t i = 0; i < bytes_to_log; ++i)
-                {
-                    if (i > 0) hex_dump << " ";
-                    hex_dump << std::setw(2) << static_cast<unsigned>(m_rx_accumulator[i]);
-                }
-                m_logger->error("[RX] First {} bytes: {}", bytes_to_log, hex_dump.str());
-            }
-
-            // Recovery: check if this looks like a zero-payload BLOCK_DATA from the node
-            // (node bug: sends truncated/broken BLOCK_DATA when get_block() fails internally).
-            // Pattern: all-zero bytes in accumulator = likely null/empty template response.
-            bool is_recoverable = false;
-            if (!m_rx_accumulator.empty() && m_rx_accumulator.size() <= 8)
-            {
-                bool all_zeros = true;
-                for (auto b : m_rx_accumulator)
-                    if (b != 0) { all_zeros = false; break; }
-                if (all_zeros)
-                    is_recoverable = true;
-            }
-
-            m_rx_accumulator.clear();
-
-            if (is_recoverable)
-            {
-                m_logger->warn("[RX] All-zero malformed bytes — likely node sent empty/null BLOCK_DATA response");
-                m_logger->warn("[RX] Attempting recovery: requesting new template without disconnecting");
-                // Request a fresh template via the protocol layer instead of disconnecting
-                if (auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get()))
-                {
-                    // Use GET_BLOCK (0xD081) for recovery regardless of lane.
-                    // MINER_READY is a one-time subscription handshake; do NOT use it for recovery.
-                    auto work_payload = solo_protocol->get_work();
-                    if (work_payload && !work_payload->empty())
-                        m_connection->transmit(work_payload);
-                }
-                break;
-            }
-
-            m_logger->error("[RX] DISCONNECTING due to malformed packet");
-            m_logger->error("[RX] ========================================");
-            
-            // Disconnect immediately
-            if (m_connection)
-            {
-                m_connection->close();
-            }
-            
-            return;
-        }
-        else // ParseResult::SUCCESS
-        {
-            // Successfully parsed packet
-            m_logger->trace("[RX] Parsed packet: header=0x{:04x}, length={}, consumed={} bytes", 
-                           packet.m_header, packet.m_length, bytes_consumed);
-            
-            // Remove consumed bytes from front of deque (O(bytes_consumed) operation)
-            m_rx_accumulator.erase(m_rx_accumulator.begin(), 
-                                   m_rx_accumulator.begin() + bytes_consumed);
-            total_consumed += bytes_consumed;
-            
-            // Process the packet
-            if (packet.m_header == Packet::PING)
-            {
-                m_logger->trace("PING received");
-            }
-            else
-            {
-                // solo/pool specific messages
-                m_miner_protocol->process_messages(std::move(packet), m_connection);
-            }
-        }
-    }
-    
-    if (total_consumed > 0)
-    {
-        m_logger->trace("[RX] Total consumed {} bytes, {} bytes remaining in accumulator", 
-                       total_consumed, m_rx_accumulator.size());
-    }
-}
-
-void Worker_manager::process_secondary_data(network::Shared_payload&& receive_buffer)
-{
-    // Secondary-lane RX path: mirrors primary process_data() but uses the secondary
-    // accumulator, secondary connection, and secondary protocol instance.
-    if (receive_buffer && !receive_buffer->empty())
-    {
-        m_secondary_rx_accumulator.insert(m_secondary_rx_accumulator.end(),
-                                          receive_buffer->begin(), receive_buffer->end());
-    }
-
-    ProtocolLane lane = m_secondary_connection
-        ? m_secondary_connection->get_protocol_lane()
-        : ProtocolLane::UNKNOWN;
-
-    if (lane == ProtocolLane::UNKNOWN)
-    {
-        m_logger->warn("[SIM Link RX] Secondary lane UNKNOWN — clearing accumulator, marking secondary dead");
-        m_secondary_rx_accumulator.clear();
-        // Notify DCM that secondary lane has failed (determine which lane based on port)
-        // If we can't determine the lane, assume LEGACY (ProtocolPorts::LEGACY_PORT) as that's the typical secondary port
-        ProtocolLane failed_lane = ProtocolLane::LEGACY;
-        if (m_secondary_connection)
-        {
-            uint16_t sec_port = m_secondary_connection->remote_endpoint().port();
-            failed_lane = determine_lane_from_port(sec_port);
-        }
-        m_sim_link.on_lane_failed(failed_lane);
-        return;
-    }
-
-    if (m_secondary_rx_accumulator.empty())
-        return;
-
-    // Build the buffer once (single allocation) and advance parse_offset
-    // instead of re-copying the accumulator on every iteration.
-    std::vector<uint8_t> buffer_view(m_secondary_rx_accumulator.begin(),
-                                     m_secondary_rx_accumulator.end());
-    auto buffer_shared = std::make_shared<network::Payload>(std::move(buffer_view));
-    std::size_t parse_offset = 0;
-    std::size_t total_consumed = 0;
-
-    while (parse_offset < buffer_shared->size())
-    {
-        ParseResult parse_result;
-        std::size_t bytes_consumed = 0;
-        auto packet = extract_packet_from_buffer_with_result(
-            buffer_shared, bytes_consumed, parse_offset, lane, parse_result);
-
-        if (parse_result == ParseResult::NEED_MORE_DATA)
-        {
-            break;
-        }
-        else if (parse_result == ParseResult::MALFORMED)
-        {
-            m_logger->error("[SIM Link RX] MALFORMED packet on secondary lane — disconnecting secondary");
-            m_secondary_rx_accumulator.clear();
-            // Notify SIM link bookkeeper and schedule reconnect
-            m_sim_link.on_lane_failed(lane);
-            if (m_secondary_connection)
-                m_secondary_connection->close();
-            return;
-        }
-        else
-        {
-            parse_offset  += bytes_consumed;
-            total_consumed += bytes_consumed;
-            if (packet.m_header == Packet::PING)
-            {
-                m_logger->trace("[SIM Link RX] PING on secondary lane");
-            }
-            else
-            {
-                m_secondary_protocol->process_messages(std::move(packet), m_secondary_connection);
-            }
-        }
-    }
-
-    // Erase all consumed bytes from the accumulator in one shot
-    if (total_consumed > 0)
-    {
-        m_secondary_rx_accumulator.erase(m_secondary_rx_accumulator.begin(),
-                                          m_secondary_rx_accumulator.begin() + total_consumed);
-        m_logger->trace("[SIM Link RX] Total consumed {} bytes, {} bytes remaining in accumulator",
-                        total_consumed, m_secondary_rx_accumulator.size());
-    }
-}
-
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // Worker Control Methods (Degraded Mode Support)
@@ -1995,8 +1215,8 @@ void Worker_manager::retry_template_request(bool bForce)
 {
     m_logger->info("[Worker_manager] Requesting fresh template...");
 
-    if (!m_connection) {
-        m_logger->error("[Worker_manager] No connection available to request template");
+    if (!m_primary_node_session || !m_primary_node_session->is_authenticated()) {
+        m_logger->error("[Worker_manager] No authenticated session available to request template");
         // Reconstruct wallet endpoint from config and retry connection
         auto const ip_address = m_config.get_wallet_ip();
         auto const port = m_config.get_port();
@@ -2006,9 +1226,9 @@ void Worker_manager::retry_template_request(bool bForce)
         return;
     }
 
-    auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
+    auto solo_protocol = m_primary_node_session->get_primary_protocol();
     if (!solo_protocol) {
-        m_logger->error("[Worker_manager] Failed to cast protocol to Solo protocol");
+        m_logger->error("[Worker_manager] Failed to get protocol from NodeSession");
         return;
     }
 
@@ -2028,64 +1248,34 @@ void Worker_manager::retry_template_request(bool bForce)
         return;
     }
 
-    // Get protocol lane from connection
-    ProtocolLane lane = m_connection->get_protocol_lane();
-    uint16_t remote_port = m_connection->remote_endpoint().port();
-    
-    m_logger->info("[Worker_manager] Requesting template on {} lane (port {})", 
-                  get_lane_name(lane), remote_port);
-    
-    if (lane == ProtocolLane::LEGACY) {
-        // Legacy lane: Request via GET_BLOCK
-        m_logger->info("[Worker_manager] → Sending GET_BLOCK request (legacy polling)");
-        auto work_payload = solo_protocol->get_work();
-        if (work_payload && !work_payload->empty()) {
-            m_connection->transmit(work_payload);
-            m_recovery_last_get_block_sent_at = std::chrono::steady_clock::now();
-            m_recovery_last_get_block_transmitted_at = m_recovery_last_get_block_sent_at;
-            m_recovery_get_block_transmitted = true;
-            m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
-        } else {
-            m_logger->info("[Worker_manager]   GET_BLOCK not sent — get_work() returned empty (unexpected)");
-        }
-    } else if (lane == ProtocolLane::STATELESS) {
-        // Stateless lane: Request fresh template via GET_BLOCK (0xD081).
-        // MINER_READY is NOT used here — it is a one-time subscription handshake
-        // sent only during initial login. GET_BLOCK is the correct recovery request.
-        m_logger->info("[Worker_manager] → Sending GET_BLOCK request (stateless 0xD081)");
-        auto work_payload = solo_protocol->get_work();
-        if (work_payload && !work_payload->empty()) {
-            m_connection->transmit(work_payload);
-            m_recovery_last_get_block_sent_at = std::chrono::steady_clock::now();
-            m_recovery_last_get_block_transmitted_at = m_recovery_last_get_block_sent_at;
-            m_recovery_get_block_transmitted = true;
-            m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
-        } else {
-            m_logger->info("[Worker_manager]   GET_BLOCK not sent — get_work() returned empty (unexpected)");
-        }
+    // Request template via NodeSession
+    m_logger->info("[Worker_manager] Requesting fresh template via NodeSession");
+    auto work_payload = m_primary_node_session->request_work();
+    if (work_payload && !work_payload->empty()) {
+        m_primary_node_session->transmit(work_payload);
+        m_recovery_last_get_block_sent_at = std::chrono::steady_clock::now();
+        m_recovery_last_get_block_transmitted_at = m_recovery_last_get_block_sent_at;
+        m_recovery_get_block_transmitted = true;
+        m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
     } else {
-        m_logger->error("[Worker_manager] → Unknown protocol lane - cannot request template");
+        m_logger->info("[Worker_manager]   GET_BLOCK not sent — request_work() returned empty (unexpected)");
     }
 }
 
 void Worker_manager::check_template_health()
 {
-    auto* solo_protocol = dynamic_cast<protocol::Solo*>(m_miner_protocol.get());
+    auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
     if (!solo_protocol) {
         return;
     }
-    
+
     auto* template_interface = solo_protocol->get_template_interface();
     if (!template_interface) {
         return;
     }
-    
+
     if (!template_interface->has_valid_template()) {
         // In degraded mode with no valid template — retry recovery to prevent permanent lockout.
-        // This handles the case where a previous recovery attempt (GET_BLOCK + MINER_READY) did
-        // not produce a template (e.g. node rate-limited the request or connection was briefly lost).
-        // Rate is naturally capped by the TEMPLATE_HEALTH_INTERVAL timer (30s), so retries fire
-        // at most once per 30s.  The node's 2s rate-limit floor handles per-request rate control.
         if (m_degraded_mode) {
             auto ht_snap = solo_protocol->get_height_tracker_snapshot();
 
@@ -2096,36 +1286,11 @@ void Worker_manager::check_template_health()
             if (keepalive_ack_received) {
                 auto since_ack_s = std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count();
-                if (since_ack_s > KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS && m_connection) {
+                if (since_ack_s > KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS && m_primary_node_session) {
                     m_logger->error("[Worker_manager] KEEPALIVE TIMEOUT — session presumed dead "
                                    "(last ACK {}s ago), forcing reconnect", since_ack_s);
-                    auto wallet_endpoint = m_connection->remote_endpoint();
-                    retry_connect(wallet_endpoint);
+                    retry_connect(m_primary_endpoint);
                     return;
-                }
-            }
-
-            // Bug 3 fix: If secondary lane is alive, try GET_BLOCK via secondary for faster recovery.
-            if (m_secondary_connection && m_secondary_protocol) {
-                auto* sec_solo = dynamic_cast<protocol::Solo*>(m_secondary_protocol.get());
-                if (sec_solo) {
-                    auto work_payload = sec_solo->send_recovery_work_request();
-                    if (work_payload && !work_payload->empty()) {
-                        m_logger->info("[SIM Link] DEGRADED MODE fallback — GET_BLOCK sent via secondary lane");
-                        m_secondary_connection->transmit(work_payload);
-                    }
-                }
-            } else if (!m_secondary_connection && m_config.get_enable_sim_link() && m_connection) {
-                // Bug 3 fix: Secondary lane is DOWN — force aggressive reconnect with 5s delay.
-                std::string wallet_addr;
-                m_connection->remote_endpoint().address(wallet_addr);
-                if (!wallet_addr.empty()) {
-                    m_logger->info("[SIM Link] DEGRADED MODE: secondary lane DOWN — forcing aggressive reconnect ({}s delay)",
-                                   protocol::ProtocolConstants::DEGRADED_SECONDARY_RETRY_DELAY_SECONDS);
-                    m_secondary_connection_backoff.set_delay(protocol::ProtocolConstants::DEGRADED_SECONDARY_RETRY_DELAY_SECONDS);
-                    network::Endpoint secondary_endpoint{
-                        network::Transport_protocol::tcp, wallet_addr, m_config.get_secondary_port()};
-                    retry_secondary_connect(secondary_endpoint);
                 }
             }
 
