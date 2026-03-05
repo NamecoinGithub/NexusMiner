@@ -175,6 +175,12 @@ public:
     using Session_authenticated_handler = std::function<void(uint32_t session_id)>;
     void set_session_authenticated_handler(Session_authenticated_handler h) { m_session_authenticated_handler = std::move(h); }
 
+    // Session-start callback: called when SESSION_START is received and keepalive interval
+    // has been auto-adjusted from the node-advertised timeout.
+    // Parameter: keepalive_hours (the newly derived interval, e.g. session_timeout / 2 / 3600)
+    using Session_start_handler = std::function<void(uint16_t keepalive_hours)>;
+    void set_session_start_handler(Session_start_handler h) { m_session_start_handler = std::move(h); }
+
     // Block-result counters (Gap 3)
     uint32_t get_blocks_accepted() const { return m_blocks_accepted.load(); }
     uint32_t get_blocks_rejected() const { return m_blocks_rejected.load(); }
@@ -382,6 +388,11 @@ private:
     // Session-authenticated callback — invoked after MINER_AUTH_RESULT processing is complete.
     // Worker_manager uses this to check session_id=0 and trigger retry if needed.
     Session_authenticated_handler m_session_authenticated_handler;
+
+    // Session-start callback — invoked when SESSION_START is received and keepalive interval
+    // has been auto-adjusted from the node-advertised timeout.
+    // Worker_manager uses this to cache the node-advertised interval for future connections.
+    Session_start_handler m_session_start_handler;  // Notifies Worker_manager of node-advertised keepalive
 
     // Block-accepted callback — invoked on BLOCK_ACCEPTED to record the mined block.
     Block_accepted_handler m_block_accepted_handler;

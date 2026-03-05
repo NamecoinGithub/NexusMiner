@@ -12,7 +12,7 @@ constexpr uint16_t MIN_KEEPALIVE_HOURS = 1;
 constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
 constexpr auto KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);   // First ping after auth
 constexpr auto KEEPALIVE_TCP_INTERVAL   = std::chrono::seconds(45);   // TCP keepalive ping
-constexpr uint16_t KEEPALIVE_REGULAR_INTERVAL_DEFAULT = 24;           // Default hours fallback
+constexpr uint16_t KEEPALIVE_REGULAR_INTERVAL_DEFAULT = 12;           // Default hours fallback (2 pings per 24h node window)
 
 // SESSION_KEEPALIVE requests encode session_id as little-endian (wire format requirement).
 static void append_uint32_le(std::vector<uint8_t>& dest, uint32_t value) {

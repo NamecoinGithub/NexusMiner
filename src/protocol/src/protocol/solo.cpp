@@ -2363,12 +2363,18 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->info("[Solo Session] Session updated with Falcon Session Key");
             }
             
-            // Adjust keepalive interval based on timeout (conservative: ping at 1/3 of timeout)
+            // Adjust keepalive interval based on timeout (ping at 1/2 of timeout = 2 pings per window)
+            // Using /2 ensures 2 keepalives per node timeout window (vs /3 which gives 3).
+            // Division by 2 is safer: less timer load, larger per-ping safety margin.
+            // Example: 24h node timeout → keepalive every 12h (2 pings/window)
             if (session_timeout > 0 && m_session_manager) {
-                uint16_t keepalive_hours = std::max(1u, session_timeout / (3 * 3600));
+                uint16_t keepalive_hours = static_cast<uint16_t>(std::max(1u, session_timeout / (2u * 3600u)));
                 m_session_manager->set_keepalive_interval(keepalive_hours);
-                m_logger->info("[Solo Session] Keepalive interval adjusted to {} hours based on timeout",
-                              keepalive_hours);
+                m_logger->info("[Solo Session] Keepalive interval adjusted to {} hours (node timeout={}s, 2 pings/window)",
+                              keepalive_hours, session_timeout);
+                if (m_session_start_handler) {
+                    m_session_start_handler(keepalive_hours);
+                }
             }
         } else {
             m_logger->warn("[Solo Session] SESSION_START packet has invalid or insufficient data");

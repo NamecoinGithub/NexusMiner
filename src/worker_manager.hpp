@@ -15,6 +15,7 @@
 #include <memory>
 #include <deque>
 #include <mutex>
+#include <atomic>
 
 namespace asio { class io_context; }
 
@@ -191,6 +192,14 @@ private:
     bool              m_using_failover{false}; // currently retrying on failover?
     uint32_t          m_primary_fail_count{0}; // consecutive failures on the active side
     std::chrono::steady_clock::time_point m_failover_activated_at{}; // when failover last became active
+
+    // Node-advertised keepalive interval (hours), updated from SESSION_START on primary lane.
+    // Used to seed secondary/failover Solo instances instead of the static config value.
+    // Atomic to allow concurrent access from primary and secondary SESSION_START handlers.
+    std::atomic<uint16_t> m_node_keepalive_interval_hours{0};  // 0 = not yet received; fall back to config value
+
+    // Returns the best known keepalive interval: node-advertised if received, else config default.
+    uint16_t get_effective_keepalive_interval() const;
 
     // Time of the most recent escalation (epoch N → epoch N+1: stop workers + hard recovery).
     // Used to prevent re-escalation within MIN_ESCALATION_INTERVAL_SECONDS of the previous
