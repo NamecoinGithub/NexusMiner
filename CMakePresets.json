@@ -94,6 +94,18 @@
         "lhs": "${hostSystemName}",
         "rhs": "Darwin"
       }
+    },
+    {
+      "name": "riscv",
+      "displayName": "RISC-V",
+      "description": "RISC-V build with Zbkb/Zbkc (ChaCha20) and RVV (SHA-256) support",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/riscv",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_FLAGS": "-march=rv64gcv_zbkb_zbkc",
+        "CMAKE_CXX_FLAGS": "-march=rv64gcv_zbkb_zbkc"
+      }
     }
   ],
   "buildPresets": [
@@ -124,6 +136,10 @@
     {
       "name": "macos",
       "configurePreset": "macos"
+    },
+    {
+      "name": "riscv",
+      "configurePreset": "riscv"
     }
   ],
   "testPresets": [
@@ -137,6 +153,13 @@
     {
       "name": "release",
       "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "riscv",
+      "configurePreset": "riscv",
       "output": {
         "outputOnFailure": true
       }
