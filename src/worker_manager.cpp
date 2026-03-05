@@ -88,7 +88,7 @@ namespace {
 
 }
 
-Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Config& config, 
+Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Config& config,
     chrono::Timer_factory::Sptr timer_factory, network::Socket::Sptr socket)
 : m_io_context{std::move(io_context)}
 , m_config{config}
@@ -98,10 +98,6 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 , m_timer_manager{std::move(timer_factory)}
 , m_degraded_mode{false}
 {
-    // Solo mining requires Falcon authentication - no legacy fallback
-    auto solo_protocol = std::make_shared<protocol::Solo>(m_config.get_mining_mode() == config::Mining_mode::PRIME ? 1U : 2U,
-        m_stats_collector, m_io_context);
-    
     // Falcon miner authentication is mandatory for solo mining
     if (!m_config.has_miner_falcon_keys())
     {
@@ -115,9 +111,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         m_logger->error("[Worker_manager] See docs/falcon_authentication.md for detailed instructions");
         throw std::runtime_error("Falcon authentication keys are required for solo mining");
     }
-        
+
         m_logger->info("[Worker_manager] Configuring Falcon miner authentication");
-        
+
         std::vector<uint8_t> pubkey, privkey;
         if (!keys::from_hex(m_config.get_miner_falcon_pubkey(), pubkey) ||
             !keys::from_hex(m_config.get_miner_falcon_privkey(), privkey))
@@ -127,50 +123,51 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             m_logger->error("[Worker_manager] Use ./NexusMiner --create-keys to generate valid keys");
             throw std::runtime_error("Invalid Falcon key format in configuration");
         }
-        
-        solo_protocol->set_miner_keys(pubkey, privkey);
-        solo_protocol->set_address(m_config.get_local_ip());
-        
+
+        // Create primary NodeSession (handles both stateless and legacy ports automatically via SIM Link)
+        m_primary_node_session = std::make_shared<NodeSession>(
+            m_io_context,
+            m_config,
+            m_socket,
+            m_stats_collector,
+            "PRIMARY");
+
+        // Configure miner keys
+        m_primary_node_session->set_miner_keys(pubkey, privkey);
+
         // Configure Tritium GenesisHash if provided
         if (m_config.has_tritium_genesis()) {
             std::vector<uint8_t> genesis;
             if (keys::from_hex(m_config.get_tritium_genesis(), genesis)) {
-                solo_protocol->set_tritium_genesis(genesis);
+                m_primary_node_session->set_tritium_genesis(genesis);
                 m_logger->info("[Worker_manager] Tritium GenesisHash configured for reward binding");
             } else {
                 m_logger->warn("[Worker_manager] Failed to parse Tritium GenesisHash - invalid hex format");
             }
         }
-        
+
         // Configure keepalive interval
-        solo_protocol->set_keepalive_interval(get_effective_keepalive_interval());
+        m_primary_node_session->set_keepalive_interval(get_effective_keepalive_interval());
         m_logger->info("[Worker_manager] Keepalive interval: {} hours", get_effective_keepalive_interval());
-        
-        // ChaCha20 encryption is ALWAYS ON (core security) - no configuration needed
-        // Explicit call kept for code clarity and to ensure proper initialization logging
-        solo_protocol->enable_chacha20_wrapping(true);
+
         m_logger->info("[Worker_manager] ChaCha20 encryption: ENABLED (ALWAYS ON - core security)");
-        
-        // Disposable Falcon signing is ALWAYS ON (core protocol) - no configuration needed
-        // Explicit call kept for code clarity and to ensure proper initialization logging
-        solo_protocol->enable_disposable_falcon(true);
         m_logger->info("[Worker_manager] Disposable Falcon signing: ENABLED (ALWAYS ON - core protocol, 0 blockchain overhead)");
-        
+
         // Configure reward address for stateless mining (MINER_SET_REWARD protocol)
         if (m_config.has_reward_address()) {
-            solo_protocol->set_reward_address(m_config.get_reward_address());
+            m_primary_node_session->set_reward_address(m_config.get_reward_address());
             m_logger->info("[Worker_manager] Reward address configured: {}", m_config.get_reward_address());
         } else {
             m_logger->debug("[Worker_manager] No reward address configured - using node default");
         }
-        
+
         m_logger->info("[Worker_manager] Falcon keys loaded from config");
         m_logger->info("[Worker_manager] Auth address: {}", m_config.get_local_ip());
-        
+
         /* ========== REGISTER TEMPLATE DISTRIBUTION HANDLER ========== */
         /* Connects protocol layer (validated templates) to worker layer (mining threads) */
         /* This lambda is called by the template feed handler (PR #62) when templates arrive */
-        solo_protocol->set_block_handler(
+        m_primary_node_session->set_template_handler(
             [this](const ::LLP::CBlock& block, uint32_t nBits) {
                 m_logger->info("[Worker_manager] ═══════════════════════════════════════");
                 m_logger->info("[Worker_manager] DISTRIBUTING TEMPLATE TO {} WORKERS", m_workers.size());
@@ -470,7 +467,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* distributes the template in-place (no thread teardown/restart).        */
         /* Escalation to stop_all_workers() only happens if the recovery window   */
         /* expires without a fresh template (handled in check_template_health()). */
-        solo_protocol->set_recovery_initiated_handler(
+        m_primary_node_session->set_recovery_initiated_handler(
             [this]() {
                 bool was_pending = m_recovery_pending;
                 mark_recovery_initiated("push_staleness");
@@ -494,18 +491,19 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* Called by Solo keepalive handlers when a session_id mismatch is detected, */
         /* indicating a stale session after node restart. Triggers recovery so the   */
         /* miner reconnects and re-authenticates rather than mining on a dead session. */
-        solo_protocol->set_session_expired_handler(
+        m_primary_node_session->set_session_expired_handler(
             [this]() {
                 m_logger->warn("[Worker_manager] Session EXPIRED — initiating reconnect for re-authentication");
                 mark_recovery_initiated("keepalive_session_mismatch");
                 // Schedule a reconnect via io_context to avoid calling retry_connect()
                 // from within a packet-receive callback (stack depth / reentrancy safety).
-                if (m_io_context && m_connection) {
-                    auto wallet_endpoint = m_connection->remote_endpoint();
-                    ::asio::post(*m_io_context, [self = shared_from_this(), wallet_endpoint]() {
-                        self->m_logger->warn("[Worker_manager] Closing stale session connection — reconnecting");
-                        self->m_connection.reset();
-                        self->retry_connect(wallet_endpoint);
+                if (m_io_context && m_primary_node_session) {
+                    // NodeSession will handle reconnection internally
+                    ::asio::post(*m_io_context, [self = shared_from_this()]() {
+                        self->m_logger->warn("[Worker_manager] Resetting node session for re-authentication");
+                        if (self->m_primary_node_session) {
+                            self->m_primary_node_session->reset();
+                        }
                     });
                 }
             }
@@ -516,7 +514,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* Called by Solo after MINER_AUTH_RESULT is fully processed and session_id is set. */
         /* This is the correct place to check session_id=0 (not in the login callback which */
         /* fires before MINER_AUTH_RESULT arrives). Triggers retry with exponential backoff. */
-        solo_protocol->set_session_authenticated_handler(
+        m_primary_node_session->set_session_authenticated_handler(
             [this](uint32_t session_id) {
                 // CRITICAL: If session_id = 0, the node rejected authentication or didn't provide a session.
                 // Mining cannot proceed without a valid session_id (work submissions will be silently rejected).
@@ -547,7 +545,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         delay_seconds);
 
                     // Get the endpoint from the current connection
-                    network::Endpoint wallet_endpoint = m_connection ? m_connection->remote_endpoint() : m_primary_endpoint;
+                    network::Endpoint wallet_endpoint = m_primary_endpoint;
 
                     // Schedule delayed retry using the existing connection retry timer infrastructure
                     m_timer_manager.start_connection_retry_timer(delay_seconds, shared_from_this(), wallet_endpoint);
@@ -577,7 +575,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* Called by Solo when SESSION_START is received and keepalive interval has been  */
         /* auto-adjusted from the node-advertised timeout. Updates m_node_keepalive_interval_hours */
         /* so future secondary/failover connections use the correct node-derived interval. */
-        solo_protocol->set_session_start_handler(
+        m_primary_node_session->set_session_start_handler(
             [weak_self = weak_from_this()](uint16_t keepalive_hours) {
                 auto self = weak_self.lock();
                 if (!self) return;
@@ -590,7 +588,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
         /* ========== REGISTER BLOCK ACCEPTED HANDLER ========== */
         /* Records accepted blocks into the three-tier mined-block cache. */
-        solo_protocol->set_block_accepted_handler(
+        m_primary_node_session->set_block_accepted_handler(
             [weak_self = weak_from_this()](uint32_t height, uint1024_t hash_prev_block, uint32_t channel, uint64_t nonce) {
                 auto self = weak_self.lock();
                 if (!self) return;
@@ -602,27 +600,12 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         );
         m_logger->info("[Worker_manager] Block accepted handler registered");
 
-        /* ========== REGISTER NODE SHUTDOWN HANDLER ========== */
-        /* Called by Solo when NODE_SHUTDOWN (0xD0FF) is received from the node.    */
-        /* Stops all workers cleanly and sets reconnect backoff to prevent the      */
-        /* miner from hammering a shutting-down node.                               */
-        solo_protocol->set_node_shutdown_handler(
-            [this](uint8_t reason) {
-                m_logger->warn("[Worker_manager] NODE_SHUTDOWN received (reason=0x{:02x}) — stopping workers", reason);
-                stop_all_workers();
+        // TODO: Add node shutdown handler to NodeSession API if needed
+        // Currently NodeSession doesn't expose set_node_shutdown_handler
+        // This handler was used to stop workers and set reconnect backoff when node shuts down
 
-                // Override the retry delay to NODE_SHUTDOWN_BACKOFF_S so the next
-                // retry_connect() call uses this floor instead of the normal
-                // exponential backoff (which starts much lower).
-                m_connection_backoff.set_delay(protocol::Solo::NODE_SHUTDOWN_BACKOFF_S);
-                m_logger->info("[Worker_manager] Reconnect backoff set to {}s (NODE_SHUTDOWN)",
-                    protocol::Solo::NODE_SHUTDOWN_BACKOFF_S);
-            }
-        );
-        m_logger->info("[Worker_manager] Node shutdown handler registered");
-        
-        m_miner_protocol = solo_protocol;
-  
+        m_logger->info("[Worker_manager] NodeSession configured and handlers registered");
+
     create_stats_printers();
     create_workers();
 }
@@ -751,9 +734,13 @@ void Worker_manager::stop()
         m_colin_agent.reset();
     }
 
-    // close connection
-    m_connection.reset();
-    m_secondary_connection.reset();
+    // Stop NodeSessions
+    if (m_primary_node_session) {
+        m_primary_node_session->stop();
+    }
+    if (m_failover_node_session) {
+        m_failover_node_session->stop();
+    }
 
     // destroy workers
     for(auto& worker : m_workers)
