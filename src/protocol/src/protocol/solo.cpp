@@ -4,6 +4,8 @@
 #include "protocol/protocol_constants.hpp"
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/packet_builder.hpp"
+#include "protocol/genesis_utils.hpp"
+#include "protocol/serialization_helpers.hpp"
 #include "packet.hpp"
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
@@ -69,31 +71,6 @@ static const std::vector<uint8_t> AAD_REWARD_RESULT{
  *  No AAD argument = default empty vector. This is intentional — the entire
  *  SUBMIT_BLOCK packet is encrypted as-is without domain separation. */
 static const std::vector<uint8_t> AAD_BLOCK_SUBMISSION{};
-
-// Helper function to serialize uint64 to little-endian bytes
-static void append_uint64_le(std::vector<uint8_t>& dest, uint64_t value) {
-    for (int i = 0; i < 8; ++i) {
-        dest.push_back((value >> (i * 8)) & 0xFF);
-    }
-}
-
-// Helper function to serialize uint32 to little-endian bytes
-static void append_uint32_le(std::vector<uint8_t>& dest, uint32_t value) {
-    for (int i = 0; i < 4; ++i) {
-        dest.push_back((value >> (i * 8)) & 0xFF);
-    }
-}
-
-// Helper function to parse uint32 from little-endian bytes
-static uint32_t read_uint32_le(const std::vector<uint8_t>& src, size_t offset = 0) {
-    if (src.size() < offset + 4) {
-        return 0;
-    }
-    return static_cast<uint32_t>(src[offset]) |
-           (static_cast<uint32_t>(src[offset + 1]) << 8) |
-           (static_cast<uint32_t>(src[offset + 2]) << 16) |
-           (static_cast<uint32_t>(src[offset + 3]) << 24);
-}
 
 // Helper function to parse uint32 from big-endian bytes
 static uint32_t read_uint32_be(const std::vector<uint8_t>& src, size_t offset = 0) {
@@ -313,21 +290,6 @@ std::vector<uint8_t> Solo::load_tritium_genesis()
     return std::vector<uint8_t>(GENESIS_HASH_SIZE, 0);  // 32 zero bytes
 }
 
-// Helper function to check if genesis hash is valid (non-zero)
-// Optimized to return early on first non-zero byte
-static bool is_valid_genesis(const std::vector<uint8_t>& genesis) {
-    if (genesis.empty()) {
-        return false;
-    }
-    // Early return optimization - stop at first non-zero byte
-    for (uint8_t byte : genesis) {
-        if (byte != 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
 void Solo::reset()
 {
     m_current_height = 0;
@@ -415,10 +377,10 @@ network::Shared_payload Solo::login(Login_handler handler)
     // ═══════════════════════════════════════════════════════════
     std::vector<uint8_t> pubkey_to_send = m_miner_pubkey;
     bool wrapped = false;
-    
+
     // Only wrap if we have a valid genesis (non-zero)
-    bool has_valid_genesis = is_valid_genesis(tritium_genesis);
-    
+    bool has_valid_genesis = genesis_utils::is_valid_genesis(tritium_genesis);
+
     if (m_enable_chacha20 && has_valid_genesis)
     {
         m_logger->info("[Solo Auth] ChaCha20 wrapping ENABLED (genesis-derived key)");
@@ -2432,7 +2394,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         } else if (packet.m_data && packet.m_length == 4) {
             // ── KEEPALIVE v1: remaining timeout (4 bytes LE) ─────────────────────
-            uint32_t remaining_timeout = read_uint32_le(*packet.m_data);
+            uint32_t remaining_timeout = serialization::read_uint32_le(*packet.m_data);
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
 
             if (m_session_manager) {
@@ -3506,7 +3468,7 @@ void Solo::handle_reward_result(const Packet& packet)
     {
         // Load genesis for decryption
         std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
-        if (is_valid_genesis(tritium_genesis))
+        if (genesis_utils::is_valid_genesis(tritium_genesis))
         {
             try {
                 auto session_key = derive_chacha20_session_key(tritium_genesis);

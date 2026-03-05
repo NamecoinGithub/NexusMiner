@@ -1,4 +1,5 @@
 #include "protocol/session_manager.hpp"
+#include "protocol/serialization_helpers.hpp"
 #include "network/connection.hpp"
 #include "packet.hpp"
 #include "miner_opcodes.hpp"
@@ -13,13 +14,6 @@ constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
 constexpr auto KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);   // First ping after auth
 constexpr auto KEEPALIVE_TCP_INTERVAL   = std::chrono::seconds(45);   // TCP keepalive ping
 constexpr uint16_t KEEPALIVE_REGULAR_INTERVAL_DEFAULT = 12;           // Default hours fallback (2 pings per 24h node window)
-
-// SESSION_KEEPALIVE requests encode session_id as little-endian (wire format requirement).
-static void append_uint32_le(std::vector<uint8_t>& dest, uint32_t value) {
-    for (uint32_t i = 0; i < 4; ++i) {
-        dest.push_back((value >> (i * 8)) & 0xFF);
-    }
-}
 
 SessionManager::SessionManager(uint16_t keepalive_interval_hours,
                                std::shared_ptr<asio::io_context> io_context)
@@ -251,7 +245,7 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
 
     // v2 keepalive payload: [session_id(4 LE)][miner_prevblock_suffix(4 raw bytes)]
     std::vector<uint8_t> payload;
-    append_uint32_le(payload, session_id);
+    serialization::append_uint32_le(payload, session_id);
     payload.insert(payload.end(), m_prevblock_suffix.begin(), m_prevblock_suffix.end());
 
     // Build lane-aware packet based on protocol lane
