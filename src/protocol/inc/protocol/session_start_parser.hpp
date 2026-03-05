@@ -3,21 +3,21 @@
  * @brief SESSION_START packet parser for NexusMiner
  *
  * Parses SESSION_START packets received from the LLL-TAO node after successful
- * MINER_AUTH_RESULT. This packet contains session timeout, optional Falcon session
- * key, and optional genesis hash confirmation.
+ * MINER_AUTH_RESULT. This packet contains session parameters including success status,
+ * session ID, timeout, and optional genesis hash.
  *
- * Wire Format (from node):
+ * ACTUAL Wire Format (from LLL-TAO node stateless_miner_connection.cpp):
+ *   [success (1 byte: 0x01)]
+ *   [session_id (4 bytes, LE)]
  *   [timeout (4 bytes, LE)]
- *   [optional: session_key (32 bytes)]
- *   [optional: genesis_hash (32 bytes)]
+ *   [genesis_hash (32 bytes, optional)]
  *
- * Minimum size: 4 bytes (timeout only)
- * With session key: 36 bytes (timeout + key, no genesis)
- * Full format: 68 bytes (timeout + key + genesis)
+ * Minimum size: 9 bytes (success + session_id + timeout)
+ * Full format: 41 bytes (success + session_id + timeout + genesis_hash)
  *
- * NOTE: The 0x01 success byte is in MINER_AUTH_RESULT, NOT in SESSION_START.
- * MINER_AUTH_RESULT format: [status(1B: 0x00=fail, 0x01=pass)][session_id(4B, LE, if success)]
- * SESSION_START is a separate packet sent AFTER MINER_AUTH_RESULT.
+ * NOTE: This format differs from earlier documentation. The node prepends a success
+ * byte (0x01) and session_id field before the timeout. The session_key field mentioned
+ * in earlier docs is not present in the actual wire format.
  */
 
 #ifndef NEXUSMINER_SESSION_START_PARSER_HPP
@@ -34,12 +34,10 @@ namespace protocol {
  * @brief Parsed SESSION_START packet data
  */
 struct SessionStartData {
-    uint32_t timeout_seconds;                       ///< Session timeout in seconds (4 bytes LE)
-    std::optional<std::vector<uint8_t>> session_key; ///< Optional Falcon session key (32 bytes)
+    uint8_t  success;                                ///< Success byte (0x01 = success)
+    uint32_t session_id;                             ///< Session ID from node (4 bytes LE)
+    uint32_t timeout_seconds;                        ///< Session timeout in seconds (4 bytes LE)
     std::optional<std::vector<uint8_t>> genesis_hash; ///< Optional genesis hash (32 bytes)
-
-    /// @brief Check if session key is present
-    bool has_session_key() const { return session_key.has_value(); }
 
     /// @brief Check if genesis hash is present
     bool has_genesis_hash() const { return genesis_hash.has_value(); }
@@ -48,7 +46,7 @@ struct SessionStartData {
 /**
  * @brief Parse SESSION_START packet from wire format
  *
- * Validates packet structure and extracts timeout, optional session key, and optional genesis hash.
+ * Validates packet structure and extracts success byte, session ID, timeout, and optional genesis hash.
  *
  * @param data Packet data (not including opcode/header, just payload)
  * @param length Packet data length
@@ -56,41 +54,39 @@ struct SessionStartData {
  *
  * @note Returns nullopt if:
  *       - data is null
- *       - length < 4 (minimum: timeout field)
- *       - length is 5-35 (invalid: too short for session_key)
- *       - length is 37-67 (invalid: too short for genesis_hash if session_key present)
- *       - length > 68 (warning: excess data ignored)
+ *       - length < 9 (minimum: success + session_id + timeout)
+ *       - length is 10-40 (invalid: partial genesis_hash)
+ *       - length > 41 (warning: excess data ignored)
  */
 inline std::optional<SessionStartData> parse_session_start(const uint8_t* data, size_t length) {
-    // Validate minimum packet size
-    if (!data || length < 4) {
+    // Validate minimum packet size: 1 (success) + 4 (session_id) + 4 (timeout) = 9 bytes
+    if (!data || length < 9) {
         return std::nullopt;
     }
 
     SessionStartData result;
 
-    // Parse timeout (4 bytes, little-endian)
-    result.timeout_seconds = static_cast<uint32_t>(data[0]) |
-                            (static_cast<uint32_t>(data[1]) << 8) |
-                            (static_cast<uint32_t>(data[2]) << 16) |
-                            (static_cast<uint32_t>(data[3]) << 24);
+    // Parse success byte (offset 0)
+    result.success = data[0];
 
-    // Extract optional session key (32 bytes at offset 4)
-    if (length >= 36) {
-        // Session key is present
-        std::vector<uint8_t> key(data + 4, data + 36);
-        result.session_key = std::move(key);
+    // Parse session_id (4 bytes, little-endian, offset 1-4)
+    result.session_id = static_cast<uint32_t>(data[1]) |
+                       (static_cast<uint32_t>(data[2]) << 8) |
+                       (static_cast<uint32_t>(data[3]) << 16) |
+                       (static_cast<uint32_t>(data[4]) << 24);
 
-        // Extract optional genesis hash (32 bytes at offset 36)
-        if (length >= 68) {
-            std::vector<uint8_t> genesis(data + 36, data + 68);
-            result.genesis_hash = std::move(genesis);
-        } else if (length > 36) {
-            // Partial genesis data (invalid)
-            return std::nullopt;
-        }
-    } else if (length > 4) {
-        // Partial session key (invalid)
+    // Parse timeout (4 bytes, little-endian, offset 5-8)
+    result.timeout_seconds = static_cast<uint32_t>(data[5]) |
+                            (static_cast<uint32_t>(data[6]) << 8) |
+                            (static_cast<uint32_t>(data[7]) << 16) |
+                            (static_cast<uint32_t>(data[8]) << 24);
+
+    // Extract optional genesis hash (32 bytes at offset 9)
+    if (length >= 41) {
+        std::vector<uint8_t> genesis(data + 9, data + 41);
+        result.genesis_hash = std::move(genesis);
+    } else if (length > 9) {
+        // Partial genesis data (invalid)
         return std::nullopt;
     }
 

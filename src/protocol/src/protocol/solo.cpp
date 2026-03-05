@@ -2305,11 +2305,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     }
     else if (matches_opcode(Packet::SESSION_START))
     {
-        // LLL-TAO PR #22: Handle SESSION_START (session parameters from node)
-        // Format: [timeout(4, LE)][optional: session_key(32)][optional: genesis_hash(32)]
-        // NOTE: The 0x01 success byte is in MINER_AUTH_RESULT, NOT in SESSION_START.
-        //       MINER_AUTH_RESULT: [status(1B: 0x00=fail, 0x01=pass)][session_id(4B, LE)]
-        //       SESSION_START is sent AFTER MINER_AUTH_RESULT and contains session params.
+        // LLL-TAO SESSION_START handler (session parameters from node)
+        // ACTUAL Wire Format: [success(1B: 0x01)][session_id(4B, LE)][timeout(4B, LE)][optional: genesis_hash(32B)]
+        // NOTE: Earlier documentation incorrectly stated success byte was only in MINER_AUTH_RESULT.
+        //       The node actually sends it again in SESSION_START along with the session_id.
         m_logger->info("[Solo Session] Received SESSION_START from node");
 
         // Defensive check: SESSION_START should only be processed after successful authentication
@@ -2331,30 +2330,35 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         if (!parsed) {
             m_logger->error("[Solo Session] Failed to parse SESSION_START packet");
             m_logger->error("[Solo Session]   - Packet length: {} bytes", packet.m_length);
-            m_logger->error("[Solo Session]   - Expected: minimum 4 bytes (timeout), 36 bytes (with key), or 68 bytes (full)");
+            m_logger->error("[Solo Session]   - Expected: minimum 9 bytes (success+session_id+timeout), or 41 bytes (with genesis)");
+            return;
+        }
+
+        // Validate success byte
+        if (parsed->success != 0x01) {
+            m_logger->error("[Solo Session] Invalid success byte in SESSION_START: 0x{:02x} (expected 0x01)",
+                          parsed->success);
+            return;
+        }
+
+        // Validate session ID matches what we received in MINER_AUTH_RESULT
+        if (parsed->session_id != m_session_id) {
+            m_logger->error("[Solo Session] Session ID mismatch in SESSION_START:");
+            m_logger->error("[Solo Session]   - Expected: 0x{:08x} (from MINER_AUTH_RESULT)", m_session_id);
+            m_logger->error("[Solo Session]   - Received: 0x{:08x} (from SESSION_START)", parsed->session_id);
             return;
         }
 
         // Log parsed session parameters
         m_logger->info("[Solo Session] Session parameters:");
+        m_logger->info("[Solo Session]   - Success: 0x{:02x}", parsed->success);
+        m_logger->info("[Solo Session]   - Session ID: 0x{:08x}", parsed->session_id);
         m_logger->info("[Solo Session]   - Timeout: {} seconds ({} hours)",
                       parsed->timeout_seconds, parsed->timeout_seconds / 3600);
-
-        if (parsed->has_session_key()) {
-            m_logger->info("[Solo Session]   - Falcon Session Key received: {} bytes",
-                          parsed->session_key->size());
-        }
 
         if (parsed->has_genesis_hash()) {
             m_logger->info("[Solo Session]   - Tritium Genesis from node: {} bytes",
                           parsed->genesis_hash->size());
-        }
-
-        // Update session manager with session key (if present)
-        if (m_session_manager && parsed->has_session_key()) {
-            m_session_manager->start_session(m_session_id, *parsed->session_key,
-                                           m_session_manager->get_tritium_genesis());
-            m_logger->info("[Solo Session] Session updated with Falcon Session Key");
         }
 
         // Adjust keepalive interval based on timeout (ping at 1/N of timeout)
