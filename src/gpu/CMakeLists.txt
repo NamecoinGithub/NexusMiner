@@ -1,5 +1,3 @@
-cmake_minimum_required(VERSION 3.21)
-
 if (WITH_GPU_CUDA)
     add_definitions(-DGPU_CUDA_ENABLED)
     add_library(gpu STATIC "src/gpu/worker_hash.cpp" "src/gpu/cuda_hash/util.cu" "src/gpu/cuda_hash/constants.cu" "src/gpu/cuda_hash/sk1024.cu")

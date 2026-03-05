@@ -1,5 +1,3 @@
-cmake_minimum_required(VERSION 3.19)
-
 add_library(cpu STATIC src/cpu/worker_hash.cpp src/cpu/thread_utils.cpp)
 
 if(WITH_PRIME)

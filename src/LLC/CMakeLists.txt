@@ -1,5 +1,3 @@
-cmake_minimum_required(VERSION 3.19)
-
 # Falcon library C sources
 set(FALCON_SOURCES
     falcon/codec.c

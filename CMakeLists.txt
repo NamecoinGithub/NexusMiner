@@ -10,15 +10,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 configure_file(src/version.h.in version.h)
 
-set(CPM_DOWNLOAD_VERSION 0.40.0) 
-set(CPM_DOWNLOAD_LOCATION "${CMAKE_BINARY_DIR}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
-
-if(NOT (EXISTS ${CPM_DOWNLOAD_LOCATION}))
-    message(STATUS "Downloading CPM.cmake")
-    file(DOWNLOAD https://github.com/TheLartians/CPM.cmake/releases/download/v${CPM_DOWNLOAD_VERSION}/CPM.cmake ${CPM_DOWNLOAD_LOCATION})
-endif()
-
-include(${CPM_DOWNLOAD_LOCATION})
+# Use vendored CPM.cmake (respects CPM_SOURCE_CACHE for offline builds)
+include(${CMAKE_SOURCE_DIR}/cmake/CPM.cmake)
 
 find_package(Threads REQUIRED)
 
@@ -34,18 +27,25 @@ link_directories(${CMAKE_SOURCE_DIR}/libs)
 option(WITH_GPU_AMD "Build with AMD gpu workers, Requires HIP and clang" OFF)
 option(WITH_GPU_CUDA "Build with Nvidia gpu workers, CUDA needed" OFF)
 option(WITH_PRIME "Build with PRIME mining support, BOOST and GMP or MPIR needed" OFF)
-option(STATIC_OPENSSL "Build with static OpenSSL" ON)
 
-if(UNIX)
-    add_definitions(-DUNIX)
+# Default OFF for macOS (Homebrew OpenSSL is typically dynamic)
+if(APPLE)
+    option(NEXUSMINER_STATIC_OPENSSL "Build with static OpenSSL" OFF)
+else()
+    option(NEXUSMINER_STATIC_OPENSSL "Build with static OpenSSL" ON)
 endif()
 
+# Create platform INTERFACE library for scoped compile definitions
+add_library(NexusMiner_platform INTERFACE)
+if(UNIX)
+    target_compile_definitions(NexusMiner_platform INTERFACE UNIX)
+endif()
 if(WIN32)
-    add_definitions(-D_WIN32_WINT=0x0601 -DNOMINMAX -D_CRT_SECURE_NO_WARNINGS)
+    target_compile_definitions(NexusMiner_platform INTERFACE _WIN32_WINT=0x0601 NOMINMAX _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # OpenSSL
-if(STATIC_OPENSSL)
+if(NEXUSMINER_STATIC_OPENSSL)
     set(OPENSSL_USE_STATIC_LIBS TRUE)
 endif()
 find_package(OpenSSL REQUIRED)
@@ -56,12 +56,12 @@ if(OPENSSL_FOUND)
     message(STATUS "OpenSSL version: ${OPENSSL_VERSION}")
     if(OPENSSL_VERSION VERSION_GREATER_EQUAL "3.0.0")
         message(STATUS "OpenSSL 3.0+ detected - adding compatibility flags")
-        add_definitions(-DOPENSSL_3_0_OR_LATER)
+        target_compile_definitions(NexusMiner_platform INTERFACE OPENSSL_3_0_OR_LATER)
         # Suppress deprecation warnings for OpenSSL 3.0 when using legacy APIs
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-            add_compile_options(-Wno-deprecated-declarations)
+            target_compile_options(NexusMiner_platform INTERFACE -Wno-deprecated-declarations)
         elseif(MSVC)
-            add_compile_options(/wd4996)
+            target_compile_options(NexusMiner_platform INTERFACE /wd4996)
         endif()
     else()
         message(STATUS "OpenSSL 1.1.1 detected - using legacy API")
@@ -124,9 +124,8 @@ if(WITH_GPU_CUDA)
     if(CMAKE_CUDA_COMPILER)
         enable_language(CUDA)
         find_package(CUDAToolkit)
-        include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}) 
-        add_definitions(-DGPU_CUDA_ENABLED)
-        add_definitions(-DGPU_ENABLED)
+        include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+        target_compile_definitions(NexusMiner_platform INTERFACE GPU_CUDA_ENABLED GPU_ENABLED)
     else()
         message(STATUS "No CUDA compiler found")
     endif()
@@ -136,8 +135,7 @@ if(WITH_GPU_AMD)
     # Search for rocm in common locations
     list(APPEND CMAKE_PREFIX_PATH /opt/rocm/hip /opt/rocm)
     find_package(hip)
-    add_definitions(-DGPU_AMD_ENABLED)
-    add_definitions(-DGPU_ENABLED)    
+    target_compile_definitions(NexusMiner_platform INTERFACE GPU_AMD_ENABLED GPU_ENABLED)
 endif()
 
 
@@ -166,12 +164,12 @@ if(WITH_PRIME)
     endif()
     
     if(WITH_PRIME)
-        include_directories(${Boost_INCLUDE_DIRS}) 
+        include_directories(${Boost_INCLUDE_DIRS})
         include(FetchContent)
         FetchContent_Declare(primesieve GIT_REPOSITORY https://github.com/kimwalisch/primesieve.git GIT_TAG master)
         FetchContent_MakeAvailable(primesieve)
         # find_package(primesieve REQUIRED)
-        add_definitions(-DPRIME_ENABLED)
+        target_compile_definitions(NexusMiner_platform INTERFACE PRIME_ENABLED)
     endif()
 endif()
 
@@ -195,6 +193,9 @@ add_subdirectory(src/tools)
 if(WITH_GPU_CUDA OR WITH_GPU_AMD)
     add_subdirectory(src/gpu)
 endif()
+
+# Enable testing
+enable_testing()
 
 set(MAIN_SOURCE_FILES src/main.cpp
                 src/miner.cpp 
@@ -233,7 +234,7 @@ endif()
               
 
 target_include_directories(NexusMiner PUBLIC "${PROJECT_BINARY_DIR}")
-target_link_libraries(NexusMiner chrono network config stats protocol cpu fpga LLP worker TAO asio spdlog::spdlog)
+target_link_libraries(NexusMiner NexusMiner_platform chrono network config stats protocol cpu fpga LLP worker TAO asio spdlog::spdlog)
 if(WITH_GPU_CUDA)
     target_link_libraries(NexusMiner gpu)
 endif()
@@ -245,4 +246,47 @@ target_link_libraries(NexusMiner Threads::Threads)
 # SIM Link DualConnectionManager unit test
 add_executable(dual_connection_manager_test src/dual_connection_manager_test.cpp src/dual_connection_manager.cpp)
 target_include_directories(dual_connection_manager_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME dual_connection_manager_test COMMAND dual_connection_manager_test)
 
+# ============================================================================
+# Installation and packaging
+# ============================================================================
+include(GNUInstallDirs)
+
+# Install the main executable
+install(TARGETS NexusMiner
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+# Install configuration files
+install(DIRECTORY configs/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/nexusminer/configs
+    FILES_MATCHING PATTERN "*.conf"
+)
+
+# Install documentation
+install(FILES README.md
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}
+    OPTIONAL
+)
+
+# CPack configuration
+set(CPACK_PACKAGE_NAME "NexusMiner")
+set(CPACK_PACKAGE_VENDOR "Nexus")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Nexus blockchain miner")
+set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
+set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
+set(CPACK_RESOURCE_FILE_README "${CMAKE_SOURCE_DIR}/README.md")
+
+# Platform-specific packaging
+if(WIN32)
+    set(CPACK_GENERATOR "ZIP;NSIS")
+    set(CPACK_NSIS_MODIFY_PATH ON)
+    set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+else()
+    set(CPACK_GENERATOR "TGZ;ZIP")
+endif()
+
+include(CPack)

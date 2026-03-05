@@ -1,5 +1,3 @@
-cmake_minimum_required(VERSION 3.21)
-
 # Build falcon-keygen tool
 add_executable(falcon-keygen falcon_keygen.cpp)
 
