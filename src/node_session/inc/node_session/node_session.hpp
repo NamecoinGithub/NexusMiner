@@ -4,10 +4,12 @@
 #include "network/connection.hpp"
 #include "network/socket.hpp"
 #include "network/types.hpp"
-#include "protocol/inc/protocol/protocol.hpp"
-#include "protocol/inc/protocol/solo.hpp"
-#include "protocol/inc/protocol/session_manager.hpp"
+#include "protocol/protocol.hpp"
+#include "protocol/solo.hpp"
+#include "protocol/session_manager.hpp"
 #include "protocol_lane.hpp"
+#include "block.hpp"
+#include "LLC/types/uint1024.h"
 #include "spdlog/spdlog.h"
 
 #include <memory>
@@ -58,7 +60,7 @@ public:
      * @param block Block data
      * @param nBits Difficulty bits
      */
-    using Template_handler = std::function<void(const LLP::CBlock& block, uint32_t nBits)>;
+    using Template_handler = std::function<void(const ::LLP::CBlock& block, uint32_t nBits)>;
 
     /**
      * @brief Block accepted handler
@@ -280,13 +282,13 @@ private:
      * @param result Connection result
      * @param callback User callback
      */
-    void handle_primary_connection_result(network::Result result, Connection_callback callback);
+    void handle_primary_connection_result(network::Result::Code result, Connection_callback callback);
 
     /**
      * @brief Handle secondary connection result
      * @param result Connection result
      */
-    void handle_secondary_connection_result(network::Result result);
+    void handle_secondary_connection_result(network::Result::Code result);
 
     // Core components
     std::shared_ptr<asio::io_context> m_io_context;

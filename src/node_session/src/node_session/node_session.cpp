@@ -1,8 +1,9 @@
 #include "node_session/node_session.hpp"
-#include "protocol/inc/protocol/solo.hpp"
-#include "protocol/inc/protocol/session_manager.hpp"
-#include "LLP/packet.h"
-#include "LLP/miner_opcodes.hpp"
+#include "protocol/solo.hpp"
+#include "protocol/session_manager.hpp"
+#include "config/config.hpp"
+#include "packet.hpp"
+#include "miner_opcodes.hpp"
 #include "asio/post.hpp"
 #include <algorithm>
 
@@ -45,8 +46,8 @@ bool NodeSession::connect(const network::Endpoint& node_endpoint, Connection_cal
         return false;
     }
 
-    m_logger->info("[NodeSession:{}] Connecting to node at {}:{}",
-                   m_node_label, node_endpoint.get_host(), node_endpoint.get_port());
+    m_logger->info("[NodeSession:{}] Connecting to node at {}",
+                   m_node_label, node_endpoint.to_string());
 
     // Start with primary connection (stateless port)
     connect_primary(node_endpoint, std::move(callback));
@@ -83,7 +84,7 @@ void NodeSession::connect_primary(const network::Endpoint& node_endpoint, Connec
                     }
 
                     // Start authentication
-                    auto auth_payload = self->m_primary_protocol->login([weak_self, callback](bool login_result) {
+                    auto auth_payload = self->m_primary_protocol->login([weak_self, callback, node_endpoint](bool login_result) {
                         auto self = weak_self.lock();
                         if (!self) return;
 
@@ -98,11 +99,14 @@ void NodeSession::connect_primary(const network::Endpoint& node_endpoint, Connec
                                             self->m_node_label);
 
                         // After primary connection is established, initiate secondary connection
-                        if (self->m_config.use_sim_link() && !self->m_secondary_connected) {
+                        if (self->m_config.get_enable_sim_link() && !self->m_secondary_connected) {
                             // Create secondary endpoint with legacy port (8323)
-                            network::Endpoint secondary_endpoint(
-                                node_endpoint.get_host(),
-                                ProtocolPorts::LEGACY_PORT);
+                            std::string node_ip;
+                            node_endpoint.address(node_ip);
+                            network::Endpoint secondary_endpoint{
+                                network::Transport_protocol::tcp,
+                                node_ip,
+                                ProtocolPorts::LEGACY_PORT};
                             self->connect_secondary(secondary_endpoint);
                         }
                     });
@@ -154,8 +158,8 @@ void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
         return;
     }
 
-    m_logger->info("[NodeSession:{}] Connecting secondary (legacy) to {}:{}",
-                   m_node_label, node_endpoint.get_host(), node_endpoint.get_port());
+    m_logger->info("[NodeSession:{}] Connecting secondary (legacy) to {}",
+                   m_node_label, node_endpoint.to_string());
 
     // Create secondary protocol instance (Legacy lane, port 8323)
     uint8_t channel = (m_config.get_mining_mode() == config::Mining_mode::PRIME) ? 1U : 2U;
@@ -176,7 +180,7 @@ void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
     m_secondary_protocol->enable_disposable_falcon(true);
 
     // Register handlers (reuse the same handlers as primary)
-    m_secondary_protocol->set_block_handler([this](const LLP::CBlock& block, uint32_t nBits) {
+    m_secondary_protocol->set_block_handler([this](const ::LLP::CBlock& block, uint32_t nBits) {
         if (m_template_handler) {
             m_template_handler(block, nBits);
         }
@@ -286,14 +290,14 @@ void NodeSession::process_primary_data(network::Shared_payload&& receive_buffer)
             m_primary_rx_accumulator.end());
 
         size_t bytes_consumed = 0;
-        LLP::ParseResult parse_result;
+        ParseResult parse_result;
 
         auto packet = extract_packet_from_buffer_with_result(
             buffer_shared, bytes_consumed, 0, lane, parse_result);
 
-        if (parse_result == LLP::ParseResult::NEED_MORE_DATA) {
+        if (parse_result == ParseResult::NEED_MORE_DATA) {
             break;
-        } else if (parse_result == LLP::ParseResult::MALFORMED) {
+        } else if (parse_result == ParseResult::MALFORMED) {
             m_logger->error("[NodeSession:{}] Malformed packet on primary connection",
                           m_node_label);
             m_primary_rx_accumulator.clear();
@@ -331,14 +335,14 @@ void NodeSession::process_secondary_data(network::Shared_payload&& receive_buffe
             m_secondary_rx_accumulator.end());
 
         size_t bytes_consumed = 0;
-        LLP::ParseResult parse_result;
+        ParseResult parse_result;
 
         auto packet = extract_packet_from_buffer_with_result(
             buffer_shared, bytes_consumed, 0, lane, parse_result);
 
-        if (parse_result == LLP::ParseResult::NEED_MORE_DATA) {
+        if (parse_result == ParseResult::NEED_MORE_DATA) {
             break;
-        } else if (parse_result == LLP::ParseResult::MALFORMED) {
+        } else if (parse_result == ParseResult::MALFORMED) {
             m_logger->error("[NodeSession:{}] Malformed packet on secondary connection",
                           m_node_label);
             m_secondary_rx_accumulator.clear();
@@ -355,7 +359,7 @@ void NodeSession::process_secondary_data(network::Shared_payload&& receive_buffe
     }
 }
 
-void NodeSession::handle_primary_connection_result(network::Result result, Connection_callback callback)
+void NodeSession::handle_primary_connection_result(network::Result::Code result, Connection_callback callback)
 {
     if (result == network::Result::connection_ok) {
         // Set protocol lane
@@ -387,7 +391,7 @@ void NodeSession::handle_primary_connection_result(network::Result result, Conne
     }
 }
 
-void NodeSession::handle_secondary_connection_result(network::Result result)
+void NodeSession::handle_secondary_connection_result(network::Result::Code result)
 {
     if (result == network::Result::connection_ok && m_secondary_connection) {
         // Set protocol lane
@@ -525,7 +529,7 @@ void NodeSession::set_template_handler(Template_handler handler)
 
     // Register with both protocols
     if (m_primary_protocol) {
-        m_primary_protocol->set_block_handler([this](const LLP::CBlock& block, uint32_t nBits) {
+        m_primary_protocol->set_block_handler([this](const ::LLP::CBlock& block, uint32_t nBits) {
             if (m_template_handler) {
                 m_template_handler(block, nBits);
             }
