@@ -2,7 +2,7 @@
 #define NEXUSMINER_PROTOCOL_PROTOCOL_HPP
 
 #include "network/types.hpp"
-#include "packet.hpp"
+#include "LLP/packet.hpp"
 #include "block.hpp"
 #include <vector>
 #include <memory>
