@@ -18,18 +18,29 @@ using namespace nexusminer;
 class MockSocket : public network::Socket {
 public:
     MockSocket(std::shared_ptr<asio::io_context> io_context)
-        : m_io_context(io_context) {}
+        : m_io_context(io_context), m_local_endpoint{} {}
 
-    network::Connection::Sptr connect(
-        const network::Endpoint& endpoint,
-        network::Connection::Receive_handler handler) override
+    network::Result::Code listen(Connect_handler handler) override
     {
-        // Return null for testing
+        return network::Result::Code::socket_ok;
+    }
+
+    void stop_listen() override {}
+
+    network::Endpoint const& local_endpoint() const override
+    {
+        return m_local_endpoint;
+    }
+
+    network::Connection::Sptr connect(network::Endpoint remote_endpoint,
+                                      network::Connection::Handler handler) override
+    {
         return nullptr;
     }
 
 private:
     std::shared_ptr<asio::io_context> m_io_context;
+    network::Endpoint m_local_endpoint;
 };
 
 void test_node_session_creation()
@@ -39,7 +50,7 @@ void test_node_session_creation()
     auto io_context = std::make_shared<asio::io_context>();
 
     // Create minimal config
-    config::Config config;
+    config::Config config(nullptr);
     config.set_mining_mode(config::Mining_mode::HASH);
 
     auto socket = std::make_shared<MockSocket>(io_context);
@@ -69,7 +80,7 @@ void test_node_session_configuration()
 
     auto io_context = std::make_shared<asio::io_context>();
 
-    config::Config config;
+    config::Config config(nullptr);
     config.set_mining_mode(config::Mining_mode::PRIME);
 
     auto socket = std::make_shared<MockSocket>(io_context);
@@ -107,7 +118,7 @@ void test_node_session_handlers()
 
     auto io_context = std::make_shared<asio::io_context>();
 
-    config::Config config;
+    config::Config config(nullptr);
     config.set_mining_mode(config::Mining_mode::HASH);
 
     auto socket = std::make_shared<MockSocket>(io_context);
@@ -165,7 +176,7 @@ void test_node_session_protocol_access()
 
     auto io_context = std::make_shared<asio::io_context>();
 
-    config::Config config;
+    config::Config config(nullptr);
     config.set_mining_mode(config::Mining_mode::HASH);
 
     auto socket = std::make_shared<MockSocket>(io_context);
@@ -196,7 +207,7 @@ void test_node_session_stop_and_reset()
 
     auto io_context = std::make_shared<asio::io_context>();
 
-    config::Config config;
+    config::Config config(nullptr);
     config.set_mining_mode(config::Mining_mode::HASH);
 
     auto socket = std::make_shared<MockSocket>(io_context);
