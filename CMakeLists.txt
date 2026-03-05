@@ -35,13 +35,16 @@ else()
     option(NEXUSMINER_STATIC_OPENSSL "Build with static OpenSSL" ON)
 endif()
 
+# Enable testing early so subdirectories can register tests
+enable_testing()
+
 # Create platform INTERFACE library for scoped compile definitions
 add_library(NexusMiner_platform INTERFACE)
 if(UNIX)
     target_compile_definitions(NexusMiner_platform INTERFACE UNIX)
 endif()
 if(WIN32)
-    target_compile_definitions(NexusMiner_platform INTERFACE _WIN32_WINT=0x0601 NOMINMAX _CRT_SECURE_NO_WARNINGS)
+    target_compile_definitions(NexusMiner_platform INTERFACE _WIN32_WINNT=0x0601 NOMINMAX _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # OpenSSL
@@ -111,7 +114,7 @@ if(asio_ADDED)
       set(_WIN32_WINNT ${ver})
     endif()
 
-    message(STATUS "Set _WIN32_WINNET=${_WIN32_WINNT}")
+    message(STATUS "Set _WIN32_WINNT=${_WIN32_WINNT}")
 
     target_compile_definitions(asio INTERFACE _WIN32_WINNT=${_WIN32_WINNT} WIN32_LEAN_AND_MEAN)
   endif()
@@ -195,9 +198,6 @@ if(WITH_GPU_CUDA OR WITH_GPU_AMD)
     add_subdirectory(src/gpu)
 endif()
 
-# Enable testing
-enable_testing()
-
 set(MAIN_SOURCE_FILES src/main.cpp
                 src/miner.cpp 
                 src/miner_keys.cpp
@@ -247,7 +247,7 @@ target_link_libraries(NexusMiner Threads::Threads)
 # SIM Link DualConnectionManager unit test
 add_executable(dual_connection_manager_test src/dual_connection_manager_test.cpp src/dual_connection_manager.cpp)
 target_include_directories(dual_connection_manager_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-add_test(NAME dual_connection_manager_test COMMAND dual_connection_manager_test)
+add_test(NAME dual_connection_manager_test COMMAND $<TARGET_FILE:dual_connection_manager_test>)
 
 # ============================================================================
 # Installation and packaging

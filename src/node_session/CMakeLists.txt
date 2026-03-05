@@ -35,4 +35,4 @@ target_include_directories(node_session_test PRIVATE
 )
 
 # Register test with CTest
-add_test(NAME node_session_test COMMAND node_session_test)
+add_test(NAME node_session_test COMMAND $<TARGET_FILE:node_session_test>)

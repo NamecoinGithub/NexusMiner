@@ -30,7 +30,7 @@ target_include_directories(mining_template_validation_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/LLP/inc
     ${CMAKE_SOURCE_DIR}/src/TAO/inc
 )
-add_test(NAME mining_template_validation_test COMMAND mining_template_validation_test)
+add_test(NAME mining_template_validation_test COMMAND $<TARGET_FILE:mining_template_validation_test>)
 
 # ChaCha20-Poly1305 AEAD Unit Test
 add_executable(chacha20_test chacha20_test.cpp)
@@ -166,19 +166,19 @@ target_include_directories(get_block_dedup_recovery_test PRIVATE
 )
 
 # Register all test executables with CTest
-add_test(NAME chacha20_test COMMAND chacha20_test)
-add_test(NAME genesis_serialization_utils_test COMMAND genesis_serialization_utils_test)
-add_test(NAME height_tracker_test COMMAND height_tracker_test)
-add_test(NAME packet_builder_test COMMAND packet_builder_test)
-add_test(NAME phase2b_update_height_test COMMAND phase2b_update_height_test)
-add_test(NAME keepalive_v2_test COMMAND keepalive_v2_test)
-add_test(NAME push_notification_lane_test COMMAND push_notification_lane_test)
-add_test(NAME session_status_wire_test COMMAND session_status_wire_test)
-add_test(NAME stateless_block_utility_test COMMAND stateless_block_utility_test)
-add_test(NAME e2e_block_submission_test COMMAND e2e_block_submission_test)
-add_test(NAME mined_block_cache_dedup_test COMMAND mined_block_cache_dedup_test)
-add_test(NAME node_shutdown_wire_test COMMAND node_shutdown_wire_test)
-add_test(NAME get_block_dedup_recovery_test COMMAND get_block_dedup_recovery_test)
+add_test(NAME chacha20_test COMMAND $<TARGET_FILE:chacha20_test>)
+add_test(NAME genesis_serialization_utils_test COMMAND $<TARGET_FILE:genesis_serialization_utils_test>)
+add_test(NAME height_tracker_test COMMAND $<TARGET_FILE:height_tracker_test>)
+add_test(NAME packet_builder_test COMMAND $<TARGET_FILE:packet_builder_test>)
+add_test(NAME phase2b_update_height_test COMMAND $<TARGET_FILE:phase2b_update_height_test>)
+add_test(NAME keepalive_v2_test COMMAND $<TARGET_FILE:keepalive_v2_test>)
+add_test(NAME push_notification_lane_test COMMAND $<TARGET_FILE:push_notification_lane_test>)
+add_test(NAME session_status_wire_test COMMAND $<TARGET_FILE:session_status_wire_test>)
+add_test(NAME stateless_block_utility_test COMMAND $<TARGET_FILE:stateless_block_utility_test>)
+add_test(NAME e2e_block_submission_test COMMAND $<TARGET_FILE:e2e_block_submission_test>)
+add_test(NAME mined_block_cache_dedup_test COMMAND $<TARGET_FILE:mined_block_cache_dedup_test>)
+add_test(NAME node_shutdown_wire_test COMMAND $<TARGET_FILE:node_shutdown_wire_test>)
+add_test(NAME get_block_dedup_recovery_test COMMAND $<TARGET_FILE:get_block_dedup_recovery_test>)
 # SESSION_START packet parser unit tests
 add_executable(session_start_parser_test session_start_parser_test.cpp)
 target_link_libraries(session_start_parser_test PRIVATE protocol)
