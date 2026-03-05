@@ -70,6 +70,7 @@ See [docs/current/security/security-overview.md](docs/current/security/security-
 
 | Category | Link | Description |
 |----------|------|-------------|
+| **Protocol Reference** | [docs/reference/block-formats.md](docs/reference/block-formats.md) | 216-byte Tritium vs 220-byte Legacy block wire formats |
 | **Build** | [BUILD.md](BUILD.md) | All-platform build guide |
 | **Hardware** | [docs/hardware/HARDWARE.md](docs/hardware/HARDWARE.md) | GPU/FPGA/CPU detail & power controls |
 | **RISC-V** | [docs/riscv/RISCV-OVERVIEW.md](docs/riscv/RISCV-OVERVIEW.md) | RISC-V extensions, performance, ecosystem |

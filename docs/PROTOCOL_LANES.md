@@ -78,6 +78,52 @@ The parser uses the connection lane (determined from port) to decide header widt
 | 0xD0D9-0xD0DA | Block availability | PRIME_BLOCK_AVAILABLE (0xD0D9), HASH_BLOCK_AVAILABLE (0xD0DA) | Data-bearing |
 | 0xD0FD-0xD0FE | Control | PING (0xD0FD), CLOSE (0xD0FE) | Header-only |
 
+> **Block Format:** Both lanes transmit **216-byte Tritium blocks**. See
+> [docs/reference/block-formats.md](reference/block-formats.md) for the complete
+> field layout and the distinction from the historical 220-byte Legacy format.
+
+## Block Format (Independent of Protocol Lane)
+
+> **Important:** The protocol lane name ("Legacy" vs "Stateless") refers ONLY to the
+> LLP framing and connection behaviour — NOT to the block serialization format.
+> Both protocol lanes transmit the same 216-byte Tritium block format.
+
+### Tritium Block (216 bytes) — Current Standard
+Both lanes transmit this format:
+
+| Offset | Size | Field | Notes |
+|--------|------|-------|-------|
+| 0 | 4 | nVersion | Block version |
+| 4 | 128 | hashPrevBlock | Previous block hash |
+| 132 | 64 | hashMerkleRoot | Merkle root |
+| 196 | 4 | nChannel | Mining channel (1=Prime, 2=Hash) |
+| 200 | 4 | nHeight | Block height |
+| 204 | 4 | nBits | Difficulty target |
+| 208 | 8 | nNonce | Miner nonce (mutable) |
+| **Total** | **216** | | **nTime is NOT in wire template** |
+
+`nTime` is **not transmitted** in the template. The node sets `nTime` internally via
+`runtime::unifiedtimestamp()` during `sign_block()` validation.
+
+### Legacy Block (220 bytes) — Historical Reference Only
+The pre-Tritium format included `nTime` in the template:
+
+| Offset | Size | Field | Notes |
+|--------|------|-------|-------|
+| 0–207 | 208 | (same as Tritium above) | |
+| 208 | 8 | nNonce | Miner nonce |
+| 216 | 4 | nTime | **Was included in wire template** |
+| **Total** | **220** | | **No longer used in active mining** |
+
+### Summary: What "Legacy" Means in This Codebase
+
+| Term | Category | Meaning |
+|------|----------|---------|
+| "Legacy Lane" | Protocol framing | Port 8323, 8-bit opcodes, polling (GET_ROUND/NEW_ROUND) |
+| "Stateless Lane" | Protocol framing | Port 9323, 16-bit opcodes, push (MINER_READY/GET_BLOCK) |
+| "Legacy Block" | Block serialization | 220-byte format with `nTime` in template (historical) |
+| "Tritium Block" | Block serialization | 216-byte format, `nTime` set by node (current standard for **both** lanes) |
+
 ## Key Design Decisions
 
 ### GET_BLOCK Behavior Difference
