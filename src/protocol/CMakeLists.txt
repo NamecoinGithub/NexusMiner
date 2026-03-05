@@ -179,3 +179,10 @@ add_test(NAME e2e_block_submission_test COMMAND e2e_block_submission_test)
 add_test(NAME mined_block_cache_dedup_test COMMAND mined_block_cache_dedup_test)
 add_test(NAME node_shutdown_wire_test COMMAND node_shutdown_wire_test)
 add_test(NAME get_block_dedup_recovery_test COMMAND get_block_dedup_recovery_test)
+# SESSION_START packet parser unit tests
+add_executable(session_start_parser_test session_start_parser_test.cpp)
+target_link_libraries(session_start_parser_test PRIVATE protocol)
+target_include_directories(session_start_parser_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src
+)
