@@ -131,7 +131,8 @@
     },
     {
       "name": "windows-msvc",
-      "configurePreset": "windows-msvc"
+      "configurePreset": "windows-msvc",
+      "configuration": "Release"
     },
     {
       "name": "macos",
