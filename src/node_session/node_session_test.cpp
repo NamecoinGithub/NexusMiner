@@ -133,7 +133,7 @@ void test_node_session_handlers()
 
     // Register handlers
     bool template_handler_called = false;
-    node_session->set_template_handler([&template_handler_called](const LLP::CBlock&, uint32_t) {
+    node_session->set_template_handler([&template_handler_called](const ::LLP::CBlock&, uint32_t) {
         template_handler_called = true;
     });
 
