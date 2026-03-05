@@ -129,6 +129,9 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_template_unified_height{0}  // No template yet
 , m_protocol_lane{ProtocolLane::UNKNOWN}  // Will be determined from connection port
 {
+    if (!m_logger) {
+        m_logger = spdlog::default_logger();
+    }
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
     

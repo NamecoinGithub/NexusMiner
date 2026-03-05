@@ -33,6 +33,7 @@ target_include_directories(node_session_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/network/inc
     ${CMAKE_SOURCE_DIR}/src/config/inc
     ${CMAKE_SOURCE_DIR}/src/stats/inc
+    ${CMAKE_SOURCE_DIR}/src/LLC/inc
     ${CMAKE_SOURCE_DIR}/src
 )
 
