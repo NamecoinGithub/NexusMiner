@@ -73,6 +73,39 @@ cmake -DCMAKE_BUILD_TYPE=Release -DWITH_GPU_AMD=On -DWITH_PRIME=On .. && make -j
 cmake -DCMAKE_BUILD_TYPE=Release .. && make -j$(nproc)
 ```
 
+## CMake Presets
+
+NexusMiner provides CMake presets for quick configuration. Use `cmake --preset <name>` to configure and `cmake --build --preset <name>` to build:
+
+### Available Presets
+
+| Preset | Description |
+|--------|-------------|
+| `debug` | Debug build with sanitizers |
+| `release` | Standard release build |
+| `gpu-cuda` | Release with CUDA GPU support |
+| `gpu-cuda-prime` | Release with CUDA GPU and PRIME support |
+| `tsan` | Debug build with ThreadSanitizer |
+| `windows-msvc` | Windows build with MSVC (Windows only) |
+| `macos` | macOS build with dynamic OpenSSL (macOS only) |
+| `riscv` | RISC-V build with hardware acceleration |
+
+### RISC-V Build
+
+For RISC-V platforms with Zbkb/Zbkc (bit manipulation) and RVV (vector) extensions:
+
+```bash
+cmake --preset riscv
+cmake --build --preset riscv
+```
+
+This preset enables:
+- **Zbkb/Zbkc extensions**: Hardware-accelerated ChaCha20 encryption (OpenSSL automatically uses these)
+- **RVV extensions**: SIMD vector operations for SHA-256 hashing in hash channel mining
+- **Target architecture**: `rv64gcv_zbkb_zbkc` (64-bit RISC-V with compressed, vectors, and bit manipulation)
+
+**Note:** ChaCha20Wrapper requires no code changes - OpenSSL automatically routes to hardware Zbkb/Zbkc instructions when available. Falcon and LLP are already portable C/C++ code.
+
 ## AMD GPU Build Notes
 
 Prime mining with Radeon RX6000 series GPUs is supported on Linux. The [ROCm](https://rocmdocs.amd.com/en/latest/Installation_Guide/Installation_new.html) toolkit is required. ROCm uses a special version of clang whose path must be passed to cmake:
