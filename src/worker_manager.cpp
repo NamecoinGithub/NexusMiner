@@ -147,8 +147,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         }
         
         // Configure keepalive interval
-        solo_protocol->set_keepalive_interval(m_config.get_keepalive_interval());
-        m_logger->info("[Worker_manager] Keepalive interval: {} hours", m_config.get_keepalive_interval());
+        solo_protocol->set_keepalive_interval(get_effective_keepalive_interval());
+        m_logger->info("[Worker_manager] Keepalive interval: {} hours", get_effective_keepalive_interval());
         
         // ChaCha20 encryption is ALWAYS ON (core security) - no configuration needed
         // Explicit call kept for code clarity and to ensure proper initialization logging
@@ -578,6 +578,21 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         );
         m_logger->info("[Worker_manager] Session authenticated handler registered");
 
+        /* ========== REGISTER SESSION START HANDLER ========== */
+        /* Called by Solo when SESSION_START is received and keepalive interval has been  */
+        /* auto-adjusted from the node-advertised timeout. Updates m_node_keepalive_interval_hours */
+        /* so future secondary/failover connections use the correct node-derived interval. */
+        solo_protocol->set_session_start_handler(
+            [weak_self = weak_from_this()](uint16_t keepalive_hours) {
+                auto self = weak_self.lock();
+                if (!self) return;
+                self->m_node_keepalive_interval_hours.store(keepalive_hours);
+                self->m_logger->info("[Worker_manager] Node-advertised keepalive interval: {} hours (will seed future connections)",
+                    keepalive_hours);
+            }
+        );
+        m_logger->info("[Worker_manager] Session start handler registered");
+
         /* ========== REGISTER BLOCK ACCEPTED HANDLER ========== */
         /* Records accepted blocks into the three-tier mined-block cache. */
         solo_protocol->set_block_accepted_handler(
@@ -752,6 +767,14 @@ void Worker_manager::stop()
     }
 }
 
+uint16_t Worker_manager::get_effective_keepalive_interval() const
+{
+    uint16_t node_interval = m_node_keepalive_interval_hours.load();
+    return (node_interval > 0)
+        ? node_interval
+        : m_config.get_keepalive_interval();
+}
+
 void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
 {
     // Set reconnect guard to prevent stale RX callbacks from processing during reconnect
@@ -829,6 +852,10 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
         {
             m_logger->info("[Failover] Resetting protocol state for fresh Falcon re-authentication on {}",
                 effective_endpoint.to_string());
+            // Failover node may have a different session timeout — clear cached interval
+            // so we re-learn from the failover node's SESSION_START
+            m_node_keepalive_interval_hours.store(0);
+            m_logger->info("[Failover] Cleared node-advertised keepalive interval (will re-learn from failover SESSION_START)");
         }
 
         // Notify DualConnectionManager about failover state and trigger secondary reconnection
@@ -1304,7 +1331,7 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
             if (keys::from_hex(m_config.get_tritium_genesis(), genesis))
                 secondary_solo->set_tritium_genesis(genesis);
         }
-        secondary_solo->set_keepalive_interval(m_config.get_keepalive_interval());
+        secondary_solo->set_keepalive_interval(get_effective_keepalive_interval());
         secondary_solo->enable_chacha20_wrapping(true);
         secondary_solo->enable_disposable_falcon(true);
         m_logger->info("[SIM Link] Secondary lane: ChaCha20 ENABLED, genesis configured ({} bytes)",
@@ -1423,6 +1450,23 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
             else
                 self->m_logger->info("[SIM Link][Primary] Secondary lane session established on primary node: session_id=0x{:08x}",
                     session_id);
+        }
+    );
+
+    // Register session_start_handler on the secondary Solo so that a SESSION_START on the
+    // secondary lane also updates m_node_keepalive_interval_hours if the primary hasn't received
+    // one yet (secondary takes effect only when primary has not already set the value).
+    secondary_solo->set_session_start_handler(
+        [weak_self = weak_from_this()](uint16_t keepalive_hours) {
+            auto self = weak_self.lock();
+            if (!self) return;
+            // Only update if not already set by primary lane (primary takes precedence).
+            // Use CAS so concurrent primary and secondary handlers don't create a data race.
+            uint16_t expected = 0;
+            if (self->m_node_keepalive_interval_hours.compare_exchange_strong(expected, keepalive_hours)) {
+                self->m_logger->info("[SIM Link] Node-advertised keepalive from secondary lane: {} hours",
+                    keepalive_hours);
+            }
         }
     );
 

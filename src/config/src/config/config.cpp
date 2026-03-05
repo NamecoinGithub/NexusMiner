@@ -219,8 +219,8 @@ namespace config
 				}
 			}
 			
-			// Keep-alive interval in hours (default: 24 hours = 1 ping/day)
-			m_keepalive_interval = 24;  // Default
+			// Keep-alive interval in hours (default: 12 hours = 2 pings/day safety margin vs 24h node timeout)
+			m_keepalive_interval = 12;  // Default
 			if (j.count("keepalive_interval") != 0)
 			{
 				j.at("keepalive_interval").get_to(m_keepalive_interval);
