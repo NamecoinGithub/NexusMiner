@@ -762,17 +762,11 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
     // Set reconnect guard to prevent stale RX callbacks from processing during reconnect
     m_reconnect_in_progress = true;
 
-    // Synchronize DCM state: mark the primary lane as failed before attempting reconnect.
-    // This keeps the DCM in sync with actual wire state, especially for keepalive timeout paths.
-    ProtocolLane primary_lane = m_connection ? m_connection->get_protocol_lane() : ProtocolLane::STATELESS;
-    m_sim_link.on_lane_failed(primary_lane);
-    if (primary_lane == ProtocolLane::STATELESS)
-        m_sim_link.set_stateless_alive(false);
-    else if (primary_lane == ProtocolLane::LEGACY)
-        m_sim_link.set_legacy_alive(false);
+    // Reset NodeSession for reconnection
+    if (m_primary_node_session) {
+        m_primary_node_session->reset();
+    }
 
-    m_connection = nullptr;		// close connection (socket etc)
-    m_miner_protocol->reset();
     stats::Global global_stats{};
     global_stats.m_connection_retries = 1;
     m_stats_collector->update_global_stats(global_stats);
@@ -828,46 +822,13 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
             }
         }
 
-        // Log protocol reset for failover switch (reset already occurred at top of retry_connect)
+        // Clear cached keepalive interval for failover switch
         if (failover_switched)
         {
-            m_logger->info("[Failover] Resetting protocol state for fresh Falcon re-authentication on {}",
+            m_logger->info("[Failover] Resetting NodeSession for fresh authentication on {}",
                 effective_endpoint.to_string());
-            // Failover node may have a different session timeout — clear cached interval
-            // so we re-learn from the failover node's SESSION_START
             m_node_keepalive_interval_hours.store(0);
             m_logger->info("[Failover] Cleared node-advertised keepalive interval (will re-learn from failover SESSION_START)");
-        }
-
-        // Notify DualConnectionManager about failover state and trigger secondary reconnection
-        // Note: This block only runs when failover is configured (parent if condition)
-        // AND when we've actually switched nodes AND SIM Link is enabled.
-        if (failover_switched && m_config.get_enable_sim_link())
-        {
-            std::string active_ip;
-            effective_endpoint.address(active_ip);
-            m_sim_link.set_failover_active(m_using_failover, active_ip);
-
-            // Close secondary connection to force reconnect on the new node
-            if (m_secondary_connection)
-            {
-                m_logger->info("[SIM Link] Failover switch detected — closing secondary lane to re-establish on {}",
-                               effective_endpoint.to_string());
-                m_secondary_connection = nullptr;
-                if (m_secondary_protocol)
-                    m_secondary_protocol->reset();
-            }
-
-            // Derive secondary port from the effective primary port
-            uint16_t effective_primary_port = 0;
-            effective_endpoint.port(effective_primary_port);
-            uint16_t secondary_port = (effective_primary_port == ProtocolPorts::STATELESS_PORT) ? ProtocolPorts::LEGACY_PORT : ProtocolPorts::STATELESS_PORT;
-
-            // Schedule secondary reconnection with the new failover IP
-            network::Endpoint secondary_endpoint{
-                network::Transport_protocol::tcp, active_ip, secondary_port};
-            m_secondary_connection_backoff.reset();  // Reset backoff for failover attempt
-            retry_secondary_connect(secondary_endpoint);
         }
     }
 
