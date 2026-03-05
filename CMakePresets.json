@@ -1,0 +1,145 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "description": "Debug build with sanitizers",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Release build with optimizations",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "gpu-cuda",
+      "displayName": "GPU CUDA",
+      "description": "Release build with CUDA GPU support",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/gpu-cuda",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "WITH_GPU_CUDA": "ON"
+      }
+    },
+    {
+      "name": "gpu-cuda-prime",
+      "displayName": "GPU CUDA + PRIME",
+      "description": "Release build with CUDA GPU and PRIME support",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/gpu-cuda-prime",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "WITH_GPU_CUDA": "ON",
+        "WITH_PRIME": "ON"
+      }
+    },
+    {
+      "name": "tsan",
+      "displayName": "ThreadSanitizer",
+      "description": "Debug build with ThreadSanitizer",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -g",
+        "CMAKE_C_FLAGS": "-fsanitize=thread -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=thread"
+      }
+    },
+    {
+      "name": "windows-msvc",
+      "displayName": "Windows MSVC",
+      "description": "Windows build with MSVC",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/windows-msvc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "macos",
+      "displayName": "macOS",
+      "description": "macOS build with dynamic OpenSSL",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/macos",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "NEXUSMINER_STATIC_OPENSSL": "OFF"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "gpu-cuda",
+      "configurePreset": "gpu-cuda"
+    },
+    {
+      "name": "gpu-cuda-prime",
+      "configurePreset": "gpu-cuda-prime"
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan"
+    },
+    {
+      "name": "windows-msvc",
+      "configurePreset": "windows-msvc"
+    },
+    {
+      "name": "macos",
+      "configurePreset": "macos"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
