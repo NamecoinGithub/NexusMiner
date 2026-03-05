@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include "worker.hpp"
+#include "block.hpp"
 #include "hash/nexus_skein.hpp"
 #include "hash/nexus_keccak.hpp"
 #include "hash/nexus_hash_utils.hpp"
@@ -13,7 +14,7 @@
 namespace nexusminer {
 namespace config { class Worker_config; }
 namespace stats { class Collector; }
-namespace fpga 
+namespace fpga
 {
 
 class Worker_hash : public Worker, public std::enable_shared_from_this<Worker_hash>
@@ -27,7 +28,7 @@ public:
 
     // Sets a new block (nexus data type) for the miner worker. The miner worker must reset the current work.
     // When  the worker finds a new block, the BlockFoundHandler has to be called with the found BlockData
-    void set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result) override;
+    void set_block(::LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result) override;
     void update_statistics(stats::Collector& stats_collector) override;
 
 private:

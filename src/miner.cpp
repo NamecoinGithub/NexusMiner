@@ -154,19 +154,10 @@ namespace nexusminer
 			return;
 		}
 
-		// SIM Link: open secondary lane on the complementary port (9323↔8323)
+		// SIM Link is now handled automatically by NodeSession - no need for explicit secondary connection
 		if (m_config.get_enable_sim_link())
 		{
-			std::string wallet_addr;
-			wallet_endpoint.address(wallet_addr);
-			uint16_t secondary_port = m_config.get_secondary_port();
-			network::Endpoint secondary_endpoint{
-				network::Transport_protocol::tcp, wallet_addr, secondary_port};
-
-			m_logger->info("[SIM Link] ENABLED — Primary: {}:{} | Secondary: {}:{}",
-				wallet_addr, m_config.get_port(), wallet_addr, secondary_port);
-
-			m_worker_manager->connect_secondary(secondary_endpoint);
+			m_logger->info("[SIM Link] ENABLED — NodeSession will automatically manage dual-lane connections");
 		}
 		else
 		{

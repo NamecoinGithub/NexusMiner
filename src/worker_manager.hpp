@@ -13,6 +13,7 @@
 #include "stats/mined_block_cache.hpp"
 #include "Util/include/exponential_backoff.h"
 #include "protocol/inc/protocol/protocol_constants.hpp"
+#include "node_session/inc/node_session/node_session.hpp"
 
 #include <memory>
 #include <deque>
@@ -40,10 +41,6 @@ public:
 
     bool connect(network::Endpoint const& wallet_endpoint);
 
-    /// Open the secondary SIM Link connection in the background.
-    /// Should be called after the primary connect() succeeds and SIM Link is enabled.
-    bool connect_secondary(network::Endpoint const& secondary_endpoint);
-
     // stop the component and destroy all workers
     void stop();
     
@@ -69,9 +66,6 @@ public:
     FailoverStatus get_failover_status() const;
 
 private:
-
-    void process_data(network::Shared_payload&& receive_buffer);
-    void process_secondary_data(network::Shared_payload&& receive_buffer);
 
     void create_stats_printers();
     void create_workers();
@@ -102,7 +96,6 @@ private:
     void clear_recovery_state();
 
     void retry_connect(network::Endpoint const& wallet_endpoint);
-    void retry_secondary_connect(network::Endpoint const& secondary_endpoint);
 
     /// Submit a found block: try primary lane first, fallback to secondary within 100 ms.
     void submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce);
@@ -110,11 +103,15 @@ private:
 	std::shared_ptr<::asio::io_context> m_io_context;
     Config& m_config;
 	network::Socket::Sptr m_socket;
-	network::Connection::Sptr m_connection;
     std::shared_ptr<spdlog::logger> m_logger;
     std::shared_ptr<stats::Collector> m_stats_collector;
     Timer_manager m_timer_manager;
-    std::shared_ptr<protocol::Protocol> m_miner_protocol;
+
+    // Primary NodeSession (replaces m_connection + m_miner_protocol + m_secondary_connection + m_secondary_protocol)
+    std::shared_ptr<NodeSession> m_primary_node_session;
+
+    // Failover NodeSession (optional secondary node)
+    std::shared_ptr<NodeSession> m_failover_node_session;
     
     // Degraded mode flag - set when mining is stopped due to invalid template
     bool m_degraded_mode;
@@ -159,10 +156,6 @@ private:
     // Used by check_template_health() to detect the doom-loop symptom where every
     // GET_BLOCK attempt is rate-limited and the node never receives the request.
     bool m_recovery_get_block_transmitted{false};
-    
-    // Persistent receive accumulator for TCP stream reassembly
-    // Using deque for O(1) front removal when consuming packets
-    std::deque<uint8_t> m_rx_accumulator;
 
     // Connection retry state for exponential backoff
     uint32_t m_connection_retry_count{0};
@@ -173,12 +166,11 @@ private:
 
     // ── Reconnect guard (belt-and-suspenders race prevention) ────────────────
     // Set to true at the start of retry_connect(), cleared when new connection is authenticated.
-    // Guards process_data() from processing stale callbacks during reconnect window.
+    // Guards against processing stale callbacks during reconnect window.
     bool m_reconnect_in_progress{false};
 
     // ── Session authentication retry state (infinite loop prevention) ─────────
     uint32_t m_session_auth_fail_count{0};          // consecutive session_id=0 failures on primary
-    uint32_t m_secondary_session_auth_fail_count{0}; // consecutive session_id=0 failures on secondary
 
     // Exponential backoff calculator for session authentication retries
     util::ExponentialBackoff m_session_auth_backoff{
@@ -215,15 +207,7 @@ private:
     std::vector<std::shared_ptr<stats::Printer>> m_stats_printers;
     std::vector<std::shared_ptr<Worker>> m_workers;
 
-    // ── SIM Link: secondary lane (port derived from primary) ─────────────────
-    network::Connection::Sptr m_secondary_connection;
-    std::shared_ptr<protocol::Protocol> m_secondary_protocol;
-    std::deque<uint8_t> m_secondary_rx_accumulator;
-    uint32_t m_secondary_retry_count{0};
-    util::ExponentialBackoffWithState m_secondary_connection_backoff{
-        0,  // Base delay is set dynamically from config in retry_secondary_connect()
-        protocol::ProtocolConstants::MAX_RETRY_DELAY_SECONDS
-    };
+    // ── SIM Link and diagnostic tools ─────────────────────────────────────────
     DualConnectionManager m_sim_link;  // Lane state bookkeeper
     std::shared_ptr<ColinAgent> m_colin_agent;  // Diagnostic agent (started after first connect)
 
