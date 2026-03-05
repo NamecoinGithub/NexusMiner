@@ -11,6 +11,8 @@
 #include "dual_connection_manager.hpp"
 #include "LLC/types/uint1024.h"
 #include "stats/mined_block_cache.hpp"
+#include "Util/include/exponential_backoff.h"
+#include "protocol/inc/protocol/protocol_constants.hpp"
 
 #include <memory>
 #include <deque>
@@ -164,7 +166,10 @@ private:
 
     // Connection retry state for exponential backoff
     uint32_t m_connection_retry_count{0};
-    uint32_t m_current_retry_delay_seconds{0};  // 0 = use config default on first retry
+    util::ExponentialBackoffWithState m_connection_backoff{
+        0,  // Base delay is set dynamically from config in retry_connect()
+        protocol::ProtocolConstants::MAX_RETRY_DELAY_SECONDS
+    };
 
     // ── Reconnect guard (belt-and-suspenders race prevention) ────────────────
     // Set to true at the start of retry_connect(), cleared when new connection is authenticated.
@@ -175,10 +180,11 @@ private:
     uint32_t m_session_auth_fail_count{0};          // consecutive session_id=0 failures on primary
     uint32_t m_secondary_session_auth_fail_count{0}; // consecutive session_id=0 failures on secondary
 
-    // Constants for session auth retry limits (shared between primary and secondary)
-    static constexpr uint32_t MAX_SESSION_AUTH_RETRIES = 10;  // Hard limit before halting
-    static constexpr uint32_t BASE_SESSION_RETRY_MS = 1000;   // 1 second base delay
-    static constexpr uint32_t MAX_SESSION_RETRY_MS = 60000;   // 60 second cap
+    // Exponential backoff calculator for session authentication retries
+    util::ExponentialBackoff m_session_auth_backoff{
+        protocol::ProtocolConstants::BASE_SESSION_RETRY_MS,
+        protocol::ProtocolConstants::MAX_SESSION_RETRY_MS
+    };
 
     // ── Timer guards: start timers once only (prevent restart on reconnect) ───
     bool m_stats_timers_started{false};
@@ -214,7 +220,10 @@ private:
     std::shared_ptr<protocol::Protocol> m_secondary_protocol;
     std::deque<uint8_t> m_secondary_rx_accumulator;
     uint32_t m_secondary_retry_count{0};
-    uint32_t m_secondary_retry_delay_seconds{0};
+    util::ExponentialBackoffWithState m_secondary_connection_backoff{
+        0,  // Base delay is set dynamically from config in retry_secondary_connect()
+        protocol::ProtocolConstants::MAX_RETRY_DELAY_SECONDS
+    };
     DualConnectionManager m_sim_link;  // Lane state bookkeeper
     std::shared_ptr<ColinAgent> m_colin_agent;  // Diagnostic agent (started after first connect)
 

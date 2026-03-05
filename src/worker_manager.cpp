@@ -77,10 +77,6 @@ namespace {
     constexpr int64_t KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS = 300;
 
     // Aggressive secondary reconnect delay during degraded mode.
-    // Overrides exponential backoff to reconnect the secondary lane quickly
-    // so it can serve as a template fallback during recovery.
-    constexpr uint32_t DEGRADED_SECONDARY_RETRY_DELAY_SECONDS = 5;
-
     // Unified height drift threshold: if HeightTracker.unified_height exceeds
     // template.block.nHeight by more than this many blocks, the template is
     // presumed stale (hashPrevBlock is wrong) and must be discarded.
@@ -529,23 +525,22 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 {
                     ++m_session_auth_fail_count;
                     m_logger->error("[Session] CRITICAL: Node returned session_id=0x00000000 after authentication (attempt #{}/{})",
-                        m_session_auth_fail_count, MAX_SESSION_AUTH_RETRIES);
+                        m_session_auth_fail_count, protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
                     m_logger->error("[Session] This indicates the node rejected the session or is misconfigured");
                     m_logger->error("[Session] Work submissions cannot proceed without a valid session ID");
 
                     // Hard limit: if we've exceeded max retries, halt reconnection to prevent infinite loop
-                    if (m_session_auth_fail_count > MAX_SESSION_AUTH_RETRIES)
+                    if (m_session_auth_fail_count > protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES)
                     {
                         m_logger->error("[Session] Max authentication retries ({}) exceeded — halting reconnection",
-                            MAX_SESSION_AUTH_RETRIES);
+                            protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
                         m_logger->error("[Session] Node appears to be persistently rejecting authentication");
                         m_logger->error("[Session] Check node logs, miner_auth handler, and mining account configuration");
                         return;
                     }
 
                     // Exponential backoff: 1s, 2s, 4s, 8s, ..., capped at 60s
-                    auto delay_ms = std::min(BASE_SESSION_RETRY_MS * (1u << (m_session_auth_fail_count - 1)),
-                                             MAX_SESSION_RETRY_MS);
+                    auto delay_ms = m_session_auth_backoff.calculate_delay_ms(m_session_auth_fail_count);
                     auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
 
                     m_logger->warn("[Session] Scheduling reconnection retry in {}s (exponential backoff)",
@@ -619,9 +614,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // Override the retry delay to NODE_SHUTDOWN_BACKOFF_S so the next
                 // retry_connect() call uses this floor instead of the normal
                 // exponential backoff (which starts much lower).
-                m_current_retry_delay_seconds = protocol::Solo::NODE_SHUTDOWN_BACKOFF_S;
+                m_connection_backoff.set_delay(protocol::Solo::NODE_SHUTDOWN_BACKOFF_S);
                 m_logger->info("[Worker_manager] Reconnect backoff set to {}s (NODE_SHUTDOWN)",
-                    m_current_retry_delay_seconds);
+                    protocol::Solo::NODE_SHUTDOWN_BACKOFF_S);
             }
         );
         m_logger->info("[Worker_manager] Node shutdown handler registered");
@@ -798,12 +793,11 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
     ++m_connection_retry_count;
 
     // Exponential backoff: start at the configured interval, double each failure, cap at 60s
-    constexpr uint32_t MAX_RETRY_DELAY_SECONDS = 60;
     auto const base_delay = static_cast<uint32_t>(m_config.get_connection_retry_interval());
-    if (m_current_retry_delay_seconds == 0)
-        m_current_retry_delay_seconds = base_delay;
-    else
-        m_current_retry_delay_seconds = std::min(m_current_retry_delay_seconds * 2, MAX_RETRY_DELAY_SECONDS);
+    if (m_connection_backoff.base == 0) {
+        m_connection_backoff.base = base_delay;  // Set base delay from config on first use
+    }
+    auto current_delay = m_connection_backoff.next_delay();
 
     // ── Failover switchover logic ─────────────────────────────────────────────
     network::Endpoint effective_endpoint = wallet_endpoint;
@@ -818,7 +812,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
             {
                 m_using_failover = true;
                 m_primary_fail_count = 0;
-                m_current_retry_delay_seconds = 0;  // reset backoff for failover attempt
+                m_connection_backoff.reset();  // reset backoff for failover attempt
                 m_failover_activated_at = std::chrono::steady_clock::now();
                 m_logger->warn("[Failover] Primary {} failed {} times — switching to failover {}",
                     m_primary_endpoint.to_string(),
@@ -835,7 +829,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
             {
                 m_using_failover = false;
                 m_primary_fail_count = 0;
-                m_current_retry_delay_seconds = 0;
+                m_connection_backoff.reset();
                 m_logger->info("[Failover] Retrying primary {} after failover failures",
                     m_primary_endpoint.to_string());
                 effective_endpoint = m_primary_endpoint;
@@ -885,19 +879,19 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
             // Schedule secondary reconnection with the new failover IP
             network::Endpoint secondary_endpoint{
                 network::Transport_protocol::tcp, active_ip, secondary_port};
-            m_secondary_retry_delay_seconds = 0;  // Reset backoff for failover attempt
+            m_secondary_connection_backoff.reset();  // Reset backoff for failover attempt
             retry_secondary_connect(secondary_endpoint);
         }
     }
 
     if (m_connection_retry_count > 10)
-        m_logger->error("Connection retry #{} - {} consecutive failures", 
+        m_logger->error("Connection retry #{} - {} consecutive failures",
                         m_connection_retry_count, m_connection_retry_count);
     else
-        m_logger->info("Connection retry {} seconds (attempt #{})", 
-                       m_current_retry_delay_seconds, m_connection_retry_count);
+        m_logger->info("Connection retry {} seconds (attempt #{})",
+                       current_delay, m_connection_retry_count);
 
-    m_timer_manager.start_connection_retry_timer(m_current_retry_delay_seconds, shared_from_this(), effective_endpoint);
+    m_timer_manager.start_connection_retry_timer(current_delay, shared_from_this(), effective_endpoint);
 }
 
 Worker_manager::FailoverStatus Worker_manager::get_failover_status() const
@@ -1019,7 +1013,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 
                 // Reset exponential backoff state on successful TCP connection
                 self->m_connection_retry_count = 0;
-                self->m_current_retry_delay_seconds = 0;
+                self->m_connection_backoff.reset();
 
                 // Reset failover failure counter; also clear failover mode if we connected to primary
                 self->m_primary_fail_count = 0;
@@ -1412,23 +1406,22 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
             {
                 ++self->m_secondary_session_auth_fail_count;
                 self->m_logger->error("[SIM Link] CRITICAL: Node returned session_id=0x00000000 after secondary authentication (attempt #{}/{})",
-                    self->m_secondary_session_auth_fail_count, MAX_SESSION_AUTH_RETRIES);
+                    self->m_secondary_session_auth_fail_count, protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
                 self->m_logger->error("[SIM Link] This indicates the node rejected the session or is misconfigured");
                 self->m_logger->error("[SIM Link] Secondary lane cannot proceed without a valid session ID");
 
                 // Hard limit: if we've exceeded max retries, halt reconnection to prevent infinite loop
-                if (self->m_secondary_session_auth_fail_count > MAX_SESSION_AUTH_RETRIES)
+                if (self->m_secondary_session_auth_fail_count > protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES)
                 {
                     self->m_logger->error("[SIM Link] Max authentication retries ({}) exceeded — halting secondary reconnection",
-                        MAX_SESSION_AUTH_RETRIES);
+                        protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
                     self->m_logger->error("[SIM Link] Node appears to be persistently rejecting secondary authentication");
                     self->m_logger->error("[SIM Link] Check node logs and SIM Link configuration");
                     return;
                 }
 
                 // Exponential backoff: 1s, 2s, 4s, 8s, ..., capped at 60s
-                auto delay_ms = std::min(BASE_SESSION_RETRY_MS * (1u << (self->m_secondary_session_auth_fail_count - 1)),
-                                         MAX_SESSION_RETRY_MS);
+                auto delay_ms = self->m_session_auth_backoff.calculate_delay_ms(self->m_secondary_session_auth_fail_count);
                 auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
 
                 self->m_logger->warn("[SIM Link] Scheduling secondary reconnection retry in {}s (exponential backoff)",
@@ -1509,7 +1502,7 @@ bool Worker_manager::connect_secondary(network::Endpoint const& secondary_endpoi
                     get_lane_name(sec_lane), sec_addr, sec_port);
 
                 self->m_secondary_retry_count = 0;
-                self->m_secondary_retry_delay_seconds = 0;
+                self->m_secondary_connection_backoff.reset();
 
                 // Set protocol lane immediately after connection succeeds, before any data arrives.
                 // This ensures process_secondary_data() can always get the lane from the connection.
@@ -1593,19 +1586,17 @@ void Worker_manager::retry_secondary_connect(network::Endpoint const& secondary_
 
     ++m_secondary_retry_count;
 
-    constexpr uint32_t MAX_SECONDARY_RETRY_DELAY_SECONDS = 60;
     auto const base_delay = static_cast<uint32_t>(m_config.get_connection_retry_interval());
-    if (m_secondary_retry_delay_seconds == 0)
-        m_secondary_retry_delay_seconds = base_delay;
-    else
-        m_secondary_retry_delay_seconds = std::min(m_secondary_retry_delay_seconds * 2,
-                                                   MAX_SECONDARY_RETRY_DELAY_SECONDS);
+    if (m_secondary_connection_backoff.base == 0) {
+        m_secondary_connection_backoff.base = base_delay;  // Set base delay from config on first use
+    }
+    auto current_delay = m_secondary_connection_backoff.next_delay();
 
     m_logger->info("[SIM Link] Secondary lane retry in {}s (attempt #{})",
-        m_secondary_retry_delay_seconds, m_secondary_retry_count);
+        current_delay, m_secondary_retry_count);
 
     m_timer_manager.start_secondary_connection_retry_timer(
-        static_cast<uint16_t>(m_secondary_retry_delay_seconds), shared_from_this(), secondary_endpoint);
+        static_cast<uint16_t>(current_delay), shared_from_this(), secondary_endpoint);
 }
 
 void Worker_manager::submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce)
@@ -2182,8 +2173,8 @@ void Worker_manager::check_template_health()
                 m_connection->remote_endpoint().address(wallet_addr);
                 if (!wallet_addr.empty()) {
                     m_logger->info("[SIM Link] DEGRADED MODE: secondary lane DOWN — forcing aggressive reconnect ({}s delay)",
-                                   DEGRADED_SECONDARY_RETRY_DELAY_SECONDS);
-                    m_secondary_retry_delay_seconds = DEGRADED_SECONDARY_RETRY_DELAY_SECONDS;
+                                   protocol::ProtocolConstants::DEGRADED_SECONDARY_RETRY_DELAY_SECONDS);
+                    m_secondary_connection_backoff.set_delay(protocol::ProtocolConstants::DEGRADED_SECONDARY_RETRY_DELAY_SECONDS);
                     network::Endpoint secondary_endpoint{
                         network::Transport_protocol::tcp, wallet_addr, m_config.get_secondary_port()};
                     retry_secondary_connect(secondary_endpoint);
