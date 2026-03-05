@@ -36,7 +36,14 @@ target_include_directories(mining_template_validation_test PRIVATE
 # ChaCha20-Poly1305 AEAD Unit Test
 add_executable(chacha20_test chacha20_test.cpp)
 target_link_libraries(chacha20_test PRIVATE protocol spdlog ${OPENSSL_LIBRARIES})
-target_include_directories(chacha20_test PRIVATE 
+target_include_directories(chacha20_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+)
+
+# Genesis Utils and Serialization Helpers Unit Test
+add_executable(genesis_serialization_utils_test genesis_serialization_utils_test.cpp)
+target_link_libraries(genesis_serialization_utils_test PRIVATE protocol)
+target_include_directories(genesis_serialization_utils_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
 )
 
