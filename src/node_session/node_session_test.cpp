@@ -7,7 +7,7 @@
 #include "node_session/node_session.hpp"
 #include "config/config.hpp"
 #include "network/socket.hpp"
-#include "stats/collector.hpp"
+#include "stats/stats_collector.hpp"
 #include <iostream>
 #include <cassert>
 #include <memory>
@@ -43,7 +43,7 @@ void test_node_session_creation()
     config.set_mining_mode(config::Mining_mode::HASH);
 
     auto socket = std::make_shared<MockSocket>(io_context);
-    auto stats_collector = std::make_shared<stats::Collector>();
+    auto stats_collector = std::make_shared<stats::Collector>(config);
 
     // Create NodeSession
     auto node_session = std::make_shared<NodeSession>(
@@ -73,7 +73,7 @@ void test_node_session_configuration()
     config.set_mining_mode(config::Mining_mode::PRIME);
 
     auto socket = std::make_shared<MockSocket>(io_context);
-    auto stats_collector = std::make_shared<stats::Collector>();
+    auto stats_collector = std::make_shared<stats::Collector>(config);
 
     auto node_session = std::make_shared<NodeSession>(
         io_context,
@@ -111,7 +111,7 @@ void test_node_session_handlers()
     config.set_mining_mode(config::Mining_mode::HASH);
 
     auto socket = std::make_shared<MockSocket>(io_context);
-    auto stats_collector = std::make_shared<stats::Collector>();
+    auto stats_collector = std::make_shared<stats::Collector>(config);
 
     auto node_session = std::make_shared<NodeSession>(
         io_context,
@@ -169,7 +169,7 @@ void test_node_session_protocol_access()
     config.set_mining_mode(config::Mining_mode::HASH);
 
     auto socket = std::make_shared<MockSocket>(io_context);
-    auto stats_collector = std::make_shared<stats::Collector>();
+    auto stats_collector = std::make_shared<stats::Collector>(config);
 
     auto node_session = std::make_shared<NodeSession>(
         io_context,
@@ -200,7 +200,7 @@ void test_node_session_stop_and_reset()
     config.set_mining_mode(config::Mining_mode::HASH);
 
     auto socket = std::make_shared<MockSocket>(io_context);
-    auto stats_collector = std::make_shared<stats::Collector>();
+    auto stats_collector = std::make_shared<stats::Collector>(config);
 
     auto node_session = std::make_shared<NodeSession>(
         io_context,
