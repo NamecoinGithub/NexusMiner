@@ -153,8 +153,8 @@ int main()
     // ====================================================================
     std::cout << "\nTest 5: Protocol lane determination from port" << std::endl;
     {
-        ProtocolLane legacy = determine_lane_from_port(8323);
-        ProtocolLane stateless = determine_lane_from_port(9323);
+        ProtocolLane legacy = determine_lane_from_port(ProtocolPorts::LEGACY_PORT);
+        ProtocolLane stateless = determine_lane_from_port(ProtocolPorts::STATELESS_PORT);
         
         print_test_result("Port 8323 → LEGACY lane",
             legacy == ProtocolLane::LEGACY);
