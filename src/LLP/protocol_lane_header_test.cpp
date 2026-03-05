@@ -54,11 +54,11 @@ int main()
     {
         // Legacy port
         print_test_result("Port 8323 → LEGACY",
-            determine_lane_from_port(8323) == ProtocolLane::LEGACY);
-        
+            determine_lane_from_port(ProtocolPorts::LEGACY_PORT) == ProtocolLane::LEGACY);
+
         // Stateless ports
         print_test_result("Port 9323 → STATELESS",
-            determine_lane_from_port(9323) == ProtocolLane::STATELESS);
+            determine_lane_from_port(ProtocolPorts::STATELESS_PORT) == ProtocolLane::STATELESS);
         print_test_result("Port 9324 → STATELESS",
             determine_lane_from_port(9324) == ProtocolLane::STATELESS);
         print_test_result("Port 10000 → STATELESS",
@@ -124,7 +124,7 @@ int main()
     {
         // Scenario A: Legacy miner on port 8323
         {
-            uint16_t port = 8323;
+            uint16_t port = ProtocolPorts::LEGACY_PORT;
             ProtocolLane lane = determine_lane_from_port(port);
             bool use_stateless = (lane == ProtocolLane::STATELESS);
             
@@ -144,7 +144,7 @@ int main()
         
         // Scenario B: Stateless miner on port 9323
         {
-            uint16_t port = 9323;
+            uint16_t port = ProtocolPorts::STATELESS_PORT;
             ProtocolLane lane = determine_lane_from_port(port);
             bool use_stateless = (lane == ProtocolLane::STATELESS);
             
