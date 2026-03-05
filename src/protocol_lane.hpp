@@ -21,6 +21,7 @@ enum class ProtocolLane : uint8_t {
 
 // Port constants for lane determination
 namespace ProtocolPorts {
+    static constexpr uint16_t STATELESS_PORT = 9323;
     static constexpr uint16_t LEGACY_PORT = 8323;
 }
 
