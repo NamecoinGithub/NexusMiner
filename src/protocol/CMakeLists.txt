@@ -165,3 +165,11 @@ target_include_directories(get_block_dedup_recovery_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/LLP
     ${CMAKE_SOURCE_DIR}/src
 )
+
+# SESSION_START packet parser unit tests
+add_executable(session_start_parser_test session_start_parser_test.cpp)
+target_link_libraries(session_start_parser_test PRIVATE protocol)
+target_include_directories(session_start_parser_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src
+)

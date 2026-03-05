@@ -6,6 +6,7 @@
 #include "protocol/packet_builder.hpp"
 #include "protocol/genesis_utils.hpp"
 #include "protocol/serialization_helpers.hpp"
+#include "protocol/session_start_parser.hpp"
 #include "packet.hpp"
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
@@ -1898,27 +1899,45 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         
         if (auth_success) {
             m_authenticated = true;
-            
+
             // Extract session ID if present (4 bytes, little-endian)
             if (packet.m_length >= 5) {
                 // Read little-endian uint32
-                m_session_id = static_cast<uint32_t>((*packet.m_data)[1]) | 
-                               (static_cast<uint32_t>((*packet.m_data)[2]) << 8) | 
-                               (static_cast<uint32_t>((*packet.m_data)[3]) << 16) | 
+                m_session_id = static_cast<uint32_t>((*packet.m_data)[1]) |
+                               (static_cast<uint32_t>((*packet.m_data)[2]) << 8) |
+                               (static_cast<uint32_t>((*packet.m_data)[3]) << 16) |
                                (static_cast<uint32_t>((*packet.m_data)[4]) << 24);
-                
+
+                // Validate session ID: must be non-zero for a valid session
+                // Zero session ID indicates a protocol error or node-side issue
+                if (m_session_id == 0) {
+                    m_logger->error("[Solo Auth] CRITICAL: Node sent session_id = 0 (invalid)");
+                    m_logger->error("[Solo Auth] This indicates a node-side bug or protocol violation");
+                    m_logger->error("[Solo Auth] Valid session IDs must be non-zero");
+                    m_logger->error("[Solo Auth] Cannot proceed with mining - session establishment failed");
+
+                    // Reset authentication state
+                    m_authenticated = false;
+
+                    // Close connection to force re-authentication
+                    if (connection) {
+                        connection->close();
+                    }
+                    return;
+                }
+
                 // Visual box logging for success
-                std::string genesis_status = (m_session_manager && !m_session_manager->get_tritium_genesis().empty()) 
+                std::string genesis_status = (m_session_manager && !m_session_manager->get_tritium_genesis().empty())
                                              ? "CONFIGURED" : "NOT CONFIGURED";
                 std::string chacha20_status = m_enable_chacha20 ? "ENABLED" : "DISABLED";
-                
+
                 // Prepare formatted strings with safe alignment
                 std::stringstream pubkey_line, genesis_line, chacha20_line, session_line;
                 pubkey_line << "║ Public Key:  " << m_miner_pubkey.size() << " bytes";
                 genesis_line << "║ Genesis:     " << genesis_status;
                 chacha20_line << "║ ChaCha20:    " << chacha20_status;
                 session_line << "║ Session ID:  0x" << std::hex << std::setw(8) << std::setfill('0') << m_session_id;
-                
+
                 // Calculate padding (box width = 59 chars, '║' takes 1 char at end)
                 auto pad_line = [](std::stringstream& ss) -> std::string {
                     std::string line = ss.str();
@@ -1926,7 +1945,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     if (padding < 0) padding = 0;  // Safety: never negative
                     return line + std::string(padding, ' ') + "║";
                 };
-                
+
                 m_logger->info("╔═════════════════════════════════════════════════════════╗");
                 m_logger->info("║       FALCON AUTHENTICATION SUCCESSFUL                  ║");
                 m_logger->info("╠═════════════════════════════════════════════════════════╣");
@@ -1935,10 +1954,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->info(pad_line(chacha20_line));
                 m_logger->info(pad_line(session_line));
                 m_logger->info("╚═════════════════════════════════════════════════════════╝");
-                
+
                 m_logger->debug("[Solo Auth]   - Session ID bytes (LE): {:02x} {:02x} {:02x} {:02x}",
                     (*packet.m_data)[1], (*packet.m_data)[2], (*packet.m_data)[3], (*packet.m_data)[4]);
-                
+
                 // Start session in session manager
                 if (m_session_manager) {
                     m_session_manager->set_state(SessionManager::SessionState::AUTHENTICATED);
@@ -1947,7 +1966,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     m_logger->info("[Solo Session] Session started in session manager");
                     m_logger->info("[Solo Session] Keepalive timer started (early ping + regular cadence)");
                 }
-                
+
                 // Update template interface with authenticated session ID (FALCON tunnel established)
                 if (m_template_interface) {
                     m_template_interface->set_session_id(m_session_id);
@@ -2287,7 +2306,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     else if (matches_opcode(Packet::SESSION_START))
     {
         // LLL-TAO PR #22: Handle SESSION_START (session parameters from node)
-        // Format: [timeout(4, LE)][optional: session_key][optional: genesis_hash(32)]
+        // Format: [timeout(4, LE)][optional: session_key(32)][optional: genesis_hash(32)]
+        // NOTE: The 0x01 success byte is in MINER_AUTH_RESULT, NOT in SESSION_START.
+        //       MINER_AUTH_RESULT: [status(1B: 0x00=fail, 0x01=pass)][session_id(4B, LE)]
+        //       SESSION_START is sent AFTER MINER_AUTH_RESULT and contains session params.
         m_logger->info("[Solo Session] Received SESSION_START from node");
 
         // Defensive check: SESSION_START should only be processed after successful authentication
@@ -2299,61 +2321,55 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
 
-        if (packet.m_data && packet.m_length >= 4) {
-            // Parse session timeout (4 bytes, little-endian)
-            // NOTE: Node serializes timeout as uint32_t (4 bytes LE) per wire protocol spec.
-            // If node-side nSessionTimeout is uint64_t, values > 0xFFFFFFFF will be truncated.
-            // This miner correctly expects and parses 4 bytes. Node should cast to uint32_t before serialization.
-            uint32_t session_timeout = (*packet.m_data)[0] |
-                                      ((*packet.m_data)[1] << 8) |
-                                      ((*packet.m_data)[2] << 16) |
-                                      ((*packet.m_data)[3] << 24);
-            
-            m_logger->info("[Solo Session] Session parameters:");
-            m_logger->info("[Solo Session]   - Timeout: {} seconds ({} hours)", 
-                          session_timeout, session_timeout / 3600);
-            
-            // Extract optional session key (if present)
-            std::vector<uint8_t> session_key;
-            if (packet.m_length > 36) {  // timeout(4) + key(32) + genesis(32) minimum
-                // Session key is 32 bytes after timeout
-                session_key.assign(packet.m_data->begin() + 4, 
-                                 packet.m_data->begin() + 36);
-                m_logger->info("[Solo Session]   - Falcon Session Key received: {} bytes", 
-                              session_key.size());
-                
-                // Extract optional genesis hash
-                if (packet.m_length >= 68) {  // timeout(4) + key(32) + genesis(32)
-                    std::vector<uint8_t> node_genesis(packet.m_data->begin() + 36,
-                                                      packet.m_data->begin() + 68);
-                    m_logger->info("[Solo Session]   - Tritium Genesis from node: {} bytes",
-                                  node_genesis.size());
-                }
-            }
-            
-            // Update session manager with session key
-            if (m_session_manager && !session_key.empty()) {
-                m_session_manager->start_session(m_session_id, session_key, 
-                                               m_session_manager->get_tritium_genesis());
-                m_logger->info("[Solo Session] Session updated with Falcon Session Key");
-            }
+        // Parse SESSION_START packet using dedicated parser
+        if (!packet.m_data) {
+            m_logger->error("[Solo Session] SESSION_START packet has null data");
+            return;
+        }
 
-            // Adjust keepalive interval based on timeout (ping at 1/N of timeout)
-            // Using KEEPALIVE_SAFETY_DIVISOR=2 ensures 2 keepalives per node timeout window.
-            // Division by 2 is safer: less timer load, larger per-ping safety margin.
-            // Example: 24h node timeout → keepalive every 12h (2 pings/window)
-            if (session_timeout > 0 && m_session_manager) {
-                uint16_t keepalive_hours = static_cast<uint16_t>(
-                    std::max(1u, session_timeout / (ProtocolConstants::KEEPALIVE_SAFETY_DIVISOR * 3600u)));
-                m_session_manager->set_keepalive_interval(keepalive_hours);
-                m_logger->info("[Solo Session] Keepalive interval adjusted to {} hours (node timeout={}s, {} pings/window)",
-                              keepalive_hours, session_timeout, ProtocolConstants::KEEPALIVE_SAFETY_DIVISOR);
-                if (m_session_start_handler) {
-                    m_session_start_handler(keepalive_hours);
-                }
+        auto parsed = parse_session_start(packet.m_data->data(), packet.m_length);
+        if (!parsed) {
+            m_logger->error("[Solo Session] Failed to parse SESSION_START packet");
+            m_logger->error("[Solo Session]   - Packet length: {} bytes", packet.m_length);
+            m_logger->error("[Solo Session]   - Expected: minimum 4 bytes (timeout), 36 bytes (with key), or 68 bytes (full)");
+            return;
+        }
+
+        // Log parsed session parameters
+        m_logger->info("[Solo Session] Session parameters:");
+        m_logger->info("[Solo Session]   - Timeout: {} seconds ({} hours)",
+                      parsed->timeout_seconds, parsed->timeout_seconds / 3600);
+
+        if (parsed->has_session_key()) {
+            m_logger->info("[Solo Session]   - Falcon Session Key received: {} bytes",
+                          parsed->session_key->size());
+        }
+
+        if (parsed->has_genesis_hash()) {
+            m_logger->info("[Solo Session]   - Tritium Genesis from node: {} bytes",
+                          parsed->genesis_hash->size());
+        }
+
+        // Update session manager with session key (if present)
+        if (m_session_manager && parsed->has_session_key()) {
+            m_session_manager->start_session(m_session_id, *parsed->session_key,
+                                           m_session_manager->get_tritium_genesis());
+            m_logger->info("[Solo Session] Session updated with Falcon Session Key");
+        }
+
+        // Adjust keepalive interval based on timeout (ping at 1/N of timeout)
+        // Using KEEPALIVE_SAFETY_DIVISOR=2 ensures 2 keepalives per node timeout window.
+        // Division by 2 is safer: less timer load, larger per-ping safety margin.
+        // Example: 24h node timeout → keepalive every 12h (2 pings/window)
+        if (parsed->timeout_seconds > 0 && m_session_manager) {
+            uint16_t keepalive_hours = calculate_keepalive_hours(
+                parsed->timeout_seconds, ProtocolConstants::KEEPALIVE_SAFETY_DIVISOR);
+            m_session_manager->set_keepalive_interval(keepalive_hours);
+            m_logger->info("[Solo Session] Keepalive interval adjusted to {} hours (node timeout={}s, {} pings/window)",
+                          keepalive_hours, parsed->timeout_seconds, ProtocolConstants::KEEPALIVE_SAFETY_DIVISOR);
+            if (m_session_start_handler) {
+                m_session_start_handler(keepalive_hours);
             }
-        } else {
-            m_logger->warn("[Solo Session] SESSION_START packet has invalid or insufficient data");
         }
     }
     else if (matches_opcode(Packet::SESSION_KEEPALIVE))
