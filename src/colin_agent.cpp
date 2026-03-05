@@ -248,7 +248,9 @@ void ColinAgent::run_diagnostics()
 
     if (m_dcm && !m_dcm->is_stateless_alive())
         recommendations.push_back("Check primary (stateless:9323) connectivity");
-    if (m_dcm && !m_dcm->is_legacy_alive())
+    // Secondary down: only recommend when primary is ALSO down.
+    // When primary is alive, secondary being down is normal single-lane operation.
+    if (m_dcm && !m_dcm->is_legacy_alive() && !m_dcm->is_stateless_alive())
         recommendations.push_back("Check secondary (legacy:8323) connectivity");
 
     if (m_height_tracker) {
