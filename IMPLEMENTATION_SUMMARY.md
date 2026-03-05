@@ -19,6 +19,16 @@ This implementation enforces **strict port-lane separation** for the NexusMiner 
 - **Opcodes**: 0xD000-0xD0FF (mirror-mapped from legacy)
 - **Authentication**: Falcon + ChaCha20 (required)
 
+## Block Format Note
+
+> Both lanes transmit **216-byte Tritium blocks**. The term "Legacy Lane" (Port 8323)
+> refers only to the polling protocol behavior — NOT to the block serialization format.
+>
+> - **216-byte Tritium**: `nTime` NOT in wire template; set by node at `sign_block()` time
+> - **220-byte Legacy**: `nTime` IS in wire template (historical; not used in current mining)
+>
+> See `docs/reference/block-formats.md` for the full field-by-field breakdown.
+
 ## Key Implementation Details
 
 ### 1. Lane Determination (packet.hpp)
