@@ -8,6 +8,8 @@
 #include "config/config.hpp"
 #include "network/socket.hpp"
 #include "stats/stats_collector.hpp"
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <iostream>
 #include <cassert>
 #include <memory>
@@ -49,8 +51,9 @@ void test_node_session_creation()
 
     auto io_context = std::make_shared<asio::io_context>();
 
-    // Create minimal config
-    config::Config config(nullptr);
+    // Create minimal config with a logger
+    auto logger = spdlog::stdout_color_mt("test_logger_create");
+    config::Config config(logger);
     config.set_mining_mode(config::Mining_mode::HASH);
 
     auto socket = std::make_shared<MockSocket>(io_context);
@@ -80,7 +83,8 @@ void test_node_session_configuration()
 
     auto io_context = std::make_shared<asio::io_context>();
 
-    config::Config config(nullptr);
+    auto logger = spdlog::stdout_color_mt("test_logger_config");
+    config::Config config(logger);
     config.set_mining_mode(config::Mining_mode::PRIME);
 
     auto socket = std::make_shared<MockSocket>(io_context);
@@ -118,7 +122,8 @@ void test_node_session_handlers()
 
     auto io_context = std::make_shared<asio::io_context>();
 
-    config::Config config(nullptr);
+    auto logger = spdlog::stdout_color_mt("test_logger_handlers");
+    config::Config config(logger);
     config.set_mining_mode(config::Mining_mode::HASH);
 
     auto socket = std::make_shared<MockSocket>(io_context);
@@ -176,7 +181,8 @@ void test_node_session_protocol_access()
 
     auto io_context = std::make_shared<asio::io_context>();
 
-    config::Config config(nullptr);
+    auto logger = spdlog::stdout_color_mt("test_logger_protocol");
+    config::Config config(logger);
     config.set_mining_mode(config::Mining_mode::HASH);
 
     auto socket = std::make_shared<MockSocket>(io_context);
@@ -207,7 +213,8 @@ void test_node_session_stop_and_reset()
 
     auto io_context = std::make_shared<asio::io_context>();
 
-    config::Config config(nullptr);
+    auto logger = spdlog::stdout_color_mt("test_logger_stop");
+    config::Config config(logger);
     config.set_mining_mode(config::Mining_mode::HASH);
 
     auto socket = std::make_shared<MockSocket>(io_context);
