@@ -2289,9 +2289,21 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // LLL-TAO PR #22: Handle SESSION_START (session parameters from node)
         // Format: [timeout(4, LE)][optional: session_key][optional: genesis_hash(32)]
         m_logger->info("[Solo Session] Received SESSION_START from node");
-        
+
+        // Defensive check: SESSION_START should only be processed after successful authentication
+        // This guards against node-side bugs where SESSION_START might be sent after auth rejection
+        if (!m_authenticated) {
+            m_logger->error("[Solo Session] Rejecting SESSION_START - not authenticated");
+            m_logger->error("[Solo Session] This indicates a node-side protocol violation");
+            m_logger->error("[Solo Session] SESSION_START should only be sent after MINER_AUTH_RESULT success");
+            return;
+        }
+
         if (packet.m_data && packet.m_length >= 4) {
             // Parse session timeout (4 bytes, little-endian)
+            // NOTE: Node serializes timeout as uint32_t (4 bytes LE) per wire protocol spec.
+            // If node-side nSessionTimeout is uint64_t, values > 0xFFFFFFFF will be truncated.
+            // This miner correctly expects and parses 4 bytes. Node should cast to uint32_t before serialization.
             uint32_t session_timeout = (*packet.m_data)[0] |
                                       ((*packet.m_data)[1] << 8) |
                                       ((*packet.m_data)[2] << 16) |
