@@ -1881,7 +1881,7 @@ void Worker_manager::process_secondary_data(network::Shared_payload&& receive_bu
         m_logger->warn("[SIM Link RX] Secondary lane UNKNOWN — clearing accumulator, marking secondary dead");
         m_secondary_rx_accumulator.clear();
         // Notify DCM that secondary lane has failed (determine which lane based on port)
-        // If we can't determine the lane, assume LEGACY (8323) as that's the typical secondary port
+        // If we can't determine the lane, assume LEGACY (ProtocolPorts::LEGACY_PORT) as that's the typical secondary port
         ProtocolLane failed_lane = ProtocolLane::LEGACY;
         if (m_secondary_connection)
         {
