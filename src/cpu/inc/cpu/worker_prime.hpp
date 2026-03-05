@@ -7,6 +7,7 @@
 #include <atomic>
 #include <mutex>
 #include "worker.hpp"
+#include "block.hpp"
 #include "hash/nexus_skein.hpp"
 #include "hash/nexus_keccak.hpp"
 #include <boost/multiprecision/cpp_int.hpp>
@@ -31,7 +32,7 @@ public:
     Worker_prime(std::shared_ptr<asio::io_context> io_context, config::Worker_config& config);
     ~Worker_prime() noexcept override;
 
-    void set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result) override;
+    void set_block(::LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result) override;
     bool is_running() const override { return !m_stop; }
     void update_statistics(stats::Collector& stats_collector) override;
 
