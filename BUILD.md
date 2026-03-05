@@ -104,6 +104,11 @@ This preset enables:
 - **RVV extensions**: SIMD vector operations for SHA-256 hashing in hash channel mining
 - **Target architecture**: `rv64gcv_zbkb_zbkc` (64-bit RISC-V with compressed, vectors, and bit manipulation)
 
+**Requirements:**
+- RISC-V hardware or emulator (e.g., QEMU with RVV support)
+- RISC-V-capable compiler (GCC 12+ or Clang 14+ with RISC-V target)
+- OpenSSL built with RISC-V support (detects Zbkb/Zbkc at runtime)
+
 **Note:** ChaCha20Wrapper requires no code changes - OpenSSL automatically routes to hardware Zbkb/Zbkc instructions when available. Falcon and LLP are already portable C/C++ code.
 
 ## AMD GPU Build Notes
