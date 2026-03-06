@@ -4,6 +4,8 @@
 #include <memory>
 #include <functional>
 #include <algorithm>
+#include <optional>
+#include <boost/multiprecision/cpp_int.hpp>
 #include "LLC/types/uint1024.h"
 #include "block.hpp"
 #include "hash/byte_utils.hpp"
@@ -83,12 +85,15 @@ public:
  * - Original CBlock from protocol layer
  * - nBits (difficulty target)
  * - Precomputed header bytes (208 or 216 bytes depending on nonce inclusion)
+ * - Optional precomputed base hash for prime workers (Skein + Keccak of header)
  *
  * Workers maintain per-worker mutable state (starting nonce, Block_data copy).
  */
 class WorkPackage
 {
 public:
+    using uint1k = boost::multiprecision::uint1024_t;
+
     WorkPackage(const ::LLP::CBlock& block, std::uint32_t nbits)
         : m_block{block}
         , m_nbits{nbits}
@@ -104,10 +109,18 @@ public:
     std::uint32_t get_nbits() const { return m_nbits; }
     const std::vector<unsigned char>& get_header_bytes() const { return m_header_bytes; }
 
+    // Optional precomputed base hash for prime workers
+    // Set via set_prime_base_hash() after construction for prime channel
+    const std::optional<uint1k>& get_prime_base_hash() const { return m_prime_base_hash; }
+
+    // Setter for prime base hash (called only for prime channel blocks)
+    void set_prime_base_hash(const uint1k& base_hash) { m_prime_base_hash = base_hash; }
+
 private:
     ::LLP::CBlock m_block;                      // Original block from protocol
     std::uint32_t m_nbits;                      // Difficulty target
     std::vector<unsigned char> m_header_bytes;  // Precomputed header (shared)
+    std::optional<uint1k> m_prime_base_hash;    // Precomputed base hash for prime (Skein+Keccak)
 };
 
 class Worker {

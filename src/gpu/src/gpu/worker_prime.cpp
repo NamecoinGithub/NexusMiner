@@ -139,23 +139,32 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 
 		m_difficulty = m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
 
-		// For prime mining, we need to compute hash excluding nonce
-		bool excludeNonce = true;  //prime block hash excludes the nonce
-		std::vector<unsigned char> headerB = m_block.GetHeaderBytes(excludeNonce);
+		// Optimization: Use precomputed base hash from WorkPackage if available
+		const auto& precomputed_hash = work_package->get_prime_base_hash();
+		if (precomputed_hash.has_value()) {
+			// Use shared precomputed hash (computed once in Worker_manager)
+			m_base_hash = precomputed_hash.value();
+			m_logger->debug("GPU Worker_prime: Using precomputed base hash from WorkPackage");
+		} else {
+			// Fallback: Compute hash locally (backward compatibility)
+			m_logger->debug("GPU Worker_prime: Computing base hash locally (no precomputed hash)");
+			bool excludeNonce = true;  //prime block hash excludes the nonce
+			std::vector<unsigned char> headerB = m_block.GetHeaderBytes(excludeNonce);
 
-		//calculate the block hash
-		NexusSkein skein;
-		skein.setMessage(headerB);
-		skein.calculateHash();
-		NexusSkein::stateType hash = skein.getHash();
+			//calculate the block hash
+			NexusSkein skein;
+			skein.setMessage(headerB);
+			skein.calculateHash();
+			NexusSkein::stateType hash = skein.getHash();
 
-		//keccak
-		NexusKeccak keccak(hash);
-		keccak.calculateHash();
-		NexusKeccak::k_1024 keccakFullHash_i = keccak.getHashResult();
-		keccakFullHash_i.isBigInt = true;
-		uint1k keccakFullHash("0x" + keccakFullHash_i.toHexString(true));
-		m_base_hash = keccakFullHash;
+			//keccak
+			NexusKeccak keccak(hash);
+			keccak.calculateHash();
+			NexusKeccak::k_1024 keccakFullHash_i = keccak.getHashResult();
+			keccakFullHash_i.isBigInt = true;
+			uint1k keccakFullHash("0x" + keccakFullHash_i.toHexString(true));
+			m_base_hash = keccakFullHash;
+		}
 		//Now we have the hash of the block header.  We use this to feed the miner.
 
 		//set the starting nonce for each worker to something different that won't overlap with the others

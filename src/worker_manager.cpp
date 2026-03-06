@@ -11,6 +11,8 @@
 #endif
 #ifdef PRIME_ENABLED
 #include "cpu/worker_prime.hpp"
+#include "hash/nexus_skein.hpp"
+#include "hash/nexus_keccak.hpp"
 #endif
 #include "packet.hpp"
 #include "config/config.hpp"
@@ -223,6 +225,36 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 auto work_package = std::make_shared<WorkPackage>(block, nBits);
                 m_logger->debug("[Worker_manager] Created shared WorkPackage (block height: {}, nBits: 0x{:08x})",
                                 block.nHeight, nBits);
+
+#ifdef PRIME_ENABLED
+                /* Optimization: For prime channel, precompute base hash (Skein+Keccak) once
+                 * instead of having each worker compute it independently */
+                if (block.nChannel == 1) {  // Prime channel
+                    // Get header bytes without nonce (prime blocks exclude nonce from base hash)
+                    Block_data temp_block{block};
+                    bool excludeNonce = true;
+                    std::vector<unsigned char> headerB = temp_block.GetHeaderBytes(excludeNonce);
+
+                    // Compute Skein hash
+                    NexusSkein skein;
+                    skein.setMessage(headerB);
+                    skein.calculateHash();
+                    NexusSkein::stateType hash = skein.getHash();
+
+                    // Compute Keccak hash
+                    NexusKeccak keccak(hash);
+                    keccak.calculateHash();
+                    NexusKeccak::k_1024 keccakFullHash_i = keccak.getHashResult();
+                    keccakFullHash_i.isBigInt = true;
+
+                    // Convert to uint1024_t and store in WorkPackage
+                    using uint1k = boost::multiprecision::uint1024_t;
+                    uint1k keccakFullHash("0x" + keccakFullHash_i.toHexString(true));
+                    work_package->set_prime_base_hash(keccakFullHash);
+
+                    m_logger->debug("[Worker_manager] Precomputed prime base hash for all workers");
+                }
+#endif
 
                 /* Distribute template to all worker threads */
                 size_t workers_fed = 0;
