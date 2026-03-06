@@ -370,10 +370,17 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             }
 
                             m_logger->info("[Worker_manager] Full block serialized: {} bytes", full_block_bytes.size());
-                            m_logger->info("[Worker_manager] Submitting block to protocol layer...");
+                            m_logger->info("[Worker_manager] Pushing block to submission queue...");
 
-                            // Submit the full block via NodeSession
-                            submit_solution(full_block_bytes, block_data->nNonce);
+                            // Push to submission queue (lock-free) instead of direct submission
+                            // The submitter thread will drain and submit with staleness checks
+                            SubmissionItem item(std::move(full_block_bytes), block_data->nNonce);
+                            if (m_submission_queue.push(std::move(item))) {
+                                m_logger->info("[Worker_manager] ✓ Block queued for submission (queue size: ~{})",
+                                             m_submission_queue.size());
+                            } else {
+                                m_logger->error("[Worker_manager] ✗ Submission queue full! Block dropped");
+                            }
                         });
                         if (worker->is_running()) {
                             workers_fed++;
@@ -663,6 +670,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
     create_stats_printers();
     create_workers();
+
+    // Start submission queue drainer thread
+    m_submitter_running = true;
+    m_submitter_thread = std::thread(&Worker_manager::submitter_thread_main, this);
+    m_logger->info("[Worker_manager] Submission queue drainer thread started");
 }
 
 void Worker_manager::create_stats_printers()
@@ -782,6 +794,9 @@ void Worker_manager::create_workers()
 void Worker_manager::stop()
 {
     m_timer_manager.stop();
+
+    // Stop submitter thread
+    stop_submitter_thread();
 
     if (m_colin_agent)
     {
@@ -1704,6 +1719,72 @@ void Worker_manager::log_mined_block_cache() const
         if (!line.empty())
             m_logger->info("[MinedBlockCache] {}", line);
     }
+}
+
+void Worker_manager::submitter_thread_main()
+{
+    m_logger->info("[Submitter] Thread started - draining submission queue");
+
+    while (m_submitter_running.load(std::memory_order_acquire)) {
+        SubmissionItem item;
+
+        // Try to pop an item from the queue
+        if (m_submission_queue.pop(item)) {
+            // Check how long ago this block was found
+            auto now = std::chrono::steady_clock::now();
+            auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - item.found_at).count();
+
+            // Log if submission was queued for a significant time
+            if (age_ms > 100) {
+                m_logger->warn("[Submitter] Block queued for {}ms before submission", age_ms);
+            }
+
+            // Perform staleness check before submission
+            bool should_submit = true;
+            if (m_primary_node_session) {
+                auto solo_protocol = m_primary_node_session->get_primary_protocol();
+                if (solo_protocol) {
+                    auto ht_snap = solo_protocol->get_height_tracker_snapshot();
+
+                    // Check if template is stale
+                    bool channel_stale = ht_snap.is_template_stale();
+                    bool age_stale = ht_snap.is_template_age_stale();
+
+                    if (channel_stale || age_stale) {
+                        m_logger->warn("[Submitter] Dropping stale submission (age={}s, channel_stale={}, age_stale={})",
+                                      ht_snap.get_template_age_seconds(), channel_stale, age_stale);
+                        should_submit = false;
+                    }
+                }
+            }
+
+            // Submit if not stale
+            if (should_submit) {
+                submit_solution(item.block_data, item.nonce);
+            }
+        } else {
+            // Queue empty - sleep briefly to avoid busy-waiting
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+
+    m_logger->info("[Submitter] Thread stopped");
+}
+
+void Worker_manager::stop_submitter_thread()
+{
+    if (!m_submitter_running.load()) {
+        return;  // Already stopped
+    }
+
+    m_logger->info("[Submitter] Stopping thread...");
+    m_submitter_running.store(false, std::memory_order_release);
+
+    if (m_submitter_thread.joinable()) {
+        m_submitter_thread.join();
+    }
+
+    m_logger->info("[Submitter] Thread joined");
 }
 
 }

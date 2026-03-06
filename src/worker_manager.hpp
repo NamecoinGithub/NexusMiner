@@ -14,11 +14,13 @@
 #include "Util/include/exponential_backoff.h"
 #include "protocol/inc/protocol/protocol_constants.hpp"
 #include "node_session/inc/node_session/node_session.hpp"
+#include "submission_queue.hpp"
 
 #include <memory>
 #include <deque>
 #include <mutex>
 #include <atomic>
+#include <thread>
 
 namespace asio { class io_context; }
 
@@ -99,6 +101,12 @@ private:
 
     /// Submit a found block: try primary lane first, fallback to secondary within 100 ms.
     void submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce);
+
+    /// Submitter thread function: drains the submission queue and submits blocks
+    void submitter_thread_main();
+
+    /// Stop the submitter thread
+    void stop_submitter_thread();
 
 	std::shared_ptr<::asio::io_context> m_io_context;
     Config& m_config;
@@ -230,6 +238,13 @@ private:
     // Tier 2: up to 100 confirmed blocks (hashPrevBlock + nHeight + channel)
     // Tier 3: archive overflow from Tier 2
     stats::MinedBlockCache m_mined_block_cache;
+
+    // ── Lock-free submission pipeline ────────────────────────────────────────
+    // Workers push found blocks into this queue (lock-free MPSC pattern)
+    // Dedicated submitter thread drains and submits with staleness checks
+    SubmissionQueue m_submission_queue;
+    std::thread m_submitter_thread;
+    std::atomic<bool> m_submitter_running{false};
 };
 }
 

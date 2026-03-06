@@ -240,6 +240,18 @@ public:
     network::Shared_payload submit_block(const std::vector<uint8_t>& block_data, uint64_t nonce);
 
     /**
+     * @brief Track last successful submission lane
+     * @param lane Lane that succeeded (true = primary, false = secondary)
+     */
+    void track_submission_success(bool primary_lane);
+
+    /**
+     * @brief Check if it's time to probe the secondary lane
+     * @return True if secondary should be probed
+     */
+    bool should_probe_secondary() const;
+
+    /**
      * @brief Send GET_ROUND request
      * @return Payload to transmit
      */
@@ -332,6 +344,11 @@ private:
     std::atomic<bool> m_primary_connected{false};
     std::atomic<bool> m_secondary_connected{false};
     std::atomic<bool> m_stopped{false};
+
+    // Lane-aware submission tracking
+    std::atomic<bool> m_last_success_was_primary{true};  // Track which lane last succeeded
+    std::atomic<uint64_t> m_submissions_since_secondary_probe{0};  // Count submissions for periodic probing
+    static constexpr uint64_t SECONDARY_PROBE_INTERVAL = 10;  // Probe secondary every N submissions
 };
 
 } // namespace nexusminer

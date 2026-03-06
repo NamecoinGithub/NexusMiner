@@ -1,0 +1,36 @@
+# CMake generated Testfile for 
+# Source directory: /home/runner/work/NexusMiner/NexusMiner/src/protocol
+# Build directory: /home/runner/work/NexusMiner/NexusMiner/src/protocol
+# 
+# This file includes the relevant testing commands required for 
+# testing this directory and lists subdirectories to be tested as well.
+add_test([=[mining_template_validation_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/mining_template_validation_test")
+set_tests_properties([=[mining_template_validation_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;34;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[chacha20_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/chacha20_test")
+set_tests_properties([=[chacha20_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;170;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[genesis_serialization_utils_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/genesis_serialization_utils_test")
+set_tests_properties([=[genesis_serialization_utils_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;171;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[height_tracker_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/height_tracker_test")
+set_tests_properties([=[height_tracker_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;172;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[packet_builder_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/packet_builder_test")
+set_tests_properties([=[packet_builder_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;173;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[phase2b_update_height_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/phase2b_update_height_test")
+set_tests_properties([=[phase2b_update_height_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;174;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[keepalive_v2_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/keepalive_v2_test")
+set_tests_properties([=[keepalive_v2_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;175;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[push_notification_lane_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/push_notification_lane_test")
+set_tests_properties([=[push_notification_lane_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;176;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[session_status_wire_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/session_status_wire_test")
+set_tests_properties([=[session_status_wire_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;177;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[stateless_block_utility_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/stateless_block_utility_test")
+set_tests_properties([=[stateless_block_utility_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;178;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[e2e_block_submission_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/e2e_block_submission_test")
+set_tests_properties([=[e2e_block_submission_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;179;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[mined_block_cache_dedup_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/mined_block_cache_dedup_test")
+set_tests_properties([=[mined_block_cache_dedup_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;180;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[node_shutdown_wire_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/node_shutdown_wire_test")
+set_tests_properties([=[node_shutdown_wire_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;181;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[get_block_dedup_recovery_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/get_block_dedup_recovery_test")
+set_tests_properties([=[get_block_dedup_recovery_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;182;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")
+add_test([=[node_session_context_test]=] "/home/runner/work/NexusMiner/NexusMiner/src/protocol/node_session_context_test")
+set_tests_properties([=[node_session_context_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;198;add_test;/home/runner/work/NexusMiner/NexusMiner/src/protocol/CMakeLists.txt;0;")

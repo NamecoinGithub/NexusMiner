@@ -669,17 +669,78 @@ network::Shared_payload NodeSession::request_work()
 
 network::Shared_payload NodeSession::submit_block(const std::vector<uint8_t>& block_data, uint64_t nonce)
 {
-    // Try primary first
-    if (m_primary_protocol && m_primary_connected && m_primary_protocol->is_authenticated()) {
-        return m_primary_protocol->submit_block(block_data, nonce);
+    // Increment submission counter for periodic secondary probing
+    m_submissions_since_secondary_probe.fetch_add(1, std::memory_order_relaxed);
+
+    // Lane-aware submission: use last-success lane first
+    bool try_primary_first = m_last_success_was_primary.load(std::memory_order_acquire);
+
+    // Check if we should probe the secondary lane
+    bool probe_secondary = should_probe_secondary();
+
+    network::Shared_payload result = nullptr;
+    bool primary_attempted = false;
+    bool secondary_attempted = false;
+
+    // Try preferred lane first
+    if (try_primary_first) {
+        if (m_primary_protocol && m_primary_connected && m_primary_protocol->is_authenticated()) {
+            result = m_primary_protocol->submit_block(block_data, nonce);
+            primary_attempted = true;
+            if (result && !result->empty()) {
+                track_submission_success(true);
+                return result;
+            }
+        }
+
+        // Fallback to secondary if primary failed or if probing
+        if (!result || probe_secondary) {
+            if (m_secondary_protocol && m_secondary_connected && m_secondary_protocol->is_authenticated()) {
+                result = m_secondary_protocol->submit_block(block_data, nonce);
+                secondary_attempted = true;
+                if (result && !result->empty()) {
+                    track_submission_success(false);
+                    return result;
+                }
+            }
+        }
+    } else {
+        // Try secondary first (last success was secondary)
+        if (m_secondary_protocol && m_secondary_connected && m_secondary_protocol->is_authenticated()) {
+            result = m_secondary_protocol->submit_block(block_data, nonce);
+            secondary_attempted = true;
+            if (result && !result->empty()) {
+                track_submission_success(false);
+                return result;
+            }
+        }
+
+        // Fallback to primary if secondary failed or if probing
+        if (!result || probe_secondary) {
+            if (m_primary_protocol && m_primary_connected && m_primary_protocol->is_authenticated()) {
+                result = m_primary_protocol->submit_block(block_data, nonce);
+                primary_attempted = true;
+                if (result && !result->empty()) {
+                    track_submission_success(true);
+                    return result;
+                }
+            }
+        }
     }
 
-    // Fallback to secondary
-    if (m_secondary_protocol && m_secondary_connected && m_secondary_protocol->is_authenticated()) {
-        return m_secondary_protocol->submit_block(block_data, nonce);
-    }
+    return result;
+}
 
-    return nullptr;
+void NodeSession::track_submission_success(bool primary_lane)
+{
+    m_last_success_was_primary.store(primary_lane, std::memory_order_release);
+}
+
+bool NodeSession::should_probe_secondary() const
+{
+    // Probe secondary every N submissions to check if it's available
+    uint64_t count = m_submissions_since_secondary_probe.load(std::memory_order_acquire);
+    return (count % SECONDARY_PROBE_INTERVAL) == 0;
 }
 
 network::Shared_payload NodeSession::send_get_round()
