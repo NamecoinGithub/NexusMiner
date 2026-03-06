@@ -1,6 +1,6 @@
 #include "node_session/node_session.hpp"
 #include "protocol/solo.hpp"
-#include "protocol/session_manager.hpp"
+#include "protocol/node_session_context.hpp"
 #include "config/config.hpp"
 #include "packet.hpp"
 #include "miner_opcodes.hpp"
@@ -34,7 +34,10 @@ NodeSession::NodeSession(
     m_primary_protocol = std::make_shared<protocol::Solo>(channel, m_stats_collector, m_io_context);
 
     // Create session manager (shared across both protocols)
-    m_session_manager = std::make_shared<protocol::SessionManager>(24, m_io_context);
+    auto session_manager = std::make_shared<protocol::SessionManager>(24, m_io_context);
+
+    // Wrap session manager in NodeSessionContext (AUTHORITATIVE session state)
+    m_session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
 
     m_logger->info("[NodeSession:{}] Initialized with channel {}", m_node_label, channel);
 }
@@ -148,7 +151,7 @@ void NodeSession::connect_primary(const network::Endpoint& node_endpoint, Connec
     if (connection) {
         m_primary_connection = std::move(connection);
         m_primary_protocol->set_connection(m_primary_connection);
-        m_session_manager->set_connection(m_primary_connection);
+        m_session_context->set_connection(m_primary_connection);
     }
 }
 
@@ -380,7 +383,8 @@ void NodeSession::handle_primary_connection_result(network::Result::Code result,
             }
 
             m_logger->info("[NodeSession:{}] Primary authentication succeeded", m_node_label);
-            m_authenticated = true;
+            // Note: Session state is managed by SessionManager inside Solo protocol
+            // NodeSession queries session state via m_session_context
 
             if (callback) callback(true);
         });
@@ -441,32 +445,20 @@ bool NodeSession::transmit(network::Shared_payload data)
 
 uint32_t NodeSession::session_id() const
 {
-    if (m_primary_protocol) {
-        return m_primary_protocol->get_session_id();
-    }
-    return 0;
+    // Query the authoritative session context
+    return m_session_context ? m_session_context->get_session_id() : 0;
 }
 
 bool NodeSession::is_authenticated() const
 {
-    if (m_primary_protocol && m_primary_protocol->is_authenticated()) {
-        return true;
-    }
-    if (m_secondary_protocol && m_secondary_protocol->is_authenticated()) {
-        return true;
-    }
-    return false;
+    // Query the authoritative session context
+    return m_session_context ? m_session_context->is_authenticated() : false;
 }
 
 bool NodeSession::is_session_active() const
 {
-    if (m_primary_protocol && m_primary_protocol->is_session_active()) {
-        return true;
-    }
-    if (m_secondary_protocol && m_secondary_protocol->is_session_active()) {
-        return true;
-    }
-    return false;
+    // Query the authoritative session context
+    return m_session_context ? m_session_context->is_active() : false;
 }
 
 void NodeSession::stop()
@@ -495,8 +487,11 @@ void NodeSession::stop()
 
     m_primary_connected = false;
     m_secondary_connected = false;
-    m_authenticated = false;
-    m_session_id = 0;
+
+    // End session in the context (clears session ID and state)
+    if (m_session_context) {
+        m_session_context->end_session();
+    }
 
     // Clear accumulators
     m_primary_rx_accumulator.clear();
@@ -515,8 +510,10 @@ void NodeSession::reset()
         m_secondary_protocol->reset();
     }
 
-    m_authenticated = false;
-    m_session_id = 0;
+    // End session in the context (clears session ID and state)
+    if (m_session_context) {
+        m_session_context->end_session();
+    }
 
     // Clear accumulators
     m_primary_rx_accumulator.clear();
@@ -584,8 +581,9 @@ void NodeSession::set_session_authenticated_handler(Session_authenticated_handle
 
     if (m_primary_protocol) {
         m_primary_protocol->set_session_authenticated_handler([this](uint32_t sid) {
-            m_session_id = sid;
-            m_authenticated = (sid != 0);
+            // Note: Session state is managed by SessionManager inside Solo protocol
+            // The session_id can be queried via m_session_context->get_session_id()
+            // No need to maintain a duplicate here
 
             if (m_session_authenticated_handler) {
                 m_session_authenticated_handler(sid);

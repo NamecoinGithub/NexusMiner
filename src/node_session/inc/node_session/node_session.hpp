@@ -6,7 +6,7 @@
 #include "network/types.hpp"
 #include "protocol/protocol.hpp"
 #include "protocol/solo.hpp"
-#include "protocol/session_manager.hpp"
+#include "protocol/node_session_context.hpp"
 #include "protocol_lane.hpp"
 #include "block.hpp"
 #include "LLC/types/uint1024.h"
@@ -306,10 +306,8 @@ private:
     std::shared_ptr<protocol::Solo> m_primary_protocol;
     std::shared_ptr<protocol::Solo> m_secondary_protocol;
 
-    // Session management (shared across both ports)
-    std::shared_ptr<protocol::SessionManager> m_session_manager;
-    std::atomic<uint32_t> m_session_id{0};
-    std::atomic<bool> m_authenticated{false};
+    // Session management (shared across both ports) - AUTHORITATIVE source for session state
+    std::shared_ptr<protocol::NodeSessionContext> m_session_context;
 
     // Receive accumulators for TCP stream reassembly
     std::deque<uint8_t> m_primary_rx_accumulator;
