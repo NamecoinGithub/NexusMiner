@@ -68,13 +68,7 @@ Worker_prime::~Worker_prime() noexcept
 
 void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result)
 {
-	//stop the existing mining loop if it is running
-	m_stop = true;
-	if (m_run_thread.joinable())
-	{
-		m_run_thread.join();
-	}
-
+	// Update work data atomically and signal worker thread
 	{
 		std::scoped_lock<std::mutex> lck(m_mtx);
 		m_found_nonce_callback = result;
@@ -100,7 +94,7 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 		keccakFullHash_i.isBigInt = true;
 		uint1k keccakFullHash("0x" + keccakFullHash_i.toHexString(true));
 		m_base_hash = keccakFullHash;
-		//Now we have the hash of the block header.  We use this to feed the miner. 
+		//Now we have the hash of the block header.  We use this to feed the miner.
 
 		//set the starting nonce for each worker to something different that won't overlap with the others
 		m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
@@ -114,27 +108,19 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 		//m_logger->debug("starting nonce: {}", m_nonce);
 		//clear out any old chains from the last block
 		m_segmented_sieve->clear_chains();
+
+		// Signal new work is available
+		m_stop = false;
+		m_new_work = true;
 	}
-	//restart the mining loop
-	m_stop = false;
-	//The first time prior to running allocate memory on the gpu
-	
-	if (!m_gpu_initialized)
-	{
-		auto& worker_config_gpu = std::get<config::Worker_config_gpu>(m_config.m_worker_mode);
-		m_segmented_sieve->gpu_sieve_load(worker_config_gpu.m_device);
-		m_segmented_sieve->gpu_fermat_test_init(worker_config_gpu.m_device);
-		m_gpu_initialized = true;
-	}
-	m_run_thread = std::thread(&Worker_prime::run, this);
+
+	// Wake up the worker thread
+	m_cv.notify_one();
 }
 
 void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::Block_found_handler result)
 {
-	//stop the existing mining loop if it is running
-	m_stop = true;
-	if (m_run_thread.joinable())
-		m_run_thread.join();
+	// Update work data atomically and signal worker thread
 	{
 		std::scoped_lock<std::mutex> lck(m_mtx);
 		m_found_nonce_callback = result;
@@ -191,47 +177,87 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 		//m_logger->debug("starting nonce: {}", m_nonce);
 		//clear out any old chains from the last block
 		m_segmented_sieve->clear_chains();
-	}
-	//restart the mining loop
-	m_stop = false;
-	//The first time prior to running allocate memory on the gpu
 
-	if (!m_gpu_initialized)
-	{
-		auto& worker_config_gpu = std::get<config::Worker_config_gpu>(m_config.m_worker_mode);
-		m_segmented_sieve->gpu_sieve_load(worker_config_gpu.m_device);
-		m_segmented_sieve->gpu_fermat_test_init(worker_config_gpu.m_device);
-		m_gpu_initialized = true;
+		// Signal new work is available
+		m_stop = false;
+		m_new_work = true;
 	}
-	m_run_thread = std::thread(&Worker_prime::run, this);
+
+	// Wake up the worker thread
+	m_cv.notify_one();
 }
 
 void Worker_prime::run()
 {
-	m_segmented_sieve->calculate_starting_multiples();
-	//copy starting multiples to the sieve
-	m_segmented_sieve->gpu_sieve_init();
-	m_segmented_sieve->gpu_fermat_test_set_base_int(m_segmented_sieve->get_sieve_start());
-	uint64_t sieve_batch_range = m_segmented_sieve->m_sieve_range;
-	uint64_t find_chains_ms = 0;
-	uint64_t sieving_ms = 0;
-	uint64_t test_chains_ms = 0;
-	uint64_t clean_chains_ms = 0;
-	uint64_t elapsed_ms = 0;
-	uint64_t low = 0;
-	uint64_t range_searched_this_cycle = 0;
-	uint64_t fermat_tests_this_cycle_start;
-	uint64_t fermat_passes_this_cycle_start;
-	uint64_t trial_division_tests, trial_division_composites;
-	m_segmented_sieve->gpu_get_fermat_stats(fermat_tests_this_cycle_start, fermat_passes_this_cycle_start,
-		trial_division_tests, trial_division_composites);
+	m_logger->info(m_log_leader + "Persistent worker thread ready, waiting for work...");
 
-	//Setting debug to true can impact performance.  we will set it to true if the log level is set to debug or more verbose.
-	//setting debug to true is required to measure individual kernel run time
-	bool debug = m_logger->level() <= spdlog::level::level_enum::debug;
-	auto start = std::chrono::steady_clock::now();
-	auto interval_start = std::chrono::steady_clock::now();
-	while (!m_stop)
+	// Persistent thread loop - runs until shutdown
+	while (true) {
+		// Wait for new work or shutdown signal
+		{
+			std::unique_lock<std::mutex> lock(m_mtx);
+			m_cv.wait(lock, [this] { return m_new_work || m_shutdown; });
+
+			// Check for shutdown
+			if (m_shutdown) {
+				m_logger->info(m_log_leader + "Worker thread shutting down");
+				break;
+			}
+
+			// Clear new work flag
+			m_new_work = false;
+
+			// Initialize GPU if needed (first time)
+			if (!m_gpu_initialized)
+			{
+				auto& worker_config_gpu = std::get<config::Worker_config_gpu>(m_config.m_worker_mode);
+				m_segmented_sieve->gpu_sieve_load(worker_config_gpu.m_device);
+				m_segmented_sieve->gpu_fermat_test_init(worker_config_gpu.m_device);
+				m_gpu_initialized = true;
+				m_logger->info(m_log_leader + "GPU memory initialized");
+			}
+		}
+
+		// Start mining with the new work
+		m_logger->info(m_log_leader + "Starting GPU mining");
+
+		// Make local copies of block data to avoid race conditions
+		// These copies are made once per work unit and remain stable during mining
+		Block_data local_block;
+		uint1k local_base_hash;
+		uint64_t local_nonce;
+		{
+			std::scoped_lock<std::mutex> lck(m_mtx);
+			local_block = m_block;
+			local_base_hash = m_base_hash;
+			local_nonce = m_nonce;
+		}
+
+		m_segmented_sieve->calculate_starting_multiples();
+		//copy starting multiples to the sieve
+		m_segmented_sieve->gpu_sieve_init();
+		m_segmented_sieve->gpu_fermat_test_set_base_int(m_segmented_sieve->get_sieve_start());
+		uint64_t sieve_batch_range = m_segmented_sieve->m_sieve_range;
+		uint64_t find_chains_ms = 0;
+		uint64_t sieving_ms = 0;
+		uint64_t test_chains_ms = 0;
+		uint64_t clean_chains_ms = 0;
+		uint64_t elapsed_ms = 0;
+		uint64_t low = 0;
+		uint64_t range_searched_this_cycle = 0;
+		uint64_t fermat_tests_this_cycle_start;
+		uint64_t fermat_passes_this_cycle_start;
+		uint64_t trial_division_tests, trial_division_composites;
+		m_segmented_sieve->gpu_get_fermat_stats(fermat_tests_this_cycle_start, fermat_passes_this_cycle_start,
+			trial_division_tests, trial_division_composites);
+
+		//Setting debug to true can impact performance.  we will set it to true if the log level is set to debug or more verbose.
+		//setting debug to true is required to measure individual kernel run time
+		bool debug = m_logger->level() <= spdlog::level::level_enum::debug;
+		auto start = std::chrono::steady_clock::now();
+		auto interval_start = std::chrono::steady_clock::now();
+
+		while (!m_stop)
 	{
 		m_range_searched += sieve_batch_range;
 		range_searched_this_cycle += sieve_batch_range;
@@ -273,21 +299,23 @@ void Worker_prime::run()
 		//check difficulty of any chains that passed through the filter
 		for (auto x : m_segmented_sieve->m_long_chain_starts)
 		{
-			m_block.nNonce = m_nonce + x;
-			uint1k chain_start = m_base_hash + m_block.nNonce;
+			local_block.nNonce = local_nonce + x;
+			uint1k chain_start = local_base_hash + local_block.nNonce;
 			double difficulty = getDifficulty(chain_start);
 			m_segmented_sieve->m_best_chain = std::max(difficulty, m_segmented_sieve->m_best_chain);
 			m_logger->info("Actual difficulty {} required {}", difficulty, getNetworkDifficulty());
 			if (difficulty_check(chain_start))
 			{
-				//we found a valid chain.  submit it. 
+				//we found a valid chain.  submit it.
 				if (m_found_nonce_callback)
 				{
 					m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
-					::asio::post(*m_io_context, [self = shared_from_this()]()
+					// Capture local_block by value to avoid dangling reference
+					auto block_copy = local_block;
+					::asio::post(*m_io_context, [self = shared_from_this(), block_copy]()
 					{
-						self->m_found_nonce_callback(self->m_config.m_internal_id, 
-							std::make_unique<Block_data>(self->m_block));
+						self->m_found_nonce_callback(self->m_config.m_internal_id,
+							std::make_unique<Block_data>(block_copy));
 					});
 				}
 				else
@@ -334,7 +362,9 @@ void Worker_prime::run()
 			m_logger->debug(ss.str());
 		}
 	}
-	
+
+		m_logger->info(m_log_leader + "Mining stopped, waiting for new work...");
+	}  // End of persistent thread loop
 }
 
 double Worker_prime::getDifficulty(uint1k p)

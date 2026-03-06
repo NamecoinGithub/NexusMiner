@@ -370,6 +370,18 @@ void Worker_prime::run()
 			}
 		}
 
+		// Make local copies of block data to avoid race conditions
+		// These copies are made once per work unit and remain stable during mining
+		Block_data local_block;
+		uint1k local_base_hash;
+		uint64_t local_nonce;
+		{
+			std::scoped_lock<std::mutex> lck(m_mtx);
+			local_block = m_block;
+			local_base_hash = m_base_hash;
+			local_nonce = m_nonce;
+		}
+
 		m_segmented_sieve->calculate_starting_multiples();
 		uint32_t segment_size = m_segmented_sieve->get_segment_size();
 		uint64_t find_chains_ms = 0;
@@ -419,27 +431,27 @@ void Worker_prime::run()
 		//check difficulty of any chains that passed through the filter
 		for (auto x : m_segmented_sieve->m_long_chain_starts)
 		{
-			m_block.nNonce = m_nonce + x;
-			uint1k chain_start = m_base_hash + m_block.nNonce;
-			
+			local_block.nNonce = local_nonce + x;
+			uint1k chain_start = local_base_hash + local_block.nNonce;
+
 			// Enhanced validation using new prime_validation module
 			uint1024_t hashPrime = boost_uint1024_t_to_uint1024_t(chain_start);
 			double required_difficulty = getNetworkDifficulty();
 			std::vector<uint8_t> offsets;
 			double actual_difficulty = 0.0;
-			
+
 			// Use the new comprehensive validation
 			bool is_valid = nexusminer::prime::ValidatePrimeCandidate(
-				hashPrime, 
-				required_difficulty, 
-				offsets, 
+				hashPrime,
+				required_difficulty,
+				offsets,
 				actual_difficulty
 			);
-			
+
 			if (is_valid)
 			{
 				m_segmented_sieve->m_best_chain = std::max(actual_difficulty, m_segmented_sieve->m_best_chain);
-				
+
 				// Format offsets for logging
 				std::ostringstream offsets_str;
 				offsets_str << "[";
@@ -448,22 +460,23 @@ void Worker_prime::run()
 					offsets_str << static_cast<int>(offsets[i]);
 				}
 				offsets_str << "]";
-				
-				m_logger->info(m_log_leader + "✓ FOUND VALID PRIME BLOCK! Difficulty: {:.6f} (required: {:.6f}), Chain length: {}, Offsets: {}", 
+
+				m_logger->info(m_log_leader + "✓ FOUND VALID PRIME BLOCK! Difficulty: {:.6f} (required: {:.6f}), Chain length: {}, Offsets: {}",
 					actual_difficulty, required_difficulty, offsets.size(), offsets_str.str());
-				
-				//we found a valid chain.  submit it. 
+
+				//we found a valid chain.  submit it.
 				{
 					if (m_found_nonce_callback)
 					{
 						m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
-						// Capture offsets by value so they survive the async post
+						// Capture block and offsets by value to avoid dangling references
+						auto block_copy = local_block;
 						auto captured_offsets = offsets;
-						::asio::post(*m_io_context, [self = shared_from_this(), captured_offsets = std::move(captured_offsets)]()
+						::asio::post(*m_io_context, [self = shared_from_this(), block_copy, captured_offsets = std::move(captured_offsets)]()
 						{
-							auto bd = std::make_unique<Block_data>(self->m_block);
+							auto bd = std::make_unique<Block_data>(block_copy);
 							bd->vOffsets = captured_offsets; // Prime chain offsets for submission
-							self->m_found_nonce_callback(self->m_config.m_internal_id, 
+							self->m_found_nonce_callback(self->m_config.m_internal_id,
 								std::move(bd));
 						});
 					}
