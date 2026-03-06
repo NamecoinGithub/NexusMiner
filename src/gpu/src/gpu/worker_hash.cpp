@@ -104,8 +104,12 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
         // Set the target hash on this device for the difficulty.
         cuda_sk1024_set_Target((uint64_t*)m_target.begin());
 
-        // Signal new work is available
-        m_stop = false;
+        // Signal new work is available.
+        // m_stop = true interrupts the current while(!m_stop) loop iteration immediately,
+        // matching the pattern used in the prime workers (PR #343).
+        // Reset m_hashes to prevent INF MH/s on the first stats interval after recovery.
+        m_hashes = 0;
+        m_stop = true;
         m_new_work = true;
     }
 
@@ -153,8 +157,12 @@ void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::B
         // Set the target hash on this device for the difficulty.
         cuda_sk1024_set_Target((uint64_t*)m_target.begin());
 
-        // Signal new work is available
-        m_stop = false;
+        // Signal new work is available.
+        // m_stop = true interrupts the current while(!m_stop) loop iteration immediately,
+        // matching the pattern used in the prime workers (PR #343).
+        // Reset m_hashes to prevent INF MH/s on the first stats interval after recovery.
+        m_hashes = 0;
+        m_stop = true;
         m_new_work = true;
     }
 
