@@ -6,6 +6,7 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 #include "worker.hpp"
 #include "block.hpp"
 #include "hash/nexus_skein.hpp"
@@ -66,6 +67,9 @@ private:
 
     Block_data m_block;
     std::mutex m_mtx;
+    std::condition_variable m_cv;  // For persistent thread wake-up
+    bool m_new_work = false;       // Flag to indicate new work is available
+    bool m_shutdown = false;       // Flag to indicate worker should shut down
     std::uint64_t m_starting_nonce = 0;
     std::string m_log_leader;
 

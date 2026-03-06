@@ -31,7 +31,7 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 {
 	try {
 		m_logger->debug("Worker_prime constructor: Initializing worker {}", m_config.m_id);
-		
+
 		// Log CPU-specific configuration for multi-core support
 		if (std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
 			auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
@@ -46,28 +46,33 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 				m_logger->info(m_log_leader + "Thread priority: {}", cpu_cfg.m_priority_level);
 			}
 		}
-		
+
 		// Initialize segmented sieve with error handling
 		m_segmented_sieve->generate_sieving_primes();
-		
+
 		// Run performance test
 		fermat_performance_test();
-		
+
 		// Initialize data structures
 		m_chain_histogram = std::vector<std::uint32_t>(10, 0);
 		m_segmented_sieve->reset_stats();
-		
+
 		// Mark as initialized
 		m_initialized = true;
 		m_logger->info("Worker_prime {}: Initialization complete", m_config.m_id);
-		
+
+		// Start persistent thread
+		m_shutdown = false;
+		m_run_thread = std::thread(&Worker_prime::run, this);
+		m_logger->info(m_log_leader + "Persistent worker thread started");
+
 	} catch (const std::exception& e) {
-		m_logger->error("Worker_prime constructor: Failed to initialize worker {}: {}", 
+		m_logger->error("Worker_prime constructor: Failed to initialize worker {}: {}",
 		                m_config.m_id, e.what());
 		m_initialized = false;
 		throw;
 	} catch (...) {
-		m_logger->error("Worker_prime constructor: Unknown exception during initialization of worker {}", 
+		m_logger->error("Worker_prime constructor: Unknown exception during initialization of worker {}",
 		                m_config.m_id);
 		m_initialized = false;
 		throw;
@@ -78,34 +83,39 @@ Worker_prime::~Worker_prime() noexcept
 {
 	try {
 		m_logger->debug("Worker_prime destructor: Cleaning up worker {}", m_config.m_id);
-		
-		// Stop the mining thread
-		m_stop = true;
-		
-		// Wait for thread to complete with timeout protection
+
+		// Signal shutdown and wake up the worker thread
+		{
+			std::scoped_lock<std::mutex> lck(m_mtx);
+			m_shutdown = true;
+			m_stop = true;  // Also set m_stop to interrupt mining loops
+		}
+		m_cv.notify_all();
+
+		// Wait for main thread to complete with timeout protection
 		if (m_run_thread.joinable())
 		{
 			m_logger->debug("Worker_prime destructor: Waiting for worker {} thread to finish", m_config.m_id);
 			m_run_thread.join();
 		}
-		
+
 		// Join all worker threads
 		for (auto& thread : m_worker_threads) {
 			if (thread.joinable())
 				thread.join();
 		}
-		
+
 		m_logger->debug("Worker_prime destructor: Worker {} cleanup complete", m_config.m_id);
-		
+
 	} catch (const std::exception& e) {
 		// Log but don't propagate exceptions from destructor
 		if (m_logger) {
-			m_logger->error("Worker_prime destructor: Exception during cleanup of worker {}: {}", 
+			m_logger->error("Worker_prime destructor: Exception during cleanup of worker {}: {}",
 			                m_config.m_id, e.what());
 		}
 	} catch (...) {
 		if (m_logger) {
-			m_logger->error("Worker_prime destructor: Unknown exception during cleanup of worker {}", 
+			m_logger->error("Worker_prime destructor: Unknown exception during cleanup of worker {}",
 			                m_config.m_id);
 		}
 	}
@@ -115,23 +125,15 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 {
 	// Validate worker is properly initialized
 	if (!m_initialized) {
-		m_logger->error("Worker_prime::set_block: Worker {} not properly initialized, cannot set block", 
+		m_logger->error("Worker_prime::set_block: Worker {} not properly initialized, cannot set block",
 		                m_config.m_id);
 		return;
 	}
-	
+
 	try {
 		m_logger->debug("Worker_prime::set_block: Setting new block for worker {}", m_config.m_id);
-		
-		//stop the existing mining loop if it is running
-		m_stop = true;
-		if (m_run_thread.joinable())
-		{
-			m_logger->debug("Worker_prime::set_block: Waiting for previous thread to finish for worker {}", 
-			                m_config.m_id);
-			m_run_thread.join();
-		}
 
+		// Update work data atomically and signal worker thread
 		{
 			std::scoped_lock<std::mutex> lck(m_mtx);
 			m_found_nonce_callback = result;
@@ -157,7 +159,7 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 			keccakFullHash_i.isBigInt = true;
 			uint1k keccakFullHash("0x" + keccakFullHash_i.toHexString(true));
 			m_base_hash = keccakFullHash;
-			//Now we have the hash of the block header.  We use this to feed the miner. 
+			//Now we have the hash of the block header.  We use this to feed the miner.
 
 			//set the starting nonce for each worker to something different that won't overlap with the others
 			m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
@@ -171,18 +173,20 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 			//m_logger->debug("starting nonce: {}", m_nonce);
 			//clear out any old chains from the last block
 			m_segmented_sieve->clear_chains();
+
+			// Signal new work is available
+			m_stop = false;
+			m_new_work = true;
 		}
-		//restart the mining loop
-		m_stop = false;
-		m_logger->debug("Worker_prime::set_block: Starting mining thread for worker {}", m_config.m_id);
-		m_run_thread = std::thread(&Worker_prime::run, this);
-		
+
+		// Wake up the worker thread
+		m_cv.notify_one();
+		m_logger->debug("Worker_prime::set_block: New work signaled for worker {}", m_config.m_id);
+
 	} catch (const std::exception& e) {
 		m_logger->error("Worker_prime::set_block: Exception for worker {}: {}", m_config.m_id, e.what());
-		m_stop = true;
 	} catch (...) {
 		m_logger->error("Worker_prime::set_block: Unknown exception for worker {}", m_config.m_id);
-		m_stop = true;
 	}
 }
 
@@ -198,15 +202,7 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 	try {
 		m_logger->debug("Worker_prime::set_block: Setting new block for worker {} (optimized)", m_config.m_id);
 
-		//stop the existing mining loop if it is running
-		m_stop = true;
-		if (m_run_thread.joinable())
-		{
-			m_logger->debug("Worker_prime::set_block: Waiting for previous thread to finish for worker {}",
-			                m_config.m_id);
-			m_run_thread.join();
-		}
-
+		// Update work data atomically and signal worker thread
 		{
 			std::scoped_lock<std::mutex> lck(m_mtx);
 			m_found_nonce_callback = result;
@@ -263,18 +259,20 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 			//m_logger->debug("starting nonce: {}", m_nonce);
 			//clear out any old chains from the last block
 			m_segmented_sieve->clear_chains();
+
+			// Signal new work is available
+			m_stop = false;
+			m_new_work = true;
 		}
-		//restart the mining loop
-		m_stop = false;
-		m_logger->debug("Worker_prime::set_block: Starting mining thread for worker {}", m_config.m_id);
-		m_run_thread = std::thread(&Worker_prime::run, this);
+
+		// Wake up the worker thread
+		m_cv.notify_one();
+		m_logger->debug("Worker_prime::set_block: New work signaled for worker {}", m_config.m_id);
 
 	} catch (const std::exception& e) {
 		m_logger->error("Worker_prime::set_block: Exception for worker {}: {}", m_config.m_id, e.what());
-		m_stop = true;
 	} catch (...) {
 		m_logger->error("Worker_prime::set_block: Unknown exception for worker {}", m_config.m_id);
-		m_stop = true;
 	}
 }
 
@@ -285,10 +283,10 @@ void Worker_prime::run()
 		m_logger->error(m_log_leader + "Invalid worker mode for CPU worker");
 		return;
 	}
-	
+
 	auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
-	uint32_t num_threads = (cpu_cfg.m_threads > 0) ? cpu_cfg.m_threads : 1;
-	
+	uint32_t num_threads = (cpu_cfg.m_threads > 1) ? cpu_cfg.m_threads : 1;
+
 	// Prime mining currently supports single-threaded mode only
 	// Multi-threading requires sieve partitioning which is more complex
 	if (num_threads > 1) {
@@ -296,68 +294,87 @@ void Worker_prime::run()
 		m_logger->warn(m_log_leader + "Falling back to single-threaded mode");
 		num_threads = 1;
 	}
-	
-	// Apply thread settings
-	if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
-		m_logger->info(m_log_leader + "Thread priority set to level {}", cpu_cfg.m_priority_level);
-	} else {
-		m_logger->warn(m_log_leader + "Failed to set thread priority to level {}", cpu_cfg.m_priority_level);
-	}
-	
-	// Apply hyperthreading and efficiency cores filtering
-	uint64_t effective_affinity = cpu_cfg.m_affinity_mask;
-	
-	if (effective_affinity == 0) {
-		// No specific affinity set, potentially filter based on HT/E-core settings
-		if (!cpu_cfg.m_enable_hyperthreading || !cpu_cfg.m_enable_efficiency_cores) {
-			// Get total logical processors
-			uint32_t total_cores = std::thread::hardware_concurrency();
-			uint32_t physical_cores = cpu::get_physical_core_count();
-			bool smt_enabled = cpu::is_smt_enabled();
-			
-			m_logger->info(m_log_leader + "Core detection: {} logical cores, {} physical cores, SMT {}",
-			              total_cores, physical_cores, smt_enabled ? "enabled" : "disabled");
-			
-			// Build affinity mask based on settings
-			if (!cpu_cfg.m_enable_hyperthreading && smt_enabled) {
-				// Use only physical cores (first half typically)
-				for (uint32_t i = 0; i < physical_cores; i++) {
-					effective_affinity |= (1ULL << i);
-				}
-				m_logger->info(m_log_leader + "Hyperthreading disabled, using physical cores only: 0x{:016x}", 
-				              effective_affinity);
+
+	m_logger->info(m_log_leader + "Persistent worker thread ready, waiting for work...");
+
+	// Persistent thread loop - runs until shutdown
+	while (true) {
+		// Wait for new work or shutdown signal
+		{
+			std::unique_lock<std::mutex> lock(m_mtx);
+			m_cv.wait(lock, [this] { return m_new_work || m_shutdown; });
+
+			// Check for shutdown
+			if (m_shutdown) {
+				m_logger->info(m_log_leader + "Worker thread shutting down");
+				break;
 			}
-			
-			if (!cpu_cfg.m_enable_efficiency_cores) {
-				// Try to get P-cores only
-				auto p_cores = cpu::get_performance_cores();
-				if (!p_cores.empty()) {
-					effective_affinity = 0;
-					for (auto core : p_cores) {
-						effective_affinity |= (1ULL << core);
-					}
-					m_logger->info(m_log_leader + "E-cores disabled, using P-cores only: 0x{:016x}", 
-					              effective_affinity);
-				} else {
-					m_logger->warn(m_log_leader + "Could not detect P-cores, using all cores");
-				}
-			}
+
+			// Clear new work flag
+			m_new_work = false;
 		}
-	}
-	
-	if (effective_affinity != 0) {
-		if (cpu::set_thread_affinity(effective_affinity)) {
-			m_logger->info(m_log_leader + "Thread affinity set to 0x{:016x}", effective_affinity);
+
+		// Apply thread settings for mining
+		if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
+			m_logger->info(m_log_leader + "Thread priority set to level {}", cpu_cfg.m_priority_level);
 		} else {
-			m_logger->warn(m_log_leader + "Failed to set thread affinity to 0x{:016x}", effective_affinity);
+			m_logger->warn(m_log_leader + "Failed to set thread priority to level {}", cpu_cfg.m_priority_level);
 		}
-	}
-	
-	m_segmented_sieve->calculate_starting_multiples();
-	uint32_t segment_size = m_segmented_sieve->get_segment_size();
-	uint64_t find_chains_ms = 0;
-	uint64_t sieving_ms = 0;
-	uint64_t test_chains_ms = 0;
+
+		// Apply hyperthreading and efficiency cores filtering
+		uint64_t effective_affinity = cpu_cfg.m_affinity_mask;
+
+		if (effective_affinity == 0) {
+			// No specific affinity set, potentially filter based on HT/E-core settings
+			if (!cpu_cfg.m_enable_hyperthreading || !cpu_cfg.m_enable_efficiency_cores) {
+				// Get total logical processors
+				uint32_t total_cores = std::thread::hardware_concurrency();
+				uint32_t physical_cores = cpu::get_physical_core_count();
+				bool smt_enabled = cpu::is_smt_enabled();
+
+				m_logger->info(m_log_leader + "Core detection: {} logical cores, {} physical cores, SMT {}",
+				              total_cores, physical_cores, smt_enabled ? "enabled" : "disabled");
+
+				// Build affinity mask based on settings
+				if (!cpu_cfg.m_enable_hyperthreading && smt_enabled) {
+					// Use only physical cores (first half typically)
+					for (uint32_t i = 0; i < physical_cores; i++) {
+						effective_affinity |= (1ULL << i);
+					}
+					m_logger->info(m_log_leader + "Hyperthreading disabled, using physical cores only: 0x{:016x}",
+					              effective_affinity);
+				}
+
+				if (!cpu_cfg.m_enable_efficiency_cores) {
+					// Try to get P-cores only
+					auto p_cores = cpu::get_performance_cores();
+					if (!p_cores.empty()) {
+						effective_affinity = 0;
+						for (auto core : p_cores) {
+							effective_affinity |= (1ULL << core);
+						}
+						m_logger->info(m_log_leader + "E-cores disabled, using P-cores only: 0x{:016x}",
+						              effective_affinity);
+					} else {
+						m_logger->warn(m_log_leader + "Could not detect P-cores, using all cores");
+					}
+				}
+			}
+		}
+
+		if (effective_affinity != 0) {
+			if (cpu::set_thread_affinity(effective_affinity)) {
+				m_logger->info(m_log_leader + "Thread affinity set to 0x{:016x}", effective_affinity);
+			} else {
+				m_logger->warn(m_log_leader + "Failed to set thread affinity to 0x{:016x}", effective_affinity);
+			}
+		}
+
+		m_segmented_sieve->calculate_starting_multiples();
+		uint32_t segment_size = m_segmented_sieve->get_segment_size();
+		uint64_t find_chains_ms = 0;
+		uint64_t sieving_ms = 0;
+		uint64_t test_chains_ms = 0;
 	uint64_t elapsed_ms = 0;
 	uint64_t high = 0;
 	uint64_t low = 0;
@@ -506,6 +523,9 @@ void Worker_prime::run()
 			std::cout << std::endl;
 		}
 	}
+
+		m_logger->info(m_log_leader + "Mining stopped, waiting for new work...");
+	}  // End of persistent thread loop
 }
 
 double Worker_prime::getDifficulty(uint1k p)
