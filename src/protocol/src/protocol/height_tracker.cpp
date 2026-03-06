@@ -215,6 +215,7 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     s.canonical_unified_height = m_canonical.canonical_unified_height;
     s.canonical_channel_height = m_canonical.canonical_channel_height;
     s.canonical_hash_prev_block = m_canonical.canonical_hash_prev_block;
+    s.canonical_received_at = m_canonical.canonical_received_at;
 
     return s;
 }

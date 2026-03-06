@@ -278,17 +278,16 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             }
 
                             // ✅ NEW: Final staleness check before submission (Template Staleness Prevention)
-                            uint64_t template_age = template_interface->get_template_age();
+                            // Use HeightTracker snapshot as single source of truth for both channel and age checks
+                            auto ht_snap = solo_protocol->get_height_tracker_snapshot();
 
                             // Check 1 — Channel Height (PRIMARY: has another miner found this block?)
-                            // Use HeightTracker snapshot as single source of truth for staleness
-                            auto ht_snap = solo_protocol->get_height_tracker_snapshot();
                             bool channel_stale = ht_snap.is_template_stale();
 
                             // Check 2 — Age (SECONDARY: safety net for missed push notifications)
                             // 600s matches the push-driven era MAX_TEMPLATE_AGE
-                            constexpr uint64_t SUBMISSION_MAX_AGE_SECONDS = 600;
-                            bool age_stale = (template_age > SUBMISSION_MAX_AGE_SECONDS);
+                            bool age_stale = ht_snap.is_template_age_stale();
+                            uint64_t template_age = ht_snap.get_template_age_seconds();
 
                             if (channel_stale || age_stale)
                             {
@@ -298,8 +297,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                                    ht_snap.channel_height, ht_snap.channel_target);
                                     m_logger->error("[Worker_manager]    Another miner found this block first - discarding");
                                 } else {
-                                    m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: {}s)",
-                                                   template_age, SUBMISSION_MAX_AGE_SECONDS);
+                                    m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: 600s)",
+                                                   template_age);
                                     m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
                                 }
                                 template_interface->discard_template(channel_stale ? "Channel height advanced before submission"
@@ -985,7 +984,9 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                                     snap.channel_height = tmpl->nChannelHeight;
                                     snap.channel        = tmpl->block.nChannel;
                                     snap.state_name     = protocol::MiningTemplateInterface::state_to_string(tmpl->state);
-                                    snap.age_seconds    = iface->get_template_age();
+                                    // Use HeightTracker for canonical age calculation
+                                    auto ht_snap = proto->get_height_tracker_snapshot();
+                                    snap.age_seconds = ht_snap.get_template_age_seconds();
                                 }
                             }
                             return snap;
@@ -1297,8 +1298,10 @@ void Worker_manager::check_template_health()
         }
         return;
     }
-    
-    uint64_t template_age = template_interface->get_template_age();
+
+    // Get HeightTracker snapshot for staleness and age checks (single source of truth)
+    auto ht_snap = solo_protocol->get_height_tracker_snapshot();
+    uint64_t template_age = ht_snap.get_template_age_seconds();
     uint8_t channel = template_interface->get_channel();
     std::string channel_name = (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
 
@@ -1335,8 +1338,6 @@ void Worker_manager::check_template_health()
     // Channel height-based staleness detection (primary check — HeightTracker is the single
     // source of truth).  Template is stale when channel_height >= channel_target (both non-zero).
     {
-        auto ht_snap = solo_protocol->get_height_tracker_snapshot();
-
         if (ht_snap.is_template_stale()) {
             // ── Temporal guard (doom-loop prevention) ────────────────────────────────
             // Only stop workers and discard if the template is older than the last push.
