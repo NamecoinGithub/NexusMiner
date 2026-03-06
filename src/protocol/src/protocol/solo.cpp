@@ -1370,6 +1370,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
 
         // Parse rejection reason byte if present (stateless lane sends it in payload).
         std::string reason_str = "NONE";
+        bool is_fork_rejection = false;
         if (packet.m_data && !packet.m_data->empty()) {
             uint8_t reason_byte = (*packet.m_data)[0];
             switch (reason_byte) {
@@ -1377,13 +1378,16 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 case static_cast<uint8_t>(LLP::StatelessMining::RejectionReason::INVALID_POW): reason_str = "INVALID_POW"; break;
                 case static_cast<uint8_t>(LLP::StatelessMining::RejectionReason::INVALID_SIG): reason_str = "INVALID_SIG"; break;
                 case static_cast<uint8_t>(LLP::StatelessMining::RejectionReason::DUPLICATE):   reason_str = "DUPLICATE"; break;
-                case static_cast<uint8_t>(LLP::StatelessMining::RejectionReason::FORK):        reason_str = "FORK"; break;
+                case static_cast<uint8_t>(LLP::StatelessMining::RejectionReason::FORK):
+                    reason_str = "FORK";
+                    is_fork_rejection = true;
+                    break;
                 default: { char buf[16]; snprintf(buf, sizeof(buf), "0x%02x", reason_byte); reason_str = buf; break; }
             }
         }
         m_logger->warn("❌ BLOCK REJECTED by node — height={} channel={} reason={}", rejected_height, rejected_channel, reason_str);
         m_logger->warn("Block Rejected by Nexus Network.");
-        
+
         // Enhanced diagnostics: Log connection info and possible reasons
         if (connection) {
             auto const& remote_ep = connection->remote_endpoint();
@@ -1392,12 +1396,39 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             uint16_t actual_port = remote_ep.port();
             m_logger->warn("[Solo] Block rejected on connection {}:{}", remote_addr, actual_port);
         }
-        
+
         m_logger->info("[Solo] Possible rejection reasons:");
         m_logger->info("[Solo]   - Block already found by another miner (stale)");
         m_logger->info("[Solo]   - Invalid proof-of-work (nonce doesn't meet difficulty)");
         m_logger->info("[Solo]   - Blockchain reorganization occurred");
-        
+
+        // Special handling for FORK rejections: invalidate template and trigger recovery
+        if (is_fork_rejection) {
+            m_logger->warn("[Solo FORK] FORK rejection detected — invalidating template and initiating recovery");
+
+            // Get current height for fork detection handler
+            auto snap = m_height_tracker.GetSnapshot();
+            uint32_t unified_height = snap.unified_height;
+
+            // Call handle_fork_detected to invalidate the template
+            auto* pManager = get_channel_manager();
+            if (pManager) {
+                handle_fork_detected(pManager, unified_height);
+            } else {
+                // Fallback: Invalidate template directly if no channel manager
+                if (m_template_interface && m_template_interface->has_valid_template()) {
+                    m_template_interface->discard_template("Fork detected - BLOCK_REJECTED:FORK");
+                    m_logger->info("[Solo FORK] ✗ Template invalidated due to fork rejection");
+                }
+            }
+
+            // Notify Worker_manager to mark recovery initiated (same pattern as push handler)
+            if (m_recovery_handler) {
+                m_logger->info("[Solo FORK] Recovery initiated (fork_rejection) — notifying Worker_manager");
+                m_recovery_handler();
+            }
+        }
+
         // Request new work with recovery logic
         auto work_payload = get_work();
         if (!work_payload || work_payload->empty()) {
