@@ -139,3 +139,4 @@ architectures.
 - [CPU-INFRASTRUCTURE-DIAGRAMS.md](CPU-INFRASTRUCTURE-DIAGRAMS.md) — Diagrams
   13–16: CPU worker lifecycle, set\_block() handoff, sieve ownership model,
   template-to-mining timeline
+- [../philosophy/why-linux-nexus-vonbraun-succeed.md](../philosophy/why-linux-nexus-vonbraun-succeed.md) — Why the culture of documented engineering invariants is what separates successful projects

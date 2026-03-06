@@ -41,3 +41,5 @@
 | **Cheat Sheets** | [cheat-sheets/debugging-guide.md](cheat-sheets/debugging-guide.md) | Common errors and AI diagnostics |
 | **Cheat Sheets** | [cheat-sheets/testing-guide.md](cheat-sheets/testing-guide.md) | Test generation guide |
 | **AI Collab** | [diagrams/ai-collaboration/miner-dev-guide.md](diagrams/ai-collaboration/miner-dev-guide.md) | AI-Human development framework |
+| **Philosophy** | [philosophy/why-ai-human-wins.md](philosophy/why-ai-human-wins.md) | AI-human collaboration model |
+| **Philosophy** | [philosophy/why-linux-nexus-vonbraun-succeed.md](philosophy/why-linux-nexus-vonbraun-succeed.md) | Linux, Nexus, Von Braun — why autodidact engineering wins |
