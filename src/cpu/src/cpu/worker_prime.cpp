@@ -186,6 +186,90 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 	}
 }
 
+void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::Block_found_handler result)
+{
+	// Validate worker is properly initialized
+	if (!m_initialized) {
+		m_logger->error("Worker_prime::set_block: Worker {} not properly initialized, cannot set block",
+		                m_config.m_id);
+		return;
+	}
+
+	try {
+		m_logger->debug("Worker_prime::set_block: Setting new block for worker {} (optimized)", m_config.m_id);
+
+		//stop the existing mining loop if it is running
+		m_stop = true;
+		if (m_run_thread.joinable())
+		{
+			m_logger->debug("Worker_prime::set_block: Waiting for previous thread to finish for worker {}",
+			                m_config.m_id);
+			m_run_thread.join();
+		}
+
+		{
+			std::scoped_lock<std::mutex> lck(m_mtx);
+			m_found_nonce_callback = result;
+
+			// Use precomputed data from WorkPackage
+			const auto& block = work_package->get_block();
+			m_block = Block_data{ block };
+
+			std::uint32_t nbits = work_package->get_nbits();
+			if (nbits != 0)	// take nBits provided from pool
+			{
+				m_pool_nbits = nbits;
+			}
+
+			m_difficulty = m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
+
+			// For prime mining, we need to compute hash excluding nonce
+			// Note: WorkPackage contains header WITH nonce, but prime needs WITHOUT nonce
+			bool excludeNonce = true;  //prime block hash excludes the nonce
+			std::vector<unsigned char> headerB = m_block.GetHeaderBytes(excludeNonce);
+
+			//calculate the block hash
+			NexusSkein skein;
+			skein.setMessage(headerB);
+			skein.calculateHash();
+			NexusSkein::stateType hash = skein.getHash();
+
+			//keccak
+			NexusKeccak keccak(hash);
+			keccak.calculateHash();
+			NexusKeccak::k_1024 keccakFullHash_i = keccak.getHashResult();
+			keccakFullHash_i.isBigInt = true;
+			uint1k keccakFullHash("0x" + keccakFullHash_i.toHexString(true));
+			m_base_hash = keccakFullHash;
+			//Now we have the hash of the block header.  We use this to feed the miner.
+
+			//set the starting nonce for each worker to something different that won't overlap with the others
+			m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
+			m_nonce = m_starting_nonce;
+
+			//set the sieve start range
+			uint1k startprime = m_base_hash + m_nonce;
+			m_segmented_sieve->set_sieve_start(startprime);
+			//update the starting nonce to reflect the actual sieve start used
+			m_nonce = static_cast<uint64_t>(m_segmented_sieve->get_sieve_start() - m_base_hash);
+			//m_logger->debug("starting nonce: {}", m_nonce);
+			//clear out any old chains from the last block
+			m_segmented_sieve->clear_chains();
+		}
+		//restart the mining loop
+		m_stop = false;
+		m_logger->debug("Worker_prime::set_block: Starting mining thread for worker {}", m_config.m_id);
+		m_run_thread = std::thread(&Worker_prime::run, this);
+
+	} catch (const std::exception& e) {
+		m_logger->error("Worker_prime::set_block: Exception for worker {}: {}", m_config.m_id, e.what());
+		m_stop = true;
+	} catch (...) {
+		m_logger->error("Worker_prime::set_block: Unknown exception for worker {}", m_config.m_id);
+		m_stop = true;
+	}
+}
+
 void Worker_prime::run()
 {
 	// Get CPU configuration

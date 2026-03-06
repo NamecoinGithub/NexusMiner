@@ -243,13 +243,18 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     m_logger->error("[Worker_manager]   Template will be lost - mining cannot start");
                     return;
                 }
-                
+
+                /* Create shared WorkPackage once for all workers */
+                auto work_package = std::make_shared<WorkPackage>(block, nBits);
+                m_logger->debug("[Worker_manager] Created shared WorkPackage (block height: {}, nBits: 0x{:08x})",
+                                block.nHeight, nBits);
+
                 /* Distribute template to all worker threads */
                 size_t workers_fed = 0;
                 for (size_t i = 0; i < m_workers.size(); ++i) {
                     auto& worker = m_workers[i];
                     if (worker) {
-                        worker->set_block(block, nBits, [this](auto id, auto block_data)
+                        worker->set_block(work_package, [this](auto id, auto block_data)
                         {
                             m_logger->info("════════════════════════════════════════════════════════");
                             m_logger->info("💎 BLOCK FOUND CALLBACK INVOKED!");

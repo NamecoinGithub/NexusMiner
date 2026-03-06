@@ -72,9 +72,47 @@ public:
 
 };
 
+/**
+ * WorkPackage: Immutable shared work data for template distribution
+ *
+ * Created once per template by Worker_manager and shared across all workers
+ * via std::shared_ptr. Eliminates repeated Block_data construction and
+ * serialization per worker.
+ *
+ * Contains precomputed immutable data:
+ * - Original CBlock from protocol layer
+ * - nBits (difficulty target)
+ * - Precomputed header bytes (208 or 216 bytes depending on nonce inclusion)
+ *
+ * Workers maintain per-worker mutable state (starting nonce, Block_data copy).
+ */
+class WorkPackage
+{
+public:
+    WorkPackage(const ::LLP::CBlock& block, std::uint32_t nbits)
+        : m_block{block}
+        , m_nbits{nbits}
+    {
+        // Precompute header bytes once for all workers
+        // Note: Block_data constructor copies from CBlock
+        Block_data temp_block_data{block};
+        m_header_bytes = temp_block_data.GetHeaderBytes();
+    }
+
+    // Immutable accessors
+    const ::LLP::CBlock& get_block() const { return m_block; }
+    std::uint32_t get_nbits() const { return m_nbits; }
+    const std::vector<unsigned char>& get_header_bytes() const { return m_header_bytes; }
+
+private:
+    ::LLP::CBlock m_block;                      // Original block from protocol
+    std::uint32_t m_nbits;                      // Difficulty target
+    std::vector<unsigned char> m_header_bytes;  // Precomputed header (shared)
+};
+
 class Worker {
 public:
-	
+
 	virtual ~Worker() = default;
 
     // A call to the BlockFoundHandler informs the user about a new found block.
@@ -82,7 +120,16 @@ public:
 
     // Sets a new block (nexus data type) for the miner worker. The miner worker must reset the current work.
     // When  the worker finds a new block, the BlockFoundHandler has to be called with the found BlockData
+    // DEPRECATED: Use set_block(shared_ptr<WorkPackage>, Block_found_handler) for better performance
     virtual void set_block(::LLP::CBlock block, std::uint32_t nbits, Block_found_handler result) = 0;
+
+    // Optimized version: accepts shared WorkPackage to eliminate repeated block data construction
+    // Default implementation delegates to legacy set_block() for backward compatibility
+    virtual void set_block(std::shared_ptr<WorkPackage> work_package, Block_found_handler result)
+    {
+        // Default fallback: extract block and nbits from WorkPackage
+        set_block(work_package->get_block(), work_package->get_nbits(), result);
+    }
 
     // Returns true if the worker's mining thread is actively running (i.e. set_block() started it).
     // Implementations backed by an m_stop atomic should override this to return !m_stop.

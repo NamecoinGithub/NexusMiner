@@ -103,6 +103,54 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
     m_run_thread = std::thread(&Worker_hash::run, this);
 }
 
+void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::Block_found_handler result)
+{
+    //stop the existing mining loop if it is running
+    m_stop = true;
+    if (m_run_thread.joinable())
+    {
+        m_run_thread.join();
+    }
+
+    m_found_nonce_callback = result;
+
+    // Use precomputed data from WorkPackage
+    const auto& block = work_package->get_block();
+    m_block = Block_data{block};
+
+    std::uint32_t nbits = work_package->get_nbits();
+    if (nbits != 0)
+    {
+        // take nbits provided by pool
+        m_pool_nbits = nbits;
+    }
+
+    // Set the block for this device
+    cuda_sk1024_setBlock(&m_block.nVersion, m_block.nHeight);
+
+    /* Get the target difficulty. */
+    auto const nbits_cuda = m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
+
+    double mainnet_difficulty = TAO::Ledger::GetDifficulty(m_block.nBits, m_block.nChannel);
+    double pool_difficulty = TAO::Ledger::GetDifficulty(m_pool_nbits, m_block.nChannel);
+    if (m_pool_nbits != 0)
+        m_logger->debug("Leading zeros required mainnet:{}  pool:{}", log2(mainnet_difficulty)+34, log2(pool_difficulty)+34);
+    else
+        m_logger->debug("Leading zeros required:{}", log2(mainnet_difficulty) + 34);
+
+    /* Get the target difficulty. */
+    LLC::CBigNum target;
+    target.SetCompact(nbits_cuda);
+    m_target = target.getuint1024();
+
+    // Set the target hash on this device for the difficulty.
+    cuda_sk1024_set_Target((uint64_t*)m_target.begin());
+
+    //restart the mining loop
+    m_stop = false;
+    m_run_thread = std::thread(&Worker_hash::run, this);
+}
+
 void Worker_hash::run()
 {
     while (!m_stop)
