@@ -42,8 +42,6 @@ public:
 
 private:
 
-    void reset_statistics();
-
     void run();
     double getDifficulty(uint1k p);
     double getNetworkDifficulty();
