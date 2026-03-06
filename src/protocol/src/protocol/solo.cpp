@@ -2490,7 +2490,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             [this](uint32_t u, uint32_t c, uint32_t d) {
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
-            [&connection, this]() {
+            [connection, this]() {
                 // Snapshot staleness BEFORE calling get_work() so we capture
                 // the state that triggered this request_work_fn invocation.
                 bool is_stale_recovery = m_height_tracker.GetSnapshot().is_template_stale();
@@ -2524,7 +2524,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             [this](uint32_t u, uint32_t c, uint32_t d) {
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
-            [&connection, this]() {
+            [connection, this]() {
                 // Snapshot staleness BEFORE calling get_work() so we capture
                 // the state that triggered this request_work_fn invocation.
                 bool is_stale_recovery = m_height_tracker.GetSnapshot().is_template_stale();
