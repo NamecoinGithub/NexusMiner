@@ -202,3 +202,7 @@ NexusMiner is building that culture. PR #348 is evidence. This document is evide
 - [../riscv/CPU-INFRASTRUCTURE.md](../riscv/CPU-INFRASTRUCTURE.md) — The Saturn V notebook for the sieve-ownership invariant (PR #348)
 - [../riscv/CPU-INFRASTRUCTURE-DIAGRAMS.md](../riscv/CPU-INFRASTRUCTURE-DIAGRAMS.md) — Mermaid diagrams 13–16: CPU worker lifecycle and sieve ownership model
 - [../riscv/RISCV-OVERVIEW.md](../riscv/RISCV-OVERVIEW.md) — RISC-V ISA profiles, extensions, and performance context
+
+---
+
+> **Continue reading:** [Chapter II — Cycles of Development vs. the Void](chapter-ii-cycles-and-dual-use.md)
