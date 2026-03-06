@@ -43,3 +43,4 @@
 | **AI Collab** | [diagrams/ai-collaboration/miner-dev-guide.md](diagrams/ai-collaboration/miner-dev-guide.md) | AI-Human development framework |
 | **Philosophy** | [philosophy/why-ai-human-wins.md](philosophy/why-ai-human-wins.md) | AI-human collaboration model |
 | **Philosophy** | [philosophy/why-linux-nexus-vonbraun-succeed.md](philosophy/why-linux-nexus-vonbraun-succeed.md) | Linux, Nexus, Von Braun — why autodidact engineering wins |
+| **Philosophy** | [philosophy/chapter-ii-cycles-and-dual-use.md](philosophy/chapter-ii-cycles-and-dual-use.md) | Chapter II — Cycles of development vs. the void; the dual-use principle |
