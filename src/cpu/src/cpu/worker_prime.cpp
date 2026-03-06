@@ -89,6 +89,7 @@ Worker_prime::~Worker_prime() noexcept
 			std::scoped_lock<std::mutex> lck(m_mtx);
 			m_shutdown = true;
 			m_stop = true;  // Also set m_stop to interrupt mining loops
+			m_running = false;
 		}
 		m_cv.notify_all();
 
@@ -177,6 +178,7 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 			// Signal new work is available
 			m_stop = true;
 			m_new_work = true;
+			m_running = true;
 		}
 
 		// Wake up the worker thread
@@ -263,6 +265,7 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 			// Signal new work is available
 			m_stop = true;
 			m_new_work = true;
+			m_running = true;
 		}
 
 		// Wake up the worker thread
@@ -312,6 +315,8 @@ void Worker_prime::run()
 
 			// Clear new work flag
 			m_new_work = false;
+			// Reset stop flag so the inner mining loop can run
+			m_stop = false;
 		}
 
 		// Apply thread settings for mining
@@ -400,7 +405,7 @@ void Worker_prime::run()
 	m_cpu_tracking_start = std::chrono::steady_clock::now();
 	m_cpu_active_time = std::chrono::milliseconds{0};
 	m_cpu_total_time = std::chrono::milliseconds{0};
-	
+
 	while (!m_stop)
 	{
 		// Check for new work at the top of the loop

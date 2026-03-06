@@ -37,7 +37,7 @@ public:
     // Optimized version: accepts shared WorkPackage to eliminate repeated block data construction
     void set_block(std::shared_ptr<WorkPackage> work_package, Worker::Block_found_handler result) override;
 
-    bool is_running() const override { return !m_stop; }
+    bool is_running() const override { return m_running.load(); }
     void update_statistics(stats::Collector& stats_collector) override;
 
 private:
@@ -63,6 +63,7 @@ private:
     std::shared_ptr<spdlog::logger> m_logger;
     Worker_config& m_config;
     std::atomic<bool> m_stop;
+    std::atomic<bool> m_running{false};  // true once set_block() has been called with valid work
     std::thread m_run_thread;
     std::vector<std::thread> m_worker_threads;  // For multi-threading support
     Worker::Block_found_handler m_found_nonce_callback;

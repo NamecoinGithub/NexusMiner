@@ -54,6 +54,7 @@ Worker_hash::~Worker_hash()
         std::lock_guard<std::mutex> lock(m_mtx);
         m_shutdown = true;
         m_stop = true;  // Also set m_stop to interrupt mining loops
+        m_running = false;
     }
     m_cv.notify_all();
 
@@ -107,6 +108,7 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
         // Signal new work is available
         m_stop = false;
         m_new_work = true;
+        m_running = true;
     }
 
     // Wake up the worker thread
@@ -156,6 +158,7 @@ void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::B
         // Signal new work is available
         m_stop = false;
         m_new_work = true;
+        m_running = true;
     }
 
     // Wake up the worker thread
