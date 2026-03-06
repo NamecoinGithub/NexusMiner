@@ -2448,6 +2448,33 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Phase 2: Handle MINER_REWARD_RESULT (reward binding result from node)
         handle_reward_result(packet);
     }
+    else if (matches_opcode(Packet::SESSION_EXPIRED))
+    {
+        // SESSION_EXPIRED handler (LLL-TAO PR #354)
+        // Node notifies miner that session has expired (inactivity timeout)
+        // Wire format: [session_id(4B, LE)][reason(1B)]
+        m_logger->info("[Solo Session] Received SESSION_EXPIRED from node");
+
+        // Validate payload size
+        if (!packet.m_data || packet.m_length < 5) {
+            m_logger->error("[Solo Session] SESSION_EXPIRED packet too small: {} bytes (expected 5)",
+                          packet.m_length);
+            m_logger->error("[Solo Session]   Expected: [session_id(4B LE)][reason(1B)]");
+            return;
+        }
+
+        // Parse session_id (little-endian uint32)
+        uint32_t expired_sid = static_cast<uint32_t>((*packet.m_data)[0]) |
+                               (static_cast<uint32_t>((*packet.m_data)[1]) << 8) |
+                               (static_cast<uint32_t>((*packet.m_data)[2]) << 16) |
+                               (static_cast<uint32_t>((*packet.m_data)[3]) << 24);
+
+        // Parse reason code
+        uint8_t reason = (*packet.m_data)[4];
+
+        // Delegate to handler
+        handle_session_expired(expired_sid, reason, connection);
+    }
     else if (matches_opcode(Packet::PRIME_BLOCK_AVAILABLE))
     {
         m_push_handler->handle_push_notification(
@@ -2997,6 +3024,69 @@ bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
     if (m_session_expired_handler)
         m_session_expired_handler();
     return true;
+}
+
+void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection)
+{
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SESSION_EXPIRED HANDLER (5-step response flow per LLL-TAO PR #354)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // STEP 1: LOG & VERIFY session_id
+    m_logger->warn("[Solo] SESSION_EXPIRED received: session_id=0x{:08x} reason=0x{:02x}",
+                   expired_sid, reason);
+
+    // Verify session_id matches our current session
+    if (expired_sid != m_session_id) {
+        m_logger->warn("[Solo] SESSION_EXPIRED session_id mismatch: expired=0x{:08x} != local=0x{:08x}",
+                      expired_sid, m_session_id);
+        m_logger->warn("[Solo] Ignoring stale or replay SESSION_EXPIRED packet");
+        return;
+    }
+
+    // Log reason code
+    const char* reason_str = "UNKNOWN";
+    if (reason == static_cast<uint8_t>(LLP::StatelessMining::SessionExpiredReason::EXPIRED_INACTIVITY)) {
+        reason_str = "EXPIRED_INACTIVITY";
+    }
+    m_logger->warn("[Solo] Session 0x{:08x} expired: reason={} ({})",
+                  m_session_id, reason_str, reason);
+
+    // STEP 2: CLEAR LOCAL SESSION STATE (mirror reset_auth_state)
+    m_logger->info("[Solo] Clearing local session state");
+    m_session_id = 0;
+    m_authenticated = false;
+    m_auth_state = AuthState::NOT_AUTHENTICATED;
+    m_reward_bound = false;  // Reward binding dies with session
+    m_subscribed_to_notifications = false;
+
+    // Clear the authoritative session context
+    if (m_session_context) {
+        m_session_context->end_session();
+        m_logger->info("[Solo] Session context cleared");
+    }
+
+    // DO NOT close the connection — the node kept it open deliberately
+    // (The whole point of PR-C is to re-auth on the same TCP connection)
+
+    // STEP 3: STOP WORKERS (via callback)
+    // The m_session_expired_handler is registered by Worker_manager to pause workers
+    // (no valid template/session to work on)
+    if (m_session_expired_handler) {
+        m_logger->info("[Solo] Invoking session_expired_handler to stop workers");
+        m_session_expired_handler();
+    }
+
+    // STEP 4 & 5: EXPONENTIAL BACKOFF THEN RE-AUTH
+    // The Worker_manager's session_expired_handler callback will handle:
+    // - Exponential backoff using MAX_SESSION_AUTH_RETRIES / BASE_SESSION_RETRY_MS / MAX_SESSION_RETRY_MS
+    // - Incrementing retry counter
+    // - Scheduling io_context timer to delay re-auth
+    // - Calling login(m_login_handler) to re-send MINER_AUTH_INIT on same TCP connection
+    //
+    // The retry counter will be reset to 0 on next successful SESSION_START (handled separately)
+
+    m_logger->warn("[Solo] SESSION_EXPIRED handling complete — waiting for Worker_manager to re-authenticate");
 }
 
 void Solo::handle_miner_auth_challenge(const Packet& packet)
