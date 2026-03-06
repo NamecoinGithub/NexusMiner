@@ -5,6 +5,8 @@
 #include <atomic>
 #include <string>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
 #include "worker.hpp"
 #include "LLC/types/uint1024.h"
 #include <spdlog/spdlog.h>
@@ -46,6 +48,10 @@ private:
     Worker::Block_found_handler m_found_nonce_callback;
     std::atomic<bool> m_stop;
     std::thread m_run_thread;
+    std::mutex m_mtx;
+    std::condition_variable m_cv;  // For persistent thread wake-up
+    bool m_new_work = false;       // Flag to indicate new work is available
+    bool m_shutdown = false;       // Flag to indicate worker should shut down
 
     std::string m_log_leader;
     Block_data m_block;
