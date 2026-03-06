@@ -158,6 +158,18 @@ void NodeSessionContext::set_prevblock_suffix(const std::array<uint8_t, 4>& suff
     }
 }
 
+bool NodeSessionContext::is_keepalive_due() const
+{
+    return m_session_manager ? m_session_manager->is_keepalive_due() : false;
+}
+
+void NodeSessionContext::record_keepalive()
+{
+    if (m_session_manager) {
+        m_session_manager->record_keepalive();
+    }
+}
+
 bool NodeSessionContext::parse_session_start(
     const std::vector<uint8_t>& packet_data,
     uint32_t& out_session_id,

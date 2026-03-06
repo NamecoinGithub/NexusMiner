@@ -180,6 +180,17 @@ public:
     void set_prevblock_suffix(const std::array<uint8_t, 4>& suffix);
 
     /**
+     * @brief Check if keepalive is due
+     * @return True if keepalive should be sent
+     */
+    bool is_keepalive_due() const;
+
+    /**
+     * @brief Record that a keepalive was sent/received
+     */
+    void record_keepalive();
+
+    /**
      * @brief Get the underlying SessionManager (for advanced use cases)
      * @return Shared pointer to SessionManager
      */

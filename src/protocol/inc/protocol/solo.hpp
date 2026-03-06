@@ -34,7 +34,7 @@ class Solo : public Protocol {
 public:
 
     Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
-         std::shared_ptr<asio::io_context> io_context);
+         std::shared_ptr<NodeSessionContext> session_context);
 
     void reset() override;
     network::Shared_payload login(Login_handler handler) override;
@@ -343,8 +343,8 @@ private:
     std::unique_ptr<ChaCha20Wrapper> m_chacha20_wrapper;
     bool m_enable_chacha20;  // ChaCha20 encryption (ALWAYS ON - core security for localhost + SessionID)
     
-    // Session manager for adaptive cache management
-    std::shared_ptr<SessionManager> m_session_manager;
+    // Session context for unified session management (AUTHORITATIVE)
+    std::shared_ptr<NodeSessionContext> m_session_context;
 
     // KEEPALIVE_V2 (0xD100) send-side tracking:
     // The lo32 of hashPrevBlock that the miner put in its last KEEPALIVE_V2 frame.

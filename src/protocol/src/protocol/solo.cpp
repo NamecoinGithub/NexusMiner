@@ -100,7 +100,7 @@ static std::string get_channel_name(uint32_t channel) {
 }
 
 Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
-           std::shared_ptr<asio::io_context> io_context)
+           std::shared_ptr<NodeSessionContext> session_context)
 : m_channel{channel}
 , m_logger{spdlog::get("logger")}
 , m_current_height{0}
@@ -117,7 +117,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_disposable_falcon_enabled{true}  // ALWAYS ON - Disposable Falcon (core protocol, accepts both F-512/F-1024)
 , m_chacha20_wrapper{nullptr}  // Lazy initialization when needed
 , m_enable_chacha20{true}  // ALWAYS ON - Core implementation (localhost miners, SessionID protection, etc.)
-, m_session_manager{nullptr}
+, m_session_context{std::move(session_context)}
 , m_template_interface{nullptr}
 , m_connection{nullptr}
 , m_reward_address{""}  // Empty until configured
@@ -134,33 +134,33 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     }
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
-    
+
     // Clamp channel to valid LLL-TAO channels: 1 = prime, 2 = hash
     if (m_channel != 1 && m_channel != 2) {
-        m_logger->warn("Invalid channel {} specified. Valid channels: 1 (prime), 2 (hash). Defaulting to 2 (hash).", 
+        m_logger->warn("Invalid channel {} specified. Valid channels: 1 (prime), 2 (hash). Defaulting to 2 (hash).",
             static_cast<int>(m_channel));
         m_channel = 2;
     }
-    
+
     // Initialize unified push notification handler
     m_push_handler = std::make_unique<PushNotificationHandler>(m_logger, m_channel);
-    
+
     // Initialize Colin AI Diagnostic PING/PONG handler with the shared logger
     m_colin_ping_handler.set_logger(m_logger);
     m_colin_ping_handler.set_channel(m_channel);
-    
+
     // Note: ChaCha20 wrapper is lazily initialized when enable_chacha20_wrapping() is called
     // This avoids unnecessary resource allocation when ChaCha20 is not needed
-    
-    // Initialize session manager with default keepalive interval (24 hours)
-    m_session_manager = std::make_shared<SessionManager>(24, io_context);
-    m_logger->info("[Solo] Session manager initialized for adaptive cache management");
-    
+
+    // Session context is now passed from NodeSession (shared across both protocols)
+    // No longer create SessionManager here - use the shared NodeSessionContext
+    m_logger->info("[Solo] Using shared NodeSessionContext for session management");
+
     // Initialize client-side channel managers (mirrors NODE's PR #136)
     m_prime_manager = std::make_unique<mining::PrimeClientManager>();
     m_hash_manager = std::make_unique<mining::HashClientManager>();
     m_logger->info("[Solo] Client channel managers initialized (Prime + Hash)");
-    
+
     // Initialize the Mining Template Interface for unified READ/FEED operations
     // Session ID starts at 0 (unauthenticated) and will be updated after MINER_AUTH_RESULT
     // The session ID binds the template interface to the FALCON authenticated tunnel
@@ -215,8 +215,8 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     // so the node sees a clean slate when a template is discarded.
     m_template_interface->set_template_cleared_callback(
         [this]() {
-            if (m_session_manager) {
-                m_session_manager->set_prevblock_suffix({0, 0, 0, 0});
+            if (m_session_context) {
+                m_session_context->set_prevblock_suffix({0, 0, 0, 0});
                 m_logger->debug("[Solo] Template cleared — prevblock_suffix zeroed in session keepalive");
             }
         }
@@ -263,10 +263,10 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
 std::vector<uint8_t> Solo::load_tritium_genesis()
 {
     // Try to get genesis from session manager first
-    if (m_session_manager && !m_session_manager->get_tritium_genesis().empty()) 
+    if (m_session_context && !m_session_context->get_tritium_genesis().empty()) 
     {
         m_logger->info("[Solo Auth] Using genesis from session manager");
-        return m_session_manager->get_tritium_genesis();
+        return m_session_context->get_tritium_genesis();
     }
     
     // If session manager doesn't have it, reload from persistent storage (handles reconnection)
@@ -275,9 +275,9 @@ std::vector<uint8_t> Solo::load_tritium_genesis()
         auto genesis = m_persistent_tritium_genesis;
         
         // Restore to session manager for future use
-        if (m_session_manager)
+        if (m_session_context)
         {
-            m_session_manager->set_tritium_genesis(genesis);
+            m_session_context->set_tritium_genesis(genesis);
         }
         
         if (genesis.size() >= 4)
@@ -310,9 +310,9 @@ void Solo::reset()
     // m_chacha20_session_key IS cleared so the new login() derives a fresh key.
     m_chacha20_session_key.clear();
 
-    // Reset session manager
-    if (m_session_manager) {
-        m_session_manager->end_session();
+    // Reset session context
+    if (m_session_context) {
+        m_session_context->end_session();
     }
 
     // Reset template interface for new session
@@ -1141,14 +1141,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Update keepalive v2 suffix: first 4 bytes of hashPrevBlock (bytes[0..3] of GetBytes()).
             // This suffix is appended to every outgoing SESSION_KEEPALIVE so the node can detect
             // whether the miner is anchored to the current chain tip.
-            if (m_session_manager) {
+            if (m_session_context) {
                 auto prev_bytes = tmpl->block.hashPrevBlock.GetBytes();
                 std::array<uint8_t, 4> suffix{};
                 if (prev_bytes.size() >= 4) {
                     // BUG FIX: Use bytes 0-3 (same as node's hash_tip_lo32) for fork canary alignment
                     suffix = { prev_bytes[0], prev_bytes[1], prev_bytes[2], prev_bytes[3] };
                 }
-                m_session_manager->set_prevblock_suffix(suffix);
+                m_session_context->set_prevblock_suffix(suffix);
                 m_logger->debug("[Solo Keepalive v2] prevblock_suffix set to {:02x}{:02x}{:02x}{:02x}",
                                suffix[0], suffix[1], suffix[2], suffix[3]);
                 // Track lo32 locally so KEEPALIVE_V2_ACK handler can verify without
@@ -1508,11 +1508,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     {
         m_logger->info("[Solo GET_ROUND] NEW_ROUND response received");
 
-        if (m_session_manager) {
-            if (!m_session_manager->is_active()) {
+        if (m_session_context) {
+            if (!m_session_context->is_active()) {
                 m_logger->error("[Solo GET_ROUND] NEW_ROUND received but no active session");
             } else {
-                auto session_id = m_session_manager->get_session_id();
+                auto session_id = m_session_context->get_session_id();
                 m_logger->info("[Solo GET_ROUND] NEW_ROUND received, keeping session 0x{:08X}", session_id);
             }
         }
@@ -1930,7 +1930,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 }
 
                 // Visual box logging for success
-                std::string genesis_status = (m_session_manager && !m_session_manager->get_tritium_genesis().empty())
+                std::string genesis_status = (m_session_context && !m_session_context->get_tritium_genesis().empty())
                                              ? "CONFIGURED" : "NOT CONFIGURED";
                 std::string chacha20_status = m_enable_chacha20 ? "ENABLED" : "DISABLED";
 
@@ -1961,12 +1961,12 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->debug("[Solo Auth]   - Session ID bytes (LE): {:02x} {:02x} {:02x} {:02x}",
                     (*packet.m_data)[1], (*packet.m_data)[2], (*packet.m_data)[3], (*packet.m_data)[4]);
 
-                // Start session in session manager
-                if (m_session_manager) {
-                    m_session_manager->set_state(SessionManager::SessionState::AUTHENTICATED);
-                    m_session_manager->start_session(m_session_id);
-                    m_session_manager->start_keepalive_timer();
-                    m_logger->info("[Solo Session] Session started in session manager");
+                // Start session in session context
+                if (m_session_context) {
+                    m_session_context->set_state(SessionManager::SessionState::AUTHENTICATED);
+                    m_session_context->start_session(m_session_id);
+                    m_session_context->start_keepalive_timer();
+                    m_logger->info("[Solo Session] Session started in session context");
                     m_logger->info("[Solo Session] Keepalive timer started (early ping + regular cadence)");
                 }
 
@@ -2368,10 +2368,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Using KEEPALIVE_SAFETY_DIVISOR=2 ensures 2 keepalives per node timeout window.
         // Division by 2 is safer: less timer load, larger per-ping safety margin.
         // Example: 24h node timeout → keepalive every 12h (2 pings/window)
-        if (parsed->timeout_seconds > 0 && m_session_manager) {
+        if (parsed->timeout_seconds > 0 && m_session_context) {
             uint16_t keepalive_hours = calculate_keepalive_hours(
                 parsed->timeout_seconds, ProtocolConstants::KEEPALIVE_SAFETY_DIVISOR);
-            m_session_manager->set_keepalive_interval(keepalive_hours);
+            m_session_context->set_keepalive_interval(keepalive_hours);
             m_logger->info("[Solo Session] Keepalive interval adjusted to {} hours (node timeout={}s, {} pings/window)",
                           keepalive_hours, parsed->timeout_seconds, ProtocolConstants::KEEPALIVE_SAFETY_DIVISOR);
             if (m_session_start_handler) {
@@ -2423,8 +2423,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                         m_last_keepalive_prevhash_lo32, unified.hash_tip_lo32, unified.fork_score);
                 }
 
-                if (m_session_manager) {
-                    m_session_manager->record_keepalive();
+                if (m_session_context) {
+                    m_session_context->record_keepalive();
                 }
             }
         } else if (packet.m_data && packet.m_length == 4) {
@@ -2432,8 +2432,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             uint32_t remaining_timeout = serialization::read_uint32_le(*packet.m_data);
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
 
-            if (m_session_manager) {
-                m_session_manager->record_keepalive();
+            if (m_session_context) {
+                m_session_context->record_keepalive();
             }
         } else if (packet.m_length != 0) {
             // Unexpected payload length — ignore gracefully
@@ -2868,10 +2868,10 @@ void Solo::set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_
 void Solo::set_protocol_lane(ProtocolLane lane)
 {
     m_protocol_lane = lane;
-    
-    // Also set protocol lane in SessionManager for keepalive packet generation
-    if (m_session_manager) {
-        m_session_manager->set_protocol_lane(lane);
+
+    // Also set protocol lane in NodeSessionContext for keepalive packet generation
+    if (m_session_context) {
+        m_session_context->set_protocol_lane(lane);
     }
 }
 
@@ -2879,20 +2879,20 @@ network::Shared_payload Solo::send_session_keepalive()
 {
     m_logger->debug("[Solo Session] Sending SESSION_KEEPALIVE for session 0x{:08x}", m_session_id);
 
-    // Delegate to SessionManager which builds the correct 8-byte v2 payload:
+    // Delegate to NodeSessionContext which builds the correct 8-byte v2 payload:
     //   [0..3] session_id             (u32 little-endian)
     //   [4..7] miner_prevblock_suffix (last 4 bytes of hashPrevBlock, raw bytes;
     //                                  zeros when no valid template is available)
     // This causes the node to reply with the 32-byte unified KeepAliveV2AckFrame
     // (unified_height / prime_height / hash_height / stake_height / hash_tip_lo32 / fork_score).
-    return m_session_manager->build_keepalive_packet();
+    return m_session_context->build_keepalive_packet();
 }
 
 network::Shared_payload Solo::build_session_status_packet(
     bool degraded, bool workers_running, bool secondary_up) const
 {
     bool has_tmpl = m_template_interface && m_template_interface->has_valid_template();
-    return m_session_manager->build_session_status_packet(
+    return m_session_context->build_session_status_packet(
         degraded, has_tmpl, workers_running, secondary_up);
 }
 
@@ -2914,9 +2914,9 @@ void Solo::set_tritium_genesis(std::vector<uint8_t> const& genesis)
     
     // Store persistently to survive reconnections
     m_persistent_tritium_genesis = genesis;
-    
-    if (m_session_manager) {
-        m_session_manager->set_tritium_genesis(genesis);
+
+    if (m_session_context) {
+        m_session_context->set_tritium_genesis(genesis);
         m_logger->info("[Solo] Tritium genesis hash configured for reward binding");
     }
 }
@@ -2927,41 +2927,41 @@ bool Solo::has_tritium_genesis() const
     if (!m_persistent_tritium_genesis.empty()) {
         return true;
     }
-    
-    if (m_session_manager) {
-        return !m_session_manager->get_tritium_genesis().empty();
+
+    if (m_session_context) {
+        return !m_session_context->get_tritium_genesis().empty();
     }
     return false;
 }
 
 void Solo::set_keepalive_interval(std::uint16_t hours)
 {
-    if (m_session_manager) {
-        m_session_manager->set_keepalive_interval(hours);
+    if (m_session_context) {
+        m_session_context->set_keepalive_interval(hours);
         m_logger->info("[Solo] Keepalive interval set to {} hours", hours);
     }
 }
 
 std::uint32_t Solo::get_session_id() const
 {
-    if (m_session_manager) {
-        return m_session_manager->get_session_id();
+    if (m_session_context) {
+        return m_session_context->get_session_id();
     }
     return m_session_id;  // Fallback to legacy session ID
 }
 
 bool Solo::is_session_active() const
 {
-    if (m_session_manager) {
-        return m_session_manager->is_active();
+    if (m_session_context) {
+        return m_session_context->is_active();
     }
     return m_authenticated;  // Fallback to legacy auth status
 }
 
 bool Solo::is_keepalive_due() const
 {
-    if (m_session_manager) {
-        return m_session_manager->is_keepalive_due();
+    if (m_session_context) {
+        return m_session_context->is_keepalive_due();
     }
     return false;
 }
@@ -2969,8 +2969,8 @@ bool Solo::is_keepalive_due() const
 void Solo::set_connection(std::shared_ptr<network::Connection> connection)
 {
     m_connection = std::move(connection);
-    if (m_session_manager) {
-        m_session_manager->set_connection(m_connection);
+    if (m_session_context) {
+        m_session_context->set_connection(m_connection);
     }
 }
 
@@ -2983,14 +2983,14 @@ void Solo::reset_auth_state()
 
 bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
 {
-    if (!m_session_manager || ack_session_id == 0 ||
-        ack_session_id == m_session_manager->get_session_id())
+    if (!m_session_context || ack_session_id == 0 ||
+        ack_session_id == m_session_context->get_session_id())
         return false;
 
     m_logger->warn("[KEEPALIVE_V2] Session ID mismatch: ack.session_id=0x{:08x} != local=0x{:08x}"
                    " — possible stale session after node restart",
-        ack_session_id, m_session_manager->get_session_id());
-    m_session_manager->set_state(SessionManager::SessionState::EXPIRED);
+        ack_session_id, m_session_context->get_session_id());
+    m_session_context->set_state(SessionManager::SessionState::EXPIRED);
     if (m_session_expired_handler)
         m_session_expired_handler();
     return true;
@@ -3295,14 +3295,14 @@ bool Solo::finalize_template_with_channel_height(uint32_t node_channel_height, c
             // Gap 3: Update session keepalive prevblock_suffix on legacy GET_ROUND lane
             // (mirrors the stateless lane at BLOCK_DATA parse time) so the fork-canary
             // suffix is always current regardless of which protocol lane delivered the template.
-            if (m_session_manager) {
+            if (m_session_context) {
                 auto suffix_bytes = m_last_known_hash_prev_block.GetBytes();
                 std::array<uint8_t, 4> suffix{};
                 if (suffix_bytes.size() >= 4) {
                     // BUG FIX: Use bytes 0-3 (same as node's hash_tip_lo32) for fork canary alignment
                     suffix = { suffix_bytes[0], suffix_bytes[1], suffix_bytes[2], suffix_bytes[3] };
                 }
-                m_session_manager->set_prevblock_suffix(suffix);
+                m_session_context->set_prevblock_suffix(suffix);
                 m_last_keepalive_prevhash_lo32 =
                     (uint32_t(suffix[0]) << 24) | (uint32_t(suffix[1]) << 16)
                   | (uint32_t(suffix[2]) <<  8) | uint32_t(suffix[3]);
