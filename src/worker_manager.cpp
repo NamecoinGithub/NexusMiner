@@ -22,6 +22,7 @@
 #include "stats/stats_collector.hpp"
 #include "miner_keys.hpp"
 #include "protocol/solo.hpp"
+#include "protocol/protocol_constants.hpp"
 #include <variant>
 #include <iomanip>
 #include <sstream>
@@ -30,20 +31,12 @@
 namespace nexusminer
 {
 
-// Template age timeout constants (seconds) - unified for both Prime and Hash channels.
-// In the push-driven protocol the node pushes a fresh template on every unified tip advance
-// (including hash blocks every ~18s).  Prime blocks can take 2-5+ minutes, so thresholds
-// must be safely above that window to avoid false emergencies.
-// WARNING at 480s gives operators a 120s (2-minute) window before the 600s emergency fires.
+// Recovery window: if no template arrives within this many seconds after a
+// GET_BLOCK recovery is initiated, the health monitor escalates to hard recovery.
+// Channel-aware: Prime blocks genuinely take 2-5+ min, so a 60 s window causes
+// spurious escalations during normal long Prime blocks. Hash blocks arrive every
+// ~18 s so 60 s (≈ 3 blocks) is appropriate for Hash.
 namespace {
-    constexpr uint64_t TEMPLATE_AGE_WARNING_SECONDS = 480;          // warn 2 min before emergency
-    constexpr uint64_t TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 600; // matches MiningTemplateInterface::MAX_TEMPLATE_AGE
-
-    // Recovery window: if no template arrives within this many seconds after a
-    // GET_BLOCK recovery is initiated, the health monitor escalates to hard recovery.
-    // Channel-aware: Prime blocks genuinely take 2-5+ min, so a 60 s window causes
-    // spurious escalations during normal long Prime blocks. Hash blocks arrive every
-    // ~18 s so 60 s (≈ 3 blocks) is appropriate for Hash.
     constexpr int64_t RECOVERY_WINDOW_SECONDS_HASH  =  60;   // Hash blocks every ~18s; 60s ≈ 3 blocks
     constexpr int64_t RECOVERY_WINDOW_SECONDS_PRIME = 300;   // Prime blocks take 2-5+ min; 300s gives margin
 
@@ -815,7 +808,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
         }
     }
 
-    if (m_connection_retry_count > 10)
+    if (m_connection_retry_count > protocol::ProtocolConstants::CONNECTION_RETRY_ERROR_THRESHOLD)
         m_logger->error("Connection retry #{} - {} consecutive failures",
                         m_connection_retry_count, m_connection_retry_count);
     else
@@ -1516,28 +1509,31 @@ void Worker_manager::check_template_health()
         // Do NOT stop workers based on keepalive fork_score alone.
     }
 
-    // Age-based warning: 150s gives a 50s window before the 200s emergency fires.
+    // Age-based warning: 480s gives operators a 120s (2-minute) window before the 600s emergency fires.
     // Both channels use the same threshold — in the push-driven protocol the node pushes
-    // on every unified tip advance (~18s apart via hash blocks), so 150s without a push
+    // on every unified tip advance (~18s apart via hash blocks), so 480s without a push
     // is unusual for either channel.
-    if (template_age > TEMPLATE_AGE_WARNING_SECONDS && template_age <= TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
+    if (template_age > protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS &&
+        template_age <= protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
         m_logger->warn("[Worker_manager] ⚠️  {} template age {}s (warning threshold {}s, emergency {}s)",
-            channel_name, template_age, TEMPLATE_AGE_WARNING_SECONDS, TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
+            channel_name, template_age,
+            protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS,
+            protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
         m_logger->warn("[Worker_manager]    No push received for {}s — connection may be degrading", template_age);
     }
 
-    // Age-based emergency (200s) — dead-connection detector for both channels.
+    // Age-based emergency (600s) — dead-connection detector for both channels.
     //
     // In the push-driven era the node pushes a fresh template within ~2s of every unified
     // tip advance.  Even during long Prime blocks, hash blocks keep advancing the unified
-    // chain every ~18s, so a push should arrive well within 200s.
+    // chain every ~18s, so a push should arrive well within 600s.
     //
-    // If template_age > 200s the connection is almost certainly dead (missed push).
+    // If template_age > 600s the connection is almost certainly dead (missed push).
     // We then check HeightTracker to distinguish the two sub-cases for logging:
     //   • chain advanced  → push missed while chain moved  (clear emergency)
     //   • chain unchanged → push missed, chain stuck or truly no advance yet
     //     Either way the connection needs recovery — do NOT silently loop forever.
-    if (template_age > TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
+    if (template_age > protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
 
         // Bug D fix: During an active recovery epoch, the miner is already waiting for a
         // fresh GET_BLOCK response.  Discarding the template now makes recovery self-defeating:
@@ -1596,19 +1592,19 @@ void Worker_manager::check_template_health()
         } else {
             // Chain has not advanced in HeightTracker, but 200s without a push means the
             // connection is likely dead.  For Prime this could also be a genuinely long block,
-            // but 200s without any hash-block push is still a dead-connection signal.
+            // but 600s without any hash-block push is still a dead-connection signal.
             m_logger->error("[Worker_manager] ❌ EMERGENCY ({} channel): template {}s old — no push received",
                             channel_name, template_age);
             m_logger->error("[Worker_manager]    channel_height {} / channel_target {} (chain not yet advanced in tracker)",
                             ht_snap.channel_height, ht_snap.channel_target);
             if (channel == mining::CHANNEL_PRIME) {
-                m_logger->error("[Worker_manager]    Prime blocks are long, but 200s without ANY push (hash or prime) indicates a dead connection");
+                m_logger->error("[Worker_manager]    Prime blocks are long, but 600s without ANY push (hash or prime) indicates a dead connection");
             }
             m_logger->error("[Worker_manager]    Forcing hard recovery (discard + stop + retry)");
         }
 
         template_interface->discard_template("Emergency: age " + std::to_string(template_age) +
-                                             "s exceeded " + std::to_string(TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) + "s limit");
+                                             "s exceeded " + std::to_string(protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) + "s limit");
         stop_all_workers();
         // Bug 3 fix: Recreate workers immediately after stopping them so they are alive
         // and ready to receive the incoming template from retry_template_request().
