@@ -70,6 +70,30 @@ namespace ProtocolConstants {
      */
     constexpr uint32_t DEGRADED_SECONDARY_RETRY_DELAY_SECONDS = 5;
 
+    /**
+     * Connection retry count threshold for error-level logging
+     * Warnings are logged for retries below this threshold, errors at or above it
+     */
+    constexpr uint32_t CONNECTION_RETRY_ERROR_THRESHOLD = 10;
+
+    //==========================================================================
+    // Template Age Constants
+    //==========================================================================
+
+    /**
+     * Template age warning threshold (seconds)
+     * Warn operators 2 minutes before emergency timeout
+     * In push-driven protocol, templates should be refreshed on every unified tip advance
+     */
+    constexpr uint64_t TEMPLATE_AGE_WARNING_SECONDS = 480;
+
+    /**
+     * Template age emergency timeout (seconds)
+     * Matches MiningTemplateInterface::MAX_TEMPLATE_AGE
+     * Prime blocks can take 2-5+ minutes, so threshold must be safely above that window
+     */
+    constexpr uint64_t TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 600;
+
 } // namespace ProtocolConstants
 
 } // namespace protocol
