@@ -110,7 +110,7 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 		m_segmented_sieve->clear_chains();
 
 		// Signal new work is available
-		m_stop = false;
+		m_stop = true;
 		m_new_work = true;
 	}
 
@@ -179,7 +179,7 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 		m_segmented_sieve->clear_chains();
 
 		// Signal new work is available
-		m_stop = false;
+		m_stop = true;
 		m_new_work = true;
 	}
 

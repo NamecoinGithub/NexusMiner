@@ -175,7 +175,7 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 			m_segmented_sieve->clear_chains();
 
 			// Signal new work is available
-			m_stop = false;
+			m_stop = true;
 			m_new_work = true;
 		}
 
@@ -261,7 +261,7 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 			m_segmented_sieve->clear_chains();
 
 			// Signal new work is available
-			m_stop = false;
+			m_stop = true;
 			m_new_work = true;
 		}
 
@@ -415,7 +415,9 @@ void Worker_prime::run()
 		auto iteration_start = std::chrono::steady_clock::now();
 
 		m_segmented_sieve->reset_sieve();
+		if (m_stop) break;  // Check if new work arrived during reset_sieve()
 		m_segmented_sieve->clear_chains();
+		if (m_stop) break;  // Check if new work arrived during clear_chains()
 
 		// current segment = [low, high]
 		high = low + segment_size - 1;
@@ -428,6 +430,7 @@ void Worker_prime::run()
 		auto sieve_stop = std::chrono::steady_clock::now();
 		auto sieve_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(sieve_stop - sieve_start);
 		sieving_ms += sieve_elapsed.count();
+		if (m_stop) break;  // Check after expensive sieve_segment() operation
 		auto find_chains_start = std::chrono::steady_clock::now();
 		m_segmented_sieve->find_chains(low, false);
 		auto find_chains_stop = std::chrono::steady_clock::now();
