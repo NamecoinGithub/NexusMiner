@@ -166,14 +166,10 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 			m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
 			m_nonce = m_starting_nonce;
 
-			//set the sieve start range
-			uint1k startprime = m_base_hash + m_nonce;
-			m_segmented_sieve->set_sieve_start(startprime);
-			//update the starting nonce to reflect the actual sieve start used
-			m_nonce = static_cast<uint64_t>(m_segmented_sieve->get_sieve_start() - m_base_hash);
-			//m_logger->debug("starting nonce: {}", m_nonce);
-			//clear out any old chains from the last block
-			m_segmented_sieve->clear_chains();
+			// NOTE: Sieve initialization (set_sieve_start, clear_chains,
+			// calculate_starting_multiples) is intentionally NOT done here.
+			// It runs on the worker thread in run() to eliminate the race condition
+			// where set_block() could mutate the sieve while run() is using it.
 
 			// Signal new work is available
 			m_stop = true;
@@ -253,14 +249,10 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 			m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
 			m_nonce = m_starting_nonce;
 
-			//set the sieve start range
-			uint1k startprime = m_base_hash + m_nonce;
-			m_segmented_sieve->set_sieve_start(startprime);
-			//update the starting nonce to reflect the actual sieve start used
-			m_nonce = static_cast<uint64_t>(m_segmented_sieve->get_sieve_start() - m_base_hash);
-			//m_logger->debug("starting nonce: {}", m_nonce);
-			//clear out any old chains from the last block
-			m_segmented_sieve->clear_chains();
+			// NOTE: Sieve initialization (set_sieve_start, clear_chains,
+			// calculate_starting_multiples) is intentionally NOT done here.
+			// It runs on the worker thread in run() to eliminate the race condition
+			// where set_block() could mutate the sieve while run() is using it.
 
 			// Signal new work is available
 			m_stop = true;
@@ -385,8 +377,19 @@ void Worker_prime::run()
 			local_block = m_block;
 			local_base_hash = m_base_hash;
 			local_nonce = m_nonce;
-			// Calculate starting multiples inside mutex to prevent concurrent modification
-			// by set_block() which calls set_sieve_start() and clear_chains()
+		}
+		// Initialize the sieve on the worker thread only — set_block() no longer mutates
+		// m_segmented_sieve, so all sieve operations are exclusively on this thread,
+		// eliminating the race condition that caused the segfault at template transitions.
+		{
+			uint1k startprime = local_base_hash + local_nonce;
+			m_segmented_sieve->set_sieve_start(startprime);
+			// Update local_nonce to reflect the actual sieve start position chosen by the sieve.
+			// We do NOT write back to m_nonce here: set_block() always resets m_nonce to
+			// m_starting_nonce before run() reads it, so the adjusted value is only needed
+			// locally within this mining cycle.
+			local_nonce = static_cast<uint64_t>(m_segmented_sieve->get_sieve_start() - local_base_hash);
+			m_segmented_sieve->clear_chains();
 			m_segmented_sieve->calculate_starting_multiples();
 		}
 		uint32_t segment_size = m_segmented_sieve->get_segment_size();
