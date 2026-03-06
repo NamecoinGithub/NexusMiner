@@ -141,3 +141,9 @@ flowchart TD
     HASH2 --> BUILD
     FALLBACK2 --> BUILD
 ```
+
+---
+
+## See Also
+
+- [CPU-INFRASTRUCTURE-DIAGRAMS.md](CPU-INFRASTRUCTURE-DIAGRAMS.md) — Diagrams 13–16: CPU worker thread model, sieve ownership, template handoff timeline
