@@ -4,6 +4,7 @@
 #include "config/config.hpp"
 #include "packet.hpp"
 #include "miner_opcodes.hpp"
+#include "dual_connection_manager.hpp"
 #include "asio/post.hpp"
 #include <algorithm>
 
@@ -14,12 +15,14 @@ NodeSession::NodeSession(
     Config& config,
     network::Socket::Sptr socket,
     std::shared_ptr<stats::Collector> stats_collector,
-    const std::string& node_label)
+    const std::string& node_label,
+    DualConnectionManager* dcm)
     : m_io_context(std::move(io_context))
     , m_config(config)
     , m_socket(std::move(socket))
     , m_stats_collector(std::move(stats_collector))
     , m_node_label(node_label)
+    , m_dcm(dcm)
 {
     m_logger = spdlog::get("miner");
     if (!m_logger) {
@@ -137,6 +140,13 @@ void NodeSession::connect_primary(const network::Endpoint& node_endpoint, Connec
                                  self->m_node_label, static_cast<int>(result));
             self->m_primary_connected = false;
 
+            // Update DualConnectionManager: primary (stateless) lane has failed
+            if (self->m_dcm) {
+                self->m_dcm->on_lane_failed(ProtocolLane::STATELESS);
+                self->m_logger->warn("[NodeSession:{}] Primary lane (STATELESS) failed → DualConnectionManager updated",
+                                    self->m_node_label);
+            }
+
             if (callback) {
                 callback(false);
             }
@@ -195,6 +205,16 @@ void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
                                                              uint32_t channel, uint64_t nonce) {
         if (m_block_accepted_handler) {
             m_block_accepted_handler(height, hash_prev, channel, nonce);
+        }
+    });
+
+    // Set up authentication handler for secondary lane
+    m_secondary_protocol->set_session_authenticated_handler([this](uint32_t sid) {
+        // Update DualConnectionManager: secondary (legacy) lane is now authenticated and alive
+        if (m_dcm && sid != 0) {
+            m_dcm->set_legacy_alive(true);
+            m_logger->info("[NodeSession:{}] Secondary lane (LEGACY) authenticated → DualConnectionManager updated",
+                          m_node_label);
         }
     });
 
@@ -258,6 +278,13 @@ void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
             self->m_logger->warn("[NodeSession:{}] Secondary connection failed: {}",
                                 self->m_node_label, static_cast<int>(result));
             self->m_secondary_connected = false;
+
+            // Update DualConnectionManager: secondary (legacy) lane has failed
+            if (self->m_dcm) {
+                self->m_dcm->on_lane_failed(ProtocolLane::LEGACY);
+                self->m_logger->warn("[NodeSession:{}] Secondary lane (LEGACY) failed → DualConnectionManager updated",
+                                    self->m_node_label);
+            }
 
         } else {
             // Data received - process it
@@ -490,6 +517,14 @@ void NodeSession::stop()
     m_primary_connected = false;
     m_secondary_connected = false;
 
+    // Update DualConnectionManager: both lanes are now down
+    if (m_dcm) {
+        m_dcm->set_stateless_alive(false);
+        m_dcm->set_legacy_alive(false);
+        m_logger->info("[NodeSession:{}] Session stopped → DualConnectionManager lanes marked down",
+                      m_node_label);
+    }
+
     // End session in the context (clears session ID and state)
     if (m_session_context) {
         m_session_context->end_session();
@@ -510,6 +545,14 @@ void NodeSession::reset()
     }
     if (m_secondary_protocol) {
         m_secondary_protocol->reset();
+    }
+
+    // Update DualConnectionManager: both lanes are being reset (mark down)
+    if (m_dcm) {
+        m_dcm->set_stateless_alive(false);
+        m_dcm->set_legacy_alive(false);
+        m_logger->info("[NodeSession:{}] Session reset → DualConnectionManager lanes marked down",
+                      m_node_label);
     }
 
     // End session in the context (clears session ID and state)
@@ -586,6 +629,13 @@ void NodeSession::set_session_authenticated_handler(Session_authenticated_handle
             // Note: Session state is managed by SessionManager inside Solo protocol
             // The session_id can be queried via m_session_context->get_session_id()
             // No need to maintain a duplicate here
+
+            // Update DualConnectionManager: primary (stateless) lane is now authenticated and alive
+            if (m_dcm && sid != 0) {
+                m_dcm->set_stateless_alive(true);
+                m_logger->info("[NodeSession:{}] Primary lane (STATELESS) authenticated → DualConnectionManager updated",
+                              m_node_label);
+            }
 
             if (m_session_authenticated_handler) {
                 m_session_authenticated_handler(sid);
