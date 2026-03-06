@@ -25,6 +25,7 @@
 #include "miner_keys.hpp"
 #include "protocol/solo.hpp"
 #include "protocol/protocol_constants.hpp"
+#include <asio/steady_timer.hpp>
 #include <variant>
 #include <iomanip>
 #include <sstream>
@@ -477,21 +478,86 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         m_logger->info("[Worker_manager] Recovery handler registered");
 
         /* ========== REGISTER SESSION EXPIRED HANDLER ========== */
-        /* Called by Solo keepalive handlers when a session_id mismatch is detected, */
-        /* indicating a stale session after node restart. Triggers recovery so the   */
-        /* miner reconnects and re-authenticates rather than mining on a dead session. */
+        /* Called by Solo when SESSION_EXPIRED opcode is received from the node.     */
+        /* The TCP connection is still alive — we must re-authenticate in-band       */
+        /* using login() on the existing connection, NOT reset() which tears down    */
+        /* the TCP connection. Uses existing session auth backoff infrastructure.    */
         m_primary_node_session->set_session_expired_handler(
             [this]() {
-                m_logger->warn("[Worker_manager] Session EXPIRED — initiating reconnect for re-authentication");
-                mark_recovery_initiated("keepalive_session_mismatch");
-                // Schedule a reconnect via io_context to avoid calling retry_connect()
+                m_logger->warn("[Worker_manager] Session EXPIRED — initiating in-band re-authentication");
+                mark_recovery_initiated("session_expired");
+
+                // Use the current session auth fail count to calculate backoff delay.
+                // NOTE: We do NOT increment m_session_auth_fail_count here.
+                // The session_authenticated_handler will increment it if the subsequent
+                // authentication fails (session_id == 0), avoiding double-counting.
+
+                // If we've already exceeded max retries, halt re-authentication
+                if (m_session_auth_fail_count >= protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES)
+                {
+                    m_logger->error("[Session] Max authentication retries ({}) already reached after SESSION_EXPIRED",
+                        protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
+                    m_logger->error("[Session] Node appears to be persistently expiring or rejecting sessions");
+                    m_logger->error("[Session] Check node logs and session keepalive configuration");
+                    return;
+                }
+
+                // Calculate backoff delay based on current failure count
+                // (will be 0 delay on first SESSION_EXPIRED if no prior auth failures)
+                auto delay_ms = m_session_auth_fail_count > 0
+                    ? m_session_auth_backoff.calculate_delay_ms(m_session_auth_fail_count)
+                    : 0;
+                auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
+
+                if (delay_seconds > 0) {
+                    m_logger->warn("[Session] Scheduling in-band re-authentication in {}s (based on {} prior failures, exponential backoff)",
+                        delay_seconds, m_session_auth_fail_count);
+                } else {
+                    m_logger->info("[Session] Scheduling immediate in-band re-authentication (no prior auth failures)");
+                }
+
+                // Schedule re-auth via io_context to avoid calling login()
                 // from within a packet-receive callback (stack depth / reentrancy safety).
                 if (m_io_context && m_primary_node_session) {
-                    // NodeSession will handle reconnection internally
-                    ::asio::post(*m_io_context, [self = shared_from_this()]() {
-                        self->m_logger->warn("[Worker_manager] Resetting node session for re-authentication");
-                        if (self->m_primary_node_session) {
-                            self->m_primary_node_session->reset();
+                    auto timer = std::make_shared<asio::steady_timer>(*m_io_context, std::chrono::seconds(delay_seconds));
+                    timer->async_wait([self = shared_from_this(), timer](const asio::error_code& ec) {
+                        if (ec) {
+                            if (ec != asio::error::operation_aborted) {
+                                self->m_logger->error("[Session] Re-auth timer error: {}", ec.message());
+                            }
+                            return;
+                        }
+
+                        if (!self->m_primary_node_session) {
+                            self->m_logger->warn("[Session] Node session destroyed before re-auth could execute");
+                            return;
+                        }
+
+                        self->m_logger->info("[Session] Executing in-band re-authentication (calling login() on existing connection)");
+
+                        // Call login() on the existing connection via the primary protocol
+                        auto primary_protocol = self->m_primary_node_session->get_primary_protocol();
+                        if (!primary_protocol) {
+                            self->m_logger->error("[Session] Primary protocol not available for re-authentication");
+                            return;
+                        }
+
+                        // The login callback result is not critical here - the session_authenticated_handler
+                        // will be invoked after MINER_AUTH_RESULT is received and will handle
+                        // success/failure and further retry logic if needed
+                        auto auth_payload = primary_protocol->login([self](bool login_result) {
+                            if (!login_result) {
+                                self->m_logger->error("[Session] In-band re-authentication login() call failed");
+                                // The session_authenticated_handler will handle retry logic
+                            } else {
+                                self->m_logger->info("[Session] In-band re-authentication login() call succeeded, awaiting MINER_AUTH_RESULT");
+                            }
+                        });
+
+                        if (auth_payload && !auth_payload->empty()) {
+                            self->m_primary_node_session->transmit(auth_payload);
+                        } else {
+                            self->m_logger->error("[Session] Failed to generate re-authentication payload");
                         }
                     });
                 }
