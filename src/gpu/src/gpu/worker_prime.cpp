@@ -231,9 +231,10 @@ void Worker_prime::run()
 			local_block = m_block;
 			local_base_hash = m_base_hash;
 			local_nonce = m_nonce;
+			// Calculate starting multiples inside mutex to prevent race with set_block()
+			// which calls set_sieve_start() and clear_chains()
+			m_segmented_sieve->calculate_starting_multiples();
 		}
-
-		m_segmented_sieve->calculate_starting_multiples();
 		//copy starting multiples to the sieve
 		m_segmented_sieve->gpu_sieve_init();
 		m_segmented_sieve->gpu_fermat_test_set_base_int(m_segmented_sieve->get_sieve_start());
