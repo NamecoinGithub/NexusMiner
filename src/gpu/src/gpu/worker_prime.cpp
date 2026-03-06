@@ -271,6 +271,10 @@ void Worker_prime::run()
 
 		m_range_searched += sieve_batch_range;
 		range_searched_this_cycle += sieve_batch_range;
+		// Guard against set_block() arriving between the m_new_work check and the first GPU kernel.
+		// Without this, set_sieve_start() + clear_chains() in set_block() could mutate the sieve
+		// concurrently while the GPU kernels below are starting to read it.
+		if (m_stop) break;
 
 		auto sieve_start = std::chrono::steady_clock::now();
 		m_segmented_sieve->gpu_sieve_small_primes(low);
