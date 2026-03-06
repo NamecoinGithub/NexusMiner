@@ -187,20 +187,30 @@ void Worker_hash::run()
         // Start mining with the new work
         m_logger->info(m_log_leader + "Starting GPU mining");
 
+        // Create a local copy of m_block and m_target to avoid race conditions
+        // The shared m_block is updated in set_block() and we snapshot it here
+        Block_data local_block;
+        uint1024_t local_target;
+        {
+            std::lock_guard<std::mutex> lock(m_mtx);
+            local_block = m_block;
+            local_target = m_target;
+        }
+
         while (!m_stop)
         {
             std::uint64_t hashes = 0;
 
-            // Do hashing on a CUDA device
+            // Do hashing on a CUDA device using local copy
             bool found = cuda_sk1024_hash(
                 m_config.m_internal_id,
-                reinterpret_cast<uint32_t*>(&m_block.nVersion),
-                m_target,
-                m_block.nNonce,
+                reinterpret_cast<uint32_t*>(&local_block.nVersion),
+                local_target,
+                local_block.nNonce,
                 &hashes,
                 m_throughput,
                 m_threads_per_block,
-                m_block.nHeight);
+                local_block.nHeight);
 
             m_hashes += hashes;
 
@@ -209,7 +219,7 @@ void Worker_hash::run()
             {
                 ++m_met_difficulty_count;
                 // Calculate the number of leading zero-bits
-                uint1024_t hash_proof = LLC::SK1024(BEGIN(m_block.nVersion), END(m_block.nNonce));
+                uint1024_t hash_proof = LLC::SK1024(BEGIN(local_block.nVersion), END(local_block.nNonce));
                 std::uint32_t leading_zeros = 1024 - hash_proof.BitCount();
                 if (leading_zeros > m_best_leading_zeros)
                 {
@@ -221,10 +231,11 @@ void Worker_hash::run()
                 if (m_found_nonce_callback)
                 {
                     m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
-                    ::asio::post(*m_io_context, [self = shared_from_this()]()
+                    // Capture local_block by value in the lambda to avoid race condition
+                    ::asio::post(*m_io_context, [self = shared_from_this(), block = local_block]()
                     {
                         self->m_found_nonce_callback(self->m_config.m_internal_id,
-                            std::make_unique<Block_data>(self->m_block));
+                            std::make_unique<Block_data>(block));
                     });
                 }
                 else
