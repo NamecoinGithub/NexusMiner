@@ -373,7 +373,15 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 	uint64_t payload_validation_failures = 0;
 	uint64_t hash_mismatches = 0;
 	uint64_t thread_hash_count = 0;
-	
+
+	// Create a thread-local copy of m_skein to avoid race conditions
+	// The shared m_skein is updated in set_block() and we snapshot it here
+	// Use copy construction to create the local copy
+	NexusSkein local_skein = [this]() {
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		return m_skein;
+	}();
+
 	while (!m_stop)
 	{
 		uint64_t nonce;
@@ -385,84 +393,96 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 		{
 			try
 			{
-				std::scoped_lock<std::mutex> lck(m_mtx);
-				
-				// For multi-threading: partition nonce space
-				// Each thread increments by total_threads to avoid overlap
-				// Thread 0: 0, 4, 8, 12, ...
-				// Thread 1: 1, 5, 9, 13, ...
-				// Thread 2: 2, 6, 10, 14, ...
-				// etc.
-				
 				// Calculate the remainder of the skein hash starting from the midstate
-				m_skein.calculateHash();
-				
+				// Using thread-local copy to avoid race conditions with set_block()
+				local_skein.calculateHash();
+
 				// Validate Skein output before passing to Keccak
-				NexusSkein::stateType skeinHash = m_skein.getHash();
+				NexusSkein::stateType skeinHash = local_skein.getHash();
 				if (!validate_skein_output(skeinHash))
 				{
 					++payload_validation_failures;
-					m_logger->warn(m_log_leader + "Thread {} Skein payload validation failed for nonce 0x{:016x}", 
-					              thread_id, m_skein.getNonce());
+					m_logger->warn(m_log_leader + "Thread {} Skein payload validation failed for nonce 0x{:016x}",
+					              thread_id, local_skein.getNonce());
 					throw std::runtime_error("Invalid Skein output payload");
 				}
-				
+
 				// Log Skein output for debugging (periodically)
 				if (thread_hash_count % (log_interval * 10) == 0)
 				{
-					log_skein_state(skeinHash, m_skein.getNonce());
+					log_skein_state(skeinHash, local_skein.getNonce());
 				}
-				
+
 				// Run keccak on the result from skein
 				NexusKeccak keccak(skeinHash);
 				keccak.calculateHash();
 				uint64_t keccakHash = keccak.getResult();
-				
+
 				// Validate Keccak output
 				if (!validate_keccak_output(keccakHash))
 				{
 					++payload_validation_failures;
-					m_logger->warn(m_log_leader + "Thread {} Keccak payload validation failed for nonce 0x{:016x}", 
-					              thread_id, m_skein.getNonce());
+					m_logger->warn(m_log_leader + "Thread {} Keccak payload validation failed for nonce 0x{:016x}",
+					              thread_id, local_skein.getNonce());
 					throw std::runtime_error("Invalid Keccak output payload");
 				}
-				
+
 				// Cross-validate periodically (every 100000 hashes) to minimize performance impact
 				// Also validate when we find a candidate nonce
 				bool should_cross_validate = (thread_hash_count % 100000 == 0) || ((keccakHash & leading_zero_mask()) == 0);
-				
+
 				if (should_cross_validate && !cross_validate_hashes(skeinHash, keccakHash))
 				{
 					++hash_mismatches;
-					m_logger->error(m_log_leader + "Thread {} Hash cross-validation failed for nonce 0x{:016x} - skipping nonce", 
-					               thread_id, m_skein.getNonce());
+					m_logger->error(m_log_leader + "Thread {} Hash cross-validation failed for nonce 0x{:016x} - skipping nonce",
+					               thread_id, local_skein.getNonce());
 					// Log detailed mismatch info for debugging
-					log_hash_mismatch(skeinHash, keccakHash, m_skein.getNonce());
-					
+					log_hash_mismatch(skeinHash, keccakHash, local_skein.getNonce());
+
 					// Skip this nonce due to validation failure and move to next
 					throw std::runtime_error("Hash cross-validation failed");
 				}
-				
-				nonce = m_skein.getNonce();
-				
+
+				nonce = local_skein.getNonce();
+
 				// Check the result for leading zeros
 				if ((keccakHash & leading_zero_mask()) == 0)
 				{
 					m_logger->info(m_log_leader + "Thread {} found a nonce candidate {}", thread_id, nonce);
-					m_skein.setNonce(nonce);
-					// Verify the difficulty
-					if (difficulty_check())
+
+					// Verify the difficulty using a snapshot of m_block
+					Block_data block_snapshot;
+					{
+						std::scoped_lock<std::mutex> lck(m_mtx);
+						block_snapshot = m_block;
+					}
+
+					// Update the snapshot with the found nonce for difficulty check
+					block_snapshot.nNonce = nonce;
+
+					// Perform difficulty check on the snapshot
+					// Note: difficulty_check() uses m_skein, so we need to update it temporarily
+					bool passes_difficulty = false;
+					{
+						std::scoped_lock<std::mutex> lck(m_mtx);
+						m_skein.setNonce(nonce);
+						passes_difficulty = difficulty_check();
+					}
+
+					if (passes_difficulty)
 					{
 						++m_met_difficulty_count;
 						// Update the block with the nonce and call the callback function
-						m_block.nNonce = nonce;
 						{
+							std::scoped_lock<std::mutex> lck(m_mtx);
+							m_block.nNonce = nonce;
+
 							if (m_found_nonce_callback)
 							{
 								m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
 								::asio::post(*m_io_context, [self = shared_from_this()]()
 								{
-									self->m_found_nonce_callback(self->m_config.m_internal_id, 
+									self->m_found_nonce_callback(self->m_config.m_internal_id,
 										std::make_unique<Block_data>(self->m_block));
 								});
 							}
@@ -473,22 +493,28 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 						}
 					}
 				}
-				
+
 				// Increment nonce by total_threads for nonce partitioning
 				nonce += total_threads;
-				m_skein.setNonce(nonce);	
+				local_skein.setNonce(nonce);
 				++thread_hash_count;
-				++m_hash_count;
+
+				// Update global hash count (needs mutex protection)
+				{
+					std::scoped_lock<std::mutex> lck(m_mtx);
+					++m_hash_count;
+				}
+
 				hash_calculated = true;
-				
+
 				// Log progress periodically with enhanced diagnostics
 				if (thread_hash_count - last_log_hash_count >= log_interval)
 				{
-					m_logger->debug(m_log_leader + "Thread {} hashing progress: {} hashes computed, current nonce: 0x{:016x}", 
+					m_logger->debug(m_log_leader + "Thread {} hashing progress: {} hashes computed, current nonce: 0x{:016x}",
 					               thread_id, thread_hash_count, nonce);
 					if (payload_validation_failures > 0 || hash_mismatches > 0)
 					{
-						m_logger->info(m_log_leader + "Thread {} diagnostics: {} payload validation failures, {} hash mismatches", 
+						m_logger->info(m_log_leader + "Thread {} diagnostics: {} payload validation failures, {} hash mismatches",
 						              thread_id, payload_validation_failures, hash_mismatches);
 					}
 					last_log_hash_count = thread_hash_count;
@@ -499,19 +525,18 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 				++retry_count;
 				if (retry_count < max_retries)
 				{
-					m_logger->warn(m_log_leader + "Thread {} hash calculation failed (attempt {}/{}): {}. Retrying...", 
+					m_logger->warn(m_log_leader + "Thread {} hash calculation failed (attempt {}/{}): {}. Retrying...",
 					              thread_id, retry_count, max_retries, e.what());
 					std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				}
 				else
 				{
-					m_logger->error(m_log_leader + "Thread {} hash calculation failed after {} retries: {}. Skipping nonce.", 
+					m_logger->error(m_log_leader + "Thread {} hash calculation failed after {} retries: {}. Skipping nonce.",
 					               thread_id, max_retries, e.what());
 					// Skip this nonce and continue
-					std::scoped_lock<std::mutex> lck(m_mtx);
-					nonce = m_skein.getNonce();
+					nonce = local_skein.getNonce();
 					nonce += total_threads;
-					m_skein.setNonce(nonce);
+					local_skein.setNonce(nonce);
 				}
 			}
 		}
