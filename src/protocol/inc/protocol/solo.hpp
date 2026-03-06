@@ -5,6 +5,7 @@
 #include "protocol/falcon_wrapper.hpp"
 #include "protocol/chacha20_wrapper.hpp"
 #include "protocol/session_manager.hpp"
+#include "protocol/node_session_context.hpp"
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/height_tracker.hpp"
