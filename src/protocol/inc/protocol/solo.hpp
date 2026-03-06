@@ -501,15 +501,6 @@ private:
     ::LLP::SessionStatusAckFrame m_last_session_status_ack{};
     std::chrono::steady_clock::time_point m_last_session_status_ack_time{};
 
-    // ── TEMPLATE_ANCHOR debounce ─────────────────────────────────────────────
-    // Suppress re-push to workers if the last template feed was < ANCHOR_REPUSH_DEBOUNCE_MS ago
-    // AND it was for the same block height.
-    // Prevents double-distribution when read_template() fires the template_feed_handler
-    // AND the BLOCK_DATA path also calls m_set_block_handler() directly.
-    std::chrono::steady_clock::time_point m_last_template_feed_tp{};
-    uint32_t m_last_template_feed_height{0};
-    static constexpr int64_t ANCHOR_REPUSH_DEBOUNCE_MS = 1500;
-
     // ── GET_BLOCK deduplication ──────────────────────────────────────────────
     // Tracks the last GET_BLOCK transmission time to prevent duplicate requests
     // from push_notification_handler and Worker_manager within the same millisecond.

@@ -169,33 +169,15 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                               block.nChannel,
                               (block.nChannel == 1) ? "prime" : "hash");
                 m_logger->info("[Worker_manager]   Difficulty: 0x{:08x}", nBits);
-                m_logger->info("[Worker_manager]   Merkle:     {}...", 
+                m_logger->info("[Worker_manager]   Merkle:     {}...",
                               block.hashMerkleRoot.ToString().substr(0, 16));
                 m_logger->info("[Worker_manager]   PrevHash:   {}...",
                               block.hashPrevBlock.ToString().substr(0, 20));
                 m_logger->info("[Worker_manager] ═══════════════════════════════════════");
 
-                // ── Worker-feed deduplication (PR #324 double-fire prevention) ────
-                // SendChannelNotification() now pushes a template AND triggers a
-                // GET_BLOCK response almost simultaneously.  Without this guard the
-                // second arrival restarts every worker mid-sieve.
-                {
-                    auto now = std::chrono::steady_clock::now();
-                    auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        now - m_last_worker_feed_tp).count();
-                    bool same_template = (block.nHeight == m_last_worker_feed_height &&
-                                          block.hashPrevBlock == m_last_worker_feed_prev_hash);
-                    if (same_template && ms_since_last < WORKER_FEED_DEBOUNCE_MS) {
-                        m_logger->info("[Worker_manager] ⏱ Duplicate template suppressed "
-                                       "(height {} already fed {}ms ago, debounce {}ms)",
-                                       block.nHeight, ms_since_last, WORKER_FEED_DEBOUNCE_MS);
-                        return;
-                    }
-                    // Record this feed so the next duplicate is caught
-                    m_last_worker_feed_tp = now;
-                    m_last_worker_feed_height = block.nHeight;
-                    m_last_worker_feed_prev_hash = block.hashPrevBlock;
-                }
+                // Note: Template feed debounce is now handled in MiningTemplateInterface
+                // (unified dedup gate). This handler is only called after the template
+                // passes the debounce check, so no additional checking is needed here.
 
                 // Update mined-block cache confirmations based on new chain height.
                 m_mined_block_cache.update_confirmations(block.nHeight);

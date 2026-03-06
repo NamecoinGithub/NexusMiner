@@ -201,10 +201,10 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             m_logger->info("[Solo] ═══════════════════════════════════════");
             
             // Feed to worker threads via set_block_handler
+            // Note: Debounce is now handled in MiningTemplateInterface::feed_current_template()
+            // This handler is only invoked if the template passes the unified debounce gate
             if (m_set_block_handler) {
                 m_logger->info("[Solo] Distributing template to worker threads...");
-                m_last_template_feed_tp = std::chrono::steady_clock::now();
-                m_last_template_feed_height = tmpl.block.nHeight;
                 m_set_block_handler(tmpl.block, nBits);
                 m_logger->info("[Solo] ✓ Template distributed - workers should start mining");
             } else {
@@ -1196,40 +1196,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 return;
             }
 
-            // TEMPLATE_ANCHOR debounce: suppress re-push if read_template() already fired
-            // the template_feed_handler (which calls m_set_block_handler) within the last
-            // ANCHOR_REPUSH_DEBOUNCE_MS ms FOR THE SAME BLOCK HEIGHT.  Double-feeds cause
-            // partial worker initialisation because some workers receive the new template
-            // while others are still computing starting multiples for the previous one.
-            {
-                auto now_tp = std::chrono::steady_clock::now();
-                auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now_tp - m_last_template_feed_tp).count();
-
-                // Height guard (Option A fix): suppress if the debounce window is active AND
-                // the height being distributed matches the last fed height.
-                // This prevents tip_changed from bypassing the debounce when Path 1
-                // already distributed the exact same template moments ago.
-                bool debounce_active = (ms_since_last < ANCHOR_REPUSH_DEBOUNCE_MS);
-                bool same_height_as_last_feed = (tmpl->block.nHeight == m_last_template_feed_height);
-
-                if (debounce_active && same_height_as_last_feed) {
-                    m_logger->info("[TEMPLATE ANCHOR] ⏱ Re-push suppressed: same height {} already fed {}ms ago (< {}ms debounce window)",
-                        tmpl->block.nHeight, ms_since_last, ANCHOR_REPUSH_DEBOUNCE_MS);
-                    m_logger->info("[TEMPLATE ANCHOR]   Workers still initializing — chain tip noted, no double-distribution");
-                } else {
-                    m_last_template_feed_tp = now_tp;
-                    m_last_template_feed_height = tmpl->block.nHeight;
-                    if (tip_changed) {
-                        m_logger->info("[TEMPLATE ANCHOR] ⚡ Debounce bypassed: chain tip changed (hashPrevBlock), new height {}",
-                            tmpl->block.nHeight);
-                    }
-                    m_logger->info("[Solo FEED] Dispatching validated template to workers (height: {}, nBits: 0x{:08x})",
-                        tmpl->block.nHeight, tmpl->nBits);
-                    m_set_block_handler(tmpl->block, tmpl->nBits);
-                }
+            // Manual template feed: Attempt to feed the template to workers.
+            // Debounce is handled inside MiningTemplateInterface::feed_current_template()
+            // which will suppress duplicates if read_template() already fed this template.
+            // This provides defense-in-depth if the BLOCK_DATA handler is called multiple
+            // times for the same template within the debounce window.
+            if (!m_template_interface->feed_current_template()) {
+                m_logger->debug("[Solo FEED] Template feed suppressed by unified debounce gate");
             }
-            
+
             // Log template interface statistics periodically
             auto stats = m_template_interface->get_stats();
             if (stats.templates_received % 10 == 0) {

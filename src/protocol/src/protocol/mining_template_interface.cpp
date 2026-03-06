@@ -1,4 +1,5 @@
 #include "protocol/mining_template_interface.hpp"
+#include "protocol/protocol_constants.hpp"
 #include "LLP/block_utils.hpp"
 #include <chrono>
 #include <cstring>
@@ -357,28 +358,72 @@ void MiningTemplateInterface::set_validation_failure_handler(ValidationFailureHa
 bool MiningTemplateInterface::feed_current_template()
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
-    
+
     if (!has_valid_template_unsafe()) {
         m_logger->warn("[TemplateInterface] FEED: No valid template to feed");
         return false;
     }
-    
+
     if (!m_feed_handler) {
         m_logger->debug("[TemplateInterface] FEED: No handler registered");
         return false;
     }
-    
+
+    // ── Unified Template Feed Debounce (PR #324 evolution: central dedup gate) ──
+    // Prevents duplicate template distribution when the same block arrives via
+    // multiple paths (push notification + GET_BLOCK response, or automatic feed
+    // from read_template() + manual BLOCK_DATA handler re-push).
+    //
+    // This is the SINGLE AUTHORITATIVE debounce gate for the entire system.
+    // Both Solo's BLOCK_DATA handler and Worker_manager's set_block flow rely on
+    // this check to suppress duplicates at the source.
+    {
+        auto now = std::chrono::steady_clock::now();
+        auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - m_last_feed_tp).count();
+
+        bool same_template = (m_current_template.block.nHeight == m_last_feed_height &&
+                              m_current_template.block.hashPrevBlock == m_last_feed_prev_hash);
+
+        // Bypass debounce if chain tip changed (hashPrevBlock differs)
+        // This handles StakeMinter Guard 1 scenario: new template at same height
+        // but building on a different tip (reorg or multi-tip race).
+        bool tip_changed = (m_current_template.block.hashPrevBlock != m_last_feed_prev_hash) &&
+                           (m_last_feed_height > 0);  // Skip on first feed
+
+        if (same_template && ms_since_last < ProtocolConstants::TEMPLATE_FEED_DEBOUNCE_MS) {
+            m_logger->info("[TemplateInterface] ⏱ Duplicate template feed suppressed "
+                           "(height {} already fed {}ms ago, debounce {}ms)",
+                           m_current_template.block.nHeight, ms_since_last,
+                           ProtocolConstants::TEMPLATE_FEED_DEBOUNCE_MS);
+            m_logger->info("[TemplateInterface]   Workers still initializing — "
+                           "duplicate distribution prevented at source");
+            return false;  // Duplicate suppressed
+        }
+
+        if (tip_changed) {
+            m_logger->info("[TemplateInterface] ⚡ Debounce bypassed: chain tip changed "
+                           "(hashPrevBlock), feeding new template at height {}",
+                           m_current_template.block.nHeight);
+        }
+
+        // Record this feed for next duplicate check
+        m_last_feed_tp = now;
+        m_last_feed_height = m_current_template.block.nHeight;
+        m_last_feed_prev_hash = m_current_template.block.hashPrevBlock;
+    }
+
     m_logger->info("[TemplateInterface] FEED: Feeding template at height {} to workers",
         m_current_template.block.nHeight);
-    
+
     // Update state to active since it's being fed to workers
     m_current_template.state = TemplateState::ACTIVE;
-    
+
     // Feed to handlers
     m_feed_handler(m_current_template, m_current_template.nBits);
-    
+
     m_templates_fed.fetch_add(1, std::memory_order_relaxed);
-    
+
     return true;
 }
 
