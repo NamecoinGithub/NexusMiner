@@ -11,6 +11,8 @@
 | **Reference** | [PROTOCOL_LANES.md](PROTOCOL_LANES.md) | Dual-lane protocol (legacy / stateless) |
 | **RISC-V** | [riscv/RISCV-OVERVIEW.md](riscv/RISCV-OVERVIEW.md) | RISC-V ISA profiles, extensions, performance |
 | **RISC-V** | [riscv/RISCV-DIAGRAMS.md](riscv/RISCV-DIAGRAMS.md) | Full RISC-V diagram set (diagrams 7–12) |
+| **RISC-V** | [riscv/CPU-INFRASTRUCTURE.md](riscv/CPU-INFRASTRUCTURE.md) | CPU worker thread model, sieve ownership invariant (PR #348) |
+| **RISC-V** | [riscv/CPU-INFRASTRUCTURE-DIAGRAMS.md](riscv/CPU-INFRASTRUCTURE-DIAGRAMS.md) | CPU Infrastructure diagram set (diagrams 13–16) |
 | **Authentication** | [current/authentication/falcon-integration.md](current/authentication/falcon-integration.md) | Falcon post-quantum auth guide |
 | **Authentication** | [current/authentication/falcon-keygen-guide.md](current/authentication/falcon-keygen-guide.md) | Key generation |
 | **Authentication** | [current/authentication/genesis-first-protocol.md](current/authentication/genesis-first-protocol.md) | Genesis-based key derivation |
