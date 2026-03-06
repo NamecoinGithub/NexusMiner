@@ -3,6 +3,7 @@ add_library(protocol STATIC src/protocol/solo.cpp
                             src/protocol/falcon_wrapper.cpp
                             src/protocol/chacha20_wrapper.cpp
                             src/protocol/session_manager.cpp
+                            src/protocol/node_session_context.cpp
                             src/protocol/mining_template_interface.cpp
                             src/protocol/push_notification_handler.cpp
                             src/protocol/height_tracker.cpp
@@ -186,3 +187,12 @@ target_include_directories(session_start_parser_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
     ${CMAKE_SOURCE_DIR}/src
 )
+
+# NodeSessionContext unit tests
+add_executable(node_session_context_test node_session_context_test.cpp)
+target_link_libraries(node_session_context_test PRIVATE protocol network asio spdlog)
+target_include_directories(node_session_context_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME node_session_context_test COMMAND $<TARGET_FILE:node_session_context_test>)
