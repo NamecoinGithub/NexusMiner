@@ -380,9 +380,10 @@ void Worker_prime::run()
 			local_block = m_block;
 			local_base_hash = m_base_hash;
 			local_nonce = m_nonce;
+			// Calculate starting multiples inside mutex to prevent concurrent modification
+			// by set_block() which calls set_sieve_start() and clear_chains()
+			m_segmented_sieve->calculate_starting_multiples();
 		}
-
-		m_segmented_sieve->calculate_starting_multiples();
 		uint32_t segment_size = m_segmented_sieve->get_segment_size();
 		uint64_t find_chains_ms = 0;
 		uint64_t sieving_ms = 0;
