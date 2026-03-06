@@ -15,7 +15,7 @@ namespace nexusminer
 namespace cpu
 {
 
-Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_config& config) 
+Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_config& config)
 : m_io_context{std::move(io_context)}
 , m_logger{spdlog::get("logger")}
 , m_config{config}
@@ -27,7 +27,7 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
 , m_pool_nbits{0}
 {
 	m_logger->info(m_log_leader + "Initialized (Internal ID: {})", m_config.m_internal_id);
-	
+
 	// Log CPU-specific configuration for multi-core support
 	if (std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
 		auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
@@ -42,15 +42,27 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
 			m_logger->info(m_log_leader + "Thread priority: {}", cpu_cfg.m_priority_level);
 		}
 	}
+
+	// Start persistent thread immediately
+	m_shutdown = false;
+	m_run_thread = std::thread(&Worker_hash::run, this);
+	m_logger->info(m_log_leader + "Persistent worker thread started");
 }
 
-Worker_hash::~Worker_hash() 
-{ 
-	//make sure the run thread exits the loop
-	m_stop = true;  
+Worker_hash::~Worker_hash()
+{
+	// Signal shutdown and wake up the worker thread
+	{
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		m_shutdown = true;
+		m_stop = true;  // Also set m_stop to interrupt mining loops
+	}
+	m_cv.notify_all();
+
+	// Wait for main thread to finish
 	if (m_run_thread.joinable())
-		m_run_thread.join(); 
-	
+		m_run_thread.join();
+
 	// Join all worker threads
 	for (auto& thread : m_worker_threads) {
 		if (thread.joinable())
@@ -60,12 +72,11 @@ Worker_hash::~Worker_hash()
 
 void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result)
 {
-	//stop the existing mining loop if it is running
-	m_stop = true;
-	if (m_run_thread.joinable())
-		m_run_thread.join();
+	// Update work data atomically and signal worker thread
 	{
 		std::scoped_lock<std::mutex> lck(m_mtx);
+
+		// Update callback
 		m_found_nonce_callback = result;
 		m_block = Block_data{ block };
 
@@ -115,20 +126,22 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 
 		// Reset statistics for new block
 		reset_statistics();
+
+		// Signal new work is available
+		m_stop = false;
+		m_new_work = true;
 	}
-	//restart the mining loop
-	m_stop = false;
-	m_logger->info(m_log_leader + "Starting hashing loop (Starting nonce: 0x{:016x}, nBits: 0x{:08x})",
+
+	// Wake up the worker thread
+	m_cv.notify_one();
+
+	m_logger->info(m_log_leader + "New work set (Starting nonce: 0x{:016x}, nBits: 0x{:08x})",
 		m_starting_nonce, m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits);
-	m_run_thread = std::thread(&Worker_hash::run, this);
 }
 
 void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::Block_found_handler result)
 {
-	//stop the existing mining loop if it is running
-	m_stop = true;
-	if (m_run_thread.joinable())
-		m_run_thread.join();
+	// Update work data atomically and signal worker thread
 	{
 		std::scoped_lock<std::mutex> lck(m_mtx);
 		m_found_nonce_callback = result;
@@ -185,12 +198,17 @@ void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::B
 
 		// Reset statistics for new block
 		reset_statistics();
+
+		// Signal new work is available
+		m_stop = false;
+		m_new_work = true;
 	}
-	//restart the mining loop
-	m_stop = false;
-	m_logger->info(m_log_leader + "Starting hashing loop (Starting nonce: 0x{:016x}, nBits: 0x{:08x})",
+
+	// Wake up the worker thread
+	m_cv.notify_one();
+
+	m_logger->info(m_log_leader + "New work set (Starting nonce: 0x{:016x}, nBits: 0x{:08x})",
 		m_starting_nonce, m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits);
-	m_run_thread = std::thread(&Worker_hash::run, this);
 }
 
 void Worker_hash::run()
@@ -200,129 +218,150 @@ void Worker_hash::run()
 		m_logger->error(m_log_leader + "Invalid worker mode for CPU worker");
 		return;
 	}
-	
+
 	auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
 	uint32_t num_threads = (cpu_cfg.m_threads > 0) ? cpu_cfg.m_threads : 1;
-	
-	m_logger->info(m_log_leader + "Starting {} mining thread(s)", num_threads);
-	
-	// Clear any existing worker threads
-	m_worker_threads.clear();
-	
-	// Apply hyperthreading and efficiency cores filtering
-	uint64_t effective_affinity = cpu_cfg.m_affinity_mask;
-	
-	if (effective_affinity == 0) {
-		// No specific affinity set, potentially filter based on HT/E-core settings
-		if (!cpu_cfg.m_enable_hyperthreading || !cpu_cfg.m_enable_efficiency_cores) {
-			// Get total logical processors
-			uint32_t total_cores = std::thread::hardware_concurrency();
-			uint32_t physical_cores = cpu::get_physical_core_count();
-			bool smt_enabled = cpu::is_smt_enabled();
-			
-			m_logger->info(m_log_leader + "Core detection: {} logical cores, {} physical cores, SMT {}",
-			              total_cores, physical_cores, smt_enabled ? "enabled" : "disabled");
-			
-			// Build affinity mask based on settings
-			if (!cpu_cfg.m_enable_hyperthreading && smt_enabled) {
-				// Use only physical cores (first half typically)
-				for (uint32_t i = 0; i < physical_cores; i++) {
-					effective_affinity |= (1ULL << i);
-				}
-				m_logger->info(m_log_leader + "Hyperthreading disabled, using physical cores only: 0x{:016x}", 
-				              effective_affinity);
+
+	m_logger->info(m_log_leader + "Persistent worker thread ready, waiting for work...");
+
+	// Persistent thread loop - runs until shutdown
+	while (true) {
+		// Wait for new work or shutdown signal
+		{
+			std::unique_lock<std::mutex> lock(m_mtx);
+			m_cv.wait(lock, [this] { return m_new_work || m_shutdown; });
+
+			// Check for shutdown
+			if (m_shutdown) {
+				m_logger->info(m_log_leader + "Worker thread shutting down");
+				break;
 			}
-			
-			if (!cpu_cfg.m_enable_efficiency_cores) {
-				// Try to get P-cores only
-				auto p_cores = cpu::get_performance_cores();
-				if (!p_cores.empty()) {
-					effective_affinity = 0;
-					for (auto core : p_cores) {
-						effective_affinity |= (1ULL << core);
+
+			// Clear new work flag
+			m_new_work = false;
+		}
+
+		// Start mining with the new work
+		m_logger->info(m_log_leader + "Starting {} mining thread(s)", num_threads);
+
+		// Clear any existing worker threads
+		m_worker_threads.clear();
+
+		// Apply hyperthreading and efficiency cores filtering
+		uint64_t effective_affinity = cpu_cfg.m_affinity_mask;
+
+		if (effective_affinity == 0) {
+			// No specific affinity set, potentially filter based on HT/E-core settings
+			if (!cpu_cfg.m_enable_hyperthreading || !cpu_cfg.m_enable_efficiency_cores) {
+				// Get total logical processors
+				uint32_t total_cores = std::thread::hardware_concurrency();
+				uint32_t physical_cores = cpu::get_physical_core_count();
+				bool smt_enabled = cpu::is_smt_enabled();
+
+				m_logger->info(m_log_leader + "Core detection: {} logical cores, {} physical cores, SMT {}",
+				              total_cores, physical_cores, smt_enabled ? "enabled" : "disabled");
+
+				// Build affinity mask based on settings
+				if (!cpu_cfg.m_enable_hyperthreading && smt_enabled) {
+					// Use only physical cores (first half typically)
+					for (uint32_t i = 0; i < physical_cores; i++) {
+						effective_affinity |= (1ULL << i);
 					}
-					m_logger->info(m_log_leader + "E-cores disabled, using P-cores only: 0x{:016x}", 
+					m_logger->info(m_log_leader + "Hyperthreading disabled, using physical cores only: 0x{:016x}",
 					              effective_affinity);
-				} else {
-					m_logger->warn(m_log_leader + "Could not detect P-cores, using all cores");
+				}
+
+				if (!cpu_cfg.m_enable_efficiency_cores) {
+					// Try to get P-cores only
+					auto p_cores = cpu::get_performance_cores();
+					if (!p_cores.empty()) {
+						effective_affinity = 0;
+						for (auto core : p_cores) {
+							effective_affinity |= (1ULL << core);
+						}
+						m_logger->info(m_log_leader + "E-cores disabled, using P-cores only: 0x{:016x}",
+						              effective_affinity);
+					} else {
+						m_logger->warn(m_log_leader + "Could not detect P-cores, using all cores");
+					}
 				}
 			}
 		}
-	}
-	
-	// Spawn mining threads
-	if (num_threads > 1) {
-		m_logger->info(m_log_leader + "Multi-threading enabled with {} threads", num_threads);
-		m_logger->info(m_log_leader + "Nonce space will be partitioned across threads");
-		
-		for (uint32_t i = 0; i < num_threads; i++) {
-			m_worker_threads.emplace_back([this, i, num_threads, &cpu_cfg, effective_affinity]() {
-				// Set thread-specific affinity if needed
-				uint64_t thread_affinity = 0;
-				
-				if (effective_affinity != 0) {
-					// Distribute threads across available cores
-					std::vector<uint32_t> available_cores;
-					for (uint32_t c = 0; c < 64; c++) {
-						if (effective_affinity & (1ULL << c)) {
-							available_cores.push_back(c);
+
+		// Spawn mining threads
+		if (num_threads > 1) {
+			m_logger->info(m_log_leader + "Multi-threading enabled with {} threads", num_threads);
+			m_logger->info(m_log_leader + "Nonce space will be partitioned across threads");
+
+			for (uint32_t i = 0; i < num_threads; i++) {
+				m_worker_threads.emplace_back([this, i, num_threads, &cpu_cfg, effective_affinity]() {
+					// Set thread-specific affinity if needed
+					uint64_t thread_affinity = 0;
+
+					if (effective_affinity != 0) {
+						// Distribute threads across available cores
+						std::vector<uint32_t> available_cores;
+						for (uint32_t c = 0; c < 64; c++) {
+							if (effective_affinity & (1ULL << c)) {
+								available_cores.push_back(c);
+							}
+						}
+
+						if (!available_cores.empty()) {
+							// Assign core to this thread (round-robin)
+							uint32_t core_idx = i % available_cores.size();
+							thread_affinity = 1ULL << available_cores[core_idx];
+
+							if (cpu::set_thread_affinity(thread_affinity)) {
+								m_logger->info(m_log_leader + "Thread {} pinned to core {}",
+								              i, available_cores[core_idx]);
+							}
 						}
 					}
-					
-					if (!available_cores.empty()) {
-						// Assign core to this thread (round-robin)
-						uint32_t core_idx = i % available_cores.size();
-						thread_affinity = 1ULL << available_cores[core_idx];
-						
-						if (cpu::set_thread_affinity(thread_affinity)) {
-							m_logger->info(m_log_leader + "Thread {} pinned to core {}", 
-							              i, available_cores[core_idx]);
-						}
+
+					// Set thread priority
+					if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
+						m_logger->debug(m_log_leader + "Thread {} priority set to level {}",
+						               i, cpu_cfg.m_priority_level);
+					} else {
+						m_logger->warn(m_log_leader + "Thread {} failed to set priority", i);
 					}
-				}
-				
-				// Set thread priority
-				if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
-					m_logger->debug(m_log_leader + "Thread {} priority set to level {}", 
-					               i, cpu_cfg.m_priority_level);
-				} else {
-					m_logger->warn(m_log_leader + "Thread {} failed to set priority", i);
-				}
-				
-				// Run mining loop for this thread
-				mine_loop(i, num_threads);
-			});
-		}
-		
-		// Wait for all threads to complete
-		for (auto& thread : m_worker_threads) {
-			if (thread.joinable()) {
-				thread.join();
+
+					// Run mining loop for this thread
+					mine_loop(i, num_threads);
+				});
 			}
-		}
-		
-	} else {
-		// Single thread mode
-		// Apply thread settings
-		if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
-			m_logger->info(m_log_leader + "Thread priority set to level {}", cpu_cfg.m_priority_level);
+
+			// Wait for all threads to complete
+			for (auto& thread : m_worker_threads) {
+				if (thread.joinable()) {
+					thread.join();
+				}
+			}
+
 		} else {
-			m_logger->warn(m_log_leader + "Failed to set thread priority to level {}", cpu_cfg.m_priority_level);
-		}
-		
-		if (effective_affinity != 0) {
-			if (cpu::set_thread_affinity(effective_affinity)) {
-				m_logger->info(m_log_leader + "Thread affinity set to 0x{:016x}", effective_affinity);
+			// Single thread mode
+			// Apply thread settings
+			if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
+				m_logger->info(m_log_leader + "Thread priority set to level {}", cpu_cfg.m_priority_level);
 			} else {
-				m_logger->warn(m_log_leader + "Failed to set thread affinity to 0x{:016x}", effective_affinity);
+				m_logger->warn(m_log_leader + "Failed to set thread priority to level {}", cpu_cfg.m_priority_level);
 			}
+
+			if (effective_affinity != 0) {
+				if (cpu::set_thread_affinity(effective_affinity)) {
+					m_logger->info(m_log_leader + "Thread affinity set to 0x{:016x}", effective_affinity);
+				} else {
+					m_logger->warn(m_log_leader + "Failed to set thread affinity to 0x{:016x}", effective_affinity);
+				}
+			}
+
+			// Run single-threaded mining loop
+			mine_loop(0, 1);
 		}
-		
-		// Run single-threaded mining loop
-		mine_loop(0, 1);
+
+		m_logger->info(m_log_leader + "All mining threads stopped, waiting for new work...");
 	}
-	
-	m_logger->info(m_log_leader + "All mining threads stopped");
 }
 
 void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
