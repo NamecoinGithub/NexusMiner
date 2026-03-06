@@ -62,7 +62,34 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 	}
 
 	send_block_to_fpga();
-    
+
+}
+
+void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::Block_found_handler result)
+{
+	//send new block info to the device
+	std::scoped_lock<std::mutex> lck(m_mtx);
+	//cancel any outstanding serial port async read
+	m_serial.cancel();
+
+	m_found_nonce_callback = result;
+
+	// Use precomputed data from WorkPackage
+	const auto& block = work_package->get_block();
+	m_block = Block_data{ block };
+
+	m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
+	m_block.nNonce = m_starting_nonce;
+
+	std::uint32_t nbits = work_package->get_nbits();
+	if(nbits != 0)
+	{
+		// take nbits provided by pool
+		m_pool_nbits = nbits;
+	}
+
+	send_block_to_fpga();
+
 }
 
 void Worker_hash::send_block_to_fpga()

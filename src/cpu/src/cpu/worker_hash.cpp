@@ -72,7 +72,7 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 		//set the starting nonce for each worker to something different that won't overlap with the others
 		m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
 		m_block.nNonce = m_starting_nonce;
-		
+
 		// Validate and set nBits with consistency checks
 		if(nbits != 0)	// take nBits provided from pool
 		{
@@ -89,36 +89,106 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 			// Use block's nBits when pool doesn't provide one
 			if (m_pool_nbits != 0)
 			{
-				m_logger->info(m_log_leader + "Resetting m_pool_nbits (was 0x{:08x}, using block nBits 0x{:08x})", 
+				m_logger->info(m_log_leader + "Resetting m_pool_nbits (was 0x{:08x}, using block nBits 0x{:08x})",
 					m_pool_nbits, m_block.nBits);
 			}
 			m_pool_nbits = 0;
 		}
 
 		std::vector<unsigned char> headerB = m_block.GetHeaderBytes();
-		
+
 		// Validate header payload before processing
 		if (headerB.empty())
 		{
 			m_logger->error(m_log_leader + "GetHeaderBytes() returned empty payload!");
 			throw std::runtime_error("Empty header payload");
 		}
-		
-		m_logger->debug(m_log_leader + "Header payload size: {} bytes (expected: 216 for hash, 208 for prime)", 
+
+		m_logger->debug(m_log_leader + "Header payload size: {} bytes (expected: 216 for hash, 208 for prime)",
 			headerB.size());
-		
+
 		//calculate midstate
 		m_skein.setMessage(headerB);
-		
+
 		// Log midstate calculation for debugging
 		log_midstate_calculation();
-		
+
 		// Reset statistics for new block
 		reset_statistics();
 	}
 	//restart the mining loop
 	m_stop = false;
-	m_logger->info(m_log_leader + "Starting hashing loop (Starting nonce: 0x{:016x}, nBits: 0x{:08x})", 
+	m_logger->info(m_log_leader + "Starting hashing loop (Starting nonce: 0x{:016x}, nBits: 0x{:08x})",
+		m_starting_nonce, m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits);
+	m_run_thread = std::thread(&Worker_hash::run, this);
+}
+
+void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::Block_found_handler result)
+{
+	//stop the existing mining loop if it is running
+	m_stop = true;
+	if (m_run_thread.joinable())
+		m_run_thread.join();
+	{
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		m_found_nonce_callback = result;
+
+		// Use precomputed data from WorkPackage
+		const auto& block = work_package->get_block();
+		m_block = Block_data{ block };
+
+		//set the starting nonce for each worker to something different that won't overlap with the others
+		m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
+		m_block.nNonce = m_starting_nonce;
+
+		// Validate and set nBits with consistency checks
+		std::uint32_t nbits = work_package->get_nbits();
+		if(nbits != 0)	// take nBits provided from pool
+		{
+			// Validate nbits consistency
+			if (m_pool_nbits != 0 && m_pool_nbits != nbits)
+			{
+				m_logger->warn(m_log_leader + "m_pool_nbits changed from 0x{:08x} to 0x{:08x}", m_pool_nbits, nbits);
+			}
+			m_pool_nbits = nbits;
+			m_logger->info(m_log_leader + "Set m_pool_nbits to 0x{:08x} (from pool)", m_pool_nbits);
+		}
+		else
+		{
+			// Use block's nBits when pool doesn't provide one
+			if (m_pool_nbits != 0)
+			{
+				m_logger->info(m_log_leader + "Resetting m_pool_nbits (was 0x{:08x}, using block nBits 0x{:08x})",
+					m_pool_nbits, m_block.nBits);
+			}
+			m_pool_nbits = 0;
+		}
+
+		// Use precomputed header bytes from WorkPackage (optimization!)
+		const std::vector<unsigned char>& headerB = work_package->get_header_bytes();
+
+		// Validate header payload before processing
+		if (headerB.empty())
+		{
+			m_logger->error(m_log_leader + "GetHeaderBytes() returned empty payload!");
+			throw std::runtime_error("Empty header payload");
+		}
+
+		m_logger->debug(m_log_leader + "Header payload size: {} bytes (expected: 216 for hash, 208 for prime)",
+			headerB.size());
+
+		//calculate midstate using precomputed header bytes
+		m_skein.setMessage(headerB);
+
+		// Log midstate calculation for debugging
+		log_midstate_calculation();
+
+		// Reset statistics for new block
+		reset_statistics();
+	}
+	//restart the mining loop
+	m_stop = false;
+	m_logger->info(m_log_leader + "Starting hashing loop (Starting nonce: 0x{:016x}, nBits: 0x{:08x})",
 		m_starting_nonce, m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits);
 	m_run_thread = std::thread(&Worker_hash::run, this);
 }
