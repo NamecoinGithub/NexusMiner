@@ -259,6 +259,15 @@ void Worker_prime::run()
 
 		while (!m_stop)
 	{
+		// Check for new work at the top of the loop
+		{
+			std::unique_lock<std::mutex> lck(m_mtx);
+			if (m_new_work)
+			{
+				break;
+			}
+		}
+
 		m_range_searched += sieve_batch_range;
 		range_searched_this_cycle += sieve_batch_range;
 

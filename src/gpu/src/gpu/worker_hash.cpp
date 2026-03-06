@@ -189,6 +189,15 @@ void Worker_hash::run()
 
         while (!m_stop)
         {
+            // Check for new work at the top of the loop
+            {
+                std::unique_lock<std::mutex> lck(m_mtx);
+                if (m_new_work)
+                {
+                    break;
+                }
+            }
+
             std::uint64_t hashes = 0;
 
             // Do hashing on a CUDA device
