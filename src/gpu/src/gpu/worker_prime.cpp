@@ -109,9 +109,6 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 		//clear out any old chains from the last block
 		m_segmented_sieve->clear_chains();
 
-		// Reset statistics for new block
-		reset_statistics();
-
 		// Signal new work is available
 		m_stop = true;
 		m_new_work = true;
@@ -180,9 +177,6 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 		//m_logger->debug("starting nonce: {}", m_nonce);
 		//clear out any old chains from the last block
 		m_segmented_sieve->clear_chains();
-
-		// Reset statistics for new block
-		reset_statistics();
 
 		// Signal new work is available
 		m_stop = true;
@@ -425,11 +419,6 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 
 	m_primes = 0;
 	m_chains = 0;
-}
-
-void Worker_prime::reset_statistics()
-{
-	m_range_searched = 0;
 }
 
 
