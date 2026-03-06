@@ -403,8 +403,17 @@ void Worker_prime::run()
 	
 	while (!m_stop)
 	{
+		// Check for new work at the top of the loop
+		{
+			std::unique_lock<std::mutex> lck(m_mtx);
+			if (m_new_work)
+			{
+				break;
+			}
+		}
+
 		auto iteration_start = std::chrono::steady_clock::now();
-		
+
 		m_segmented_sieve->reset_sieve();
 		m_segmented_sieve->clear_chains();
 

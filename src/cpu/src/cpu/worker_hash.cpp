@@ -376,6 +376,15 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 	
 	while (!m_stop)
 	{
+		// Check for new work at the top of the loop
+		{
+			std::unique_lock<std::mutex> lck(m_mtx);
+			if (m_new_work)
+			{
+				break;
+			}
+		}
+
 		uint64_t nonce;
 		bool hash_calculated = false;
 		int retry_count = 0;
