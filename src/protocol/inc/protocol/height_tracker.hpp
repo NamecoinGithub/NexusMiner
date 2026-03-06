@@ -238,6 +238,49 @@ public:
         }
 
         /**
+         * @brief Get template age in seconds since canonical receipt
+         *
+         * Returns the age of the current template based on when it was received
+         * via OnBlockDataReceived(). Returns 0 if no template has been received yet.
+         *
+         * @return Age in seconds, or 0 if canonical_received_at is uninitialized
+         */
+        uint64_t get_template_age_seconds() const {
+            if (canonical_received_at == std::chrono::steady_clock::time_point{}) {
+                return 0;
+            }
+            auto age = std::chrono::steady_clock::now() - canonical_received_at;
+            return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(age).count());
+        }
+
+        /**
+         * @brief True when template age exceeds the stale threshold (600s)
+         *
+         * Push-driven era last-resort timeout: node delivers a fresh template within
+         * ~2s of every tip advance, so 600s only fires as a dead-connection detector.
+         * Safely above 5-minute Prime block maximum.
+         *
+         * @return true if template age exceeds 600 seconds
+         */
+        bool is_template_age_stale() const {
+            constexpr uint64_t MAX_TEMPLATE_AGE_SECONDS = 600;
+            return get_template_age_seconds() > MAX_TEMPLATE_AGE_SECONDS;
+        }
+
+        /**
+         * @brief True when template age exceeds the warning threshold (300s)
+         *
+         * Proactive warning threshold to detect degraded connectivity before
+         * hitting the hard 600s timeout. Fires after Prime block window expires.
+         *
+         * @return true if template age exceeds 300 seconds
+         */
+        bool is_template_age_old() const {
+            constexpr uint64_t WARNING_TEMPLATE_AGE_SECONDS = 300;
+            return get_template_age_seconds() > WARNING_TEMPLATE_AGE_SECONDS;
+        }
+
+        /**
          * @brief True when the unified tip has moved beyond the height at which
          *        the current template was issued (hashPrevBlock is stale).
          *
@@ -289,6 +332,7 @@ public:
         uint32_t canonical_unified_height{0};
         uint32_t canonical_channel_height{0};
         uint1024_t canonical_hash_prev_block{}; ///< From canonical state (BLOCK_DATA decoded Tritium block)
+        std::chrono::steady_clock::time_point canonical_received_at{}; ///< When canonical template was received (for age calculation)
     };
 
     HeightTracker() = default;
