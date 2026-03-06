@@ -21,6 +21,10 @@
 namespace asio { class io_context; }
 
 namespace nexusminer {
+    class DualConnectionManager;
+}
+
+namespace nexusminer {
 
 namespace config { class Config; }
 namespace stats { class Collector; }
@@ -101,13 +105,15 @@ public:
      * @param socket Network socket for connections
      * @param stats_collector Statistics collector
      * @param node_label Human-readable label for this node (e.g., "PRIMARY", "SECONDARY")
+     * @param dcm DualConnectionManager for tracking lane health (optional)
      */
     NodeSession(
         std::shared_ptr<asio::io_context> io_context,
         Config& config,
         network::Socket::Sptr socket,
         std::shared_ptr<stats::Collector> stats_collector,
-        const std::string& node_label);
+        const std::string& node_label,
+        DualConnectionManager* dcm = nullptr);
 
     /**
      * @brief Connect to the node (both ports)
@@ -332,6 +338,9 @@ private:
     std::atomic<bool> m_primary_connected{false};
     std::atomic<bool> m_secondary_connected{false};
     std::atomic<bool> m_stopped{false};
+
+    // Lane health tracking
+    DualConnectionManager* m_dcm{nullptr};
 };
 
 } // namespace nexusminer

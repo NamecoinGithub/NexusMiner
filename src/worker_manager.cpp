@@ -126,7 +126,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             m_config,
             m_socket,
             m_stats_collector,
-            "PRIMARY");
+            "PRIMARY",
+            &m_sim_link);  // Pass DualConnectionManager for lane health tracking
 
         // Configure miner keys
         m_primary_node_session->set_miner_keys(pubkey, privkey);
