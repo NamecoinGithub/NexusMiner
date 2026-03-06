@@ -69,11 +69,13 @@ inline void Printer_file<PrinterType>::print()
         if (m_mining_mode == config::Mining_mode::HASH)
         {
             auto& hash_stats = std::get<Hash>(worker);
-            
+
             // Show 0.00 hashrate in degraded mode
             double hashrate = 0.0;
             if (!global_stats.m_degraded_mode) {
-                hashrate = (hash_stats.m_hash_count / static_cast<double>(m_stats_collector.get_elapsed_time_seconds().count())) / 1.0e6;
+                double elapsed_s = static_cast<double>(m_stats_collector.get_elapsed_time_seconds().count());
+                if (elapsed_s < 1.0) elapsed_s = 1.0;  // minimum 1 second guard
+                hashrate = (hash_stats.m_hash_count / elapsed_s) / 1.0e6;
             }
             
             ss << std::setprecision(2) << std::fixed << hashrate << "MH/s";
@@ -91,11 +93,13 @@ inline void Printer_file<PrinterType>::print()
         {
             auto& prime_stats = std::get<Prime>(worker);
             ss << std::setprecision(2) << std::fixed;
-            
+
             // Show 0.00 GISPS in degraded mode
             double gisps = 0.0;
             if (!global_stats.m_degraded_mode) {
-                gisps = (prime_stats.m_range_searched / (1.0e9 * static_cast<double>(m_stats_collector.get_elapsed_time_seconds().count())));
+                double elapsed_s = static_cast<double>(m_stats_collector.get_elapsed_time_seconds().count());
+                if (elapsed_s < 1.0) elapsed_s = 1.0;  // minimum 1 second guard
+                gisps = (prime_stats.m_range_searched / (1.0e9 * elapsed_s));
             }
             
             ss << gisps << " GISPS";
