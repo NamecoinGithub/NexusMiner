@@ -28,7 +28,7 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 	, m_pool_nbits{ 0 }
 	, m_gpu_initialized{false}
 {
-	
+
 	auto& worker_config_gpu = std::get<config::Worker_config_gpu>(m_config.m_worker_mode);
 	PrimeTests prime_test(worker_config_gpu.m_device);
 	//prime_test.math_test();
@@ -38,14 +38,26 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 	m_segmented_sieve->generate_small_prime_tables();
 	m_segmented_sieve->generate_trial_divisors();
 
+	// Start persistent thread
+	m_shutdown = false;
+	m_run_thread = std::thread(&Worker_prime::run, this);
+	m_logger->info(m_log_leader + "Persistent worker thread started");
 }
 
 Worker_prime::~Worker_prime() noexcept
 {
-	//make sure the run thread exits the loop
-	m_stop = true;
+	// Signal shutdown and wake up the worker thread
+	{
+		std::lock_guard<std::mutex> lock(m_mtx);
+		m_shutdown = true;
+		m_stop = true;  // Also set m_stop to interrupt mining loops
+	}
+	m_cv.notify_all();
+
+	// Wait for thread to finish
 	if (m_run_thread.joinable())
 		m_run_thread.join();
+
 	//free gpu memory
 	if (m_gpu_initialized)
 	{
