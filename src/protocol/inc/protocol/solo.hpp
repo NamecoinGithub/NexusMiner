@@ -5,6 +5,7 @@
 #include "protocol/falcon_wrapper.hpp"
 #include "protocol/chacha20_wrapper.hpp"
 #include "protocol/session_manager.hpp"
+#include "protocol/node_session_context.hpp"
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/height_tracker.hpp"
@@ -34,7 +35,7 @@ class Solo : public Protocol {
 public:
 
     Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
-         std::shared_ptr<asio::io_context> io_context);
+         std::shared_ptr<NodeSessionContext> session_context);
 
     void reset() override;
     network::Shared_payload login(Login_handler handler) override;
@@ -251,7 +252,12 @@ private:
     // Helper method to get channel manager for current channel
     mining::ClientChannelManager* get_channel_manager() const;
     mining::ClientChannelManager* get_channel_manager(uint32_t channel) const;
-    
+
+    // Helper to access SessionManager through NodeSessionContext
+    SessionManager* get_session_manager() const {
+        return m_session_context ? m_session_context->get_session_manager().get() : nullptr;
+    }
+
     // Integration helper functions (bridge MiningTemplateInterface and ClientChannelManager)
     /**
      * @brief Synchronize channel manager state with template interface
@@ -342,9 +348,10 @@ private:
     // ChaCha20 encryption wrapper for Falcon pubkey protection
     std::unique_ptr<ChaCha20Wrapper> m_chacha20_wrapper;
     bool m_enable_chacha20;  // ChaCha20 encryption (ALWAYS ON - core security for localhost + SessionID)
-    
-    // Session manager for adaptive cache management
-    std::shared_ptr<SessionManager> m_session_manager;
+
+    // Session context for centralized session management (passed from NodeSession)
+    // This is the authoritative source for session state shared across primary/secondary protocols
+    std::shared_ptr<NodeSessionContext> m_session_context;
 
     // KEEPALIVE_V2 (0xD100) send-side tracking:
     // The lo32 of hashPrevBlock that the miner put in its last KEEPALIVE_V2 frame.
