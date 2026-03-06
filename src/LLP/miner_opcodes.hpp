@@ -228,7 +228,20 @@ enum MinerOpcodes : std::uint8_t
     
     /** Keep session alive (heartbeat) */
     SESSION_KEEPALIVE = 212,
-    
+
+    /**
+     * SESSION_EXPIRED: Node notifies miner that session has expired
+     * Direction: Node -> Miner
+     * Payload: 5 bytes
+     *   [0-3] session_id (uint32_t, little-endian) - session that expired
+     *   [4]   reason_code (uint8_t) - 0x01 = EXPIRED_INACTIVITY
+     * Miner action:
+     *   - Clear local session state
+     *   - Stop workers
+     *   - Exponential backoff then re-authenticate on same connection
+     */
+    SESSION_EXPIRED = 221,
+
     // ============================================================================
     // STATELESS MINING REWARD BINDING (213-214)
     // Phase 2 encrypted reward address binding after Falcon auth
@@ -558,7 +571,12 @@ namespace StatelessMining {
     
     /** SESSION_KEEPALIVE: Mirror-mapped from legacy 212 → 0xD0D4 */
     constexpr uint16_t SESSION_KEEPALIVE = MirrorOpcode(LLP::SESSION_KEEPALIVE);  // 0xD0D4
-    
+
+    /** SESSION_EXPIRED: Mirror-mapped from legacy 221 → 0xD0DD
+     *  Node notifies miner that session has expired.
+     *  Payload: 5 bytes ([session_id:4B LE][reason:1B]) */
+    constexpr uint16_t SESSION_EXPIRED = MirrorOpcode(LLP::SESSION_EXPIRED);  // 0xD0DD
+
     /** NODE_SHUTDOWN: Mirror-mapped from legacy 255 → 0xD0FF
      *  Node sends graceful shutdown notice to miner.
      *  Payload: 1 byte (shutdown reason: GRACEFUL=0x01, MAINTENANCE=0x02) */
@@ -587,7 +605,15 @@ namespace StatelessMining {
         GRACEFUL    = 0x01,  // Normal shutdown
         MAINTENANCE = 0x02,  // Planned maintenance window
     };
-    
+
+    /**
+     * @enum SessionExpiredReason
+     * @brief Reasons why a session has expired (SESSION_EXPIRED payload byte)
+     */
+    enum SessionExpiredReason : uint8_t {
+        EXPIRED_INACTIVITY = 0x01,  // Session expired due to inactivity (no keepalive)
+    };
+
 } // namespace StatelessMining
 
 } // namespace LLP

@@ -232,7 +232,11 @@ private:
     // Returns true if a mismatch was detected (state set to EXPIRED, handler called);
     // caller must return immediately when true is returned.
     bool handle_session_id_mismatch(uint32_t ack_session_id);
-    
+
+    // Session expired handler — called when SESSION_EXPIRED (0xDD / 0xD0DD) packet is received
+    // Implements 5-step response: log, clear state, stop workers, prepare for re-auth
+    void handle_session_expired(uint32_t expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection);
+
     // Challenge-response authentication methods
     void handle_miner_auth_challenge(const Packet& packet);
     
