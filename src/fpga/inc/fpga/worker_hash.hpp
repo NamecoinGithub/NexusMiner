@@ -40,6 +40,7 @@ private:
     void start_read();
     void handle_read(const asio::error_code& error, std::size_t bytes_transferred);
     bool difficulty_check();
+    bool difficulty_check_with_skein(NexusSkein& local_skein, uint64_t nonce);
     void send_block_to_fpga();
 
     static constexpr int baud = 230400;

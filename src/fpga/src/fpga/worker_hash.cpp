@@ -136,7 +136,15 @@ void Worker_hash::handle_read(const asio::error_code& error_code, std::size_t by
 	if (!error_code && bytes_transferred == m_receive_nonce_buffer.size())
 	{
 		uint64_t nonce = bytesToInt<uint64_t>(m_receive_nonce_buffer);
-		if (m_starting_nonce - nonce == 1)
+
+		// Create snapshots of shared state to avoid race conditions with set_block()
+		uint64_t starting_nonce_snapshot;
+		{
+			std::scoped_lock<std::mutex> lck(m_mtx);
+			starting_nonce_snapshot = m_starting_nonce;
+		}
+
+		if (starting_nonce_snapshot - nonce == 1)
 		{
 			//the fpga MAY respond with starting nonce - 1 to acknowledge receipt of the work package.
 			m_logger->info(m_log_leader + "New block receipt acknowledged by FPGA.");
@@ -145,22 +153,34 @@ void Worker_hash::handle_read(const asio::error_code& error_code, std::size_t by
 		{
 			++m_nonce_candidates_recieved;
 			//m_logger->info(m_log_leader + "found a nonce candidate {}", nonce);
-			m_skein.setNonce(nonce);
-			//verify the difficulty
-			if (difficulty_check())
+
+			// Create a local copy of m_skein to avoid race conditions
+			NexusSkein local_skein = [this]() {
+				std::scoped_lock<std::mutex> lck(m_mtx);
+				return m_skein;
+			}();
+
+			local_skein.setNonce(nonce);
+
+			//verify the difficulty using local copy
+			if (difficulty_check_with_skein(local_skein, nonce))
 			{
 				++m_met_difficulty_count;
-				//update the block with the nonce and call the callback function;
-				m_block.nNonce = nonce;
+
+				// Capture nonce and block data for submission
+				Block_data block_snapshot;
 				{
 					std::scoped_lock<std::mutex> lck(m_mtx);
+					block_snapshot = m_block;
+					block_snapshot.nNonce = nonce;
+
 					if (m_found_nonce_callback)
 					{
 						m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
-						::asio::post(*m_io_context, [self = shared_from_this()]()
+						::asio::post(*m_io_context, [self = shared_from_this(), block = block_snapshot]()
 						{
-							self->m_found_nonce_callback(self->m_config.m_internal_id, 
-								std::make_unique<Block_data>(self->m_block));
+							self->m_found_nonce_callback(self->m_config.m_internal_id,
+								std::make_unique<Block_data>(block));
 						});
 					}
 					else
@@ -240,6 +260,57 @@ bool Worker_hash::difficulty_check()
 			//something is not right.  try resending the block header to the fpga
 			send_block_to_fpga();
 			
+		}
+		return false;
+	}
+}
+
+// Thread-safe version that takes a local Skein copy
+bool Worker_hash::difficulty_check_with_skein(NexusSkein& local_skein, uint64_t nonce)
+{
+	//perform additional difficulty filtering prior to submitting the nonce
+
+	// Get block data snapshot for difficulty calculation
+	uint32_t pool_nbits_snapshot;
+	uint32_t block_nbits_snapshot;
+	{
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		pool_nbits_snapshot = m_pool_nbits;
+		block_nbits_snapshot = m_block.nBits;
+	}
+
+	//leading zeros in bits required of the hash for it to pass the current difficulty.
+	int leadingZerosRequired;
+	uint64_t difficultyTest64;
+	decodeBits(pool_nbits_snapshot != 0 ? pool_nbits_snapshot : block_nbits_snapshot, leadingZerosRequired, difficultyTest64);
+	local_skein.calculateHash();
+	//run keccak on the result from skein
+	NexusKeccak keccak(local_skein.getHash());
+	keccak.calculateHash();
+	uint64_t keccakHash = keccak.getResult();
+	int hashActualLeadingZeros = 63 - findMSB(keccakHash);
+	m_logger->info(m_log_leader + "Found a candidate with {} leading zeros, {} required.", hashActualLeadingZeros, leadingZerosRequired);
+	if (hashActualLeadingZeros > m_best_leading_zeros)
+	{
+		m_best_leading_zeros = hashActualLeadingZeros;
+	}
+	//check the hash result is less than the difficulty.  We truncate to just use the upper 64 bits for easier calculation.
+	if (keccakHash <= difficultyTest64)
+	{
+		m_logger->info(m_log_leader + "Nonce passes difficulty check.");
+		return true;
+	}
+	else
+	{
+		//m_logger->warn(m_log_leader + "Nonce fails difficulty check.");
+		//check if the hash is less than the fixed difficulty.  This indicates a possible bad hash (hardware error) from the fpga.
+		if (hashActualLeadingZeros < fpga_leading_zero_threshold)
+		{
+			m_hash_error_count++;
+			m_logger->info(m_log_leader + "FPGA hash error detected.  Got {} leading zeros.  Expected {}.",hashActualLeadingZeros, fpga_leading_zero_threshold);
+			//something is not right.  try resending the block header to the fpga
+			// Note: Cannot call send_block_to_fpga() here as it would create a new async read chain
+			// The FPGA will be resynced on the next set_block() call
 		}
 		return false;
 	}
