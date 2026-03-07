@@ -274,7 +274,7 @@ system/get/info
 
 **Symptoms:**
 ```
-[Worker_manager] ❌ EMERGENCY (Hash channel): template 205s old — no push received
+[Worker_manager] ❌ EMERGENCY (Hash channel): template 305s old — no push received
 [Worker_manager]    channel_height 0 / channel_target 0 (chain not yet advanced in tracker)
 [Worker_manager]    Forcing hard recovery (discard + stop + retry)
 ```
@@ -282,21 +282,33 @@ system/get/info
 **Explanation:**
 
 The miner monitors template age to detect when the push-notification connection has gone dead.
-Both Prime and Hash channels share a single **200-second emergency timeout**, aligned with
-`MiningTemplateInterface::MAX_TEMPLATE_AGE`.
+There are two age thresholds:
 
-In the push-driven protocol the node pushes a fresh template within ~2 seconds of every
-unified chain tip advance.  Hash blocks advance the unified chain every ~18 seconds, so
-even during long Prime blocks the miner should receive pushes well within 200 seconds.
+- **`MAX_TEMPLATE_AGE_SECONDS` = 300 s** (`client_block.h`) — per-template validation gate in
+  `ClientChannelManager::ValidateTemplate()`.  This is the first line of defence: it rejects
+  a template that has not been refreshed by a push in 300 seconds.
+- **`TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS` = 600 s** (`protocol_constants.hpp`) — the
+  hard dead-connection detector.  If 600 seconds pass with no push the connection is
+  declared dead and a forced recovery is triggered.
 
-If 200 seconds pass without any push the connection is almost certainly dead, regardless
-of channel.  The miner will then:
+Both thresholds must be above any realistic block drought.  A 275 s drought with no block
+on **any** channel (Prime, Hash, or Stake combined) has been observed in production.  The
+300 s client-validation gate is set to be safely above this observed worst case.
+
+In the push-driven protocol the node pushes a fresh template within ~2 s of every unified
+chain tip advance.  Hash blocks advance the unified chain every ~18 s on average, but can
+take up to 300+ s when no block arrives on any channel.  Prime blocks typically take 2–10
+minutes, during which Hash blocks keep the template fresh.
+
+If 300 seconds pass without any push the `ClientChannelManager` will mark the template
+stale and request a new one via GET_BLOCK.  If 600 seconds pass the connection is declared
+dead and a hard recovery is forced.  The miner will then:
 1. Discard the stale template
 2. Stop all workers
 3. Re-request a fresh template (retry / re-subscribe)
 
-A warning is logged at **150 seconds** (50 seconds before the emergency threshold) to give
-operators an early signal.
+A warning is logged when the template approaches the emergency threshold to give operators
+an early signal.
 
 **Logging distinguishes two sub-cases:**
 
@@ -304,7 +316,8 @@ operators an early signal.
   chain advance were detected; clear emergency.
 - **Chain unchanged** — tracker shows no advance: push was missed while the chain was
   (apparently) still at the same height.  For Prime this *could* be a genuinely long
-  block, but 200 s without any hash-block push still indicates a dead connection.
+  block (2–10 min is normal), but 300 s without any hash-block push still indicates a
+  likely dead connection.
 
 **Solutions:**
 

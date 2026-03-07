@@ -11,7 +11,7 @@ tip advance (every new block on any channel) via `SendStatelessTemplate()` +
 ## Diagram 1 — Timeline: push-driven refresh vs age timeout
 
 ```
-t=0       t=2s      t=120s    t=200s    t=240s
+t=0       t=2s      t=120s    t=300s    t=320s
 │         │         │         │         │
 │ Push ✅ │ Push ✅  │ Push ✅  │ AGE     │ [dead link]
 │         │         │         │ TIMEOUT │
@@ -19,8 +19,10 @@ t=0       t=2s      t=120s    t=200s    t=240s
 ```
 
 In normal operation the node pushes a new template within ~2 s of each tip advance.
-The 200 s `MAX_TEMPLATE_AGE` / `MAX_TEMPLATE_AGE_SECONDS` only fires as a last-resort
-dead-connection detector when no push has been delivered for an unusually long time.
+The 300 s `MAX_TEMPLATE_AGE_SECONDS` only fires as a last-resort dead-connection detector
+when no push has been delivered for an unusually long time (above the 275 s observed
+real-world drought).  The higher-level emergency is at 600 s
+(`TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS` in `protocol_constants.hpp`).
 
 ---
 
@@ -29,12 +31,16 @@ dead-connection detector when no push has been delivered for an unusually long t
 ```
 Template age check
        │
-       ├─ age < 50 s  → mining normally, no action needed
-       ├─ 50 ≤ age < 200 s → WARNING logged; push expected imminently
-       └─ age ≥ 200 s → STALE; GET_BLOCK fallback fired (only if 6500ms rate-limit clears)
+       ├─ age < 300 s  → mining normally, no action needed
+       ├─ 300 ≤ age < 600 s → WARNING logged; push expected imminently
+       └─ age ≥ 300 s → STALE at client-validation level; GET_BLOCK fallback fired
+       └─ age ≥ 600 s → EMERGENCY (dead-connection detector); hard recovery forced
 ```
 
-`WARNING_TEMPLATE_AGE = 50 s` provides a proactive warning well before the 200 s hard timeout.
+`MAX_TEMPLATE_AGE_SECONDS = 300 s` (`client_block.h`) is the per-template validation gate.
+`TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS = 600 s` (`protocol_constants.hpp`) is the
+hard dead-connection detector — both thresholds must be above any realistic block drought
+(observed worst case: 275 s with no block on any channel).
 
 ---
 
@@ -75,16 +81,17 @@ Miner handles empty response gracefully — next push notification retries.
 ## Diagram 5 — Age constants before vs after
 
 ```
-                BEFORE (polling era)   AFTER (push-driven era)
-                ─────────────────────  ─────────────────────────
-MAX_TEMPLATE_AGE        600 s               200 s
-WARNING_TEMPLATE_AGE     50 s                50 s (unchanged)
-GET_BLOCK rate limit   6500 ms            none (node-side only)
-Push cooldown fallback  N/A               removed
-Node push throttle      N/A               2000 ms (node PR)
+                BEFORE (polling era)   AFTER (push-driven era, PR #348+)          Reason
+                ─────────────────────  ──────────────────────────────────          ──────────────────────────────────────
+MAX_TEMPLATE_AGE_SECONDS  600 s              300 s  (client validation gate)       Above 275 s observed drought; below 600 s emergency
+MAX_TEMPLATE_AGE           600 s              600 s  (connection-dead detector)     Unchanged — hard recovery threshold
+WARNING_TEMPLATE_AGE        50 s              300 s  (warn after 300 s drought)     Aligned with new client gate
+TEMPLATE_AGE_EMERGENCY     n/a               600 s  (hard recovery threshold)       Unchanged
 ```
 
-Files changed:
-- `src/mining/client_block.h` — `MAX_TEMPLATE_AGE_SECONDS`
-- `src/protocol/inc/protocol/mining_template_interface.hpp` — `MAX_TEMPLATE_AGE`, `WARNING_TEMPLATE_AGE`
+Files changed in **this PR** (raising client-validation gate above 275 s drought):
+- `src/mining/client_block.h` — `MAX_TEMPLATE_AGE_SECONDS` (200 → 300)
+
+Previously changed (for reference):
+- `src/protocol/inc/protocol/mining_template_interface.hpp` — `MAX_TEMPLATE_AGE` (600), `WARNING_TEMPLATE_AGE` (300)
 - `src/protocol/src/protocol/solo.cpp` — hashPrevBlock delta log
