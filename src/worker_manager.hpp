@@ -140,6 +140,12 @@ private:
     // health monitor escalates (stop workers → hard recovery).
     std::chrono::steady_clock::time_point m_recovery_started_at{};
 
+    // Time when degraded mode was first entered in the current outage.
+    // Set once by stop_all_workers() (first entry only); cleared by clear_recovery_state().
+    // Used by the escape ladder in check_template_health() to enforce hard time-based
+    // stage escalation (Stage 1 / Stage 2 / Stage 3 / hard limit).
+    std::chrono::steady_clock::time_point m_degraded_since{};
+
     // Time of the most recent GET_BLOCK sent by the health monitor during this
     // recovery epoch.  Used to rate-limit health-monitor resends to one per
     // RECOVERY_RESEND_INTERVAL (10 s) without stopping workers each time.

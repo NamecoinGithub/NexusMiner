@@ -116,6 +116,61 @@ namespace ProtocolConstants {
      */
     constexpr int64_t TEMPLATE_FEED_DEBOUNCE_MS = 2000;
 
+    //==========================================================================
+    // Degraded Mode Escape Ladder Constants
+    //==========================================================================
+
+    /**
+     * Push-notification liveness threshold (seconds)
+     *
+     * Aligns with KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS in worker_manager.cpp.
+     * If a push notification (PRIME/HASH_BLOCK_AVAILABLE) was received within
+     * this window, the TCP session is considered alive regardless of keepalive ACK
+     * silence — only retry GET_BLOCK, do NOT force a full TCP reconnect.
+     */
+    constexpr int64_t PUSH_LIVENESS_THRESHOLD_SECONDS = 300;
+
+    /**
+     * Degraded mode Stage 2 threshold (seconds)
+     *
+     * After this many seconds in degraded mode without a valid template, the
+     * escape ladder escalates from "just retry GET_BLOCK" (Stage 1) to
+     * "attempt explicit in-band re-authentication via login()" (Stage 2).
+     */
+    constexpr int64_t DEGRADED_MODE_STAGE2_SECONDS = 60;
+
+    /**
+     * Degraded mode Stage 3 threshold (seconds)
+     *
+     * After this many seconds in degraded mode without a valid template AND
+     * without recent push or keepalive ACK signals, the escape ladder escalates
+     * to a full TCP reconnect via retry_connect() (Stage 3).
+     */
+    constexpr int64_t DEGRADED_MODE_STAGE3_SECONDS = 180;
+
+    /**
+     * Degraded mode hard-limit timeout (seconds)
+     *
+     * Unconditional maximum time a miner may remain in degraded mode.
+     * After this limit, retry_connect() is forced regardless of any liveness
+     * signals. No miner should ever be stuck in degraded mode for this long.
+     */
+    constexpr int64_t DEGRADED_MODE_HARD_LIMIT_SECONDS = 300;
+
+    //==========================================================================
+    // Session ID Mismatch Threshold
+    //==========================================================================
+
+    /**
+     * Number of consecutive KEEPALIVE_V2_ACK session ID mismatches required
+     * before the miner self-expires its session.
+     *
+     * A single mismatch may be caused by a late/replayed ACK or a node-side
+     * race condition during re-authentication.  Only expire the session after
+     * this many consecutive mismatches with no intervening successful ACK.
+     */
+    constexpr uint32_t SESSION_MISMATCH_EXPIRE_THRESHOLD = 3;
+
 } // namespace ProtocolConstants
 
 } // namespace protocol
