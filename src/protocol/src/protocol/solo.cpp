@@ -3021,15 +3021,33 @@ bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
 {
     if (!get_session_manager() || ack_session_id == 0 ||
         ack_session_id == get_session_manager()->get_session_id())
+    {
+        // Reset mismatch counter on a successful session-ID match.
+        if (get_session_manager() && ack_session_id != 0 &&
+            ack_session_id == get_session_manager()->get_session_id())
+        {
+            m_session_id_mismatch_count = 0;
+        }
         return false;
+    }
 
-    m_logger->warn("[KEEPALIVE_V2] Session ID mismatch: ack.session_id=0x{:08x} != local=0x{:08x}"
-                   " — possible stale session after node restart",
-        ack_session_id, get_session_manager()->get_session_id());
-    get_session_manager()->set_state(SessionManager::SessionState::EXPIRED);
-    if (m_session_expired_handler)
-        m_session_expired_handler();
-    return true;
+    ++m_session_id_mismatch_count;
+    m_logger->warn("[KEEPALIVE_V2] Session ID mismatch #{}: ack=0x{:08x} != local=0x{:08x}"
+                   " — possible stale ACK or race condition (not self-expiring yet)",
+        m_session_id_mismatch_count, ack_session_id, get_session_manager()->get_session_id());
+
+    constexpr uint32_t THRESHOLD = protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD;
+    if (m_session_id_mismatch_count >= THRESHOLD) {
+        m_logger->error("[KEEPALIVE_V2] {} consecutive session ID mismatches — session presumed stale, expiring",
+                        m_session_id_mismatch_count);
+        m_session_id_mismatch_count = 0;
+        get_session_manager()->set_state(SessionManager::SessionState::EXPIRED);
+        if (m_session_expired_handler)
+            m_session_expired_handler();
+        return true;
+    }
+    return true;  // mismatch detected — caller must return to skip further ACK processing,
+                  // even though the session is not yet expired (threshold not reached)
 }
 
 void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection)

@@ -440,6 +440,72 @@ an early signal.
 
 ---
 
+## Stuck in Degraded Mode
+
+**Symptoms:**
+```
+[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)
+[Worker_manager] Mining stopped - waiting for valid template
+... (miner remains in degraded mode for 1-2+ hours without recovery)
+```
+
+**Explanation:**
+
+Degraded mode is entered when the miner has no valid mining template (e.g., after a node restart, session expiry, or network interruption). The miner uses a **3-stage escape ladder** with a hard time limit to guarantee recovery within 300 seconds.
+
+### Escape Ladder Stages
+
+| Stage | Trigger | Action |
+|-------|---------|--------|
+| **Stage 1** | 0–60 s in degraded | Retry GET_BLOCK (template request) — allow in-flight re-auth to complete |
+| **Stage 2** | 60–180 s, both keepalive ACK **and** push signals stale | Attempt explicit in-band re-authentication via `login()`, then retry GET_BLOCK |
+| **Stage 3** | > 180 s **and** both signals dead | Force full TCP reconnect via `retry_connect()` |
+| **Hard Limit** | > 300 s in degraded (any state) | **Unconditional** `retry_connect()` — no miner should be stuck longer than this |
+
+### Two-Signal Liveness Model
+
+Before escalating to a TCP reconnect, the miner checks two independent liveness signals:
+
+1. **KEEPALIVE_V2_ACK** — keepalive response from the node; stale if silent > 300 s
+2. **Push notifications** (`PRIME_BLOCK_AVAILABLE`, `BLOCK_DATA`) — updated by `HeightTracker::OnPushNotification()`; stale if silent > 300 s
+
+**If push notifications are arriving but keepalive ACK is silent:** The TCP session is demonstrably alive. The miner logs a warning and retries GET_BLOCK instead of tearing down the connection. This prevents spurious reconnects caused by a node-side keepalive responder issue.
+
+**If BOTH signals are stale for > 300 s:** The connection is presumed dead and `retry_connect()` is called.
+
+### Session ID Mismatch Handling
+
+When a `KEEPALIVE_V2_ACK` carries a session ID that doesn't match the miner's local session ID, the miner **does not immediately self-expire**. Instead:
+
+1. A mismatch counter is incremented and a warning is logged.
+2. After **3 consecutive mismatches** with no intervening successful ACK, the session is expired and re-authentication is triggered.
+3. A successful (matching) ACK resets the mismatch counter to 0.
+
+This prevents premature session expiry due to late/replayed ACKs or node-side race conditions during re-authentication.
+
+### Diagnostic Log Messages
+
+| Log Message | Meaning |
+|-------------|---------|
+| `Stage 1 (Xs in degraded): retrying recovery request` | Normal — waiting for GET_BLOCK response |
+| `Stage 2 (Xs in degraded, both signals stale) — attempting in-band re-authentication` | Retrying login on existing TCP connection |
+| `Stage 3 ESCALATION — forcing reconnect` | Both signals dead > 180 s; reconnecting |
+| `DEGRADED MODE HARD LIMIT — forcing reconnect` | Exceeded 300 s hard limit; reconnecting unconditionally |
+| `KEEPALIVE ACK STALE (Xs) but push received Xs ago — TCP session alive` | Push proving connection live; keepalive silent is a node-side issue |
+| `Session ID mismatch #N` | Counting mismatches; will expire after 3 consecutive mismatches |
+
+### Common Causes and Fixes
+
+1. **Node restarted:** The miner detects SESSION_EXPIRED and re-authenticates. Should recover within Stage 1 (< 60 s). If not, check node is accepting connections.
+
+2. **Network intermittent:** Push signals will be stale. Stage 2 triggers in-band re-auth; Stage 3 reconnects. Check network stability.
+
+3. **Node keepalive responder silent:** If push notifications still arrive but keepalive ACKs are silent, this is a node-side issue. The miner will NOT reconnect while pushes are arriving — it retries GET_BLOCK on the live session. Update the node software.
+
+4. **Miner stuck > 5 min:** Should never happen with the hard limit. If it does, check for crashes or deadlocks in the miner log.
+
+---
+
 ## Performance Problems
 
 ### "High CPU usage"

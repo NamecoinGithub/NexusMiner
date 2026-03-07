@@ -65,20 +65,20 @@ namespace {
     // Keepalive ACK guard: if an ACK was received within this many seconds of the
     // emergency timeout, the TCP connection is demonstrably alive and we defer the
     // hard recovery to avoid spurious stops during slow-block scenarios.
-    // 2× keepalive interval (keepalive every 45s → 90s guard).
-    constexpr int64_t KEEPALIVE_ACK_RECENT_THRESHOLD_SECONDS = 90;
+    // Aligned with KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS so a recent ACK also
+    // covers the full stale window; prevents spurious reconnects on slow nodes.
+    constexpr int64_t KEEPALIVE_ACK_RECENT_THRESHOLD_SECONDS = 300;
 
     // Colin agent: maximum acceptable seconds between keepalive ACK responses.
     // If no ACK is received for this long, the node may have dropped the session.
     constexpr int64_t KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS = 300;
 
     // Two-signal liveness model: secondary push-notification recency threshold.
-    // If a push notification (PRIME/HASH_BLOCK_AVAILABLE) was received within
-    // this many seconds, the TCP session is demonstrably alive and authenticated
-    // regardless of whether the KEEPALIVE_V2_ACK responder has gone silent.
-    // Only force a hard TCP reconnect when BOTH the keepalive ACK AND the last
-    // push notification are stale (no evidence the connection is alive at all).
-    constexpr int64_t PUSH_ALIVE_THRESHOLD_SECONDS = 120;
+    // Aligned with KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS: if a push notification
+    // (PRIME/HASH_BLOCK_AVAILABLE) was received within this window, the TCP session
+    // is demonstrably alive and authenticated regardless of keepalive ACK silence.
+    // Only force a hard TCP reconnect when BOTH signals are stale.
+    constexpr int64_t PUSH_ALIVE_THRESHOLD_SECONDS = protocol::ProtocolConstants::PUSH_LIVENESS_THRESHOLD_SECONDS;
 
     // Aggressive secondary reconnect delay during degraded mode.
     // Unified height drift threshold: if HeightTracker.unified_height exceeds
@@ -630,6 +630,20 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 {
                     m_logger->info("[Primary] Fresh session established on primary node: session_id=0x{:08x}",
                         session_id);
+                }
+
+                // Bug 4 fix: If we are in degraded/recovery mode (e.g. after in-band
+                // re-authentication following SESSION_EXPIRED), explicitly send GET_BLOCK
+                // to acquire a fresh template and exit degraded mode.  Without this call
+                // the miner has no way to escape degraded mode because workers can't be
+                // fed without a template and a template won't arrive without GET_BLOCK.
+                if (m_degraded_mode || m_recovery_pending) {
+                    m_logger->info("[Worker_manager] Re-authentication SUCCESS — "
+                                   "requesting fresh template to exit degraded mode");
+                    // Reset m_degraded_since so the escape ladder timer restarts cleanly
+                    // for this new authenticated session (avoids Stage 3 immediately firing).
+                    m_degraded_since = {};
+                    retry_template_request(true);
                 }
             }
         );
@@ -1252,6 +1266,7 @@ void Worker_manager::clear_recovery_state()
     m_recovery_last_get_block_sent_at = {};
     m_recovery_last_get_block_transmitted_at = {};
     m_recovery_get_block_transmitted = false;
+    m_degraded_since = {};  // Clear escape-ladder timer; next outage will re-anchor it
     // Note: m_recovery_workers_spawned is intentionally NOT reset here.
     // It is only reset in stop_all_workers() which actually destroys workers,
     // preventing a mid-recovery clear_recovery_state() call (e.g. from a
@@ -1277,6 +1292,13 @@ void Worker_manager::stop_all_workers()
     // Set degraded mode flag
     m_degraded_mode = true;
     m_template_withheld = false;  // Full stop supersedes soft-pause
+
+    // Record when degraded mode was first entered (only on first entry — not overwritten
+    // by subsequent stop_all_workers() calls within the same outage, so the escape ladder
+    // measures wall-clock time from the true start of the outage).
+    if (m_degraded_since == std::chrono::steady_clock::time_point{}) {
+        m_degraded_since = std::chrono::steady_clock::now();
+    }
     
     // Update stats to reflect degraded mode
     auto global_stats = m_stats_collector->get_global_stats();
@@ -1363,54 +1385,98 @@ void Worker_manager::check_template_health()
     }
 
     if (!template_interface->has_valid_template()) {
-        // In degraded mode with no valid template — retry recovery to prevent permanent lockout.
+        // In degraded mode with no valid template — apply escape ladder to prevent permanent lockout.
         if (m_degraded_mode) {
+            auto now = std::chrono::steady_clock::now();
             auto ht_snap = solo_protocol->get_height_tracker_snapshot();
 
-            // Two-signal liveness check: the KEEPALIVE_V2_ACK responder and push
-            // notifications are independent signals.  Push notifications (BLOCK_AVAILABLE)
-            // prove the TCP session is alive and authenticated — even if the node-side
-            // keepalive responder has gone silent.  Only force a full TCP reconnect when
-            // BOTH signals are stale; if pushes are still arriving, retry the template
-            // request instead (node-side keepalive responder issue, not a dead connection).
+            // Belt-and-suspenders: ensure m_degraded_since is stamped even if stop_all_workers()
+            // was somehow bypassed (e.g. direct m_degraded_mode = true assignment in tests).
+            if (m_degraded_since == std::chrono::steady_clock::time_point{}) {
+                m_degraded_since = now;
+            }
+            auto degraded_duration = std::chrono::duration_cast<std::chrono::seconds>(
+                now - m_degraded_since).count();
+
+            // Compute liveness signals from HeightTracker snapshot.
             bool keepalive_ack_received = (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
-            if (keepalive_ack_received) {
-                auto since_ack_s = std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count();
-                if (since_ack_s > KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS && m_primary_node_session) {
-                    // Secondary liveness check: were push notifications received recently?
-                    bool push_received = (ht_snap.last_height_update != std::chrono::steady_clock::time_point{});
-                    int64_t since_push_s = push_received
-                        ? std::chrono::duration_cast<std::chrono::seconds>(
-                            std::chrono::steady_clock::now() - ht_snap.last_height_update).count()
-                        : INT64_MAX;
-                    bool push_recent = push_received && (since_push_s < PUSH_ALIVE_THRESHOLD_SECONDS);
+            int64_t since_ack_s = keepalive_ack_received
+                ? std::chrono::duration_cast<std::chrono::seconds>(now - ht_snap.last_keepalive_ack_at).count()
+                : INT64_MAX;
+            bool ack_recent = keepalive_ack_received && (since_ack_s <= KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS);
 
-                    if (push_recent) {
-                        // TCP session is provably alive — pushes are arriving.
-                        // The KEEPALIVE_V2_ACK responder has gone silent (a node-side
-                        // issue), but there is no reason to tear down the connection.
-                        // Retry the template request without forcing a reconnect.
-                        m_logger->warn("[Worker_manager] KEEPALIVE ACK STALE ({}s) but push "
-                                       "notifications received {}s ago — TCP session alive, "
-                                       "retrying template request (node-side keepalive responder "
-                                       "may be malfunctioning)",
-                                       since_ack_s, since_push_s);
-                        retry_template_request(true);
-                        return;
+            bool push_received = (ht_snap.last_height_update != std::chrono::steady_clock::time_point{});
+            int64_t since_push_s = push_received
+                ? std::chrono::duration_cast<std::chrono::seconds>(now - ht_snap.last_height_update).count()
+                : INT64_MAX;
+            bool push_recent = push_received && (since_push_s <= PUSH_ALIVE_THRESHOLD_SECONDS);
+
+            // ── Hard limit: unconditionally reconnect after DEGRADED_MODE_HARD_LIMIT_SECONDS ──
+            if (degraded_duration > protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS) {
+                m_logger->error("[Worker_manager] ⛔ DEGRADED MODE HARD LIMIT ({}s > {}s) — forcing reconnect "
+                               "(last ACK {}s ago, last push {}s ago)",
+                               degraded_duration, protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS,
+                               keepalive_ack_received ? since_ack_s : static_cast<int64_t>(-1),
+                               push_received ? since_push_s : static_cast<int64_t>(-1));
+                retry_connect(m_primary_endpoint);
+                return;
+            }
+
+            // ── Stage 3 (>180s AND both signals stale): true dead connection ────────────────
+            if (degraded_duration > protocol::ProtocolConstants::DEGRADED_MODE_STAGE3_SECONDS &&
+                !ack_recent && !push_recent && m_primary_node_session)
+            {
+                m_logger->error("[Worker_manager] Stage 3 ESCALATION ({}s in degraded, both signals dead) — "
+                               "forcing reconnect (last ACK {}s ago, last push {}s ago)",
+                               degraded_duration,
+                               keepalive_ack_received ? since_ack_s : static_cast<int64_t>(-1),
+                               push_received ? since_push_s : static_cast<int64_t>(-1));
+                retry_connect(m_primary_endpoint);
+                return;
+            }
+
+            // ── Bug 1 fix: stale keepalive ACK but push is still arriving ────────────────────
+            // The TCP session is demonstrably alive (push notifications proving authenticated
+            // connection).  Do NOT tear down — just retry GET_BLOCK on the live session.
+            if (keepalive_ack_received && since_ack_s > KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS && push_recent) {
+                m_logger->warn("[Worker_manager] ⚠️  KEEPALIVE ACK STALE ({}s) but push received {}s ago — "
+                               "TCP session alive, retrying template request (node-side responder silent)",
+                               since_ack_s, since_push_s);
+                retry_template_request(true);
+                return;
+            }
+
+            // ── Stage 2 (60s–180s, both signals stale): attempt in-band re-auth ─────────────
+            if (degraded_duration > protocol::ProtocolConstants::DEGRADED_MODE_STAGE2_SECONDS &&
+                !ack_recent && !push_recent && m_primary_node_session)
+            {
+                auto primary_protocol = m_primary_node_session->get_primary_protocol();
+                if (primary_protocol) {
+                    m_logger->warn("[Worker_manager] Stage 2 ({}s in degraded, both signals stale) — "
+                                   "attempting in-band re-authentication via login()", degraded_duration);
+                    auto auth_payload = primary_protocol->login([weak_self = weak_from_this()](bool login_result) {
+                        auto self = weak_self.lock();
+                        if (!self) return;
+                        if (!login_result) {
+                            self->m_logger->error("[Worker_manager] Stage 2 re-auth login() failed");
+                        } else {
+                            self->m_logger->info("[Worker_manager] Stage 2 re-auth login() sent, "
+                                                 "awaiting MINER_AUTH_RESULT");
+                        }
+                    });
+                    if (auth_payload && !auth_payload->empty()) {
+                        m_primary_node_session->transmit(auth_payload);
+                    } else {
+                        m_logger->error("[Worker_manager] Stage 2 re-auth: failed to generate payload");
                     }
-
-                    // Both keepalive ACK and push notifications are stale — session is dead.
-                    m_logger->error("[Worker_manager] KEEPALIVE TIMEOUT — session presumed dead "
-                                   "(last ACK {}s ago, last push {}s ago), forcing reconnect",
-                                   since_ack_s,
-                                   push_received ? since_push_s : static_cast<int64_t>(-1));
-                    retry_connect(m_primary_endpoint);
-                    return;
                 }
             }
 
-            m_logger->warn("[Worker_manager] ⚠️  DEGRADED MODE: no valid template — retrying recovery request");
+            // ── Stage 1 (< 60s) or Stage 2 fallback: retry GET_BLOCK and wait ───────────────
+            m_logger->warn("[Worker_manager] ⚠️  DEGRADED MODE ({}s): no valid template — "
+                           "retrying recovery request (stage {})",
+                           degraded_duration,
+                           degraded_duration > protocol::ProtocolConstants::DEGRADED_MODE_STAGE2_SECONDS ? 2 : 1);
             retry_template_request(true);
         }
         return;

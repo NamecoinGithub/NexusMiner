@@ -344,6 +344,13 @@ private:
     std::uint64_t m_auth_timestamp;  // Timestamp for auth message
     AuthState m_auth_state;  // Authentication state machine
     std::string m_miner_id;  // Miner identifier (optional)
+
+    // Consecutive KEEPALIVE_V2_ACK session-ID mismatch counter.
+    // Incremented each time handle_session_id_mismatch() detects a mismatch;
+    // reset to zero on a successful (matching) ACK.  The session is only
+    // self-expired once this reaches SESSION_MISMATCH_EXPIRE_THRESHOLD,
+    // preventing premature expiry on late/replayed ACKs or node-side races.
+    uint32_t m_session_id_mismatch_count{0};
     
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
