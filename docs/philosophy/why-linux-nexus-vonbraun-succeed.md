@@ -206,3 +206,10 @@ NexusMiner is building that culture. PR #348 is evidence. This document is evide
 ---
 
 > **Continue reading:** [Chapter II — Cycles of Development vs. the Void](chapter-ii-cycles-and-dual-use.md)
+
+---
+
+**Series:**
+- [Chapter 1: Why NexusMiner Development is Perfect for AI-Human Collaboration](why-ai-human-wins.md)
+- Chapter 2: Why Linux, Nexus, and Werner Von Braun Succeed *(this document)*
+- [Chapter 3: Ukraine, Open-Source Warfare, and the Sovereign Self](chapter-3-ukraine-open-warfare-sovereign-self.md)

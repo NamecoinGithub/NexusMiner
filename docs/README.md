@@ -42,5 +42,6 @@
 | **Cheat Sheets** | [cheat-sheets/testing-guide.md](cheat-sheets/testing-guide.md) | Test generation guide |
 | **AI Collab** | [diagrams/ai-collaboration/miner-dev-guide.md](diagrams/ai-collaboration/miner-dev-guide.md) | AI-Human development framework |
 | **Philosophy** | [philosophy/why-ai-human-wins.md](philosophy/why-ai-human-wins.md) | AI-human collaboration model |
-| **Philosophy** | [philosophy/why-linux-nexus-vonbraun-succeed.md](philosophy/why-linux-nexus-vonbraun-succeed.md) | Linux, Nexus, Von Braun — why autodidact engineering wins |
+| **Philosophy** | [philosophy/why-linux-nexus-vonbraun-succeed.md](philosophy/why-linux-nexus-vonbraun-succeed.md) | Open engineering, Saturn V standard |
+| **Philosophy** | [philosophy/chapter-3-ukraine-open-warfare-sovereign-self.md](philosophy/chapter-3-ukraine-open-warfare-sovereign-self.md) | Ukraine, open-source warfare, sovereign identity |
 | **Philosophy** | [philosophy/chapter-ii-cycles-and-dual-use.md](philosophy/chapter-ii-cycles-and-dual-use.md) | Chapter II — Cycles of development vs. the void; the dual-use principle |
