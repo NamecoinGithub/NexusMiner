@@ -270,6 +270,45 @@ system/get/info
 
 ---
 
+### "KEEPALIVE ACK stale but push notifications arriving"
+
+**Symptoms:**
+```
+[Worker_manager] KEEPALIVE ACK STALE (420s) but push notifications received 12s ago — TCP session alive, retrying template request (node-side keepalive responder may be malfunctioning)
+```
+
+**Explanation:**
+
+NexusMiner uses a **two-signal liveness model** to avoid false "session dead" detection:
+
+| Signal | What it proves | When it can go silent |
+|--------|---------------|-----------------------|
+| `KEEPALIVE_V2_ACK` | Node's keepalive responder is answering | Node-side bug, rate limiting, or responder hang |
+| Push notifications (`PRIME/HASH_BLOCK_AVAILABLE`) | TCP session is alive & authenticated | Only when the TCP connection is actually dead |
+
+If push notifications are arriving on a connection, the TCP session is demonstrably alive —
+the miner will **not** tear it down just because `KEEPALIVE_V2_ACK` responses have gone silent.
+Instead, it retries the template request (`retry_template_request`) and logs a warning.
+
+A full TCP reconnect (`retry_connect`) is only triggered when **both** signals are stale:
+- No `KEEPALIVE_V2_ACK` for > 300 seconds, **AND**
+- No push notifications received for > 120 seconds
+
+**What to investigate:**
+
+1. **Node-side keepalive responder:** The node may have a bug or rate-limiting issue causing
+   it to stop sending `KEEPALIVE_V2_ACK` responses while still serving block push notifications.
+   Check node logs for keepalive-related errors.
+
+2. **No further action if mining continues:** If the miner continues to receive push
+   notifications and template updates, mining will proceed normally. The stale ACK warning
+   is informational — the connection is healthy.
+
+3. **If both signals go stale:** If push notifications also stop arriving (> 120s), a full
+   reconnect will be triggered automatically.
+
+---
+
 ### "Template age exceeds emergency timeout"
 
 **Symptoms:**

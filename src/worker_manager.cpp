@@ -72,6 +72,14 @@ namespace {
     // If no ACK is received for this long, the node may have dropped the session.
     constexpr int64_t KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS = 300;
 
+    // Two-signal liveness model: secondary push-notification recency threshold.
+    // If a push notification (PRIME/HASH_BLOCK_AVAILABLE) was received within
+    // this many seconds, the TCP session is demonstrably alive and authenticated
+    // regardless of whether the KEEPALIVE_V2_ACK responder has gone silent.
+    // Only force a hard TCP reconnect when BOTH the keepalive ACK AND the last
+    // push notification are stale (no evidence the connection is alive at all).
+    constexpr int64_t PUSH_ALIVE_THRESHOLD_SECONDS = 120;
+
     // Aggressive secondary reconnect delay during degraded mode.
     // Unified height drift threshold: if HeightTracker.unified_height exceeds
     // template.block.nHeight by more than this many blocks, the template is
@@ -1359,16 +1367,44 @@ void Worker_manager::check_template_health()
         if (m_degraded_mode) {
             auto ht_snap = solo_protocol->get_height_tracker_snapshot();
 
-            // Bug 2 fix: If keepalive ACK is stale (>KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS)
-            // AND we're in degraded mode, the session is presumed dead — force a full TCP
-            // reconnect instead of retrying GET_BLOCK on a dead session.
+            // Two-signal liveness check: the KEEPALIVE_V2_ACK responder and push
+            // notifications are independent signals.  Push notifications (BLOCK_AVAILABLE)
+            // prove the TCP session is alive and authenticated — even if the node-side
+            // keepalive responder has gone silent.  Only force a full TCP reconnect when
+            // BOTH signals are stale; if pushes are still arriving, retry the template
+            // request instead (node-side keepalive responder issue, not a dead connection).
             bool keepalive_ack_received = (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
             if (keepalive_ack_received) {
                 auto since_ack_s = std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count();
                 if (since_ack_s > KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS && m_primary_node_session) {
+                    // Secondary liveness check: were push notifications received recently?
+                    bool push_received = (ht_snap.last_height_update != std::chrono::steady_clock::time_point{});
+                    int64_t since_push_s = push_received
+                        ? std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::steady_clock::now() - ht_snap.last_height_update).count()
+                        : INT64_MAX;
+                    bool push_recent = push_received && (since_push_s < PUSH_ALIVE_THRESHOLD_SECONDS);
+
+                    if (push_recent) {
+                        // TCP session is provably alive — pushes are arriving.
+                        // The KEEPALIVE_V2_ACK responder has gone silent (a node-side
+                        // issue), but there is no reason to tear down the connection.
+                        // Retry the template request without forcing a reconnect.
+                        m_logger->warn("[Worker_manager] KEEPALIVE ACK STALE ({}s) but push "
+                                       "notifications received {}s ago — TCP session alive, "
+                                       "retrying template request (node-side keepalive responder "
+                                       "may be malfunctioning)",
+                                       since_ack_s, since_push_s);
+                        retry_template_request(true);
+                        return;
+                    }
+
+                    // Both keepalive ACK and push notifications are stale — session is dead.
                     m_logger->error("[Worker_manager] KEEPALIVE TIMEOUT — session presumed dead "
-                                   "(last ACK {}s ago), forcing reconnect", since_ack_s);
+                                   "(last ACK {}s ago, last push {}s ago), forcing reconnect",
+                                   since_ack_s,
+                                   push_received ? since_push_s : static_cast<int64_t>(-1));
                     retry_connect(m_primary_endpoint);
                     return;
                 }
