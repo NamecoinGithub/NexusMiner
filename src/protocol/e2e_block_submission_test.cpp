@@ -550,9 +550,9 @@ static void test_e2e_payload_info_hash_unsigned() {
     // For unsigned submit, plaintext = block bytes only (216)
     auto info = StatelessBlockUtility::compute_submit_payload_info(2, 216, 0);
 
-    // Unsigned: expected_plaintext_size = 216 + 0 + 8 + 2 + 0 = 226.
-    // But unsigned path has NO timestamp/sig fields — just 216 bytes.
-    // PayloadInfo is designed for the signed path; for unsigned, check actual size.
+    // For unsigned submit, plaintext = block bytes only (216), since
+    // timestamp/sig_len/signature are only added in the signed path.
+    // SubmitBlockPayloadInfo is designed for the signed path sizing.
     bool actual_ok = (plaintext.size() == StatelessBlockUtility::BLOCK_BODY_SIZE);
 
     // Encrypt and verify encrypted size

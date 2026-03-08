@@ -679,10 +679,13 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // Compute payload metadata from live data — offset_bytes_count is derived
     // from real block_data, not defaulted to 0.
     const size_t live_offset_bytes = vOffsets.size();
-    // Signature size: plaintext includes block + offsets + ts(8) + sig_len(2) + sig.
+    // Signature size: in the signed path, plaintext includes
+    // block + offsets + timestamp(8) + sig_len(2) + signature.
     // If unsigned (no Falcon), signature_size = 0 and plaintext = block + offsets only.
     const size_t block_plus_offsets = StatelessBlockUtility::BLOCK_BODY_SIZE + live_offset_bytes;
-    const size_t sig_size = (plaintextPayload.size() > block_plus_offsets + 10)
+    // Minimum signed overhead = timestamp(8) + sig_len_field(2) = 10 bytes
+    constexpr size_t MIN_SIGNED_OVERHEAD = 8 + 2;
+    const size_t sig_size = (plaintextPayload.size() > block_plus_offsets + MIN_SIGNED_OVERHEAD)
         ? (plaintextPayload.size() - block_plus_offsets - 8 - 2)  // signed: subtract ts + sig_len
         : 0;  // unsigned or too small for signature fields
 

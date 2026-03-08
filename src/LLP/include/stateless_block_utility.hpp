@@ -97,9 +97,17 @@ struct DecodedTemplate {
  * Computes expected plaintext and encrypted sizes from real inputs rather
  * than assuming a universal fixed Tritium payload size.
  *
- * Hash:   plaintext = base_block_size + timestamp_size + sig_len_field_size + signature_size
- * Prime:  plaintext = base_block_size + offset_bytes_count + timestamp_size + sig_len_field_size + signature_size
- * encrypted = plaintext + CHACHA20_OVERHEAD (nonce 12 + tag 16 = 28)
+ * For **signed** submissions (Falcon wrapper active):
+ *   Hash:   plaintext = base_block_size + timestamp_size + sig_len_field_size + signature_size
+ *   Prime:  plaintext = base_block_size + offset_bytes_count + timestamp_size + sig_len_field_size + signature_size
+ *   encrypted = plaintext + CHACHA20_OVERHEAD (nonce 12 + tag 16 = 28)
+ *
+ * For unsigned submissions (falcon == nullptr), the actual plaintext is just
+ * base_block_size (Hash) or base_block_size + offset_bytes_count (Prime),
+ * without timestamp/sig fields.  In that case set signature_size = 0 and note
+ * that expected_plaintext_size() will include the timestamp + sig_len overhead
+ * of 10 bytes even though they are absent; callers should check the actual
+ * plaintext size directly for unsigned payloads.
  */
 struct SubmitBlockPayloadInfo
 {
