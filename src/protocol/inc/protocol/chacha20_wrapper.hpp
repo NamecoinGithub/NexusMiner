@@ -19,10 +19,47 @@ namespace protocol {
  * - MANDATORY for public/remote mining (HTTPS/TLS communication)
  * 
  * The wrapper uses OpenSSL's EVP interface for ChaCha20-Poly1305 AEAD encryption.
+ *
+ * Canonical SUBMIT_BLOCK wire format (Tritium Falcon-1024):
+ *   Plaintext : [block(216)][timestamp(8 LE)][sig_len(2 LE)][Falcon-1024 sig(1577)]
+ *               = 1803 bytes
+ *   Encrypted : [nonce(12)][ciphertext(1803)][Poly1305 tag(16)]
+ *               = 1831 bytes
+ *
+ * Use encrypt_submit_block_payload() to enforce this layout in one place.
  */
 class ChaCha20Wrapper {
 public:
-    
+
+    // =========================================================================
+    // Tritium Falcon-1024 SUBMIT_BLOCK canonical wire-format constants
+    // (matches LLL-TAO src/LLP/include/falcon_constants.h)
+    // =========================================================================
+
+    /** 216-byte serialised Tritium block header */
+    static constexpr size_t TRITIUM_BLOCK_SIZE             = 216;
+    /** Submission timestamp field (8 bytes, little-endian) */
+    static constexpr size_t SUBMIT_TIMESTAMP_SIZE          = 8;
+    /** Signature length field (2 bytes, little-endian) */
+    static constexpr size_t SUBMIT_SIGLEN_FIELD_SIZE       = 2;
+    /** Falcon-1024 constant-time signature size */
+    static constexpr size_t FALCON1024_CT_SIG_SIZE         = 1577;
+    /** Expected plaintext for a Falcon-1024 Tritium full-block submission */
+    static constexpr size_t TRITIUM_F1024_PLAINTEXT_EXPECTED =
+        TRITIUM_BLOCK_SIZE + SUBMIT_TIMESTAMP_SIZE +
+        SUBMIT_SIGLEN_FIELD_SIZE + FALCON1024_CT_SIG_SIZE; // 1803
+
+    /** ChaCha20-Poly1305 nonce size (prepended to encrypted output) */
+    static constexpr size_t CHACHA20_NONCE_SIZE            = 12;
+    /** Poly1305 authentication tag size (appended to encrypted output) */
+    static constexpr size_t CHACHA20_TAG_SIZE              = 16;
+    /** Total overhead added by encrypt_submit_block_payload() */
+    static constexpr size_t CHACHA20_OVERHEAD              =
+        CHACHA20_NONCE_SIZE + CHACHA20_TAG_SIZE; // 28
+    /** Expected encrypted output for a Falcon-1024 Tritium full-block submission */
+    static constexpr size_t TRITIUM_F1024_ENCRYPTED_EXPECTED =
+        TRITIUM_F1024_PLAINTEXT_EXPECTED + CHACHA20_OVERHEAD; // 1831
+
     /**
      * @brief Encryption/Decryption result structure
      */
@@ -97,6 +134,35 @@ public:
                                       const std::vector<uint8_t>& session_key,
                                       const std::vector<uint8_t>& nonce);
     
+    /**
+     * @brief Build and encrypt a canonical Tritium full-block SUBMIT_BLOCK payload.
+     *
+     * This is the SINGLE authoritative place where the Tritium Falcon-1024
+     * submit-block wire format is assembled and encrypted.  Callers supply the
+     * pre-built plaintext (already containing the serialised block, timestamp,
+     * sig_len field, and Falcon signature) and the session key; this method
+     * validates the sizes, generates a fresh nonce, and returns:
+     *
+     *   [nonce(12)][ciphertext(plaintext_size)][Poly1305 tag(16)]
+     *
+     * Size invariants (enforced with log warnings/errors):
+     *   - Expected plaintext : TRITIUM_F1024_PLAINTEXT_EXPECTED (1803) bytes
+     *   - Expected ciphertext: TRITIUM_F1024_ENCRYPTED_EXPECTED (1831) bytes
+     *
+     * The canonical plaintext layout (built by the caller) must be:
+     *   [block(216)][timestamp(8 LE)][sig_len(2 LE)][Falcon-1024 sig(1577)]
+     *
+     * AAD for SUBMIT_BLOCK is always empty ({}) — matching the node-side
+     * LLC::DecryptPayloadChaCha20() call which passes no AAD.
+     *
+     * @param plaintext   Pre-assembled SUBMIT_BLOCK plaintext payload.
+     * @param session_key 32-byte ChaCha20 session key derived at login.
+     * @return CryptoResult with data=[nonce][ciphertext][tag] on success.
+     */
+    CryptoResult encrypt_submit_block_payload(
+        const std::vector<uint8_t>& plaintext,
+        const std::vector<uint8_t>& session_key);
+
     /**
      * @brief Generate random nonce for ChaCha20
      * 
