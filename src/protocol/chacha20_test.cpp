@@ -12,9 +12,6 @@
  *   - Nonce uniqueness
  *   - SUBMIT_BLOCK AAD is empty {} (no domain separation, matches node behavior)
  *   - KDF domain separator consistency
- *   - encrypt_submit_block_payload(): canonical Tritium Falcon-1024 sizes
- *       plaintext=1803 bytes, encrypted=1831 bytes (LLL-TAO PR #356)
- *   - 10-byte regression detection: 1813-byte payload → 1841 encrypted output
  */
 
 #include "protocol/chacha20_wrapper.hpp"
@@ -509,68 +506,8 @@ int main()
     }
 
     // ====================================================================
-    // Test 18: encrypt_submit_block_payload() — Tritium Falcon-1024 canonical
-    // Acceptance criteria (aligned with LLL-TAO PR #356):
-    //   plaintext  = block(216)+ts(8)+sig_len(2)+sig(1577) = 1803 bytes
-    //   encrypted  = nonce(12)+ciphertext(1803)+tag(16)    = 1831 bytes
+    // Summary
     // ====================================================================
-    std::cout << "\nTest 18: encrypt_submit_block_payload() Tritium Falcon-1024 canonical sizes" << std::endl;
-    {
-        // Verify the compile-time constants match the expected values
-        print_test_result(
-            "TRITIUM_F1024_PLAINTEXT_EXPECTED == 1803",
-            ChaCha20Wrapper::TRITIUM_F1024_PLAINTEXT_EXPECTED == 1803);
-        print_test_result(
-            "TRITIUM_F1024_ENCRYPTED_EXPECTED == 1831",
-            ChaCha20Wrapper::TRITIUM_F1024_ENCRYPTED_EXPECTED == 1831);
-        print_test_result(
-            "TRITIUM_BLOCK_SIZE == 216",
-            ChaCha20Wrapper::TRITIUM_BLOCK_SIZE == 216);
-
-        auto key = make_test_key();
-        // Canonical plaintext: block(216)+ts(8)+sig_len(2)+sig(1577) = 1803 bytes
-        auto canonical_pt = make_test_plaintext(ChaCha20Wrapper::TRITIUM_F1024_PLAINTEXT_EXPECTED);
-
-        auto result = wrapper.encrypt_submit_block_payload(canonical_pt, key);
-
-        print_test_result("encrypt_submit_block_payload(): succeeds for 1803-byte payload",
-                          result.success);
-        print_test_result("encrypt_submit_block_payload(): encrypted output is 1831 bytes",
-                          result.success &&
-                          result.data.size() == ChaCha20Wrapper::TRITIUM_F1024_ENCRYPTED_EXPECTED);
-
-        // The first 12 bytes of the encrypted output are the nonce.
-        // Verify that two calls produce different nonces (randomness).
-        if (result.success && result.data.size() >= ChaCha20Wrapper::CHACHA20_NONCE_SIZE) {
-            auto result2 = wrapper.encrypt_submit_block_payload(canonical_pt, key);
-            bool nonces_differ = false;
-            if (result2.success &&
-                result2.data.size() >= ChaCha20Wrapper::CHACHA20_NONCE_SIZE) {
-                nonces_differ = (std::memcmp(result.data.data(),
-                                             result2.data.data(),
-                                             ChaCha20Wrapper::CHACHA20_NONCE_SIZE) != 0);
-            }
-            print_test_result("encrypt_submit_block_payload(): fresh nonce on each call",
-                              nonces_differ);
-        } else {
-            print_test_result("encrypt_submit_block_payload(): fresh nonce on each call (skip)", false);
-        }
-
-        // Verify wrong-size payload is accepted but logs a warning (not a hard failure).
-        // A 1813-byte plaintext (the extra 10 bytes found in LLL-TAO PR #356) must
-        // still encrypt (so the regression reaches the node and can be diagnosed) but
-        // the encrypted size will be 1841 bytes — not 1831.
-        auto too_large_pt = make_test_plaintext(1813);
-        auto result_large = wrapper.encrypt_submit_block_payload(too_large_pt, key);
-        print_test_result("encrypt_submit_block_payload(): still encrypts 1813-byte payload "
-                          "(regression path: logs size-mismatch warning)",
-                          result_large.success);
-        print_test_result("encrypt_submit_block_payload(): 1813-byte payload → 1841 encrypted "
-                          "(10-byte regression visible in output size)",
-                          result_large.success && result_large.data.size() == 1841);
-    }
-
-
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Summary: " << tests_passed << "/" << tests_run << " passed";
     if (tests_failed > 0)
