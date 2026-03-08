@@ -614,6 +614,93 @@ static void test_e2e_payload_info_prime_pipeline() {
 }
 
 
+// ── Test 18: E2E via encrypt_submit_block_payload() — canonical wrapper path ─
+// Validates: encode_submit → compute_submit_payload_info → encrypt_submit_block_payload
+// covers both Hash and Prime channels; verifies single-call [nonce][ct][tag] output.
+static void test_e2e_encrypt_submit_block_payload() {
+    std::vector<uint8_t> genesis(32, 0xAB);
+    auto session_key = derive_session_key(genesis);
+    ChaCha20Wrapper wrapper;
+
+    // ── Case A: Hash channel (unsigned, no Falcon) ────────────────────────
+    {
+        auto mti  = make_loaded_mti(2);   // Hash
+        auto blk  = make_solved_block(2);
+        auto snap = make_snapshot();
+
+        auto submit = StatelessBlockUtility::encode_submit(
+            *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        if (!submit.valid) {
+            print_result("E2E encrypt_submit_block_payload: Hash encode_submit succeeds", false);
+            return;
+        }
+
+        auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
+
+        // Unsigned Hash: plaintext = block(216) only
+        auto info = StatelessBlockUtility::compute_submit_payload_info(
+            2, plaintext.size(), 0);
+
+        // For unsigned payload the wrapper may log a size-mismatch warning
+        // (since expected_plaintext_size() includes ts+sig overhead), but must
+        // still succeed encryption.
+        auto enc = wrapper.encrypt_submit_block_payload(plaintext, session_key, info);
+        print_result("E2E encrypt_submit_block_payload: Hash unsigned — succeeds",
+                     enc.success);
+
+        // Output must be [nonce(12)][ciphertext(plaintext.size())][tag(16)]
+        const size_t expected_size = 12 + plaintext.size() + 16;
+        print_result("E2E encrypt_submit_block_payload: Hash unsigned — size = nonce+ct+tag",
+                     enc.success && enc.data.size() == expected_size);
+    }
+
+    // ── Case B: Prime channel with 10 vOffsets (unsigned) ────────────────
+    {
+        auto mti  = make_loaded_mti(1);   // Prime
+        auto blk  = make_solved_block(1);
+        auto snap = make_snapshot();
+        std::vector<uint8_t> vOffsets(10, 0x42);
+
+        auto submit = StatelessBlockUtility::encode_submit(
+            *mti, blk, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        if (!submit.valid) {
+            print_result("E2E encrypt_submit_block_payload: Prime encode_submit succeeds", false);
+            return;
+        }
+
+        auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
+
+        // Unsigned Prime: plaintext = block(216) + offsets(10)
+        auto info = StatelessBlockUtility::compute_submit_payload_info(
+            1, plaintext.size(), 0);
+
+        auto enc = wrapper.encrypt_submit_block_payload(plaintext, session_key, info);
+        print_result("E2E encrypt_submit_block_payload: Prime+10-offsets unsigned — succeeds",
+                     enc.success);
+
+        const size_t expected_size = 12 + plaintext.size() + 16;
+        print_result("E2E encrypt_submit_block_payload: Prime+10-offsets — size = nonce+ct+tag",
+                     enc.success && enc.data.size() == expected_size);
+
+        // Two calls must produce different outputs (fresh nonce each time)
+        auto enc2 = wrapper.encrypt_submit_block_payload(plaintext, session_key, info);
+        print_result("E2E encrypt_submit_block_payload: each call generates a fresh nonce",
+                     enc.success && enc2.success && enc.data != enc2.data);
+
+        // The first 12 bytes are the nonce; the rest is ciphertext+tag.
+        // Verify the ciphertext+tag portion (bytes [12..end]) can be decrypted
+        // by extracting the nonce and calling decrypt() directly.
+        if (enc.success && enc.data.size() >= 12) {
+            std::vector<uint8_t> nonce(enc.data.begin(), enc.data.begin() + 12);
+            std::vector<uint8_t> ct_tag(enc.data.begin() + 12, enc.data.end());
+            auto dec = wrapper.decrypt(ct_tag, session_key, nonce, {});
+            print_result("E2E encrypt_submit_block_payload: Prime — decrypt(nonce, ct+tag) succeeds",
+                         dec.success && dec.data == plaintext);
+        }
+    }
+}
+
+
 int main() {
     std::cout << "\n";
     std::cout << "========================================\n";
@@ -646,6 +733,9 @@ int main() {
     test_payload_info_prime_not_equal_hash();      // 15
     test_e2e_payload_info_hash_unsigned();         // 16
     test_e2e_payload_info_prime_pipeline();        // 17
+
+    std::cout << "\n--- Canonical Wrapper Path (encrypt_submit_block_payload) ---\n";
+    test_e2e_encrypt_submit_block_payload();       // 18
 
     std::cout << "\n";
     std::cout << "========================================\n";

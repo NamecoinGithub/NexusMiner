@@ -4,6 +4,7 @@
 #include <openssl/err.h>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 
 namespace nexusminer {
 namespace protocol {
@@ -333,6 +334,91 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::unwrap_falcon_pubkey(
         }
     }
     
+    return result;
+}
+
+ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::encrypt_submit_block_payload(
+    const std::vector<uint8_t>& plaintext,
+    const std::vector<uint8_t>& session_key,
+    const SubmitBlockPayloadInfo& payload_info)
+{
+    CryptoResult result;
+    result.success = false;
+
+    // Hard fail only when the plaintext doesn't contain even the block body.
+    const size_t hard_min = payload_info.base_block_size + payload_info.offset_bytes_count;
+    if (plaintext.size() < hard_min) {
+        result.error_message =
+            "SUBMIT_BLOCK plaintext too small for base block + offsets ("
+            + std::to_string(plaintext.size()) + " < " + std::to_string(hard_min) + ")";
+        m_logger->error("[ChaCha20] {}", result.error_message);
+        return result;
+    }
+
+    // Log a warning if the Hash channel carries unexpected offset bytes
+    if (payload_info.channel == 2 && payload_info.offset_bytes_count != 0) {
+        m_logger->warn("[ChaCha20] Hash channel SUBMIT_BLOCK has {} offset bytes (expected 0)",
+                       payload_info.offset_bytes_count);
+    }
+
+    // Read sig_len (2-byte LE uint16_t) at the channel-aware offset, if present.
+    // For unsigned submissions the plaintext may end before the sig_len field;
+    // in that case treat sig_len as 0 and the size-mismatch path below will log
+    // the discrepancy without aborting encryption.
+    const size_t sig_len_offset = payload_info.base_block_size
+                                + payload_info.offset_bytes_count
+                                + payload_info.timestamp_size;
+    uint16_t sig_len = 0;
+    if (plaintext.size() >= sig_len_offset + payload_info.sig_len_field_size) {
+        sig_len = static_cast<uint16_t>(plaintext[sig_len_offset])
+                | (static_cast<uint16_t>(plaintext[sig_len_offset + 1]) << 8);
+    }
+
+    const size_t expected_plaintext_size = payload_info.base_block_size
+                                         + payload_info.offset_bytes_count
+                                         + payload_info.timestamp_size
+                                         + payload_info.sig_len_field_size
+                                         + sig_len;
+    const size_t expected_encrypted_size = expected_plaintext_size
+                                         + SubmitBlockPayloadInfo::CHACHA20_OVERHEAD;
+
+    // Log size mismatch as an error, but do NOT abort — the node can correlate
+    // a size-based rejection back to the original block submission.
+    if (plaintext.size() != expected_plaintext_size) {
+        m_logger->error("[ChaCha20] SUBMIT_BLOCK plaintext size mismatch: "
+                        "actual={} expected={} (channel={}, sig_len={})",
+                        plaintext.size(), expected_plaintext_size,
+                        payload_info.channel, sig_len);
+    }
+
+    // Generate a fresh nonce — callers never manage nonces for SUBMIT_BLOCK
+    auto nonce = generate_nonce();
+
+    // Encrypt with empty AAD — matches node-side LLC::DecryptPayloadChaCha20()
+    auto enc = encrypt(plaintext, session_key, nonce, {});
+    if (!enc.success || enc.data.empty()) {
+        result.error_message = enc.error_message;
+        m_logger->error("[ChaCha20] SUBMIT_BLOCK encryption failed: {}", result.error_message);
+        return result;
+    }
+
+    // Assemble [nonce(12)][ciphertext(plaintext.size())][tag(16)]
+    result.data.reserve(nonce.size() + enc.data.size());
+    result.data.insert(result.data.end(), nonce.begin(), nonce.end());
+    result.data.insert(result.data.end(), enc.data.begin(), enc.data.end());
+    result.success = true;
+
+    // Validate final assembled size
+    if (result.data.size() != expected_encrypted_size) {
+        m_logger->warn("[ChaCha20] SUBMIT_BLOCK encrypted size mismatch: "
+                       "actual={} expected={}", result.data.size(), expected_encrypted_size);
+    }
+
+    m_logger->debug("[ChaCha20] SUBMIT_BLOCK encrypted: plaintext={} encrypted={} "
+                    "(channel={}, sig_len={})",
+                    plaintext.size(), result.data.size(),
+                    payload_info.channel, sig_len);
+
     return result;
 }
 

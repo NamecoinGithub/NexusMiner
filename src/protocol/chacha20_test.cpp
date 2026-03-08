@@ -15,6 +15,8 @@
  */
 
 #include "protocol/chacha20_wrapper.hpp"
+#include "protocol/falcon_constants.hpp"
+#include "submit_block_payload_info.hpp"
 #include <iostream>
 #include <cassert>
 #include <cstdint>
@@ -503,6 +505,90 @@ int main()
     std::cout << "\nTest 17: ChaCha20 availability" << std::endl;
     {
         print_test_result("ChaCha20-Poly1305 is available", ChaCha20Wrapper::is_available());
+    }
+
+    // ====================================================================
+    // Test 18: encrypt_submit_block_payload() — canonical wrapper path
+    // ====================================================================
+    std::cout << "\nTest 18: encrypt_submit_block_payload() canonical path" << std::endl;
+    {
+        auto key = make_test_key();
+
+        // ── Case A: Hash channel, Falcon-1024 signature ──────────────────
+        // Plaintext layout: block(216) + timestamp(8) + sig_len(2) + sig(1577) = 1803
+        // Encrypted:        nonce(12) + ciphertext(1803) + tag(16) = 1831
+        const size_t FALCON1024_SIG_SIZE = FalconConstants::FALCON1024_SIG_CT_SIZE;  // 1577
+        const size_t HASH_PLAINTEXT      = 216 + 8 + 2 + FALCON1024_SIG_SIZE;       // 1803
+        const size_t HASH_ENCRYPTED      = HASH_PLAINTEXT + 28;                      // 1831
+
+        SubmitBlockPayloadInfo hash_info;
+        hash_info.channel           = 2;   // Hash
+        hash_info.base_block_size   = 216;
+        hash_info.offset_bytes_count = 0;
+        hash_info.timestamp_size     = 8;
+        hash_info.sig_len_field_size = 2;
+        hash_info.signature_size     = FALCON1024_SIG_SIZE;
+
+        // Build mock plaintext: zeroed block, zeroed timestamp, sig_len LE, zeroed sig
+        std::vector<uint8_t> hash_plaintext(HASH_PLAINTEXT, 0xAB);
+        // Write sig_len (1577 = 0x0629) in LE at sig_len_offset_hash
+        const size_t sig_len_offset_hash = 216 + 0 + 8;
+        hash_plaintext[sig_len_offset_hash]     = 0x29;  // LSB of 1577
+        hash_plaintext[sig_len_offset_hash + 1] = 0x06;  // MSB of 1577
+
+        auto hash_result = wrapper.encrypt_submit_block_payload(hash_plaintext, key, hash_info);
+        print_test_result("Hash channel: encrypt_submit_block_payload succeeds",
+                          hash_result.success);
+        print_test_result("Hash channel: encrypted size = 1831 (plaintext 1803 + overhead 28)",
+                          hash_result.success && hash_result.data.size() == HASH_ENCRYPTED);
+        print_test_result("Hash channel: encrypted size == payload_info.expected_encrypted_size()",
+                          hash_result.success &&
+                          hash_result.data.size() == hash_info.expected_encrypted_size());
+
+        // ── Case B: Prime channel, 10 offset bytes, Falcon-1024 ──────────
+        // Plaintext layout: block(216) + offsets(10) + timestamp(8) + sig_len(2) + sig(1577) = 1813
+        // Encrypted:        nonce(12) + ciphertext(1813) + tag(16) = 1841
+        const size_t PRIME_OFFSETS       = 10;
+        const size_t PRIME_PLAINTEXT     = 216 + PRIME_OFFSETS + 8 + 2 + FALCON1024_SIG_SIZE; // 1813
+        const size_t PRIME_ENCRYPTED     = PRIME_PLAINTEXT + 28;                               // 1841
+
+        SubmitBlockPayloadInfo prime_info;
+        prime_info.channel            = 1;   // Prime
+        prime_info.base_block_size    = 216;
+        prime_info.offset_bytes_count = PRIME_OFFSETS;
+        prime_info.timestamp_size     = 8;
+        prime_info.sig_len_field_size = 2;
+        prime_info.signature_size     = FALCON1024_SIG_SIZE;
+
+        // Build mock plaintext: sig_len (1577 = 0x0629) in LE at sig_len_offset_prime
+        std::vector<uint8_t> prime_plaintext(PRIME_PLAINTEXT, 0xCD);
+        const size_t sig_len_offset_prime = 216 + PRIME_OFFSETS + 8;
+        prime_plaintext[sig_len_offset_prime]     = 0x29;  // LSB of 1577
+        prime_plaintext[sig_len_offset_prime + 1] = 0x06;  // MSB of 1577
+
+        auto prime_result = wrapper.encrypt_submit_block_payload(prime_plaintext, key, prime_info);
+        print_test_result("Prime+10-offsets: encrypt_submit_block_payload succeeds",
+                          prime_result.success);
+        print_test_result("Prime+10-offsets: encrypted size = 1841 (plaintext 1813 + overhead 28)",
+                          prime_result.success && prime_result.data.size() == PRIME_ENCRYPTED);
+        print_test_result("Prime+10-offsets: encrypted size == payload_info.expected_encrypted_size()",
+                          prime_result.success &&
+                          prime_result.data.size() == prime_info.expected_encrypted_size());
+
+        // ── Verify nonce(12) is prepended (no manual nonce management by caller)
+        // Two calls with the same key+plaintext should produce different ciphertexts
+        // because encrypt_submit_block_payload() generates a fresh nonce each time.
+        auto result_a = wrapper.encrypt_submit_block_payload(hash_plaintext, key, hash_info);
+        auto result_b = wrapper.encrypt_submit_block_payload(hash_plaintext, key, hash_info);
+        bool nonces_differ = result_a.success && result_b.success &&
+                             result_a.data != result_b.data;
+        print_test_result("Each call generates a fresh nonce (outputs differ)", nonces_differ);
+
+        // ── Too-small plaintext → hard failure ────────────────────────────
+        std::vector<uint8_t> tiny(10, 0xFF);  // way too small
+        auto tiny_result = wrapper.encrypt_submit_block_payload(tiny, key, hash_info);
+        print_test_result("Too-small plaintext → encrypt_submit_block_payload fails",
+                          !tiny_result.success);
     }
 
     // ====================================================================

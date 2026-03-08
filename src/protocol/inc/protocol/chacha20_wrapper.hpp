@@ -6,6 +6,7 @@
 #include <string>
 #include <memory>
 #include "spdlog/spdlog.h"
+#include "submit_block_payload_info.hpp"
 
 namespace nexusminer {
 namespace protocol {
@@ -70,6 +71,31 @@ public:
                         const std::vector<uint8_t>& nonce,
                         const std::vector<uint8_t>& aad = {});
     
+    /**
+     * @brief Canonical encryption path for SUBMIT_BLOCK payloads.
+     *
+     * Generates a fresh 12-byte nonce internally, validates the plaintext size
+     * against the channel-aware @p payload_info, then encrypts with
+     * ChaCha20-Poly1305 (empty AAD — matches node-side behaviour).
+     *
+     * Returned data layout: [nonce(12)][ciphertext(plaintext.size())][tag(16)]
+     * No manual nonce management is required by the caller.
+     *
+     * A size mismatch between @p plaintext and payload_info.expected_plaintext_size()
+     * is logged as an error but does NOT abort encryption — the node can
+     * correlate a size-wrong rejection back to the original block.
+     *
+     * @param plaintext       Raw SUBMIT_BLOCK payload (extracted from wire frame)
+     * @param session_key     32-byte ChaCha20 session key from login()
+     * @param payload_info    Channel-aware sizing metadata from compute_submit_payload_info()
+     * @return CryptoResult whose data is [nonce(12)][ciphertext][tag(16)], or
+     *         a failure result if inputs are invalid or encryption fails.
+     */
+    CryptoResult encrypt_submit_block_payload(
+        const std::vector<uint8_t>& plaintext,
+        const std::vector<uint8_t>& session_key,
+        const SubmitBlockPayloadInfo& payload_info);
+
     /**
      * @brief Wrap Falcon Public Key for handshake transmission
      * 
