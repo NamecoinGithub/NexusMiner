@@ -265,12 +265,12 @@ SubmitResult StatelessBlockUtility::encode_submit(
 }
 
 // ─── Channel-aware payload sizing helper ─────────────────────────────────────
-SubmitBlockPayloadInfo StatelessBlockUtility::compute_submit_payload_info(
+ChaCha20Wrapper::SubmitBlockPayloadInfo StatelessBlockUtility::compute_submit_payload_info(
     uint32_t channel,
     size_t   block_data_size,
     size_t   signature_size)
 {
-    SubmitBlockPayloadInfo info;
+    ChaCha20Wrapper::SubmitBlockPayloadInfo info;
     info.channel            = channel;
     info.base_block_size    = BLOCK_BODY_SIZE;  // 216 for Tritium
     // For Prime, offset bytes = total block_data_size - base 216-byte block body.

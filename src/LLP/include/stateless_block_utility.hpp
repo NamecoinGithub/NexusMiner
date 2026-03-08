@@ -37,7 +37,7 @@
 #include "protocol/height_tracker.hpp"
 #include "protocol/mining_template_interface.hpp"
 #include "protocol_lane.hpp"
-#include "submit_block_payload_info.hpp"
+#include "protocol/chacha20_wrapper.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -220,7 +220,7 @@ public:
      * @param signature_size   Actual Falcon signature length (0 when unsigned).
      * @return Populated SubmitBlockPayloadInfo with all size fields.
      */
-    static SubmitBlockPayloadInfo compute_submit_payload_info(
+    static ChaCha20Wrapper::SubmitBlockPayloadInfo compute_submit_payload_info(
         uint32_t channel,
         size_t   block_data_size,
         size_t   signature_size);
