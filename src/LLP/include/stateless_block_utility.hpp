@@ -92,6 +92,40 @@ struct DecodedTemplate {
 };
 
 /**
+ * @brief Channel-aware payload metadata for SUBMIT_BLOCK sizing.
+ *
+ * Computes expected plaintext and encrypted sizes from real inputs rather
+ * than assuming a universal fixed Tritium payload size.
+ *
+ * Hash:   plaintext = base_block_size + timestamp_size + sig_len_field_size + signature_size
+ * Prime:  plaintext = base_block_size + offset_bytes_count + timestamp_size + sig_len_field_size + signature_size
+ * encrypted = plaintext + CHACHA20_OVERHEAD (nonce 12 + tag 16 = 28)
+ */
+struct SubmitBlockPayloadInfo
+{
+    uint32_t channel{0};              ///< 1 = Prime, 2 = Hash
+    size_t   base_block_size{0};      ///< 216 for Tritium (empty block body)
+    size_t   offset_bytes_count{0};   ///< 0 for Hash, variable for Prime (vOffsets.size())
+    size_t   timestamp_size{8};       ///< always 8 (uint64_t LE)
+    size_t   sig_len_field_size{2};   ///< always 2 (uint16_t LE)
+    size_t   signature_size{0};       ///< parsed/actual Falcon signature length
+
+    /// ChaCha20-Poly1305 overhead: nonce(12) + auth_tag(16)
+    static constexpr size_t CHACHA20_OVERHEAD = 28;
+
+    /// Expected plaintext size: block + offsets + timestamp + sig_len + sig
+    size_t expected_plaintext_size() const {
+        return base_block_size + offset_bytes_count
+             + timestamp_size + sig_len_field_size + signature_size;
+    }
+
+    /// Expected encrypted size: plaintext + ChaCha20 overhead
+    size_t expected_encrypted_size() const {
+        return expected_plaintext_size() + CHACHA20_OVERHEAD;
+    }
+};
+
+/**
  * @brief Result of an encode_submit() call
  */
 struct SubmitResult {
@@ -199,6 +233,30 @@ public:
                                       ProtocolLane lane,
                                       const HeightTracker::Snapshot& ht,
                                       std::shared_ptr<spdlog::logger> logger);
+
+    // =========================================================================
+    // Channel-aware payload sizing helpers
+    // =========================================================================
+
+    /**
+     * @brief Build a SubmitBlockPayloadInfo from runtime submit data.
+     *
+     * This helper computes expected sizes from real inputs rather than
+     * assuming a universal fixed Tritium payload size.  Hash submissions
+     * are fixed-size; Prime submissions are variable because
+     * prepare_block_submission() appends vOffsets.
+     *
+     * @param channel          1 = Prime, 2 = Hash
+     * @param block_data_size  Total serialized block bytes returned by
+     *                         prepare_block_submission() (includes vOffsets
+     *                         for Prime).  For Hash this is always 216.
+     * @param signature_size   Actual Falcon signature length (0 when unsigned).
+     * @return Populated SubmitBlockPayloadInfo with all size fields.
+     */
+    static SubmitBlockPayloadInfo compute_submit_payload_info(
+        uint32_t channel,
+        size_t   block_data_size,
+        size_t   signature_size);
 
 private:
     StatelessBlockUtility() = delete;
