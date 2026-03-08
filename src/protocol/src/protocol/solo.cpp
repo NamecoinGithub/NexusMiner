@@ -70,10 +70,8 @@ static const std::vector<uint8_t> AAD_REWARD_RESULT{
  *  See: LLL-TAO stateless_miner_connection.cpp ~L1186:
  *    LLC::DecryptPayloadChaCha20(PACKET.DATA, context.vChaChaKey, decryptedData)
  *  No AAD argument = default empty vector. This is intentional — the entire
- *  SUBMIT_BLOCK packet is encrypted as-is without domain separation.
- *  NOTE: the empty AAD is now enforced inside
- *        ChaCha20Wrapper::encrypt_submit_block_payload() so callers cannot
- *        accidentally pass a wrong AAD value. */
+ *  SUBMIT_BLOCK packet is encrypted as-is without domain separation. */
+static const std::vector<uint8_t> AAD_BLOCK_SUBMISSION{};
 
 // Helper function to parse uint32 from big-endian bytes
 static uint32_t read_uint32_be(const std::vector<uint8_t>& src, size_t offset = 0) {
@@ -666,17 +664,6 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     }
 
     // ── Extract plaintext payload from PacketBuilder-framed wire_bytes ────────
-    // encode_submit() returns a PacketBuilder-framed packet so that downstream
-    // code can send it directly on the unencrypted (localhost) path.  For the
-    // encrypted path we strip that frame to recover the raw plaintext and then
-    // hand it to ChaCha20Wrapper::encrypt_submit_block_payload() which is the
-    // single canonical place responsible for:
-    //   1. Validating that the plaintext is exactly 1803 bytes
-    //      (Tritium Falcon-1024: block(216)+ts(8)+sig_len(2)+sig(1577))
-    //   2. Generating a fresh 12-byte nonce
-    //   3. Encrypting with ChaCha20-Poly1305 (empty AAD)
-    //   4. Returning [nonce(12)][ciphertext(1803)][tag(16)] = 1831 bytes
-    //
     // STATELESS wire format: [opcode(2 BE)][length(4 BE)][plaintext_payload]
     // LEGACY wire format:    [opcode(1)   ][length(4 BE)][plaintext_payload]
     const size_t header_size = (m_protocol_lane == ProtocolLane::STATELESS) ? 6u : 5u;
@@ -686,27 +673,13 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
                         framed.size(), header_size);
         return network::Shared_payload{};
     }
-    // plaintextPayload = exactly the bytes encode_submit() built:
-    //   [block(216)][timestamp(8 LE)][sig_len(2 LE)][Falcon signature]
-    // Any extra bytes here indicate a regression in encode_submit() framing.
     std::vector<uint8_t> plaintextPayload(framed.begin() + header_size, framed.end());
 
     m_logger->info("[Solo Submit] Plaintext payload: {} bytes "
-                   "[block({})][timestamp({})][sig_len({})][sig] "
-                   "(expected {} for Tritium Falcon-1024)",
-                   plaintextPayload.size(),
-                   ChaCha20Wrapper::TRITIUM_BLOCK_SIZE,
-                   ChaCha20Wrapper::SUBMIT_TIMESTAMP_SIZE,
-                   ChaCha20Wrapper::SUBMIT_SIGLEN_FIELD_SIZE,
-                   ChaCha20Wrapper::TRITIUM_F1024_PLAINTEXT_EXPECTED);
+                   "[block][timestamp(8)][sig_len(2)][sig]",
+                   plaintextPayload.size());
 
-    // ── ChaCha20-Poly1305 encryption via canonical wrapper ───────────────────
-    // All encryption for SUBMIT_BLOCK goes through
-    // ChaCha20Wrapper::encrypt_submit_block_payload() which:
-    //   • enforces the canonical 1803-byte plaintext size invariant
-    //   • generates the nonce internally (no caller-side nonce assembly)
-    //   • returns [nonce(12)][ciphertext][tag(16)] = 1831 bytes
-    // This prevents ad-hoc plaintext assembly and future byte-count regressions.
+    // ── ChaCha20-Poly1305 encryption ─────────────────────────────────────────
     if (!m_enable_chacha20) {
         m_logger->error("[Solo Submit] ChaCha20 not enabled");
         return network::Shared_payload{};
@@ -722,25 +695,25 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         if (!m_chacha20_wrapper)
             m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
 
-        // encrypt_submit_block_payload() validates sizes, generates the nonce,
-        // encrypts, and assembles [nonce(12)][ciphertext][tag(16)].
-        auto enc_result = m_chacha20_wrapper->encrypt_submit_block_payload(
-            plaintextPayload, m_chacha20_session_key);
+        auto enc_nonce     = ChaCha20Wrapper::generate_nonce();
+        auto encrypt_result = m_chacha20_wrapper->encrypt(
+            plaintextPayload, m_chacha20_session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
 
-        if (!enc_result.success || enc_result.data.empty()) {
+        if (!encrypt_result.success || encrypt_result.data.empty()) {
             m_logger->error("[Solo Submit] ChaCha20 encryption failed: {}",
-                            enc_result.error_message);
+                            encrypt_result.error_message);
             return network::Shared_payload{};
         }
 
-        // enc_result.data is the complete encrypted payload:
-        // [nonce(12)][ciphertext(plaintextPayload.size())][tag(16)]
-        const auto& encryptedPayload = enc_result.data;
+        // Wire format: [nonce(12)][ciphertext+tag]
+        std::vector<uint8_t> encryptedPayload;
+        encryptedPayload.reserve(12 + encrypt_result.data.size());
+        encryptedPayload.insert(encryptedPayload.end(), enc_nonce.begin(), enc_nonce.end());
+        encryptedPayload.insert(encryptedPayload.end(),
+                                encrypt_result.data.begin(), encrypt_result.data.end());
 
-        m_logger->info("[Solo Submit] Encrypted payload: {} bytes "
-                       "(expected {} for Tritium Falcon-1024)",
-                       encryptedPayload.size(),
-                       ChaCha20Wrapper::TRITIUM_F1024_ENCRYPTED_EXPECTED);
+        m_logger->info("[Solo Submit] Encrypted payload: {} bytes → SUBMIT_BLOCK (using cached session key)",
+                       encryptedPayload.size());
 
         auto result = PacketBuilder::build(m_protocol_lane, LLP::SUBMIT_BLOCK, encryptedPayload);
         if (!result || result->empty()) {
