@@ -111,7 +111,7 @@ private:
 
     //stats
     std::vector<std::uint32_t> m_chain_histogram;
-    uint64_t m_range_searched = 0;
+    std::atomic<uint64_t> m_range_searched{0};
     
     // CPU load tracking
     std::chrono::steady_clock::time_point m_cpu_tracking_start;
