@@ -21,10 +21,15 @@ namespace protocol {
  * The wrapper uses OpenSSL's EVP interface for ChaCha20-Poly1305 AEAD encryption.
  *
  * Canonical SUBMIT_BLOCK wire format (Tritium Falcon-1024):
- *   Plaintext : [block(216)][timestamp(8 LE)][sig_len(2 LE)][Falcon-1024 sig(1577)]
- *               = 1803 bytes
- *   Encrypted : [nonce(12)][ciphertext(1803)][Poly1305 tag(16)]
- *               = 1831 bytes
+ *   Hash / Prime-with-empty-offsets plaintext :
+ *     [block(216)][timestamp(8 LE)][sig_len(2 LE)][Falcon-1024 sig(1577)]
+ *     = 1803 bytes
+ *   Prime plaintext with vOffsets :
+ *     [block(216)][vOffsets(N)][timestamp(8 LE)][sig_len(2 LE)][Falcon-1024 sig(1577)]
+ *     = 1803 + N bytes
+ *   Encrypted :
+ *     [nonce(12)][ciphertext(plaintext_size)][Poly1305 tag(16)]
+ *     = plaintext_size + 28 bytes
  *
  * Use encrypt_submit_block_payload() to enforce this layout in one place.
  */
@@ -44,7 +49,7 @@ public:
     static constexpr size_t SUBMIT_SIGLEN_FIELD_SIZE       = 2;
     /** Falcon-1024 constant-time signature size */
     static constexpr size_t FALCON1024_CT_SIG_SIZE         = 1577;
-    /** Expected plaintext for a Falcon-1024 Tritium full-block submission */
+    /** Expected plaintext for a Falcon-1024 Tritium Hash (or Prime empty-offset) submission */
     static constexpr size_t TRITIUM_F1024_PLAINTEXT_EXPECTED =
         TRITIUM_BLOCK_SIZE + SUBMIT_TIMESTAMP_SIZE +
         SUBMIT_SIGLEN_FIELD_SIZE + FALCON1024_CT_SIG_SIZE; // 1803
@@ -56,9 +61,40 @@ public:
     /** Total overhead added by encrypt_submit_block_payload() */
     static constexpr size_t CHACHA20_OVERHEAD              =
         CHACHA20_NONCE_SIZE + CHACHA20_TAG_SIZE; // 28
-    /** Expected encrypted output for a Falcon-1024 Tritium full-block submission */
+    /** Expected encrypted output for a Falcon-1024 Tritium Hash (or Prime empty-offset) submission */
     static constexpr size_t TRITIUM_F1024_ENCRYPTED_EXPECTED =
         TRITIUM_F1024_PLAINTEXT_EXPECTED + CHACHA20_OVERHEAD; // 1831
+
+    struct SubmitBlockPayloadInfo {
+        uint32_t channel = 2; // 1=Prime, 2=Hash
+        size_t base_block_size = TRITIUM_BLOCK_SIZE;
+        size_t offset_bytes_count = 0;
+        size_t timestamp_size = SUBMIT_TIMESTAMP_SIZE;
+        size_t sig_len_field_size = SUBMIT_SIGLEN_FIELD_SIZE;
+
+        constexpr size_t minimum_plaintext_size() const
+        {
+            return base_block_size + offset_bytes_count +
+                   timestamp_size + sig_len_field_size;
+        }
+
+        constexpr bool is_prime_channel() const { return channel == 1; }
+        constexpr bool is_hash_channel() const { return channel == 2; }
+    };
+
+    static constexpr size_t compute_submit_plaintext_size(
+        size_t base_block_size,
+        size_t offset_bytes_count,
+        size_t signature_size)
+    {
+        return base_block_size + offset_bytes_count +
+               SUBMIT_TIMESTAMP_SIZE + SUBMIT_SIGLEN_FIELD_SIZE + signature_size;
+    }
+
+    static constexpr size_t compute_submit_encrypted_size(size_t plaintext_size)
+    {
+        return plaintext_size + CHACHA20_OVERHEAD;
+    }
 
     /**
      * @brief Encryption/Decryption result structure
@@ -146,22 +182,26 @@ public:
      *   [nonce(12)][ciphertext(plaintext_size)][Poly1305 tag(16)]
      *
      * Size invariants (enforced with log warnings/errors):
-     *   - Expected plaintext : TRITIUM_F1024_PLAINTEXT_EXPECTED (1803) bytes
-     *   - Expected ciphertext: TRITIUM_F1024_ENCRYPTED_EXPECTED (1831) bytes
+     *   - Hash / Prime-empty-offsets expected plaintext : 1803 bytes
+     *   - Prime expected plaintext                      : 1803 + vOffsets.size()
+     *   - Expected ciphertext                          : plaintext + 28
      *
      * The canonical plaintext layout (built by the caller) must be:
-     *   [block(216)][timestamp(8 LE)][sig_len(2 LE)][Falcon-1024 sig(1577)]
+     *   Hash :  [block(216)][timestamp(8 LE)][sig_len(2 LE)][Falcon-1024 sig(1577)]
+     *   Prime: [block(216)][vOffsets(N)][timestamp(8 LE)][sig_len(2 LE)][Falcon-1024 sig(1577)]
      *
      * AAD for SUBMIT_BLOCK is always empty ({}) — matching the node-side
      * LLC::DecryptPayloadChaCha20() call which passes no AAD.
      *
-     * @param plaintext   Pre-assembled SUBMIT_BLOCK plaintext payload.
-     * @param session_key 32-byte ChaCha20 session key derived at login.
+     * @param plaintext     Pre-assembled SUBMIT_BLOCK plaintext payload.
+     * @param session_key   32-byte ChaCha20 session key derived at login.
+     * @param payload_info  Channel-aware sizing metadata for Prime vs Hash.
      * @return CryptoResult with data=[nonce][ciphertext][tag] on success.
      */
     CryptoResult encrypt_submit_block_payload(
         const std::vector<uint8_t>& plaintext,
-        const std::vector<uint8_t>& session_key);
+        const std::vector<uint8_t>& session_key,
+        const SubmitBlockPayloadInfo& payload_info);
 
     /**
      * @brief Generate random nonce for ChaCha20

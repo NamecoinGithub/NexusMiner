@@ -8,6 +8,25 @@
 namespace nexusminer {
 namespace protocol {
 
+namespace {
+
+const char* submit_channel_name(uint32_t channel)
+{
+    switch (channel) {
+        case 1: return "Prime";
+        case 2: return "Hash";
+        default: return "Unknown";
+    }
+}
+
+uint16_t read_u16_le(const std::vector<uint8_t>& src, size_t offset)
+{
+    return static_cast<uint16_t>(src[offset]) |
+           (static_cast<uint16_t>(src[offset + 1]) << 8);
+}
+
+} // namespace
+
 // ChaCha20-Poly1305 constants
 constexpr size_t CHACHA20_KEY_SIZE = 32;    // 256 bits
 constexpr size_t CHACHA20_NONCE_SIZE = 12;  // 96 bits
@@ -282,39 +301,80 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::decrypt(
 
 ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::encrypt_submit_block_payload(
     const std::vector<uint8_t>& plaintext,
-    const std::vector<uint8_t>& session_key)
+    const std::vector<uint8_t>& session_key,
+    const SubmitBlockPayloadInfo& payload_info)
 {
     CryptoResult result;
     result.success = false;
 
-    // ── Size validation ────────────────────────────────────────────────────
-    // The canonical Tritium Falcon-1024 SUBMIT_BLOCK plaintext is exactly
-    // TRITIUM_F1024_PLAINTEXT_EXPECTED (1803) bytes:
-    //   [block(216)][timestamp(8 LE)][sig_len(2 LE)][Falcon-1024 sig(1577)]
-    //
-    // A mismatch means the caller assembled the payload incorrectly.  We log
-    // the discrepancy clearly so a regression is immediately visible in logs.
-    if (plaintext.size() != TRITIUM_F1024_PLAINTEXT_EXPECTED) {
+    const size_t minimum_plaintext_size = payload_info.minimum_plaintext_size();
+    if (plaintext.size() < minimum_plaintext_size) {
+        result.error_message =
+            "SUBMIT_BLOCK plaintext too small for " +
+            std::string(submit_channel_name(payload_info.channel)) +
+            " channel sizing metadata";
         m_logger->error(
-            "[ChaCha20 SubmitBlock] PAYLOAD SIZE MISMATCH: got {} bytes, "
-            "expected {} bytes (Tritium Falcon-1024 full-block format: "
-            "block({})+ts({})+sig_len({})+sig({})). "
-            "Extra bytes before encryption: {} (should be 0).",
+            "[ChaCha20 SubmitBlock] {}: plaintext={} minimum={} channel={} "
+            "base_block={} offset_bytes={} timestamp={} sig_len_field={}",
+            result.error_message,
             plaintext.size(),
-            TRITIUM_F1024_PLAINTEXT_EXPECTED,
-            TRITIUM_BLOCK_SIZE,
-            SUBMIT_TIMESTAMP_SIZE,
-            SUBMIT_SIGLEN_FIELD_SIZE,
-            FALCON1024_CT_SIG_SIZE,
+            minimum_plaintext_size,
+            submit_channel_name(payload_info.channel),
+            payload_info.base_block_size,
+            payload_info.offset_bytes_count,
+            payload_info.timestamp_size,
+            payload_info.sig_len_field_size);
+        return result;
+    }
+
+    const size_t sig_len_offset = payload_info.base_block_size +
+                                  payload_info.offset_bytes_count +
+                                  payload_info.timestamp_size;
+    const uint16_t signature_size = read_u16_le(plaintext, sig_len_offset);
+    const size_t expected_plaintext_size = compute_submit_plaintext_size(
+        payload_info.base_block_size,
+        payload_info.offset_bytes_count,
+        signature_size);
+    const size_t expected_encrypted_size =
+        compute_submit_encrypted_size(expected_plaintext_size);
+
+    if (payload_info.is_hash_channel() && payload_info.offset_bytes_count != 0) {
+        m_logger->warn(
+            "[ChaCha20 SubmitBlock] Hash channel supplied {} offset bytes; "
+            "Hash submissions normally have zero Prime vOffsets",
+            payload_info.offset_bytes_count);
+    }
+
+    if (plaintext.size() != expected_plaintext_size) {
+        m_logger->error(
+            "[ChaCha20 SubmitBlock] PAYLOAD SIZE MISMATCH: channel={} "
+            "base_block={} offset_bytes={} timestamp={} sig_len_field={} "
+            "signature={} plaintext={} expected_plaintext={} "
+            "expected_encrypted={} delta={}",
+            submit_channel_name(payload_info.channel),
+            payload_info.base_block_size,
+            payload_info.offset_bytes_count,
+            payload_info.timestamp_size,
+            payload_info.sig_len_field_size,
+            signature_size,
+            plaintext.size(),
+            expected_plaintext_size,
+            expected_encrypted_size,
             static_cast<int64_t>(plaintext.size()) -
-                static_cast<int64_t>(TRITIUM_F1024_PLAINTEXT_EXPECTED));
-        // Do NOT abort — still encrypt so the submission reaches the node
-        // and the rejection log can be correlated.
+                static_cast<int64_t>(expected_plaintext_size));
     } else {
         m_logger->info(
-            "[ChaCha20 SubmitBlock] Plaintext size: {} bytes (✓ matches "
-            "Tritium Falcon-1024 expected {})",
-            plaintext.size(), TRITIUM_F1024_PLAINTEXT_EXPECTED);
+            "[ChaCha20 SubmitBlock] Layout OK: channel={} base_block={} "
+            "offset_bytes={} timestamp={} sig_len_field={} signature={} "
+            "plaintext={} expected_encrypted={}",
+            submit_channel_name(payload_info.channel),
+            payload_info.base_block_size,
+            payload_info.offset_bytes_count,
+            payload_info.timestamp_size,
+            payload_info.sig_len_field_size,
+            signature_size,
+            plaintext.size(),
+            expected_encrypted_size);
     }
 
     // ── Generate fresh nonce ───────────────────────────────────────────────
@@ -344,19 +404,33 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::encrypt_submit_block_payload(
     result.data.insert(result.data.end(), enc.data.begin(), enc.data.end());
 
     // ── Validate final encrypted size ──────────────────────────────────────
-    if (result.data.size() != TRITIUM_F1024_ENCRYPTED_EXPECTED) {
+    if (result.data.size() != expected_encrypted_size) {
         m_logger->warn(
-            "[ChaCha20 SubmitBlock] Encrypted payload size: {} bytes "
-            "(expected {} for Tritium Falcon-1024: "
-            "nonce(12)+ciphertext({})+tag(16))",
+            "[ChaCha20 SubmitBlock] Final encrypted size mismatch: channel={} "
+            "base_block={} offset_bytes={} timestamp={} sig_len_field={} "
+            "signature={} plaintext={} encrypted={} expected_encrypted={}",
+            submit_channel_name(payload_info.channel),
+            payload_info.base_block_size,
+            payload_info.offset_bytes_count,
+            payload_info.timestamp_size,
+            payload_info.sig_len_field_size,
+            signature_size,
+            plaintext.size(),
             result.data.size(),
-            TRITIUM_F1024_ENCRYPTED_EXPECTED,
-            plaintext.size());
+            expected_encrypted_size);
     } else {
         m_logger->info(
-            "[ChaCha20 SubmitBlock] Encrypted payload: {} bytes "
-            "(✓ nonce(12)+ciphertext({})+tag(16))",
-            result.data.size(), plaintext.size());
+            "[ChaCha20 SubmitBlock] Encrypted payload OK: channel={} "
+            "base_block={} offset_bytes={} timestamp={} sig_len_field={} "
+            "signature={} plaintext={} encrypted={}",
+            submit_channel_name(payload_info.channel),
+            payload_info.base_block_size,
+            payload_info.offset_bytes_count,
+            payload_info.timestamp_size,
+            payload_info.sig_len_field_size,
+            signature_size,
+            plaintext.size(),
+            result.data.size());
     }
 
     result.success = true;

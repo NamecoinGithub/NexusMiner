@@ -12,9 +12,10 @@
  *   - Nonce uniqueness
  *   - SUBMIT_BLOCK AAD is empty {} (no domain separation, matches node behavior)
  *   - KDF domain separator consistency
- *   - encrypt_submit_block_payload(): canonical Tritium Falcon-1024 sizes
- *       plaintext=1803 bytes, encrypted=1831 bytes (LLL-TAO PR #356)
- *   - 10-byte regression detection: 1813-byte payload → 1841 encrypted output
+ *   - encrypt_submit_block_payload(): Hash fixed-size Tritium Falcon-1024 sizes
+ *       plaintext=1803 bytes, encrypted=1831 bytes
+ *   - encrypt_submit_block_payload(): Prime variable-size sizing with vOffsets
+ *       plaintext=1813 bytes, encrypted=1841 bytes for 10 offset bytes
  */
 
 #include "protocol/chacha20_wrapper.hpp"
@@ -75,6 +76,21 @@ static std::vector<uint8_t> make_test_plaintext(size_t size) {
     std::vector<uint8_t> pt(size);
     for (size_t i = 0; i < size; ++i)
         pt[i] = static_cast<uint8_t>(i & 0xFF);
+    return pt;
+}
+
+static std::vector<uint8_t> make_submit_block_plaintext(size_t offset_bytes_count,
+                                                        uint16_t signature_size =
+                                                            static_cast<uint16_t>(
+                                                                ChaCha20Wrapper::FALCON1024_CT_SIG_SIZE)) {
+    const size_t total_size = ChaCha20Wrapper::compute_submit_plaintext_size(
+        ChaCha20Wrapper::TRITIUM_BLOCK_SIZE, offset_bytes_count, signature_size);
+    auto pt = make_test_plaintext(total_size);
+    const size_t sig_len_offset =
+        ChaCha20Wrapper::TRITIUM_BLOCK_SIZE + offset_bytes_count +
+        ChaCha20Wrapper::SUBMIT_TIMESTAMP_SIZE;
+    pt[sig_len_offset] = static_cast<uint8_t>(signature_size & 0xFF);
+    pt[sig_len_offset + 1] = static_cast<uint8_t>((signature_size >> 8) & 0xFF);
     return pt;
 }
 
@@ -509,12 +525,15 @@ int main()
     }
 
     // ====================================================================
-    // Test 18: encrypt_submit_block_payload() — Tritium Falcon-1024 canonical
-    // Acceptance criteria (aligned with LLL-TAO PR #356):
-    //   plaintext  = block(216)+ts(8)+sig_len(2)+sig(1577) = 1803 bytes
-    //   encrypted  = nonce(12)+ciphertext(1803)+tag(16)    = 1831 bytes
+    // Test 18: encrypt_submit_block_payload() — channel-aware SUBMIT_BLOCK sizing
+    // Acceptance criteria:
+    //   Hash plaintext   = block(216)+ts(8)+sig_len(2)+sig(1577)   = 1803 bytes
+    //   Hash encrypted   = nonce(12)+ciphertext(1803)+tag(16)      = 1831 bytes
+    //   Prime plaintext  = block(216)+vOffsets(10)+ts(8)+sig_len(2)+sig(1577)
+    //                    = 1813 bytes
+    //   Prime encrypted  = nonce(12)+ciphertext(1813)+tag(16)      = 1841 bytes
     // ====================================================================
-    std::cout << "\nTest 18: encrypt_submit_block_payload() Tritium Falcon-1024 canonical sizes" << std::endl;
+    std::cout << "\nTest 18: encrypt_submit_block_payload() channel-aware sizes" << std::endl;
     {
         // Verify the compile-time constants match the expected values
         print_test_result(
@@ -528,10 +547,9 @@ int main()
             ChaCha20Wrapper::TRITIUM_BLOCK_SIZE == 216);
 
         auto key = make_test_key();
-        // Canonical plaintext: block(216)+ts(8)+sig_len(2)+sig(1577) = 1803 bytes
-        auto canonical_pt = make_test_plaintext(ChaCha20Wrapper::TRITIUM_F1024_PLAINTEXT_EXPECTED);
-
-        auto result = wrapper.encrypt_submit_block_payload(canonical_pt, key);
+        ChaCha20Wrapper::SubmitBlockPayloadInfo hash_info{2};
+        auto canonical_pt = make_submit_block_plaintext(0);
+        auto result = wrapper.encrypt_submit_block_payload(canonical_pt, key, hash_info);
 
         print_test_result("encrypt_submit_block_payload(): succeeds for 1803-byte payload",
                           result.success);
@@ -542,7 +560,7 @@ int main()
         // The first 12 bytes of the encrypted output are the nonce.
         // Verify that two calls produce different nonces (randomness).
         if (result.success && result.data.size() >= ChaCha20Wrapper::CHACHA20_NONCE_SIZE) {
-            auto result2 = wrapper.encrypt_submit_block_payload(canonical_pt, key);
+            auto result2 = wrapper.encrypt_submit_block_payload(canonical_pt, key, hash_info);
             bool nonces_differ = false;
             if (result2.success &&
                 result2.data.size() >= ChaCha20Wrapper::CHACHA20_NONCE_SIZE) {
@@ -556,18 +574,13 @@ int main()
             print_test_result("encrypt_submit_block_payload(): fresh nonce on each call (skip)", false);
         }
 
-        // Verify wrong-size payload is accepted but logs a warning (not a hard failure).
-        // A 1813-byte plaintext (the extra 10 bytes found in LLL-TAO PR #356) must
-        // still encrypt (so the regression reaches the node and can be diagnosed) but
-        // the encrypted size will be 1841 bytes — not 1831.
-        auto too_large_pt = make_test_plaintext(1813);
-        auto result_large = wrapper.encrypt_submit_block_payload(too_large_pt, key);
-        print_test_result("encrypt_submit_block_payload(): still encrypts 1813-byte payload "
-                          "(regression path: logs size-mismatch warning)",
-                          result_large.success);
-        print_test_result("encrypt_submit_block_payload(): 1813-byte payload → 1841 encrypted "
-                          "(10-byte regression visible in output size)",
-                          result_large.success && result_large.data.size() == 1841);
+        ChaCha20Wrapper::SubmitBlockPayloadInfo prime_info{1, ChaCha20Wrapper::TRITIUM_BLOCK_SIZE, 10};
+        auto prime_pt = make_submit_block_plaintext(10);
+        auto result_prime = wrapper.encrypt_submit_block_payload(prime_pt, key, prime_info);
+        print_test_result("encrypt_submit_block_payload(): Prime 1813-byte payload succeeds",
+                          result_prime.success);
+        print_test_result("encrypt_submit_block_payload(): Prime 1813-byte payload → 1841 encrypted",
+                          result_prime.success && result_prime.data.size() == 1841);
     }
 
 

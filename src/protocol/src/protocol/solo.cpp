@@ -671,11 +671,12 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // encrypted path we strip that frame to recover the raw plaintext and then
     // hand it to ChaCha20Wrapper::encrypt_submit_block_payload() which is the
     // single canonical place responsible for:
-    //   1. Validating that the plaintext is exactly 1803 bytes
-    //      (Tritium Falcon-1024: block(216)+ts(8)+sig_len(2)+sig(1577))
+    //   1. Validating channel-aware sizing metadata
+    //      Hash :  block(216)+ts(8)+sig_len(2)+sig(1577) = 1803 bytes
+    //      Prime: block(216)+vOffsets(N)+ts(8)+sig_len(2)+sig(1577)
     //   2. Generating a fresh 12-byte nonce
     //   3. Encrypting with ChaCha20-Poly1305 (empty AAD)
-    //   4. Returning [nonce(12)][ciphertext(1803)][tag(16)] = 1831 bytes
+    //   4. Returning [nonce(12)][ciphertext(plaintext)][tag(16)]
     //
     // STATELESS wire format: [opcode(2 BE)][length(4 BE)][plaintext_payload]
     // LEGACY wire format:    [opcode(1)   ][length(4 BE)][plaintext_payload]
@@ -687,25 +688,48 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         return network::Shared_payload{};
     }
     // plaintextPayload = exactly the bytes encode_submit() built:
-    //   [block(216)][timestamp(8 LE)][sig_len(2 LE)][Falcon signature]
-    // Any extra bytes here indicate a regression in encode_submit() framing.
+    //   Hash :  [block(216)][timestamp(8 LE)][sig_len(2 LE)][Falcon signature]
+    //   Prime: [block(216)][vOffsets(N)][timestamp(8 LE)][sig_len(2 LE)][Falcon signature]
     std::vector<uint8_t> plaintextPayload(framed.begin() + header_size, framed.end());
 
-    m_logger->info("[Solo Submit] Plaintext payload: {} bytes "
-                   "[block({})][timestamp({})][sig_len({})][sig] "
-                   "(expected {} for Tritium Falcon-1024)",
-                   plaintextPayload.size(),
-                   ChaCha20Wrapper::TRITIUM_BLOCK_SIZE,
+    const size_t base_block_size = ChaCha20Wrapper::TRITIUM_BLOCK_SIZE;
+    const size_t offset_bytes_count =
+        (block_data.size() > base_block_size) ? (block_data.size() - base_block_size) : 0u;
+    const size_t sig_len_offset = base_block_size + offset_bytes_count +
+                                  ChaCha20Wrapper::SUBMIT_TIMESTAMP_SIZE;
+    uint16_t signature_size = 0;
+    if (plaintextPayload.size() >= sig_len_offset + ChaCha20Wrapper::SUBMIT_SIGLEN_FIELD_SIZE) {
+        signature_size = static_cast<uint16_t>(plaintextPayload[sig_len_offset]) |
+                         (static_cast<uint16_t>(plaintextPayload[sig_len_offset + 1]) << 8);
+    }
+    const size_t expected_plaintext_size = ChaCha20Wrapper::compute_submit_plaintext_size(
+        base_block_size, offset_bytes_count, signature_size);
+    const size_t expected_encrypted_size =
+        ChaCha20Wrapper::compute_submit_encrypted_size(expected_plaintext_size);
+    ChaCha20Wrapper::SubmitBlockPayloadInfo payload_info{
+        block_to_submit.nChannel, base_block_size, offset_bytes_count,
+        ChaCha20Wrapper::SUBMIT_TIMESTAMP_SIZE,
+        ChaCha20Wrapper::SUBMIT_SIGLEN_FIELD_SIZE};
+
+    m_logger->info("[Solo Submit] channel={} base_block={} offset_bytes={} "
+                   "timestamp={} sig_len_field={} signature={} plaintext={} "
+                   "expected_plaintext={} expected_encrypted={}",
+                   get_channel_name(block_to_submit.nChannel),
+                   base_block_size,
+                   offset_bytes_count,
                    ChaCha20Wrapper::SUBMIT_TIMESTAMP_SIZE,
                    ChaCha20Wrapper::SUBMIT_SIGLEN_FIELD_SIZE,
-                   ChaCha20Wrapper::TRITIUM_F1024_PLAINTEXT_EXPECTED);
+                   signature_size,
+                   plaintextPayload.size(),
+                   expected_plaintext_size,
+                   expected_encrypted_size);
 
     // ── ChaCha20-Poly1305 encryption via canonical wrapper ───────────────────
     // All encryption for SUBMIT_BLOCK goes through
     // ChaCha20Wrapper::encrypt_submit_block_payload() which:
-    //   • enforces the canonical 1803-byte plaintext size invariant
+    //   • validates Hash fixed-size vs Prime variable-size layouts
     //   • generates the nonce internally (no caller-side nonce assembly)
-    //   • returns [nonce(12)][ciphertext][tag(16)] = 1831 bytes
+    //   • returns [nonce(12)][ciphertext][tag(16)] = plaintext + 28 bytes
     // This prevents ad-hoc plaintext assembly and future byte-count regressions.
     if (!m_enable_chacha20) {
         m_logger->error("[Solo Submit] ChaCha20 not enabled");
@@ -725,7 +749,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         // encrypt_submit_block_payload() validates sizes, generates the nonce,
         // encrypts, and assembles [nonce(12)][ciphertext][tag(16)].
         auto enc_result = m_chacha20_wrapper->encrypt_submit_block_payload(
-            plaintextPayload, m_chacha20_session_key);
+            plaintextPayload, m_chacha20_session_key, payload_info);
 
         if (!enc_result.success || enc_result.data.empty()) {
             m_logger->error("[Solo Submit] ChaCha20 encryption failed: {}",
@@ -737,10 +761,11 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         // [nonce(12)][ciphertext(plaintextPayload.size())][tag(16)]
         const auto& encryptedPayload = enc_result.data;
 
-        m_logger->info("[Solo Submit] Encrypted payload: {} bytes "
-                       "(expected {} for Tritium Falcon-1024)",
+        m_logger->info("[Solo Submit] channel={} encrypted payload={} "
+                       "expected_encrypted={}",
+                       get_channel_name(block_to_submit.nChannel),
                        encryptedPayload.size(),
-                       ChaCha20Wrapper::TRITIUM_F1024_ENCRYPTED_EXPECTED);
+                       expected_encrypted_size);
 
         auto result = PacketBuilder::build(m_protocol_lane, LLP::SUBMIT_BLOCK, encryptedPayload);
         if (!result || result->empty()) {
