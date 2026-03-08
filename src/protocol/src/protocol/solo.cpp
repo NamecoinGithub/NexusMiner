@@ -649,8 +649,8 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // Extract Prime channel vOffsets from block_data (bytes after 216-byte Tritium body).
     // For Hash channel block_data is exactly 216 bytes so this is always empty.
     std::vector<uint8_t> vOffsets;
-    if (block_data.size() > 216)
-        vOffsets.assign(block_data.begin() + 216, block_data.end());
+    if (block_data.size() > StatelessBlockUtility::BLOCK_BODY_SIZE)
+        vOffsets.assign(block_data.begin() + StatelessBlockUtility::BLOCK_BODY_SIZE, block_data.end());
 
     auto submit_result = StatelessBlockUtility::encode_submit(
         *m_template_interface, block_to_submit, vOffsets,
@@ -675,9 +675,35 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     }
     std::vector<uint8_t> plaintextPayload(framed.begin() + header_size, framed.end());
 
-    m_logger->info("[Solo Submit] Plaintext payload: {} bytes "
-                   "[block][timestamp(8)][sig_len(2)][sig]",
-                   plaintextPayload.size());
+    // ── Channel-aware payload diagnostics ────────────────────────────────────
+    // Compute payload metadata from live data — offset_bytes_count is derived
+    // from real block_data, not defaulted to 0.
+    const size_t live_offset_bytes = vOffsets.size();
+    // Signature size: in the signed path, plaintext includes
+    // block + offsets + timestamp(8) + sig_len(2) + signature.
+    // If unsigned (no Falcon), signature_size = 0 and plaintext = block + offsets only.
+    const size_t block_plus_offsets = StatelessBlockUtility::BLOCK_BODY_SIZE + live_offset_bytes;
+    // Minimum signed overhead = timestamp(8) + sig_len_field(2) = 10 bytes
+    constexpr size_t MIN_SIGNED_OVERHEAD = 8 + 2;
+    const size_t sig_size = (plaintextPayload.size() > block_plus_offsets + MIN_SIGNED_OVERHEAD)
+        ? (plaintextPayload.size() - block_plus_offsets - 8 - 2)  // signed: subtract ts + sig_len
+        : 0;  // unsigned or too small for signature fields
+
+    auto payload_info = StatelessBlockUtility::compute_submit_payload_info(
+        tmpl->block.nChannel, block_plus_offsets, sig_size);
+
+    m_logger->info("[Solo Submit] Channel-aware payload diagnostics:");
+    m_logger->info("[Solo Submit]   channel            = {} ({})",
+                   payload_info.channel,
+                   payload_info.channel == 1 ? "Prime" : "Hash");
+    m_logger->info("[Solo Submit]   base_block_size    = {} bytes", payload_info.base_block_size);
+    m_logger->info("[Solo Submit]   offset_bytes_count = {} bytes", payload_info.offset_bytes_count);
+    m_logger->info("[Solo Submit]   timestamp_size     = {} bytes", payload_info.timestamp_size);
+    m_logger->info("[Solo Submit]   sig_len_field_size = {} bytes", payload_info.sig_len_field_size);
+    m_logger->info("[Solo Submit]   signature_size     = {} bytes", payload_info.signature_size);
+    m_logger->info("[Solo Submit]   plaintext (actual) = {} bytes", plaintextPayload.size());
+    m_logger->info("[Solo Submit]   plaintext (expect) = {} bytes", payload_info.expected_plaintext_size());
+    m_logger->info("[Solo Submit]   encrypted (expect) = {} bytes", payload_info.expected_encrypted_size());
 
     // ── ChaCha20-Poly1305 encryption ─────────────────────────────────────────
     if (!m_enable_chacha20) {
@@ -712,8 +738,10 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         encryptedPayload.insert(encryptedPayload.end(),
                                 encrypt_result.data.begin(), encrypt_result.data.end());
 
-        m_logger->info("[Solo Submit] Encrypted payload: {} bytes → SUBMIT_BLOCK (using cached session key)",
-                       encryptedPayload.size());
+        m_logger->info("[Solo Submit] Encrypted payload: {} bytes "
+                       "(expected {} from payload_info) → SUBMIT_BLOCK",
+                       encryptedPayload.size(),
+                       payload_info.expected_encrypted_size());
 
         auto result = PacketBuilder::build(m_protocol_lane, LLP::SUBMIT_BLOCK, encryptedPayload);
         if (!result || result->empty()) {

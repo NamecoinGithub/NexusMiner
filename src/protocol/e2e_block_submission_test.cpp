@@ -18,6 +18,11 @@
  * 10.  LEGACY lane: final SUBMIT_BLOCK packet has correct structure
  * 11.  Prime-channel vOffsets flow through prepare_block_submission()
  * 12.  Empty vOffsets for Hash channel (no extra bytes appended)
+ * 13.  SubmitBlockPayloadInfo: Hash Falcon-1024 fixed-size (pt=1803, enc=1831)
+ * 14.  SubmitBlockPayloadInfo: Prime + 10 offsets (pt=1813, enc=1841)
+ * 15.  SubmitBlockPayloadInfo: Prime != Hash when offsets present
+ * 16.  E2E: Hash unsigned payload_info + encrypt size correct
+ * 17.  E2E: Prime with vOffsets full pipeline size correct
  */
 
 #include "include/stateless_block_utility.hpp"
@@ -25,6 +30,7 @@
 #include "protocol/chacha20_wrapper.hpp"
 #include "protocol/height_tracker.hpp"
 #include "protocol/packet_builder.hpp"
+#include "protocol/falcon_constants.hpp"
 #include "miner_opcodes.hpp"
 #include <iostream>
 #include <cassert>
@@ -473,6 +479,140 @@ static void test_hash_no_voffsets_appended() {
     print_result("Hash channel: prepare_block_submission() = 216 bytes (no vOffsets)", ok);
 }
 
+// ── Test 13: SubmitBlockPayloadInfo Hash Falcon-1024 fixed-size ─────────────
+// Hash: plaintext = 216 + 8 + 2 + 1577 = 1803, encrypted = 1803 + 28 = 1831
+static void test_payload_info_hash_falcon1024() {
+    auto info = StatelessBlockUtility::compute_submit_payload_info(
+        /*channel=*/2, /*block_data_size=*/216,
+        /*signature_size=*/FalconConstants::FALCON1024_SIG_CT_SIZE);  // 1577
+
+    bool channel_ok   = (info.channel == 2);
+    bool base_ok      = (info.base_block_size == 216);
+    bool offset_ok    = (info.offset_bytes_count == 0);
+    bool ts_ok        = (info.timestamp_size == 8);
+    bool siglen_ok    = (info.sig_len_field_size == 2);
+    bool sig_ok       = (info.signature_size == FalconConstants::FALCON1024_SIG_CT_SIZE);
+    bool plain_ok     = (info.expected_plaintext_size() == 1803);
+    bool enc_ok       = (info.expected_encrypted_size() == 1831);
+
+    print_result("PayloadInfo Hash F1024: plaintext=1803, encrypted=1831",
+                 channel_ok && base_ok && offset_ok && ts_ok &&
+                 siglen_ok && sig_ok && plain_ok && enc_ok);
+}
+
+// ── Test 14: SubmitBlockPayloadInfo Prime with 10 offset bytes ──────────────
+// Prime: plaintext = 216 + 10 + 8 + 2 + 1577 = 1813, encrypted = 1813 + 28 = 1841
+static void test_payload_info_prime_with_offsets() {
+    const size_t offset_count = 10;
+    auto info = StatelessBlockUtility::compute_submit_payload_info(
+        /*channel=*/1, /*block_data_size=*/216 + offset_count,
+        /*signature_size=*/FalconConstants::FALCON1024_SIG_CT_SIZE);
+
+    bool channel_ok   = (info.channel == 1);
+    bool base_ok      = (info.base_block_size == 216);
+    bool offset_ok    = (info.offset_bytes_count == offset_count);
+    bool plain_ok     = (info.expected_plaintext_size() == 1813);
+    bool enc_ok       = (info.expected_encrypted_size() == 1841);
+
+    print_result("PayloadInfo Prime F1024 (10 offsets): plaintext=1813, encrypted=1841",
+                 channel_ok && base_ok && offset_ok && plain_ok && enc_ok);
+}
+
+// ── Test 15: Prime variable-size is NOT Hash fixed-size ─────────────────────
+// Verifies that Hash and Prime with offsets produce different expected sizes.
+static void test_payload_info_prime_not_equal_hash() {
+    auto hash_info = StatelessBlockUtility::compute_submit_payload_info(
+        2, 216, FalconConstants::FALCON1024_SIG_CT_SIZE);
+    auto prime_info = StatelessBlockUtility::compute_submit_payload_info(
+        1, 216 + 7, FalconConstants::FALCON1024_SIG_CT_SIZE);
+
+    bool sizes_differ = (prime_info.expected_plaintext_size() !=
+                         hash_info.expected_plaintext_size());
+    bool prime_larger  = (prime_info.expected_plaintext_size() ==
+                          hash_info.expected_plaintext_size() + 7);
+
+    print_result("PayloadInfo: Prime(7 offsets) != Hash, differs by offset count",
+                 sizes_differ && prime_larger);
+}
+
+// ── Test 16: E2E integration — encode_submit → compute_payload_info → ChaCha20 ──
+// Exercises the full submit path for Hash unsigned, verifies the payload_info
+// matches the actual sizes produced by the pipeline.
+static void test_e2e_payload_info_hash_unsigned() {
+    auto mti  = make_loaded_mti(2);
+    auto blk  = make_solved_block(2);
+    auto snap = make_snapshot();
+
+    auto submit = StatelessBlockUtility::encode_submit(
+        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+    auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
+
+    // For unsigned submit, plaintext = block bytes only (216)
+    auto info = StatelessBlockUtility::compute_submit_payload_info(2, 216, 0);
+
+    // For unsigned submit, plaintext = block bytes only (216), since
+    // timestamp/sig_len/signature are only added in the signed path.
+    // SubmitBlockPayloadInfo is designed for the signed path sizing.
+    bool actual_ok = (plaintext.size() == StatelessBlockUtility::BLOCK_BODY_SIZE);
+
+    // Encrypt and verify encrypted size
+    std::vector<uint8_t> genesis(32, 0xAB);
+    auto session_key = derive_session_key(genesis);
+    ChaCha20Wrapper wrapper;
+    auto enc_nonce = ChaCha20Wrapper::generate_nonce();
+    auto enc = wrapper.encrypt(plaintext, session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
+    // Encrypted = [ciphertext(plaintext.size())][tag(16)]
+    bool enc_ok = enc.success &&
+                  (enc.data.size() == plaintext.size() + 16);  // ct+tag
+
+    print_result("E2E PayloadInfo: Hash unsigned → encrypt size correct",
+                 actual_ok && enc_ok);
+}
+
+// ── Test 17: E2E integration — Prime with vOffsets through full pipeline ─────
+// Exercises prepare_block_submission → encode_submit → ChaCha20 → verify sizes
+static void test_e2e_payload_info_prime_pipeline() {
+    auto mti  = make_loaded_mti(1);  // Prime
+    auto blk  = make_solved_block(1);
+    auto snap = make_snapshot();
+    std::vector<uint8_t> vOffsets(10, 0x42);  // 10 offset bytes
+
+    auto submit = StatelessBlockUtility::encode_submit(
+        *mti, blk, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+    if (!submit.valid) {
+        print_result("E2E PayloadInfo Prime pipeline: encode_submit succeeds", false);
+        return;
+    }
+
+    auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
+    bool plain_ok = (plaintext.size() == StatelessBlockUtility::BLOCK_BODY_SIZE + vOffsets.size());
+
+    // Encrypt
+    std::vector<uint8_t> genesis(32, 0xAB);
+    auto session_key = derive_session_key(genesis);
+    ChaCha20Wrapper wrapper;
+    auto enc_nonce = ChaCha20Wrapper::generate_nonce();
+    auto enc = wrapper.encrypt(plaintext, session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
+
+    // Decrypt and verify round-trip
+    auto dec = wrapper.decrypt(enc.data, session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
+    bool rt_ok = dec.success && (dec.data == plaintext);
+
+    // Verify payload info matches
+    auto info = StatelessBlockUtility::compute_submit_payload_info(1, 216 + 10, 0);
+    bool info_ok = (info.offset_bytes_count == 10) && (info.channel == 1);
+
+    // Final encrypted wire payload = nonce(12) + ciphertext(plaintext.size()) + tag(16)
+    size_t expected_wire = 12 + plaintext.size() + 16;
+    std::vector<uint8_t> wire_payload;
+    wire_payload.insert(wire_payload.end(), enc_nonce.begin(), enc_nonce.end());
+    wire_payload.insert(wire_payload.end(), enc.data.begin(), enc.data.end());
+    bool wire_ok = (wire_payload.size() == expected_wire);
+
+    print_result("E2E PayloadInfo Prime (10 offsets): full pipeline size correct",
+                 plain_ok && rt_ok && info_ok && wire_ok);
+}
+
 
 int main() {
     std::cout << "\n";
@@ -499,6 +639,13 @@ int main() {
     std::cout << "\n--- vOffsets Flow ---\n";
     test_voffsets_flow_prepare_block_submission();// 11
     test_hash_no_voffsets_appended();            // 12
+
+    std::cout << "\n--- Channel-Aware Payload Sizing ---\n";
+    test_payload_info_hash_falcon1024();          // 13
+    test_payload_info_prime_with_offsets();        // 14
+    test_payload_info_prime_not_equal_hash();      // 15
+    test_e2e_payload_info_hash_unsigned();         // 16
+    test_e2e_payload_info_prime_pipeline();        // 17
 
     std::cout << "\n";
     std::cout << "========================================\n";

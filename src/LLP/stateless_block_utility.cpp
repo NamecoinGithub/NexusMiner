@@ -264,5 +264,25 @@ SubmitResult StatelessBlockUtility::encode_submit(
     return result;
 }
 
+// ─── Channel-aware payload sizing helper ─────────────────────────────────────
+SubmitBlockPayloadInfo StatelessBlockUtility::compute_submit_payload_info(
+    uint32_t channel,
+    size_t   block_data_size,
+    size_t   signature_size)
+{
+    SubmitBlockPayloadInfo info;
+    info.channel            = channel;
+    info.base_block_size    = BLOCK_BODY_SIZE;  // 216 for Tritium
+    // For Prime, offset bytes = total block_data_size - base 216-byte block body.
+    // For Hash, block_data_size should equal 216, so offset_bytes_count = 0.
+    info.offset_bytes_count = (block_data_size > BLOCK_BODY_SIZE)
+                                ? (block_data_size - BLOCK_BODY_SIZE)
+                                : 0;
+    info.timestamp_size     = 8;
+    info.sig_len_field_size = 2;
+    info.signature_size     = signature_size;
+    return info;
+}
+
 } // namespace protocol
 } // namespace nexusminer
