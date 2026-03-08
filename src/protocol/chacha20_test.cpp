@@ -547,7 +547,7 @@ int main()
             ChaCha20Wrapper::TRITIUM_BLOCK_SIZE == 216);
 
         auto key = make_test_key();
-        ChaCha20Wrapper::SubmitBlockPayloadInfo hash_info{2};
+        ChaCha20Wrapper::SubmitBlockPayloadInfo hash_info{ChaCha20Wrapper::CHANNEL_HASH};
         auto canonical_pt = make_submit_block_plaintext(0);
         auto result = wrapper.encrypt_submit_block_payload(canonical_pt, key, hash_info);
 
@@ -574,7 +574,8 @@ int main()
             print_test_result("encrypt_submit_block_payload(): fresh nonce on each call (skip)", false);
         }
 
-        ChaCha20Wrapper::SubmitBlockPayloadInfo prime_info{1, ChaCha20Wrapper::TRITIUM_BLOCK_SIZE, 10};
+        ChaCha20Wrapper::SubmitBlockPayloadInfo prime_info{
+            ChaCha20Wrapper::CHANNEL_PRIME, ChaCha20Wrapper::TRITIUM_BLOCK_SIZE, 10};
         auto prime_pt = make_submit_block_plaintext(10);
         auto result_prime = wrapper.encrypt_submit_block_payload(prime_pt, key, prime_info);
         print_test_result("encrypt_submit_block_payload(): Prime 1813-byte payload succeeds",

@@ -13,8 +13,8 @@ namespace {
 const char* submit_channel_name(uint32_t channel)
 {
     switch (channel) {
-        case 1: return "Prime";
-        case 2: return "Hash";
+        case ChaCha20Wrapper::CHANNEL_PRIME: return "Prime";
+        case ChaCha20Wrapper::CHANNEL_HASH: return "Hash";
         default: return "Unknown";
     }
 }

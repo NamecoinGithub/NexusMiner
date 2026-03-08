@@ -43,6 +43,10 @@ public:
 
     /** 216-byte serialised Tritium block header */
     static constexpr size_t TRITIUM_BLOCK_SIZE             = 216;
+    /** Tritium Prime mining channel */
+    static constexpr uint32_t CHANNEL_PRIME                = 1;
+    /** Tritium Hash mining channel */
+    static constexpr uint32_t CHANNEL_HASH                 = 2;
     /** Submission timestamp field (8 bytes, little-endian) */
     static constexpr size_t SUBMIT_TIMESTAMP_SIZE          = 8;
     /** Signature length field (2 bytes, little-endian) */
@@ -66,7 +70,7 @@ public:
         TRITIUM_F1024_PLAINTEXT_EXPECTED + CHACHA20_OVERHEAD; // 1831
 
     struct SubmitBlockPayloadInfo {
-        uint32_t channel = 2; // 1=Prime, 2=Hash
+        uint32_t channel = CHANNEL_HASH;
         size_t base_block_size = TRITIUM_BLOCK_SIZE;
         size_t offset_bytes_count = 0;
         size_t timestamp_size = SUBMIT_TIMESTAMP_SIZE;
@@ -78,8 +82,8 @@ public:
                    timestamp_size + sig_len_field_size;
         }
 
-        constexpr bool is_prime_channel() const { return channel == 1; }
-        constexpr bool is_hash_channel() const { return channel == 2; }
+        constexpr bool is_prime_channel() const { return channel == CHANNEL_PRIME; }
+        constexpr bool is_hash_channel() const { return channel == CHANNEL_HASH; }
     };
 
     static constexpr size_t compute_submit_plaintext_size(
