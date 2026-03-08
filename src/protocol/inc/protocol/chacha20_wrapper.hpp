@@ -6,7 +6,7 @@
 #include <string>
 #include <memory>
 #include "spdlog/spdlog.h"
-#include "submit_block_payload_info.hpp"
+#include "protocol/submit_block_payload_info.hpp"
 
 namespace nexusminer {
 namespace protocol {

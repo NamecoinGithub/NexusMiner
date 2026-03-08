@@ -16,7 +16,7 @@
 
 #include "protocol/chacha20_wrapper.hpp"
 #include "protocol/falcon_constants.hpp"
-#include "submit_block_payload_info.hpp"
+#include "protocol/submit_block_payload_info.hpp"
 #include <iostream>
 #include <cassert>
 #include <cstdint>
