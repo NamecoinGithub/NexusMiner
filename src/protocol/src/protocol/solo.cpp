@@ -65,14 +65,6 @@ static const std::vector<uint8_t> AAD_REWARD_RESULT{
     'R','E','S','U','L','T'
 };
 
-/** AAD for encrypting SUBMIT_BLOCK payload
- *  Node uses NO AAD (empty vector {}) for SUBMIT_BLOCK decryption.
- *  See: LLL-TAO stateless_miner_connection.cpp ~L1186:
- *    LLC::DecryptPayloadChaCha20(PACKET.DATA, context.vChaChaKey, decryptedData)
- *  No AAD argument = default empty vector. This is intentional — the entire
- *  SUBMIT_BLOCK packet is encrypted as-is without domain separation. */
-static const std::vector<uint8_t> AAD_BLOCK_SUBMISSION{};
-
 // Helper function to parse uint32 from big-endian bytes
 static uint32_t read_uint32_be(const std::vector<uint8_t>& src, size_t offset = 0) {
     if (src.size() < offset + 4) {
@@ -721,22 +713,19 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         if (!m_chacha20_wrapper)
             m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
 
-        auto enc_nonce     = ChaCha20Wrapper::generate_nonce();
-        auto encrypt_result = m_chacha20_wrapper->encrypt(
-            plaintextPayload, m_chacha20_session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
+        // Canonical wrapper path: nonce generation, size validation, and
+        // [nonce(12)][ciphertext][tag(16)] assembly are all internal.
+        auto enc_result = m_chacha20_wrapper->encrypt_submit_block_payload(
+            plaintextPayload, m_chacha20_session_key, payload_info);
 
-        if (!encrypt_result.success || encrypt_result.data.empty()) {
+        if (!enc_result.success || enc_result.data.empty()) {
             m_logger->error("[Solo Submit] ChaCha20 encryption failed: {}",
-                            encrypt_result.error_message);
+                            enc_result.error_message);
             return network::Shared_payload{};
         }
 
-        // Wire format: [nonce(12)][ciphertext+tag]
-        std::vector<uint8_t> encryptedPayload;
-        encryptedPayload.reserve(12 + encrypt_result.data.size());
-        encryptedPayload.insert(encryptedPayload.end(), enc_nonce.begin(), enc_nonce.end());
-        encryptedPayload.insert(encryptedPayload.end(),
-                                encrypt_result.data.begin(), encrypt_result.data.end());
+        // enc_result.data is already [nonce(12)][ciphertext(plaintext.size())][tag(16)]
+        const auto& encryptedPayload = enc_result.data;
 
         m_logger->info("[Solo Submit] Encrypted payload: {} bytes "
                        "(expected {} from payload_info) → SUBMIT_BLOCK",

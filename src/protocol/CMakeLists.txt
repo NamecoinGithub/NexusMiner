@@ -38,6 +38,7 @@ add_executable(chacha20_test chacha20_test.cpp)
 target_link_libraries(chacha20_test PRIVATE protocol spdlog ${OPENSSL_LIBRARIES})
 target_include_directories(chacha20_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/include
 )
 
 # Genesis Utils and Serialization Helpers Unit Test
