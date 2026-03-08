@@ -185,3 +185,45 @@ sequenceDiagram
     Note over WT: All 8 workers enter inner mining loop<br/>Total template-to-mining latency ≈ 15–162 ms
     WT->>WT: while (!m_stop) { sieve_segment() → test → submit }
 ```
+
+
+---
+
+## Diagram 17 — CPU Prime Worker — Sieve → Stats Pipeline
+
+This diagram shows how the sieve inner loop accumulates `m_range_searched` and
+how `update_statistics()` snapshots and resets it each stats interval to
+produce accurate per-interval GISPS values.
+
+```mermaid
+flowchart TD
+    A["set_block() called\nio_context thread"] -->|"m_mtx lock"| B["write block scalars\nm_stop=true, m_new_work=true"]
+    B -->|"unlock + notify_one"| C["run() loop wakes\nworker thread"]
+    C --> D["Snapshot under m_mtx:\nblock / base_hash / nonce\nm_new_work=false, m_stop=false"]
+    D --> E["set_sieve_start(starting_nonce)\nclear_chains()\ncalculate_starting_multiples()"]
+    E --> F["while (!m_stop)"]
+    F --> G["sieve_segment()"]
+    G --> H["find_chains()"]
+    H --> I{chain found?}
+    I -->|"yes"| J["Fermat test"]
+    J -->|"pass"| K["difficulty_check()"]
+    K -->|"pass"| L["block_found_callback()"]
+    I -->|"no"| M["low += segment_size\nm_range_searched += segment_size"]
+    J -->|"fail"| M
+    K -->|"fail"| M
+    L --> M
+    M --> N{m_stop?}
+    N -->|"no"| F
+    N -->|"yes"| O["wait on m_cv\n(new work)"]
+
+    P["stats timer fires\nio_context thread"] --> Q["update_statistics()"]
+    Q --> R["snapshot m_range_searched\n→ prime_stats.m_range_searched"]
+    R --> S["stats_collector.update_worker_stats()"]
+    S --> T["m_range_searched = 0\nm_cpu_active_time = {}\nm_cpu_total_time = {}\nm_cpu_tracking_start = now()"]
+    T --> U["GISPS printer reads\nrange / max(elapsed_s, 1.0) / 1e9"]
+```
+
+The two paths (worker thread on the left, stats-timer thread on the right)
+interact only at `m_range_searched`: the worker accumulates it; the stats
+timer snapshots then resets it. The race can at most undercount one interval
+by a few sieve-segment widths — a negligible blip, not a correctness issue.

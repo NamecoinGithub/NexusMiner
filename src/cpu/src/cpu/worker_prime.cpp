@@ -627,6 +627,10 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 
 	m_primes = 0;
 	m_chains = 0;
+	m_range_searched = 0;                                          // Reset range delta
+	m_cpu_active_time = {};                                        // Reset CPU-load numerator
+	m_cpu_total_time  = {};                                        // Reset CPU-load denominator
+	m_cpu_tracking_start = std::chrono::steady_clock::now();       // Restart interval
 }
 
 void Worker_prime::fermat_performance_test()

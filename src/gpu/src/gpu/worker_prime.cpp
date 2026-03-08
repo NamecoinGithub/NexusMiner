@@ -428,6 +428,7 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 
 	m_primes = 0;
 	m_chains = 0;
+	m_range_searched = 0;   // Reset delta counter after each stats snapshot
 }
 
 

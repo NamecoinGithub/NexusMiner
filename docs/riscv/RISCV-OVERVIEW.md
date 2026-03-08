@@ -196,5 +196,7 @@ kernel, which directly benefits NexusMiner's Zbkb/Zbkc and RVV codepaths.
 
 - **[BUILD-RISCV.md](BUILD-RISCV.md)** — Cross-compilation and native build guide
 - **[RISCV-DIAGRAMS.md](RISCV-DIAGRAMS.md)** — Full diagram set (7–12)
+- **[CPU-INFRASTRUCTURE.md](CPU-INFRASTRUCTURE.md)** — CPU prime worker thread model, sieve ownership, `m_range_searched` reset cycle, GISPS calculation
+- **[CPU-INFRASTRUCTURE-DIAGRAMS.md](CPU-INFRASTRUCTURE-DIAGRAMS.md)** — CPU Infrastructure diagrams (13–17): worker lifecycle, set\_block() handoff, sieve→stats pipeline
 - **[../../BUILD.md](../../BUILD.md)** — General build guide (all platforms)
 - **[../../docs/current/security/chacha20-encryption.md](../current/security/chacha20-encryption.md)** — ChaCha20-Poly1305 session encryption

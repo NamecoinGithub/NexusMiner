@@ -132,11 +132,108 @@ architectures.
 
 ---
 
+## `m_range_searched` Accumulation and Reset Cycle (PR #344 / #346 / #348)
+
+`m_range_searched` is a `uint64_t` member that counts the number of integers
+examined by the sieve since the last stats snapshot. It drives the **GISPS**
+(giga-integers-per-second) metric displayed by the stats printer.
+
+### How it accumulates
+
+Inside the inner mining loop (`run()`, worker thread), after each sieve
+segment completes:
+
+```cpp
+m_range_searched += segment_size;
+```
+
+This runs entirely on the worker thread with no lock held, matching the same
+lock-free pattern used by `m_primes` and `m_chains`.
+
+### How the stats printer converts it to GISPS
+
+`update_statistics()` (called by the stats-timer on the io\_context thread)
+copies the current value into `stats::Prime::m_range_searched`, then the
+console printer computes:
+
+```
+GISPS = m_range_searched / (1e9 × max(elapsed_seconds, 1.0))
+```
+
+The `max(…, 1.0)` clamp prevents division by zero immediately after
+`reset_start_time()`.
+
+### Why `m_range_searched` must be reset in `update_statistics()`
+
+Without resetting `m_range_searched` at the end of each stats interval the
+value accumulates across every interval since the miner started (or since
+the last block-recovery reset). The stats printer divides by **elapsed
+seconds since the last `reset_start_time()`** (a small, fixed window), not
+by total uptime, so the reported GISPS inflates linearly with uptime and
+eventually overflows into wildly wrong values.
+
+The fix — `m_range_searched = 0;` at the end of `update_statistics()` — is
+safe because:
+
+- `update_statistics()` always runs on the io\_context thread (the same thread
+  as the stats printer), never concurrently with itself.
+- The worst-case race is: the worker thread increments `m_range_searched`
+  between the copy into `prime_stats` and the reset. This causes at most one
+  stats interval to under-count by a few sieve-segment-widths — a negligible
+  blip, not a correctness issue.
+- This mirrors the identical pattern already used for `m_primes` and `m_chains`.
+
+**PR history:**
+- **PR #344** attempted to reset in `set_block()` — wrong location; that
+  function runs on the io\_context thread while the worker thread is still
+  reading `m_range_searched` from the active sieve loop.
+- **PR #346** reverted PR #344 because a concurrent segfault (sieve
+  data-race) made any change risky.
+- **PR #348** fixed the root segfault (`calculate_starting_multiples()` moved
+  to the worker thread under `m_sieve_mtx`).
+- **PR #344 fix (re-landed)** resets `m_range_searched` in
+  `update_statistics()` — correct, safe location.
+
+### CPU-load accumulator reset (CPU worker only)
+
+The CPU prime worker tracks per-interval CPU load using three fields:
+
+| Field | Role |
+|-------|------|
+| `m_cpu_active_time` | Accumulated sieve-active time in this interval |
+| `m_cpu_total_time`  | Total wall time in this interval |
+| `m_cpu_tracking_start` | Interval start timestamp |
+
+All three are reset at the end of `update_statistics()` alongside
+`m_range_searched` so that each stats interval reports load for **that
+interval only**, not a lifetime average.
+
+---
+
+## RISC-V Relevance
+
+On x86 the Total Store Order (TSO) memory model tends to hide data races behind
+aggressive store-buffer coalescing — races often produce no visible corruption
+for long periods, making them appear intermittent. RISC-V implements a relaxed
+memory model (RVWMO) with weaker ordering guarantees, so two threads accessing
+the same memory without synchronisation will **see each other's partial writes
+far more readily**. On RISC-V hardware — especially single-core embedded boards
+(VisionFive 2, Milk-V Pioneer) and the SiFive P870 — the sieve data-race
+produced a `Segmentation fault (core dumped)` on virtually every new block
+template, making it straightforward to reproduce and diagnose.
+
+This stronger visibility is a feature, not a bug: RISC-V effectively acts as a
+**race detector in production**, surfacing bugs that x86 hides. The invariant
+documented here must be maintained to keep NexusMiner correct on all
+architectures.
+
+---
+
 ## See Also
 
 - [RISCV-DIAGRAMS.md](RISCV-DIAGRAMS.md) — Diagrams 7–12: vectorization,
   hardware timeline, runtime dispatch, performance comparison
 - [CPU-INFRASTRUCTURE-DIAGRAMS.md](CPU-INFRASTRUCTURE-DIAGRAMS.md) — Diagrams
-  13–16: CPU worker lifecycle, set\_block() handoff, sieve ownership model,
-  template-to-mining timeline
+  13–17: CPU worker lifecycle, set\_block() handoff, sieve ownership model,
+  template-to-mining timeline, sieve→stats pipeline
 - [../philosophy/why-linux-nexus-vonbraun-succeed.md](../philosophy/why-linux-nexus-vonbraun-succeed.md) — Why the culture of documented engineering invariants is what separates successful projects
