@@ -9,6 +9,7 @@
 #include <iostream>
 #include <variant>
 #include <iomanip>
+#include <chrono>
 
 namespace nexusminer {
 namespace stats
@@ -29,6 +30,7 @@ private:
     std::vector<config::Worker_config> const& m_worker_config;
     Collector& m_stats_collector;
     std::shared_ptr<spdlog::logger> m_logger;
+    std::chrono::steady_clock::time_point m_last_print_time;
     
 };
 
@@ -39,6 +41,7 @@ inline Printer_console<PrinterType>::Printer_console(config::Mining_mode mining_
     , m_worker_config{ worker_config }
     , m_stats_collector{ stats_collector }
     , m_logger{ spdlog::stdout_color_mt("statistics") }
+    , m_last_print_time{ std::chrono::steady_clock::now() }
 {
     m_logger->set_pattern("[%D %H:%M:%S.%e][%^%n%$] %v");
 }
@@ -46,6 +49,10 @@ inline Printer_console<PrinterType>::Printer_console(config::Mining_mode mining_
 template<typename PrinterType>
 inline void Printer_console<PrinterType>::print()
 {
+    auto const now = std::chrono::steady_clock::now();
+    double interval_s = std::chrono::duration<double>(now - m_last_print_time).count();
+    if (interval_s < 1.0) interval_s = 1.0;
+
     // Check for degraded mode
     auto const global_stats = m_stats_collector.get_global_stats();
     
@@ -75,9 +82,7 @@ inline void Printer_console<PrinterType>::print()
             // Show 0.00 hashrate in degraded mode
             double hashrate = 0.0;
             if (!global_stats.m_degraded_mode) {
-                double elapsed_s = static_cast<double>(m_stats_collector.get_elapsed_time_seconds().count());
-                if (elapsed_s < 1.0) elapsed_s = 1.0;  // minimum 1 second guard
-                hashrate = (hash_stats.m_hash_count / elapsed_s) / 1.0e6;
+                hashrate = (hash_stats.m_hash_count / interval_s) / 1.0e6;
             }
             
             ss << std::setprecision(2) << std::fixed << hashrate << "MH/s";
@@ -99,9 +104,7 @@ inline void Printer_console<PrinterType>::print()
             // Show 0.00 GISPS in degraded mode
             double gisps = 0.0;
             if (!global_stats.m_degraded_mode) {
-                double elapsed_s = static_cast<double>(m_stats_collector.get_elapsed_time_seconds().count());
-                if (elapsed_s < 1.0) elapsed_s = 1.0;  // minimum 1 second guard
-                gisps = (prime_stats.m_range_searched / (1.0e9 * elapsed_s));
+                gisps = (prime_stats.m_range_searched / (1.0e9 * interval_s));
             }
             
             ss << gisps << " GISPS";
@@ -124,6 +127,7 @@ inline void Printer_console<PrinterType>::print()
     }
 
     m_logger->info(ss.str());
+    m_last_print_time = now;
 }
 
 }
