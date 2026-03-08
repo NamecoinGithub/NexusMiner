@@ -403,11 +403,14 @@ void Worker_prime::run()
 
 	auto start = std::chrono::steady_clock::now();
 	auto interval_start = std::chrono::steady_clock::now();
-	
-	// Initialize CPU tracking
-	m_cpu_tracking_start = std::chrono::steady_clock::now();
-	m_cpu_active_time = std::chrono::milliseconds{0};
-	m_cpu_total_time = std::chrono::milliseconds{0};
+
+	// Initialize CPU tracking (protected by mutex to prevent races with update_statistics)
+	{
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		m_cpu_tracking_start = std::chrono::steady_clock::now();
+		m_cpu_active_time = std::chrono::milliseconds{0};
+		m_cpu_total_time = std::chrono::milliseconds{0};
+	}
 
 	while (!m_stop)
 	{
@@ -514,15 +517,18 @@ void Worker_prime::run()
 			}
 		}
 		low += segment_size;
-		
-		// Track CPU active time for this iteration
+
+		// Track CPU active time for this iteration (protected by mutex to prevent races with update_statistics)
 		auto iteration_end = std::chrono::steady_clock::now();
 		auto iteration_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(iteration_end - iteration_start);
-		m_cpu_active_time += iteration_elapsed;
-		
-		// Update total time
-		m_cpu_total_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-			iteration_end - m_cpu_tracking_start);
+		{
+			std::scoped_lock<std::mutex> lck(m_mtx);
+			m_cpu_active_time += iteration_elapsed;
+
+			// Update total time
+			m_cpu_total_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+				iteration_end - m_cpu_tracking_start);
+		}
 		
 		//debug
 		auto end = std::chrono::steady_clock::now();
@@ -610,27 +616,35 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 	prime_stats.m_chains = m_segmented_sieve->m_chain_count;
 	prime_stats.m_difficulty = m_difficulty;
 	prime_stats.m_chain_histogram = m_segmented_sieve->m_chain_histogram;
-	prime_stats.m_range_searched = m_range_searched;
+	prime_stats.m_range_searched = m_range_searched.load();
 	prime_stats.m_most_difficult_chain = m_segmented_sieve->m_best_chain;
-	
-	// Calculate CPU load as ratio of active time to total time
-	if (m_cpu_total_time.count() > 0) {
-		prime_stats.m_cpu_load = static_cast<double>(m_cpu_active_time.count()) / 
-		                          static_cast<double>(m_cpu_total_time.count());
-		// Clamp to [0.0, 1.0]
-		prime_stats.m_cpu_load = std::max(0.0, std::min(1.0, prime_stats.m_cpu_load));
-	} else {
-		prime_stats.m_cpu_load = 0.0;
+
+	// Calculate CPU load as ratio of active time to total time (protected by mutex)
+	{
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		if (m_cpu_total_time.count() > 0) {
+			prime_stats.m_cpu_load = static_cast<double>(m_cpu_active_time.count()) /
+			                          static_cast<double>(m_cpu_total_time.count());
+			// Clamp to [0.0, 1.0]
+			prime_stats.m_cpu_load = std::max(0.0, std::min(1.0, prime_stats.m_cpu_load));
+		} else {
+			prime_stats.m_cpu_load = 0.0;
+		}
 	}
 
 	stats_collector.update_worker_stats(m_config.m_internal_id, prime_stats);
 
 	m_primes = 0;
 	m_chains = 0;
-	m_range_searched = 0;                                          // Reset range delta
-	m_cpu_active_time = {};                                        // Reset CPU-load numerator
-	m_cpu_total_time  = {};                                        // Reset CPU-load denominator
-	m_cpu_tracking_start = std::chrono::steady_clock::now();       // Restart interval
+	m_range_searched.store(0);                                     // Reset range delta (atomic)
+
+	// Reset CPU-load tracking under mutex to prevent races with mining loop
+	{
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		m_cpu_active_time = {};                                        // Reset CPU-load numerator
+		m_cpu_total_time  = {};                                        // Reset CPU-load denominator
+		m_cpu_tracking_start = std::chrono::steady_clock::now();       // Restart interval
+	}
 }
 
 void Worker_prime::fermat_performance_test()
