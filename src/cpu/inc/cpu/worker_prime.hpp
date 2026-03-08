@@ -74,7 +74,6 @@ private:
     std::uint64_t m_starting_nonce = 0;
     std::string m_log_leader;
 
-    void reset_statistics();
     std::uint32_t m_primes{ 0 };
     std::uint32_t m_chains{ 0 };
     std::uint32_t m_difficulty{ 0 };
