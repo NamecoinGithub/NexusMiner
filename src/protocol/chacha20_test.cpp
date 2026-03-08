@@ -16,7 +16,6 @@
 
 #include "protocol/chacha20_wrapper.hpp"
 #include "protocol/falcon_constants.hpp"
-#include "protocol/submit_block_payload_info.hpp"
 #include <iostream>
 #include <cassert>
 #include <cstdint>
@@ -521,7 +520,7 @@ int main()
         const size_t HASH_PLAINTEXT      = 216 + 8 + 2 + FALCON1024_SIG_SIZE;       // 1803
         const size_t HASH_ENCRYPTED      = HASH_PLAINTEXT + 28;                      // 1831
 
-        SubmitBlockPayloadInfo hash_info;
+        ChaCha20Wrapper::SubmitBlockPayloadInfo hash_info;
         hash_info.channel           = 2;   // Hash
         hash_info.base_block_size   = 216;
         hash_info.offset_bytes_count = 0;
@@ -552,7 +551,7 @@ int main()
         const size_t PRIME_PLAINTEXT     = 216 + PRIME_OFFSETS + 8 + 2 + FALCON1024_SIG_SIZE; // 1813
         const size_t PRIME_ENCRYPTED     = PRIME_PLAINTEXT + 28;                               // 1841
 
-        SubmitBlockPayloadInfo prime_info;
+        ChaCha20Wrapper::SubmitBlockPayloadInfo prime_info;
         prime_info.channel            = 1;   // Prime
         prime_info.base_block_size    = 216;
         prime_info.offset_bytes_count = PRIME_OFFSETS;
