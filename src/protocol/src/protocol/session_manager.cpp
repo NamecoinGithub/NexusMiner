@@ -334,9 +334,13 @@ void SessionManager::send_keepalive(const char* cadence)
 network::Shared_payload SessionManager::build_keepalive_packet() const
 {
     uint32_t session_id;
+    ProtocolLane lane;
+    std::array<uint8_t, 4> prevblock_suffix;
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
         session_id = m_session.session_id;
+        lane = m_protocol_lane;
+        prevblock_suffix = m_prevblock_suffix;
     }
 
     if (session_id == 0) {
@@ -344,7 +348,7 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
     }
 
     // Validate protocol lane is set - UNKNOWN lane is not allowed
-    if (m_protocol_lane == ProtocolLane::UNKNOWN) {
+    if (lane == ProtocolLane::UNKNOWN) {
         m_logger->error("[SessionManager] build_keepalive_packet() called with UNKNOWN protocol lane");
         m_logger->error("[SessionManager]   Cannot send SESSION_KEEPALIVE without knowing the protocol lane");
         m_logger->error("[SessionManager]   This indicates a configuration or initialization error");
@@ -354,12 +358,12 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
     // v2 keepalive payload: [session_id(4 LE)][miner_prevblock_suffix(4 raw bytes)]
     std::vector<uint8_t> payload;
     serialization::append_uint32_le(payload, session_id);
-    payload.insert(payload.end(), m_prevblock_suffix.begin(), m_prevblock_suffix.end());
+    payload.insert(payload.end(), prevblock_suffix.begin(), prevblock_suffix.end());
 
     // Build lane-aware packet based on protocol lane
     // On stateless lane, use mirror-mapped SESSION_KEEPALIVE (0xD0D4)
     // On legacy lane, use legacy SESSION_KEEPALIVE (212)
-    bool use_stateless_opcode = (m_protocol_lane == ProtocolLane::STATELESS);
+    bool use_stateless_opcode = (lane == ProtocolLane::STATELESS);
 
     Packet packet = use_stateless_opcode
         ? Packet{ LLP::StatelessMining::SESSION_KEEPALIVE,  // already uint16_t
@@ -376,15 +380,17 @@ network::Shared_payload SessionManager::build_session_status_packet(
     using namespace ::LLP::SessionStatusOpcodes;
 
     uint32_t session_id;
+    ProtocolLane lane;
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
         session_id = m_session.session_id;
+        lane = m_protocol_lane;
     }
 
     if (session_id == 0)
         return network::Shared_payload{};
 
-    if (m_protocol_lane == ProtocolLane::UNKNOWN) {
+    if (lane == ProtocolLane::UNKNOWN) {
         m_logger->error("[SessionManager] build_session_status_packet() called with UNKNOWN protocol lane");
         return network::Shared_payload{};
     }
@@ -400,7 +406,7 @@ network::Shared_payload SessionManager::build_session_status_packet(
     frame.status_flags = status_flags;
     auto payload = frame.Serialize();
 
-    bool use_stateless = (m_protocol_lane == ProtocolLane::STATELESS);
+    bool use_stateless = (lane == ProtocolLane::STATELESS);
 
     // Build lane-aware packet following the same framing as build_keepalive_packet()
     Packet packet = use_stateless
@@ -652,7 +658,10 @@ SessionManager::SessionInfo SessionManager::get_session_info() const
 
 void SessionManager::set_prevblock_suffix(const std::array<uint8_t, 4>& suffix)
 {
-    m_prevblock_suffix = suffix;
+    {
+        std::lock_guard<std::mutex> lock(m_session_mutex);
+        m_prevblock_suffix = suffix;
+    }
     m_logger->debug("[SessionManager] prevblock_suffix updated: {:02x}{:02x}{:02x}{:02x}",
                    suffix[0], suffix[1], suffix[2], suffix[3]);
 }
@@ -681,24 +690,30 @@ void SessionManager::set_keepalive_interval(uint16_t hours)
 
 void SessionManager::set_protocol_lane(ProtocolLane lane)
 {
-    if (m_protocol_lane != lane) {
-        const char* old_lane = (m_protocol_lane == ProtocolLane::LEGACY) ? "Legacy (8-bit)" :
-                               (m_protocol_lane == ProtocolLane::STATELESS) ? "Stateless (16-bit)" : "Unknown";
-        const char* new_lane = (lane == ProtocolLane::LEGACY) ? "Legacy (8-bit)" :
-                               (lane == ProtocolLane::STATELESS) ? "Stateless (16-bit)" : "Unknown";
-        
-        m_logger->info("[SessionManager] Protocol lane changed: {} -> {}", old_lane, new_lane);
+    ProtocolLane old_lane = ProtocolLane::UNKNOWN;
+    {
+        std::lock_guard<std::mutex> lock(m_session_mutex);
+        old_lane = m_protocol_lane;
         m_protocol_lane = lane;
+        m_session.active_lane = lane;
+        m_session.last_activity = now_epoch_seconds();
     }
 
-    std::lock_guard<std::mutex> lock(m_session_mutex);
-    m_session.active_lane = lane;
-    m_session.last_activity = now_epoch_seconds();
+    if (old_lane != lane) {
+        m_logger->info("[SessionManager] Protocol lane changed: {} -> {}",
+                       lane_name(old_lane), lane_name(lane));
+    }
 }
 
 uint16_t SessionManager::map_auth_opcode(uint8_t legacy_opcode) const
 {
-    if (m_protocol_lane == ProtocolLane::STATELESS) {
+    ProtocolLane lane;
+    {
+        std::lock_guard<std::mutex> lock(m_session_mutex);
+        lane = m_protocol_lane;
+    }
+
+    if (lane == ProtocolLane::STATELESS) {
         return static_cast<uint16_t>(0xD000 | legacy_opcode);  // Mirror-map
     }
     return static_cast<uint16_t>(legacy_opcode);  // Legacy as-is
