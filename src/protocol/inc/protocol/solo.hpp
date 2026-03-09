@@ -217,6 +217,13 @@ public:
     /** Returns time of last SESSION_STATUS_ACK (default time_point if never received) **/
     std::chrono::steady_clock::time_point last_session_status_ack_time() const { return m_last_session_status_ack_time; }
 
+    // Returns true if authentication is currently in-flight (waiting for challenge or result).
+    // Used by Worker_manager to avoid sending duplicate login() calls.
+    bool is_auth_in_progress() const {
+        return m_auth_state == AuthState::WAITING_FOR_CHALLENGE ||
+               m_auth_state == AuthState::WAITING_FOR_RESULT;
+    }
+
 private:
     
     // Derive ChaCha20 session key from genesis hash

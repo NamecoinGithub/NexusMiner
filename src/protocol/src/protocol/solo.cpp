@@ -2514,7 +2514,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 if (!m_authenticated) {
                     m_logger->warn("[Solo Push] ⚠ PRIME_BLOCK_AVAILABLE received while NOT_AUTHENTICATED — "
                                    "TCP session may still be alive at node; triggering in-band re-auth");
-                    if (m_session_expired_handler) {
+                    // Only fire re-auth if not already in the handshake
+                    if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
                         m_session_expired_handler();
                     }
                     return;
@@ -2559,7 +2560,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 if (!m_authenticated) {
                     m_logger->warn("[Solo Push] ⚠ HASH_BLOCK_AVAILABLE received while NOT_AUTHENTICATED — "
                                    "TCP session may still be alive at node; triggering in-band re-auth");
-                    if (m_session_expired_handler) {
+                    // Only fire re-auth if not already in the handshake
+                    if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
                         m_session_expired_handler();
                     }
                     return;
@@ -2593,6 +2595,19 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     // ═══════════════════════════════════════════════════════════════════════
     else if (matches_stateless_opcode(Packet::GET_BLOCK))
     {
+        // Auth guard — same pattern as PRIME/HASH_BLOCK_AVAILABLE push handlers.
+        // Do NOT process the template if we have no valid session.
+        if (!m_authenticated) {
+            m_logger->warn("[Solo Stateless] ⚠ STATELESS_GET_BLOCK (0xD081) received while "
+                           "NOT_AUTHENTICATED (auth_state={}) — triggering in-band re-auth",
+                           static_cast<int>(m_auth_state));
+            // Only invoke session_expired_handler if not already mid-handshake
+            if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
+                m_session_expired_handler();
+            }
+            return;
+        }
+
         // ═══════════════════════════════════════════════════════════════════
         // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!
         // ═══════════════════════════════════════════════════════════════════
