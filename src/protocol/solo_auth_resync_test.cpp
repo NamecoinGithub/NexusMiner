@@ -1,4 +1,3 @@
-#include <cassert>
 #include <chrono>
 #include <iostream>
 
@@ -134,7 +133,7 @@ void test_auth_result_success_sets_authenticated_state()
                       guard.m_auth_in_flight_since == std::chrono::steady_clock::time_point{});
 }
 
-void test_auth_result_failure_clears_inflight_state()
+void test_auth_result_failure_clears_in_flight_state()
 {
     std::cout << "\nTest 4: failed auth result clears local in-flight state\n";
 
@@ -163,7 +162,7 @@ int main()
     test_guard_requires_both_sources_to_be_unauthenticated();
     test_guard_resyncs_stale_local_flag_from_session_context();
     test_auth_result_success_sets_authenticated_state();
-    test_auth_result_failure_clears_inflight_state();
+    test_auth_result_failure_clears_in_flight_state();
 
     std::cout << "\n========================================\n";
     std::cout << "Results: " << tests_passed << "/" << tests_run
