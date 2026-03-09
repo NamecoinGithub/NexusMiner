@@ -65,6 +65,24 @@ static const std::vector<uint8_t> AAD_REWARD_RESULT{
     'R','E','S','U','L','T'
 };
 
+// Format the first N bytes of a byte vector as contiguous lowercase hex for
+// direct comparison with node-side diagnostic fingerprint logs.
+static std::string format_hex_prefix(const std::vector<uint8_t>& bytes, std::size_t prefix_bytes)
+{
+    const std::size_t prefix_size = std::min(bytes.size(), prefix_bytes);
+    static const char* const HEX = "0123456789abcdef";
+    std::string out;
+    out.reserve(prefix_size * 2);
+
+    for (std::size_t i = 0; i < prefix_size; ++i) {
+        const uint8_t byte = bytes[i];
+        out.push_back(HEX[(byte >> 4) & 0x0F]);
+        out.push_back(HEX[byte & 0x0F]);
+    }
+
+    return out;
+}
+
 // Helper function to parse uint32 from big-endian bytes
 static uint32_t read_uint32_be(const std::vector<uint8_t>& src, size_t offset = 0) {
     if (src.size() < offset + 4) {
@@ -220,6 +238,8 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 
 std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t>& genesis)
 {
+    // IMPORTANT: Use genesis bytes exactly as parsed/configured; do not reverse them
+    // before the KDF step. This must match the node's hashGenesis.GetBytes() ordering.
     std::vector<uint8_t> preimage;
     preimage.insert(preimage.end(), KDF_DOMAIN.begin(), KDF_DOMAIN.end());
     preimage.insert(preimage.end(), genesis.begin(), genesis.end());
@@ -245,7 +265,7 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
         // Use existing keys::to_hex with truncated vector to limit log output
         size_t log_length = std::min(genesis.size(), MAX_GENESIS_LOG_BYTES);
         std::vector<uint8_t> genesis_truncated(genesis.begin(), genesis.begin() + log_length);
-        m_logger->info("║ Genesis (hex): {}", nexusminer::keys::to_hex(genesis_truncated));
+        m_logger->info("║ Genesis (hex, configured order / no reversal): {}", nexusminer::keys::to_hex(genesis_truncated));
     }
     
     // Log derived key for comparison with node's "Derived Key (32 bytes):" log
@@ -410,6 +430,8 @@ network::Shared_payload Solo::login(Login_handler handler)
 
                 // Cache the session key for reuse in submit_block() and send_set_reward()
                 m_chacha20_session_key = session_key;
+                m_logger->info("[Solo Auth] ChaCha20 key fingerprint (first 8 bytes): {}",
+                               format_hex_prefix(m_chacha20_session_key, 8));
                 m_logger->info("[Solo Auth] ✓ Session key cached for this session");
 
                 m_logger->info("[Solo Auth] ✓ Pubkey wrapped: {} → {} bytes (genesis-derived key)",

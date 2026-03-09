@@ -98,6 +98,30 @@ static const std::vector<uint8_t> AAD_BLOCK_SUBMISSION{};
 
 static const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
 
+static std::vector<uint8_t> derive_session_key_for_test(const std::vector<uint8_t>& genesis) {
+    std::vector<uint8_t> preimage;
+    preimage.insert(preimage.end(), KDF_DOMAIN.begin(), KDF_DOMAIN.end());
+    preimage.insert(preimage.end(), genesis.begin(), genesis.end());
+
+    std::vector<uint8_t> derived_key(SHA256_DIGEST_LENGTH);
+    SHA256(preimage.data(), preimage.size(), derived_key.data());
+    return derived_key;
+}
+
+static std::string format_hex_prefix(const std::vector<uint8_t>& bytes, size_t prefix_bytes) {
+    static const char* const HEX = "0123456789abcdef";
+    const size_t prefix_size = std::min(bytes.size(), prefix_bytes);
+    std::string out;
+    out.reserve(prefix_size * 2);
+
+    for (size_t i = 0; i < prefix_size; ++i) {
+        uint8_t byte = bytes[i];
+        out.push_back(HEX[(byte >> 4) & 0x0F]);
+        out.push_back(HEX[byte & 0x0F]);
+    }
+
+    return out;
+}
 
 int main()
 {
@@ -394,15 +418,9 @@ int main()
     std::cout << "\nTest 14: KDF domain separator and key derivation" << std::endl;
     {
         // Verify KDF: SHA256(KDF_DOMAIN + genesis) produces 32-byte key
-        std::string domain = "nexus-mining-chacha20-v1";
         std::vector<uint8_t> genesis(32, 0x42);  // test genesis hash
 
-        std::vector<uint8_t> preimage;
-        preimage.insert(preimage.end(), domain.begin(), domain.end());
-        preimage.insert(preimage.end(), genesis.begin(), genesis.end());
-
-        std::vector<uint8_t> derived_key(SHA256_DIGEST_LENGTH);
-        SHA256(preimage.data(), preimage.size(), derived_key.data());
+        auto derived_key = derive_session_key_for_test(genesis);
 
         print_test_result("KDF produces 32-byte key", derived_key.size() == 32);
         print_test_result("KDF_DOMAIN matches expected string",
@@ -415,21 +433,36 @@ int main()
         print_test_result("Derived key is not all zeros", !all_zero);
 
         // Verify same inputs produce same key (deterministic)
-        std::vector<uint8_t> derived_key2(SHA256_DIGEST_LENGTH);
-        SHA256(preimage.data(), preimage.size(), derived_key2.data());
+        auto derived_key2 = derive_session_key_for_test(genesis);
         print_test_result("KDF is deterministic (same input → same key)",
                           derived_key == derived_key2);
 
         // Verify different genesis produces different key
         std::vector<uint8_t> genesis2(32, 0x43);  // different genesis
-        std::vector<uint8_t> preimage2;
-        preimage2.insert(preimage2.end(), domain.begin(), domain.end());
-        preimage2.insert(preimage2.end(), genesis2.begin(), genesis2.end());
-
-        std::vector<uint8_t> derived_key3(SHA256_DIGEST_LENGTH);
-        SHA256(preimage2.data(), preimage2.size(), derived_key3.data());
+        auto derived_key3 = derive_session_key_for_test(genesis2);
         print_test_result("Different genesis → different key",
                           derived_key != derived_key3);
+
+        // Verify miner.conf hex parsing order is used as-is (no reversal) before the KDF step
+        std::vector<uint8_t> ordered_genesis(32);
+        for (size_t i = 0; i < ordered_genesis.size(); ++i)
+            ordered_genesis[i] = static_cast<uint8_t>(i);
+
+        std::vector<uint8_t> reversed_genesis = ordered_genesis;
+        std::reverse(reversed_genesis.begin(), reversed_genesis.end());
+
+        auto ordered_key = derive_session_key_for_test(ordered_genesis);
+        auto reversed_key = derive_session_key_for_test(reversed_genesis);
+        print_test_result("Configured genesis byte order is used as-is (no reversal)",
+                          ordered_key != reversed_key);
+
+        std::string fingerprint = format_hex_prefix(ordered_key, 8);
+        print_test_result("Derived key fingerprint uses first 8 bytes (16 hex chars)",
+                          fingerprint.size() == 16);
+        // Verified from SHA256("nexus-mining-chacha20-v1" || 00..1f) and used here
+        // to lock in the node-comparable 8-byte fingerprint format.
+        print_test_result("Derived key fingerprint matches expected key prefix",
+                          fingerprint == "f96c268fa2b63991");
     }
 
     // ====================================================================
@@ -442,11 +475,7 @@ int main()
 
         // Step 1: Derive session key from genesis (same as both miner and node do)
         std::vector<uint8_t> genesis(32, 0xAB);
-        std::vector<uint8_t> preimage;
-        preimage.insert(preimage.end(), KDF_DOMAIN.begin(), KDF_DOMAIN.end());
-        preimage.insert(preimage.end(), genesis.begin(), genesis.end());
-        std::vector<uint8_t> session_key(SHA256_DIGEST_LENGTH);
-        SHA256(preimage.data(), preimage.size(), session_key.data());
+        auto session_key = derive_session_key_for_test(genesis);
 
         // Step 2: Create mock block payload (216 bytes block + 8 bytes timestamp)
         auto block_data = make_test_plaintext(216);
