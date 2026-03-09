@@ -143,6 +143,33 @@ public:
      */
     void set_tritium_genesis(const std::vector<uint8_t>& genesis);
 
+    void set_connection_metadata(const std::string& local_endpoint,
+                                 const std::string& remote_endpoint,
+                                 bool connected);
+
+    void set_falcon_identity(const std::vector<uint8_t>& pubkey,
+                             const std::string& key_id,
+                             bool authenticated);
+
+    void set_chacha20_session_key(const std::vector<uint8_t>& session_key,
+                                  const std::string& fingerprint,
+                                  bool ready);
+
+    void set_reward_binding(const std::string& reward_address,
+                            const std::vector<uint8_t>& reward_hash,
+                            bool bound,
+                            const std::string& source);
+
+    void set_channel_state(uint32_t channel,
+                           bool ready_for_submit,
+                           bool ready_for_get_block);
+
+    void mark_activity();
+
+    bool validate_miner_session(std::string* reason = nullptr) const;
+
+    std::string build_miner_session_diagnostics() const;
+
     /**
      * @brief Get Tritium genesis hash
      * @return Genesis hash vector

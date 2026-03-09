@@ -138,7 +138,7 @@ public:
     const MiningTemplateInterface* get_template_interface() const { return m_template_interface.get(); }
     
     // Stateless mining reward address binding (MINER_SET_REWARD protocol)
-    void set_reward_address(std::string const& address) { m_reward_address = address; }
+    void set_reward_address(std::string const& address);
     bool has_reward_address() const { return !m_reward_address.empty(); }
     bool is_reward_bound() const { return m_reward_bound; }
     network::Shared_payload send_set_reward();
@@ -290,6 +290,10 @@ private:
     // whether a stale local auth flag needs resynchronization.
     bool session_context_is_authenticated() const;
     void resync_auth_from_session_context(const char* log_scope);
+    void refresh_cached_session_state(const char* log_scope);
+    void update_connection_metadata(const std::shared_ptr<network::Connection>& connection);
+    bool validate_authoritative_session(const char* log_scope, bool require_reward_binding) const;
+    void log_session_container_summary(const char* log_scope) const;
 
     // Integration helper functions (bridge MiningTemplateInterface and ClientChannelManager)
     /**

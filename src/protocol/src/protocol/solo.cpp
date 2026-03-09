@@ -327,8 +327,12 @@ void Solo::reset()
     m_chacha20_session_key.clear();
 
     // Reset session manager
-    if (get_session_manager()) {
-        get_session_manager()->end_session();
+    if (m_session_context) {
+        m_session_context->set_chacha20_session_key({}, "", false);
+        m_session_context->set_channel_state(m_channel, false, false);
+        m_session_context->set_reward_binding(m_reward_address, {}, false,
+                                             m_reward_address.empty() ? "" : "config");
+        m_session_context->end_session();
     }
 
     // Reset template interface for new session
@@ -355,6 +359,97 @@ void Solo::resync_auth_from_session_context(const char* log_scope)
     m_auth_in_flight_since = {};
     m_logger->warn("[{}] Resynced m_authenticated from session_context — local flag was stale",
                    log_scope);
+}
+
+void Solo::refresh_cached_session_state(const char* log_scope)
+{
+    if (!m_session_context) {
+        return;
+    }
+
+    const auto session = m_session_context->get_session_info();
+
+    if (m_authenticated != session.authenticated) {
+        m_logger->warn("[{}] Resyncing local auth flag from authoritative session container: local={} authoritative={}",
+                       log_scope, m_authenticated ? "true" : "false", session.authenticated ? "true" : "false");
+        m_authenticated = session.authenticated;
+    }
+
+    if (m_session_id != session.session_id) {
+        m_logger->warn("[{}] Resyncing local session_id from authoritative session container: local=0x{:08x} authoritative=0x{:08x}",
+                       log_scope, m_session_id, session.session_id);
+        m_session_id = session.session_id;
+        if (m_template_interface) {
+            m_template_interface->set_session_id(m_session_id);
+        }
+    }
+
+    if (m_reward_bound != session.reward_bound) {
+        m_logger->warn("[{}] Resyncing local reward_bound from authoritative session container: local={} authoritative={}",
+                       log_scope, m_reward_bound ? "true" : "false", session.reward_bound ? "true" : "false");
+        m_reward_bound = session.reward_bound;
+    }
+
+    if (m_chacha20_session_key != session.chacha20_session_key) {
+        m_logger->warn("[{}] Resyncing cached ChaCha20 session key from authoritative session container", log_scope);
+        m_chacha20_session_key = session.chacha20_session_key;
+    }
+
+    if (m_protocol_lane != session.active_lane &&
+        session.active_lane != ProtocolLane::UNKNOWN &&
+        m_protocol_lane == ProtocolLane::UNKNOWN) {
+        m_logger->warn("[{}] Resyncing protocol lane from authoritative session container because local lane was UNKNOWN: authoritative={}",
+                       log_scope, get_lane_name(session.active_lane));
+        m_protocol_lane = session.active_lane;
+    }
+}
+
+void Solo::update_connection_metadata(const std::shared_ptr<network::Connection>& connection)
+{
+    if (!m_session_context) {
+        return;
+    }
+
+    if (!connection) {
+        m_session_context->set_connection_metadata("", "", false);
+        return;
+    }
+
+    const auto& remote_ep = connection->remote_endpoint();
+    const auto& local_ep = connection->local_endpoint();
+    m_session_context->set_connection_metadata(local_ep.to_string(), remote_ep.to_string(), true);
+}
+
+bool Solo::validate_authoritative_session(const char* log_scope, bool require_reward_binding) const
+{
+    if (!m_session_context) {
+        return true;
+    }
+
+    std::string reason;
+    if (!m_session_context->validate_miner_session(&reason)) {
+        m_logger->error("[{}] Authoritative miner session container consistency failure: {}", log_scope, reason);
+        m_logger->error("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
+        return false;
+    }
+
+    const auto session = m_session_context->get_session_info();
+    if (require_reward_binding && !session.reward_address_string.empty() && !session.reward_bound) {
+        m_logger->error("[{}] Authoritative miner session container requires reward binding before continuing", log_scope);
+        m_logger->error("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
+        return false;
+    }
+
+    return true;
+}
+
+void Solo::log_session_container_summary(const char* log_scope) const
+{
+    if (!m_session_context) {
+        return;
+    }
+
+    m_logger->info("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
 }
 
 network::Shared_payload Solo::login(Login_handler handler)
@@ -406,6 +501,12 @@ network::Shared_payload Solo::login(Login_handler handler)
     // STEP 1: hashGenesis FIRST (32 bytes) - enables key derivation
     // ═══════════════════════════════════════════════════════════
     std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
+    if (m_session_context) {
+        m_session_context->set_tritium_genesis(tritium_genesis);
+        m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), false);
+        m_session_context->set_channel_state(m_channel, false, false);
+        m_session_context->mark_activity();
+    }
     
     // Genesis goes FIRST in the packet
     auth_payload.insert(auth_payload.end(), tritium_genesis.begin(), tritium_genesis.end());
@@ -451,6 +552,11 @@ network::Shared_payload Solo::login(Login_handler handler)
                 m_logger->info("[Solo Auth] ChaCha20 key fingerprint (first 8 bytes): {}",
                                format_hex_prefix(m_chacha20_session_key, 8));
                 m_logger->info("[Solo Auth] ✓ Session key cached for this session");
+                if (m_session_context) {
+                    m_session_context->set_chacha20_session_key(m_chacha20_session_key,
+                                                                format_hex_prefix(m_chacha20_session_key, 8),
+                                                                true);
+                }
 
                 m_logger->info("[Solo Auth] ✓ Pubkey wrapped: {} → {} bytes (genesis-derived key)",
                                m_miner_pubkey.size(), pubkey_to_send.size());
@@ -524,6 +630,9 @@ network::Shared_payload Solo::login(Login_handler handler)
     // Set state to waiting for challenge
     m_auth_state = AuthState::WAITING_FOR_CHALLENGE;
     m_auth_in_flight_since = std::chrono::steady_clock::now();
+    if (m_session_context) {
+        m_session_context->set_state(SessionManager::SessionState::AUTHENTICATING);
+    }
     
     // Login handler will be called after successful authentication in MINER_AUTH_RESULT
     // For now, mark as "in progress"
@@ -538,6 +647,8 @@ network::Shared_payload Solo::get_work()
     /// Authentication-guarded; returns null if not authenticated or reward not bound.
     /// No miner-side rate limiting — the node's 2-second AutoCoolDown enforces the server-side floor.
 
+    refresh_cached_session_state("Solo GET_BLOCK");
+
     /* Validate prerequisites */
     if (!m_authenticated) {
         m_logger->error("[Solo] Cannot request work - not authenticated");
@@ -547,6 +658,10 @@ network::Shared_payload Solo::get_work()
             m_auth_state == AuthState::WAITING_FOR_RESULT ? "WAITING_FOR_RESULT" :
             "AUTHENTICATED");
         m_logger->error("[Solo]   Waiting for Falcon authentication to complete");
+        return nullptr;
+    }
+
+    if (!validate_authoritative_session("Solo GET_BLOCK", !m_reward_address.empty())) {
         return nullptr;
     }
 
@@ -577,6 +692,10 @@ network::Shared_payload Solo::get_work()
     m_logger->info("[Solo]   Session ID: 0x{:08x}", m_session_id);
     m_logger->info("[Solo]   Authenticated: {}", m_authenticated ? "YES" : "NO");
     m_logger->info("[Solo]   Reward bound: {}", m_reward_bound ? "YES" : "NO");
+    if (m_session_context) {
+        m_session_context->set_channel_state(m_channel, false, true);
+        m_session_context->mark_activity();
+    }
 
     /* Build GET_BLOCK packet via PacketBuilder (header-only, no payload) */
     auto payload = PacketBuilder::build(m_protocol_lane, LLP::GET_BLOCK);
@@ -647,8 +766,14 @@ network::Shared_payload Solo::send_recovery_work_request()
 
 network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce)
 {
+    refresh_cached_session_state("Solo Submit");
+
     if (block_data.empty()) {
         m_logger->error("[Solo Submit] CRITICAL: block_data is empty! Cannot submit block.");
+        return network::Shared_payload{};
+    }
+
+    if (!validate_authoritative_session("Solo Submit", !m_reward_address.empty())) {
         return network::Shared_payload{};
     }
 
@@ -745,8 +870,14 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         return network::Shared_payload{};
     }
 
-    // Use cached session key from login() — no re-derivation
-    if (m_chacha20_session_key.empty()) {
+    const auto session = m_session_context ? m_session_context->get_session_info()
+                                           : SessionManager::SessionInfo{};
+    const auto& submit_session_key = session.chacha20_session_key.empty()
+        ? m_chacha20_session_key
+        : session.chacha20_session_key;
+
+    // Use authoritative cached session key from login() — no re-derivation
+    if (submit_session_key.empty()) {
         m_logger->error("[Solo Submit] No cached session key (was login() successful?)");
         return network::Shared_payload{};
     }
@@ -758,7 +889,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         // Canonical wrapper path: nonce generation, size validation, and
         // [nonce(12)][ciphertext][tag(16)] assembly are all internal.
         auto enc_result = m_chacha20_wrapper->encrypt_submit_block_payload(
-            plaintextPayload, m_chacha20_session_key, payload_info);
+            plaintextPayload, submit_session_key, payload_info);
 
         if (!enc_result.success || enc_result.data.empty()) {
             m_logger->error("[Solo Submit] ChaCha20 encryption failed: {}",
@@ -784,6 +915,10 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
             (m_protocol_lane == ProtocolLane::STATELESS)
                 ? "STATELESS_SUBMIT_BLOCK (0xD001)" : "SUBMIT_BLOCK (0x01)",
             result->size());
+        if (m_session_context) {
+            m_session_context->set_channel_state(m_channel, true, true);
+            m_session_context->mark_activity();
+        }
         return result;
     }
     catch (const std::exception& e) {
@@ -797,6 +932,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     // Store connection for multi-packet authentication flow
     if (connection) {
         set_connection(connection);
+        update_connection_metadata(connection);
         
         // Initialize protocol lane from connection port (once, on first message)
         if (m_protocol_lane == ProtocolLane::UNKNOWN) {
@@ -2110,6 +2246,11 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     m_authenticated = false;
                     m_auth_state = AuthState::NOT_AUTHENTICATED;
                     m_auth_in_flight_since = {};
+                    if (m_session_context) {
+                        m_session_context->set_state(SessionManager::SessionState::DISCONNECTED);
+                        m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), false);
+                        m_session_context->set_chacha20_session_key({}, "", false);
+                    }
 
                     // Close connection to force re-authentication
                     if (connection) {
@@ -2151,10 +2292,12 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     (*packet.m_data)[1], (*packet.m_data)[2], (*packet.m_data)[3], (*packet.m_data)[4]);
 
                 // Start session in session manager
-                if (get_session_manager()) {
-                    get_session_manager()->set_state(SessionManager::SessionState::AUTHENTICATED);
-                    get_session_manager()->start_session(m_session_id);
-                    get_session_manager()->start_keepalive_timer();
+                if (m_session_context) {
+                    m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), true);
+                    m_session_context->start_session(m_session_id, {}, load_tritium_genesis());
+                    m_session_context->set_channel_state(m_channel, false, false);
+                    m_session_context->start_keepalive_timer();
+                    m_session_context->mark_activity();
                     m_logger->info("[Solo Session] Session started in session manager");
                     m_logger->info("[Solo Session] Keepalive timer started (early ping + regular cadence)");
                 }
@@ -2172,10 +2315,23 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 if (m_session_authenticated_handler) {
                     m_session_authenticated_handler(m_session_id);
                 }
+
+                refresh_cached_session_state("Solo Auth");
+                if (!validate_authoritative_session("Solo Auth", false)) {
+                    if (connection) {
+                        connection->close();
+                    }
+                    return;
+                }
+                log_session_container_summary("Solo Auth");
             } else {
                 m_logger->info("[Solo Phase 2] ✓ Authentication SUCCEEDED");
                 m_logger->warn("[Solo Auth]   - WARNING: No session ID provided by node (expected 5 bytes, got {})",
                     packet.m_length);
+                if (m_session_context) {
+                    m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), true);
+                    m_session_context->set_channel_state(m_channel, false, false);
+                }
 
                 // BUG FIX (Bug 2): Invoke handler even when no session ID provided (session_id will be 0).
                 if (m_session_authenticated_handler) {
@@ -2245,6 +2401,12 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             m_authenticated = false;
             m_auth_state = AuthState::NOT_AUTHENTICATED;
             m_auth_in_flight_since = {};
+            if (m_session_context) {
+                m_session_context->set_state(SessionManager::SessionState::DISCONNECTED);
+                m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), false);
+                m_session_context->set_chacha20_session_key({}, "", false);
+                m_session_context->set_channel_state(m_channel, false, false);
+            }
             
             // Visual box logging for failure
             uint8_t error_code = (packet.m_length >= 2) ? (*packet.m_data)[1] : 0x00;
@@ -2553,6 +2715,9 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
         if (parsed->has_genesis_hash()) {
             m_logger->info("[Solo Session]   - Tritium Genesis from node: {} bytes",
                           parsed->genesis_hash->size());
+            if (m_session_context) {
+                m_session_context->set_tritium_genesis(*parsed->genesis_hash);
+            }
         }
 
         // Adjust keepalive interval based on timeout (ping at 1/N of timeout)
@@ -2569,6 +2734,12 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 m_session_start_handler(keepalive_hours);
             }
         }
+
+        refresh_cached_session_state("Solo SessionStart");
+        if (!validate_authoritative_session("Solo SessionStart", false)) {
+            return;
+        }
+        log_session_container_summary("Solo SessionStart");
     }
     else if (matches_opcode(packet, Packet::SESSION_KEEPALIVE))
     {
@@ -3053,8 +3224,9 @@ void Solo::set_protocol_lane(ProtocolLane lane)
     m_protocol_lane = lane;
     
     // Also set protocol lane in SessionManager for keepalive packet generation
-    if (get_session_manager()) {
-        get_session_manager()->set_protocol_lane(lane);
+    if (m_session_context) {
+        m_session_context->set_protocol_lane(lane);
+        m_session_context->mark_activity();
     }
 }
 
@@ -3083,6 +3255,10 @@ void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
 {
     std::string channel_name = (m_channel == 1) ? "prime" : "hash";
     m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
+    if (m_session_context) {
+        m_session_context->set_channel_state(m_channel, false, false);
+        m_session_context->mark_activity();
+    }
     
     std::vector<uint8_t> channel_data(1, m_channel);
     connection->transmit(PacketBuilder::build(m_protocol_lane, LLP::SET_CHANNEL, channel_data));
@@ -3098,9 +3274,17 @@ void Solo::set_tritium_genesis(std::vector<uint8_t> const& genesis)
     // Store persistently to survive reconnections
     m_persistent_tritium_genesis = genesis;
     
-    if (get_session_manager()) {
-        get_session_manager()->set_tritium_genesis(genesis);
+    if (m_session_context) {
+        m_session_context->set_tritium_genesis(genesis);
         m_logger->info("[Solo] Tritium genesis hash configured for reward binding");
+    }
+}
+
+void Solo::set_reward_address(std::string const& address)
+{
+    m_reward_address = address;
+    if (m_session_context) {
+        m_session_context->set_reward_binding(address, {}, false, address.empty() ? "" : "config");
     }
 }
 
@@ -3152,8 +3336,9 @@ bool Solo::is_keepalive_due() const
 void Solo::set_connection(std::shared_ptr<network::Connection> connection)
 {
     m_connection = std::move(connection);
-    if (get_session_manager()) {
-        get_session_manager()->set_connection(m_connection);
+    if (m_session_context) {
+        m_session_context->set_connection(m_connection);
+        update_connection_metadata(m_connection);
     }
 }
 
@@ -3162,6 +3347,10 @@ void Solo::reset_auth_state()
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_auth_in_flight_since = {};
     m_authenticated = false;
+    if (m_session_context) {
+        m_session_context->set_state(SessionManager::SessionState::DISCONNECTED);
+        m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), false);
+    }
     m_logger->info("[Solo] Auth state reset (in-band re-auth prep)");
 }
 
@@ -3249,6 +3438,11 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
 
     // Clear the authoritative session context
     if (m_session_context) {
+        m_session_context->set_chacha20_session_key({}, "", false);
+        m_session_context->set_reward_binding(m_reward_address, {}, false,
+                                             m_reward_address.empty() ? "" : "config");
+        m_session_context->set_channel_state(m_channel, false, false);
+        m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), false);
         m_session_context->end_session();
         m_logger->info("[Solo] Session context cleared");
     }
@@ -3404,6 +3598,8 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
 
 network::Shared_payload Solo::send_set_reward()
 {
+    refresh_cached_session_state("Solo RewardSend");
+
     // Verify we have a reward address configured
     if (m_reward_address.empty()) {
         m_logger->warn("[Solo Reward] No reward address configured - skipping MINER_SET_REWARD");
@@ -3441,6 +3637,10 @@ network::Shared_payload Solo::send_set_reward()
     
     // Extract bytes 1-32 (skip version byte at index 0, skip checksum at end)
     std::vector<uint8_t> vHash(vAddress.begin() + 1, vAddress.begin() + 33);
+    if (m_session_context) {
+        m_session_context->set_reward_binding(m_reward_address, vHash, false, "config");
+        m_session_context->mark_activity();
+    }
     
     // Log the extracted hash for debugging
     std::string hex_hash;
@@ -3462,7 +3662,12 @@ network::Shared_payload Solo::send_set_reward()
             return nullptr;  // hard fail — do NOT send unencrypted
         }
         // Use cached session key from login() — no re-derivation
-        if (m_chacha20_session_key.empty())
+        const auto session = m_session_context ? m_session_context->get_session_info()
+                                               : SessionManager::SessionInfo{};
+        const auto& reward_session_key = session.chacha20_session_key.empty()
+            ? m_chacha20_session_key
+            : session.chacha20_session_key;
+        if (reward_session_key.empty())
         {
             m_logger->error("[Solo Reward] No cached session key (was login() successful?)");
             return nullptr;
@@ -3472,7 +3677,7 @@ network::Shared_payload Solo::send_set_reward()
             auto nonce = ChaCha20Wrapper::generate_nonce();
 
             // Encrypt the 32-byte hash (NOT the 37-byte address!)
-            auto encrypt_result = m_chacha20_wrapper->encrypt(vHash, m_chacha20_session_key, nonce, AAD_REWARD_ADDRESS);
+            auto encrypt_result = m_chacha20_wrapper->encrypt(vHash, reward_session_key, nonce, AAD_REWARD_ADDRESS);
 
             if (encrypt_result.success)
             {
@@ -3504,6 +3709,10 @@ network::Shared_payload Solo::send_set_reward()
     
     // Build the MINER_SET_REWARD packet via PacketBuilder
     m_logger->info("[Solo Reward] MINER_SET_REWARD packet built: {} bytes", payload_data.size());
+    if (!validate_authoritative_session("Solo RewardSend", false)) {
+        return nullptr;
+    }
+    log_session_container_summary("Solo RewardSend");
     
     return PacketBuilder::build(m_protocol_lane, LLP::MINER_SET_REWARD, payload_data);
 }
@@ -3768,11 +3977,16 @@ void Solo::update_height_state(uint32_t unified_height, uint32_t channel_height,
 void Solo::handle_reward_result(const Packet& packet)
 {
     m_logger->info("[Solo Reward] Received MINER_REWARD_RESULT");
+    refresh_cached_session_state("Solo RewardResult");
     
     // Validate packet data
     if (!packet.m_data || packet.m_length < 1) {
         m_logger->error("[Solo Reward] Invalid MINER_REWARD_RESULT packet - no data");
         m_reward_bound = false;
+        if (m_session_context) {
+            m_session_context->set_reward_binding(m_reward_address, {}, false,
+                                                 m_reward_address.empty() ? "" : "live bind");
+        }
         return;
     }
     
@@ -3781,19 +3995,20 @@ void Solo::handle_reward_result(const Packet& packet)
     // Decrypt if ChaCha20 is enabled
     if (m_enable_chacha20 && m_chacha20_wrapper && packet.m_length > 13)
     {
-        // Load genesis for decryption
-        std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
-        if (genesis_utils::is_valid_genesis(tritium_genesis))
+        const auto session = m_session_context ? m_session_context->get_session_info()
+                                               : SessionManager::SessionInfo{};
+        const auto& reward_session_key = session.chacha20_session_key.empty()
+            ? m_chacha20_session_key
+            : session.chacha20_session_key;
+        if (!reward_session_key.empty())
         {
             try {
-                auto session_key = derive_chacha20_session_key(tritium_genesis);
-                
                 // Extract nonce (first 12 bytes)
                 std::vector<uint8_t> nonce(packet.m_data->begin(), packet.m_data->begin() + 12);
                 std::vector<uint8_t> ciphertext(packet.m_data->begin() + 12, packet.m_data->end());
                 
                 // Decrypt response using matching AAD
-                auto decrypt_result = m_chacha20_wrapper->decrypt(ciphertext, session_key, nonce, AAD_REWARD_RESULT);
+                auto decrypt_result = m_chacha20_wrapper->decrypt(ciphertext, reward_session_key, nonce, AAD_REWARD_RESULT);
                 
                 if (decrypt_result.success) {
                     result_data = decrypt_result.data;
@@ -3841,6 +4056,18 @@ void Solo::handle_reward_result(const Packet& packet)
         m_logger->info("╚═════════════════════════════════════════════════════════╝");
         
         m_reward_bound = true;
+        std::vector<uint8_t> reward_hash;
+        const auto decoded = decode_base58(m_reward_address);
+        if (decoded.size() >= 33) {
+            reward_hash.assign(decoded.begin() + 1, decoded.begin() + 33);
+        }
+        if (m_session_context) {
+            m_session_context->set_reward_binding(m_reward_address, reward_hash, true, "live bind");
+            m_session_context->set_channel_state(m_channel, false, true);
+            m_session_context->mark_activity();
+        }
+        validate_authoritative_session("Solo RewardResult", false);
+        log_session_container_summary("Solo RewardResult");
         
         // CONTINUE MINING FLOW: Now send SET_CHANNEL and GET_BLOCK
         if (m_connection)
@@ -3877,6 +4104,10 @@ void Solo::handle_reward_result(const Packet& packet)
         m_logger->error("╚═════════════════════════════════════════════════════════╝");
         
         m_reward_bound = false;
+        if (m_session_context) {
+            m_session_context->set_reward_binding(m_reward_address, {}, false, "live bind");
+            m_session_context->set_channel_state(m_channel, false, false);
+        }
         
         // Reward binding failed - cannot proceed with mining
         m_logger->error("[Solo Reward] Cannot mine without reward address bound");
