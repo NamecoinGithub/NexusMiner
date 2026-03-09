@@ -837,6 +837,43 @@ uint16_t Worker_manager::get_effective_keepalive_interval() const
 
 void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
 {
+    // Safety guard: if push notifications have been received recently, the TCP
+    // connection is demonstrably alive from the node's perspective. Tearing it
+    // down here would destroy a valid node session. Use in-band re-auth instead.
+    if (m_primary_node_session) {
+        auto push_protocol = m_primary_node_session->get_primary_protocol();
+        if (push_protocol) {
+            auto ht_snap = push_protocol->get_height_tracker_snapshot();
+            bool push_received = (ht_snap.last_height_update != std::chrono::steady_clock::time_point{});
+            if (push_received) {
+                auto now = std::chrono::steady_clock::now();
+                auto since_push_s = std::chrono::duration_cast<std::chrono::seconds>(
+                    now - ht_snap.last_height_update).count();
+                if (since_push_s < PUSH_ALIVE_THRESHOLD_SECONDS) {
+                    m_logger->warn("[Worker_manager] retry_connect() suppressed — push received {}s ago "
+                                  "(TCP alive). Triggering in-band re-auth instead.", since_push_s);
+                    // Attempt in-band re-authentication on the existing TCP connection
+                    auto auth_payload = push_protocol->login([weak_self = weak_from_this()](bool login_result) {
+                        auto self = weak_self.lock();
+                        if (!self) return;
+                        if (!login_result) {
+                            self->m_logger->error("[Worker_manager] In-band re-auth (retry_connect guard) login() failed");
+                        } else {
+                            self->m_logger->info("[Worker_manager] In-band re-auth (retry_connect guard) login() sent, "
+                                                 "awaiting MINER_AUTH_RESULT");
+                        }
+                    });
+                    if (auth_payload && !auth_payload->empty()) {
+                        m_primary_node_session->transmit(auth_payload);
+                    } else {
+                        m_logger->error("[Worker_manager] retry_connect guard: failed to generate re-auth payload");
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
     // Set reconnect guard to prevent stale RX callbacks from processing during reconnect
     m_reconnect_in_progress = true;
 
@@ -1411,9 +1448,48 @@ void Worker_manager::check_template_health()
                 : INT64_MAX;
             bool push_recent = push_received && (since_push_s <= PUSH_ALIVE_THRESHOLD_SECONDS);
 
-            // ── Hard limit: unconditionally reconnect after DEGRADED_MODE_HARD_LIMIT_SECONDS ──
+            // ── Hard limit: reconnect after DEGRADED_MODE_HARD_LIMIT_SECONDS ─────────────────
+            // But only if push notifications are also stale — a recent push proves the TCP
+            // connection is alive and the node is actively communicating. In that case,
+            // escalate to in-band re-authentication instead of tearing down the live session.
             if (degraded_duration > protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS) {
-                m_logger->error("[Worker_manager] ⛔ DEGRADED MODE HARD LIMIT ({}s > {}s) — forcing reconnect "
+                if (push_recent) {
+                    m_logger->error("[Worker_manager] ⛔ DEGRADED MODE HARD LIMIT ({}s > {}s) — "
+                                   "BUT push received {}s ago; TCP alive → in-band re-auth instead of reconnect",
+                                   degraded_duration,
+                                   protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS,
+                                   since_push_s);
+                    // Attempt re-authentication on the existing TCP connection
+                    if (m_primary_node_session && !m_primary_node_session->is_authenticated()) {
+                        auto primary_protocol = m_primary_node_session->get_primary_protocol();
+                        if (primary_protocol) {
+                            auto auth_payload = primary_protocol->login([weak_self = weak_from_this()](bool login_result) {
+                                auto self = weak_self.lock();
+                                if (!self) return;
+                                if (!login_result) {
+                                    self->m_logger->error("[Worker_manager] Hard-limit re-auth login() failed");
+                                } else {
+                                    self->m_logger->info("[Worker_manager] Hard-limit re-auth login() sent, "
+                                                         "awaiting MINER_AUTH_RESULT");
+                                }
+                            });
+                            if (auth_payload && !auth_payload->empty()) {
+                                m_primary_node_session->transmit(auth_payload);
+                            } else {
+                                m_logger->error("[Worker_manager] Hard-limit re-auth: failed to generate payload");
+                            }
+                        }
+                    } else {
+                        // Session is already authenticated — push is recent and TCP is alive.
+                        // Just request a fresh template on the existing session (GET_BLOCK).
+                        m_logger->info("[Worker_manager] Hard-limit: session already authenticated, "
+                                       "requesting fresh template on existing session");
+                        retry_template_request(true);
+                    }
+                    return;
+                }
+                m_logger->error("[Worker_manager] ⛔ DEGRADED MODE HARD LIMIT ({}s > {}s) — "
+                               "no push signal; forcing full TCP reconnect "
                                "(last ACK {}s ago, last push {}s ago)",
                                degraded_duration, protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS,
                                keepalive_ack_received ? since_ack_s : static_cast<int64_t>(-1),
