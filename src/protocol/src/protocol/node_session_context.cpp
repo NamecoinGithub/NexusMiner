@@ -121,6 +121,69 @@ void NodeSessionContext::set_tritium_genesis(const std::vector<uint8_t>& genesis
     }
 }
 
+void NodeSessionContext::set_connection_metadata(const std::string& local_endpoint,
+                                                 const std::string& remote_endpoint,
+                                                 bool connected)
+{
+    if (m_session_manager) {
+        m_session_manager->set_connection_metadata(local_endpoint, remote_endpoint, connected);
+    }
+}
+
+void NodeSessionContext::set_falcon_identity(const std::vector<uint8_t>& pubkey,
+                                             const std::string& key_id,
+                                             bool authenticated)
+{
+    if (m_session_manager) {
+        m_session_manager->set_falcon_identity(pubkey, key_id, authenticated);
+    }
+}
+
+void NodeSessionContext::set_chacha20_session_key(const std::vector<uint8_t>& session_key,
+                                                  const std::string& fingerprint,
+                                                  bool ready)
+{
+    if (m_session_manager) {
+        m_session_manager->set_chacha20_session_key(session_key, fingerprint, ready);
+    }
+}
+
+void NodeSessionContext::set_reward_binding(const std::string& reward_address,
+                                            const std::vector<uint8_t>& reward_hash,
+                                            bool bound,
+                                            const std::string& source)
+{
+    if (m_session_manager) {
+        m_session_manager->set_reward_binding(reward_address, reward_hash, bound, source);
+    }
+}
+
+void NodeSessionContext::set_channel_state(uint32_t channel,
+                                           bool ready_for_submit,
+                                           bool ready_for_get_block)
+{
+    if (m_session_manager) {
+        m_session_manager->set_channel_state(channel, ready_for_submit, ready_for_get_block);
+    }
+}
+
+void NodeSessionContext::mark_activity()
+{
+    if (m_session_manager) {
+        m_session_manager->mark_activity();
+    }
+}
+
+bool NodeSessionContext::validate_miner_session(std::string* reason) const
+{
+    return m_session_manager ? m_session_manager->validate_miner_session(reason) : false;
+}
+
+std::string NodeSessionContext::build_miner_session_diagnostics() const
+{
+    return m_session_manager ? m_session_manager->build_miner_session_diagnostics() : std::string{};
+}
+
 std::vector<uint8_t> NodeSessionContext::get_tritium_genesis() const
 {
     return m_session_manager ? m_session_manager->get_tritium_genesis() : std::vector<uint8_t>{};

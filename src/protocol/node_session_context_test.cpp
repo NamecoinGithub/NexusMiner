@@ -1,6 +1,7 @@
 #include "protocol/node_session_context.hpp"
 #include <cassert>
 #include <iostream>
+#include <string>
 
 using namespace nexusminer::protocol;
 
@@ -142,6 +143,111 @@ void test_session_manager_access() {
     std::cout << "Session manager access test passed!" << std::endl;
 }
 
+void test_authoritative_miner_session_container_binding() {
+    std::cout << "Testing authoritative miner session container binding..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    std::vector<uint8_t> genesis(32, 0x11);
+    std::vector<uint8_t> falcon_pubkey(32, 0x22);
+    std::vector<uint8_t> chacha_key(32, 0x33);
+    std::vector<uint8_t> reward_hash(32, 0x44);
+
+    context.set_protocol_lane(nexusminer::ProtocolLane::STATELESS);
+    context.set_connection_metadata("127.0.0.1:4000", "127.0.0.1:9323", true);
+    context.set_tritium_genesis(genesis);
+    context.set_falcon_identity(falcon_pubkey, "2222222222222222", true);
+    context.start_session(0x12345678, {}, genesis);
+    context.set_chacha20_session_key(chacha_key, "3333333333333333", true);
+    context.set_reward_binding("reward-address", reward_hash, true, "config");
+    context.set_channel_state(2, true, true);
+
+    std::string reason;
+    assert(context.validate_miner_session(&reason));
+    assert(reason == "PASS");
+
+    auto info = context.get_session_info();
+    assert(info.connected);
+    assert(info.authenticated);
+    assert(info.falcon_authenticated);
+    assert(info.session_id == 0x12345678);
+    assert(info.session_genesis == genesis);
+    assert(info.falcon_pubkey == falcon_pubkey);
+    assert(info.falcon_key_id == "2222222222222222");
+    assert(info.chacha20_session_key == chacha_key);
+    assert(info.chacha20_key_fingerprint == "3333333333333333");
+    assert(info.reward_address_string == "reward-address");
+    assert(info.reward_hash == reward_hash);
+    assert(info.reward_bound);
+    assert(info.channel == 2);
+    assert(info.ready_for_submit);
+    assert(info.ready_for_get_block);
+
+    const auto diagnostics = context.build_miner_session_diagnostics();
+    assert(diagnostics.find("MINER SESSION CONTAINER") != std::string::npos);
+    assert(diagnostics.find("reward-address") != std::string::npos);
+    assert(diagnostics.find("consistency: PASS") != std::string::npos);
+
+    std::cout << "Authoritative miner session container binding test passed!" << std::endl;
+}
+
+void test_miner_session_container_detects_inconsistent_state() {
+    std::cout << "Testing miner session container consistency checks..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    std::vector<uint8_t> genesis(32, 0x55);
+    std::vector<uint8_t> chacha_key(32, 0x66);
+    context.set_protocol_lane(nexusminer::ProtocolLane::STATELESS);
+    context.set_connection_metadata("127.0.0.1:4000", "127.0.0.1:9323", true);
+    context.start_session(0xABCDEF01, {}, genesis);
+    context.set_falcon_identity(std::vector<uint8_t>(32, 0x77), "7777777777777777", true);
+    context.set_chacha20_session_key(chacha_key, "deadbeef", true);
+    context.set_reward_binding("reward-address", std::vector<uint8_t>(32, 0x88), false, "config");
+    context.set_channel_state(1, true, true);
+
+    std::string reason;
+    assert(!context.validate_miner_session(&reason));
+    assert(reason.find("ChaCha20 fingerprint") != std::string::npos);
+
+    std::cout << "Miner session container consistency test passed!" << std::endl;
+}
+
+void test_multiple_session_contexts_do_not_overlap() {
+    std::cout << "Testing multiple session container isolation..." << std::endl;
+
+    auto session_manager_a = std::make_shared<SessionManager>(24, nullptr);
+    auto session_manager_b = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context_a(session_manager_a);
+    NodeSessionContext context_b(session_manager_b);
+
+    context_a.set_falcon_identity(std::vector<uint8_t>(32, 0x01), "aaaaaaaaaaaaaaaa", true);
+    context_a.start_session(0x11111111, {}, std::vector<uint8_t>(32, 0x10));
+    context_a.set_reward_binding("reward-a", std::vector<uint8_t>(32, 0x21), true, "config");
+    context_a.set_channel_state(1, true, true);
+
+    context_b.set_falcon_identity(std::vector<uint8_t>(32, 0x02), "bbbbbbbbbbbbbbbb", true);
+    context_b.start_session(0x22222222, {}, std::vector<uint8_t>(32, 0x20));
+    context_b.set_reward_binding("reward-b", std::vector<uint8_t>(32, 0x31), true, "config");
+    context_b.set_channel_state(2, true, true);
+
+    auto info_a = context_a.get_session_info();
+    auto info_b = context_b.get_session_info();
+
+    assert(info_a.session_id == 0x11111111);
+    assert(info_b.session_id == 0x22222222);
+    assert(info_a.reward_address_string == "reward-a");
+    assert(info_b.reward_address_string == "reward-b");
+    assert(info_a.falcon_key_id == "aaaaaaaaaaaaaaaa");
+    assert(info_b.falcon_key_id == "bbbbbbbbbbbbbbbb");
+    assert(info_a.session_genesis != info_b.session_genesis);
+    assert(info_a.reward_hash != info_b.reward_hash);
+
+    std::cout << "Multiple session container isolation test passed!" << std::endl;
+}
+
 int main() {
     std::cout << "Running NodeSessionContext unit tests..." << std::endl;
 
@@ -152,6 +258,9 @@ int main() {
         test_keepalive_interval();
         test_tritium_genesis();
         test_session_manager_access();
+        test_authoritative_miner_session_container_binding();
+        test_miner_session_container_detects_inconsistent_state();
+        test_multiple_session_contexts_do_not_overlap();
 
         std::cout << "\nAll NodeSessionContext tests passed!" << std::endl;
         return 0;

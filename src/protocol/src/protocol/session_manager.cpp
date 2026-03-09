@@ -4,6 +4,9 @@
 #include "packet.hpp"
 #include "miner_opcodes.hpp"
 #include <algorithm>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 
 namespace nexusminer {
 namespace protocol {
@@ -14,6 +17,88 @@ constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
 constexpr auto KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);   // First ping after auth
 constexpr auto KEEPALIVE_TCP_INTERVAL   = std::chrono::seconds(45);   // TCP keepalive ping
 constexpr uint16_t KEEPALIVE_REGULAR_INTERVAL_DEFAULT = 12;           // Default hours fallback (2 pings per 24h node window)
+
+namespace {
+
+uint64_t now_epoch_seconds()
+{
+    return static_cast<uint64_t>(std::time(nullptr));
+}
+
+std::string format_hex_prefix(const std::vector<uint8_t>& bytes, std::size_t prefix_bytes)
+{
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+
+    const auto limit = std::min(bytes.size(), prefix_bytes);
+    for (std::size_t i = 0; i < limit; ++i) {
+        oss << std::setw(2) << static_cast<unsigned int>(bytes[i]);
+    }
+
+    return oss.str();
+}
+
+const char* lane_name(ProtocolLane lane)
+{
+    switch (lane) {
+        case ProtocolLane::LEGACY:
+            return "LEGACY";
+        case ProtocolLane::STATELESS:
+            return "STATELESS";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+bool validate_container_no_lock(const SessionManager::MinerSessionContainer& session, std::string* reason)
+{
+    auto fail = [&](const std::string& message) {
+        if (reason) {
+            *reason = message;
+        }
+        return false;
+    };
+
+    if (session.connected && session.active_lane == ProtocolLane::UNKNOWN) {
+        return fail("connected session has UNKNOWN lane");
+    }
+
+    if (session.authenticated) {
+        if (session.session_id == 0) {
+            return fail("authenticated session missing session_id");
+        }
+        if (!session.falcon_authenticated) {
+            return fail("authenticated session missing Falcon auth");
+        }
+    }
+
+    if (session.chacha20_ready) {
+        if (session.session_genesis.empty()) {
+            return fail("ChaCha20 ready without session genesis");
+        }
+        if (session.chacha20_session_key.empty()) {
+            return fail("ChaCha20 ready without session key");
+        }
+        if (format_hex_prefix(session.chacha20_session_key, 8) != session.chacha20_key_fingerprint) {
+            return fail("ChaCha20 fingerprint does not match stored key");
+        }
+    }
+
+    if (!session.reward_address_string.empty() && session.ready_for_submit && !session.reward_bound) {
+        return fail("submit marked ready before reward binding");
+    }
+
+    if (session.reward_bound && !session.reward_address_string.empty() && session.reward_hash.empty()) {
+        return fail("reward bound without decoded reward hash");
+    }
+
+    if (reason) {
+        *reason = "PASS";
+    }
+    return true;
+}
+
+} // namespace
 
 SessionManager::SessionManager(uint16_t keepalive_interval_hours,
                                std::shared_ptr<asio::io_context> io_context)
@@ -32,12 +117,14 @@ SessionManager::SessionManager(uint16_t keepalive_interval_hours,
     
     // Clamp keepalive interval to reasonable range
     if (m_keepalive_interval_hours < MIN_KEEPALIVE_HOURS) m_keepalive_interval_hours = MIN_KEEPALIVE_HOURS;
-    if (m_keepalive_interval_hours > MAX_KEEPALIVE_HOURS) m_keepalive_interval_hours = MAX_KEEPALIVE_HOURS;
-    
-    // Initialize session to disconnected state
-    m_session.session_id = 0;
-    m_session.state = SessionState::DISCONNECTED;
-    m_session.keepalive_count = 0;
+     if (m_keepalive_interval_hours > MAX_KEEPALIVE_HOURS) m_keepalive_interval_hours = MAX_KEEPALIVE_HOURS;
+     
+     // Initialize session to disconnected state
+     m_session.created_at = now_epoch_seconds();
+     m_session.last_activity = m_session.created_at;
+     m_session.session_id = 0;
+     m_session.state = SessionState::DISCONNECTED;
+     m_session.keepalive_count = 0;
     
     m_logger->info("[SessionManager] Initialized with keepalive interval: {} hours", 
                   m_keepalive_interval_hours);
@@ -59,11 +146,21 @@ void SessionManager::start_session(uint32_t session_id,
         std::lock_guard<std::mutex> lock(m_session_mutex);
         m_session.session_id = session_id;
         m_session.session_key = session_key;
-        m_session.tritium_genesis = tritium_genesis;
+        if (!tritium_genesis.empty()) {
+            m_session.session_genesis = tritium_genesis;
+        }
         m_session.state = SessionState::AUTHENTICATED;
+        m_session.authenticated = (session_id != 0);
+        m_session.falcon_authenticated = (session_id != 0);
+        m_session.created_at = now_epoch_seconds();
+        m_session.ready_for_submit = false;
+        m_session.ready_for_get_block = false;
+        m_session.reward_bound = false;
         m_session.session_start = std::chrono::system_clock::now();
         m_session.last_keepalive = m_session.session_start;
         m_session.keepalive_count = 0;
+        m_session.last_auth_time = now_epoch_seconds();
+        m_session.last_activity = m_session.last_auth_time;
     }
 
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}", session_id);
@@ -98,15 +195,25 @@ void SessionManager::end_session()
 
         m_session.session_id = 0;
         m_session.session_key.clear();
+        m_session.chacha20_session_key.clear();
+        m_session.chacha20_key_fingerprint.clear();
+        m_session.chacha20_ready = false;
+        m_session.authenticated = false;
+        m_session.falcon_authenticated = false;
+        m_session.reward_bound = false;
+        m_session.reward_hash.clear();
+        m_session.ready_for_submit = false;
+        m_session.ready_for_get_block = false;
 
         // Preserve tritium_genesis if configured (enables reconnection without reconfiguration)
         if (!m_preserve_genesis_on_disconnect) {
-            m_session.tritium_genesis.clear();
+            m_session.session_genesis.clear();
         }
-        genesis_size = m_session.tritium_genesis.size();
+        genesis_size = m_session.session_genesis.size();
 
         m_session.state = SessionState::DISCONNECTED;
         m_session.keepalive_count = 0;
+        m_session.last_activity = now_epoch_seconds();
     }
 
     stop_keepalive_timer();
@@ -216,6 +323,7 @@ void SessionManager::send_keepalive(const char* cadence)
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
         session_id = m_session.session_id;
+        m_session.last_activity = now_epoch_seconds();
     }
 
     connection->transmit(payload);
@@ -324,6 +432,7 @@ void SessionManager::record_keepalive()
     std::lock_guard<std::mutex> lock(m_session_mutex);
     m_session.last_keepalive = std::chrono::system_clock::now();
     m_session.keepalive_count++;
+    m_session.last_activity = now_epoch_seconds();
 
     // Transition to ACTIVE state after first keepalive
     if (m_session.state == SessionState::AUTHENTICATED) {
@@ -348,6 +457,9 @@ void SessionManager::set_state(SessionState state)
                       state_names[static_cast<int>(state)]);
 
         m_session.state = state;
+        if (state != SessionState::DISCONNECTED) {
+            m_session.last_activity = now_epoch_seconds();
+        }
 
         if (state == SessionState::EXPIRED && m_session_expired_handler)
             m_session_expired_handler();
@@ -382,7 +494,7 @@ std::vector<uint8_t> SessionManager::get_session_key() const
 std::vector<uint8_t> SessionManager::get_tritium_genesis() const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    return m_session.tritium_genesis;
+    return m_session.session_genesis;
 }
 
 void SessionManager::set_tritium_genesis(const std::vector<uint8_t>& genesis)
@@ -394,8 +506,107 @@ void SessionManager::set_tritium_genesis(const std::vector<uint8_t>& genesis)
     }
 
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    m_session.tritium_genesis = genesis;
+    m_session.session_genesis = genesis;
+    m_session.last_activity = now_epoch_seconds();
     m_logger->info("[SessionManager] Tritium genesis set: {} bytes", genesis.size());
+}
+
+void SessionManager::set_connection_metadata(const std::string& local_endpoint,
+                                             const std::string& remote_endpoint,
+                                             bool connected)
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    m_session.local_endpoint = local_endpoint;
+    m_session.remote_endpoint = remote_endpoint;
+    m_session.connected = connected;
+    m_session.last_activity = now_epoch_seconds();
+}
+
+void SessionManager::set_falcon_identity(const std::vector<uint8_t>& pubkey,
+                                         const std::string& key_id,
+                                         bool authenticated)
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    m_session.falcon_pubkey = pubkey;
+    m_session.falcon_key_id = key_id;
+    m_session.falcon_authenticated = authenticated;
+    m_session.last_activity = now_epoch_seconds();
+}
+
+void SessionManager::set_chacha20_session_key(const std::vector<uint8_t>& session_key,
+                                              const std::string& fingerprint,
+                                              bool ready)
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    m_session.chacha20_session_key = session_key;
+    m_session.chacha20_key_fingerprint = fingerprint;
+    m_session.chacha20_ready = ready;
+    m_session.last_activity = now_epoch_seconds();
+}
+
+void SessionManager::set_reward_binding(const std::string& reward_address,
+                                        const std::vector<uint8_t>& reward_hash,
+                                        bool bound,
+                                        const std::string& source)
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    m_session.reward_address_string = reward_address;
+    m_session.reward_hash = reward_hash;
+    m_session.reward_bound = bound;
+    m_session.reward_binding_source = source;
+    if (bound) {
+        m_session.last_reward_bind_time = now_epoch_seconds();
+    }
+    m_session.last_activity = now_epoch_seconds();
+}
+
+void SessionManager::set_channel_state(uint32_t channel,
+                                       bool ready_for_submit,
+                                       bool ready_for_get_block)
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    m_session.channel = channel;
+    m_session.ready_for_submit = ready_for_submit;
+    m_session.ready_for_get_block = ready_for_get_block;
+    m_session.last_activity = now_epoch_seconds();
+}
+
+void SessionManager::mark_activity()
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    m_session.last_activity = now_epoch_seconds();
+}
+
+bool SessionManager::validate_miner_session(std::string* reason) const
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    return validate_container_no_lock(m_session, reason);
+}
+
+std::string SessionManager::build_miner_session_diagnostics() const
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+
+    std::ostringstream oss;
+    std::string consistency_reason;
+    const bool consistency = validate_container_no_lock(m_session, &consistency_reason);
+
+    oss << "MINER SESSION CONTAINER\n"
+        << "- remote endpoint: " << (m_session.remote_endpoint.empty() ? "<unset>" : m_session.remote_endpoint) << '\n'
+        << "- local endpoint: " << (m_session.local_endpoint.empty() ? "<unset>" : m_session.local_endpoint) << '\n'
+        << "- active lane: " << lane_name(m_session.active_lane) << '\n'
+        << "- connected: " << (m_session.connected ? "YES" : "NO") << '\n'
+        << "- authenticated: " << (m_session.authenticated ? "YES" : "NO") << '\n'
+        << "- falcon_key_id: " << (m_session.falcon_key_id.empty() ? "<unset>" : m_session.falcon_key_id) << '\n'
+        << "- session_id: 0x" << std::hex << std::setw(8) << std::setfill('0') << m_session.session_id << std::dec << '\n'
+        << "- session_genesis: " << (m_session.session_genesis.empty() ? "<unset>" : format_hex_prefix(m_session.session_genesis, 8)) << '\n'
+        << "- chacha20_key_fingerprint: " << (m_session.chacha20_key_fingerprint.empty() ? "<unset>" : m_session.chacha20_key_fingerprint) << '\n'
+        << "- reward_address_string: " << (m_session.reward_address_string.empty() ? "<unset>" : m_session.reward_address_string) << '\n'
+        << "- reward_hash: " << (m_session.reward_hash.empty() ? "<unset>" : format_hex_prefix(m_session.reward_hash, 8)) << '\n'
+        << "- reward_binding_source: " << (m_session.reward_binding_source.empty() ? "<unset>" : m_session.reward_binding_source) << '\n'
+        << "- channel: " << m_session.channel << '\n'
+        << "- consistency: " << (consistency ? "PASS" : "FAIL") << " (" << consistency_reason << ")";
+    return oss.str();
 }
 
 std::chrono::seconds SessionManager::get_session_uptime_locked() const
@@ -479,6 +690,10 @@ void SessionManager::set_protocol_lane(ProtocolLane lane)
         m_logger->info("[SessionManager] Protocol lane changed: {} -> {}", old_lane, new_lane);
         m_protocol_lane = lane;
     }
+
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    m_session.active_lane = lane;
+    m_session.last_activity = now_epoch_seconds();
 }
 
 uint16_t SessionManager::map_auth_opcode(uint8_t legacy_opcode) const

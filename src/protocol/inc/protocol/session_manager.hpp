@@ -10,6 +10,7 @@
 #include <mutex>
 #include <array>
 #include <functional>
+#include <optional>
 #include "asio/io_context.hpp"
 #include "asio/steady_timer.hpp"
 #include "network/types.hpp"
@@ -62,15 +63,38 @@ public:
     /**
      * @brief Session information structure
      */
-    struct SessionInfo {
+    struct MinerSessionContainer {
+        std::string remote_endpoint;
+        std::string local_endpoint;
+        ProtocolLane active_lane{ProtocolLane::UNKNOWN};
+        bool connected{false};
+        bool authenticated{false};
+        std::vector<uint8_t> falcon_pubkey;
+        std::string falcon_key_id;
+        bool falcon_authenticated{false};
         uint32_t session_id;
         std::vector<uint8_t> session_key;  // Falcon session key from node
-        std::vector<uint8_t> tritium_genesis;  // Tritium genesis hash (32 bytes)
+        std::vector<uint8_t> session_genesis;  // Tritium genesis hash (32 bytes)
+        std::vector<uint8_t> chacha20_session_key;
+        std::string chacha20_key_fingerprint;
+        bool chacha20_ready{false};
+        std::string reward_address_string;
+        std::vector<uint8_t> reward_hash;
+        bool reward_bound{false};
+        std::string reward_binding_source;
+        uint32_t channel{0};
+        bool ready_for_submit{false};
+        bool ready_for_get_block{false};
+        uint64_t created_at{0};
+        uint64_t last_auth_time{0};
+        uint64_t last_reward_bind_time{0};
+        uint64_t last_activity{0};
         SessionState state;
         std::chrono::system_clock::time_point last_keepalive;
         std::chrono::system_clock::time_point session_start;
         uint32_t keepalive_count;
     };
+    using SessionInfo = MinerSessionContainer;
     
     /**
      * @brief Constructor
@@ -213,6 +237,33 @@ public:
      * @param genesis Genesis hash (32 bytes)
      */
     void set_tritium_genesis(const std::vector<uint8_t>& genesis);
+
+    void set_connection_metadata(const std::string& local_endpoint,
+                                 const std::string& remote_endpoint,
+                                 bool connected);
+
+    void set_falcon_identity(const std::vector<uint8_t>& pubkey,
+                             const std::string& key_id,
+                             bool authenticated);
+
+    void set_chacha20_session_key(const std::vector<uint8_t>& session_key,
+                                  const std::string& fingerprint,
+                                  bool ready);
+
+    void set_reward_binding(const std::string& reward_address,
+                            const std::vector<uint8_t>& reward_hash,
+                            bool bound,
+                            const std::string& source);
+
+    void set_channel_state(uint32_t channel,
+                           bool ready_for_submit,
+                           bool ready_for_get_block);
+
+    void mark_activity();
+
+    bool validate_miner_session(std::string* reason = nullptr) const;
+
+    std::string build_miner_session_diagnostics() const;
     
     /**
      * @brief Get session uptime

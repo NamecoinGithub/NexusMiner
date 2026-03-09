@@ -1,5 +1,7 @@
 #include <chrono>
+#include <cstdint>
 #include <iostream>
+#include <vector>
 
 enum class AuthState {
     NOT_AUTHENTICATED,
@@ -28,11 +30,22 @@ void print_test_result(const char* name, bool passed)
 
 struct SimulatedSoloAuthGuard
 {
+    struct AuthoritativeSession {
+        bool authenticated{false};
+        uint32_t session_id{0};
+        bool reward_bound{false};
+        std::vector<unsigned char> chacha_key;
+    };
+
     bool m_authenticated{false};
+    uint32_t m_session_id{0};
+    bool m_reward_bound{false};
+    std::vector<unsigned char> m_chacha_key;
     bool session_context_authenticated{false};
     AuthState m_auth_state{AuthState::NOT_AUTHENTICATED};
     std::chrono::steady_clock::time_point m_auth_in_flight_since{};
     int reauth_requests{0};
+    AuthoritativeSession authoritative{};
 
     bool session_context_is_authenticated() const
     {
@@ -48,6 +61,22 @@ struct SimulatedSoloAuthGuard
         m_authenticated = true;
         m_auth_state = AuthState::AUTHENTICATED;
         m_auth_in_flight_since = {};
+    }
+
+    void refresh_cached_session_state()
+    {
+        if (m_authenticated != authoritative.authenticated) {
+            m_authenticated = authoritative.authenticated;
+        }
+        if (m_session_id != authoritative.session_id) {
+            m_session_id = authoritative.session_id;
+        }
+        if (m_reward_bound != authoritative.reward_bound) {
+            m_reward_bound = authoritative.reward_bound;
+        }
+        if (m_chacha_key != authoritative.chacha_key) {
+            m_chacha_key = authoritative.chacha_key;
+        }
     }
 
     bool should_continue_after_guard()
@@ -151,6 +180,25 @@ void test_auth_result_failure_clears_in_flight_state()
                       guard.m_auth_in_flight_since == std::chrono::steady_clock::time_point{});
 }
 
+void test_cached_session_state_resyncs_from_authoritative_container()
+{
+    std::cout << "\nTest 5: cached local session state resyncs from authoritative container\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_authenticated = false;
+    guard.m_session_id = 0;
+    guard.m_reward_bound = false;
+    guard.authoritative = {true, 0x12345678, true, std::vector<unsigned char>(32, 0xAB)};
+
+    guard.refresh_cached_session_state();
+
+    print_test_result("Auth flag resynced from authoritative container", guard.m_authenticated);
+    print_test_result("Session ID resynced from authoritative container", guard.m_session_id == 0x12345678);
+    print_test_result("Reward binding resynced from authoritative container", guard.m_reward_bound);
+    print_test_result("ChaCha20 key resynced from authoritative container",
+                      guard.m_chacha_key == std::vector<unsigned char>(32, 0xAB));
+}
+
 }  // namespace
 
 int main()
@@ -163,6 +211,7 @@ int main()
     test_guard_resyncs_stale_local_flag_from_session_context();
     test_auth_result_success_sets_authenticated_state();
     test_auth_result_failure_clears_in_flight_state();
+    test_cached_session_state_resyncs_from_authoritative_container();
 
     std::cout << "\n========================================\n";
     std::cout << "Results: " << tests_passed << "/" << tests_run
