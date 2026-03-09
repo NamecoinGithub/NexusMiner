@@ -850,11 +850,25 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                 auto since_push_s = std::chrono::duration_cast<std::chrono::seconds>(
                     now - ht_snap.last_height_update).count();
                 if (since_push_s < PUSH_ALIVE_THRESHOLD_SECONDS) {
-                    // Only re-auth if not already mid-handshake
-                    if (push_protocol->is_auth_in_progress()) {
-                        m_logger->info("[Worker_manager] Auth already in-flight — skipping duplicate login()");
+                    // Conditional auth guard: suppress duplicate login() only if auth is recent.
+                    // If auth has been in-flight longer than 10s it is likely stuck from a dead
+                    // TCP mid-handshake — reset and retry rather than silently blocking.
+                    double in_flight_s = push_protocol->auth_in_flight_seconds();
+                    constexpr double AUTH_STALE_THRESHOLD_S = 10.0;
+
+                    if (in_flight_s > 0.0 && in_flight_s <= AUTH_STALE_THRESHOLD_S) {
+                        m_logger->info("[Worker_manager] Auth in-flight and recent ({:.1f}s < {}s) — "
+                                       "skipping duplicate login()", in_flight_s, AUTH_STALE_THRESHOLD_S);
                         return;
                     }
+                    if (in_flight_s > AUTH_STALE_THRESHOLD_S) {
+                        m_logger->warn("[Worker_manager] Auth in-flight but stale ({:.1f}s > {}s) — "
+                                       "resetting auth state before retry", in_flight_s, AUTH_STALE_THRESHOLD_S);
+                    }
+                    // Reset auth state so login() starts from a clean NOT_AUTHENTICATED state.
+                    // This clears any stale WAITING_FOR_CHALLENGE / WAITING_FOR_RESULT left
+                    // over from a previous attempt on a now-dead TCP connection.
+                    push_protocol->reset_auth_state();
                     m_logger->warn("[Worker_manager] retry_connect() suppressed — push received {}s ago "
                                   "(TCP alive). Triggering in-band re-auth instead.", since_push_s);
                     // Attempt in-band re-authentication on the existing TCP connection
