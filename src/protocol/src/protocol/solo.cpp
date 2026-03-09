@@ -339,6 +339,24 @@ void Solo::reset()
     }
 }
 
+bool Solo::session_context_is_authenticated() const
+{
+    return m_session_context && m_session_context->is_authenticated();
+}
+
+void Solo::resync_auth_from_session_context(const char* log_scope)
+{
+    if (m_authenticated || !session_context_is_authenticated()) {
+        return;
+    }
+
+    m_authenticated = true;
+    m_auth_state = AuthState::AUTHENTICATED;
+    m_auth_in_flight_since = {};
+    m_logger->warn("[{}] Resynced m_authenticated from session_context — local flag was stale",
+                   log_scope);
+}
+
 network::Shared_payload Solo::login(Login_handler handler)
 {
     // Clamp channel to valid values as safety net
@@ -2069,6 +2087,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
         
         if (auth_success) {
             m_authenticated = true;
+            m_auth_state = AuthState::AUTHENTICATED;
             m_auth_in_flight_since = {};  // Auth complete — clear in-flight timestamp
 
             // Extract session ID if present (4 bytes, little-endian)
@@ -2089,6 +2108,8 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
 
                     // Reset authentication state
                     m_authenticated = false;
+                    m_auth_state = AuthState::NOT_AUTHENTICATED;
+                    m_auth_in_flight_since = {};
 
                     // Close connection to force re-authentication
                     if (connection) {
@@ -2222,6 +2243,8 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
         }
         else {
             m_authenticated = false;
+            m_auth_state = AuthState::NOT_AUTHENTICATED;
+            m_auth_in_flight_since = {};
             
             // Visual box logging for failure
             uint8_t error_code = (packet.m_length >= 2) ? (*packet.m_data)[1] : 0x00;
@@ -2654,10 +2677,11 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
             [connection, this, push_opcode_name]() {
+                bool session_says_auth = session_context_is_authenticated();
                 // Guard: if not authenticated, the TCP connection is still alive from the
                 // node's perspective (push proves it), but local auth state is stale.
                 // Do NOT call get_work() — trigger in-band re-auth instead.
-                if (!m_authenticated) {
+                if (!m_authenticated && !session_says_auth) {
                     m_logger->warn("[Solo Push] ⚠ {} received while NOT_AUTHENTICATED — "
                                    "TCP session may still be alive at node; triggering in-band re-auth",
                                push_opcode_name);
@@ -2667,6 +2691,9 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                         m_session_expired_handler();
                     }
                     return;
+                }
+                if (!m_authenticated && session_says_auth) {
+                    resync_auth_from_session_context("Solo Push");
                 }
                 // Snapshot staleness BEFORE calling get_work() so we capture
                 // the state that triggered this request_work_fn invocation.
@@ -2695,9 +2722,10 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
 
 void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
+        bool session_says_auth = session_context_is_authenticated();
         // Auth guard — same pattern as PRIME/HASH_BLOCK_AVAILABLE push handlers.
         // Do NOT process the template if we have no valid session.
-        if (!m_authenticated) {
+        if (!m_authenticated && !session_says_auth) {
             m_logger->warn("[Solo Stateless] ⚠ STATELESS_GET_BLOCK (0xD081) received while "
                            "NOT_AUTHENTICATED (auth_state={}) — triggering in-band re-auth",
                            static_cast<int>(m_auth_state));
@@ -2707,6 +2735,9 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
                 m_session_expired_handler();
             }
             return;
+        }
+        if (!m_authenticated && session_says_auth) {
+            resync_auth_from_session_context("Solo Stateless");
         }
 
         // ═══════════════════════════════════════════════════════════════════
