@@ -297,6 +297,7 @@ void Solo::reset()
     m_session_id = 0;
     m_auth_timestamp = 0;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
+    m_auth_in_flight_since = {};
     m_reward_bound = false;  // Reset reward binding for new session
     m_subscribed_to_notifications = false;  // Reset push notification subscription
 
@@ -482,6 +483,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     
     // Set state to waiting for challenge
     m_auth_state = AuthState::WAITING_FOR_CHALLENGE;
+    m_auth_in_flight_since = std::chrono::steady_clock::now();
     
     // Login handler will be called after successful authentication in MINER_AUTH_RESULT
     // For now, mark as "in progress"
@@ -1928,6 +1930,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         
         if (auth_success) {
             m_authenticated = true;
+            m_auth_in_flight_since = {};  // Auth complete — clear in-flight timestamp
 
             // Extract session ID if present (4 bytes, little-endian)
             if (packet.m_length >= 5) {
@@ -2514,7 +2517,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 if (!m_authenticated) {
                     m_logger->warn("[Solo Push] ⚠ PRIME_BLOCK_AVAILABLE received while NOT_AUTHENTICATED — "
                                    "TCP session may still be alive at node; triggering in-band re-auth");
-                    if (m_session_expired_handler) {
+                    check_auth_in_flight_timeout("Solo Push");
+                    // Only fire re-auth if not already in the handshake
+                    if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
                         m_session_expired_handler();
                     }
                     return;
@@ -2559,7 +2564,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 if (!m_authenticated) {
                     m_logger->warn("[Solo Push] ⚠ HASH_BLOCK_AVAILABLE received while NOT_AUTHENTICATED — "
                                    "TCP session may still be alive at node; triggering in-band re-auth");
-                    if (m_session_expired_handler) {
+                    check_auth_in_flight_timeout("Solo Push");
+                    // Only fire re-auth if not already in the handshake
+                    if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
                         m_session_expired_handler();
                     }
                     return;
@@ -2593,6 +2600,20 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     // ═══════════════════════════════════════════════════════════════════════
     else if (matches_stateless_opcode(Packet::GET_BLOCK))
     {
+        // Auth guard — same pattern as PRIME/HASH_BLOCK_AVAILABLE push handlers.
+        // Do NOT process the template if we have no valid session.
+        if (!m_authenticated) {
+            m_logger->warn("[Solo Stateless] ⚠ STATELESS_GET_BLOCK (0xD081) received while "
+                           "NOT_AUTHENTICATED (auth_state={}) — triggering in-band re-auth",
+                           static_cast<int>(m_auth_state));
+            check_auth_in_flight_timeout("Solo Stateless");
+            // Only invoke session_expired_handler if not already mid-handshake
+            if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
+                m_session_expired_handler();
+            }
+            return;
+        }
+
         // ═══════════════════════════════════════════════════════════════════
         // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!
         // ═══════════════════════════════════════════════════════════════════
@@ -3052,8 +3073,23 @@ void Solo::set_connection(std::shared_ptr<network::Connection> connection)
 void Solo::reset_auth_state()
 {
     m_auth_state = AuthState::NOT_AUTHENTICATED;
+    m_auth_in_flight_since = {};
     m_connection = nullptr;
     m_logger->debug("[Solo Auth] Authentication state reset");
+}
+
+bool Solo::check_auth_in_flight_timeout(const char* context)
+{
+    if (is_auth_in_progress() &&
+        m_auth_in_flight_since != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() - m_auth_in_flight_since > std::chrono::seconds(AUTH_IN_FLIGHT_TIMEOUT_S)) {
+        m_logger->warn("[{}] Auth in-flight timeout (>{}s) — resetting to NOT_AUTHENTICATED",
+                       context, AUTH_IN_FLIGHT_TIMEOUT_S);
+        m_auth_state = AuthState::NOT_AUTHENTICATED;
+        m_auth_in_flight_since = {};
+        return true;
+    }
+    return false;
 }
 
 bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
@@ -3120,6 +3156,7 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
     m_session_id = 0;
     m_authenticated = false;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
+    m_auth_in_flight_since = {};
     m_reward_bound = false;  // Reward binding dies with session
     m_subscribed_to_notifications = false;
 

@@ -217,6 +217,16 @@ public:
     /** Returns time of last SESSION_STATUS_ACK (default time_point if never received) **/
     std::chrono::steady_clock::time_point last_session_status_ack_time() const { return m_last_session_status_ack_time; }
 
+    // Returns true if authentication is currently in-flight (waiting for challenge or result).
+    // Used by Worker_manager to avoid sending duplicate login() calls.
+    bool is_auth_in_progress() const {
+        return m_auth_state == AuthState::WAITING_FOR_CHALLENGE ||
+               m_auth_state == AuthState::WAITING_FOR_RESULT;
+    }
+
+    // Maximum time (seconds) auth is allowed to stay in-flight before being treated as failed.
+    static constexpr int AUTH_IN_FLIGHT_TIMEOUT_S = 30;
+
 private:
     
     // Derive ChaCha20 session key from genesis hash
@@ -227,6 +237,10 @@ private:
     
     // Helper method to send SET_CHANNEL packet
     void send_set_channel(std::shared_ptr<network::Connection> connection);
+
+    // If auth is in-flight and has exceeded AUTH_IN_FLIGHT_TIMEOUT_S, reset to NOT_AUTHENTICATED.
+    // Returns true if a timeout reset occurred.
+    bool check_auth_in_flight_timeout(const char* context);
 
     // Session ID mismatch check — shared by KEEPALIVE_V2_ACK and SESSION_KEEPALIVE handlers.
     // Returns true if a mismatch was detected (state set to EXPIRED, handler called);
@@ -343,6 +357,7 @@ private:
     std::string m_address;  // Miner's network address for auth message
     std::uint64_t m_auth_timestamp;  // Timestamp for auth message
     AuthState m_auth_state;  // Authentication state machine
+    std::chrono::steady_clock::time_point m_auth_in_flight_since{};  // When auth entered in-flight; default-constructed = not in-flight
     std::string m_miner_id;  // Miner identifier (optional)
 
     // Consecutive KEEPALIVE_V2_ACK session-ID mismatch counter.
