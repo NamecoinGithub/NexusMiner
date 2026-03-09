@@ -338,7 +338,7 @@ private:
     std::chrono::seconds get_session_uptime_locked() const;
 
     // Session information
-    mutable std::mutex m_session_mutex;  // guards m_session struct
+    mutable std::mutex m_session_mutex;  // guards m_session and related lane/keepalive metadata
     SessionInfo m_session;  // protected by m_session_mutex
     
     // Configuration

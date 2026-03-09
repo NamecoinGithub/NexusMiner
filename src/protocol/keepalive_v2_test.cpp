@@ -23,6 +23,8 @@
 #include <cstdint>
 #include <vector>
 #include <array>
+#include <future>
+#include <chrono>
 
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/null_sink.h"
@@ -245,6 +247,37 @@ void test_parse_session_id_le() {
 }
 
 // ============================================================================
+// Test 10: set_protocol_lane returns promptly and updates session + wire lane
+// ============================================================================
+void test_set_protocol_lane_no_deadlock_and_updates_state() {
+    std::cout << "\nTest 10: set_protocol_lane does not deadlock and updates packet lane\n";
+
+    auto mgr = std::make_shared<SessionManager>(24, nullptr);
+    mgr->start_session(0x01020304);
+
+    auto future = std::async(std::launch::async, [mgr]() {
+        mgr->set_protocol_lane(ProtocolLane::STATELESS);
+        return mgr->get_session_info();
+    });
+
+    const auto status = future.wait_for(std::chrono::seconds(1));
+    print_test_result("set_protocol_lane returns within timeout", status == std::future_status::ready);
+    if (status != std::future_status::ready) {
+        return;
+    }
+
+    const auto info = future.get();
+    print_test_result("Session info active_lane updated to STATELESS",
+                      info.active_lane == ProtocolLane::STATELESS);
+
+    auto wire = mgr->build_keepalive_packet();
+    bool stateless_header = wire && wire->size() >= 2 &&
+                            (*wire)[0] == 0xD0 &&
+                            (*wire)[1] == static_cast<uint8_t>(nexusminer::LLP::SESSION_KEEPALIVE);
+    print_test_result("Keepalive packet uses stateless mirrored opcode header", stateless_header);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -266,6 +299,7 @@ int main() {
     test_keepalive_parse_robustness_other_lengths();
     test_keepalive_v2_ack_frame_layout();
     test_parse_session_id_le();
+    test_set_protocol_lane_no_deadlock_and_updates_state();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
