@@ -2508,6 +2508,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
             [connection, this]() {
+                // Guard: if not authenticated, the TCP connection is still alive from the
+                // node's perspective (push proves it), but local auth state is stale.
+                // Do NOT call get_work() — trigger in-band re-auth instead.
+                if (!m_authenticated) {
+                    m_logger->warn("[Solo Push] ⚠ PRIME_BLOCK_AVAILABLE received while NOT_AUTHENTICATED — "
+                                   "TCP session may still be alive at node; triggering in-band re-auth");
+                    if (m_session_expired_handler) {
+                        m_session_expired_handler();
+                    }
+                    return;
+                }
                 // Snapshot staleness BEFORE calling get_work() so we capture
                 // the state that triggered this request_work_fn invocation.
                 bool is_stale_recovery = m_height_tracker.GetSnapshot().is_template_stale();
@@ -2542,6 +2553,17 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
             [connection, this]() {
+                // Guard: if not authenticated, the TCP connection is still alive from the
+                // node's perspective (push proves it), but local auth state is stale.
+                // Do NOT call get_work() — trigger in-band re-auth instead.
+                if (!m_authenticated) {
+                    m_logger->warn("[Solo Push] ⚠ HASH_BLOCK_AVAILABLE received while NOT_AUTHENTICATED — "
+                                   "TCP session may still be alive at node; triggering in-band re-auth");
+                    if (m_session_expired_handler) {
+                        m_session_expired_handler();
+                    }
+                    return;
+                }
                 // Snapshot staleness BEFORE calling get_work() so we capture
                 // the state that triggered this request_work_fn invocation.
                 bool is_stale_recovery = m_height_tracker.GetSnapshot().is_template_stale();
