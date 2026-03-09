@@ -271,9 +271,10 @@ void test_set_protocol_lane_no_deadlock_and_updates_state() {
                       info.active_lane == ProtocolLane::STATELESS);
 
     auto wire = mgr->build_keepalive_packet();
+    constexpr uint16_t expected_opcode = nexusminer::LLP::StatelessMining::SESSION_KEEPALIVE;
     bool stateless_header = wire && wire->size() >= 2 &&
-                            (*wire)[0] == 0xD0 &&
-                            (*wire)[1] == static_cast<uint8_t>(nexusminer::LLP::SESSION_KEEPALIVE);
+                            (*wire)[0] == static_cast<uint8_t>(expected_opcode >> 8) &&
+                            (*wire)[1] == static_cast<uint8_t>(expected_opcode & 0xFF);
     print_test_result("Keepalive packet uses stateless mirrored opcode header", stateless_header);
 }
 

@@ -691,17 +691,15 @@ void SessionManager::set_keepalive_interval(uint16_t hours)
 void SessionManager::set_protocol_lane(ProtocolLane lane)
 {
     ProtocolLane old_lane = ProtocolLane::UNKNOWN;
-    bool lane_changed = false;
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
         old_lane = m_protocol_lane;
-        lane_changed = (old_lane != lane);
         m_protocol_lane = lane;
         m_session.active_lane = lane;
         m_session.last_activity = now_epoch_seconds();
     }
 
-    if (lane_changed) {
+    if (old_lane != lane) {
         m_logger->info("[SessionManager] Protocol lane changed: {} -> {}",
                        lane_name(old_lane), lane_name(lane));
     }
