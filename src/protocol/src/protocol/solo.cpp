@@ -3074,8 +3074,8 @@ void Solo::reset_auth_state()
 {
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_auth_in_flight_since = {};
-    m_connection = nullptr;
-    m_logger->debug("[Solo Auth] Authentication state reset");
+    m_authenticated = false;
+    m_logger->info("[Solo] Auth state reset (in-band re-auth prep)");
 }
 
 bool Solo::check_auth_in_flight_timeout(const char* context)

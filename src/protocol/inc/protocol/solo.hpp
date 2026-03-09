@@ -224,6 +224,19 @@ public:
                m_auth_state == AuthState::WAITING_FOR_RESULT;
     }
 
+    // Returns how many seconds auth has been in-flight (0 if not in-flight).
+    // Used by Worker_manager to detect stuck in-flight auth from a dead TCP session.
+    double auth_in_flight_seconds() const {
+        if (!is_auth_in_progress() || m_auth_in_flight_since == std::chrono::steady_clock::time_point{})
+            return 0.0;
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - m_auth_in_flight_since).count();
+    }
+
+    // Reset only the authentication state machine (auth_state, auth_in_flight_since, authenticated flag).
+    // Call this before triggering in-band re-authentication to clear any stale in-flight state.
+    // Does NOT clear session key, genesis, or connection.
+    void reset_auth_state();
+
     // Maximum time (seconds) auth is allowed to stay in-flight before being treated as failed.
     static constexpr int AUTH_IN_FLIGHT_TIMEOUT_S = 30;
 
@@ -253,9 +266,6 @@ private:
 
     // Challenge-response authentication methods
     void handle_miner_auth_challenge(const Packet& packet);
-    
-    // Helper to reset authentication state on errors
-    void reset_auth_state();
     
     // Handle reward result response from node (MINER_REWARD_RESULT)
     void handle_reward_result(const Packet& packet);
