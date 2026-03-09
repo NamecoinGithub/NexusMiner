@@ -65,10 +65,22 @@ static const std::vector<uint8_t> AAD_REWARD_RESULT{
     'R','E','S','U','L','T'
 };
 
+// Format the first N bytes of a byte vector as contiguous lowercase hex for
+// direct comparison with node-side diagnostic fingerprint logs.
 static std::string format_hex_prefix(const std::vector<uint8_t>& bytes, std::size_t prefix_bytes)
 {
     const std::size_t prefix_size = std::min(bytes.size(), prefix_bytes);
-    return nexusminer::keys::to_hex(std::vector<uint8_t>(bytes.begin(), bytes.begin() + prefix_size));
+    static const char* const HEX = "0123456789abcdef";
+    std::string out;
+    out.reserve(prefix_size * 2);
+
+    for (std::size_t i = 0; i < prefix_size; ++i) {
+        const uint8_t byte = bytes[i];
+        out.push_back(HEX[(byte >> 4) & 0x0F]);
+        out.push_back(HEX[byte & 0x0F]);
+    }
+
+    return out;
 }
 
 // Helper function to parse uint32 from big-endian bytes

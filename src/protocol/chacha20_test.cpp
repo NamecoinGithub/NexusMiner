@@ -123,7 +123,6 @@ static std::string format_hex_prefix(const std::vector<uint8_t>& bytes, size_t p
     return out;
 }
 
-
 int main()
 {
     // Setup null logger to avoid spam during tests
@@ -460,8 +459,10 @@ int main()
         std::string fingerprint = format_hex_prefix(ordered_key, 8);
         print_test_result("Derived key fingerprint uses first 8 bytes (16 hex chars)",
                           fingerprint.size() == 16);
-        print_test_result("Derived key fingerprint matches key prefix",
-                          fingerprint == format_hex_prefix(ordered_key, ordered_key.size()).substr(0, 16));
+        // Verified from SHA256("nexus-mining-chacha20-v1" || 00..1f) and used here
+        // to lock in the node-comparable 8-byte fingerprint format.
+        print_test_result("Derived key fingerprint matches expected key prefix",
+                          fingerprint == "f96c268fa2b63991");
     }
 
     // ====================================================================
