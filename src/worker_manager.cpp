@@ -850,11 +850,6 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                 auto since_push_s = std::chrono::duration_cast<std::chrono::seconds>(
                     now - ht_snap.last_height_update).count();
                 if (since_push_s < PUSH_ALIVE_THRESHOLD_SECONDS) {
-                    // Only re-auth if not already mid-handshake
-                    if (push_protocol->is_auth_in_progress()) {
-                        m_logger->info("[Worker_manager] Auth already in-flight — skipping duplicate login()");
-                        return;
-                    }
                     m_logger->warn("[Worker_manager] retry_connect() suppressed — push received {}s ago "
                                   "(TCP alive). Triggering in-band re-auth instead.", since_push_s);
                     // Attempt in-band re-authentication on the existing TCP connection

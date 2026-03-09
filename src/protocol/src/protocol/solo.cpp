@@ -3083,7 +3083,8 @@ bool Solo::check_auth_in_flight_timeout(const char* context)
     if (is_auth_in_progress() &&
         m_auth_in_flight_since != std::chrono::steady_clock::time_point{} &&
         std::chrono::steady_clock::now() - m_auth_in_flight_since > std::chrono::seconds(AUTH_IN_FLIGHT_TIMEOUT_S)) {
-        m_logger->warn("[{}] Auth in-flight timeout (>{}s) — resetting to NOT_AUTHENTICATED",
+        m_logger->warn("[{}] Auth-in-flight {}s safety timeout fired — reset() should have cleared this; "
+                       "investigate if frequent",
                        context, AUTH_IN_FLIGHT_TIMEOUT_S);
         m_auth_state = AuthState::NOT_AUTHENTICATED;
         m_auth_in_flight_since = {};
