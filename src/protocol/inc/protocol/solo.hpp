@@ -286,6 +286,11 @@ private:
         return m_session_context ? m_session_context->get_session_manager().get() : nullptr;
     }
 
+    // NodeSessionContext is the authoritative session source; use it to detect
+    // whether a stale local auth flag needs resynchronization.
+    bool session_context_is_authenticated() const;
+    void resync_auth_from_session_context(const char* log_scope);
+
     // Integration helper functions (bridge MiningTemplateInterface and ClientChannelManager)
     /**
      * @brief Synchronize channel manager state with template interface
