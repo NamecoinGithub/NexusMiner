@@ -864,16 +864,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo] ══════════════════════════════════════════════");
     }
     
-    auto matches_opcode = [&packet](uint16_t legacy_opcode) {
-        if (packet.m_is_uint16_opcode) {
-            return packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
-        }
-        return packet.m_header == legacy_opcode;
-    };
-    auto matches_stateless_opcode = [&packet](uint16_t legacy_opcode) {
-        return packet.m_is_uint16_opcode &&
-            packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
-    };
     const bool is_block_accepted_compat =
         packet.m_is_uint16_opcode &&
         packet.m_header == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT &&
@@ -886,7 +876,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     
     // 0xD002/0xD003 may be used as stateless response aliases by some nodes.
     // Exclude those compatibility responses from normal BLOCK_HEIGHT parsing.
-    if (matches_opcode(Packet::BLOCK_HEIGHT) &&
+    if (matches_opcode(packet, Packet::BLOCK_HEIGHT) &&
         !is_block_accepted_compat &&
         !is_block_rejected_compat)
     {
@@ -933,7 +923,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
     }
     // Handle BLOCK_REWARD response
-    else if (matches_opcode(Packet::BLOCK_REWARD))
+    else if (matches_opcode(packet, Packet::BLOCK_REWARD))
     {
         // Validate packet data before processing
         if (!packet.m_data || packet.m_length < 8) {
@@ -947,8 +937,112 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo] Received BLOCK_REWARD: reward={}", m_current_reward);
     }
     // Block from wallet received
-    else if(matches_opcode(Packet::BLOCK_DATA))
+    else if (matches_opcode(packet, Packet::BLOCK_DATA))
     {
+        on_block_data(packet, connection);
+    }
+    else if (matches_opcode(packet, Packet::ACCEPT) || is_block_accepted_compat ||
+             matches_opcode(packet, LLP::GOOD_BLOCK))
+    {
+        on_block_accepted(packet, connection);
+    }
+    else if (matches_opcode(packet, Packet::REJECT) || is_block_rejected_compat ||
+             matches_opcode(packet, LLP::ORPHAN_BLOCK))
+    {
+        on_block_rejected(packet, connection);
+    }
+    else if (matches_opcode(packet, Packet::NEW_ROUND) || matches_opcode(packet, Packet::OLD_ROUND))
+    {
+        on_get_round_response(packet, connection);
+    }
+    else if (matches_opcode(packet, Packet::MINER_AUTH_CHALLENGE) ||
+             matches_opcode(packet, Packet::MINER_AUTH_RESULT)    ||
+             matches_opcode(packet, Packet::CHANNEL_ACK)          ||
+             matches_opcode(packet, Packet::SESSION_START)        ||
+             matches_opcode(packet, Packet::SESSION_KEEPALIVE)    ||
+             matches_opcode(packet, Packet::MINER_REWARD_RESULT))
+    {
+        on_miner_auth_response(packet, connection);
+    }
+    else if (matches_opcode(packet, Packet::SESSION_EXPIRED))
+    {
+        on_session_expired(packet, connection);
+    }
+    else if (matches_opcode(packet, Packet::PRIME_BLOCK_AVAILABLE))
+    {
+        on_push_notification(packet, connection, mining::CHANNEL_PRIME);
+    }
+    else if (matches_opcode(packet, Packet::HASH_BLOCK_AVAILABLE))
+    {
+        on_push_notification(packet, connection, mining::CHANNEL_HASH);
+    }
+    else if (matches_stateless_opcode(packet, Packet::GET_BLOCK))
+    {
+        on_stateless_get_block(packet, connection);
+    }
+    else if (matches_opcode(packet, 0xE0))
+    {
+        on_ping_diag(packet, connection);
+    }
+    else if (packet.m_is_uint16_opcode &&
+             packet.m_header == ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
+    {
+        on_keepalive_ack(packet, connection);
+    }
+    else if (packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK)
+          || packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY))
+    {
+        on_session_status_ack(packet, connection);
+    }
+    // ═══════════════════════════════════════════════════════════════════════
+    // NODE_SHUTDOWN (0xD0FF / legacy 0xFF) — graceful shutdown notice from node
+    // ═══════════════════════════════════════════════════════════════════════
+    else if(matches_opcode(packet, Packet::NODE_SHUTDOWN))
+    {
+        ::LLP::NodeShutdownFrame frame;
+        std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
+        if(frame.Parse(payload))
+        {
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason={}) — stopping workers",
+                frame.ReasonString());
+            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+        }
+        else
+        {
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason=UNKNOWN, no payload) — stopping workers");
+            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+        }
+
+        // Notify Worker_manager to stop workers and set reconnect backoff
+        if(m_node_shutdown_handler)
+            m_node_shutdown_handler(frame.reason);
+    }
+    else
+    {
+        m_logger->debug("Invalid header received: 0x{:04x}", packet.m_header);
+    } 
+}
+
+bool Solo::matches_opcode(Packet const& packet, uint16_t legacy_opcode)
+{
+    if (packet.m_is_uint16_opcode) {
+        return packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
+    }
+    return packet.m_header == legacy_opcode;
+}
+
+bool Solo::matches_stateless_opcode(Packet const& packet, uint16_t legacy_opcode)
+{
+    return packet.m_is_uint16_opcode &&
+        packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
+}
+
+void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connection> connection)
+{
         // Enhanced diagnostics: Check payload is non-null
         if (!packet.m_data) {
             m_logger->error("[Solo] CRITICAL: BLOCK_DATA received with null payload");
@@ -1309,8 +1403,16 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 return;
             }
         }
-    }
-    else if(matches_opcode(Packet::ACCEPT) || is_block_accepted_compat)
+}
+
+void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Connection> connection)
+{
+    const bool is_block_accepted_compat =
+        packet.m_is_uint16_opcode &&
+        packet.m_header == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT &&
+        packet.m_length == 0;
+
+    if (matches_opcode(packet, Packet::ACCEPT) || is_block_accepted_compat)
     {
         stats::Global global_stats{};
         global_stats.m_accepted_blocks = 1;
@@ -1369,7 +1471,54 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             connection->transmit(work_payload);
         }
     }
-    else if(matches_opcode(Packet::REJECT) || is_block_rejected_compat)
+    // Handle legacy GOOD_BLOCK (opcode 6): some legacy nodes send this for valid-but-not-best blocks.
+    // Treat as accepted for counter purposes.
+    else if (matches_opcode(packet, LLP::GOOD_BLOCK))
+    {
+        stats::Global global_stats{};
+        global_stats.m_accepted_blocks = 1;
+        m_stats_collector->update_global_stats(global_stats);
+        ++m_blocks_accepted;
+
+        // Use submitted block state (snapshotted at submit_block time).
+        uint32_t accepted_height  = m_last_submitted_height;
+        uint32_t accepted_channel = m_last_submitted_channel;
+        if (!m_last_submitted_valid) {
+            m_logger->warn("GOOD_BLOCK fallback: m_last_submitted_valid=false — "
+                           "reading height/channel from current template (may reflect a newer block)");
+            if (m_template_interface) {
+                auto const* tmpl = m_template_interface->get_current_template();
+                if (tmpl) {
+                    accepted_height  = tmpl->block.nHeight;
+                    accepted_channel = tmpl->block.nChannel;
+                }
+            }
+        }
+        m_logger->info("✅ BLOCK ACCEPTED by node (Legacy Lane, GOOD_BLOCK) — height={} channel={}",
+            accepted_height, accepted_channel);
+
+        // Notify Worker_manager to record in the mined-block cache.
+        // Use submitted prev_hash and nonce rather than re-reading from template.
+        if (m_block_accepted_handler) {
+            m_block_accepted_handler(accepted_height, m_last_submitted_prev_hash,
+                                     accepted_channel, m_last_submitted_nonce);
+        }
+
+        auto work_payload = get_work();
+        if (work_payload && !work_payload->empty()) {
+            connection->transmit(work_payload);
+        }
+    }
+}
+
+void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Connection> connection)
+{
+    const bool is_block_rejected_compat =
+        packet.m_is_uint16_opcode &&
+        packet.m_header == LLP::StatelessMining::BLOCK_REJECTED_COMPAT &&
+        packet.m_length <= 1;
+
+    if (matches_opcode(packet, Packet::REJECT) || is_block_rejected_compat)
     {
         stats::Global global_stats{};
         global_stats.m_rejected_blocks = 1;
@@ -1467,47 +1616,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             connection->transmit(work_payload);
         }
     }
-    // Handle legacy GOOD_BLOCK (opcode 6): some legacy nodes send this for valid-but-not-best blocks.
-    // Treat as accepted for counter purposes.
-    else if (matches_opcode(LLP::GOOD_BLOCK))
-    {
-        stats::Global global_stats{};
-        global_stats.m_accepted_blocks = 1;
-        m_stats_collector->update_global_stats(global_stats);
-        ++m_blocks_accepted;
-
-        // Use submitted block state (snapshotted at submit_block time).
-        uint32_t accepted_height  = m_last_submitted_height;
-        uint32_t accepted_channel = m_last_submitted_channel;
-        if (!m_last_submitted_valid) {
-            m_logger->warn("GOOD_BLOCK fallback: m_last_submitted_valid=false — "
-                           "reading height/channel from current template (may reflect a newer block)");
-            if (m_template_interface) {
-                auto const* tmpl = m_template_interface->get_current_template();
-                if (tmpl) {
-                    accepted_height  = tmpl->block.nHeight;
-                    accepted_channel = tmpl->block.nChannel;
-                }
-            }
-        }
-        m_logger->info("✅ BLOCK ACCEPTED by node (Legacy Lane, GOOD_BLOCK) — height={} channel={}",
-            accepted_height, accepted_channel);
-
-        // Notify Worker_manager to record in the mined-block cache.
-        // Use submitted prev_hash and nonce rather than re-reading from template.
-        if (m_block_accepted_handler) {
-            m_block_accepted_handler(accepted_height, m_last_submitted_prev_hash,
-                                     accepted_channel, m_last_submitted_nonce);
-        }
-
-        auto work_payload = get_work();
-        if (work_payload && !work_payload->empty()) {
-            connection->transmit(work_payload);
-        }
-    }
     // Handle legacy ORPHAN_BLOCK (opcode 7): some legacy nodes send this for orphaned blocks.
     // Treat as rejected for counter purposes.
-    else if (matches_opcode(LLP::ORPHAN_BLOCK))
+    else if (matches_opcode(packet, LLP::ORPHAN_BLOCK))
     {
         stats::Global global_stats{};
         global_stats.m_rejected_blocks = 1;
@@ -1531,8 +1642,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             connection->transmit(work_payload);
         }
     }
-    // Handle NEW_ROUND response (LLL-TAO PR #151 - 12-byte format, legacy 16-byte compatibility)
-    else if (matches_opcode(Packet::NEW_ROUND))
+}
+
+void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::Connection> connection)
+{
+    if (matches_opcode(packet, Packet::NEW_ROUND))
     {
         m_logger->info("[Solo GET_ROUND] NEW_ROUND response received");
 
@@ -1732,8 +1846,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             on_new_round_received(unified_height);
         }
     }
-    // Handle OLD_ROUND response (LLL-TAO PR #151 - 12-byte format, legacy 16-byte compatibility)
-    else if (matches_opcode(Packet::OLD_ROUND))
+    else if (matches_opcode(packet, Packet::OLD_ROUND))
     {
         m_logger->info("[Solo GET_ROUND] OLD_ROUND response received");
         
@@ -1899,14 +2012,18 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Update intelligent polling state
         on_old_round_received();
     }
-    else if (matches_opcode(Packet::MINER_AUTH_CHALLENGE))
+}
+
+void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network::Connection> connection)
+{
+    if (matches_opcode(packet, Packet::MINER_AUTH_CHALLENGE))
     {
         // Phase 2 Challenge-Response Protocol:
         // Handle MINER_AUTH_CHALLENGE from node and respond with signed nonce
         m_logger->info("[Solo Auth] Received MINER_AUTH_CHALLENGE from node");
         handle_miner_auth_challenge(packet);
     }
-    else if (matches_opcode(Packet::MINER_AUTH_RESULT))
+    else if (matches_opcode(packet, Packet::MINER_AUTH_RESULT))
     {
         // Phase 2: Handle MINER_AUTH_RESULT (auth result from node)
         // The node sends: [status(1)][session_id(4, optional, LE)]
@@ -2181,7 +2298,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             // Connection will fail - no fallback available
         }
     }
-    else if (matches_opcode(Packet::CHANNEL_ACK))
+    else if (matches_opcode(packet, Packet::CHANNEL_ACK))
     {
         // Phase 2: Handle CHANNEL_ACK response with dynamic port detection
         m_logger->info("[Solo Phase 2] Received CHANNEL_ACK from node");
@@ -2335,7 +2452,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
     }
-    else if (matches_opcode(Packet::SESSION_START))
+    else if (matches_opcode(packet, Packet::SESSION_START))
     {
         // LLL-TAO SESSION_START handler (session parameters from node)
         // ACTUAL Wire Format: [success(1B: 0x01)][session_id(4B, LE)][timeout(4B, LE)][optional: genesis_hash(32B)]
@@ -2408,7 +2525,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
     }
-    else if (matches_opcode(Packet::SESSION_KEEPALIVE))
+    else if (matches_opcode(packet, Packet::SESSION_KEEPALIVE))
     {
         // KEEPALIVE receive handler: branch by payload length
         //   32 bytes → unified keepalive reply (v2): KeepAliveV2AckFrame; provides
@@ -2469,13 +2586,15 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->debug("[Solo Session] Unexpected KEEPALIVE payload length {} — ignored", packet.m_length);
         }
     }
-    else if (matches_opcode(Packet::MINER_REWARD_RESULT))
+    else if (matches_opcode(packet, Packet::MINER_REWARD_RESULT))
     {
         // Phase 2: Handle MINER_REWARD_RESULT (reward binding result from node)
         handle_reward_result(packet);
     }
-    else if (matches_opcode(Packet::SESSION_EXPIRED))
-    {
+}
+
+void Solo::on_session_expired(Packet const& packet, std::shared_ptr<network::Connection> connection)
+{
         // SESSION_EXPIRED handler (LLL-TAO PR #354)
         // Node notifies miner that session has expired (inactivity timeout)
         // Wire format: [session_id(4B, LE)][reason(1B)]
@@ -2500,23 +2619,26 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
 
         // Delegate to handler
         handle_session_expired(expired_sid, reason, connection);
-    }
-    else if (matches_opcode(Packet::PRIME_BLOCK_AVAILABLE))
-    {
+}
+
+void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::Connection> connection, uint32_t channel)
+{
+    const char* push_opcode_name = (channel == mining::CHANNEL_PRIME) ? "PRIME_BLOCK_AVAILABLE" : "HASH_BLOCK_AVAILABLE";
         m_push_handler->handle_push_notification(
-            packet, mining::CHANNEL_PRIME, m_protocol_lane,
+            packet, channel, m_protocol_lane,
             m_template_interface.get(),
             &m_height_tracker,
             [this](uint32_t u, uint32_t c, uint32_t d) {
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
-            [connection, this]() {
+            [connection, this, push_opcode_name]() {
                 // Guard: if not authenticated, the TCP connection is still alive from the
                 // node's perspective (push proves it), but local auth state is stale.
                 // Do NOT call get_work() — trigger in-band re-auth instead.
                 if (!m_authenticated) {
-                    m_logger->warn("[Solo Push] ⚠ PRIME_BLOCK_AVAILABLE received while NOT_AUTHENTICATED — "
-                                   "TCP session may still be alive at node; triggering in-band re-auth");
+                    m_logger->warn("[Solo Push] ⚠ {} received while NOT_AUTHENTICATED — "
+                                   "TCP session may still be alive at node; triggering in-band re-auth",
+                               push_opcode_name);
                     check_auth_in_flight_timeout("Solo Push");
                     // Only fire re-auth if not already in the handshake
                     if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
@@ -2547,59 +2669,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                     m_recovery_handler();
                 }
             });
-    }
-    else if (matches_opcode(Packet::HASH_BLOCK_AVAILABLE))
-    {
-        m_push_handler->handle_push_notification(
-            packet, mining::CHANNEL_HASH, m_protocol_lane,
-            m_template_interface.get(),
-            &m_height_tracker,
-            [this](uint32_t u, uint32_t c, uint32_t d) {
-                update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
-            },
-            [connection, this]() {
-                // Guard: if not authenticated, the TCP connection is still alive from the
-                // node's perspective (push proves it), but local auth state is stale.
-                // Do NOT call get_work() — trigger in-band re-auth instead.
-                if (!m_authenticated) {
-                    m_logger->warn("[Solo Push] ⚠ HASH_BLOCK_AVAILABLE received while NOT_AUTHENTICATED — "
-                                   "TCP session may still be alive at node; triggering in-band re-auth");
-                    check_auth_in_flight_timeout("Solo Push");
-                    // Only fire re-auth if not already in the handshake
-                    if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
-                        m_session_expired_handler();
-                    }
-                    return;
-                }
-                // Snapshot staleness BEFORE calling get_work() so we capture
-                // the state that triggered this request_work_fn invocation.
-                bool is_stale_recovery = m_height_tracker.GetSnapshot().is_template_stale();
-                if (connection) {
-                    auto work_payload = get_work();
-                    if (work_payload && !work_payload->empty()) {
-                        connection->transmit(work_payload);
-                    } else {
-                        m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
-                    }
-                    // NOTE: Do NOT send MINER_READY here. MINER_READY is a one-time subscription
-                    // handshake sent only during initial login. The node keeps the miner subscribed
-                    // for the lifetime of the session. GET_BLOCK (0xD081) is the correct recovery
-                    // request — it asks for a fresh template without resetting the subscription state.
-                }
-                // Notify Worker_manager that a channel-stale recovery was initiated so it
-                // can set recovery_pending and prevent check_template_health() from stopping
-                // workers redundantly while awaiting the GET_BLOCK response.
-                if (is_stale_recovery && m_recovery_handler) {
-                    m_logger->info("[Solo] Recovery initiated (channel_advanced) — notifying Worker_manager");
-                    m_recovery_handler();
-                }
-            });
-    }
-    // ═══════════════════════════════════════════════════════════════════════
-    // NEW STATELESS MINING PROTOCOL HANDLERS (uint16_t opcodes, 0xD000+)
-    // ═══════════════════════════════════════════════════════════════════════
-    else if (matches_stateless_opcode(Packet::GET_BLOCK))
-    {
+}
+
+void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network::Connection> connection)
+{
         // Auth guard — same pattern as PRIME/HASH_BLOCK_AVAILABLE push handlers.
         // Do NOT process the template if we have no valid session.
         if (!m_authenticated) {
@@ -2775,12 +2848,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
 
         m_logger->info("[Solo Stateless] 🎯 Template ready! Mining for height {} (channel {})",
                        unified_height, channel_height);
-    }
-    // ═══════════════════════════════════════════════════════════════════════
-    // COLIN AI DIAGNOSTIC PING/PONG (opcode 0xD0E0 stateless-only)
-    // ═══════════════════════════════════════════════════════════════════════
-    else if (matches_opcode(0xE0))
-    {
+}
+
+void Solo::on_ping_diag(Packet const& packet, std::shared_ptr<network::Connection> connection)
+{
         /* PING_DIAG is stateless-only — reject on legacy lane */
         if(m_protocol_lane != ProtocolLane::STATELESS)
         {
@@ -2808,13 +2879,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             m_logger->debug("[Colin PING] PongFrame transmitted (seq #{})",
                 m_colin_ping_handler.last_received_ping().sequence);
         }
-    }
-    // ═══════════════════════════════════════════════════════════════════════
-    // KEEPALIVE_V2_ACK (0xD101) — stateless-only, 32-byte chain-state payload
-    // ═══════════════════════════════════════════════════════════════════════
-    else if(packet.m_is_uint16_opcode &&
-            packet.m_header == ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
-    {
+}
+
+void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Connection> connection)
+{
         /* Exact payload size enforcement for KEEPALIVE_V2_ACK (32 bytes) */
         std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
         uint32_t nExpected = ::LLP::GetExpectedPayloadSize(::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK);
@@ -2870,12 +2938,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 }
             }
         }
-    }
-    // SESSION_STATUS_ACK (0xD0DC / legacy 220) — node responded to our session health query
-    // ═══════════════════════════════════════════════════════════════════════
-    else if(packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK)
-         || packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY))
-    {
+}
+
+void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::Connection> connection)
+{
         std::vector<uint8_t> data = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
         ::LLP::SessionStatusAckFrame ack;
         if(ack.Parse(data))
@@ -2893,38 +2959,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         {
             m_logger->warn("[Solo] SESSION_STATUS_ACK: malformed payload (size={})", data.size());
         }
-    }
-    // ═══════════════════════════════════════════════════════════════════════
-    // NODE_SHUTDOWN (0xD0FF / legacy 0xFF) — graceful shutdown notice from node
-    // ═══════════════════════════════════════════════════════════════════════
-    else if(matches_opcode(Packet::NODE_SHUTDOWN))
-    {
-        ::LLP::NodeShutdownFrame frame;
-        std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
-        if(frame.Parse(payload))
-        {
-            m_logger->warn("[Solo] ════════════════════════════════════════════════");
-            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason={}) — stopping workers",
-                frame.ReasonString());
-            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
-            m_logger->warn("[Solo] ════════════════════════════════════════════════");
-        }
-        else
-        {
-            m_logger->warn("[Solo] ════════════════════════════════════════════════");
-            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason=UNKNOWN, no payload) — stopping workers");
-            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
-            m_logger->warn("[Solo] ════════════════════════════════════════════════");
-        }
-
-        // Notify Worker_manager to stop workers and set reconnect backoff
-        if(m_node_shutdown_handler)
-            m_node_shutdown_handler(frame.reason);
-    }
-    else
-    {
-        m_logger->debug("Invalid header received: 0x{:04x}", packet.m_header);
-    } 
 }
 
 void Solo::set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_t> const& privkey)

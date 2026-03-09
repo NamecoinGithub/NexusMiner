@@ -343,6 +343,23 @@ private:
     void update_height_state(uint32_t unified_height, uint32_t channel_height,
                              uint32_t difficulty_nbits, HeightTracker::UpdateSource source);
 
+    // Opcode matching helpers (promoted from process_messages() lambdas so all on_* methods can use them)
+    static bool matches_opcode(Packet const& packet, uint16_t legacy_opcode);
+    static bool matches_stateless_opcode(Packet const& packet, uint16_t legacy_opcode);
+
+    // Called from process_messages() after the lane/validity guards pass
+    void on_miner_auth_response(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    void on_session_expired(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    void on_block_accepted(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    void on_block_rejected(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    void on_block_data(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    void on_push_notification(Packet const& packet, std::shared_ptr<network::Connection> connection, uint32_t channel);
+    void on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    void on_ping_diag(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    void on_session_status_ack(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    void on_get_round_response(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    void on_stateless_get_block(Packet const& packet, std::shared_ptr<network::Connection> connection);
+
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;
     std::uint32_t m_current_height; ///< Diagnostic-only: used for BLOCK_DATA legacy fallback; NOT authoritative for staleness
