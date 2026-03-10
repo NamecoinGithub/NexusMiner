@@ -127,9 +127,6 @@ public:
     network::Shared_payload build_session_status_packet(
         bool degraded, bool workers_running, bool secondary_up) const;
     
-    // Check if keep-alive ping is due
-    bool is_keepalive_due() const;
-
     // SessionManager keepalive needs connection context
     void set_connection(std::shared_ptr<network::Connection> connection);
     

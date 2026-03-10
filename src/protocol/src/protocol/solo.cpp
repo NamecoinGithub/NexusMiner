@@ -3310,14 +3310,6 @@ bool Solo::is_session_active() const
     return m_authenticated;  // Fallback to legacy auth status
 }
 
-bool Solo::is_keepalive_due() const
-{
-    if (get_session_manager()) {
-        return get_session_manager()->is_keepalive_due();
-    }
-    return false;
-}
-
 void Solo::set_connection(std::shared_ptr<network::Connection> connection)
 {
     m_connection = std::move(connection);

@@ -175,17 +175,6 @@ public:
         bool secondary_up) const;
     
     /**
-     * @brief Check if keepalive ping is due
-     * 
-     * NOTE: This function is currently UNUSED. The timer-driven keepalive system
-     * in schedule_regular_keepalives() directly controls when keepalives are sent.
-     * This function is retained for potential future manual keepalive checks.
-     * 
-     * @return true if it's time to send SESSION_KEEPALIVE
-     */
-    bool is_keepalive_due() const;
-    
-    /**
      * @brief Record keepalive ping sent
      */
     void record_keepalive();
@@ -333,6 +322,15 @@ public:
 
 private:
 
+    /**
+     * @brief Validate MinerSessionContainer invariants while the caller controls locking.
+     *
+     * @param session Session snapshot/container to validate
+     * @param reason Optional diagnostic output describing the first failure or PASS
+     * @return true when the container is internally consistent
+     */
+    static bool validate_miner_session_container(const MinerSessionContainer& session,
+                                                 std::string* reason);
     void schedule_regular_keepalives(const std::shared_ptr<SessionManager>& self);
     void send_keepalive(const char* cadence);
     // Internal helper: get session uptime without locking (caller must hold m_session_mutex)
