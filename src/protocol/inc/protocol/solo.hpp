@@ -293,16 +293,20 @@ private:
     void update_connection_metadata(const std::shared_ptr<network::Connection>& connection);
     bool validate_authoritative_session(const char* log_scope, bool require_reward_binding) const;
     void log_session_container_summary(const char* log_scope) const;
+    struct PacketIngressPreflightOptions {
+        const SessionOwnershipStamp* owner{nullptr};
+        uint32_t packet_session_id{0};
+        bool allow_without_active_session{false};
+        bool validate_lane{false};
+        bool require_crypto_ready{false};
+        bool require_reward_binding{false};
+        bool trigger_reauth{false};
+    };
     SessionOwnershipStamp capture_session_ownership() const;
     void clear_generation_bound_state(const char* reason);
+    bool run_packet_ingress_preflight(const char* log_scope) const;
     bool run_packet_ingress_preflight(const char* log_scope,
-                                      const SessionOwnershipStamp* owner = nullptr,
-                                      uint32_t packet_session_id = 0,
-                                      bool allow_without_active_session = false,
-                                      bool validate_lane = false,
-                                      bool require_crypto_ready = false,
-                                      bool require_reward_binding = false,
-                                      bool trigger_reauth = false) const;
+                                      const PacketIngressPreflightOptions& options) const;
 
     // Integration helper functions (bridge MiningTemplateInterface and ClientChannelManager)
     /**
@@ -364,6 +368,7 @@ private:
     // Opcode matching helpers (promoted from process_messages() lambdas so all on_* methods can use them)
     static bool matches_opcode(Packet const& packet, uint16_t legacy_opcode);
     static bool matches_stateless_opcode(Packet const& packet, uint16_t legacy_opcode);
+    static bool requires_active_session_packet(Packet const& packet);
 
     // Called from process_messages() after the lane/validity guards pass
     void on_miner_auth_response(Packet const& packet, std::shared_ptr<network::Connection> connection);
@@ -400,6 +405,7 @@ private:
     bool m_authenticated;
     std::uint32_t m_session_id;
     uint64_t m_session_epoch{0};
+    bool m_has_seen_session_epoch{false};
     std::string m_address;  // Miner's network address for auth message
     std::uint64_t m_auth_timestamp;  // Timestamp for auth message
     AuthState m_auth_state;  // Authentication state machine
@@ -431,7 +437,7 @@ private:
     // without trusting the potentially-tampered echo in ack.hashPrevBlock_lo32.
     uint32_t m_last_keepalive_prevhash_lo32{0};
     SessionOwnershipStamp m_last_keepalive_request_owner{};
-    SessionOwnershipStamp m_last_session_status_request_owner{};
+    mutable SessionOwnershipStamp m_last_session_status_request_owner{};
     SessionOwnershipStamp m_last_reward_request_owner{};
     SessionOwnershipStamp m_last_get_block_request_owner{};
     SessionOwnershipStamp m_last_submitted_owner{};

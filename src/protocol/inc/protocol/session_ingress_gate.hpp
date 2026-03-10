@@ -15,7 +15,10 @@ struct SessionOwnershipStamp
 
     bool valid() const
     {
-        return session_id != 0 || session_epoch != 0;
+        // Ownership stamps are only captured from authenticated sessions after
+        // SessionManager::start_session() advances the authoritative epoch, so
+        // {0,0} remains the sentinel for "no correlatable owner".
+        return session_id != 0 && session_epoch != 0;
     }
 
     void clear()

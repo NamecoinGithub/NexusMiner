@@ -177,7 +177,11 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     m_template_interface->set_height_tracker(&m_height_tracker);
     if (m_session_context) {
         m_session_epoch = m_session_context->get_session_epoch();
+        m_has_seen_session_epoch = true;
     }
+    // Keep MTI/HeightTracker aligned with the authoritative session epoch even
+    // before authentication. With no session context the epoch remains 0,
+    // which is the explicit "no active session ownership" baseline.
     m_template_interface->set_session_epoch(m_session_epoch);
     m_height_tracker.set_session_epoch(m_session_epoch);
     m_logger->info("[Solo] HeightTracker wired into MiningTemplateInterface");
@@ -365,8 +369,8 @@ void Solo::refresh_cached_session_state(const char* log_scope)
 
     const auto session = m_session_context->get_session_info();
 
-    if (m_session_epoch != session.session_epoch) {
-        if (m_session_epoch == 0) {
+    if (!m_has_seen_session_epoch || m_session_epoch != session.session_epoch) {
+        if (!m_has_seen_session_epoch) {
             m_logger->info("[{}] Resyncing local session epoch from authoritative session container: local={} authoritative={}",
                            log_scope, m_session_epoch, session.session_epoch);
         } else {
@@ -376,6 +380,7 @@ void Solo::refresh_cached_session_state(const char* log_scope)
         }
 
         m_session_epoch = session.session_epoch;
+        m_has_seen_session_epoch = true;
         m_height_tracker.set_session_epoch(m_session_epoch);
         if (m_template_interface) {
             m_template_interface->set_session_epoch(m_session_epoch);
@@ -430,6 +435,8 @@ void Solo::refresh_cached_session_state(const char* log_scope)
 SessionOwnershipStamp Solo::capture_session_ownership() const
 {
     if (!m_session_context) {
+        // No authoritative session context means there is no correlatable owner.
+        // Callers treat the zero-initialized stamp as "ownership unavailable".
         return {};
     }
 
@@ -459,14 +466,13 @@ void Solo::clear_generation_bound_state(const char* reason)
     }
 }
 
+bool Solo::run_packet_ingress_preflight(const char* log_scope) const
+{
+    return run_packet_ingress_preflight(log_scope, PacketIngressPreflightOptions{});
+}
+
 bool Solo::run_packet_ingress_preflight(const char* log_scope,
-                                        const SessionOwnershipStamp* owner,
-                                        uint32_t packet_session_id,
-                                        bool allow_without_active_session,
-                                        bool validate_lane,
-                                        bool require_crypto_ready,
-                                        bool require_reward_binding,
-                                        bool trigger_reauth) const
+                                        const PacketIngressPreflightOptions& options) const
 {
     if (!m_session_context) {
         return true;
@@ -480,12 +486,12 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
         session_valid,
         session,
         m_protocol_lane,
-        validate_lane,
-        allow_without_active_session,
-        require_crypto_ready,
-        require_reward_binding,
-        packet_session_id,
-        owner ? *owner : SessionOwnershipStamp{}
+        options.validate_lane,
+        options.allow_without_active_session,
+        options.require_crypto_ready,
+        options.require_reward_binding,
+        options.packet_session_id,
+        options.owner ? *options.owner : SessionOwnershipStamp{}
     });
 
     if (decision.allow) {
@@ -498,7 +504,7 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
         m_logger->warn("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
     }
 
-    if (decision.force_reauth && trigger_reauth && m_session_expired_handler) {
+    if (decision.force_reauth && options.trigger_reauth && m_session_expired_handler) {
         m_logger->warn("[{}] Triggering session-expired handler after preflight rejection", log_scope);
         m_session_expired_handler();
     }
@@ -1100,33 +1106,13 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         return;
     }
 
-    const bool requires_active_session =
-        matches_opcode(packet, Packet::BLOCK_DATA) ||
-        matches_opcode(packet, Packet::ACCEPT) ||
-        matches_opcode(packet, LLP::GOOD_BLOCK) ||
-        matches_opcode(packet, Packet::REJECT) ||
-        matches_opcode(packet, LLP::ORPHAN_BLOCK) ||
-        matches_opcode(packet, Packet::NEW_ROUND) ||
-        matches_opcode(packet, Packet::OLD_ROUND) ||
-        matches_opcode(packet, Packet::PRIME_BLOCK_AVAILABLE) ||
-        matches_opcode(packet, Packet::HASH_BLOCK_AVAILABLE) ||
-        matches_stateless_opcode(packet, Packet::GET_BLOCK) ||
-        matches_opcode(packet, Packet::MINER_REWARD_RESULT) ||
-        (packet.m_is_uint16_opcode &&
-         packet.m_header == ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK) ||
-        packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK) ||
-        packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY);
-
-    if (requires_active_session &&
-        !run_packet_ingress_preflight("Solo ProcessMessages",
-                                      nullptr,
-                                      0,
-                                      false,
-                                      true,
-                                      false,
-                                      false,
-                                      true)) {
-        return;
+    if (requires_active_session_packet(packet)) {
+        PacketIngressPreflightOptions preflight;
+        preflight.validate_lane = true;
+        preflight.trigger_reauth = true;
+        if (!run_packet_ingress_preflight("Solo ProcessMessages", preflight)) {
+            return;
+        }
     }
     
     // Log received packet for diagnostics with port information
@@ -1350,18 +1336,32 @@ bool Solo::matches_stateless_opcode(Packet const& packet, uint16_t legacy_opcode
         packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
 }
 
+bool Solo::requires_active_session_packet(Packet const& packet)
+{
+    return matches_opcode(packet, Packet::BLOCK_DATA) ||
+           matches_opcode(packet, Packet::ACCEPT) ||
+           matches_opcode(packet, LLP::GOOD_BLOCK) ||
+           matches_opcode(packet, Packet::REJECT) ||
+           matches_opcode(packet, LLP::ORPHAN_BLOCK) ||
+           matches_opcode(packet, Packet::NEW_ROUND) ||
+           matches_opcode(packet, Packet::OLD_ROUND) ||
+           matches_opcode(packet, Packet::PRIME_BLOCK_AVAILABLE) ||
+           matches_opcode(packet, Packet::HASH_BLOCK_AVAILABLE) ||
+           matches_stateless_opcode(packet, Packet::GET_BLOCK) ||
+           matches_opcode(packet, Packet::MINER_REWARD_RESULT) ||
+           (packet.m_is_uint16_opcode &&
+            packet.m_header == ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK) ||
+           packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK) ||
+           packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY);
+}
+
 void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
-        if (!run_packet_ingress_preflight("Solo BlockData",
-                                          &m_last_get_block_request_owner,
-                                          0,
-                                          false,
-                                          false,
-                                          false,
-                                          false,
-                                          false)) {
-            return;
-        }
+    PacketIngressPreflightOptions preflight;
+    preflight.owner = &m_last_get_block_request_owner;
+    if (!run_packet_ingress_preflight("Solo BlockData", preflight)) {
+        return;
+    }
 
         // Enhanced diagnostics: Check payload is non-null
         if (!packet.m_data) {
@@ -1727,14 +1727,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
 
 void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
-    if (!run_packet_ingress_preflight("Solo BlockAccepted",
-                                      &m_last_submitted_owner,
-                                      0,
-                                      false,
-                                      false,
-                                      false,
-                                      false,
-                                      false)) {
+    PacketIngressPreflightOptions preflight;
+    preflight.owner = &m_last_submitted_owner;
+    if (!run_packet_ingress_preflight("Solo BlockAccepted", preflight)) {
         return;
     }
 
@@ -1848,14 +1843,9 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
 
 void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
-    if (!run_packet_ingress_preflight("Solo BlockRejected",
-                                      &m_last_submitted_owner,
-                                      0,
-                                      false,
-                                      false,
-                                      false,
-                                      false,
-                                      false)) {
+    PacketIngressPreflightOptions preflight;
+    preflight.owner = &m_last_submitted_owner;
+    if (!run_packet_ingress_preflight("Solo BlockRejected", preflight)) {
         return;
     }
 
@@ -3063,47 +3053,42 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
 
 void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
-        if (!run_packet_ingress_preflight("Solo StatelessGetBlock",
-                                          &m_last_get_block_request_owner,
-                                          0,
-                                          false,
-                                          false,
-                                          false,
-                                          false,
-                                          false)) {
-            return;
-        }
+    PacketIngressPreflightOptions preflight;
+    preflight.owner = &m_last_get_block_request_owner;
+    if (!run_packet_ingress_preflight("Solo StatelessGetBlock", preflight)) {
+        return;
+    }
 
-        bool session_says_auth = session_context_is_authenticated();
-        // Auth guard — same pattern as PRIME/HASH_BLOCK_AVAILABLE push handlers.
-        // Do NOT process the template if we have no valid session.
-        if (!m_authenticated && !session_says_auth) {
-            m_logger->warn("[Solo Stateless] ⚠ STATELESS_GET_BLOCK (0xD081) received while "
-                           "NOT_AUTHENTICATED (auth_state={}) — triggering in-band re-auth",
-                           static_cast<int>(m_auth_state));
-            check_auth_in_flight_timeout("Solo Stateless");
-            // Only invoke session_expired_handler if not already mid-handshake
-            if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
-                m_session_expired_handler();
-            }
-            return;
+    bool session_says_auth = session_context_is_authenticated();
+    // Auth guard — same pattern as PRIME/HASH_BLOCK_AVAILABLE push handlers.
+    // Do NOT process the template if we have no valid session.
+    if (!m_authenticated && !session_says_auth) {
+        m_logger->warn("[Solo Stateless] ⚠ STATELESS_GET_BLOCK (0xD081) received while "
+                       "NOT_AUTHENTICATED (auth_state={}) — triggering in-band re-auth",
+                       static_cast<int>(m_auth_state));
+        check_auth_in_flight_timeout("Solo Stateless");
+        // Only invoke session_expired_handler if not already mid-handshake
+        if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
+            m_session_expired_handler();
         }
-        if (!m_authenticated && session_says_auth) {
-            resync_auth_from_session_context("Solo Stateless");
-        }
+        return;
+    }
+    if (!m_authenticated && session_says_auth) {
+        resync_auth_from_session_context("Solo Stateless");
+    }
 
-        // ═══════════════════════════════════════════════════════════════════
-        // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!
-        // ═══════════════════════════════════════════════════════════════════
-        
-        // Unified handler for initial template response
-        handle_initial_template_response("STATELESS_GET_BLOCK (0xD081)");
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // ENHANCED DIAGNOSTICS: Template delivery tracking
-        // ═══════════════════════════════════════════════════════════════════
-        m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
-        m_logger->info("[Solo Template Delivery] 📥 TEMPLATE RECEIVED VIA: STATELESS_GET_BLOCK (0xD081)");
+    // ═══════════════════════════════════════════════════════════════════
+    // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!
+    // ═══════════════════════════════════════════════════════════════════
+    
+    // Unified handler for initial template response
+    handle_initial_template_response("STATELESS_GET_BLOCK (0xD081)");
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // ENHANCED DIAGNOSTICS: Template delivery tracking
+    // ═══════════════════════════════════════════════════════════════════
+    m_logger->info("[Solo Template Delivery] ═══════════════════════════════════");
+    m_logger->info("[Solo Template Delivery] 📥 TEMPLATE RECEIVED VIA: STATELESS_GET_BLOCK (0xD081)");
         m_logger->info("[Solo Template Delivery]   Mirror-mapped from legacy GET_BLOCK (129)");
         m_logger->info("[Solo Template Delivery]   Delivery Method: Stateless 16-bit opcode");
         m_logger->info("[Solo Template Delivery]   Payload Size: {} bytes", packet.m_length);
@@ -3301,14 +3286,10 @@ void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Conne
         ::LLP::KeepAliveV2AckFrame ack;
         if(ack.Parse(payload))
         {
-            if (!run_packet_ingress_preflight("Solo KeepaliveAck",
-                                              &m_last_keepalive_request_owner,
-                                              ack.session_id,
-                                              false,
-                                              false,
-                                              false,
-                                              false,
-                                              false)) {
+            PacketIngressPreflightOptions preflight;
+            preflight.owner = &m_last_keepalive_request_owner;
+            preflight.packet_session_id = ack.session_id;
+            if (!run_packet_ingress_preflight("Solo KeepaliveAck", preflight)) {
                 return;
             }
 
@@ -3362,14 +3343,10 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
         ::LLP::SessionStatusAckFrame ack;
         if(ack.Parse(data))
         {
-            if (!run_packet_ingress_preflight("Solo SessionStatusAck",
-                                              &m_last_session_status_request_owner,
-                                              ack.session_id,
-                                              false,
-                                              false,
-                                              false,
-                                              false,
-                                              false)) {
+            PacketIngressPreflightOptions preflight;
+            preflight.owner = &m_last_session_status_request_owner;
+            preflight.packet_session_id = ack.session_id;
+            if (!run_packet_ingress_preflight("Solo SessionStatusAck", preflight)) {
                 return;
             }
 
@@ -3471,7 +3448,7 @@ network::Shared_payload Solo::build_session_status_packet(
     auto payload = get_session_manager()->build_session_status_packet(
         degraded, has_tmpl, workers_running, secondary_up);
     if (payload && !payload->empty()) {
-        const_cast<Solo*>(this)->m_last_session_status_request_owner = capture_session_ownership();
+        m_last_session_status_request_owner = capture_session_ownership();
     }
     return payload;
 }
@@ -4201,14 +4178,10 @@ void Solo::handle_reward_result(const Packet& packet)
     m_logger->info("[Solo Reward] Received MINER_REWARD_RESULT");
     refresh_cached_session_state("Solo RewardResult");
 
-    if (!run_packet_ingress_preflight("Solo RewardResult",
-                                      &m_last_reward_request_owner,
-                                      0,
-                                      false,
-                                      false,
-                                      m_enable_chacha20,
-                                      false,
-                                      false)) {
+    PacketIngressPreflightOptions preflight;
+    preflight.owner = &m_last_reward_request_owner;
+    preflight.require_crypto_ready = m_enable_chacha20;
+    if (!run_packet_ingress_preflight("Solo RewardResult", preflight)) {
         m_reward_bound = false;
         return;
     }
