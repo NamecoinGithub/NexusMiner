@@ -321,6 +321,8 @@ void test_cached_session_state_logging_downgrades_expected_reconnect_resyncs()
     print_test_result("Session ID drift remains warning-level", session_id_drift == ResyncLogSeverity::WARN);
     print_test_result("Reward drift remains warning-level", reward_drift == ResyncLogSeverity::WARN);
     print_test_result("ChaCha20 drift remains warning-level", chacha_drift == ResyncLogSeverity::WARN);
+}
+
 void test_submit_requires_authoritative_chacha20_key()
 {
     std::cout << "\nTest 8: submit path only accepts authoritative session key\n";
