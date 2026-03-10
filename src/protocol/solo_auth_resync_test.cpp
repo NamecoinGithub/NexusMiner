@@ -3,6 +3,8 @@
 #include <iostream>
 #include <vector>
 
+#include "protocol/protocol_constants.hpp"
+
 enum class AuthState {
     NOT_AUTHENTICATED,
     WAITING_FOR_CHALLENGE,
