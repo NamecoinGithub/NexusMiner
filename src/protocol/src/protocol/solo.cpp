@@ -5,6 +5,7 @@
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/packet_builder.hpp"
 #include "protocol/genesis_utils.hpp"
+#include "protocol/hex_prefix_utils.hpp"
 #include "protocol/serialization_helpers.hpp"
 #include "protocol/session_start_parser.hpp"
 #include "packet.hpp"
@@ -64,24 +65,6 @@ static const std::vector<uint8_t> AAD_REWARD_RESULT{
     'R','E','W','A','R','D','_',
     'R','E','S','U','L','T'
 };
-
-// Format the first N bytes of a byte vector as contiguous lowercase hex for
-// direct comparison with node-side diagnostic fingerprint logs.
-static std::string format_hex_prefix(const std::vector<uint8_t>& bytes, std::size_t prefix_bytes)
-{
-    const std::size_t prefix_size = std::min(bytes.size(), prefix_bytes);
-    static const char* const HEX = "0123456789abcdef";
-    std::string out;
-    out.reserve(prefix_size * 2);
-
-    for (std::size_t i = 0; i < prefix_size; ++i) {
-        const uint8_t byte = bytes[i];
-        out.push_back(HEX[(byte >> 4) & 0x0F]);
-        out.push_back(HEX[byte & 0x0F]);
-    }
-
-    return out;
-}
 
 // Helper function to parse uint32 from big-endian bytes
 static uint32_t read_uint32_be(const std::vector<uint8_t>& src, size_t offset = 0) {
@@ -3707,13 +3690,15 @@ network::Shared_payload Solo::send_set_reward()
         payload_data = vHash;
     }
     
-    // Build the MINER_SET_REWARD packet via PacketBuilder
-    m_logger->info("[Solo Reward] MINER_SET_REWARD packet built: {} bytes", payload_data.size());
     if (!validate_authoritative_session("Solo RewardSend", false)) {
         return nullptr;
     }
     log_session_container_summary("Solo RewardSend");
-    
+
+    // Build the MINER_SET_REWARD packet via PacketBuilder only after the
+    // authoritative session guard passes, so invalid session state cannot
+    // silently prepare an outbound reward packet.
+    m_logger->info("[Solo Reward] MINER_SET_REWARD packet built: {} bytes", payload_data.size());
     return PacketBuilder::build(m_protocol_lane, LLP::MINER_SET_REWARD, payload_data);
 }
 

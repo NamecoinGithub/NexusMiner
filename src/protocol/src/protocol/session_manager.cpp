@@ -1,4 +1,5 @@
 #include "protocol/session_manager.hpp"
+#include "protocol/hex_prefix_utils.hpp"
 #include "protocol/serialization_helpers.hpp"
 #include "network/connection.hpp"
 #include "packet.hpp"
@@ -23,19 +24,6 @@ namespace {
 uint64_t now_epoch_seconds()
 {
     return static_cast<uint64_t>(std::time(nullptr));
-}
-
-std::string format_hex_prefix(const std::vector<uint8_t>& bytes, std::size_t prefix_bytes)
-{
-    std::ostringstream oss;
-    oss << std::hex << std::setfill('0');
-
-    const auto limit = std::min(bytes.size(), prefix_bytes);
-    for (std::size_t i = 0; i < limit; ++i) {
-        oss << std::setw(2) << static_cast<unsigned int>(bytes[i]);
-    }
-
-    return oss.str();
 }
 
 const char* lane_name(ProtocolLane lane)
@@ -692,6 +680,8 @@ void SessionManager::set_protocol_lane(ProtocolLane lane)
 {
     ProtocolLane old_lane = ProtocolLane::UNKNOWN;
     {
+        // Keep protocol-lane and session-container updates under the same guard
+        // so lane switches cannot observe partial state or require lock ordering.
         std::lock_guard<std::mutex> lock(m_session_mutex);
         old_lane = m_protocol_lane;
         m_protocol_lane = lane;
