@@ -9,11 +9,13 @@
 #include <atomic>
 #include <mutex>
 #include <array>
+#include <deque>
 #include <functional>
 #include <optional>
 #include "asio/io_context.hpp"
 #include "asio/steady_timer.hpp"
 #include "network/types.hpp"
+#include "protocol/session_semantic_types.hpp"
 #include "protocol_lane.hpp"
 #include "spdlog/spdlog.h"
 #include "LLP/include/colin_ping_protocol.h"
@@ -36,6 +38,7 @@ namespace protocol {
  */
 class SessionManager : public std::enable_shared_from_this<SessionManager> {
 public:
+    static constexpr std::size_t SESSION_EVENT_JOURNAL_CAPACITY = 32;
     
     /**
      * @brief Session state enumeration
@@ -53,6 +56,30 @@ public:
      * Registered by Solo/Worker_manager to trigger recovery on session mismatch.
      */
     using SessionExpiredHandler = std::function<void()>;
+
+    enum class SessionEventKind {
+        AUTH_INIT,
+        AUTH_SUCCESS,
+        SESSION_START,
+        REWARD_BIND_SENT,
+        REWARD_BIND_RESULT,
+        STATUS_ACK_ACCEPTED,
+        STATUS_ACK_REJECTED,
+        STALE_PACKET_DROPPED,
+        EPOCH_MISMATCH,
+        FORCED_REAUTH,
+        SUBMIT_SENT,
+        SUBMIT_ACCEPTED,
+        SUBMIT_REJECTED
+    };
+
+    struct SessionEvent {
+        uint64_t timestamp{0};
+        SessionEventKind kind{SessionEventKind::AUTH_INIT};
+        SessionId session_id{};
+        SessionEpoch session_epoch{};
+        std::string detail;
+    };
 
     /**
      * @brief Register a callback to be invoked when session transitions to EXPIRED.
@@ -265,6 +292,12 @@ public:
     bool validate_miner_session(std::string* reason = nullptr) const;
 
     std::string build_miner_session_diagnostics() const;
+
+    void record_session_event(SessionEventKind kind, const std::string& detail = "");
+
+    std::vector<SessionEvent> get_session_event_journal() const;
+
+    std::string build_session_event_journal() const;
     
     /**
      * @brief Get session uptime
@@ -342,6 +375,9 @@ private:
      */
     static bool validate_miner_session_container_locked(const MinerSessionContainer& session,
                                                         std::string* reason);
+    static const char* session_event_kind_name(SessionEventKind kind);
+    void clear_session_event_journal_locked();
+    void record_session_event_locked(SessionEventKind kind, const std::string& detail);
     void schedule_regular_keepalives(const std::shared_ptr<SessionManager>& self);
     void send_keepalive(const char* cadence);
     // Internal helper: get session uptime without locking (caller must hold m_session_mutex)
@@ -350,6 +386,7 @@ private:
     // Session information
     mutable std::mutex m_session_mutex;  // guards m_session and related lane/keepalive metadata
     SessionInfo m_session;  // protected by m_session_mutex
+    std::deque<SessionEvent> m_session_event_journal;  // protected by m_session_mutex
     
     // Configuration
     uint16_t m_keepalive_interval_hours;

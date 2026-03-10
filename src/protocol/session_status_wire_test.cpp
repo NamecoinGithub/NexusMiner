@@ -216,7 +216,7 @@ void test_session_ingress_gate_rejects_stale_owner_generation() {
     session.active_lane = ProtocolLane::STATELESS;
     session.chacha20_ready = true;
 
-    const auto decision = SessionIngressGate::preflight({
+    const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
         true,
         true,
         session,
@@ -225,11 +225,12 @@ void test_session_ingress_gate_rejects_stale_owner_generation() {
         false,
         false,
         false,
-        0x22222222u,
-        SessionOwnershipStamp{0x22222222u, 6}
+        SessionId(0x22222222u),
+        SessionOwnershipStamp{SessionId(0x22222222u), SessionEpoch(6)}
     });
 
-    print_test_result("stale owner epoch is rejected", !decision.allow);
+    print_test_result("stale owner epoch is rejected", !decision.allow_processing);
+    print_test_result("stale owner epoch is marked stale", decision.drop_as_stale);
     print_test_result("stale owner epoch does not force reauth", !decision.force_reauth);
     print_test_result("stale owner epoch reason mentions ownership epoch",
                       decision.reason.find("ownership epoch") != std::string::npos);
@@ -248,7 +249,7 @@ void test_session_ingress_gate_requires_crypto_context_when_requested() {
     session.active_lane = ProtocolLane::STATELESS;
     session.chacha20_ready = false;
 
-    const auto decision = SessionIngressGate::preflight({
+    const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
         true,
         true,
         session,
@@ -257,11 +258,11 @@ void test_session_ingress_gate_requires_crypto_context_when_requested() {
         false,
         true,
         false,
-        0,
-        SessionOwnershipStamp{0x01020304u, 3}
+        SessionId(0),
+        SessionOwnershipStamp{SessionId(0x01020304u), SessionEpoch(3)}
     });
 
-    print_test_result("missing crypto readiness is rejected", !decision.allow);
+    print_test_result("missing crypto readiness is rejected", !decision.allow_processing);
     print_test_result("missing crypto readiness forces reauth", decision.force_reauth);
     print_test_result("missing crypto readiness reason mentions crypto context",
                       decision.reason.find("crypto context") != std::string::npos);
