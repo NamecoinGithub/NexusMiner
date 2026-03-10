@@ -393,9 +393,9 @@ void test_push_during_handshake_is_queued_until_auth_completes()
     guard.m_reward_bound = true;
     guard.m_auth_state = AuthState::WAITING_FOR_RESULT;
 
-    const bool handled_immediately = guard.on_push_notification();
+    const bool push_handled_immediately = guard.on_push_notification();
 
-    print_test_result("Push during handshake does not request GET_BLOCK immediately", !handled_immediately);
+    print_test_result("Push during handshake does not request GET_BLOCK immediately", !push_handled_immediately);
     print_test_result("Push during handshake is queued for post-auth replay", guard.m_pending_push_after_auth);
     print_test_result("Push during handshake does not trigger duplicate re-auth", guard.reauth_requests == 0);
     print_test_result("Push during handshake does not send GET_BLOCK early", guard.get_block_requests == 0);
@@ -417,9 +417,9 @@ void test_push_triggered_reauth_queues_followup_get_block()
     guard.m_reward_bound = true;
     guard.m_auth_state = AuthState::NOT_AUTHENTICATED;
 
-    const bool handled_immediately = guard.on_push_notification();
+    const bool push_handled_immediately = guard.on_push_notification();
 
-    print_test_result("Push-triggered re-auth defers GET_BLOCK until auth completes", !handled_immediately);
+    print_test_result("Push-triggered re-auth defers GET_BLOCK until auth completes", !push_handled_immediately);
     print_test_result("Push-triggered re-auth queues a post-auth GET_BLOCK", guard.m_pending_push_after_auth);
     print_test_result("Push-triggered re-auth requests exactly one re-auth", guard.reauth_requests == 1);
 

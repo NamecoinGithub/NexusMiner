@@ -475,11 +475,7 @@ void Solo::clear_generation_bound_state(const char* reason)
     }
 }
 
-const Solo::PacketIngressPreflightOptions& Solo::default_packet_ingress_preflight_options()
-{
-    static const PacketIngressPreflightOptions options{};
-    return options;
-}
+const Solo::PacketIngressPreflightOptions Solo::kDefaultPacketIngressPreflightOptions{};
 
 bool Solo::run_packet_ingress_preflight(const char* log_scope,
                                         const PacketIngressPreflightOptions& options) const
