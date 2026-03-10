@@ -317,10 +317,12 @@ void test_reset_session_credentials_clears_atomic_auth_flags() {
     NodeSessionContext context(session_manager);
 
     constexpr uint32_t committed_session_id = 0x24681357;
+    const std::vector<uint8_t> falcon_pubkey(32, 0x33);
+    const std::string falcon_key_id = "reset-session-key";
     context.commit_authenticated_session(
         committed_session_id,
-        std::vector<uint8_t>(32, 0x33),
-        "reset-session-key",
+        falcon_pubkey,
+        falcon_key_id,
         std::vector<uint8_t>(32, 0x44));
     context.set_channel_state(3, true, true);
 
@@ -330,6 +332,8 @@ void test_reset_session_credentials_clears_atomic_auth_flags() {
     assert(info.session_id == 0);
     assert(!info.authenticated);
     assert(!info.falcon_authenticated);
+    assert(info.falcon_pubkey == falcon_pubkey);
+    assert(info.falcon_key_id == falcon_key_id);
     assert(!info.ready_for_submit);
     assert(!info.ready_for_get_block);
     assert(context.get_state() == SessionManager::SessionState::DISCONNECTED);

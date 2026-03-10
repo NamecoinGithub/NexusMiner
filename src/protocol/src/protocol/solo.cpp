@@ -2440,10 +2440,6 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     m_auth_in_flight_since = {};
                     if (m_session_context) {
                         m_session_context->reset_session_credentials();
-                        m_session_context->set_falcon_identity(
-                            m_miner_pubkey,
-                            format_hex_prefix(m_miner_pubkey, 16),
-                            false);
                         m_session_context->set_chacha20_session_key({}, "", false);
                     }
 
@@ -3592,10 +3588,6 @@ void Solo::reset_auth_state()
     m_authenticated = false;
     if (m_session_context) {
         m_session_context->reset_session_credentials();
-        m_session_context->set_falcon_identity(
-            m_miner_pubkey,
-            format_hex_prefix(m_miner_pubkey, 16),
-            false);
     }
     m_logger->info("[Solo] Auth state reset (in-band re-auth prep)");
 }
