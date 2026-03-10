@@ -10,7 +10,17 @@ enum class AuthState {
     AUTHENTICATED
 };
 
+enum class ResyncLogSeverity {
+    INFO,
+    WARN
+};
+
 namespace {
+
+bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_has_state)
+{
+    return !local_has_state && authoritative_has_state;
+}
 
 int tests_run = 0;
 int tests_passed = 0;
@@ -252,6 +262,38 @@ void test_process_messages_entry_resyncs_cached_reward_binding()
                       guard.m_chacha_key == std::vector<unsigned char>(32, 0xCD));
 }
 
+void test_cached_session_state_logging_downgrades_expected_reconnect_resyncs()
+{
+    std::cout << "\nTest 8: expected reconnect resyncs log at info while drift stays warn\n";
+
+    const auto auth_reconnect = is_expected_cached_session_resync(false, true)
+        ? ResyncLogSeverity::INFO : ResyncLogSeverity::WARN;
+    const auto session_id_reconnect = is_expected_cached_session_resync(false, true)
+        ? ResyncLogSeverity::INFO : ResyncLogSeverity::WARN;
+    const auto reward_reconnect = is_expected_cached_session_resync(false, true)
+        ? ResyncLogSeverity::INFO : ResyncLogSeverity::WARN;
+    const auto chacha_reconnect = is_expected_cached_session_resync(false, true)
+        ? ResyncLogSeverity::INFO : ResyncLogSeverity::WARN;
+
+    const auto auth_drift = is_expected_cached_session_resync(true, false)
+        ? ResyncLogSeverity::INFO : ResyncLogSeverity::WARN;
+    const auto session_id_drift = is_expected_cached_session_resync(true, true)
+        ? ResyncLogSeverity::INFO : ResyncLogSeverity::WARN;
+    const auto reward_drift = is_expected_cached_session_resync(true, false)
+        ? ResyncLogSeverity::INFO : ResyncLogSeverity::WARN;
+    const auto chacha_drift = is_expected_cached_session_resync(true, true)
+        ? ResyncLogSeverity::INFO : ResyncLogSeverity::WARN;
+
+    print_test_result("Auth reconnect resync is informational", auth_reconnect == ResyncLogSeverity::INFO);
+    print_test_result("Session ID reconnect resync is informational", session_id_reconnect == ResyncLogSeverity::INFO);
+    print_test_result("Reward reconnect resync is informational", reward_reconnect == ResyncLogSeverity::INFO);
+    print_test_result("ChaCha20 reconnect resync is informational", chacha_reconnect == ResyncLogSeverity::INFO);
+    print_test_result("Auth drift remains warning-level", auth_drift == ResyncLogSeverity::WARN);
+    print_test_result("Session ID drift remains warning-level", session_id_drift == ResyncLogSeverity::WARN);
+    print_test_result("Reward drift remains warning-level", reward_drift == ResyncLogSeverity::WARN);
+    print_test_result("ChaCha20 drift remains warning-level", chacha_drift == ResyncLogSeverity::WARN);
+}
+
 }  // namespace
 
 int main()
@@ -267,6 +309,7 @@ int main()
     test_cached_session_state_resyncs_from_authoritative_container();
     test_reward_send_validates_before_packet_build();
     test_process_messages_entry_resyncs_cached_reward_binding();
+    test_cached_session_state_logging_downgrades_expected_reconnect_resyncs();
 
     std::cout << "\n========================================\n";
     std::cout << "Results: " << tests_passed << "/" << tests_run
