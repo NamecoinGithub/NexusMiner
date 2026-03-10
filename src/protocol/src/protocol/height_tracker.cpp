@@ -176,6 +176,8 @@ void HeightTracker::OnKeepaliveResponse(uint32_t unified_height,
 HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     Snapshot s;
 
+    s.session_epoch = m_session_epoch;
+
     // Compose unified/channel heights: max(canonical, push)
     // GET_ROUND and keepalive heights are excluded — they are diagnostic-only
     // and must never regress mining decisions.
@@ -223,6 +225,12 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
 HeightTracker::Snapshot HeightTracker::GetSnapshot() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     return build_snapshot_locked();
+}
+
+void HeightTracker::set_session_epoch(uint64_t session_epoch)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_session_epoch = session_epoch;
 }
 
 HeightTracker::CanonicalChainState HeightTracker::GetCanonicalSnapshot() const {

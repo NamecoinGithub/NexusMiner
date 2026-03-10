@@ -189,6 +189,7 @@ public:
      * Fork detection fields come from DiagnosticObserverState only.
      */
     struct Snapshot {
+        uint64_t session_epoch{0};           ///< Authoritative session epoch captured with this snapshot
         uint32_t unified_height{0};           ///< Unified blockchain height (max of canonical and push)
         uint32_t channel_height{0};           ///< Channel-specific height (max of canonical and push)
         uint32_t difficulty_nbits{0};         ///< Compact nBits difficulty
@@ -478,6 +479,13 @@ public:
     Snapshot GetSnapshot() const;
 
     /**
+     * @brief Update the authoritative session epoch associated with future snapshots
+     *
+     * Used to reject stale snapshots/submissions after a session restart.
+     */
+    void set_session_epoch(uint64_t session_epoch);
+
+    /**
      * @brief Return a snapshot of canonical chain state only
      *
      * Contains only the authoritative state from OnBlockDataReceived().
@@ -515,6 +523,7 @@ private:
     UpdateSource m_last_update_source{UpdateSource::NONE};
     std::chrono::steady_clock::time_point m_last_height_update{};
     std::chrono::steady_clock::time_point m_last_template_update{};
+    uint64_t m_session_epoch{0};
 
     // Latest non-zero difficulty from any non-keepalive source (push, GET_ROUND, block data).
     // Difficulty doesn't suffer from the height-regression problem, so the latest value wins.

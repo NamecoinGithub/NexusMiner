@@ -334,6 +334,35 @@ void test_prevblock_suffix_is_authoritative_session_state() {
     std::cout << "Prevblock suffix authoritative-state test passed!" << std::endl;
 }
 
+void test_session_epoch_advances_across_session_restarts() {
+    std::cout << "Testing authoritative session epoch advancement across restarts..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    assert(context.get_session_epoch() == 0);
+
+    context.start_session(0x11111111);
+    const auto first_info = context.get_session_info();
+    assert(first_info.session_id == 0x11111111);
+    assert(first_info.session_epoch == context.get_session_epoch());
+    assert(first_info.session_epoch > 0);
+
+    context.end_session();
+    assert(context.get_session_epoch() == first_info.session_epoch);
+
+    context.start_session(0x22222222);
+    const auto second_info = context.get_session_info();
+    assert(second_info.session_id == 0x22222222);
+    assert(second_info.session_epoch == context.get_session_epoch());
+    assert(second_info.session_epoch > first_info.session_epoch);
+
+    const auto diagnostics = context.build_miner_session_diagnostics();
+    assert(diagnostics.find("session_epoch: " + std::to_string(second_info.session_epoch)) != std::string::npos);
+
+    std::cout << "Session epoch advancement test passed!" << std::endl;
+}
+
 void test_hex_prefix_header_supports_qualified_callers() {
     std::cout << "Testing hex_prefix_utils qualified-call documentation path..." << std::endl;
 
@@ -359,6 +388,7 @@ int main() {
         test_miner_session_container_detects_inconsistent_state();
         test_multiple_session_contexts_do_not_overlap();
         test_prevblock_suffix_is_authoritative_session_state();
+        test_session_epoch_advances_across_session_restarts();
         test_hex_prefix_header_supports_qualified_callers();
 
         std::cout << "\nAll NodeSessionContext tests passed!" << std::endl;

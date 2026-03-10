@@ -15,6 +15,11 @@ uint32_t NodeSessionContext::get_session_id() const
     return m_session_manager ? m_session_manager->get_session_id() : 0;
 }
 
+uint64_t NodeSessionContext::get_session_epoch() const
+{
+    return m_session_manager ? m_session_manager->get_session_epoch() : 0;
+}
+
 bool NodeSessionContext::is_authenticated() const
 {
     if (!m_session_manager) {
