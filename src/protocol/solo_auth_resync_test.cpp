@@ -1,9 +1,11 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <string>
 #include <vector>
 
 #include "protocol/protocol_constants.hpp"
+#include "protocol/session_status_policy.hpp"
 
 enum class AuthState {
     NOT_AUTHENTICATED,
@@ -178,24 +180,33 @@ struct SimulatedSessionStatusAckHandler
     uint32_t last_uptime_seconds{0};
     uint32_t last_status_echo_flags{0};
     bool ack_recorded{false};
+    bool expired_session{false};
+    bool force_reauth{false};
+    bool mark_degraded{false};
+    std::string last_reason;
 
     bool handle_session_id_mismatch(uint32_t ack_session_id)
     {
-        if (ack_session_id == 0 || ack_session_id == local_session_id) {
-            if (ack_session_id != 0 && ack_session_id == local_session_id) {
-                mismatch_count = 0;
-            }
-            return false;
-        }
-
-        ++mismatch_count;
-        return true;
+        const auto decision = nexusminer::protocol::SessionStatusPolicy::validate_ack({
+            true,
+            local_session_id,
+            ack_session_id,
+            mismatch_count,
+            nexusminer::protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD
+        });
+        mismatch_count = decision.mismatch_count;
+        expired_session = decision.expire_session;
+        force_reauth = decision.force_reauth;
+        mark_degraded = decision.mark_degraded;
+        last_reason = decision.reason;
+        return !decision.accept_ack;
     }
 
     bool on_session_status_ack(uint32_t ack_session_id,
                                uint32_t lane_health_flags,
                                uint32_t uptime_seconds,
-                               uint32_t status_echo_flags)
+                               uint32_t status_echo_flags,
+                               bool lane_authenticated = true)
     {
         if (handle_session_id_mismatch(ack_session_id)) {
             return false;
@@ -206,7 +217,13 @@ struct SimulatedSessionStatusAckHandler
         last_uptime_seconds = uptime_seconds;
         last_status_echo_flags = status_echo_flags;
         ack_recorded = true;
-        return true;
+
+        const auto decision = nexusminer::protocol::SessionStatusPolicy::evaluate_ack_health(
+            { uptime_seconds, lane_authenticated });
+        force_reauth = decision.force_reauth;
+        mark_degraded = decision.mark_degraded;
+        last_reason = decision.reason;
+        return decision.accept_ack;
     }
 };
 
@@ -401,9 +418,25 @@ void test_block_accepted_consumes_snapshot_before_future_fallback()
     print_test_result("Second accept records that fallback was used", second_accept.used_fallback);
 }
 
+void test_session_status_policy_resets_mismatch_counter_on_match()
+{
+    std::cout << "\nTest 10: matching SESSION_STATUS_ACK resets mismatch counter\n";
+
+    SimulatedSessionStatusAckHandler handler;
+    handler.local_session_id = 0x12345678;
+    handler.mismatch_count = 2;
+
+    const bool accepted = handler.on_session_status_ack(0x12345678, 0x0F, 120, 0x07);
+
+    print_test_result("Matching SESSION_STATUS_ACK is accepted", accepted);
+    print_test_result("Mismatch counter resets on match", handler.mismatch_count == 0);
+    print_test_result("Healthy ACK does not force re-auth", !handler.force_reauth);
+    print_test_result("Healthy ACK does not mark degraded", !handler.mark_degraded);
+}
+
 void test_session_status_ack_ignores_stale_session_id()
 {
-    std::cout << "\nTest 10: stale SESSION_STATUS_ACK does not overwrite cached status\n";
+    std::cout << "\nTest 11: stale SESSION_STATUS_ACK does not overwrite cached status\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -417,10 +450,72 @@ void test_session_status_ack_ignores_stale_session_id()
 
     print_test_result("Mismatched SESSION_STATUS_ACK is rejected", !accepted);
     print_test_result("Mismatch counter increments", handler.mismatch_count == 1);
+    print_test_result("Threshold not yet reached does not expire session", !handler.expired_session);
     print_test_result("Cached session ID is not overwritten", handler.last_session_id == 0x12345678);
     print_test_result("Cached lane health is not overwritten", handler.last_lane_health_flags == 0x09);
     print_test_result("Cached uptime is not overwritten", handler.last_uptime_seconds == 60);
     print_test_result("Cached echoed status is not overwritten", handler.last_status_echo_flags == 0x02);
+}
+
+void test_session_status_ack_expires_after_threshold_mismatches()
+{
+    std::cout << "\nTest 12: repeated mismatched SESSION_STATUS_ACKs expire the session\n";
+
+    SimulatedSessionStatusAckHandler handler;
+    handler.local_session_id = 0x12345678;
+    handler.mismatch_count =
+        nexusminer::protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD - 1;
+
+    const bool accepted = handler.on_session_status_ack(0x87654321, 0x0F, 999, 0x07);
+
+    print_test_result("Threshold mismatch SESSION_STATUS_ACK is rejected", !accepted);
+    print_test_result("Threshold mismatch marks session expired", handler.expired_session);
+    print_test_result("Threshold mismatch forces re-auth", handler.force_reauth);
+    print_test_result("Threshold mismatch marks degraded", handler.mark_degraded);
+}
+
+void test_session_status_ack_force_reauth_when_node_reports_expired()
+{
+    std::cout << "\nTest 13: unhealthy SESSION_STATUS_ACK forces re-auth\n";
+
+    SimulatedSessionStatusAckHandler handler;
+    handler.local_session_id = 0x12345678;
+
+    const bool accepted = handler.on_session_status_ack(0x12345678, 0x01, 0, 0x02, false);
+
+    print_test_result("Unhealthy SESSION_STATUS_ACK is still accepted for caching", accepted);
+    print_test_result("Expired/unauthenticated ACK forces re-auth", handler.force_reauth);
+    print_test_result("Expired/unauthenticated ACK marks degraded", handler.mark_degraded);
+}
+
+void test_degraded_live_session_policy_prefers_reauth_over_reconnect()
+{
+    std::cout << "\nTest 14: stalled live degraded session prefers in-band re-auth\n";
+
+    const auto decision = nexusminer::protocol::SessionStatusPolicy::evaluate_degraded_session({
+        nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1,
+        nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS,
+        true
+    });
+
+    print_test_result("Hard-limit degraded live session forces re-auth", decision.force_reauth);
+    print_test_result("Hard-limit degraded live session does not force reconnect", !decision.force_reconnect);
+    print_test_result("Hard-limit degraded live session is marked degraded", decision.mark_degraded);
+}
+
+void test_degraded_dead_session_policy_forces_reconnect()
+{
+    std::cout << "\nTest 15: degraded session without live push traffic reconnects\n";
+
+    const auto decision = nexusminer::protocol::SessionStatusPolicy::evaluate_degraded_session({
+        nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1,
+        nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS,
+        false
+    });
+
+    print_test_result("Hard-limit degraded dead session forces reconnect", decision.force_reconnect);
+    print_test_result("Hard-limit degraded dead session does not force re-auth", !decision.force_reauth);
+    print_test_result("Hard-limit degraded dead session is marked degraded", decision.mark_degraded);
 }
 
 }  // namespace
@@ -441,7 +536,12 @@ int main()
     test_cached_session_state_logging_downgrades_expected_reconnect_resyncs();
     test_submit_requires_authoritative_chacha20_key();
     test_block_accepted_consumes_snapshot_before_future_fallback();
+    test_session_status_policy_resets_mismatch_counter_on_match();
     test_session_status_ack_ignores_stale_session_id();
+    test_session_status_ack_expires_after_threshold_mismatches();
+    test_session_status_ack_force_reauth_when_node_reports_expired();
+    test_degraded_live_session_policy_prefers_reauth_over_reconnect();
+    test_degraded_dead_session_policy_forces_reconnect();
 
     std::cout << "\n========================================\n";
     std::cout << "Results: " << tests_passed << "/" << tests_run
