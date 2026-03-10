@@ -152,6 +152,7 @@ void SessionManager::commit_authenticated_session(uint32_t session_id,
                                                   const std::vector<uint8_t>& tritium_genesis)
 {
     stop_keepalive_timer();
+    const bool is_authenticated = (session_id != 0);
 
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
@@ -161,14 +162,14 @@ void SessionManager::commit_authenticated_session(uint32_t session_id,
         ++m_session.session_epoch;
         m_session.falcon_pubkey = pubkey;
         m_session.falcon_key_id = key_id;
-        m_session.falcon_authenticated = (session_id != 0);
+        m_session.falcon_authenticated = is_authenticated;
         m_session.session_id = session_id;
         m_session.session_key.clear();
         if (!tritium_genesis.empty()) {
             m_session.session_genesis = tritium_genesis;
         }
         m_session.state = SessionState::AUTHENTICATED;
-        m_session.authenticated = (session_id != 0);
+        m_session.authenticated = is_authenticated;
         m_session.created_at = now_epoch_seconds();
         m_session.ready_for_submit = false;
         m_session.ready_for_get_block = false;
