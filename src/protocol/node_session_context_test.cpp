@@ -289,14 +289,15 @@ void test_atomic_authenticated_session_commit_sets_auth_fields_together() {
     auto session_manager = std::make_shared<SessionManager>(24, nullptr);
     NodeSessionContext context(session_manager);
 
+    constexpr uint32_t committed_session_id = 0x13572468;
     const std::vector<uint8_t> genesis(32, 0x5A);
     const std::vector<uint8_t> falcon_pubkey(32, 0x7C);
 
     context.set_state(SessionManager::SessionState::AUTHENTICATING);
-    context.commit_authenticated_session(0x13572468, falcon_pubkey, "atomic-session-key", genesis);
+    context.commit_authenticated_session(committed_session_id, falcon_pubkey, "atomic-session-key", genesis);
 
     const auto info = context.get_session_info();
-    assert(info.session_id == 0x13572468);
+    assert(info.session_id == committed_session_id);
     assert(info.session_epoch == context.get_session_epoch());
     assert(info.authenticated);
     assert(info.falcon_authenticated);
@@ -315,8 +316,9 @@ void test_reset_session_credentials_clears_atomic_auth_flags() {
     auto session_manager = std::make_shared<SessionManager>(24, nullptr);
     NodeSessionContext context(session_manager);
 
+    constexpr uint32_t committed_session_id = 0x24681357;
     context.commit_authenticated_session(
-        0x24681357,
+        committed_session_id,
         std::vector<uint8_t>(32, 0x33),
         "reset-session-key",
         std::vector<uint8_t>(32, 0x44));
