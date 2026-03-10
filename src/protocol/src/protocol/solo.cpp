@@ -3180,6 +3180,9 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
                            ack.IsPrimaryAlive(), ack.IsSecondaryAlive(),
                            ack.IsSimLinkActive(), ack.IsAuthenticated());
 
+            if (handle_session_id_mismatch(ack.session_id))
+                return;
+
             m_last_session_status_ack      = ack;
             m_last_session_status_ack_time = std::chrono::steady_clock::now();
         }

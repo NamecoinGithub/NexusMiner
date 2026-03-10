@@ -252,7 +252,8 @@ private:
     // Returns true if a timeout reset occurred.
     bool check_auth_in_flight_timeout(const char* context);
 
-    // Session ID mismatch check — shared by KEEPALIVE_V2_ACK and SESSION_KEEPALIVE handlers.
+    // Session ID mismatch check — shared by KEEPALIVE_V2_ACK, SESSION_KEEPALIVE, and
+    // SESSION_STATUS_ACK handlers.
     // Returns true if a mismatch was detected (state set to EXPIRED, handler called);
     // caller must return immediately when true is returned.
     bool handle_session_id_mismatch(uint32_t ack_session_id);
