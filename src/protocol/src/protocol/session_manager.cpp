@@ -146,6 +146,58 @@ void SessionManager::start_session(uint32_t session_id,
     }
 }
 
+void SessionManager::commit_authenticated_session(uint32_t session_id,
+                                                  const std::vector<uint8_t>& pubkey,
+                                                  const std::string& key_id,
+                                                  const std::vector<uint8_t>& tritium_genesis)
+{
+    stop_keepalive_timer();
+
+    {
+        std::lock_guard<std::mutex> lock(m_session_mutex);
+        if (m_session.state != SessionState::AUTHENTICATING) {
+            clear_session_event_journal_locked();
+        }
+        ++m_session.session_epoch;
+        m_session.falcon_pubkey = pubkey;
+        m_session.falcon_key_id = key_id;
+        m_session.session_id = session_id;
+        m_session.session_key.clear();
+        if (!tritium_genesis.empty()) {
+            m_session.session_genesis = tritium_genesis;
+        }
+        m_session.state = SessionState::AUTHENTICATED;
+        m_session.authenticated = (session_id != 0);
+        m_session.falcon_authenticated = (session_id != 0);
+        m_session.created_at = now_epoch_seconds();
+        m_session.ready_for_submit = false;
+        m_session.ready_for_get_block = false;
+        m_session.session_start = std::chrono::system_clock::now();
+        m_session.last_keepalive = m_session.session_start;
+        m_session.keepalive_count = 0;
+        m_session.last_auth_time = now_epoch_seconds();
+        m_session.last_activity = m_session.last_auth_time;
+        record_session_event_locked(SessionEventKind::AUTH_SUCCESS,
+                                    "session authenticated with node");
+        std::ostringstream session_detail;
+        session_detail << "session_id=0x" << std::hex << std::setw(8) << std::setfill('0')
+                       << session_id << std::dec;
+        record_session_event_locked(SessionEventKind::SESSION_START, session_detail.str());
+    }
+
+    m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
+                   session_id, get_session_info().session_epoch);
+
+    if (!pubkey.empty()) {
+        m_logger->info("[SessionManager] Falcon identity committed: {} bytes", pubkey.size());
+    }
+
+    if (!tritium_genesis.empty()) {
+        m_logger->info("[SessionManager] Tritium genesis bound to session: {} bytes",
+                      tritium_genesis.size());
+    }
+}
+
 void SessionManager::end_session()
 {
     std::chrono::seconds uptime;
@@ -505,6 +557,19 @@ void SessionManager::set_falcon_identity(const std::vector<uint8_t>& pubkey,
     m_session.falcon_pubkey = pubkey;
     m_session.falcon_key_id = key_id;
     m_session.falcon_authenticated = authenticated;
+    m_session.last_activity = now_epoch_seconds();
+}
+
+void SessionManager::reset_session_credentials()
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    m_session.session_id = 0;
+    m_session.session_key.clear();
+    m_session.authenticated = false;
+    m_session.falcon_authenticated = false;
+    m_session.state = SessionState::DISCONNECTED;
+    m_session.ready_for_submit = false;
+    m_session.ready_for_get_block = false;
     m_session.last_activity = now_epoch_seconds();
 }
 

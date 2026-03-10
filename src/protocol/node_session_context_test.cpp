@@ -283,6 +283,61 @@ void test_miner_session_container_detects_inconsistent_state() {
     std::cout << "Miner session container consistency test passed!" << std::endl;
 }
 
+void test_atomic_authenticated_session_commit_sets_auth_fields_together() {
+    std::cout << "Testing atomic authenticated session commit..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    constexpr uint32_t committed_session_id = 0x13572468;
+    const std::vector<uint8_t> genesis(32, 0x5A);
+    const std::vector<uint8_t> falcon_pubkey(32, 0x7C);
+
+    context.set_state(SessionManager::SessionState::AUTHENTICATING);
+    context.commit_authenticated_session(committed_session_id, falcon_pubkey, "atomic-session-key", genesis);
+
+    const auto info = context.get_session_info();
+    assert(info.session_id == committed_session_id);
+    assert(info.session_epoch == context.get_session_epoch());
+    assert(info.authenticated);
+    assert(info.falcon_authenticated);
+    assert(info.falcon_pubkey == falcon_pubkey);
+    assert(info.falcon_key_id == "atomic-session-key");
+    assert(info.session_genesis == genesis);
+    assert(context.get_state() == SessionManager::SessionState::AUTHENTICATED);
+    assert(context.is_authenticated());
+
+    std::cout << "Atomic authenticated session commit test passed!" << std::endl;
+}
+
+void test_reset_session_credentials_clears_atomic_auth_flags() {
+    std::cout << "Testing atomic credential reset..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    constexpr uint32_t committed_session_id = 0x24681357;
+    context.commit_authenticated_session(
+        committed_session_id,
+        std::vector<uint8_t>(32, 0x33),
+        "reset-session-key",
+        std::vector<uint8_t>(32, 0x44));
+    context.set_channel_state(3, true, true);
+
+    context.reset_session_credentials();
+
+    const auto info = context.get_session_info();
+    assert(info.session_id == 0);
+    assert(!info.authenticated);
+    assert(!info.falcon_authenticated);
+    assert(!info.ready_for_submit);
+    assert(!info.ready_for_get_block);
+    assert(context.get_state() == SessionManager::SessionState::DISCONNECTED);
+    assert(!context.is_authenticated());
+
+    std::cout << "Atomic credential reset test passed!" << std::endl;
+}
+
 void test_multiple_session_contexts_do_not_overlap() {
     std::cout << "Testing multiple session container isolation..." << std::endl;
 
@@ -462,6 +517,8 @@ int main() {
         test_reward_binding_persists_across_session_restart();
         test_format_hex_prefix_matches_session_validation_fingerprint();
         test_miner_session_container_detects_inconsistent_state();
+        test_atomic_authenticated_session_commit_sets_auth_fields_together();
+        test_reset_session_credentials_clears_atomic_auth_flags();
         test_multiple_session_contexts_do_not_overlap();
         test_prevblock_suffix_is_authoritative_session_state();
         test_session_epoch_advances_across_session_restarts();
