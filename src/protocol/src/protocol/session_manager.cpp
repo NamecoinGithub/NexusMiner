@@ -597,9 +597,7 @@ std::string SessionManager::build_miner_session_diagnostics() const
         << "- chacha20_key_fingerprint: " << (m_session.chacha20_key_fingerprint.empty() ? "<unset>" : m_session.chacha20_key_fingerprint) << '\n'
         << "- reward_address_string: " << (m_session.reward_address_string.empty() ? "<unset>" : m_session.reward_address_string) << '\n'
         << "- reward_hash: " << (m_session.reward_hash.empty() ? "<unset>" : format_hex_prefix(m_session.reward_hash, 8)) << '\n'
-        << "- prevblock_suffix: "
-        << format_hex_prefix(std::vector<uint8_t>(m_session.prevblock_suffix.begin(),
-                                                 m_session.prevblock_suffix.end()), 4) << '\n'
+        << "- prevblock_suffix: " << format_hex_prefix(m_session.prevblock_suffix, 4) << '\n'
         << "- reward_binding_source: " << (m_session.reward_binding_source.empty() ? "<unset>" : m_session.reward_binding_source) << '\n'
         << "- channel: " << m_session.channel << '\n'
         << "- consistency: " << (consistency ? "PASS" : "FAIL") << " (" << consistency_reason << ")";

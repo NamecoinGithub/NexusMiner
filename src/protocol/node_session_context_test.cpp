@@ -295,7 +295,7 @@ void test_prevblock_suffix_is_authoritative_session_state() {
     assert(info.prevblock_suffix == suffix);
 
     const std::vector<uint8_t> suffix_bytes(suffix.begin(), suffix.end());
-    const std::string expected_suffix_hex = format_hex_prefix_via_qualified_call(suffix_bytes, suffix_bytes.size());
+    const std::string expected_suffix_hex = format_hex_prefix_via_qualified_call(suffix_bytes, 4);
     const auto diagnostics = context.build_miner_session_diagnostics();
     assert(diagnostics.find("prevblock_suffix: " + expected_suffix_hex) != std::string::npos);
 
