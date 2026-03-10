@@ -508,7 +508,7 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
 
     m_logger->warn("[{}] Session ingress preflight rejected packet: {}", log_scope, decision.reason);
     if (decision.drop_as_stale) {
-        const auto kind = decision.reason.find("epoch") != std::string::npos
+        const auto kind = decision.stale_reason == PacketStaleReason::OWNERSHIP_EPOCH_MISMATCH
                         ? SessionManager::SessionEventKind::EPOCH_MISMATCH
                         : SessionManager::SessionEventKind::STALE_PACKET_DROPPED;
         record_session_event(kind, std::string(log_scope) + ": " + decision.reason);

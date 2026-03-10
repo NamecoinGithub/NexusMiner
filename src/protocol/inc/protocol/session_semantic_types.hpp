@@ -35,7 +35,7 @@ public:
         return m_value;
     }
 
-    bool empty() const
+    bool is_default() const
     {
         return m_value == T{};
     }

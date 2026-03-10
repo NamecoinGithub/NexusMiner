@@ -19,7 +19,7 @@ struct SessionOwnershipStamp
         // Ownership stamps are only captured from authenticated sessions after
         // SessionManager::start_session() advances the authoritative epoch, so
         // {0,0} remains the sentinel for "no correlatable owner".
-        return !session_id.empty() && !session_epoch.empty();
+        return !session_id.is_default() && !session_epoch.is_default();
     }
 
     void clear()
@@ -29,12 +29,21 @@ struct SessionOwnershipStamp
     }
 };
 
+enum class PacketStaleReason
+{
+    NONE,
+    SESSION_ID_MISMATCH,
+    OWNERSHIP_EPOCH_MISMATCH,
+    OWNERSHIP_SESSION_ID_MISMATCH
+};
+
 struct PacketIngressDecision
 {
     bool allow_processing{false};
     bool force_reauth{false};
     bool drop_as_stale{false};
     bool mark_degraded{false};
+    PacketStaleReason stale_reason{PacketStaleReason::NONE};
     std::string reason;
 };
 
@@ -101,11 +110,12 @@ public:
             return decision;
         }
 
-        if (!input.packet_session_id.empty() &&
+        if (!input.packet_session_id.is_default() &&
             input.packet_session_id.get() != input.authoritative_session.session_id) {
             decision.reason = "packet session id mismatched authoritative session";
             decision.drop_as_stale = true;
             decision.mark_degraded = true;
+            decision.stale_reason = PacketStaleReason::SESSION_ID_MISMATCH;
             return decision;
         }
 
@@ -114,14 +124,16 @@ public:
                 decision.reason = "packet ownership epoch mismatched authoritative session";
                 decision.drop_as_stale = true;
                 decision.mark_degraded = true;
+                decision.stale_reason = PacketStaleReason::OWNERSHIP_EPOCH_MISMATCH;
                 return decision;
             }
 
-            if (!input.owner.session_id.empty() &&
+            if (!input.owner.session_id.is_default() &&
                 input.owner.session_id.get() != input.authoritative_session.session_id) {
                 decision.reason = "packet ownership session id mismatched authoritative session";
                 decision.drop_as_stale = true;
                 decision.mark_degraded = true;
+                decision.stale_reason = PacketStaleReason::OWNERSHIP_SESSION_ID_MISMATCH;
                 return decision;
             }
         }
