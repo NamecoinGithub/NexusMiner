@@ -540,7 +540,7 @@ std::string SessionManager::build_miner_session_diagnostics() const
     return oss.str();
 }
 
-bool SessionManager::validate_miner_session_container(const SessionInfo& session,
+bool SessionManager::validate_miner_session_container(const MinerSessionContainer& session,
                                                       std::string* reason)
 {
     auto fail = [&](const std::string& message) {
