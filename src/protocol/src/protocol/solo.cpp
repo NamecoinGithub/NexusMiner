@@ -857,7 +857,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
                                            : SessionManager::SessionInfo{};
     const auto& submit_session_key = session.chacha20_session_key;
 
-    // Use authoritative cached session key from the session container.
+    // Use the authoritative session key from the session container.
     if (submit_session_key.empty()) {
         m_logger->critical("[Solo Submit] CRITICAL: authoritative session.chacha20_session_key is empty");
         return network::Shared_payload{};

@@ -127,7 +127,7 @@ struct SimulatedSoloAuthGuard
         return true;
     }
 
-    bool submit_block_uses_authoritative_key_only() const
+    bool has_authoritative_key() const
     {
         return !authoritative.chacha_key.empty();
     }
@@ -289,9 +289,10 @@ void test_submit_requires_authoritative_chacha20_key()
     SimulatedSoloAuthGuard guard;
     guard.m_chacha_key = std::vector<unsigned char>(32, 0xAA);
     guard.authoritative.chacha_key.clear();
+    const bool can_submit = guard.has_authoritative_key();
 
     print_test_result("Submit fails when authoritative key is empty even if local cache is populated",
-                      !guard.submit_block_uses_authoritative_key_only());
+                      !can_submit);
 }
 
 void test_block_accepted_consumes_snapshot_before_future_fallback()
