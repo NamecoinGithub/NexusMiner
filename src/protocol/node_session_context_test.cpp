@@ -1,8 +1,10 @@
 #include "protocol/node_session_context.hpp"
 #include "protocol/hex_prefix_utils.hpp"
+#include "protocol/session_semantic_types.hpp"
 #include <cassert>
 #include <iostream>
 #include <string>
+#include <type_traits>
 
 namespace {
 std::string format_hex_prefix_via_qualified_call(const std::vector<uint8_t>& bytes, std::size_t prefix_bytes)
@@ -372,6 +374,80 @@ void test_hex_prefix_header_supports_qualified_callers() {
     std::cout << "hex_prefix_utils qualified-call test passed!" << std::endl;
 }
 
+void test_session_event_journal_tracks_current_session() {
+    std::cout << "Testing session event journal tracks current session..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    context.set_state(SessionManager::SessionState::AUTHENTICATING);
+    context.start_session(0xABCDEF01);
+    context.record_session_event(SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED,
+                                 "session status ack accepted");
+    context.set_reward_binding("reward-address", std::vector<uint8_t>(32, 0x42), true, "live bind");
+
+    const auto journal = context.get_session_event_journal();
+    assert(journal.size() >= 4);
+    assert(journal[0].kind == SessionManager::SessionEventKind::AUTH_INIT);
+    assert(journal[1].kind == SessionManager::SessionEventKind::AUTH_SUCCESS);
+    assert(journal[2].kind == SessionManager::SessionEventKind::SESSION_START);
+    assert(journal.back().kind == SessionManager::SessionEventKind::REWARD_BIND_RESULT);
+    assert(journal.back().session_id.get() == 0xABCDEF01u);
+    assert(journal.back().session_epoch.get() == context.get_session_epoch());
+
+    const auto diagnostics = context.build_miner_session_diagnostics();
+    assert(diagnostics.find("SESSION EVENT JOURNAL") != std::string::npos);
+    assert(diagnostics.find("auth_init") != std::string::npos);
+    assert(diagnostics.find("reward_bind_result") != std::string::npos);
+
+    std::cout << "Session event journal tracking test passed!" << std::endl;
+}
+
+void test_session_event_journal_behaves_like_ring_buffer() {
+    std::cout << "Testing session event journal ring buffer behavior..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    context.start_session(0x12345678);
+    for (std::size_t i = 0; i < SessionManager::SESSION_EVENT_JOURNAL_CAPACITY + 5; ++i) {
+        context.record_session_event(SessionManager::SessionEventKind::STALE_PACKET_DROPPED,
+                                     "drop-" + std::to_string(i));
+    }
+
+    const auto journal = context.get_session_event_journal();
+    assert(journal.size() == SessionManager::SESSION_EVENT_JOURNAL_CAPACITY);
+    assert(journal.front().detail == "drop-5");
+    assert(journal.back().detail ==
+           "drop-" + std::to_string(SessionManager::SESSION_EVENT_JOURNAL_CAPACITY + 4));
+
+    std::cout << "Session event journal ring buffer test passed!" << std::endl;
+}
+
+void test_session_semantic_wrapper_types_are_distinct() {
+    std::cout << "Testing strong semantic session wrapper types..." << std::endl;
+
+    static_assert(!std::is_same<SessionId, SessionEpoch>::value, "SessionId and SessionEpoch must differ");
+    static_assert(!std::is_same<SessionGenesisHash, RewardHash>::value, "Genesis and reward hashes must differ");
+    static_assert(!std::is_same<FalconHashKeyId, SessionFingerprint>::value, "Key id and fingerprint must differ");
+
+    const SessionId session_id(0x11111111u);
+    const SessionEpoch session_epoch(9);
+    const SessionGenesisHash genesis_hash(std::vector<uint8_t>(32, 0xAA));
+    const RewardHash reward_hash(std::vector<uint8_t>(32, 0xBB));
+    const FalconHashKeyId key_id(std::string("falcon-key"));
+    const SessionFingerprint fingerprint(std::string("fingerprint"));
+
+    assert(session_id.get() == 0x11111111u);
+    assert(session_epoch.get() == 9u);
+    assert(genesis_hash.get().size() == 32);
+    assert(reward_hash.get().size() == 32);
+    assert(key_id.get() == "falcon-key");
+    assert(fingerprint.get() == "fingerprint");
+
+    std::cout << "Strong semantic session wrapper types test passed!" << std::endl;
+}
+
 int main() {
     std::cout << "Running NodeSessionContext unit tests..." << std::endl;
 
@@ -390,6 +466,9 @@ int main() {
         test_prevblock_suffix_is_authoritative_session_state();
         test_session_epoch_advances_across_session_restarts();
         test_hex_prefix_header_supports_qualified_callers();
+        test_session_event_journal_tracks_current_session();
+        test_session_event_journal_behaves_like_ring_buffer();
+        test_session_semantic_wrapper_types_are_distinct();
 
         std::cout << "\nAll NodeSessionContext tests passed!" << std::endl;
         return 0;

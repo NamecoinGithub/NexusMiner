@@ -38,6 +38,27 @@ const char* lane_name(ProtocolLane lane)
     }
 }
 
+const char* session_event_kind_name(SessionManager::SessionEventKind kind)
+{
+    switch (kind) {
+        case SessionManager::SessionEventKind::AUTH_INIT: return "auth_init";
+        case SessionManager::SessionEventKind::AUTH_SUCCESS: return "auth_success";
+        case SessionManager::SessionEventKind::SESSION_START: return "session_start";
+        case SessionManager::SessionEventKind::REWARD_BIND_SENT: return "reward_bind_sent";
+        case SessionManager::SessionEventKind::REWARD_BIND_RESULT: return "reward_bind_result";
+        case SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED: return "status_ack_accepted";
+        case SessionManager::SessionEventKind::STATUS_ACK_REJECTED: return "status_ack_rejected";
+        case SessionManager::SessionEventKind::STALE_PACKET_DROPPED: return "stale_packet_dropped";
+        case SessionManager::SessionEventKind::EPOCH_MISMATCH: return "epoch_mismatch";
+        case SessionManager::SessionEventKind::FORCED_REAUTH: return "forced_reauth";
+        case SessionManager::SessionEventKind::SUBMIT_SENT: return "submit_sent";
+        case SessionManager::SessionEventKind::SUBMIT_ACCEPTED: return "submit_accepted";
+        case SessionManager::SessionEventKind::SUBMIT_REJECTED: return "submit_rejected";
+    }
+
+    return "unknown";
+}
+
 } // namespace
 
 SessionManager::SessionManager(uint16_t keepalive_interval_hours,
@@ -84,6 +105,9 @@ void SessionManager::start_session(uint32_t session_id,
 
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
+        if (m_session.state != SessionState::AUTHENTICATING) {
+            clear_session_event_journal_locked();
+        }
         ++m_session.session_epoch;
         m_session.session_id = session_id;
         m_session.session_key = session_key;
@@ -101,6 +125,12 @@ void SessionManager::start_session(uint32_t session_id,
         m_session.keepalive_count = 0;
         m_session.last_auth_time = now_epoch_seconds();
         m_session.last_activity = m_session.last_auth_time;
+        record_session_event_locked(SessionEventKind::AUTH_SUCCESS,
+                                    "session authenticated with node");
+        std::ostringstream session_detail;
+        session_detail << "session_id=0x" << std::hex << std::setw(8) << std::setfill('0')
+                       << session_id << std::dec;
+        record_session_event_locked(SessionEventKind::SESSION_START, session_detail.str());
     }
 
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
@@ -393,6 +423,13 @@ void SessionManager::set_state(SessionState state)
             m_session.last_activity = now_epoch_seconds();
         }
 
+        if (state == SessionState::AUTHENTICATING) {
+            clear_session_event_journal_locked();
+            record_session_event_locked(SessionEventKind::AUTH_INIT, "authentication handshake started");
+        } else if (state == SessionState::EXPIRED) {
+            record_session_event_locked(SessionEventKind::FORCED_REAUTH, "session marked expired");
+        }
+
         if (state == SessionState::EXPIRED && m_session_expired_handler)
             m_session_expired_handler();
     }
@@ -496,6 +533,9 @@ void SessionManager::set_reward_binding(const std::string& reward_address,
         m_session.last_reward_bind_time = now_epoch_seconds();
     }
     m_session.last_activity = now_epoch_seconds();
+    record_session_event_locked(SessionEventKind::REWARD_BIND_RESULT,
+                                std::string(bound ? "accepted" : "rejected") +
+                                    (source.empty() ? "" : (" via " + source)));
 }
 
 void SessionManager::set_channel_state(uint32_t channel,
@@ -545,7 +585,84 @@ std::string SessionManager::build_miner_session_diagnostics() const
         << "- prevblock_suffix: " << format_hex_prefix(m_session.prevblock_suffix, 4) << '\n'
         << "- reward_binding_source: " << (m_session.reward_binding_source.empty() ? "<unset>" : m_session.reward_binding_source) << '\n'
         << "- channel: " << m_session.channel << '\n'
-        << "- consistency: " << (consistency ? "PASS" : "FAIL") << " (" << consistency_reason << ")";
+        << "- consistency: " << (consistency ? "PASS" : "FAIL") << " (" << consistency_reason << ")\n"
+        << "SESSION EVENT JOURNAL";
+    if (m_session_event_journal.empty()) {
+        oss << "\n- <empty>";
+    } else {
+        for (const auto& event : m_session_event_journal) {
+            oss << "\n- [" << event.timestamp << "] "
+                << session_event_kind_name(event.kind)
+                << " sid=0x" << std::hex << std::setw(8) << std::setfill('0') << event.session_id.get()
+                << std::dec
+                << " epoch=" << event.session_epoch.get();
+            if (!event.detail.empty()) {
+                oss << " detail=" << event.detail;
+            }
+        }
+    }
+    return oss.str();
+}
+
+const char* SessionManager::session_event_kind_name(SessionEventKind kind)
+{
+    return protocol::session_event_kind_name(kind);
+}
+
+void SessionManager::clear_session_event_journal_locked()
+{
+    m_session_event_journal.clear();
+}
+
+void SessionManager::record_session_event_locked(SessionEventKind kind, const std::string& detail)
+{
+    m_session_event_journal.push_back(SessionEvent{
+        now_epoch_seconds(),
+        kind,
+        SessionId(m_session.session_id),
+        SessionEpoch(m_session.session_epoch),
+        detail
+    });
+
+    while (m_session_event_journal.size() > SESSION_EVENT_JOURNAL_CAPACITY) {
+        m_session_event_journal.pop_front();
+    }
+}
+
+void SessionManager::record_session_event(SessionEventKind kind, const std::string& detail)
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    record_session_event_locked(kind, detail);
+}
+
+std::vector<SessionManager::SessionEvent> SessionManager::get_session_event_journal() const
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    return std::vector<SessionEvent>(m_session_event_journal.begin(), m_session_event_journal.end());
+}
+
+std::string SessionManager::build_session_event_journal() const
+{
+    const auto journal = get_session_event_journal();
+
+    std::ostringstream oss;
+    oss << "SESSION EVENT JOURNAL";
+    if (journal.empty()) {
+        oss << "\n- <empty>";
+        return oss.str();
+    }
+
+    for (const auto& event : journal) {
+        oss << "\n- [" << event.timestamp << "] "
+            << session_event_kind_name(event.kind)
+            << " sid=0x" << std::hex << std::setw(8) << std::setfill('0') << event.session_id.get()
+            << std::dec
+            << " epoch=" << event.session_epoch.get();
+        if (!event.detail.empty()) {
+            oss << " detail=" << event.detail;
+        }
+    }
+
     return oss.str();
 }
 

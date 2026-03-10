@@ -441,7 +441,15 @@ SessionOwnershipStamp Solo::capture_session_ownership() const
     }
 
     const auto session = m_session_context->get_session_info();
-    return { session.session_id, session.session_epoch };
+    return { SessionId(session.session_id), SessionEpoch(session.session_epoch) };
+}
+
+void Solo::record_session_event(SessionManager::SessionEventKind kind,
+                                const std::string& detail) const
+{
+    if (m_session_context) {
+        m_session_context->record_session_event(kind, detail);
+    }
 }
 
 void Solo::clear_generation_bound_state(const char* reason)
@@ -481,7 +489,7 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
     std::string validation_reason;
     const bool session_valid = m_session_context->validate_miner_session(&validation_reason);
     const auto session = m_session_context->get_session_info();
-    const auto decision = SessionIngressGate::preflight({
+    const auto decision = PacketIngressPreflight::evaluate({
         true,
         session_valid,
         session,
@@ -490,21 +498,29 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
         options.allow_without_active_session,
         options.require_crypto_ready,
         options.require_reward_binding,
-        options.packet_session_id,
+        SessionId(options.packet_session_id),
         options.owner ? *options.owner : SessionOwnershipStamp{}
     });
 
-    if (decision.allow) {
+    if (decision.allow_processing) {
         return true;
     }
 
     m_logger->warn("[{}] Session ingress preflight rejected packet: {}", log_scope, decision.reason);
+    if (decision.drop_as_stale) {
+        const auto kind = decision.stale_reason == PacketStaleReason::OWNERSHIP_EPOCH_MISMATCH
+                        ? SessionManager::SessionEventKind::EPOCH_MISMATCH
+                        : SessionManager::SessionEventKind::STALE_PACKET_DROPPED;
+        record_session_event(kind, std::string(log_scope) + ": " + decision.reason);
+    }
     if (!session_valid) {
         m_logger->warn("[{}] Authoritative session validation failed: {}", log_scope, validation_reason);
         m_logger->warn("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
     }
 
     if (decision.force_reauth && options.trigger_reauth && m_session_expired_handler) {
+        record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
+                             std::string(log_scope) + ": " + decision.reason);
         m_logger->warn("[{}] Triggering session-expired handler after preflight rejection", log_scope);
         m_session_expired_handler();
     }
@@ -929,6 +945,8 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     if (!submit_result.valid) {
         m_logger->error("[Solo Submit] encode_submit() rejected block: {}",
                         submit_result.rejection_reason);
+        record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED,
+                             submit_result.rejection_reason);
         return network::Shared_payload{};
     }
 
@@ -943,6 +961,9 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         return network::Shared_payload{};
     }
     std::vector<uint8_t> plaintextPayload(framed.begin() + header_size, framed.end());
+    record_session_event(SessionManager::SessionEventKind::SUBMIT_SENT,
+                         "height=" + std::to_string(m_last_submitted_height) +
+                         " channel=" + std::to_string(m_last_submitted_channel));
 
     // ── Channel-aware payload diagnostics ────────────────────────────────────
     // Compute payload metadata from live data — offset_bytes_count is derived
@@ -1766,6 +1787,9 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         }
         m_logger->info("✅ BLOCK ACCEPTED by node — height={} channel={}", accepted_height, accepted_channel);
         m_logger->info("Block Accepted By Nexus Network.");
+        record_session_event(SessionManager::SessionEventKind::SUBMIT_ACCEPTED,
+                             "height=" + std::to_string(accepted_height) +
+                             " channel=" + std::to_string(accepted_channel));
 
         // Notify Worker_manager to record in the mined-block cache.
         // Use submitted prev_hash and nonce rather than re-reading from template.
@@ -1826,6 +1850,10 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         }
         m_logger->info("✅ BLOCK ACCEPTED by node (Legacy Lane, GOOD_BLOCK) — height={} channel={}",
             accepted_height, accepted_channel);
+        record_session_event(SessionManager::SessionEventKind::SUBMIT_ACCEPTED,
+                             "height=" + std::to_string(accepted_height) +
+                             " channel=" + std::to_string(accepted_channel) +
+                             " via GOOD_BLOCK");
 
         // Notify Worker_manager to record in the mined-block cache.
         // Use submitted prev_hash and nonce rather than re-reading from template.
@@ -1891,6 +1919,10 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
         }
         m_logger->warn("❌ BLOCK REJECTED by node — height={} channel={} reason={}", rejected_height, rejected_channel, reason_str);
         m_logger->warn("Block Rejected by Nexus Network.");
+        record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED,
+                             "height=" + std::to_string(rejected_height) +
+                             " channel=" + std::to_string(rejected_channel) +
+                             " reason=" + reason_str);
 
         // Enhanced diagnostics: Log connection info and possible reasons
         if (connection) {
@@ -3305,6 +3337,9 @@ void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Conne
             if (handle_session_id_mismatch(ack.session_id))
                 return;
 
+            record_session_event(SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED,
+                                 "keepalive ack accepted");
+
             // Update HeightTracker with ACK chain-state heights.
             m_height_tracker.OnKeepaliveResponse(ack.unified_height,
                                                   ack.prime_height,
@@ -3359,12 +3394,17 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
             if (handle_session_id_mismatch(ack.session_id))
                 return;
 
+            record_session_event(SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED,
+                                 "session status ack accepted");
+
             m_last_session_status_ack      = ack;
             m_last_session_status_ack_time = std::chrono::steady_clock::now();
 
             const auto decision = SessionStatusPolicy::evaluate_ack_health(
                 { ack.uptime_seconds, ack.IsAuthenticated() });
             if (decision.force_reauth) {
+                record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
+                                     "session status ack unhealthy: " + decision.reason);
                 m_logger->warn("[Solo] SESSION_STATUS_ACK {} "
                                "(uptime={}s auth={}) — triggering in-band re-auth",
                                decision.reason, ack.uptime_seconds, ack.IsAuthenticated());
@@ -3579,11 +3619,15 @@ bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
         return false;
     }
 
+    record_session_event(SessionManager::SessionEventKind::STATUS_ACK_REJECTED, decision.reason);
+
     m_logger->warn("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != local=0x{:08x}"
                    " — possible stale ACK or race condition (not self-expiring yet)",
         decision.reason, m_session_id_mismatch_count, ack_session_id, local_session_id);
 
     if (decision.expire_session) {
+        record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
+                             "ack mismatch expiry threshold reached");
         m_logger->error("[KEEPALIVE_V2] {} after {} consecutive mismatches — session presumed stale, expiring",
                         decision.reason, m_session_id_mismatch_count);
         m_session_id_mismatch_count = 0;
@@ -3912,6 +3956,8 @@ network::Shared_payload Solo::send_set_reward()
     auto payload = PacketBuilder::build(m_protocol_lane, LLP::MINER_SET_REWARD, payload_data);
     if (payload && !payload->empty()) {
         m_last_reward_request_owner = capture_session_ownership();
+        record_session_event(SessionManager::SessionEventKind::REWARD_BIND_SENT,
+                             "reward bind request sent");
     }
     return payload;
 }

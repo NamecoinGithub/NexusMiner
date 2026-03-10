@@ -176,6 +176,13 @@ public:
 
     std::string build_miner_session_diagnostics() const;
 
+    void record_session_event(SessionManager::SessionEventKind kind,
+                              const std::string& detail = "");
+
+    std::vector<SessionManager::SessionEvent> get_session_event_journal() const;
+
+    std::string build_session_event_journal() const;
+
     /**
      * @brief Get Tritium genesis hash
      * @return Genesis hash vector

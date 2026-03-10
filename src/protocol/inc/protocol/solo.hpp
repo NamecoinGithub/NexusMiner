@@ -303,6 +303,8 @@ private:
         bool trigger_reauth{false};
     };
     SessionOwnershipStamp capture_session_ownership() const;
+    void record_session_event(SessionManager::SessionEventKind kind,
+                              const std::string& detail) const;
     void clear_generation_bound_state(const char* reason);
     bool run_packet_ingress_preflight(const char* log_scope) const;
     bool run_packet_ingress_preflight(const char* log_scope,

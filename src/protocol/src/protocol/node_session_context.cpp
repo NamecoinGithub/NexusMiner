@@ -189,6 +189,25 @@ std::string NodeSessionContext::build_miner_session_diagnostics() const
     return m_session_manager ? m_session_manager->build_miner_session_diagnostics() : std::string{};
 }
 
+void NodeSessionContext::record_session_event(SessionManager::SessionEventKind kind,
+                                              const std::string& detail)
+{
+    if (m_session_manager) {
+        m_session_manager->record_session_event(kind, detail);
+    }
+}
+
+std::vector<SessionManager::SessionEvent> NodeSessionContext::get_session_event_journal() const
+{
+    return m_session_manager ? m_session_manager->get_session_event_journal()
+                             : std::vector<SessionManager::SessionEvent>{};
+}
+
+std::string NodeSessionContext::build_session_event_journal() const
+{
+    return m_session_manager ? m_session_manager->build_session_event_journal() : std::string{};
+}
+
 std::vector<uint8_t> NodeSessionContext::get_tritium_genesis() const
 {
     return m_session_manager ? m_session_manager->get_tritium_genesis() : std::vector<uint8_t>{};
