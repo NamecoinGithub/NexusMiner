@@ -855,13 +855,11 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
 
     const auto session = m_session_context ? m_session_context->get_session_info()
                                            : SessionManager::SessionInfo{};
-    const auto& submit_session_key = session.chacha20_session_key.empty()
-        ? m_chacha20_session_key
-        : session.chacha20_session_key;
+    const auto& submit_session_key = session.chacha20_session_key;
 
-    // Use authoritative cached session key from login() — no re-derivation
+    // Use the authoritative session key from the session container.
     if (submit_session_key.empty()) {
-        m_logger->error("[Solo Submit] No cached session key (was login() successful?)");
+        m_logger->critical("[Solo Submit] CRITICAL: authoritative session.chacha20_session_key is empty");
         return network::Shared_payload{};
     }
 
@@ -1582,9 +1580,11 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
 
         // Use submitted block state (snapshotted at submit_block time) so we
         // don't depend on a template that may have been replaced since submission.
+        const bool had_last_submitted = m_last_submitted_valid;
+        m_last_submitted_valid = false;
         uint32_t accepted_height  = m_last_submitted_height;
         uint32_t accepted_channel = m_last_submitted_channel;
-        if (!m_last_submitted_valid) {
+        if (!had_last_submitted) {
             // Fallback: submission state not populated (e.g. legacy path).
             // Warning: template may have been replaced since submission.
             m_logger->warn("BLOCK_ACCEPTED fallback: m_last_submitted_valid=false — "
@@ -1642,9 +1642,11 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         ++m_blocks_accepted;
 
         // Use submitted block state (snapshotted at submit_block time).
+        const bool had_last_submitted = m_last_submitted_valid;
+        m_last_submitted_valid = false;
         uint32_t accepted_height  = m_last_submitted_height;
         uint32_t accepted_channel = m_last_submitted_channel;
-        if (!m_last_submitted_valid) {
+        if (!had_last_submitted) {
             m_logger->warn("GOOD_BLOCK fallback: m_last_submitted_valid=false — "
                            "reading height/channel from current template (may reflect a newer block)");
             if (m_template_interface) {
