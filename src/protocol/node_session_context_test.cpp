@@ -203,6 +203,65 @@ void test_authoritative_miner_session_container_binding() {
     std::cout << "Authoritative miner session container binding test passed!" << std::endl;
 }
 
+void test_atomic_authenticated_session_commit_binds_credentials_and_session() {
+    std::cout << "Testing atomic authenticated session commit..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    const std::vector<uint8_t> genesis(32, 0x11);
+    const std::vector<uint8_t> falcon_pubkey(32, 0x22);
+
+    context.set_state(SessionManager::SessionState::AUTHENTICATING);
+    context.commit_authenticated_session(0x12345678, falcon_pubkey, "2222222222222222", genesis);
+
+    const auto info = context.get_session_info();
+    assert(info.authenticated);
+    assert(info.falcon_authenticated);
+    assert(info.session_id == 0x12345678);
+    assert(info.falcon_pubkey == falcon_pubkey);
+    assert(info.falcon_key_id == "2222222222222222");
+    assert(info.session_genesis == genesis);
+    assert(info.state == SessionManager::SessionState::AUTHENTICATED);
+
+    const auto journal = context.get_session_event_journal();
+    assert(journal.size() == 2);
+    assert(journal[0].kind == SessionManager::SessionEventKind::AUTH_SUCCESS);
+    assert(journal[1].kind == SessionManager::SessionEventKind::SESSION_START);
+
+    std::string reason;
+    assert(context.validate_miner_session(&reason));
+    assert(reason == "PASS");
+
+    std::cout << "Atomic authenticated session commit test passed!" << std::endl;
+}
+
+void test_reset_session_credentials_clears_both_auth_flags() {
+    std::cout << "Testing atomic session credential reset..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    const std::vector<uint8_t> genesis(32, 0x11);
+    const std::vector<uint8_t> falcon_pubkey(32, 0x22);
+
+    context.set_state(SessionManager::SessionState::AUTHENTICATING);
+    context.commit_authenticated_session(0x12345678, falcon_pubkey, "2222222222222222", genesis);
+    context.set_state(SessionManager::SessionState::DISCONNECTED);
+    context.reset_session_credentials();
+
+    const auto info = context.get_session_info();
+    assert(!info.authenticated);
+    assert(!info.falcon_authenticated);
+    assert(info.session_id == 0x12345678);
+    assert(info.falcon_pubkey == falcon_pubkey);
+    assert(info.falcon_key_id == "2222222222222222");
+    assert(info.session_genesis == genesis);
+    assert(info.state == SessionManager::SessionState::DISCONNECTED);
+
+    std::cout << "Atomic session credential reset test passed!" << std::endl;
+}
+
 void test_reward_binding_persists_across_session_restart() {
     std::cout << "Testing reward binding persistence across session restart..." << std::endl;
 
@@ -459,6 +518,8 @@ int main() {
         test_tritium_genesis();
         test_session_manager_access();
         test_authoritative_miner_session_container_binding();
+        test_atomic_authenticated_session_commit_binds_credentials_and_session();
+        test_reset_session_credentials_clears_both_auth_flags();
         test_reward_binding_persists_across_session_restart();
         test_format_hex_prefix_matches_session_validation_fingerprint();
         test_miner_session_container_detects_inconsistent_state();

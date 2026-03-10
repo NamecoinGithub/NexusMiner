@@ -50,6 +50,16 @@ void NodeSessionContext::start_session(uint32_t session_id,
     }
 }
 
+void NodeSessionContext::commit_authenticated_session(uint32_t session_id,
+                                                      const std::vector<uint8_t>& pubkey,
+                                                      const std::string& key_id,
+                                                      const std::vector<uint8_t>& tritium_genesis)
+{
+    if (m_session_manager) {
+        m_session_manager->commit_authenticated_session(session_id, pubkey, key_id, tritium_genesis);
+    }
+}
+
 void NodeSessionContext::end_session()
 {
     if (m_session_manager) {
@@ -132,6 +142,13 @@ void NodeSessionContext::set_connection_metadata(const std::string& local_endpoi
 {
     if (m_session_manager) {
         m_session_manager->set_connection_metadata(local_endpoint, remote_endpoint, connected);
+    }
+}
+
+void NodeSessionContext::reset_session_credentials()
+{
+    if (m_session_manager) {
+        m_session_manager->reset_session_credentials();
     }
 }
 

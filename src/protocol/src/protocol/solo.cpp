@@ -2485,8 +2485,11 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
 
                 // Start session in session manager
                 if (m_session_context) {
-                    m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), true);
-                    m_session_context->start_session(m_session_id, {}, load_tritium_genesis());
+                    m_session_context->commit_authenticated_session(
+                        m_session_id,
+                        m_miner_pubkey,
+                        format_hex_prefix(m_miner_pubkey, 16),
+                        load_tritium_genesis());
                     refresh_cached_session_state("Solo Auth");
                     m_session_context->set_channel_state(m_channel, false, false);
                     m_session_context->start_keepalive_timer();
@@ -3583,7 +3586,7 @@ void Solo::reset_auth_state()
     m_authenticated = false;
     if (m_session_context) {
         m_session_context->set_state(SessionManager::SessionState::DISCONNECTED);
-        m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), false);
+        m_session_context->reset_session_credentials();
     }
     m_logger->info("[Solo] Auth state reset (in-band re-auth prep)");
 }
