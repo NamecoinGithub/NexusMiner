@@ -1,4 +1,5 @@
 #include "protocol/node_session_context.hpp"
+#include "protocol/hex_prefix_utils.hpp"
 #include <cassert>
 #include <iostream>
 #include <string>
@@ -159,7 +160,8 @@ void test_authoritative_miner_session_container_binding() {
     context.set_tritium_genesis(genesis);
     context.set_falcon_identity(falcon_pubkey, "2222222222222222", true);
     context.start_session(0x12345678, {}, genesis);
-    context.set_chacha20_session_key(chacha_key, "3333333333333333", true);
+    const auto chacha_fingerprint = format_hex_prefix(chacha_key, 8);
+    context.set_chacha20_session_key(chacha_key, chacha_fingerprint, true);
     context.set_reward_binding("reward-address", reward_hash, true, "config");
     context.set_channel_state(2, true, true);
 
@@ -176,7 +178,7 @@ void test_authoritative_miner_session_container_binding() {
     assert(info.falcon_pubkey == falcon_pubkey);
     assert(info.falcon_key_id == "2222222222222222");
     assert(info.chacha20_session_key == chacha_key);
-    assert(info.chacha20_key_fingerprint == "3333333333333333");
+    assert(info.chacha20_key_fingerprint == chacha_fingerprint);
     assert(info.reward_address_string == "reward-address");
     assert(info.reward_hash == reward_hash);
     assert(info.reward_bound);
@@ -190,6 +192,31 @@ void test_authoritative_miner_session_container_binding() {
     assert(diagnostics.find("consistency: PASS") != std::string::npos);
 
     std::cout << "Authoritative miner session container binding test passed!" << std::endl;
+}
+
+void test_format_hex_prefix_matches_session_validation_fingerprint() {
+    std::cout << "Testing shared hex-prefix fingerprint formatting..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    std::vector<uint8_t> genesis(32, 0x0A);
+    std::vector<uint8_t> chacha_key{0x00, 0x01, 0x0A, 0x10, 0xAB, 0xCD, 0xEF, 0xFF, 0x55};
+    const auto fingerprint = format_hex_prefix(chacha_key, 8);
+
+    assert(fingerprint == "00010a10abcdefff");
+
+    context.set_protocol_lane(nexusminer::ProtocolLane::STATELESS);
+    context.set_connection_metadata("127.0.0.1:4000", "127.0.0.1:9323", true);
+    context.start_session(0xDEADBEEF, {}, genesis);
+    context.set_falcon_identity(std::vector<uint8_t>(32, 0x77), "7777777777777777", true);
+    context.set_chacha20_session_key(chacha_key, fingerprint, true);
+
+    std::string reason;
+    assert(context.validate_miner_session(&reason));
+    assert(reason == "PASS");
+
+    std::cout << "Shared hex-prefix fingerprint formatting test passed!" << std::endl;
 }
 
 void test_miner_session_container_detects_inconsistent_state() {
@@ -259,6 +286,7 @@ int main() {
         test_tritium_genesis();
         test_session_manager_access();
         test_authoritative_miner_session_container_binding();
+        test_format_hex_prefix_matches_session_validation_fingerprint();
         test_miner_session_container_detects_inconsistent_state();
         test_multiple_session_contexts_do_not_overlap();
 

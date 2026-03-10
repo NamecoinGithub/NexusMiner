@@ -45,6 +45,7 @@ struct SimulatedSoloAuthGuard
     AuthState m_auth_state{AuthState::NOT_AUTHENTICATED};
     std::chrono::steady_clock::time_point m_auth_in_flight_since{};
     int reauth_requests{0};
+    int packet_build_requests{0};
     AuthoritativeSession authoritative{};
 
     bool session_context_is_authenticated() const
@@ -104,6 +105,21 @@ struct SimulatedSoloAuthGuard
         m_authenticated = false;
         m_auth_state = AuthState::NOT_AUTHENTICATED;
         m_auth_in_flight_since = {};
+    }
+
+    bool validate_authoritative_session() const
+    {
+        return authoritative.authenticated;
+    }
+
+    bool send_set_reward()
+    {
+        if (!validate_authoritative_session()) {
+            return false;
+        }
+
+        ++packet_build_requests;
+        return true;
     }
 };
 
@@ -199,6 +215,19 @@ void test_cached_session_state_resyncs_from_authoritative_container()
                       guard.m_chacha_key == std::vector<unsigned char>(32, 0xAB));
 }
 
+void test_reward_send_validates_before_packet_build()
+{
+    std::cout << "\nTest 6: reward send guard runs before packet build\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.authoritative.authenticated = false;
+
+    const bool sent = guard.send_set_reward();
+
+    print_test_result("Reward send fails when authoritative session is invalid", !sent);
+    print_test_result("Reward send does not build a packet before validation", guard.packet_build_requests == 0);
+}
+
 }  // namespace
 
 int main()
@@ -212,6 +241,7 @@ int main()
     test_auth_result_success_sets_authenticated_state();
     test_auth_result_failure_clears_in_flight_state();
     test_cached_session_state_resyncs_from_authoritative_container();
+    test_reward_send_validates_before_packet_build();
 
     std::cout << "\n========================================\n";
     std::cout << "Results: " << tests_passed << "/" << tests_run
