@@ -171,34 +171,44 @@ struct SimulatedSoloAuthGuard
 
 struct SimulatedSessionStatusAckHandler
 {
-    bool session_expired_handler_called{false};
+    uint32_t local_session_id{0};
+    uint32_t mismatch_count{0};
+    uint32_t last_session_id{0};
+    uint32_t last_lane_health_flags{0};
+    uint32_t last_uptime_seconds{0};
+    uint32_t last_status_echo_flags{0};
+    bool ack_recorded{false};
 
-    void on_session_status_ack(uint32_t uptime_seconds, bool authenticated)
+    bool handle_session_id_mismatch(uint32_t ack_session_id)
     {
-        if (uptime_seconds == 0 || !authenticated) {
-            session_expired_handler_called = true;
+        if (ack_session_id == 0 || ack_session_id == local_session_id) {
+            if (ack_session_id != 0 && ack_session_id == local_session_id) {
+                mismatch_count = 0;
+            }
+            return false;
         }
+
+        ++mismatch_count;
+        return true;
+    }
+
+    bool on_session_status_ack(uint32_t ack_session_id,
+                               uint32_t lane_health_flags,
+                               uint32_t uptime_seconds,
+                               uint32_t status_echo_flags)
+    {
+        if (handle_session_id_mismatch(ack_session_id)) {
+            return false;
+        }
+
+        last_session_id = ack_session_id;
+        last_lane_health_flags = lane_health_flags;
+        last_uptime_seconds = uptime_seconds;
+        last_status_echo_flags = status_echo_flags;
+        ack_recorded = true;
+        return true;
     }
 };
-
-enum class HardLimitAction {
-    NONE,
-    FORCE_FULL_REAUTH,
-    RECONNECT,
-    RETRY_TEMPLATE
-};
-
-HardLimitAction decide_hard_limit_action(bool push_recent, int64_t degraded_duration)
-{
-    if (degraded_duration <= nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS) {
-        return HardLimitAction::NONE;
-    }
-    if (!push_recent) {
-        return HardLimitAction::RECONNECT;
-    }
-
-    return HardLimitAction::FORCE_FULL_REAUTH;
-}
 
 void test_guard_requires_both_sources_to_be_unauthenticated()
 {
@@ -391,40 +401,26 @@ void test_block_accepted_consumes_snapshot_before_future_fallback()
     print_test_result("Second accept records that fallback was used", second_accept.used_fallback);
 }
 
-void test_session_status_ack_uptime_zero_triggers_session_expired()
+void test_session_status_ack_ignores_stale_session_id()
 {
-    std::cout << "\nTest 10: SESSION_STATUS_ACK uptime=0 triggers session-expired recovery\n";
+    std::cout << "\nTest 10: stale SESSION_STATUS_ACK does not overwrite cached status\n";
 
     SimulatedSessionStatusAckHandler handler;
-    handler.on_session_status_ack(0, true);
+    handler.local_session_id = 0x12345678;
+    handler.last_session_id = 0x12345678;
+    handler.last_lane_health_flags = 0x09;
+    handler.last_uptime_seconds = 60;
+    handler.last_status_echo_flags = 0x02;
+    handler.ack_recorded = true;
 
-    print_test_result("uptime=0 triggers session_expired_handler",
-                      handler.session_expired_handler_called);
-}
+    const bool accepted = handler.on_session_status_ack(0x87654321, 0x0F, 999, 0x07);
 
-void test_session_status_ack_unauthenticated_triggers_session_expired()
-{
-    std::cout << "\nTest 11: SESSION_STATUS_ACK auth=false triggers session-expired recovery\n";
-
-    SimulatedSessionStatusAckHandler handler;
-    handler.on_session_status_ack(123, false);
-
-    print_test_result("auth=false triggers session_expired_handler",
-                      handler.session_expired_handler_called);
-}
-
-void test_hard_limit_with_recent_push_forces_full_reauth_even_if_authenticated()
-{
-    std::cout << "\nTest 12: hard-limit + recent push forces full re-auth even when auth cache says true\n";
-
-    const auto action = decide_hard_limit_action(
-        true,
-        nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1);
-
-    print_test_result("Recent-push hard-limit stall no longer falls back to GET_BLOCK",
-                      action != HardLimitAction::RETRY_TEMPLATE);
-    print_test_result("Recent-push hard-limit stall forces full re-auth",
-                      action == HardLimitAction::FORCE_FULL_REAUTH);
+    print_test_result("Mismatched SESSION_STATUS_ACK is rejected", !accepted);
+    print_test_result("Mismatch counter increments", handler.mismatch_count == 1);
+    print_test_result("Cached session ID is not overwritten", handler.last_session_id == 0x12345678);
+    print_test_result("Cached lane health is not overwritten", handler.last_lane_health_flags == 0x09);
+    print_test_result("Cached uptime is not overwritten", handler.last_uptime_seconds == 60);
+    print_test_result("Cached echoed status is not overwritten", handler.last_status_echo_flags == 0x02);
 }
 
 }  // namespace
@@ -445,9 +441,7 @@ int main()
     test_cached_session_state_logging_downgrades_expected_reconnect_resyncs();
     test_submit_requires_authoritative_chacha20_key();
     test_block_accepted_consumes_snapshot_before_future_fallback();
-    test_session_status_ack_uptime_zero_triggers_session_expired();
-    test_session_status_ack_unauthenticated_triggers_session_expired();
-    test_hard_limit_with_recent_push_forces_full_reauth_even_if_authenticated();
+    test_session_status_ack_ignores_stale_session_id();
 
     std::cout << "\n========================================\n";
     std::cout << "Results: " << tests_passed << "/" << tests_run
