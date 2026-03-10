@@ -30,6 +30,15 @@ namespace nexusminer
 namespace protocol
 {
 
+namespace {
+
+bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_has_state)
+{
+    return !local_has_state && authoritative_has_state;
+}
+
+}
+
 // Protocol constants
 constexpr size_t GENESIS_HASH_SIZE = 32;  // Tritium genesis hash size
 constexpr size_t ADDRESS_DISPLAY_TRUNCATE = 40;  // Max characters to display for addresses in logs
@@ -353,14 +362,24 @@ void Solo::refresh_cached_session_state(const char* log_scope)
     const auto session = m_session_context->get_session_info();
 
     if (m_authenticated != session.authenticated) {
-        m_logger->warn("[{}] Resyncing local auth flag from authoritative session container: local={} authoritative={}",
-                       log_scope, m_authenticated ? "true" : "false", session.authenticated ? "true" : "false");
+        if (is_expected_cached_session_resync(m_authenticated, session.authenticated)) {
+            m_logger->info("[{}] Resyncing local auth flag from authoritative session container after reconnect: local={} authoritative={}",
+                           log_scope, m_authenticated ? "true" : "false", session.authenticated ? "true" : "false");
+        } else {
+            m_logger->warn("[{}] Local auth flag drifted from authoritative session container mid-session: local={} authoritative={}",
+                           log_scope, m_authenticated ? "true" : "false", session.authenticated ? "true" : "false");
+        }
         m_authenticated = session.authenticated;
     }
 
     if (m_session_id != session.session_id) {
-        m_logger->warn("[{}] Resyncing local session_id from authoritative session container: local=0x{:08x} authoritative=0x{:08x}",
-                       log_scope, m_session_id, session.session_id);
+        if (is_expected_cached_session_resync(m_session_id != 0, session.session_id != 0)) {
+            m_logger->info("[{}] Resyncing local session_id from authoritative session container after reconnect: local=0x{:08x} authoritative=0x{:08x}",
+                           log_scope, m_session_id, session.session_id);
+        } else {
+            m_logger->warn("[{}] Local session_id drifted from authoritative session container mid-session: local=0x{:08x} authoritative=0x{:08x}",
+                           log_scope, m_session_id, session.session_id);
+        }
         m_session_id = session.session_id;
         if (m_template_interface) {
             m_template_interface->set_session_id(m_session_id);
@@ -368,20 +387,32 @@ void Solo::refresh_cached_session_state(const char* log_scope)
     }
 
     if (m_reward_bound != session.reward_bound) {
-        m_logger->warn("[{}] Resyncing local reward_bound from authoritative session container: local={} authoritative={}",
-                       log_scope, m_reward_bound ? "true" : "false", session.reward_bound ? "true" : "false");
+        if (is_expected_cached_session_resync(m_reward_bound, session.reward_bound)) {
+            m_logger->info("[{}] Resyncing local reward_bound from authoritative session container after reconnect: local={} authoritative={}",
+                           log_scope, m_reward_bound ? "true" : "false", session.reward_bound ? "true" : "false");
+        } else {
+            m_logger->warn("[{}] Local reward_bound drifted from authoritative session container mid-session: local={} authoritative={}",
+                           log_scope, m_reward_bound ? "true" : "false", session.reward_bound ? "true" : "false");
+        }
         m_reward_bound = session.reward_bound;
     }
 
     if (m_chacha20_session_key != session.chacha20_session_key) {
-        m_logger->warn("[{}] Resyncing cached ChaCha20 session key from authoritative session container", log_scope);
+        if (is_expected_cached_session_resync(!m_chacha20_session_key.empty(),
+                                              !session.chacha20_session_key.empty())) {
+            m_logger->info("[{}] Resyncing cached ChaCha20 session key from authoritative session container after reconnect",
+                           log_scope);
+        } else {
+            m_logger->warn("[{}] Cached ChaCha20 session key drifted from authoritative session container mid-session",
+                           log_scope);
+        }
         m_chacha20_session_key = session.chacha20_session_key;
     }
 
     if (m_protocol_lane != session.active_lane &&
         session.active_lane != ProtocolLane::UNKNOWN &&
         m_protocol_lane == ProtocolLane::UNKNOWN) {
-        m_logger->warn("[{}] Resyncing protocol lane from authoritative session container because local lane was UNKNOWN: authoritative={}",
+        m_logger->info("[{}] Resyncing protocol lane from authoritative session container after reconnect because local lane was UNKNOWN: authoritative={}",
                        log_scope, get_lane_name(session.active_lane));
         m_protocol_lane = session.active_lane;
     }
