@@ -510,7 +510,7 @@ void SessionManager::mark_activity()
 bool SessionManager::validate_miner_session(std::string* reason) const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    return validate_miner_session_container(m_session, reason);
+    return validate_miner_session_container_locked(m_session, reason);
 }
 
 std::string SessionManager::build_miner_session_diagnostics() const
@@ -519,7 +519,7 @@ std::string SessionManager::build_miner_session_diagnostics() const
 
     std::ostringstream oss;
     std::string consistency_reason;
-    const bool consistency = validate_miner_session_container(m_session, &consistency_reason);
+    const bool consistency = validate_miner_session_container_locked(m_session, &consistency_reason);
 
     oss << "MINER SESSION CONTAINER\n"
         << "- remote endpoint: " << (m_session.remote_endpoint.empty() ? "<unset>" : m_session.remote_endpoint) << '\n'
@@ -540,8 +540,8 @@ std::string SessionManager::build_miner_session_diagnostics() const
     return oss.str();
 }
 
-bool SessionManager::validate_miner_session_container(const MinerSessionContainer& session,
-                                                      std::string* reason)
+bool SessionManager::validate_miner_session_container_locked(const MinerSessionContainer& session,
+                                                             std::string* reason)
 {
     auto fail = [&](const std::string& message) {
         if (reason) {

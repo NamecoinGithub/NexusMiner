@@ -323,14 +323,14 @@ public:
 private:
 
     /**
-     * @brief Validate MinerSessionContainer invariants while the caller controls locking.
+     * @brief Validate MinerSessionContainer invariants while the caller holds m_session_mutex.
      *
      * @param session Session snapshot/container to validate
      * @param reason Optional diagnostic output describing the first failure or PASS
      * @return true when the container is internally consistent
      */
-    static bool validate_miner_session_container(const MinerSessionContainer& session,
-                                                 std::string* reason);
+    static bool validate_miner_session_container_locked(const MinerSessionContainer& session,
+                                                        std::string* reason);
     void schedule_regular_keepalives(const std::shared_ptr<SessionManager>& self);
     void send_keepalive(const char* cadence);
     // Internal helper: get session uptime without locking (caller must hold m_session_mutex)
