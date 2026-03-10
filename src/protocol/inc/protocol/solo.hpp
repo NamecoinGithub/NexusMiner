@@ -306,9 +306,13 @@ private:
     void record_session_event(SessionManager::SessionEventKind kind,
                               const std::string& detail) const;
     void clear_generation_bound_state(const char* reason);
-    bool run_packet_ingress_preflight(const char* log_scope) const;
-    bool run_packet_ingress_preflight(const char* log_scope,
-                                      const PacketIngressPreflightOptions& options) const;
+    static const PacketIngressPreflightOptions& default_packet_ingress_preflight_options();
+    bool run_packet_ingress_preflight(
+        const char* log_scope,
+        const PacketIngressPreflightOptions& options = default_packet_ingress_preflight_options()) const;
+    void queue_pending_push_after_auth(const char* log_scope);
+    void flush_pending_push_after_auth(const std::shared_ptr<network::Connection>& connection,
+                                       const char* log_scope);
 
     // Integration helper functions (bridge MiningTemplateInterface and ClientChannelManager)
     /**
@@ -462,6 +466,7 @@ private:
     
     // Push notification subscription state (MINER_READY sent after auth)
     std::atomic<bool> m_subscribed_to_notifications{false};
+    bool m_pending_push_after_auth{false};
 
     // Recovery callback — invoked when a push handler fires GET_BLOCK for a stale template
     // (channel_advanced staleness), signalling Worker_manager to enter recovery_pending state.

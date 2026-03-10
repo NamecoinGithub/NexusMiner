@@ -322,6 +322,7 @@ void Solo::reset()
     m_auth_in_flight_since = {};
     m_reward_bound = false;  // Reset reward binding for new session
     m_subscribed_to_notifications = false;  // Reset push notification subscription
+    m_pending_push_after_auth = false;
 
     // Note: m_chacha20_wrapper is intentionally NOT cleared here — the wrapper object
     // is stateless (no per-session state) and can be reused across reconnects.
@@ -474,9 +475,10 @@ void Solo::clear_generation_bound_state(const char* reason)
     }
 }
 
-bool Solo::run_packet_ingress_preflight(const char* log_scope) const
+const Solo::PacketIngressPreflightOptions& Solo::default_packet_ingress_preflight_options()
 {
-    return run_packet_ingress_preflight(log_scope, PacketIngressPreflightOptions{});
+    static const PacketIngressPreflightOptions options{};
+    return options;
 }
 
 bool Solo::run_packet_ingress_preflight(const char* log_scope,
@@ -526,6 +528,40 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
     }
 
     return false;
+}
+
+void Solo::queue_pending_push_after_auth(const char* log_scope)
+{
+    if (m_pending_push_after_auth) {
+        return;
+    }
+
+    m_pending_push_after_auth = true;
+    m_logger->info("[{}] Queued GET_BLOCK to run after authentication flow completes", log_scope);
+}
+
+void Solo::flush_pending_push_after_auth(const std::shared_ptr<network::Connection>& connection,
+                                         const char* log_scope)
+{
+    if (!m_pending_push_after_auth) {
+        return;
+    }
+
+    if (!connection) {
+        m_logger->warn("[{}] Pending post-auth GET_BLOCK still queued: no connection available", log_scope);
+        return;
+    }
+
+    m_logger->info("[{}] Push arrived during auth handshake — sending queued GET_BLOCK now", log_scope);
+    m_pending_push_after_auth = false;
+
+    auto work_payload = get_work();
+    if (work_payload && !work_payload->empty()) {
+        connection->transmit(work_payload);
+        return;
+    }
+
+    m_logger->warn("[{}] Queued post-auth GET_BLOCK was unavailable after auth completion", log_scope);
 }
 
 void Solo::update_connection_metadata(const std::shared_ptr<network::Connection>& connection)
@@ -2438,6 +2474,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     m_authenticated = false;
                     m_auth_state = AuthState::NOT_AUTHENTICATED;
                     m_auth_in_flight_since = {};
+                    m_pending_push_after_auth = false;
                     if (m_session_context) {
                         m_session_context->reset_session_credentials();
                         m_session_context->set_falcon_identity(
@@ -2599,6 +2636,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             m_authenticated = false;
             m_auth_state = AuthState::NOT_AUTHENTICATED;
             m_auth_in_flight_since = {};
+            m_pending_push_after_auth = false;
             if (m_session_context) {
                 m_session_context->reset_session_credentials();
                 m_session_context->set_falcon_identity(
@@ -2824,6 +2862,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 connection->transmit(miner_ready_payload);
                 m_logger->info("[Solo Protocol] ✓ STATELESS_MINER_READY transmitted");
                 m_logger->info("[Solo Protocol] Waiting for STATELESS_GET_BLOCK (0xD081) pushes...");
+                flush_pending_push_after_auth(connection, "Solo Protocol");
             } else {
                 m_logger->error("[Solo Protocol] No connection available");
                 return;
@@ -2848,6 +2887,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 connection->transmit(miner_ready_payload);
                 m_logger->info("[Solo Protocol] ✓ MINER_READY transmitted");
                 m_logger->info("[Solo Protocol] Waiting for PRIME_BLOCK_AVAILABLE/HASH_BLOCK_AVAILABLE pushes...");
+                flush_pending_push_after_auth(connection, "Solo Protocol");
             } else {
                 m_logger->error("[Solo Protocol] No connection available");
                 return;
@@ -3054,6 +3094,7 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                 // node's perspective (push proves it), but local auth state is stale.
                 // Do NOT call get_work() — trigger in-band re-auth instead.
                 if (!m_authenticated && !session_says_auth) {
+                    queue_pending_push_after_auth("Solo Push");
                     m_logger->warn("[Solo Push] ⚠ {} received while NOT_AUTHENTICATED — "
                                    "TCP session may still be alive at node; triggering in-band re-auth",
                                push_opcode_name);
