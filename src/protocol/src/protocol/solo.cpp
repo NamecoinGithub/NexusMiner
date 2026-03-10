@@ -315,8 +315,6 @@ void Solo::reset()
 
     // Note: m_chacha20_wrapper is intentionally NOT cleared here — the wrapper object
     // is stateless (no per-session state) and can be reused across reconnects.
-    // m_chacha20_session_key IS cleared so the new login() derives a fresh key.
-    m_chacha20_session_key.clear();
 
     // Reset session manager
     if (m_session_context) {
@@ -395,18 +393,6 @@ void Solo::refresh_cached_session_state(const char* log_scope)
                            log_scope, m_reward_bound ? "true" : "false", session.reward_bound ? "true" : "false");
         }
         m_reward_bound = session.reward_bound;
-    }
-
-    if (m_chacha20_session_key != session.chacha20_session_key) {
-        if (is_expected_cached_session_resync(!m_chacha20_session_key.empty(),
-                                              !session.chacha20_session_key.empty())) {
-            m_logger->info("[{}] Resyncing cached ChaCha20 session key from authoritative session container after reconnect",
-                           log_scope);
-        } else {
-            m_logger->warn("[{}] Cached ChaCha20 session key drifted from authoritative session container mid-session",
-                           log_scope);
-        }
-        m_chacha20_session_key = session.chacha20_session_key;
     }
 
     if (m_protocol_lane != session.active_lane &&
@@ -561,15 +547,15 @@ network::Shared_payload Solo::login(Login_handler handler)
 
                 wrapped = true;
 
-                // Cache the session key for reuse in submit_block() and send_set_reward()
-                m_chacha20_session_key = session_key;
                 m_logger->info("[Solo Auth] ChaCha20 key fingerprint (first 8 bytes): {}",
-                               format_hex_prefix(m_chacha20_session_key, 8));
-                m_logger->info("[Solo Auth] ✓ Session key cached for this session");
+                               format_hex_prefix(session_key, 8));
                 if (m_session_context) {
-                    m_session_context->set_chacha20_session_key(m_chacha20_session_key,
-                                                                format_hex_prefix(m_chacha20_session_key, 8),
+                    m_session_context->set_chacha20_session_key(session_key,
+                                                                format_hex_prefix(session_key, 8),
                                                                 true);
+                    m_logger->info("[Solo Auth] ✓ Session key stored in authoritative session container");
+                } else {
+                    m_logger->warn("[Solo Auth] Unable to store session key: authoritative session container unavailable");
                 }
 
                 m_logger->info("[Solo Auth] ✓ Pubkey wrapped: {} → {} bytes (genesis-derived key)",
@@ -3671,15 +3657,13 @@ network::Shared_payload Solo::send_set_reward()
             m_logger->error("[Solo Reward] ChaCha20 enabled but wrapper not initialized — cannot send reward unencrypted");
             return nullptr;  // hard fail — do NOT send unencrypted
         }
-        // Use cached session key from login() — no re-derivation
+        // Use the authoritative session key from the session container.
         const auto session = m_session_context ? m_session_context->get_session_info()
                                                : SessionManager::SessionInfo{};
-        const auto& reward_session_key = session.chacha20_session_key.empty()
-            ? m_chacha20_session_key
-            : session.chacha20_session_key;
+        const auto& reward_session_key = session.chacha20_session_key;
         if (reward_session_key.empty())
         {
-            m_logger->error("[Solo Reward] No cached session key (was login() successful?)");
+            m_logger->error("[Solo Reward] No authoritative session key (was login() successful?)");
             return nullptr;
         }
 
@@ -3695,7 +3679,7 @@ network::Shared_payload Solo::send_set_reward()
                 payload_data.insert(payload_data.end(), nonce.begin(), nonce.end());
                 payload_data.insert(payload_data.end(), encrypt_result.data.begin(), encrypt_result.data.end());
 
-                m_logger->info("[Solo Reward] Address encrypted: {} → {} bytes (using cached session key)",
+                m_logger->info("[Solo Reward] Address encrypted: {} → {} bytes (using authoritative session key)",
                                vHash.size(), payload_data.size());
                 m_logger->debug("[Solo Reward] Encrypted with AAD: REWARD_ADDRESS ({} bytes)", AAD_REWARD_ADDRESS.size());
             }
@@ -4009,9 +3993,7 @@ void Solo::handle_reward_result(const Packet& packet)
     {
         const auto session = m_session_context ? m_session_context->get_session_info()
                                                : SessionManager::SessionInfo{};
-        const auto& reward_session_key = session.chacha20_session_key.empty()
-            ? m_chacha20_session_key
-            : session.chacha20_session_key;
+        const auto& reward_session_key = session.chacha20_session_key;
         if (!reward_session_key.empty())
         {
             try {
