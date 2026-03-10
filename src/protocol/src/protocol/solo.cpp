@@ -7,6 +7,7 @@
 #include "protocol/genesis_utils.hpp"
 #include "protocol/hex_prefix_utils.hpp"
 #include "protocol/serialization_helpers.hpp"
+#include "protocol/session_status_policy.hpp"
 #include "protocol/session_start_parser.hpp"
 #include "packet.hpp"
 #include "network/connection.hpp"
@@ -3186,10 +3187,12 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
             m_last_session_status_ack      = ack;
             m_last_session_status_ack_time = std::chrono::steady_clock::now();
 
-            if (ack.uptime_seconds == 0 || !ack.IsAuthenticated()) {
-                m_logger->warn("[Solo] SESSION_STATUS_ACK indicates expired session "
+            const auto decision = SessionStatusPolicy::evaluate_ack_health(
+                { ack.uptime_seconds, ack.IsAuthenticated() });
+            if (decision.force_reauth) {
+                m_logger->warn("[Solo] SESSION_STATUS_ACK {} "
                                "(uptime={}s auth={}) — triggering in-band re-auth",
-                               ack.uptime_seconds, ack.IsAuthenticated());
+                               decision.reason, ack.uptime_seconds, ack.IsAuthenticated());
                 if (m_session_expired_handler) {
                     m_session_expired_handler();
                 }
@@ -3378,29 +3381,30 @@ bool Solo::check_auth_in_flight_timeout(const char* context)
 
 bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
 {
-    if (!get_session_manager() || ack_session_id == 0 ||
-        ack_session_id == get_session_manager()->get_session_id())
-    {
-        // Reset mismatch counter on a successful session-ID match.
-        if (get_session_manager() && ack_session_id != 0 &&
-            ack_session_id == get_session_manager()->get_session_id())
-        {
-            m_session_id_mismatch_count = 0;
-        }
+    auto* session_manager = get_session_manager();
+    const uint32_t local_session_id = session_manager ? session_manager->get_session_id() : 0;
+    const auto decision = SessionStatusPolicy::validate_ack({
+        session_manager != nullptr,
+        local_session_id,
+        ack_session_id,
+        m_session_id_mismatch_count,
+        protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD
+    });
+
+    m_session_id_mismatch_count = decision.mismatch_count;
+    if (decision.accept_ack) {
         return false;
     }
 
-    ++m_session_id_mismatch_count;
-    m_logger->warn("[KEEPALIVE_V2] Session ID mismatch #{}: ack=0x{:08x} != local=0x{:08x}"
+    m_logger->warn("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != local=0x{:08x}"
                    " — possible stale ACK or race condition (not self-expiring yet)",
-        m_session_id_mismatch_count, ack_session_id, get_session_manager()->get_session_id());
+        decision.reason, m_session_id_mismatch_count, ack_session_id, local_session_id);
 
-    constexpr uint32_t THRESHOLD = protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD;
-    if (m_session_id_mismatch_count >= THRESHOLD) {
-        m_logger->error("[KEEPALIVE_V2] {} consecutive session ID mismatches — session presumed stale, expiring",
-                        m_session_id_mismatch_count);
+    if (decision.expire_session) {
+        m_logger->error("[KEEPALIVE_V2] {} after {} consecutive mismatches — session presumed stale, expiring",
+                        decision.reason, m_session_id_mismatch_count);
         m_session_id_mismatch_count = 0;
-        get_session_manager()->set_state(SessionManager::SessionState::EXPIRED);
+        session_manager->set_state(SessionManager::SessionState::EXPIRED);
         if (m_session_expired_handler)
             m_session_expired_handler();
         return true;
