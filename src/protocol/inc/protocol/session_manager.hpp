@@ -322,7 +322,7 @@ public:
 private:
 
     /**
-     * @brief Validate MinerSessionContainer invariants while the caller controls locking.
+     * @brief Validate SessionInfo invariants while the caller controls locking.
      *
      * @param session Session snapshot/container to validate
      * @param reason Optional diagnostic output describing the first failure or PASS
