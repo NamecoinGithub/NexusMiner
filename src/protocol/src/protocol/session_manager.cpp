@@ -143,7 +143,6 @@ void SessionManager::start_session(uint32_t session_id,
         m_session.created_at = now_epoch_seconds();
         m_session.ready_for_submit = false;
         m_session.ready_for_get_block = false;
-        m_session.reward_bound = false;
         m_session.session_start = std::chrono::system_clock::now();
         m_session.last_keepalive = m_session.session_start;
         m_session.keepalive_count = 0;
