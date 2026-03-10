@@ -80,6 +80,11 @@ struct SimulatedSoloAuthGuard
         }
     }
 
+    void process_messages_entry()
+    {
+        refresh_cached_session_state();
+    }
+
     bool should_continue_after_guard()
     {
         bool session_says_auth = session_context_is_authenticated();
@@ -228,6 +233,25 @@ void test_reward_send_validates_before_packet_build()
     print_test_result("Reward send does not build a packet before validation", guard.packet_build_requests == 0);
 }
 
+void test_process_messages_entry_resyncs_cached_reward_binding()
+{
+    std::cout << "\nTest 7: process_messages entry resyncs cached reward binding before handlers run\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_authenticated = false;
+    guard.m_session_id = 0;
+    guard.m_reward_bound = false;
+    guard.authoritative = {true, 0xABCDEF01, true, std::vector<unsigned char>(32, 0xCD)};
+
+    guard.process_messages_entry();
+
+    print_test_result("Process entry resyncs auth flag", guard.m_authenticated);
+    print_test_result("Process entry resyncs session ID", guard.m_session_id == 0xABCDEF01);
+    print_test_result("Process entry resyncs reward binding", guard.m_reward_bound);
+    print_test_result("Process entry resyncs ChaCha20 key",
+                      guard.m_chacha_key == std::vector<unsigned char>(32, 0xCD));
+}
+
 }  // namespace
 
 int main()
@@ -242,6 +266,7 @@ int main()
     test_auth_result_failure_clears_in_flight_state();
     test_cached_session_state_resyncs_from_authoritative_container();
     test_reward_send_validates_before_packet_build();
+    test_process_messages_entry_resyncs_cached_reward_binding();
 
     std::cout << "\n========================================\n";
     std::cout << "Results: " << tests_passed << "/" << tests_run

@@ -194,6 +194,38 @@ void test_authoritative_miner_session_container_binding() {
     std::cout << "Authoritative miner session container binding test passed!" << std::endl;
 }
 
+void test_reward_binding_persists_across_session_restart() {
+    std::cout << "Testing reward binding persistence across session restart..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    const std::vector<uint8_t> initial_genesis(32, 0x11);
+    const std::vector<uint8_t> reconnect_genesis(32, 0x22);
+    const std::vector<uint8_t> reward_hash(32, 0x44);
+
+    context.start_session(0x12345678, {}, initial_genesis);
+    context.set_reward_binding("reward-address", reward_hash, true, "config");
+    context.set_channel_state(2, true, true);
+
+    context.start_session(0x87654321, {}, reconnect_genesis);
+
+    const auto info = context.get_session_info();
+    assert(info.session_id == 0x87654321);
+    assert(info.session_genesis == reconnect_genesis);
+    assert(info.reward_address_string == "reward-address");
+    assert(info.reward_hash == reward_hash);
+    assert(info.reward_bound);
+    assert(!info.ready_for_submit);
+    assert(!info.ready_for_get_block);
+
+    std::string reason;
+    assert(context.validate_miner_session(&reason));
+    assert(reason == "PASS");
+
+    std::cout << "Reward binding persistence across session restart test passed!" << std::endl;
+}
+
 void test_format_hex_prefix_matches_session_validation_fingerprint() {
     std::cout << "Testing shared hex-prefix fingerprint formatting..." << std::endl;
 
@@ -286,6 +318,7 @@ int main() {
         test_tritium_genesis();
         test_session_manager_access();
         test_authoritative_miner_session_container_binding();
+        test_reward_binding_persists_across_session_restart();
         test_format_hex_prefix_matches_session_validation_fingerprint();
         test_miner_session_container_detects_inconsistent_state();
         test_multiple_session_contexts_do_not_overlap();
