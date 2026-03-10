@@ -5,9 +5,9 @@
 #include <string>
 
 namespace {
-std::string format_hex_prefix_via_header_import(const std::vector<uint8_t>& bytes, std::size_t prefix_bytes)
+std::string format_hex_prefix_via_qualified_call(const std::vector<uint8_t>& bytes, std::size_t prefix_bytes)
 {
-    return format_hex_prefix(bytes, prefix_bytes);
+    return nexusminer::protocol::format_hex_prefix(bytes, prefix_bytes);
 }
 }
 
@@ -294,19 +294,21 @@ void test_prevblock_suffix_is_authoritative_session_state() {
     const auto info = context.get_session_info();
     assert(info.prevblock_suffix == suffix);
 
+    const std::vector<uint8_t> suffix_bytes(suffix.begin(), suffix.end());
+    const std::string expected_suffix_hex = format_hex_prefix_via_qualified_call(suffix_bytes, suffix_bytes.size());
     const auto diagnostics = context.build_miner_session_diagnostics();
-    assert(diagnostics.find("prevblock_suffix: 12345678") != std::string::npos);
+    assert(diagnostics.find("prevblock_suffix: " + expected_suffix_hex) != std::string::npos);
 
     std::cout << "Prevblock suffix authoritative-state test passed!" << std::endl;
 }
 
-void test_hex_prefix_header_import_supports_unqualified_callers() {
-    std::cout << "Testing hex_prefix_utils header import for unqualified callers..." << std::endl;
+void test_hex_prefix_header_supports_qualified_callers() {
+    std::cout << "Testing hex_prefix_utils qualified-call documentation path..." << std::endl;
 
     const std::vector<uint8_t> bytes{0xDE, 0xAD, 0xBE, 0xEF, 0xAA};
-    assert(format_hex_prefix_via_header_import(bytes, 4) == "deadbeef");
+    assert(format_hex_prefix_via_qualified_call(bytes, 4) == "deadbeef");
 
-    std::cout << "hex_prefix_utils header import test passed!" << std::endl;
+    std::cout << "hex_prefix_utils qualified-call test passed!" << std::endl;
 }
 
 int main() {
@@ -324,7 +326,7 @@ int main() {
         test_miner_session_container_detects_inconsistent_state();
         test_multiple_session_contexts_do_not_overlap();
         test_prevblock_suffix_is_authoritative_session_state();
-        test_hex_prefix_header_import_supports_unqualified_callers();
+        test_hex_prefix_header_supports_qualified_callers();
 
         std::cout << "\nAll NodeSessionContext tests passed!" << std::endl;
         return 0;

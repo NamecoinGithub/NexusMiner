@@ -12,6 +12,9 @@
 namespace nexusminer {
 namespace protocol {
 
+// Callers outside nexusminer::protocol should qualify this helper as
+// nexusminer::protocol::format_hex_prefix (or add a local using declaration
+// in the implementation file that includes this header).
 inline std::string format_hex_prefix(const std::vector<uint8_t>& bytes, std::size_t prefix_bytes)
 {
     const std::size_t prefix_size = std::min(bytes.size(), prefix_bytes);
@@ -31,7 +34,5 @@ inline std::string format_hex_prefix(const std::vector<uint8_t>& bytes, std::siz
 
 } // namespace protocol
 } // namespace nexusminer
-
-using nexusminer::protocol::format_hex_prefix;
 
 #endif // NEXUSMINER_PROTOCOL_HEX_PREFIX_UTILS_HPP
