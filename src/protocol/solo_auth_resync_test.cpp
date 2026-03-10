@@ -188,7 +188,7 @@ enum class HardLimitAction {
     RETRY_TEMPLATE
 };
 
-HardLimitAction decide_hard_limit_action(bool push_recent, int64_t degraded_duration, bool session_authenticated)
+HardLimitAction decide_hard_limit_action(bool push_recent, int64_t degraded_duration)
 {
     if (degraded_duration <= nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS) {
         return HardLimitAction::NONE;
@@ -197,7 +197,6 @@ HardLimitAction decide_hard_limit_action(bool push_recent, int64_t degraded_dura
         return HardLimitAction::RECONNECT;
     }
 
-    (void)session_authenticated;
     return HardLimitAction::FORCE_FULL_REAUTH;
 }
 
@@ -420,8 +419,7 @@ void test_hard_limit_with_recent_push_forces_full_reauth_even_if_authenticated()
 
     const auto action = decide_hard_limit_action(
         true,
-        nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1,
-        true);
+        nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1);
 
     print_test_result("Recent-push hard-limit stall no longer falls back to GET_BLOCK",
                       action != HardLimitAction::RETRY_TEMPLATE);
