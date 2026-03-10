@@ -133,6 +133,20 @@ target_include_directories(e2e_block_submission_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+# Deterministic first-block acceptance harness
+add_executable(first_block_acceptance_test
+    first_block_acceptance_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp)
+target_link_libraries(first_block_acceptance_test PRIVATE protocol network LLP asio spdlog ${OPENSSL_LIBRARIES})
+target_include_directories(first_block_acceptance_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src/LLP/include
+    ${CMAKE_SOURCE_DIR}/src/LLC/inc
+    ${CMAKE_SOURCE_DIR}/src
+)
+
 # MinedBlockCache + worker-feed dedup guard unit tests
 add_executable(mined_block_cache_dedup_test
     ${CMAKE_SOURCE_DIR}/src/stats/mined_block_cache_test.cpp)
@@ -185,6 +199,7 @@ add_test(NAME push_notification_lane_test COMMAND $<TARGET_FILE:push_notificatio
 add_test(NAME session_status_wire_test COMMAND $<TARGET_FILE:session_status_wire_test>)
 add_test(NAME stateless_block_utility_test COMMAND $<TARGET_FILE:stateless_block_utility_test>)
 add_test(NAME e2e_block_submission_test COMMAND $<TARGET_FILE:e2e_block_submission_test>)
+add_test(NAME first_block_acceptance_test COMMAND $<TARGET_FILE:first_block_acceptance_test>)
 add_test(NAME mined_block_cache_dedup_test COMMAND $<TARGET_FILE:mined_block_cache_dedup_test>)
 add_test(NAME node_shutdown_wire_test COMMAND $<TARGET_FILE:node_shutdown_wire_test>)
 add_test(NAME get_block_dedup_recovery_test COMMAND $<TARGET_FILE:get_block_dedup_recovery_test>)
