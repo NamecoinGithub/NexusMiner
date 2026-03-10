@@ -555,7 +555,7 @@ network::Shared_payload Solo::login(Login_handler handler)
                                                                 true);
                     m_logger->info("[Solo Auth] ✓ Session key stored in authoritative session container");
                 } else {
-                    m_logger->error("[Solo Auth] Unable to store session key: authoritative session container unavailable");
+                    m_logger->error("[Solo Auth] Unable to store session key: session context not initialized");
                 }
 
                 m_logger->info("[Solo Auth] ✓ Pubkey wrapped: {} → {} bytes (genesis-derived key)",
@@ -3663,7 +3663,7 @@ network::Shared_payload Solo::send_set_reward()
         const auto& reward_session_key = session.chacha20_session_key;
         if (reward_session_key.empty())
         {
-            m_logger->error("[Solo Reward] No authoritative session key (was login() successful?)");
+            m_logger->error("[Solo Reward] No session key available (authentication required)");
             return nullptr;
         }
 
