@@ -21,6 +21,7 @@
 | **Mining** | [current/mining-protocols/push-notifications.md](current/mining-protocols/push-notifications.md) | Block push events |
 | **Mining** | [current/mining-protocols/channel-management.md](current/mining-protocols/channel-management.md) | Prime/Hash channel handling |
 | **Mining** | [current/mining-protocols/height-tracking.md](current/mining-protocols/height-tracking.md) | Multi-channel height management |
+| **Mining** | [current/miner/README.md](current/miner/README.md) | Current miner architecture, roadmap, tests, and RISC-V notes |
 | **Security** | [current/security/security-overview.md](current/security/security-overview.md) | Overall security architecture |
 | **Security** | [current/security/chacha20-encryption.md](current/security/chacha20-encryption.md) | ChaCha20-Poly1305 session encryption |
 | **Security** | [current/security/falcon-security.md](current/security/falcon-security.md) | Post-quantum cryptography |
