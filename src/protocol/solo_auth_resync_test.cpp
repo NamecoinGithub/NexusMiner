@@ -60,6 +60,8 @@ struct SimulatedSoloAuthGuard
     std::chrono::steady_clock::time_point m_auth_in_flight_since{};
     int reauth_requests{0};
     int packet_build_requests{0};
+    int get_block_requests{0};
+    bool m_pending_push_after_auth{false};
     AuthoritativeSession authoritative{};
 
     bool session_context_is_authenticated() const
@@ -124,6 +126,7 @@ struct SimulatedSoloAuthGuard
         m_authenticated = false;
         m_auth_state = AuthState::NOT_AUTHENTICATED;
         m_auth_in_flight_since = {};
+        m_pending_push_after_auth = false;
     }
 
     bool validate_authoritative_session() const
@@ -138,6 +141,36 @@ struct SimulatedSoloAuthGuard
         }
 
         ++packet_build_requests;
+        return true;
+    }
+
+    bool on_push_notification()
+    {
+        const bool session_says_auth = session_context_is_authenticated();
+        if (!m_authenticated && !session_says_auth) {
+            m_pending_push_after_auth = true;
+            if (m_auth_state == AuthState::NOT_AUTHENTICATED) {
+                ++reauth_requests;
+            }
+            return false;
+        }
+
+        if (!m_authenticated && session_says_auth) {
+            resync_auth_from_session_context();
+        }
+
+        ++get_block_requests;
+        return true;
+    }
+
+    bool flush_pending_push_after_auth()
+    {
+        if (!m_pending_push_after_auth || !m_authenticated || !m_reward_bound) {
+            return false;
+        }
+
+        m_pending_push_after_auth = false;
+        ++get_block_requests;
         return true;
     }
 
@@ -351,9 +384,55 @@ void test_process_messages_entry_resyncs_cached_reward_binding()
                       guard.m_chacha_key == std::vector<unsigned char>(32, 0xCD));
 }
 
+void test_push_during_handshake_is_queued_until_auth_completes()
+{
+    std::cout << "\nTest 8: push during auth handshake queues a post-auth GET_BLOCK\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_authenticated = false;
+    guard.m_reward_bound = true;
+    guard.m_auth_state = AuthState::WAITING_FOR_RESULT;
+
+    const bool push_handled_immediately = guard.on_push_notification();
+
+    print_test_result("Push during handshake does not request GET_BLOCK immediately", !push_handled_immediately);
+    print_test_result("Push during handshake is queued for post-auth replay", guard.m_pending_push_after_auth);
+    print_test_result("Push during handshake does not trigger duplicate re-auth", guard.reauth_requests == 0);
+    print_test_result("Push during handshake does not send GET_BLOCK early", guard.get_block_requests == 0);
+
+    guard.handle_auth_result(true);
+    const bool flushed = guard.flush_pending_push_after_auth();
+
+    print_test_result("Queued push flushes immediately after auth completes", flushed);
+    print_test_result("Queued push sends exactly one GET_BLOCK after auth", guard.get_block_requests == 1);
+    print_test_result("Queued push is cleared after the post-auth GET_BLOCK", !guard.m_pending_push_after_auth);
+}
+
+void test_push_triggered_reauth_queues_followup_get_block()
+{
+    std::cout << "\nTest 9: push-triggered re-auth also queues the recovery GET_BLOCK\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_authenticated = false;
+    guard.m_reward_bound = true;
+    guard.m_auth_state = AuthState::NOT_AUTHENTICATED;
+
+    const bool push_handled_immediately = guard.on_push_notification();
+
+    print_test_result("Push-triggered re-auth defers GET_BLOCK until auth completes", !push_handled_immediately);
+    print_test_result("Push-triggered re-auth queues a post-auth GET_BLOCK", guard.m_pending_push_after_auth);
+    print_test_result("Push-triggered re-auth requests exactly one re-auth", guard.reauth_requests == 1);
+
+    guard.handle_auth_result(true);
+    const bool flushed = guard.flush_pending_push_after_auth();
+
+    print_test_result("Queued GET_BLOCK flushes after re-auth completes", flushed);
+    print_test_result("Re-auth path sends exactly one queued GET_BLOCK", guard.get_block_requests == 1);
+}
+
 void test_cached_session_state_logging_downgrades_expected_reconnect_resyncs()
 {
-    std::cout << "\nTest 8: expected reconnect resyncs log at info while drift stays warn\n";
+    std::cout << "\nTest 10: expected reconnect resyncs log at info while drift stays warn\n";
 
     const auto auth_reconnect = is_expected_cached_session_resync(false, true)
         ? ResyncLogSeverity::INFO : ResyncLogSeverity::WARN;
@@ -385,7 +464,7 @@ void test_cached_session_state_logging_downgrades_expected_reconnect_resyncs()
 
 void test_submit_requires_authoritative_chacha20_key()
 {
-    std::cout << "\nTest 8: submit path only accepts authoritative session key\n";
+    std::cout << "\nTest 11: submit path only accepts authoritative session key\n";
 
     SimulatedSoloAuthGuard guard;
     guard.m_chacha_key = std::vector<unsigned char>(32, 0xAA);
@@ -398,7 +477,7 @@ void test_submit_requires_authoritative_chacha20_key()
 
 void test_block_accepted_consumes_snapshot_before_future_fallback()
 {
-    std::cout << "\nTest 9: accepted-block snapshot is consumed before later fallback use\n";
+    std::cout << "\nTest 12: accepted-block snapshot is consumed before later fallback use\n";
 
     SimulatedSoloAuthGuard guard;
     guard.m_last_submitted_valid = true;
@@ -420,7 +499,7 @@ void test_block_accepted_consumes_snapshot_before_future_fallback()
 
 void test_session_status_policy_resets_mismatch_counter_on_match()
 {
-    std::cout << "\nTest 10: matching SESSION_STATUS_ACK resets mismatch counter\n";
+    std::cout << "\nTest 13: matching SESSION_STATUS_ACK resets mismatch counter\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -436,7 +515,7 @@ void test_session_status_policy_resets_mismatch_counter_on_match()
 
 void test_session_status_ack_ignores_stale_session_id()
 {
-    std::cout << "\nTest 11: stale SESSION_STATUS_ACK does not overwrite cached status\n";
+    std::cout << "\nTest 14: stale SESSION_STATUS_ACK does not overwrite cached status\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -459,7 +538,7 @@ void test_session_status_ack_ignores_stale_session_id()
 
 void test_session_status_ack_expires_after_threshold_mismatches()
 {
-    std::cout << "\nTest 12: repeated mismatched SESSION_STATUS_ACKs expire the session\n";
+    std::cout << "\nTest 15: repeated mismatched SESSION_STATUS_ACKs expire the session\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -476,7 +555,7 @@ void test_session_status_ack_expires_after_threshold_mismatches()
 
 void test_session_status_ack_force_reauth_when_node_reports_expired()
 {
-    std::cout << "\nTest 13: unhealthy SESSION_STATUS_ACK forces re-auth\n";
+    std::cout << "\nTest 16: unhealthy SESSION_STATUS_ACK forces re-auth\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -490,7 +569,7 @@ void test_session_status_ack_force_reauth_when_node_reports_expired()
 
 void test_degraded_live_session_policy_prefers_reauth_over_reconnect()
 {
-    std::cout << "\nTest 14: stalled live degraded session prefers in-band re-auth\n";
+    std::cout << "\nTest 17: stalled live degraded session prefers in-band re-auth\n";
 
     const auto decision = nexusminer::protocol::SessionStatusPolicy::evaluate_degraded_session({
         nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1,
@@ -505,7 +584,7 @@ void test_degraded_live_session_policy_prefers_reauth_over_reconnect()
 
 void test_degraded_dead_session_policy_forces_reconnect()
 {
-    std::cout << "\nTest 15: degraded session without live push traffic reconnects\n";
+    std::cout << "\nTest 18: degraded session without live push traffic reconnects\n";
 
     const auto decision = nexusminer::protocol::SessionStatusPolicy::evaluate_degraded_session({
         nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1,
@@ -533,6 +612,8 @@ int main()
     test_cached_session_state_resyncs_from_authoritative_container();
     test_reward_send_validates_before_packet_build();
     test_process_messages_entry_resyncs_cached_reward_binding();
+    test_push_during_handshake_is_queued_until_auth_completes();
+    test_push_triggered_reauth_queues_followup_get_block();
     test_cached_session_state_logging_downgrades_expected_reconnect_resyncs();
     test_submit_requires_authoritative_chacha20_key();
     test_block_accepted_consumes_snapshot_before_future_fallback();
