@@ -26,6 +26,9 @@ int tests_passed = 0;
 int tests_failed = 0;
 
 constexpr uint32_t DEFAULT_DIFFICULTY = 0x04308519u;
+constexpr uint16_t DEFAULT_KEEPALIVE_INTERVAL_HOURS = 24u;
+constexpr uint32_t SECONDS_PER_HOUR = 3600u;
+constexpr uint32_t DEFAULT_BLOCK_VERSION = 8u;
 constexpr uint32_t ACCEPTANCE_UNIFIED_HEIGHT = 6000000u;
 constexpr uint32_t ACCEPTANCE_CHANNEL_HEIGHT = 2000000u;
 constexpr uint32_t ACCEPTANCE_TEMPLATE_HEIGHT = 6000001u;
@@ -266,7 +269,7 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
         return result;
     };
 
-    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    auto session_manager = std::make_shared<SessionManager>(DEFAULT_KEEPALIVE_INTERVAL_HOURS, nullptr);
     NodeSessionContext context(session_manager);
     context.set_protocol_lane(ProtocolLane::STATELESS);
     context.set_connection_metadata("127.0.0.1:4000", "127.0.0.1:9323", true);
@@ -302,7 +305,7 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
     context.set_state(SessionManager::SessionState::ACTIVE);
     const uint16_t keepalive_hours = static_cast<uint16_t>(
         std::max<uint32_t>(1u,
-                           (parsed_timeout / NodeSessionContext::get_keepalive_safety_divisor()) / 3600u));
+                           (parsed_timeout / NodeSessionContext::get_keepalive_safety_divisor()) / SECONDS_PER_HOUR));
     context.set_keepalive_interval(keepalive_hours);
 
     const auto chacha_key = derive_session_key(parsed_genesis);
@@ -341,7 +344,7 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
         ACCEPTANCE_UNIFIED_HEIGHT,
         ACCEPTANCE_CHANNEL_HEIGHT,
         DEFAULT_DIFFICULTY,
-        8,
+        DEFAULT_BLOCK_VERSION,
         ACCEPTANCE_CHANNEL,
         ACCEPTANCE_TEMPLATE_HEIGHT,
         DEFAULT_DIFFICULTY,
@@ -461,7 +464,7 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
             ACCEPTANCE_UNIFIED_HEIGHT + 1,
             ACCEPTANCE_CHANNEL_HEIGHT + 1,
             DEFAULT_DIFFICULTY,
-            8,
+            DEFAULT_BLOCK_VERSION,
             ACCEPTANCE_CHANNEL,
             ACCEPTANCE_TEMPLATE_HEIGHT + 1,
             DEFAULT_DIFFICULTY,
