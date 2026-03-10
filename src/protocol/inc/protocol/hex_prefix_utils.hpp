@@ -1,3 +1,5 @@
+#pragma once
+
 #ifndef NEXUSMINER_PROTOCOL_HEX_PREFIX_UTILS_HPP
 #define NEXUSMINER_PROTOCOL_HEX_PREFIX_UTILS_HPP
 
@@ -29,5 +31,7 @@ inline std::string format_hex_prefix(const std::vector<uint8_t>& bytes, std::siz
 
 } // namespace protocol
 } // namespace nexusminer
+
+using nexusminer::protocol::format_hex_prefix;
 
 #endif // NEXUSMINER_PROTOCOL_HEX_PREFIX_UTILS_HPP

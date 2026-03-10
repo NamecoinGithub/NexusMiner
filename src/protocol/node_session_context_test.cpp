@@ -4,6 +4,13 @@
 #include <iostream>
 #include <string>
 
+namespace {
+std::string format_hex_prefix_via_header_import(const std::vector<uint8_t>& bytes, std::size_t prefix_bytes)
+{
+    return format_hex_prefix(bytes, prefix_bytes);
+}
+}
+
 using namespace nexusminer::protocol;
 
 void test_session_lifecycle() {
@@ -275,6 +282,33 @@ void test_multiple_session_contexts_do_not_overlap() {
     std::cout << "Multiple session container isolation test passed!" << std::endl;
 }
 
+void test_prevblock_suffix_is_authoritative_session_state() {
+    std::cout << "Testing prevblock suffix lives in the authoritative session container..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    const std::array<uint8_t, 4> suffix{0x12, 0x34, 0x56, 0x78};
+    context.set_prevblock_suffix(suffix);
+
+    const auto info = context.get_session_info();
+    assert(info.prevblock_suffix == suffix);
+
+    const auto diagnostics = context.build_miner_session_diagnostics();
+    assert(diagnostics.find("prevblock_suffix: 12345678") != std::string::npos);
+
+    std::cout << "Prevblock suffix authoritative-state test passed!" << std::endl;
+}
+
+void test_hex_prefix_header_import_supports_unqualified_callers() {
+    std::cout << "Testing hex_prefix_utils header import for unqualified callers..." << std::endl;
+
+    const std::vector<uint8_t> bytes{0xDE, 0xAD, 0xBE, 0xEF, 0xAA};
+    assert(format_hex_prefix_via_header_import(bytes, 4) == "deadbeef");
+
+    std::cout << "hex_prefix_utils header import test passed!" << std::endl;
+}
+
 int main() {
     std::cout << "Running NodeSessionContext unit tests..." << std::endl;
 
@@ -289,6 +323,8 @@ int main() {
         test_format_hex_prefix_matches_session_validation_fingerprint();
         test_miner_session_container_detects_inconsistent_state();
         test_multiple_session_contexts_do_not_overlap();
+        test_prevblock_suffix_is_authoritative_session_state();
+        test_hex_prefix_header_import_supports_unqualified_callers();
 
         std::cout << "\nAll NodeSessionContext tests passed!" << std::endl;
         return 0;
