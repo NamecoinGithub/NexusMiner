@@ -321,6 +321,13 @@ public:
 
 private:
 
+    /**
+     * @brief Validate MinerSessionContainer invariants while the caller controls locking.
+     *
+     * @param session Session snapshot/container to validate
+     * @param reason Optional diagnostic output describing the first failure or PASS
+     * @return true when the container is internally consistent
+     */
     static bool validate_miner_session_container(const SessionInfo& session,
                                                  std::string* reason);
     void schedule_regular_keepalives(const std::shared_ptr<SessionManager>& self);
