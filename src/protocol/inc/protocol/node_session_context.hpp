@@ -78,6 +78,11 @@ public:
                       const std::vector<uint8_t>& session_key = {},
                       const std::vector<uint8_t>& tritium_genesis = {});
 
+    void commit_authenticated_session(uint32_t session_id,
+                                      const std::vector<uint8_t>& pubkey,
+                                      const std::string& key_id,
+                                      const std::vector<uint8_t>& tritium_genesis = {});
+
     /**
      * @brief End current session
      */
@@ -156,6 +161,8 @@ public:
     void set_falcon_identity(const std::vector<uint8_t>& pubkey,
                              const std::string& key_id,
                              bool authenticated);
+
+    void reset_session_credentials();
 
     void set_chacha20_session_key(const std::vector<uint8_t>& session_key,
                                   const std::string& fingerprint,
