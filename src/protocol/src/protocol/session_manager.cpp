@@ -38,54 +38,6 @@ const char* lane_name(ProtocolLane lane)
     }
 }
 
-bool validate_container_no_lock(const SessionManager::MinerSessionContainer& session, std::string* reason)
-{
-    auto fail = [&](const std::string& message) {
-        if (reason) {
-            *reason = message;
-        }
-        return false;
-    };
-
-    if (session.connected && session.active_lane == ProtocolLane::UNKNOWN) {
-        return fail("connected session has UNKNOWN lane");
-    }
-
-    if (session.authenticated) {
-        if (session.session_id == 0) {
-            return fail("authenticated session missing session_id");
-        }
-        if (!session.falcon_authenticated) {
-            return fail("authenticated session missing Falcon auth");
-        }
-    }
-
-    if (session.chacha20_ready) {
-        if (session.session_genesis.empty()) {
-            return fail("ChaCha20 ready without session genesis");
-        }
-        if (session.chacha20_session_key.empty()) {
-            return fail("ChaCha20 ready without session key");
-        }
-        if (format_hex_prefix(session.chacha20_session_key, 8) != session.chacha20_key_fingerprint) {
-            return fail("ChaCha20 fingerprint does not match stored key");
-        }
-    }
-
-    if (!session.reward_address_string.empty() && session.ready_for_submit && !session.reward_bound) {
-        return fail("submit marked ready before reward binding");
-    }
-
-    if (session.reward_bound && !session.reward_address_string.empty() && session.reward_hash.empty()) {
-        return fail("reward bound without decoded reward hash");
-    }
-
-    if (reason) {
-        *reason = "PASS";
-    }
-    return true;
-}
-
 } // namespace
 
 SessionManager::SessionManager(uint16_t keepalive_interval_hours,
@@ -406,21 +358,6 @@ network::Shared_payload SessionManager::build_session_status_packet(
     return packet.get_bytes();
 }
 
-bool SessionManager::is_keepalive_due() const
-{
-    std::lock_guard<std::mutex> lock(m_session_mutex);
-    if (m_session.state != SessionState::AUTHENTICATED &&
-        m_session.state != SessionState::ACTIVE) {
-        return false;
-    }
-
-    auto now = std::chrono::system_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::hours>(
-        now - m_session.last_keepalive);
-
-    return elapsed.count() >= m_keepalive_interval_hours;
-}
-
 void SessionManager::record_keepalive()
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
@@ -574,7 +511,7 @@ void SessionManager::mark_activity()
 bool SessionManager::validate_miner_session(std::string* reason) const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    return validate_container_no_lock(m_session, reason);
+    return validate_miner_session_container(m_session, reason);
 }
 
 std::string SessionManager::build_miner_session_diagnostics() const
@@ -583,7 +520,7 @@ std::string SessionManager::build_miner_session_diagnostics() const
 
     std::ostringstream oss;
     std::string consistency_reason;
-    const bool consistency = validate_container_no_lock(m_session, &consistency_reason);
+    const bool consistency = validate_miner_session_container(m_session, &consistency_reason);
 
     oss << "MINER SESSION CONTAINER\n"
         << "- remote endpoint: " << (m_session.remote_endpoint.empty() ? "<unset>" : m_session.remote_endpoint) << '\n'
@@ -601,6 +538,55 @@ std::string SessionManager::build_miner_session_diagnostics() const
         << "- channel: " << m_session.channel << '\n'
         << "- consistency: " << (consistency ? "PASS" : "FAIL") << " (" << consistency_reason << ")";
     return oss.str();
+}
+
+bool SessionManager::validate_miner_session_container(const SessionInfo& session,
+                                                      std::string* reason)
+{
+    auto fail = [&](const std::string& message) {
+        if (reason) {
+            *reason = message;
+        }
+        return false;
+    };
+
+    if (session.connected && session.active_lane == ProtocolLane::UNKNOWN) {
+        return fail("connected session has UNKNOWN lane");
+    }
+
+    if (session.authenticated) {
+        if (session.session_id == 0) {
+            return fail("authenticated session missing session_id");
+        }
+        if (!session.falcon_authenticated) {
+            return fail("authenticated session missing Falcon auth");
+        }
+    }
+
+    if (session.chacha20_ready) {
+        if (session.session_genesis.empty()) {
+            return fail("ChaCha20 ready without session genesis");
+        }
+        if (session.chacha20_session_key.empty()) {
+            return fail("ChaCha20 ready without session key");
+        }
+        if (format_hex_prefix(session.chacha20_session_key, 8) != session.chacha20_key_fingerprint) {
+            return fail("ChaCha20 fingerprint does not match stored key");
+        }
+    }
+
+    if (!session.reward_address_string.empty() && session.ready_for_submit && !session.reward_bound) {
+        return fail("submit marked ready before reward binding");
+    }
+
+    if (session.reward_bound && !session.reward_address_string.empty() && session.reward_hash.empty()) {
+        return fail("reward bound without decoded reward hash");
+    }
+
+    if (reason) {
+        *reason = "PASS";
+    }
+    return true;
 }
 
 std::chrono::seconds SessionManager::get_session_uptime_locked() const
