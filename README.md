@@ -81,6 +81,7 @@ See [docs/current/security/security-overview.md](docs/current/security/security-
 | **Security** | [docs/current/security/chacha20-encryption.md](docs/current/security/chacha20-encryption.md) | ChaCha20-Poly1305 details |
 | **TLS** | [docs/current/security/tls-https.md](docs/current/security/tls-https.md) | Secure remote mining |
 | **Stateless protocol** | [docs/current/mining-protocols/stateless-mining.md](docs/current/mining-protocols/stateless-mining.md) | Modern push-notification protocol |
+| **Miner architecture** | [docs/current/miner/README.md](docs/current/miner/README.md) | Current session-container architecture, roadmap, diagrams, and tests |
 | **Diagrams** | [docs/diagrams/](docs/diagrams/) | Mermaid architecture diagrams |
 | **Troubleshooting** | [docs/current/troubleshooting.md](docs/current/troubleshooting.md) | Common issues & solutions |
 | **Upgrade guide** | [docs/upgrade-guides/legacy-to-stateless.md](docs/upgrade-guides/legacy-to-stateless.md) | Legacy → stateless migration |
