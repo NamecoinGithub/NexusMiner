@@ -136,6 +136,35 @@ struct SimulatedSoloAuthGuard
         ++packet_build_requests;
         return true;
     }
+
+    bool has_authoritative_chacha_key() const
+    {
+        return !authoritative.chacha_key.empty();
+    }
+
+    struct AcceptedSnapshot
+    {
+        uint32_t height{0};
+        uint32_t channel{0};
+        bool used_fallback{false};
+    };
+
+    bool m_last_submitted_valid{false};
+    uint32_t m_last_submitted_height{0};
+    uint32_t m_last_submitted_channel{0};
+
+    AcceptedSnapshot on_block_accepted(uint32_t fallback_height, uint32_t fallback_channel)
+    {
+        const bool had_last_submitted = m_last_submitted_valid;
+        m_last_submitted_valid = false;
+
+        AcceptedSnapshot accepted{m_last_submitted_height, m_last_submitted_channel, !had_last_submitted};
+        if (!had_last_submitted) {
+            accepted.height = fallback_height;
+            accepted.channel = fallback_channel;
+        }
+        return accepted;
+    }
 };
 
 void test_guard_requires_both_sources_to_be_unauthenticated()
@@ -292,6 +321,39 @@ void test_cached_session_state_logging_downgrades_expected_reconnect_resyncs()
     print_test_result("Session ID drift remains warning-level", session_id_drift == ResyncLogSeverity::WARN);
     print_test_result("Reward drift remains warning-level", reward_drift == ResyncLogSeverity::WARN);
     print_test_result("ChaCha20 drift remains warning-level", chacha_drift == ResyncLogSeverity::WARN);
+void test_submit_requires_authoritative_chacha20_key()
+{
+    std::cout << "\nTest 8: submit path only accepts authoritative session key\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_chacha_key = std::vector<unsigned char>(32, 0xAA);
+    guard.authoritative.chacha_key.clear();
+    const bool can_submit = guard.has_authoritative_chacha_key();
+
+    print_test_result("Submit fails when authoritative key is empty even if local cache is populated",
+                      !can_submit);
+}
+
+void test_block_accepted_consumes_snapshot_before_future_fallback()
+{
+    std::cout << "\nTest 9: accepted-block snapshot is consumed before later fallback use\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_last_submitted_valid = true;
+    guard.m_last_submitted_height = 101;
+    guard.m_last_submitted_channel = 2;
+
+    const auto first_accept = guard.on_block_accepted(202, 1);
+    const auto second_accept = guard.on_block_accepted(202, 1);
+
+    print_test_result("First accept uses submitted height", first_accept.height == 101);
+    print_test_result("First accept uses submitted channel", first_accept.channel == 2);
+    print_test_result("Accepted snapshot is invalidated after first consumption", !guard.m_last_submitted_valid);
+    print_test_result("Second accept falls back instead of reusing stale submitted height",
+                      second_accept.height == 202);
+    print_test_result("Second accept falls back instead of reusing stale submitted channel",
+                      second_accept.channel == 1);
+    print_test_result("Second accept records that fallback was used", second_accept.used_fallback);
 }
 
 }  // namespace
@@ -310,6 +372,8 @@ int main()
     test_reward_send_validates_before_packet_build();
     test_process_messages_entry_resyncs_cached_reward_binding();
     test_cached_session_state_logging_downgrades_expected_reconnect_resyncs();
+    test_submit_requires_authoritative_chacha20_key();
+    test_block_accepted_consumes_snapshot_before_future_fallback();
 
     std::cout << "\n========================================\n";
     std::cout << "Results: " << tests_passed << "/" << tests_run
