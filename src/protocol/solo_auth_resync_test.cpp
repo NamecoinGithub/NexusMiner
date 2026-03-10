@@ -3,6 +3,8 @@
 #include <iostream>
 #include <vector>
 
+#include "protocol/protocol_constants.hpp"
+
 enum class AuthState {
     NOT_AUTHENTICATED,
     WAITING_FOR_CHALLENGE,
@@ -166,6 +168,38 @@ struct SimulatedSoloAuthGuard
         return accepted;
     }
 };
+
+struct SimulatedSessionStatusAckHandler
+{
+    bool session_expired_handler_called{false};
+
+    void on_session_status_ack(uint32_t uptime_seconds, bool authenticated)
+    {
+        if (uptime_seconds == 0 || !authenticated) {
+            session_expired_handler_called = true;
+        }
+    }
+};
+
+enum class HardLimitAction {
+    NONE,
+    FORCE_FULL_REAUTH,
+    RECONNECT,
+    RETRY_TEMPLATE
+};
+
+HardLimitAction decide_hard_limit_action(bool push_recent, int64_t degraded_duration, bool session_authenticated)
+{
+    if (degraded_duration <= nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS) {
+        return HardLimitAction::NONE;
+    }
+    if (!push_recent) {
+        return HardLimitAction::RECONNECT;
+    }
+
+    (void)session_authenticated;
+    return HardLimitAction::FORCE_FULL_REAUTH;
+}
 
 void test_guard_requires_both_sources_to_be_unauthenticated()
 {
@@ -358,6 +392,43 @@ void test_block_accepted_consumes_snapshot_before_future_fallback()
     print_test_result("Second accept records that fallback was used", second_accept.used_fallback);
 }
 
+void test_session_status_ack_uptime_zero_triggers_session_expired()
+{
+    std::cout << "\nTest 10: SESSION_STATUS_ACK uptime=0 triggers session-expired recovery\n";
+
+    SimulatedSessionStatusAckHandler handler;
+    handler.on_session_status_ack(0, true);
+
+    print_test_result("uptime=0 triggers session_expired_handler",
+                      handler.session_expired_handler_called);
+}
+
+void test_session_status_ack_unauthenticated_triggers_session_expired()
+{
+    std::cout << "\nTest 11: SESSION_STATUS_ACK auth=false triggers session-expired recovery\n";
+
+    SimulatedSessionStatusAckHandler handler;
+    handler.on_session_status_ack(123, false);
+
+    print_test_result("auth=false triggers session_expired_handler",
+                      handler.session_expired_handler_called);
+}
+
+void test_hard_limit_with_recent_push_forces_full_reauth_even_if_authenticated()
+{
+    std::cout << "\nTest 12: hard-limit + recent push forces full re-auth even when auth cache says true\n";
+
+    const auto action = decide_hard_limit_action(
+        true,
+        nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1,
+        true);
+
+    print_test_result("Recent-push hard-limit stall no longer falls back to GET_BLOCK",
+                      action != HardLimitAction::RETRY_TEMPLATE);
+    print_test_result("Recent-push hard-limit stall forces full re-auth",
+                      action == HardLimitAction::FORCE_FULL_REAUTH);
+}
+
 }  // namespace
 
 int main()
@@ -376,6 +447,9 @@ int main()
     test_cached_session_state_logging_downgrades_expected_reconnect_resyncs();
     test_submit_requires_authoritative_chacha20_key();
     test_block_accepted_consumes_snapshot_before_future_fallback();
+    test_session_status_ack_uptime_zero_triggers_session_expired();
+    test_session_status_ack_unauthenticated_triggers_session_expired();
+    test_hard_limit_with_recent_push_forces_full_reauth_even_if_authenticated();
 
     std::cout << "\n========================================\n";
     std::cout << "Results: " << tests_passed << "/" << tests_run

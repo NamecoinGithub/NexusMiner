@@ -3182,6 +3182,15 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
 
             m_last_session_status_ack      = ack;
             m_last_session_status_ack_time = std::chrono::steady_clock::now();
+
+            if (ack.uptime_seconds == 0 || !ack.IsAuthenticated()) {
+                m_logger->warn("[Solo] SESSION_STATUS_ACK indicates expired session "
+                               "(uptime={}s auth={}) — triggering in-band re-auth",
+                               ack.uptime_seconds, ack.IsAuthenticated());
+                if (m_session_expired_handler) {
+                    m_session_expired_handler();
+                }
+            }
         }
         else
         {
