@@ -1,7 +1,10 @@
+#pragma once
+
 #ifndef NEXUSMINER_PROTOCOL_HEX_PREFIX_UTILS_HPP
 #define NEXUSMINER_PROTOCOL_HEX_PREFIX_UTILS_HPP
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -10,9 +13,12 @@
 namespace nexusminer {
 namespace protocol {
 
-inline std::string format_hex_prefix(const std::vector<uint8_t>& bytes, std::size_t prefix_bytes)
+// Callers outside nexusminer::protocol should qualify this helper as
+// nexusminer::protocol::format_hex_prefix (or add a local using declaration
+// in the implementation file that includes this header).
+inline std::string format_hex_prefix(const uint8_t* bytes, std::size_t size, std::size_t prefix_bytes)
 {
-    const std::size_t prefix_size = std::min(bytes.size(), prefix_bytes);
+    const std::size_t prefix_size = std::min(size, prefix_bytes);
     static const char* const HEX = "0123456789abcdef";
 
     std::string out;
@@ -25,6 +31,17 @@ inline std::string format_hex_prefix(const std::vector<uint8_t>& bytes, std::siz
     }
 
     return out;
+}
+
+inline std::string format_hex_prefix(const std::vector<uint8_t>& bytes, std::size_t prefix_bytes)
+{
+    return format_hex_prefix(bytes.data(), bytes.size(), prefix_bytes);
+}
+
+template <std::size_t N>
+inline std::string format_hex_prefix(const std::array<uint8_t, N>& bytes, std::size_t prefix_bytes)
+{
+    return format_hex_prefix(bytes.data(), bytes.size(), prefix_bytes);
 }
 
 } // namespace protocol

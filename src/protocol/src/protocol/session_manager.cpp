@@ -327,7 +327,7 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
         std::lock_guard<std::mutex> lock(m_session_mutex);
         session_id = m_session.session_id;
         lane = m_protocol_lane;
-        prevblock_suffix = m_prevblock_suffix;
+        prevblock_suffix = m_session.prevblock_suffix;
     }
 
     if (session_id == 0) {
@@ -596,6 +596,7 @@ std::string SessionManager::build_miner_session_diagnostics() const
         << "- chacha20_key_fingerprint: " << (m_session.chacha20_key_fingerprint.empty() ? "<unset>" : m_session.chacha20_key_fingerprint) << '\n'
         << "- reward_address_string: " << (m_session.reward_address_string.empty() ? "<unset>" : m_session.reward_address_string) << '\n'
         << "- reward_hash: " << (m_session.reward_hash.empty() ? "<unset>" : format_hex_prefix(m_session.reward_hash, 8)) << '\n'
+        << "- prevblock_suffix: " << format_hex_prefix(m_session.prevblock_suffix, 4) << '\n'
         << "- reward_binding_source: " << (m_session.reward_binding_source.empty() ? "<unset>" : m_session.reward_binding_source) << '\n'
         << "- channel: " << m_session.channel << '\n'
         << "- consistency: " << (consistency ? "PASS" : "FAIL") << " (" << consistency_reason << ")";
@@ -647,7 +648,7 @@ void SessionManager::set_prevblock_suffix(const std::array<uint8_t, 4>& suffix)
 {
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
-        m_prevblock_suffix = suffix;
+        m_session.prevblock_suffix = suffix;
     }
     m_logger->debug("[SessionManager] prevblock_suffix updated: {:02x}{:02x}{:02x}{:02x}",
                    suffix[0], suffix[1], suffix[2], suffix[3]);

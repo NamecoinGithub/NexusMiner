@@ -85,6 +85,7 @@ public:
         uint32_t channel{0};
         bool ready_for_submit{false};
         bool ready_for_get_block{false};
+        std::array<uint8_t, 4> prevblock_suffix{};
         uint64_t created_at{0};
         uint64_t last_auth_time{0};
         uint64_t last_reward_bind_time{0};
@@ -345,7 +346,6 @@ private:
     uint16_t m_keepalive_interval_hours;
     bool m_preserve_genesis_on_disconnect;  // Preserve genesis across sessions for reconnection
     ProtocolLane m_protocol_lane;  // Protocol lane for packet generation
-    std::array<uint8_t, 4> m_prevblock_suffix{};  // Last 4 bytes of current template hashPrevBlock
 
     std::shared_ptr<asio::io_context> m_io_context;
     std::shared_ptr<asio::steady_timer> m_keepalive_timer;
