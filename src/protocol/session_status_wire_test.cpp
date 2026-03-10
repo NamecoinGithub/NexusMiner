@@ -12,12 +12,16 @@
  */
 
 #include "LLP/include/colin_ping_protocol.h"
+#include "protocol/session_ingress_gate.hpp"
+#include "protocol_lane.hpp"
 #include <iostream>
 #include <cassert>
 #include <cstdint>
 #include <vector>
 
 using namespace LLP;
+using namespace nexusminer;
+using namespace nexusminer::protocol;
 
 // Test statistics
 static int tests_run    = 0;
@@ -200,6 +204,70 @@ void test_session_status_frame_payload_size() {
 }
 
 // ============================================================================
+// Test 8: shared ingress gate rejects stale owner generation
+// ============================================================================
+void test_session_ingress_gate_rejects_stale_owner_generation() {
+    std::cout << "\nTest 8: Session ingress gate rejects stale owner generation\n";
+
+    SessionManager::SessionInfo session;
+    session.authenticated = true;
+    session.session_id = 0x22222222u;
+    session.session_epoch = 7;
+    session.active_lane = ProtocolLane::STATELESS;
+    session.chacha20_ready = true;
+
+    const auto decision = SessionIngressGate::preflight({
+        true,
+        true,
+        session,
+        ProtocolLane::STATELESS,
+        true,
+        false,
+        false,
+        false,
+        0x22222222u,
+        SessionOwnershipStamp{0x22222222u, 6}
+    });
+
+    print_test_result("stale owner epoch is rejected", !decision.allow);
+    print_test_result("stale owner epoch does not force reauth", !decision.force_reauth);
+    print_test_result("stale owner epoch reason mentions ownership epoch",
+                      decision.reason.find("ownership epoch") != std::string::npos);
+}
+
+// ============================================================================
+// Test 9: shared ingress gate enforces crypto readiness when required
+// ============================================================================
+void test_session_ingress_gate_requires_crypto_context_when_requested() {
+    std::cout << "\nTest 9: Session ingress gate enforces crypto readiness when requested\n";
+
+    SessionManager::SessionInfo session;
+    session.authenticated = true;
+    session.session_id = 0x01020304u;
+    session.session_epoch = 3;
+    session.active_lane = ProtocolLane::STATELESS;
+    session.chacha20_ready = false;
+
+    const auto decision = SessionIngressGate::preflight({
+        true,
+        true,
+        session,
+        ProtocolLane::STATELESS,
+        true,
+        false,
+        true,
+        false,
+        0,
+        SessionOwnershipStamp{0x01020304u, 3}
+    });
+
+    print_test_result("missing crypto readiness is rejected", !decision.allow);
+    print_test_result("missing crypto readiness forces reauth", decision.force_reauth);
+    print_test_result("missing crypto readiness reason mentions crypto context",
+                      decision.reason.find("crypto context") != std::string::npos);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -214,6 +282,8 @@ int main() {
     test_session_status_ack_predicates();
     test_is_session_status_opcode();
     test_session_status_frame_payload_size();
+    test_session_ingress_gate_rejects_stale_owner_generation();
+    test_session_ingress_gate_requires_crypto_context_when_requested();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

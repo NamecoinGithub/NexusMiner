@@ -37,6 +37,7 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     // Initialize template as empty
     m_current_template.state = TemplateState::EMPTY;
     m_current_template.session_id = session_id;
+    m_current_template.session_epoch = m_session_epoch;
     m_current_template.timestamp_received = 0;
     m_current_template.nChannelHeight = 0;
     m_template_channel_height_snapshot = 0;
@@ -82,6 +83,7 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     MiningTemplate tmpl;
     tmpl.state = TemplateState::PENDING;
     tmpl.session_id = m_session_id;
+    tmpl.session_epoch = m_session_epoch;
     tmpl.source_endpoint = source_endpoint;
     tmpl.timestamp_received = static_cast<uint64_t>(
         std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
@@ -627,6 +629,15 @@ void MiningTemplateInterface::set_session_id(uint32_t session_id)
     m_session_id = session_id;
     m_current_template.session_id = session_id;
     m_logger->info("[TemplateInterface] Session ID set to 0x{:08x}", session_id);
+}
+
+void MiningTemplateInterface::set_session_epoch(uint64_t session_epoch)
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+
+    m_session_epoch = session_epoch;
+    m_current_template.session_epoch = session_epoch;
+    m_logger->info("[TemplateInterface] Session epoch set to {}", session_epoch);
 }
 
 void MiningTemplateInterface::set_channel(uint8_t channel)

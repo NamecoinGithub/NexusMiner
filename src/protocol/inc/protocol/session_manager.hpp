@@ -72,7 +72,8 @@ public:
         std::vector<uint8_t> falcon_pubkey;
         std::string falcon_key_id;
         bool falcon_authenticated{false};
-        uint32_t session_id;
+        uint32_t session_id{0};
+        uint64_t session_epoch{0};
         std::vector<uint8_t> session_key;  // Falcon session key from node
         std::vector<uint8_t> session_genesis;  // Tritium genesis hash (32 bytes)
         std::vector<uint8_t> chacha20_session_key;
@@ -90,10 +91,10 @@ public:
         uint64_t last_auth_time{0};
         uint64_t last_reward_bind_time{0};
         uint64_t last_activity{0};
-        SessionState state;
+        SessionState state{SessionState::DISCONNECTED};
         std::chrono::system_clock::time_point last_keepalive;
         std::chrono::system_clock::time_point session_start;
-        uint32_t keepalive_count;
+        uint32_t keepalive_count{0};
     };
     using SessionInfo = MinerSessionContainer;
     
@@ -206,6 +207,16 @@ public:
      * @return Current session ID (0 if no session)
      */
     uint32_t get_session_id() const;
+
+    /**
+     * @brief Get current authoritative session epoch/generation
+     *
+     * Incremented whenever a new session replaces the previous session so that
+     * delayed packets and stale cached state can be rejected.
+     *
+     * @return Current session epoch (0 before the first session is started)
+     */
+    uint64_t get_session_epoch() const;
 
     /**
      * @brief Get session key

@@ -139,6 +139,25 @@ static std::unique_ptr<MiningTemplateInterface> make_loaded_mti(uint32_t channel
     return mti;
 }
 
+static void test_height_tracker_snapshot_carries_session_epoch() {
+    HeightTracker tracker;
+    tracker.set_session_epoch(42);
+    auto snap = tracker.GetSnapshot();
+    print_result("HeightTracker snapshot carries authoritative session epoch", snap.session_epoch == 42);
+}
+
+static void test_template_interface_stamps_session_epoch() {
+    MiningTemplateInterface mti_hash(2, 0);
+    mti_hash.set_session_epoch(11);
+    auto payload = make_template_payload(6000000, 2000000, DEFAULT_DIFFICULTY,
+                                         8, 2, 6000001, DEFAULT_DIFFICULTY, 0);
+    auto result = mti_hash.read_stateless_payload(payload, "test");
+    const auto* tmpl = mti_hash.get_current_template();
+
+    bool ok = result.is_valid && tmpl != nullptr && tmpl->session_epoch == 11;
+    print_result("MiningTemplateInterface stamps templates with authoritative session epoch", ok);
+}
+
 /**
  * Derive a ChaCha20 session key from genesis hash, matching solo.cpp:
  *   SHA256(KDF_DOMAIN || genesis)
@@ -733,6 +752,8 @@ int main() {
     test_payload_info_prime_not_equal_hash();      // 15
     test_e2e_payload_info_hash_unsigned();         // 16
     test_e2e_payload_info_prime_pipeline();        // 17
+    test_height_tracker_snapshot_carries_session_epoch();
+    test_template_interface_stamps_session_epoch();
 
     std::cout << "\n--- Canonical Wrapper Path (encrypt_submit_block_payload) ---\n";
     test_e2e_encrypt_submit_block_payload();       // 18

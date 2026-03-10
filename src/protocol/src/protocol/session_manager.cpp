@@ -84,6 +84,7 @@ void SessionManager::start_session(uint32_t session_id,
 
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
+        ++m_session.session_epoch;
         m_session.session_id = session_id;
         m_session.session_key = session_key;
         if (!tritium_genesis.empty()) {
@@ -102,7 +103,8 @@ void SessionManager::start_session(uint32_t session_id,
         m_session.last_activity = m_session.last_auth_time;
     }
 
-    m_logger->info("[SessionManager] Session started - ID: 0x{:08X}", session_id);
+    m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
+                   session_id, get_session_info().session_epoch);
 
     if (!session_key.empty()) {
         m_logger->info("[SessionManager] Session key received: {} bytes", session_key.size());
@@ -415,6 +417,12 @@ uint32_t SessionManager::get_session_id() const
     return m_session.session_id;
 }
 
+uint64_t SessionManager::get_session_epoch() const
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    return m_session.session_epoch;
+}
+
 std::vector<uint8_t> SessionManager::get_session_key() const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
@@ -529,6 +537,7 @@ std::string SessionManager::build_miner_session_diagnostics() const
         << "- authenticated: " << (m_session.authenticated ? "YES" : "NO") << '\n'
         << "- falcon_key_id: " << (m_session.falcon_key_id.empty() ? "<unset>" : m_session.falcon_key_id) << '\n'
         << "- session_id: 0x" << std::hex << std::setw(8) << std::setfill('0') << m_session.session_id << std::dec << '\n'
+        << "- session_epoch: " << m_session.session_epoch << '\n'
         << "- session_genesis: " << (m_session.session_genesis.empty() ? "<unset>" : format_hex_prefix(m_session.session_genesis, 8)) << '\n'
         << "- chacha20_key_fingerprint: " << (m_session.chacha20_key_fingerprint.empty() ? "<unset>" : m_session.chacha20_key_fingerprint) << '\n'
         << "- reward_address_string: " << (m_session.reward_address_string.empty() ? "<unset>" : m_session.reward_address_string) << '\n'

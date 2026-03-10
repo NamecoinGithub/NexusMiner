@@ -45,6 +45,12 @@ public:
     uint32_t get_session_id() const;
 
     /**
+     * @brief Get the current authoritative session epoch/generation
+     * @return Session epoch (0 before the first session is established)
+     */
+    uint64_t get_session_epoch() const;
+
+    /**
      * @brief Check if session is authenticated
      * @return True if session is in AUTHENTICATED or ACTIVE state
      */

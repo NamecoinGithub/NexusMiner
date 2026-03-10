@@ -9,6 +9,7 @@
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/height_tracker.hpp"
+#include "protocol/session_ingress_gate.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "LLP/colin_ping_handler.h"
@@ -292,6 +293,16 @@ private:
     void update_connection_metadata(const std::shared_ptr<network::Connection>& connection);
     bool validate_authoritative_session(const char* log_scope, bool require_reward_binding) const;
     void log_session_container_summary(const char* log_scope) const;
+    SessionOwnershipStamp capture_session_ownership() const;
+    void clear_generation_bound_state(const char* reason);
+    bool run_packet_ingress_preflight(const char* log_scope,
+                                      const SessionOwnershipStamp* owner = nullptr,
+                                      uint32_t packet_session_id = 0,
+                                      bool allow_without_active_session = false,
+                                      bool validate_lane = false,
+                                      bool require_crypto_ready = false,
+                                      bool require_reward_binding = false,
+                                      bool trigger_reauth = false) const;
 
     // Integration helper functions (bridge MiningTemplateInterface and ClientChannelManager)
     /**
@@ -388,6 +399,7 @@ private:
     std::vector<uint8_t> m_miner_privkey;
     bool m_authenticated;
     std::uint32_t m_session_id;
+    uint64_t m_session_epoch{0};
     std::string m_address;  // Miner's network address for auth message
     std::uint64_t m_auth_timestamp;  // Timestamp for auth message
     AuthState m_auth_state;  // Authentication state machine
@@ -418,6 +430,11 @@ private:
     // Stored locally so the ACK handler can compare against the node's echoed value
     // without trusting the potentially-tampered echo in ack.hashPrevBlock_lo32.
     uint32_t m_last_keepalive_prevhash_lo32{0};
+    SessionOwnershipStamp m_last_keepalive_request_owner{};
+    SessionOwnershipStamp m_last_session_status_request_owner{};
+    SessionOwnershipStamp m_last_reward_request_owner{};
+    SessionOwnershipStamp m_last_get_block_request_owner{};
+    SessionOwnershipStamp m_last_submitted_owner{};
 
     // Mining Template Interface for unified READ/FEED operations
     std::unique_ptr<MiningTemplateInterface> m_template_interface;
