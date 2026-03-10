@@ -555,7 +555,7 @@ network::Shared_payload Solo::login(Login_handler handler)
                                                                 true);
                     m_logger->info("[Solo Auth] ✓ Session key stored in authoritative session container");
                 } else {
-                    m_logger->warn("[Solo Auth] Unable to store session key: authoritative session container unavailable");
+                    m_logger->error("[Solo Auth] Unable to store session key: authoritative session container unavailable");
                 }
 
                 m_logger->info("[Solo Auth] ✓ Pubkey wrapped: {} → {} bytes (genesis-derived key)",
