@@ -1006,7 +1006,8 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
             " expected_unified_height=" + std::to_string(tmpl->height_guard.unified_height.get()) +
             " channel_height=" + std::to_string(tracker_channel_tip) +
             " channel_target=" + std::to_string(template_channel_target) +
-            " channel_height_marker=" + std::to_string(is_channel_height(submit_snapshot.channel_tip_height));
+            " channel_height_marker=" +
+            std::string(is_channel_height(submit_snapshot.channel_tip_height) ? "true" : "false");
         m_logger->error("[Solo Submit] Height guard rejected submission: {}", detail);
         record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED, detail);
         return network::Shared_payload{};
@@ -1056,7 +1057,8 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
                          " channel_height=" + std::to_string(tracker_channel_tip) +
                          " channel_target=" + std::to_string(template_channel_target) +
                          " channel=" + std::to_string(m_last_submitted_channel) +
-                         " channel_height_marker=" + std::to_string(is_channel_height(submit_snapshot.channel_tip_height)));
+                         " channel_height_marker=" +
+                         std::string(is_channel_height(submit_snapshot.channel_tip_height) ? "true" : "false"));
 
     // ── Channel-aware payload diagnostics ────────────────────────────────────
     // Compute payload metadata from live data — offset_bytes_count is derived
