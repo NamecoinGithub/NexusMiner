@@ -65,6 +65,16 @@ public:
 This isolates libjulia-specific failure modes and keeps production runtime
 protection simple.
 
+The formal backend-selection and fallback contract now lives in:
+
+- `docs/current/node/riscv/JuliaProgrammingLanguage/bridge-architecture.txt`
+- `include/qtv/QTVBackendKind.hpp`
+- `include/qtv/QTVCapabilities.hpp`
+
+Those files define the public backend enum plus the deterministic selection
+rules that preserve C++ as the production authority while keeping Julia opt-in
+for fixture/parity research.
+
 ## C++ side: interface + backends
 
 When you need a swap-engine abstraction, prefer a small interface plus concrete
@@ -95,7 +105,9 @@ Treat backend choice as an explicit mode selection:
 - benchmark mode
 - research mode
 
-Do **not** route the default production miner path through Julia.
+Do **not** route the default production miner path through Julia.  `Auto`
+selection must prefer the C++ backend first and only fall back to Julia when
+the full deterministic research surface is available and C++ is not.
 
 ## RISC-V hook framing
 

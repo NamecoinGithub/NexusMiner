@@ -1,5 +1,6 @@
 #include <openssl/sha.h>
 
+#include "qtv/QTVCapabilities.hpp"
 #include "protocol/qtv_engine.hpp"
 
 #include <algorithm>
@@ -213,6 +214,8 @@ void print_result(const char* name, bool passed, int& tests_run, int& tests_fail
 
 int main()
 {
+    using nexusminer::qtv::QTVBackendKind;
+    using nexusminer::qtv::QTVCapabilities;
     using nexusminer::protocol::CppQTVEngine;
     using nexusminer::protocol::JuliaQTVEngine;
     using nexusminer::protocol::NullQTVEngine;
@@ -241,6 +244,46 @@ int main()
     int tests_failed = 0;
 
     const QTVJuliaBridge unavailable_bridge;
+    const auto cpp_only_capabilities = QTVCapabilities::cpp_only();
+    print_result("QTVCapabilities keeps C++ as the default auto-selected backend",
+                 cpp_only_capabilities.select_backend(QTVBackendKind::Auto) == QTVBackendKind::Cpp &&
+                     cpp_only_capabilities.select_backend(QTVBackendKind::Cpp) == QTVBackendKind::Cpp &&
+                     cpp_only_capabilities.select_backend(QTVBackendKind::Julia) == QTVBackendKind::Cpp &&
+                     cpp_only_capabilities.select_backend(QTVBackendKind::Null) == QTVBackendKind::Null &&
+                     cpp_only_capabilities.supports(QTVBackendKind::Cpp) &&
+                     !cpp_only_capabilities.supports(QTVBackendKind::Julia),
+                 tests_run,
+                 tests_failed);
+
+    const auto full_julia_capabilities = QTVCapabilities::with_julia(true, true);
+    print_result("QTVCapabilities enables explicit Julia selection when both research hooks exist",
+                 full_julia_capabilities.julia_backend_available() &&
+                     full_julia_capabilities.select_backend(QTVBackendKind::Julia) == QTVBackendKind::Julia &&
+                     full_julia_capabilities.select_backend(QTVBackendKind::Auto) == QTVBackendKind::Cpp &&
+                     full_julia_capabilities.supports(QTVBackendKind::Julia),
+                 tests_run,
+                 tests_failed);
+
+    QTVCapabilities julia_only_capabilities{};
+    julia_only_capabilities.cpp_backend_available = false;
+    julia_only_capabilities.julia_bridge_available = true;
+    julia_only_capabilities.julia_fixture_available = true;
+    julia_only_capabilities.julia_parity_available = true;
+    print_result("QTVCapabilities auto fallback uses Julia only when C++ is unavailable",
+                 julia_only_capabilities.select_backend(QTVBackendKind::Auto) == QTVBackendKind::Julia &&
+                     julia_only_capabilities.select_backend(QTVBackendKind::Cpp) == QTVBackendKind::Null &&
+                     julia_only_capabilities.select_backend(QTVBackendKind::Julia) == QTVBackendKind::Julia,
+                 tests_run,
+                 tests_failed);
+
+    const auto partial_julia_capabilities = QTVCapabilities::with_julia(true, false);
+    print_result("QTVCapabilities rejects partial Julia hook availability for backend selection",
+                 !partial_julia_capabilities.julia_backend_available() &&
+                     partial_julia_capabilities.select_backend(QTVBackendKind::Julia) == QTVBackendKind::Cpp &&
+                     !partial_julia_capabilities.supports(QTVBackendKind::Julia),
+                 tests_run,
+                 tests_failed);
+
     print_result("QTVJuliaBridge stays unavailable without Julia hook pointers",
                  !unavailable_bridge.available() &&
                      unavailable_bridge.run_fixture(1) == static_cast<int>(QTVHookStatus::UNAVAILABLE) &&
