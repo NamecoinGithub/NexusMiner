@@ -45,8 +45,8 @@ std::vector<uint8_t> concat_bytes(const Containers&... containers)
 std::vector<uint8_t> uint64le(uint64_t value)
 {
     std::vector<uint8_t> bytes(8);
-    for (int index = 0; index < 8; ++index)
-        bytes[index] = static_cast<uint8_t>((value >> (index * 8)) & 0xffu);
+    for (int byte_index = 0; byte_index < 8; ++byte_index)
+        bytes[byte_index] = static_cast<uint8_t>((value >> (byte_index * 8)) & 0xffu);
     return bytes;
 }
 
@@ -78,8 +78,8 @@ std::vector<uint8_t> xor_bytes(const std::vector<uint8_t>& lhs, const std::vecto
     assert(lhs.size() == rhs.size());
     std::vector<uint8_t> out(lhs.size());
 
-    for (std::size_t index = 0; index < lhs.size(); ++index)
-        out[index] = static_cast<uint8_t>(lhs[index] ^ rhs[index]);
+    for (std::size_t byte_index = 0; byte_index < lhs.size(); ++byte_index)
+        out[byte_index] = static_cast<uint8_t>(lhs[byte_index] ^ rhs[byte_index]);
 
     return out;
 }
@@ -87,8 +87,8 @@ std::vector<uint8_t> xor_bytes(const std::vector<uint8_t>& lhs, const std::vecto
 std::vector<uint8_t> fixture_privkey()
 {
     std::vector<uint8_t> privkey(2305);
-    for (std::size_t index = 0; index < privkey.size(); ++index)
-        privkey[index] = static_cast<uint8_t>((index * 73 + 19) % 256);
+    for (std::size_t byte_index = 0; byte_index < privkey.size(); ++byte_index)
+        privkey[byte_index] = static_cast<uint8_t>((byte_index * 73 + 19) % 256);
     return privkey;
 }
 
@@ -106,10 +106,10 @@ std::vector<Bucket> build_buckets(const std::vector<uint8_t>& privkey)
 
     int first_byte = 1;
     std::size_t offset = 0;
-    for (std::size_t index = 0; index < lengths.size(); ++index) {
-        const int length = lengths[index];
+    for (std::size_t bucket_index = 0; bucket_index < lengths.size(); ++bucket_index) {
+        const int length = lengths[bucket_index];
         Bucket bucket;
-        bucket.logical_id = static_cast<int>(index + 1);
+        bucket.logical_id = static_cast<int>(bucket_index + 1);
         bucket.first_byte = first_byte;
         bucket.last_byte = first_byte + length - 1;
         bucket.payload.assign(privkey.begin() + static_cast<std::ptrdiff_t>(offset),
@@ -260,19 +260,19 @@ int main()
     std::vector<uint8_t> working_vector;
     FixtureEvent final_event{};
 
-    for (std::size_t index = 0; index < kExpectedSwapLog.size(); ++index) {
-        const auto& event = kExpectedSwapLog[index];
+    for (std::size_t event_index = 0; event_index < kExpectedSwapLog.size(); ++event_index) {
+        const auto& event = kExpectedSwapLog[event_index];
         const auto& bucket = buckets[static_cast<std::size_t>(event.bucket_id - 1)];
         const auto tag_hex = bytes_to_hex(bucket.tag);
 
-        print_result(("Swap log tag matches Julia fixture entry " + std::to_string(index)).c_str(),
+        print_result(("Swap log tag matches Julia fixture entry " + std::to_string(event_index)).c_str(),
                      tag_hex == event.tag_hex,
                      tests_run,
                      tests_failed);
 
-        if (index > 0) {
-            print_result(("Swap sequence slot matches Julia fixture entry " + std::to_string(index)).c_str(),
-                         event.slot == kExpectedSwapSequence[index - 1],
+        if (event_index > 0) {
+            print_result(("Swap sequence slot matches Julia fixture entry " + std::to_string(event_index)).c_str(),
+                         event.slot == kExpectedSwapSequence[event_index - 1],
                          tests_run,
                          tests_failed);
         }
