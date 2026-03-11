@@ -253,8 +253,7 @@ private:
     // Returns true if a timeout reset occurred.
     bool check_auth_in_flight_timeout(const char* context);
 
-    // Session ID mismatch check — shared by KEEPALIVE_V2_ACK, SESSION_KEEPALIVE, and
-    // SESSION_STATUS_ACK handlers.
+    // Session ID mismatch check — shared by KEEPALIVE_V2_ACK and SESSION_STATUS_ACK handlers.
     // Returns true if a mismatch was detected (state set to EXPIRED, handler called);
     // caller must return immediately when true is returned.
     bool handle_session_id_mismatch(uint32_t ack_session_id);
@@ -310,6 +309,9 @@ private:
     bool run_packet_ingress_preflight(
         const char* log_scope,
         const PacketIngressPreflightOptions& options = kDefaultPacketIngressPreflightOptions) const;
+    bool ensure_session_ready_for_ingress(const char* log_scope,
+                                          const char* packet_name,
+                                          bool queue_post_auth_get_block);
     void queue_pending_push_after_auth(const char* log_scope);
     void flush_pending_push_after_auth(const std::shared_ptr<network::Connection>& connection,
                                        const char* log_scope);

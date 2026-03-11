@@ -430,9 +430,35 @@ void test_push_triggered_reauth_queues_followup_get_block()
     print_test_result("Re-auth path sends exactly one queued GET_BLOCK", guard.get_block_requests == 1);
 }
 
+void test_multiple_pushes_during_handshake_queue_single_followup_get_block()
+{
+    std::cout << "\nTest 10: multiple pushes during one handshake queue a single post-auth GET_BLOCK\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_authenticated = false;
+    guard.m_reward_bound = true;
+    guard.m_auth_state = AuthState::WAITING_FOR_RESULT;
+
+    const bool first_push_handled_immediately = guard.on_push_notification();
+    const bool second_push_handled_immediately = guard.on_push_notification();
+
+    print_test_result("First push during handshake is deferred", !first_push_handled_immediately);
+    print_test_result("Second push during handshake is also deferred", !second_push_handled_immediately);
+    print_test_result("Multiple pushes keep only one queued follow-up", guard.m_pending_push_after_auth);
+    print_test_result("Multiple pushes during handshake still avoid duplicate re-auth", guard.reauth_requests == 0);
+    print_test_result("Multiple pushes during handshake do not send GET_BLOCK early", guard.get_block_requests == 0);
+
+    guard.handle_auth_result(true);
+    const bool flushed = guard.flush_pending_push_after_auth();
+
+    print_test_result("Queued follow-up flushes once after auth completes", flushed);
+    print_test_result("Multiple deferred pushes still produce exactly one GET_BLOCK", guard.get_block_requests == 1);
+    print_test_result("Queued follow-up is cleared after the single replay", !guard.m_pending_push_after_auth);
+}
+
 void test_cached_session_state_logging_downgrades_expected_reconnect_resyncs()
 {
-    std::cout << "\nTest 10: expected reconnect resyncs log at info while drift stays warn\n";
+    std::cout << "\nTest 11: expected reconnect resyncs log at info while drift stays warn\n";
 
     const auto auth_reconnect = is_expected_cached_session_resync(false, true)
         ? ResyncLogSeverity::INFO : ResyncLogSeverity::WARN;
@@ -464,7 +490,7 @@ void test_cached_session_state_logging_downgrades_expected_reconnect_resyncs()
 
 void test_submit_requires_authoritative_chacha20_key()
 {
-    std::cout << "\nTest 11: submit path only accepts authoritative session key\n";
+    std::cout << "\nTest 12: submit path only accepts authoritative session key\n";
 
     SimulatedSoloAuthGuard guard;
     guard.m_chacha_key = std::vector<unsigned char>(32, 0xAA);
@@ -477,7 +503,7 @@ void test_submit_requires_authoritative_chacha20_key()
 
 void test_block_accepted_consumes_snapshot_before_future_fallback()
 {
-    std::cout << "\nTest 12: accepted-block snapshot is consumed before later fallback use\n";
+    std::cout << "\nTest 13: accepted-block snapshot is consumed before later fallback use\n";
 
     SimulatedSoloAuthGuard guard;
     guard.m_last_submitted_valid = true;
@@ -499,7 +525,7 @@ void test_block_accepted_consumes_snapshot_before_future_fallback()
 
 void test_session_status_policy_resets_mismatch_counter_on_match()
 {
-    std::cout << "\nTest 13: matching SESSION_STATUS_ACK resets mismatch counter\n";
+    std::cout << "\nTest 14: matching SESSION_STATUS_ACK resets mismatch counter\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -515,7 +541,7 @@ void test_session_status_policy_resets_mismatch_counter_on_match()
 
 void test_session_status_ack_ignores_stale_session_id()
 {
-    std::cout << "\nTest 14: stale SESSION_STATUS_ACK does not overwrite cached status\n";
+    std::cout << "\nTest 15: stale SESSION_STATUS_ACK does not overwrite cached status\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -538,7 +564,7 @@ void test_session_status_ack_ignores_stale_session_id()
 
 void test_session_status_ack_expires_after_threshold_mismatches()
 {
-    std::cout << "\nTest 15: repeated mismatched SESSION_STATUS_ACKs expire the session\n";
+    std::cout << "\nTest 16: repeated mismatched SESSION_STATUS_ACKs expire the session\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -555,7 +581,7 @@ void test_session_status_ack_expires_after_threshold_mismatches()
 
 void test_session_status_ack_force_reauth_when_node_reports_expired()
 {
-    std::cout << "\nTest 16: unhealthy SESSION_STATUS_ACK forces re-auth\n";
+    std::cout << "\nTest 17: unhealthy SESSION_STATUS_ACK forces re-auth\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -569,7 +595,7 @@ void test_session_status_ack_force_reauth_when_node_reports_expired()
 
 void test_degraded_live_session_policy_prefers_reauth_over_reconnect()
 {
-    std::cout << "\nTest 17: stalled live degraded session prefers in-band re-auth\n";
+    std::cout << "\nTest 18: stalled live degraded session prefers in-band re-auth\n";
 
     const auto decision = nexusminer::protocol::SessionStatusPolicy::evaluate_degraded_session({
         nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1,
@@ -584,7 +610,7 @@ void test_degraded_live_session_policy_prefers_reauth_over_reconnect()
 
 void test_degraded_dead_session_policy_forces_reconnect()
 {
-    std::cout << "\nTest 18: degraded session without live push traffic reconnects\n";
+    std::cout << "\nTest 19: degraded session without live push traffic reconnects\n";
 
     const auto decision = nexusminer::protocol::SessionStatusPolicy::evaluate_degraded_session({
         nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1,
@@ -614,6 +640,7 @@ int main()
     test_process_messages_entry_resyncs_cached_reward_binding();
     test_push_during_handshake_is_queued_until_auth_completes();
     test_push_triggered_reauth_queues_followup_get_block();
+    test_multiple_pushes_during_handshake_queue_single_followup_get_block();
     test_cached_session_state_logging_downgrades_expected_reconnect_resyncs();
     test_submit_requires_authoritative_chacha20_key();
     test_block_accepted_consumes_snapshot_before_future_fallback();
