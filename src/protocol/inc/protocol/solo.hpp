@@ -10,6 +10,7 @@
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/height_tracker.hpp"
 #include "protocol/session_ingress_gate.hpp"
+#include "protocol/submit_context.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "LLP/colin_ping_handler.h"
@@ -302,6 +303,8 @@ private:
         bool trigger_reauth{false};
     };
     SessionOwnershipStamp capture_session_ownership() const;
+    SubmitContext capture_submit_context(uint32_t template_height,
+                                         uint32_t chain_height) const;
     void record_session_event(SessionManager::SessionEventKind kind,
                               const std::string& detail) const;
     void clear_generation_bound_state(const char* reason);

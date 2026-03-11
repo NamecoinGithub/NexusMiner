@@ -445,6 +445,23 @@ SessionOwnershipStamp Solo::capture_session_ownership() const
     return { SessionId(session.session_id), SessionEpoch(session.session_epoch) };
 }
 
+SubmitContext Solo::capture_submit_context(uint32_t template_height,
+                                           uint32_t chain_height) const
+{
+    SubmitContext context;
+    context.template_height = template_height;
+    context.chain_height = chain_height;
+
+    if (!m_session_context) {
+        return context;
+    }
+
+    const auto session = m_session_context->get_session_info();
+    context.session_id = SessionId(session.session_id);
+    context.session_epoch = SessionEpoch(session.session_epoch);
+    return context;
+}
+
 void Solo::record_session_event(SessionManager::SessionEventKind kind,
                                 const std::string& detail) const
 {
@@ -997,8 +1014,38 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     ::LLP::CBlock block_to_submit = tmpl->block;
     block_to_submit.nNonce = nonce;
     const auto submit_snapshot = m_height_tracker.GetSnapshot();
+    const auto submit_context = capture_submit_context(tmpl->block.nHeight, submit_snapshot.unified_height);
     const auto tracker_channel_tip = submit_snapshot.channel_tip_height.get();
     const auto template_channel_target = tmpl->nChannelHeight;
+    const auto template_age_seconds = m_template_interface ? m_template_interface->get_template_age() : 0u;
+    const auto prev_hash_bytes = block_to_submit.hashPrevBlock.GetBytes();
+    std::array<uint8_t, 4> prevblock_suffix{};
+    const auto prevblock_suffix_size = static_cast<std::ptrdiff_t>(prevblock_suffix.size());
+    if (prev_hash_bytes.size() >= prevblock_suffix.size()) {
+        std::copy(prev_hash_bytes.end() - prevblock_suffix_size,
+                  prev_hash_bytes.end(),
+                  prevblock_suffix.begin());
+    }
+
+    m_logger->info("[Solo Submit][Authoritative]");
+    m_logger->info("[Solo Submit][Authoritative]   template_height      = {}", submit_context.template_height);
+    m_logger->info("[Solo Submit][Authoritative]   central_tracker_height = {}", submit_context.chain_height);
+    m_logger->info("[Solo Submit][Authoritative]   submit_height        = {}", block_to_submit.nHeight);
+    m_logger->info("[Solo Submit][Authoritative]   prevblock_hash       = {}", format_hex_prefix(prev_hash_bytes, 8));
+    m_logger->info("[Solo Submit][Authoritative]   prevblock_suffix     = {}", format_hex_prefix(prevblock_suffix, 4));
+    m_logger->info("[Solo Submit][Authoritative]   session_epoch        = {}", submit_context.session_epoch.get());
+    m_logger->info("[Solo Submit][Authoritative]   template_age         = {}s", template_age_seconds);
+
+    if (!submit_context.matches_submit_height(block_to_submit.nHeight)) {
+        const std::string detail =
+            "template_height=" + std::to_string(submit_context.template_height) +
+            " submit_height=" + std::to_string(block_to_submit.nHeight) +
+            " chain_height=" + std::to_string(submit_context.chain_height) +
+            " session_epoch=" + std::to_string(submit_context.session_epoch.get());
+        m_logger->error("[Solo Submit] Authoritative submit-height validation failed: {}", detail);
+        record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED, detail);
+        return network::Shared_payload{};
+    }
 
     if (!tmpl->height_guard.matches(block_to_submit)) {
         const std::string detail =
@@ -1031,7 +1078,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     auto submit_result = StatelessBlockUtility::encode_submit(
         *m_template_interface, block_to_submit, vOffsets,
         m_falcon_wrapper.get(), m_protocol_lane,
-        m_height_tracker.GetSnapshot(), m_logger);
+        submit_snapshot, m_logger, submit_context);
 
     if (!submit_result.valid) {
         m_logger->error("[Solo Submit] encode_submit() rejected block: {}",

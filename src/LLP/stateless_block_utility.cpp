@@ -127,7 +127,8 @@ SubmitResult StatelessBlockUtility::encode_submit(
     FalconSignatureWrapper* falcon,
     ProtocolLane lane,
     const HeightTracker::Snapshot& ht,
-    std::shared_ptr<spdlog::logger> logger)
+    std::shared_ptr<spdlog::logger> logger,
+    const SubmitContext& submit_context)
 {
     SubmitResult result;
 
@@ -161,7 +162,21 @@ SubmitResult StatelessBlockUtility::encode_submit(
         return result;
     }
 
-    // ── Pre-check 4: Staleness (informational -- node is authoritative) ────────
+    // ── Pre-check 4: Authoritative submit-height consistency ─────────────────
+    if (!submit_context.matches_submit_height(solved_block.nHeight)) {
+        result.rejection_reason =
+            "submit height mismatch -- template_height=" +
+            std::to_string(submit_context.template_height) +
+            " submit_height=" + std::to_string(solved_block.nHeight) +
+            " chain_height=" + std::to_string(submit_context.chain_height) +
+            " session_epoch=" + std::to_string(submit_context.session_epoch.get());
+        if (logger)
+            logger->error("[StatelessBlockUtility::encode_submit] {}",
+                          result.rejection_reason);
+        return result;
+    }
+
+    // ── Pre-check 5: Staleness (informational -- node is authoritative) ────────
     if (ht.is_template_stale()) {
         if (logger)
             logger->warn("[StatelessBlockUtility::encode_submit] "
@@ -171,7 +186,7 @@ SubmitResult StatelessBlockUtility::encode_submit(
                          ht.channel_height, ht.channel_target);
     }
 
-    // ── Pre-check 5: Tip-moved (informational) ────────────────────────────────
+    // ── Pre-check 6: Tip-moved (informational) ────────────────────────────────
     if (ht.is_tip_moved()) {
         if (logger)
             logger->warn("[StatelessBlockUtility::encode_submit] "
@@ -180,7 +195,7 @@ SubmitResult StatelessBlockUtility::encode_submit(
                          ht.unified_height, ht.template_unified_height);
     }
 
-    // ── Pre-check 6: Delegate serialization to MiningTemplateInterface ────────
+    // ── Pre-check 7: Delegate serialization to MiningTemplateInterface ────────
     // prepare_block_submission(merkle_root, nonce, vOffsets) handles Tritium
     // format, submit-audit logging, and Prime-channel vOffsets appending.
     auto merkle_bytes = solved_block.hashMerkleRoot.GetBytes();
@@ -197,7 +212,7 @@ SubmitResult StatelessBlockUtility::encode_submit(
         return result;
     }
 
-    // ── Pre-check 7: Disposable Falcon sign (optional) ───────────────────────
+    // ── Pre-check 8: Disposable Falcon sign (optional) ───────────────────────
     std::vector<uint8_t> plaintext;
 
     if (falcon != nullptr) {
@@ -249,7 +264,7 @@ SubmitResult StatelessBlockUtility::encode_submit(
                           plaintext.size());
     }
 
-    // ── Pre-check 8: Wire encode ─────────────────────────────────────────────
+    // ── Pre-check 9: Wire encode ─────────────────────────────────────────────
     auto wire = PacketBuilder::build(lane, LLP::SUBMIT_BLOCK, plaintext);
     if (!wire || wire->empty()) {
         result.rejection_reason = "PacketBuilder::build returned empty result";
