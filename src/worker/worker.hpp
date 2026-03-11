@@ -3,12 +3,25 @@
 
 #include <memory>
 #include <functional>
-#include <algorithm>
 #include <optional>
+#include <vector>
+
+#if defined(__has_include)
+#if __has_include(<boost/multiprecision/cpp_int.hpp>)
+#define NEXUSMINER_HAS_BOOST_MULTIPRECISION 1
+#else
+#define NEXUSMINER_HAS_BOOST_MULTIPRECISION 0
+#endif
+#else
+#define NEXUSMINER_HAS_BOOST_MULTIPRECISION 0
+#endif
+
+#if NEXUSMINER_HAS_BOOST_MULTIPRECISION
 #include <boost/multiprecision/cpp_int.hpp>
+#endif
 #include "LLC/types/uint1024.h"
 #include "block.hpp"
-#include "hash/byte_utils.hpp"
+#include "worker/block_header_utils.hpp"
 
 namespace nexusminer {
 namespace stats { class Collector; }
@@ -30,34 +43,16 @@ public:
 
 	std::vector<unsigned char> GetHeaderBytes(bool excludeNonce = false)
 	{
-		//convert header data to byte strings
-		std::vector<unsigned char> blockHeightB = IntToBytes(nHeight, 4);
-		std::vector<unsigned char> versionB = IntToBytes(nVersion, 4);
-		std::vector<unsigned char> channelB = IntToBytes(nChannel, 4);
-		std::vector<unsigned char> bitsB = IntToBytes(nBits, 4);
-		std::vector<unsigned char> nonceB = IntToBytes(nNonce, 8);
-		std::string merkleStr = merkle_root.GetHex();
-		std::string hashPrevBlockStr = previous_hash.GetHex();
-		std::vector<unsigned char> merkleB = HexStringToBytes(merkleStr);
-		std::vector<unsigned char> prevHashB = HexStringToBytes(hashPrevBlockStr);
-		reverse(merkleB.begin(), merkleB.end());
-		reverse(prevHashB.begin(), prevHashB.end());
-
-		//Concatenate the bytes
-		std::vector<unsigned char> headerB = versionB;
-		headerB.insert(headerB.end(), prevHashB.begin(), prevHashB.end());
-		headerB.insert(headerB.end(), merkleB.begin(), merkleB.end());
-		headerB.insert(headerB.end(), channelB.begin(), channelB.end());
-		headerB.insert(headerB.end(), blockHeightB.begin(), blockHeightB.end());
-		headerB.insert(headerB.end(), bitsB.begin(), bitsB.end());
-		if (!excludeNonce)
-		{
-			headerB.insert(headerB.end(), nonceB.begin(), nonceB.end());
-		}
-
-		return headerB;
-
+		return GetBlockHeaderBytes(ToBlock(), excludeNonce);
 	}
+
+#if NEXUSMINER_HAS_BOOST_MULTIPRECISION
+	boost::multiprecision::uint1024_t GetPrimeBaseHash() const
+	{
+		const auto proof_hash = GetPrimeProofHash(ToBlock());
+		return boost::multiprecision::uint1024_t("0x" + proof_hash.GetHex());
+	}
+#endif
 	//The order of the block header data below matters for the cuda miner.  Be careful.
 	uint32_t nVersion = 4;
     uint1024_t previous_hash;
@@ -71,6 +66,20 @@ public:
 	// Empty for Hash channel. Populated by worker_prime before firing the callback
 	// so that worker_manager can include them in prepare_block_submission().
 	std::vector<uint8_t> vOffsets;
+
+private:
+	::LLP::CBlock ToBlock() const
+	{
+		::LLP::CBlock block;
+		block.nVersion = nVersion;
+		block.hashPrevBlock = previous_hash;
+		block.hashMerkleRoot = merkle_root;
+		block.nChannel = nChannel;
+		block.nHeight = nHeight;
+		block.nBits = nBits;
+		block.nNonce = nNonce;
+		return block;
+	}
 
 };
 
@@ -92,7 +101,9 @@ public:
 class WorkPackage
 {
 public:
+#if NEXUSMINER_HAS_BOOST_MULTIPRECISION
     using uint1k = boost::multiprecision::uint1024_t;
+#endif
 
     WorkPackage(const ::LLP::CBlock& block, std::uint32_t nbits)
         : m_block{block}
@@ -111,16 +122,20 @@ public:
 
     // Optional precomputed base hash for prime workers
     // Set via set_prime_base_hash() after construction for prime channel
+#if NEXUSMINER_HAS_BOOST_MULTIPRECISION
     const std::optional<uint1k>& get_prime_base_hash() const { return m_prime_base_hash; }
 
     // Setter for prime base hash (called only for prime channel blocks)
     void set_prime_base_hash(const uint1k& base_hash) { m_prime_base_hash = base_hash; }
+#endif
 
 private:
     ::LLP::CBlock m_block;                      // Original block from protocol
     std::uint32_t m_nbits;                      // Difficulty target
     std::vector<unsigned char> m_header_bytes;  // Precomputed header (shared)
+#if NEXUSMINER_HAS_BOOST_MULTIPRECISION
     std::optional<uint1k> m_prime_base_hash;    // Precomputed base hash for prime (Skein+Keccak)
+#endif
 };
 
 class Worker {

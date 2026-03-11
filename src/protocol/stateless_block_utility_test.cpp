@@ -24,6 +24,7 @@
 #include "include/stateless_block_utility.hpp"
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/height_tracker.hpp"
+#include "worker/block_header_utils.hpp"
 #include "miner_opcodes.hpp"
 #include <iostream>
 #include <cassert>
@@ -137,6 +138,33 @@ static ::LLP::CBlock make_solved_block(uint32_t nChannel = 2,
     blk.nBits    = nBits;
     blk.nNonce   = nNonce;
     return blk;
+}
+
+static ::LLP::CBlock make_patterned_block(uint64_t nonce = 0x0123456789ABCDEFULL) {
+    auto blk = make_solved_block(1, 6000001, nonce, 0x1A2B3C4D);
+    blk.nVersion = 0x01020304;
+
+    std::vector<uint8_t> prev(128);
+    for (size_t i = 0; i < prev.size(); ++i)
+        prev[i] = static_cast<uint8_t>(i);
+    blk.hashPrevBlock.SetBytes(prev);
+
+    std::vector<uint8_t> merkle(64);
+    for (size_t i = 0; i < merkle.size(); ++i)
+        merkle[i] = static_cast<uint8_t>(0x80 + i);
+    blk.hashMerkleRoot.SetBytes(merkle);
+
+    return blk;
+}
+
+static std::vector<unsigned char> get_raw_block_header_bytes(const ::LLP::CBlock& block, bool exclude_nonce) {
+    // Intentional independent oracle: this mirrors the raw BEGIN/END span directly
+    // so the tests verify GetBlockHeaderBytes() instead of reusing its implementation.
+    const auto* begin = reinterpret_cast<const unsigned char*>(BEGIN(block.nVersion));
+    const auto* end = exclude_nonce
+        ? reinterpret_cast<const unsigned char*>(END(block.nBits))
+        : reinterpret_cast<const unsigned char*>(END(block.nNonce));
+    return std::vector<unsigned char>(begin, end);
 }
 
 /** Return a default (zero) HeightTracker::Snapshot for tests that don't need it. */
@@ -414,6 +442,57 @@ static void test_set_channel_height_no_corruption_guard() {
                  template_valid && still_valid);
 }
 
+// Test 16 -- worker header bytes with nonce match raw CBlock memory hashed by node
+static void test_worker_header_bytes_match_raw_block_with_nonce() {
+    auto blk = make_patterned_block();
+    const auto expected = get_raw_block_header_bytes(blk, false);
+    const auto actual = nexusminer::GetBlockHeaderBytes(blk, false);
+    print_result("GetBlockHeaderBytes(false) matches raw CBlock nVersion..nNonce bytes",
+                 actual == expected && actual.size() == 216);
+}
+
+// Test 17 -- worker prime header bytes exclude nonce and match raw ProofHash span
+static void test_worker_prime_header_bytes_match_raw_block_without_nonce() {
+    auto blk = make_patterned_block();
+    const auto expected = get_raw_block_header_bytes(blk, true);
+    const auto actual = nexusminer::GetBlockHeaderBytes(blk, true);
+    print_result("GetBlockHeaderBytes(true) matches raw CBlock nVersion..nBits bytes",
+                 actual == expected && actual.size() == 208);
+}
+
+// Test 18 -- prime base hash uses upstream LLC::SK1024 on raw ProofHash span
+static void test_worker_prime_base_hash_matches_llc_sk1024() {
+    auto blk = make_patterned_block();
+    // Intentional: the vector overload is the independent oracle here. It should
+    // hash the same raw nVersion..nBits bytes as the BEGIN/END pointer span used
+    // by GetPrimeProofHash(), without calling the production helper itself.
+    const auto expected = LLC::SK1024(get_raw_block_header_bytes(blk, true));
+    const auto actual = nexusminer::GetPrimeProofHash(blk);
+    print_result("GetPrimeProofHash() matches LLC::SK1024(raw nVersion..nBits bytes)",
+                 actual == expected);
+}
+
+// Test 19 -- prime base hash is nonce-independent just like node ProofHash
+static void test_worker_prime_base_hash_ignores_nonce() {
+    auto blk_a = make_patterned_block(0x0123456789ABCDEFULL);
+    auto blk_b = blk_a;
+    blk_b.nNonce = 0xFEDCBA9876543210ULL;
+
+    print_result("GetPrimeProofHash() ignores nonce changes",
+                 nexusminer::GetPrimeProofHash(blk_a) == nexusminer::GetPrimeProofHash(blk_b));
+}
+
+// Test 20 -- full worker header bytes remain nonce-sensitive for hash-channel mining
+static void test_worker_hash_header_bytes_include_nonce() {
+    auto blk_a = make_patterned_block(0x0123456789ABCDEFULL);
+    auto blk_b = blk_a;
+    blk_b.nNonce = 0xFEDCBA9876543210ULL;
+
+    print_result("GetBlockHeaderBytes(false) changes when nonce changes",
+                 nexusminer::GetBlockHeaderBytes(blk_a, false) != nexusminer::GetBlockHeaderBytes(blk_b, false) &&
+                 nexusminer::GetBlockHeaderBytes(blk_a, true) == nexusminer::GetBlockHeaderBytes(blk_b, true));
+}
+
 
 
 int main() {
@@ -438,6 +517,11 @@ int main() {
     test_encode_rejects_submit_height_mismatch();
     test_encode_prime_voffsets_appended();
     test_set_channel_height_no_corruption_guard();
+    test_worker_header_bytes_match_raw_block_with_nonce();
+    test_worker_prime_header_bytes_match_raw_block_without_nonce();
+    test_worker_prime_base_hash_matches_llc_sk1024();
+    test_worker_prime_base_hash_ignores_nonce();
+    test_worker_hash_header_bytes_include_nonce();
 
     std::cout << "\n";
     std::cout << "========================================\n";
