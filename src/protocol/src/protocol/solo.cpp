@@ -556,6 +556,14 @@ bool Solo::ensure_session_ready_for_ingress(const char* log_scope,
         m_logger->info("[{}] Session ingress resyncing stale local auth cache before processing {}",
                        log_scope, packet_name);
         resync_auth_from_session_context(log_scope);
+        if (!m_authenticated) {
+            m_logger->warn("[{}] Session ingress deferred: failed to resync local auth cache for {}",
+                           log_scope, packet_name);
+            if (m_session_context) {
+                m_logger->warn("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
+            }
+            return false;
+        }
     }
 
     return true;

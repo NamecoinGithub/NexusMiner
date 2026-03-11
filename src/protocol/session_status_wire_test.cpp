@@ -293,10 +293,10 @@ void test_session_ingress_gate_rejects_stale_packet_session_id() {
         SessionOwnershipStamp{SessionId(0x11112222u), SessionEpoch(4)}
     });
 
-    print_test_result("stale packet session id is rejected", !decision.allow_processing);
-    print_test_result("stale packet session id is marked stale", decision.drop_as_stale);
-    print_test_result("stale packet session id marks session degraded", decision.mark_degraded);
-    print_test_result("stale packet session id reason mentions session id",
+    print_test_result("stale packet session ID is rejected", !decision.allow_processing);
+    print_test_result("stale packet session ID is marked stale", decision.drop_as_stale);
+    print_test_result("stale packet session ID marks session degraded", decision.mark_degraded);
+    print_test_result("stale packet session ID reason mentions session ID",
                       decision.reason.find("session id") != std::string::npos);
 }
 
@@ -325,9 +325,9 @@ void test_session_ingress_gate_rejects_stale_owner_session_id() {
         SessionOwnershipStamp{SessionId(0xA0B0C0D0u), SessionEpoch(9)}
     });
 
-    print_test_result("stale owner session id is rejected", !decision.allow_processing);
-    print_test_result("stale owner session id is marked stale", decision.drop_as_stale);
-    print_test_result("stale owner session id reason mentions owner session id",
+    print_test_result("stale owner session ID is rejected", !decision.allow_processing);
+    print_test_result("stale owner session ID is marked stale", decision.drop_as_stale);
+    print_test_result("stale owner session ID reason mentions owner session ID",
                       decision.reason.find("ownership session id") != std::string::npos);
 }
 
