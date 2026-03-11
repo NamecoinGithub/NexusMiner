@@ -45,7 +45,7 @@ std::vector<uint8_t> concat_bytes(const Containers&... containers)
 std::vector<uint8_t> uint64le(uint64_t value)
 {
     std::vector<uint8_t> bytes(8);
-    for (int byte_index = 0; byte_index < 8; ++byte_index)
+    for (std::size_t byte_index = 0; byte_index < bytes.size(); ++byte_index)
         bytes[byte_index] = static_cast<uint8_t>((value >> (byte_index * 8)) & 0xffu);
     return bytes;
 }
@@ -211,6 +211,7 @@ void print_result(const char* name, bool passed, int& tests_run, int& tests_fail
 
 int main()
 {
+    // Matches FIXED_SEED in the Julia parity fixture and exercises a non-trivial swap order.
     constexpr uint64_t kSeed = 0x1024fedcULL;
     constexpr int kNSwaps = 6;
     constexpr const char* kExpectedDigest =

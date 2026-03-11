@@ -149,7 +149,7 @@ Measured locally on the GitHub runner for the fixed 24-byte message above with
 | Implementation | Command path | Average encode time |
 |----------------|--------------|---------------------|
 | Julia prototype | `encode_laser_tunnel(message, qtv)` | `21.5319 µs/op` |
-| C++ parity harness | `build/release/src/protocol/falcon_qtv_parity_test` | `3.4331 µs/op` |
+| C++ parity harness | `falcon_qtv_parity_test` built with the `release` preset | `3.4331 µs/op` |
 
 These values are fixture-driven research numbers, not production performance
 claims, but they provide the requested baseline before any production C++
