@@ -996,6 +996,21 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // block_data[0:216] was serialized from the same template by prepare_block_submission().
     ::LLP::CBlock block_to_submit = tmpl->block;
     block_to_submit.nNonce = nonce;
+    const auto submit_snapshot = m_height_tracker.GetSnapshot();
+    const auto tracker_channel_tip = submit_snapshot.channel_tip_height.get();
+    const auto template_channel_target = tmpl->nChannelHeight;
+
+    if (!tmpl->height_guard.matches(block_to_submit)) {
+        const std::string detail =
+            "unified_height=" + std::to_string(block_to_submit.nHeight) +
+            " expected_unified_height=" + std::to_string(tmpl->height_guard.unified_height.get()) +
+            " channel_height=" + std::to_string(tracker_channel_tip) +
+            " channel_target=" + std::to_string(template_channel_target) +
+            " channel_height_marker=" + std::to_string(is_channel_height(submit_snapshot.channel_tip_height));
+        m_logger->error("[Solo Submit] Height guard rejected submission: {}", detail);
+        record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED, detail);
+        return network::Shared_payload{};
+    }
 
     // Snapshot submitted block state for the ACCEPT/GOOD_BLOCK handler
     // so it doesn't need to re-read from a potentially-replaced template.
@@ -1037,8 +1052,11 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     }
     std::vector<uint8_t> plaintextPayload(framed.begin() + header_size, framed.end());
     record_session_event(SessionManager::SessionEventKind::SUBMIT_SENT,
-                         "height=" + std::to_string(m_last_submitted_height) +
-                         " channel=" + std::to_string(m_last_submitted_channel));
+                         "unified_height=" + std::to_string(m_last_submitted_height) +
+                         " channel_height=" + std::to_string(tracker_channel_tip) +
+                         " channel_target=" + std::to_string(template_channel_target) +
+                         " channel=" + std::to_string(m_last_submitted_channel) +
+                         " channel_height_marker=" + std::to_string(is_channel_height(submit_snapshot.channel_tip_height)));
 
     // ── Channel-aware payload diagnostics ────────────────────────────────────
     // Compute payload metadata from live data — offset_bytes_count is derived

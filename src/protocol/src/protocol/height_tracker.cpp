@@ -185,6 +185,8 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
                                 m_diagnostic.push_unified_height);
     s.channel_height = std::max(m_canonical.canonical_channel_height,
                                 m_diagnostic.push_channel_height);
+    s.unified_block_height = UnifiedHeight{s.unified_height};
+    s.channel_tip_height = ChannelHeight{s.channel_height};
 
     // Difficulty: latest non-zero from any non-keepalive source
     s.difficulty_nbits = m_latest_difficulty_nbits;
@@ -192,8 +194,10 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     // Use max of legacy and canonical channel_target: whichever writer advanced it last
     // (push handler via AdvanceChannelTarget, or BLOCK_DATA via OnBlockDataReceived) wins.
     s.channel_target = std::max(m_channel_target, m_canonical.canonical_channel_target);
+    s.template_channel_target = ChannelHeight{s.channel_target};
     s.channel = m_channel;
     s.template_unified_height = m_template_unified_height;
+    s.template_block_height = UnifiedHeight{s.template_unified_height};
     s.hash_prev_block = m_canonical.canonical_hash_prev_block;
     s.last_update_source = m_last_update_source;
 
@@ -202,6 +206,9 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     s.prime_height = m_diagnostic.keepalive_prime_height;
     s.hash_height  = m_diagnostic.keepalive_hash_height;
     s.stake_height = m_diagnostic.keepalive_stake_height;
+    s.prime_channel_height = ChannelHeight{s.prime_height};
+    s.hash_channel_height = ChannelHeight{s.hash_height};
+    s.stake_channel_height = ChannelHeight{s.stake_height};
 
     // Fork detection fields — diagnostic only
     s.hash_tip_lo32 = m_diagnostic.keepalive_hash_tip_lo32;
