@@ -269,6 +269,134 @@ void test_session_ingress_gate_requires_crypto_context_when_requested() {
 }
 
 // ============================================================================
+// Test 10: shared ingress gate rejects packet session id mismatches
+// ============================================================================
+void test_session_ingress_gate_rejects_stale_packet_session_id() {
+    std::cout << "\nTest 10: Session ingress gate rejects stale packet session ids\n";
+
+    SessionManager::SessionInfo session;
+    session.authenticated = true;
+    session.session_id = 0x11112222u;
+    session.session_epoch = 4;
+    session.active_lane = ProtocolLane::STATELESS;
+
+    const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
+        true,
+        true,
+        session,
+        ProtocolLane::STATELESS,
+        true,
+        false,
+        false,
+        false,
+        SessionId(0x33334444u),
+        SessionOwnershipStamp{SessionId(0x11112222u), SessionEpoch(4)}
+    });
+
+    print_test_result("stale packet session id is rejected", !decision.allow_processing);
+    print_test_result("stale packet session id is marked stale", decision.drop_as_stale);
+    print_test_result("stale packet session id marks session degraded", decision.mark_degraded);
+    print_test_result("stale packet session id reason mentions session id",
+                      decision.reason.find("session id") != std::string::npos);
+}
+
+// ============================================================================
+// Test 11: shared ingress gate rejects owner/session mismatches
+// ============================================================================
+void test_session_ingress_gate_rejects_stale_owner_session_id() {
+    std::cout << "\nTest 11: Session ingress gate rejects stale owner session ids\n";
+
+    SessionManager::SessionInfo session;
+    session.authenticated = true;
+    session.session_id = 0x01020304u;
+    session.session_epoch = 9;
+    session.active_lane = ProtocolLane::STATELESS;
+
+    const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
+        true,
+        true,
+        session,
+        ProtocolLane::STATELESS,
+        true,
+        false,
+        false,
+        false,
+        SessionId(0x01020304u),
+        SessionOwnershipStamp{SessionId(0xA0B0C0D0u), SessionEpoch(9)}
+    });
+
+    print_test_result("stale owner session id is rejected", !decision.allow_processing);
+    print_test_result("stale owner session id is marked stale", decision.drop_as_stale);
+    print_test_result("stale owner session id reason mentions owner session id",
+                      decision.reason.find("ownership session id") != std::string::npos);
+}
+
+// ============================================================================
+// Test 12: shared ingress gate enforces lane readiness
+// ============================================================================
+void test_session_ingress_gate_rejects_lane_mismatch() {
+    std::cout << "\nTest 12: Session ingress gate rejects lane mismatches\n";
+
+    SessionManager::SessionInfo session;
+    session.authenticated = true;
+    session.session_id = 0x0A0B0C0Du;
+    session.session_epoch = 2;
+    session.active_lane = ProtocolLane::STATELESS;
+
+    const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
+        true,
+        true,
+        session,
+        ProtocolLane::LEGACY,
+        true,
+        false,
+        false,
+        false,
+        SessionId(0x0A0B0C0Du),
+        SessionOwnershipStamp{SessionId(0x0A0B0C0Du), SessionEpoch(2)}
+    });
+
+    print_test_result("lane mismatch is rejected", !decision.allow_processing);
+    print_test_result("lane mismatch is not treated as stale", !decision.drop_as_stale);
+    print_test_result("lane mismatch marks session degraded", decision.mark_degraded);
+    print_test_result("lane mismatch reason mentions lane",
+                      decision.reason.find("lane") != std::string::npos);
+}
+
+// ============================================================================
+// Test 13: shared ingress gate forces reauth when auth is required
+// ============================================================================
+void test_session_ingress_gate_requires_authenticated_session() {
+    std::cout << "\nTest 13: Session ingress gate forces re-auth for unauthenticated sessions\n";
+
+    SessionManager::SessionInfo session;
+    session.authenticated = false;
+    session.session_id = 0x55667788u;
+    session.session_epoch = 5;
+    session.active_lane = ProtocolLane::STATELESS;
+
+    const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
+        true,
+        true,
+        session,
+        ProtocolLane::STATELESS,
+        true,
+        false,
+        false,
+        false,
+        SessionId(0x55667788u),
+        SessionOwnershipStamp{SessionId(0x55667788u), SessionEpoch(5)}
+    });
+
+    print_test_result("unauthenticated authoritative session is rejected", !decision.allow_processing);
+    print_test_result("unauthenticated authoritative session forces reauth", decision.force_reauth);
+    print_test_result("unauthenticated authoritative session marks session degraded",
+                      decision.mark_degraded);
+    print_test_result("unauthenticated authoritative session reason mentions authentication",
+                      decision.reason.find("not authenticated") != std::string::npos);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -285,6 +413,10 @@ int main() {
     test_session_status_frame_payload_size();
     test_session_ingress_gate_rejects_stale_owner_generation();
     test_session_ingress_gate_requires_crypto_context_when_requested();
+    test_session_ingress_gate_rejects_stale_packet_session_id();
+    test_session_ingress_gate_rejects_stale_owner_session_id();
+    test_session_ingress_gate_rejects_lane_mismatch();
+    test_session_ingress_gate_requires_authenticated_session();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

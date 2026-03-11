@@ -526,6 +526,41 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
     return false;
 }
 
+bool Solo::ensure_session_ready_for_ingress(const char* log_scope,
+                                            const char* packet_name,
+                                            bool queue_post_auth_get_block)
+{
+    const bool session_says_auth = session_context_is_authenticated();
+    if (!m_authenticated && !session_says_auth) {
+        if (queue_post_auth_get_block) {
+            queue_pending_push_after_auth(log_scope);
+        }
+
+        const std::string reason = std::string(packet_name) +
+            " received while authoritative session is not authenticated";
+        m_logger->warn("[{}] Session ingress deferred: {} (auth_state={})",
+                       log_scope, reason, static_cast<int>(m_auth_state));
+
+        check_auth_in_flight_timeout(log_scope);
+        if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
+            record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
+                                 std::string(log_scope) + ": " + reason);
+            m_logger->warn("[{}] Triggering session-expired handler after ingress readiness failure",
+                           log_scope);
+            m_session_expired_handler();
+        }
+        return false;
+    }
+
+    if (!m_authenticated && session_says_auth) {
+        m_logger->info("[{}] Session ingress resyncing stale local auth cache before processing {}",
+                       log_scope, packet_name);
+        resync_auth_from_session_context(log_scope);
+    }
+
+    return true;
+}
+
 void Solo::queue_pending_push_after_auth(const char* log_scope)
 {
     if (m_pending_push_after_auth) {
@@ -2992,6 +3027,13 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             ::LLP::KeepAliveV2AckFrame unified;
             if (unified.Parse(*packet.m_data))
             {
+                PacketIngressPreflightOptions preflight;
+                preflight.owner = &m_last_keepalive_request_owner;
+                preflight.packet_session_id = unified.session_id;
+                if (!run_packet_ingress_preflight("Solo SessionKeepalive", preflight)) {
+                    return;
+                }
+
                 m_height_tracker.OnKeepaliveResponse(unified.unified_height,
                                                       unified.prime_height,
                                                       unified.hash_height,
@@ -3007,11 +3049,6 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     unified.unified_height, unified.prime_height,
                     unified.hash_height, unified.stake_height,
                     unified.hash_tip_lo32, unified.fork_score);
-
-                // Session ID validation (Gap 1): detect stale replies from a previous session.
-                // session_id == 0 means legacy / unset — skip check.
-                if (handle_session_id_mismatch(unified.session_id))
-                    return;
 
                 // Fork canary cross-check (legacy path: hash_tip_lo32 and fork_score will be 0)
                 // Diagnostic-only: PUSH notification system handles real chain tip advances.
@@ -3085,24 +3122,8 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
             [connection, this, push_opcode_name]() {
-                bool session_says_auth = session_context_is_authenticated();
-                // Guard: if not authenticated, the TCP connection is still alive from the
-                // node's perspective (push proves it), but local auth state is stale.
-                // Do NOT call get_work() — trigger in-band re-auth instead.
-                if (!m_authenticated && !session_says_auth) {
-                    queue_pending_push_after_auth("Solo Push");
-                    m_logger->warn("[Solo Push] ⚠ {} received while NOT_AUTHENTICATED — "
-                                   "TCP session may still be alive at node; triggering in-band re-auth",
-                               push_opcode_name);
-                    check_auth_in_flight_timeout("Solo Push");
-                    // Only fire re-auth if not already in the handshake
-                    if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
-                        m_session_expired_handler();
-                    }
+                if (!ensure_session_ready_for_ingress("Solo Push", push_opcode_name, true)) {
                     return;
-                }
-                if (!m_authenticated && session_says_auth) {
-                    resync_auth_from_session_context("Solo Push");
                 }
                 // Snapshot staleness BEFORE calling get_work() so we capture
                 // the state that triggered this request_work_fn invocation.
@@ -3137,22 +3158,10 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
         return;
     }
 
-    bool session_says_auth = session_context_is_authenticated();
-    // Auth guard — same pattern as PRIME/HASH_BLOCK_AVAILABLE push handlers.
-    // Do NOT process the template if we have no valid session.
-    if (!m_authenticated && !session_says_auth) {
-        m_logger->warn("[Solo Stateless] ⚠ STATELESS_GET_BLOCK (0xD081) received while "
-                       "NOT_AUTHENTICATED (auth_state={}) — triggering in-band re-auth",
-                       static_cast<int>(m_auth_state));
-        check_auth_in_flight_timeout("Solo Stateless");
-        // Only invoke session_expired_handler if not already mid-handshake
-        if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
-            m_session_expired_handler();
-        }
+    if (!ensure_session_ready_for_ingress("Solo Stateless",
+                                          "STATELESS_GET_BLOCK (0xD081)",
+                                          false)) {
         return;
-    }
-    if (!m_authenticated && session_says_auth) {
-        resync_auth_from_session_context("Solo Stateless");
     }
 
     // ═══════════════════════════════════════════════════════════════════

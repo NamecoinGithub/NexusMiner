@@ -479,6 +479,23 @@ void test_session_event_journal_behaves_like_ring_buffer() {
     std::cout << "Session event journal ring buffer test passed!" << std::endl;
 }
 
+void test_session_event_journal_preserves_preflight_drop_detail() {
+    std::cout << "Testing session event journal preserves ingress preflight detail..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    context.start_session(0xCAFEBABEu);
+    context.record_session_event(SessionManager::SessionEventKind::EPOCH_MISMATCH,
+                                 "Solo SessionKeepalive: packet ownership epoch mismatched authoritative session");
+
+    const auto diagnostics = context.build_miner_session_diagnostics();
+    assert(diagnostics.find("epoch_mismatch") != std::string::npos);
+    assert(diagnostics.find("packet ownership epoch mismatched authoritative session") != std::string::npos);
+
+    std::cout << "Session event journal preflight detail test passed!" << std::endl;
+}
+
 void test_session_semantic_wrapper_types_are_distinct() {
     std::cout << "Testing strong semantic session wrapper types..." << std::endl;
 
@@ -525,6 +542,7 @@ int main() {
         test_hex_prefix_header_supports_qualified_callers();
         test_session_event_journal_tracks_current_session();
         test_session_event_journal_behaves_like_ring_buffer();
+        test_session_event_journal_preserves_preflight_drop_detail();
         test_session_semantic_wrapper_types_are_distinct();
 
         std::cout << "\nAll NodeSessionContext tests passed!" << std::endl;
