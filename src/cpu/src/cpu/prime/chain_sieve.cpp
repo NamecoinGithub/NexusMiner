@@ -239,23 +239,52 @@ namespace nexusminer {
 
         void Sieve::sieve_segment()
         {
+            // Pre-compute segment_bytes once outside the outer loop.
+            // sieve_size == m_segment_size / 30, so segment_bytes == sieve_size.
+            // Using segment_bytes as the loop bound avoids the per-iteration j/30 in
+            // the while-condition and keeps everything in the byte domain.
+            const uint32_t segment_bytes = m_segment_size / 30;
+
             for (std::size_t i = 0; i < m_sieving_primes.size(); i++)
             {
                 uint32_t j = m_multiples[i];
-                uint32_t k = m_sieving_primes[i];
-                //where are we in the wheel
+                const uint32_t k = m_sieving_primes[i];
                 int wheel_index = m_wheel_indices[i];
-                int next_wheel_gap = sieve30_gaps[wheel_index];
-                while (j < m_segment_size)
+
+                // Decompose j into byte index (position in m_sieve) and the wheel
+                // offset within that byte's 30-number span.
+                uint32_t sieve_byte   = j / 30;
+                uint32_t sieve_offset = j % 30;
+
+                while (sieve_byte < segment_bytes)
                 {
-                    m_sieve[j / 30] &= unset_bit_mask[j % 30];
-                    //increment the next multiple of the current prime (rotate the wheel).
-                    j += k * next_wheel_gap;
-                    wheel_index = (wheel_index + 1) % 8;
-                    next_wheel_gap = sieve30_gaps[wheel_index];
+                    // Cross off this candidate — no division needed here.
+                    m_sieve[sieve_byte] &= unset_bit_mask[sieve_offset];
+
+                    // Advance by k * wheel_gap in the byte domain.
+                    // Because k * gap can be > 30, we split into a whole-byte part
+                    // and a remainder. A single carry check is sufficient because
+                    // (advance % 30) is always in [0, 29].
+                    const int gap         = sieve30_gaps[wheel_index];
+                    const uint32_t advance = static_cast<uint32_t>(k) * static_cast<uint32_t>(gap);
+                    sieve_byte   += advance / 30;
+                    sieve_offset += advance % 30;
+                    if (sieve_offset >= 30)
+                    {
+                        sieve_offset -= 30;
+                        ++sieve_byte;
+                    }
+
+                    // Advance wheel (branch-free modulo since the array length is 8).
+                    wheel_index = (wheel_index + 1) & 7;
                 }
-                //save the starting multiple and wheel index for the next segment
-                m_multiples[i] = j - m_segment_size;
+
+                // Convert back from byte domain to j for save-back.
+                // j = sieve_byte * 30 + sieve_offset at this point represents the
+                // first multiple that fell outside this segment. We store
+                // (j - m_segment_size) so the next call to sieve_segment() starts
+                // from the right place.
+                m_multiples[i]     = sieve_byte * 30 + sieve_offset - m_segment_size;
                 m_wheel_indices[i] = wheel_index;
             }
         }
