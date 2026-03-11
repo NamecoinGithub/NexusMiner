@@ -40,6 +40,10 @@ target_include_directories(chacha20_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
 )
 
+# Falcon Quantum Tunnel Vector parity + benchmark test
+add_executable(falcon_qtv_parity_test falcon_qtv_parity_test.cpp)
+target_link_libraries(falcon_qtv_parity_test PRIVATE ${OPENSSL_LIBRARIES})
+
 # Genesis Utils and Serialization Helpers Unit Test
 add_executable(genesis_serialization_utils_test genesis_serialization_utils_test.cpp)
 target_link_libraries(genesis_serialization_utils_test PRIVATE protocol)
@@ -190,6 +194,7 @@ target_include_directories(solo_auth_resync_test PRIVATE
 
 # Register all test executables with CTest
 add_test(NAME chacha20_test COMMAND $<TARGET_FILE:chacha20_test>)
+add_test(NAME falcon_qtv_parity_test COMMAND $<TARGET_FILE:falcon_qtv_parity_test>)
 add_test(NAME genesis_serialization_utils_test COMMAND $<TARGET_FILE:genesis_serialization_utils_test>)
 add_test(NAME height_tracker_test COMMAND $<TARGET_FILE:height_tracker_test>)
 add_test(NAME packet_builder_test COMMAND $<TARGET_FILE:packet_builder_test>)

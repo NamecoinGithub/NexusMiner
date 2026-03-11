@@ -18,9 +18,15 @@ export FALCON1024_PRIVKEY_SIZE,
        QuantumTunnelVector,
        build_qtv,
        bucket_lengths,
+       encode_laser_tunnel,
+       decode_laser_tunnel,
        decode_working_vector,
        lattice_safe_permutation,
+       random_swap_sequence!,
        reconstruct_payload,
+       verify_bucket_integrity,
+       working_vector_digest,
+       generate_parity_fixture,
        swap_bucket!
 
 const FALCON1024_PRIVKEY_SIZE = 2305
@@ -151,6 +157,18 @@ function decode_working_vector(qtv::QuantumTunnelVector)
     return decode_bucket(bucket, qtv.working_vector, qtv.epoch)
 end
 
+function verify_bucket_integrity(qtv::QuantumTunnelVector)
+    return all(
+        sha512_bytes(
+            bucket.payload,
+            uint64le(bucket.logical_id),
+            uint64le(first(bucket.byte_range)),
+            uint64le(last(bucket.byte_range)),
+        ) == bucket.tag
+        for bucket in qtv.buckets
+    )
+end
+
 function reconstruct_payload(qtv::QuantumTunnelVector)
     payload = UInt8[]
     for bucket in sort(qtv.buckets; by = candidate -> candidate.logical_id)
@@ -171,6 +189,86 @@ function swap_bucket!(qtv::QuantumTunnelVector, slot::Integer)
     push!(qtv.swap_log, SwapEvent(qtv.epoch, qtv.active_slot, qtv.active_bucket_id, bytes2hex(active_bucket.tag)))
 
     return qtv
+end
+
+function random_swap_sequence!(qtv::QuantumTunnelVector, n_swaps::Integer; seed::Integer = qtv.seed)
+    n_swaps >= 0 || throw(ArgumentError("swap count must be non-negative"))
+
+    rng = MersenneTwister(seed)
+    slots = rand(rng, 1:length(qtv.permutation), Int(n_swaps))
+    for slot in slots
+        swap_bucket!(qtv, slot)
+    end
+
+    return slots
+end
+
+function laser_keystream(qtv::QuantumTunnelVector, length_bytes::Int)
+    length_bytes >= 0 || throw(ArgumentError("keystream length must be non-negative"))
+
+    bucket = qtv.buckets[qtv.active_bucket_id]
+    stream = UInt8[]
+    counter = UInt64(0)
+    block = sha512_bytes(
+        qtv.working_vector,
+        bucket.tag,
+        uint64le(qtv.epoch),
+        uint64le(qtv.active_slot),
+        uint64le(qtv.active_bucket_id),
+        uint64le(counter),
+    )
+
+    while length(stream) < length_bytes
+        append!(stream, block)
+        counter += UInt64(1)
+        block = sha512_bytes(
+            block,
+            qtv.working_vector,
+            bucket.tag,
+            uint64le(qtv.epoch),
+            uint64le(qtv.active_slot),
+            uint64le(qtv.active_bucket_id),
+            uint64le(counter),
+        )
+    end
+
+    resize!(stream, length_bytes)
+    return stream
+end
+
+function encode_laser_tunnel(data::AbstractVector{<:Unsigned}, qtv::QuantumTunnelVector)
+    payload = UInt8.(data)
+    keystream = laser_keystream(qtv, length(payload))
+    return xor_bytes(payload, keystream)
+end
+
+decode_laser_tunnel(data::AbstractVector{<:Unsigned}, qtv::QuantumTunnelVector) = encode_laser_tunnel(data, qtv)
+
+working_vector_digest(qtv::QuantumTunnelVector) = bytes2hex(sha512_bytes(qtv.working_vector))
+
+function generate_parity_fixture(privkey_payload::AbstractVector{<:Unsigned}, message::AbstractVector{<:Unsigned}; seed::Integer, n_swaps::Integer)
+    qtv = build_qtv(privkey_payload; seed = seed)
+    swap_sequence = random_swap_sequence!(qtv, n_swaps; seed = seed)
+    encoded = encode_laser_tunnel(message, qtv)
+
+    return (
+        privkey_payload = UInt8.(privkey_payload),
+        seed = UInt64(seed),
+        n_swaps = Int(n_swaps),
+        message = UInt8.(message),
+        encoded = encoded,
+        swap_sequence = collect(Int, swap_sequence),
+        swap_log = [
+            (
+                epoch = event.epoch,
+                slot = event.slot,
+                bucket_id = event.bucket_id,
+                tag_hex = event.tag_hex,
+            )
+            for event in qtv.swap_log
+        ],
+        working_vector_digest = working_vector_digest(qtv),
+    )
 end
 
 end
