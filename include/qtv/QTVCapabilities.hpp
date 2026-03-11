@@ -20,7 +20,7 @@ struct QTVCapabilities
 
     static constexpr QTVCapabilities with_julia(bool fixture_available, bool parity_available) noexcept
     {
-        return {true, fixture_available || parity_available, fixture_available, parity_available, true};
+        return {true, fixture_available && parity_available, fixture_available, parity_available, true};
     }
 
     constexpr bool julia_backend_available() const noexcept
