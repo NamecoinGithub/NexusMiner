@@ -1,6 +1,7 @@
 #include "chain_sieve.hpp"
 #include <primesieve.hpp>
 #include <vector>
+#include <array>
 #include <queue>
 #include <chrono>
 #include <bitset>
@@ -243,16 +244,35 @@ namespace nexusminer {
             {
                 uint32_t j = m_multiples[i];
                 uint32_t k = m_sieving_primes[i];
+                uint32_t sieve_byte = j / 30;
+                uint32_t sieve_offset = j % 30;
                 //where are we in the wheel
                 int wheel_index = m_wheel_indices[i];
-                int next_wheel_gap = sieve30_gaps[wheel_index];
+                std::array<uint32_t, 8> wheel_step_sizes{};
+                std::array<uint32_t, 8> wheel_step_bytes{};
+                std::array<uint32_t, 8> wheel_step_offsets{};
+                for (int wheel = 0; wheel < 8; ++wheel)
+                {
+                    wheel_step_sizes[wheel] = k * sieve30_gaps[wheel];
+                    wheel_step_bytes[wheel] = wheel_step_sizes[wheel] / 30;
+                    wheel_step_offsets[wheel] = wheel_step_sizes[wheel] % 30;
+                }
                 while (j < m_segment_size)
                 {
-                    m_sieve[j / 30] &= unset_bit_mask[j % 30];
+                    m_sieve[sieve_byte] &= unset_bit_mask[sieve_offset];
                     //increment the next multiple of the current prime (rotate the wheel).
-                    j += k * next_wheel_gap;
-                    wheel_index = (wheel_index + 1) % 8;
-                    next_wheel_gap = sieve30_gaps[wheel_index];
+                    j += wheel_step_sizes[wheel_index];
+                    sieve_byte += wheel_step_bytes[wheel_index];
+                    sieve_offset += wheel_step_offsets[wheel_index];
+                    if (sieve_offset >= 30)
+                    {
+                        sieve_offset -= 30;
+                        ++sieve_byte;
+                    }
+                    if (++wheel_index == 8)
+                    {
+                        wheel_index = 0;
+                    }
                 }
                 //save the starting multiple and wheel index for the next segment
                 m_multiples[i] = j - m_segment_size;
