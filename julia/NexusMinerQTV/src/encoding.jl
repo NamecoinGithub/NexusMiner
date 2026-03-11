@@ -20,10 +20,10 @@ function derive_keystream(
         tag          :: String,
     ) :: Vector{UInt8}
 
-    tag_bytes = hex2bytes(tag)
-    seed_bytes    = _uint64le(seed)
-    epoch_bytes   = _uint64le(UInt64(epoch))
-    bid_bytes     = _uint64le(UInt64(bucket_id))
+    tag_bytes   = hex2bytes(tag)
+    seed_bytes  = _uint64le(seed)
+    epoch_bytes = _uint64le(UInt64(epoch))
+    bid_bytes   = _uint64le(UInt64(bucket_id))
 
     # Seed the chain with bucket-specific material so each (epoch, bucket) pair
     # produces an independent keystream.

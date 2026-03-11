@@ -11,9 +11,15 @@ end
 """
     aligned_allocate(n_bytes::Int) -> Vector{UInt8}
 
-On RISC-V: allocate `n_bytes` rounded up to `RISCV.cache_line_bytes` so that
-working buffers sit on a natural cache-line boundary for the host SoC.
-On other platforms: plain `Vector{UInt8}(undef, n_bytes)`.
+Allocate an uninitialized byte buffer.
+
+On RISC-V: allocates `n_bytes` rounded **up** to the nearest multiple of
+`RISCV.cache_line_bytes` so that working buffers sit on a natural cache-line
+boundary for the host SoC.  Callers must use only the first `n_bytes` of the
+returned vector — the extra padding bytes are uninitialised and internal to the
+allocator.
+
+On other platforms: returns exactly `Vector{UInt8}(undef, n_bytes)`.
 """
 function aligned_allocate(n_bytes::Int) :: Vector{UInt8}
     if RISCV.is_riscv
@@ -106,7 +112,8 @@ end
 """
     dispatch_sha512_chain(state, tag, epoch, counter) -> Vector{UInt8}
 
-Dispatch to `sha512_chain_riscv` on RISC-V, otherwise a plain SHA-512 call.
+Dispatch SHA-512 chaining: uses `sha512_chain_riscv` (with cache-line-aligned
+input buffer) on RISC-V, otherwise a plain `SHA.sha512(vcat(...))` call.
 """
 function dispatch_sha512_chain(
         state   :: Vector{UInt8},
@@ -114,5 +121,10 @@ function dispatch_sha512_chain(
         epoch   :: UInt64,
         counter :: UInt64,
     ) :: Vector{UInt8}
-    return sha512_chain_riscv(state, tag, epoch, counter)
+
+    if RISCV.is_riscv
+        return sha512_chain_riscv(state, tag, epoch, counter)
+    else
+        return SHA.sha512(vcat(state, tag, _uint64le(epoch), _uint64le(counter)))
+    end
 end
