@@ -1,5 +1,7 @@
 #include <openssl/sha.h>
 
+#include "protocol/qtv_engine.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -211,6 +213,12 @@ void print_result(const char* name, bool passed, int& tests_run, int& tests_fail
 
 int main()
 {
+    using nexusminer::protocol::CppQTVEngine;
+    using nexusminer::protocol::JuliaQTVEngine;
+    using nexusminer::protocol::NullQTVEngine;
+    using nexusminer::protocol::QTVHookStatus;
+    using nexusminer::protocol::QTVJuliaBridge;
+
     // Matches FIXED_SEED in the Julia parity fixture and exercises a non-trivial swap order.
     constexpr uint64_t kSeed = 0x1024fedcULL;
     constexpr int kNSwaps = 6;
@@ -231,6 +239,62 @@ int main()
 
     int tests_run = 0;
     int tests_failed = 0;
+
+    const QTVJuliaBridge unavailable_bridge;
+    print_result("QTVJuliaBridge stays unavailable without Julia hook pointers",
+                 !unavailable_bridge.available() &&
+                     unavailable_bridge.run_fixture(1) == static_cast<int>(QTVHookStatus::UNAVAILABLE) &&
+                     unavailable_bridge.compare_parity(1) == static_cast<int>(QTVHookStatus::UNAVAILABLE),
+                 tests_run,
+                 tests_failed);
+
+    const auto run_fixture_hook = [](int case_id) -> int {
+        return case_id == 1
+            ? static_cast<int>(QTVHookStatus::OK)
+            : static_cast<int>(QTVHookStatus::INVALID_CASE);
+    };
+    const auto compare_parity_hook = [](int case_id) -> int {
+        return case_id == 1
+            ? static_cast<int>(QTVHookStatus::OK)
+            : static_cast<int>(QTVHookStatus::PARITY_MISMATCH);
+    };
+
+    const QTVJuliaBridge bridge(run_fixture_hook, compare_parity_hook);
+    print_result("QTVJuliaBridge forwards explicit hook status codes",
+                 bridge.available() &&
+                     bridge.run_fixture(1) == static_cast<int>(QTVHookStatus::OK) &&
+                     bridge.run_fixture(9) == static_cast<int>(QTVHookStatus::INVALID_CASE) &&
+                     bridge.compare_parity(1) == static_cast<int>(QTVHookStatus::OK) &&
+                     bridge.compare_parity(9) == static_cast<int>(QTVHookStatus::PARITY_MISMATCH),
+                 tests_run,
+                 tests_failed);
+
+    JuliaQTVEngine julia_engine(bridge);
+    print_result("JuliaQTVEngine turns OK bridge status into swappable engine success",
+                 julia_engine.available() &&
+                     julia_engine.RunFixture(1) &&
+                     !julia_engine.RunFixture(9) &&
+                     julia_engine.CompareParity(1) &&
+                     !julia_engine.CompareParity(9),
+                 tests_run,
+                 tests_failed);
+
+    CppQTVEngine cpp_engine(
+        [](int case_id) { return case_id == 7; },
+        [](int case_id) { return case_id == 7; });
+    print_result("CppQTVEngine keeps non-Julia backends swappable behind the same interface",
+                 cpp_engine.RunFixture(7) &&
+                     cpp_engine.CompareParity(7) &&
+                     !cpp_engine.RunFixture(6) &&
+                     !cpp_engine.CompareParity(6),
+                 tests_run,
+                 tests_failed);
+
+    NullQTVEngine null_engine;
+    print_result("NullQTVEngine safely disables research hooks by default",
+                 !null_engine.RunFixture(1) && !null_engine.CompareParity(1),
+                 tests_run,
+                 tests_failed);
 
     std::cout << "========================================\n";
     std::cout << "Falcon QTV C++ Parity Test\n";

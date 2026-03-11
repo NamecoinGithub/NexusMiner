@@ -15,7 +15,6 @@ A locally installable Julia package that wraps the Falcon Quantum Tunnel Vector
 julia/NexusMinerQTV/
 ├── Project.toml          ← package manifest (uuid, deps, compat)
 ├── Manifest.toml         ← resolved dependency lock file
-├── Makefile              ← make test / precompile / sysimage
 ├── README.md             ← this file
 ├── src/
 │   ├── NexusMinerQTV.jl  ← top-level module
@@ -25,7 +24,8 @@ julia/NexusMinerQTV/
 │   ├── bucket.jl         ← FalconBucket, partitioning, SHA-512 tags
 │   ├── encoding.jl       ← keystream derivation, encode/decode
 │   ├── qtv.jl            ← QuantumTunnelVector, swap engine, epoch log
-│   └── parity.jl         ← C++ parity fixture helpers
+│   ├── parity.jl         ← C++ parity fixture helpers
+│   └── hooks.jl          ← narrow C-callable fixture/parity hook surface
 └── test/
     ├── runtests.jl        ← @testset orchestrator
     ├── test_constants.jl
@@ -33,7 +33,8 @@ julia/NexusMinerQTV/
     ├── test_bucket.jl
     ├── test_encoding.jl
     ├── test_qtv.jl
-    └── test_parity.jl
+    ├── test_parity.jl
+    └── test_hooks.jl
 ```
 
 ---
@@ -130,13 +131,13 @@ println(swap_log_summary(qtv))
 
 ```sh
 cd julia/NexusMinerQTV
-make test
+julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
-Or directly via Julia's package manager:
+Or, if you want to run the test entrypoint directly after dependency resolution:
 
 ```sh
-julia --project=. -e 'using Pkg; Pkg.test()'
+julia --project=. test/runtests.jl
 ```
 
 The test suite covers:
@@ -146,28 +147,31 @@ The test suite covers:
 - Encode → decode round-trip, determinism, epoch sensitivity
 - `build_qtv`, swap cycles, epoch monotonicity, `reconstruct_payload`
 - C++ parity fixture generation and `print_cpp_fixture` output
+- Julia hook replay/parity status codes for C-callable interop
 
 ---
 
-## Building a Sysimage
+## C-callable Hook Surface
 
-Pre-compiling the package into a Julia sysimage eliminates startup latency for
-repeated REPL sessions:
+When you want a library-style interoperability boundary, keep the exported Julia
+surface small and explicit:
 
-```sh
-cd julia/NexusMinerQTV
-make sysimage
+```julia
+using NexusMinerQTV
+
+qtv_run_fixture(Cint(1))      # => 0 on success
+qtv_compare_parity(Cint(1))   # => 0 when the fixed parity case matches
 ```
 
-This generates `NexusMinerQTV.so` in the current directory.  Start Julia with
-the sysimage:
+These hooks are intentionally research-boundary safe:
 
-```sh
-julia --sysimage NexusMinerQTV.so --project=.
-```
+- `qtv_run_fixture(case_id)` replays a deterministic fixture case
+- `qtv_compare_parity(case_id)` checks a fixed cross-language parity case
+- status codes stay explicit (`0=ok`, `1=invalid case`, `2=parity mismatch`, `3=exception`)
+- no networking, auth/session ownership, or live submission paths cross into Julia
 
-The sysimage is architecture-specific — rebuild it if you move the checkout to a
-different host.
+If you later package the module as a shared library with `PackageCompiler`, these
+`Base.@ccallable` exports are the intended boundary to expose to C++.
 
 ---
 

@@ -11,6 +11,7 @@ include("bucket.jl")
 include("encoding.jl")
 include("qtv.jl")
 include("parity.jl")
+include("hooks.jl")
 
 function __init__()
     # Re-detect RISC-V caps at runtime so that a precompiled cache built on one
@@ -29,6 +30,10 @@ export FALCON1024_PRIVKEY_BYTES, FALCON1024_PUBKEY_BYTES, FALCON1024_SIG_BYTES,
        build_qtv, active_bucket, active_bucket_id,
        swap_active_bucket!, run_swap_rounds!, reconstruct_payload, swap_log_summary,
        encode_bucket, decode_working_vector,
-       fixture_privkey, make_parity_fixture, print_cpp_fixture
+       fixture_privkey, make_parity_fixture, print_cpp_fixture,
+       QTV_HOOK_STATUS_OK, QTV_HOOK_STATUS_INVALID_CASE,
+       QTV_HOOK_STATUS_PARITY_MISMATCH, QTV_HOOK_STATUS_EXCEPTION,
+       run_fixture_case, compare_parity_case,
+       qtv_run_fixture, qtv_compare_parity
 
 end # module NexusMinerQTV
