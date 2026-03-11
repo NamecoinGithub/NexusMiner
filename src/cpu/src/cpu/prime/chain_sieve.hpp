@@ -1,6 +1,7 @@
 #ifndef CHAIN_SIEVE_HPP
 #define CHAIN_SIEVE_HPP
 
+#include <array>
 #include <vector>
 #include <atomic>
 #include <spdlog/spdlog.h>
@@ -122,7 +123,8 @@ namespace nexusminer {
 			//static constexpr uint64_t sieve_range = 3e9;//3e9;
 			//upper limit of the sieving primes. 
 			static constexpr uint32_t sieving_prime_limit = 3e8; //3e8;
-			static constexpr uint32_t sieve_size = L2_CACHE_SIZE * 16;
+			static constexpr uint32_t sieve_size = L2_CACHE_SIZE;
+			static_assert(sieve_size == L2_CACHE_SIZE, "sieve_size should stay aligned to the L2 cache size");
 			//each segment byte covers a range of 30 sieving primes 
 			static constexpr uint32_t m_segment_size = sieve_size * 30;
 			//number of segments needed to cover the sieving range
@@ -168,6 +170,12 @@ namespace nexusminer {
 			//the sieve.  each bit that is set represents a possible prime.
 			std::vector<uint8_t> m_sieve;
 			std::vector<uint32_t> m_sieving_primes;
+			struct Wheel_step_tables {
+				std::array<uint32_t, 8> sizes{};
+				std::array<uint32_t, 8> bytes{};
+				std::array<uint32_t, 8> offsets{};
+			};
+			std::vector<Wheel_step_tables> m_wheel_step_tables;
 			std::vector<uint32_t> m_multiples;
 			std::vector<int> m_wheel_indices;
 			std::vector<Chain> m_chain;
