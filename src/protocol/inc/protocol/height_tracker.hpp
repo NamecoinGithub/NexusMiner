@@ -26,8 +26,17 @@ struct ChannelHeight {
     constexpr explicit operator uint32_t() const noexcept { return value; }
 };
 
-constexpr bool is_channel_height(ChannelHeight) noexcept { return true; }
-constexpr bool is_channel_height(uint32_t) noexcept { return false; }
+// Type marker helpers used by submission guards. They intentionally answer
+// whether a height was wrapped as ChannelHeight rather than validating the
+// runtime value against chain state.
+constexpr bool is_channel_height(ChannelHeight channel_height) noexcept {
+    (void)channel_height;
+    return true;
+}
+constexpr bool is_channel_height(uint32_t raw_height) noexcept {
+    (void)raw_height;
+    return false;
+}
 
 /**
  * @brief Centralized height tracking utility (single source of truth)

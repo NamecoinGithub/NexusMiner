@@ -70,6 +70,14 @@ public:
         COMPACT     // 92 bytes (pool format)
     };
 
+    /**
+     * @brief Captures the unified GET_BLOCK height that owns a template.
+     *
+     * The guard is initialized when a template is decoded from the node and
+     * checked again immediately before submission. This prevents later
+     * channel-height bookkeeping from silently overwriting block.nHeight,
+     * which would make the node's ProofHash() check reject the block.
+     */
     struct BlockTemplateHeightGuard {
         UnifiedHeight unified_height{};
         ChannelHeight channel_height{};

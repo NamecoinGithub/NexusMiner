@@ -519,6 +519,10 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     // CRITICAL HEIGHT AUDIT: block.nHeight must match the unified height captured
     // when GET_BLOCK / BLOCK_DATA constructed this template, never the channel tip/target.
     const bool height_guard_ok = height_guard.matches(solved_block);
+    if (!height_guard_ok) {
+        m_logger->error("[SUBMIT AUDIT] Height guard mismatch before DEBUG_ASSERT: actual={} expected_unified={} channel_height={}",
+            solved_block.nHeight, height_guard.unified_height.get(), height_guard.channel_height.get());
+    }
     assert(height_guard_ok && "block.nHeight must remain the unified GET_BLOCK height");
     m_logger->info("[SUBMIT AUDIT] solved_block.nHeight = {} (must equal unified GET_BLOCK height {})",
         solved_block.nHeight, height_guard.unified_height.get());
@@ -1152,6 +1156,10 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
     // using it here would cause a false mismatch on every stateless template.
     // So both should be identical; any difference indicates in-flight corruption.
     const auto expected_unified_height = m_current_template.height_guard.unified_height.get();
+    if (expected_unified_height > 0 && !m_current_template.height_guard.matches(m_current_template.block)) {
+        m_logger->error("[TemplateInterface] Height guard mismatch before DEBUG_ASSERT: actual={} expected_unified={}",
+            m_current_template.block.nHeight, expected_unified_height);
+    }
     assert(m_current_template.height_guard.matches(m_current_template.block) &&
            "set_channel_height() must not overwrite block.nHeight");
     if (expected_unified_height > 0 && !m_current_template.height_guard.matches(m_current_template.block)) {
