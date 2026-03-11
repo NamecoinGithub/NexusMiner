@@ -177,6 +177,18 @@ std::vector<uint8_t> strip_wire_header(const std::vector<uint8_t>& framed, Proto
     return std::vector<uint8_t>(framed.begin() + static_cast<std::ptrdiff_t>(header_size), framed.end());
 }
 
+uint32_t extract_serialized_block_height(const std::vector<uint8_t>& block_payload)
+{
+    if (block_payload.size() < 204u) {
+        return 0;
+    }
+
+    return (static_cast<uint32_t>(block_payload[200]) << 24) |
+           (static_cast<uint32_t>(block_payload[201]) << 16) |
+           (static_cast<uint32_t>(block_payload[202]) << 8) |
+            static_cast<uint32_t>(block_payload[203]);
+}
+
 struct AcceptedSubmissionTracker
 {
     struct Outcome
@@ -239,7 +251,10 @@ struct HarnessArtifacts
     uint16_t keepalive_hours{0};
     uint32_t unified_height{0};
     uint32_t channel_height{0};
+    uint32_t authoritative_submit_height{0};
     uint32_t template_height{0};
+    uint32_t built_block_height{0};
+    uint32_t submitted_payload_height{0};
     uint32_t template_channel{0};
     uint64_t submitted_nonce{0};
     std::size_t plaintext_submit_size{0};
@@ -363,6 +378,7 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
 
     result.artifacts.unified_height = decoded.unified_height;
     result.artifacts.channel_height = decoded.channel_height;
+    result.artifacts.authoritative_submit_height = current_template->block.nHeight;
     result.artifacts.template_height = current_template->block.nHeight;
     result.artifacts.template_channel = current_template->block.nChannel;
     result.artifacts.prevblock_suffix = extract_prevblock_suffix(current_template->block);
@@ -376,10 +392,17 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
     result.artifacts.phases.push_back("solve/inject valid block");
     ::LLP::CBlock solved_block = current_template->block;
     solved_block.nNonce = ACCEPTANCE_NONCE;
+    result.artifacts.built_block_height = solved_block.nHeight;
     result.artifacts.submitted_nonce = ACCEPTANCE_NONCE;
 
     AcceptedSubmissionTracker accepted_tracker;
     accepted_tracker.snapshot_from(*current_template, ACCEPTANCE_NONCE);
+
+    SubmitContext submit_context;
+    submit_context.session_id = SessionId(parsed_session_id);
+    submit_context.session_epoch = SessionEpoch(context.get_session_epoch());
+    submit_context.template_height = current_template->block.nHeight;
+    submit_context.chain_height = decoded.unified_height;
 
     result.artifacts.phases.push_back("submit");
     auto submit_result = StatelessBlockUtility::encode_submit(
@@ -389,7 +412,8 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
         nullptr,
         ProtocolLane::STATELESS,
         HeightTracker::Snapshot{},
-        nullptr);
+        nullptr,
+        submit_context);
     if (!submit_result.valid || !submit_result.wire_bytes || submit_result.wire_bytes->empty()) {
         return fail("submit path did not produce wire bytes");
     }
@@ -399,6 +423,7 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
         return fail("submit path produced an empty plaintext payload");
     }
     result.artifacts.plaintext_submit_size = plaintext_submit.size();
+    result.artifacts.submitted_payload_height = extract_serialized_block_height(plaintext_submit);
 
     auto expected_block_submission = template_interface.prepare_block_submission(
         current_template->block.hashMerkleRoot.GetBytes(), ACCEPTANCE_NONCE, {});
@@ -530,13 +555,20 @@ void test_first_block_acceptance_fast_mode()
                  !result.artifacts.post_accept_diagnostics.empty());
     print_result("Fast harness: captures template anchor and derived keepalive",
                  result.ok &&
-                 result.artifacts.session_id == ACCEPTANCE_SESSION_ID &&
-                 result.artifacts.keepalive_hours == 1 &&
-                 result.artifacts.template_height == ACCEPTANCE_TEMPLATE_HEIGHT &&
-                 result.artifacts.template_channel == ACCEPTANCE_CHANNEL &&
-                 result.artifacts.unified_height == ACCEPTANCE_UNIFIED_HEIGHT &&
-                 result.artifacts.channel_height == ACCEPTANCE_CHANNEL_HEIGHT &&
-                 result.artifacts.prevblock_suffix != std::array<uint8_t, 4>{});
+                  result.artifacts.session_id == ACCEPTANCE_SESSION_ID &&
+                  result.artifacts.keepalive_hours == 1 &&
+                  result.artifacts.authoritative_submit_height == ACCEPTANCE_TEMPLATE_HEIGHT &&
+                  result.artifacts.template_height == ACCEPTANCE_TEMPLATE_HEIGHT &&
+                  result.artifacts.template_channel == ACCEPTANCE_CHANNEL &&
+                  result.artifacts.unified_height == ACCEPTANCE_UNIFIED_HEIGHT &&
+                  result.artifacts.channel_height == ACCEPTANCE_CHANNEL_HEIGHT &&
+                  result.artifacts.prevblock_suffix != std::array<uint8_t, 4>{});
+    print_result("Fast harness: authoritative submit height matches template, built block, and payload",
+                 result.ok &&
+                 result.artifacts.authoritative_submit_height == ACCEPTANCE_TEMPLATE_HEIGHT &&
+                 result.artifacts.template_height == result.artifacts.authoritative_submit_height &&
+                 result.artifacts.built_block_height == result.artifacts.authoritative_submit_height &&
+                 result.artifacts.submitted_payload_height == result.artifacts.authoritative_submit_height);
     print_result("Fast harness: submit decrypt + validation + accept path succeed",
                  result.ok &&
                  result.artifacts.session_valid_before_submit &&

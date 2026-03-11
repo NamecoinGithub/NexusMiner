@@ -144,6 +144,16 @@ static HeightTracker::Snapshot make_snapshot() {
     return HeightTracker::Snapshot{};
 }
 
+static SubmitContext make_submit_context(uint32_t template_height = 6000001,
+                                         uint32_t chain_height = 6000000) {
+    SubmitContext context;
+    context.session_id = SessionId(0x12345678u);
+    context.session_epoch = SessionEpoch(7u);
+    context.template_height = template_height;
+    context.chain_height = chain_height;
+    return context;
+}
+
 /** Load a 228-byte template into a MiningTemplateInterface and return it. */
 static std::unique_ptr<MiningTemplateInterface> make_loaded_mti(uint32_t channel = 2) {
     auto mti = std::make_unique<MiningTemplateInterface>(static_cast<uint8_t>(channel), 0);
@@ -332,6 +342,19 @@ static void test_encode_stale_does_not_block() {
 }
 
 // Test 14 -- Prime channel vOffsets produce larger payload than Hash channel
+static void test_encode_rejects_submit_height_mismatch() {
+    auto mti = make_loaded_mti();
+    auto blk = make_solved_block(2, /*nHeight=*/6000002, 0xDEADBEEFCAFEBABEULL);
+    auto result = StatelessBlockUtility::encode_submit(
+        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, make_snapshot(), nullptr,
+        make_submit_context(/*template_height=*/6000001, /*chain_height=*/6000000));
+    print_result("encode_submit(): rejects authoritative submit-height mismatch",
+                 !result.valid &&
+                 result.rejection_reason.find("template_height=6000001") != std::string::npos &&
+                 result.rejection_reason.find("submit_height=6000002") != std::string::npos);
+}
+
+// Test 15 -- Prime channel vOffsets produce larger payload than Hash channel
 static void test_encode_prime_voffsets_appended() {
     // Load a Prime-channel template (nChannel=1)
     MiningTemplateInterface mti_prime(1, 0);
@@ -412,6 +435,7 @@ int main() {
     test_decode_block_fields();
     test_decode_channel_consistent();
     test_encode_stale_does_not_block();
+    test_encode_rejects_submit_height_mismatch();
     test_encode_prime_voffsets_appended();
     test_set_channel_height_no_corruption_guard();
 

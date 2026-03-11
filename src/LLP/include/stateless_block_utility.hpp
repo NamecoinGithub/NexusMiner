@@ -36,6 +36,7 @@
 #include "network/types.hpp"
 #include "protocol/height_tracker.hpp"
 #include "protocol/mining_template_interface.hpp"
+#include "protocol/submit_context.hpp"
 #include "protocol_lane.hpp"
 #include "protocol/chacha20_wrapper.hpp"
 #include <cstdint>
@@ -190,16 +191,21 @@ public:
      * @param ht            Read-only HeightTracker snapshot for diagnostic
      *                      staleness / tip-moved pre-checks.  Does NOT write
      *                      back to the tracker.
+     * @param submit_context Canonical submit-path context captured from the
+     *                      authoritative session/template flow. When populated,
+     *                      template_height must match the locally built submit
+     *                      height before serialization proceeds.
      * @param logger        Optional spdlog logger; may be nullptr.
      * @return SubmitResult -- check valid before sending wire_bytes.
      */
-    static SubmitResult encode_submit(MiningTemplateInterface& tmpl_iface,
-                                      const ::LLP::CBlock& solved_block,
-                                      const std::vector<uint8_t>& vOffsets,
-                                      FalconSignatureWrapper* falcon,
-                                      ProtocolLane lane,
-                                      const HeightTracker::Snapshot& ht,
-                                      std::shared_ptr<spdlog::logger> logger);
+     static SubmitResult encode_submit(MiningTemplateInterface& tmpl_iface,
+                                       const ::LLP::CBlock& solved_block,
+                                       const std::vector<uint8_t>& vOffsets,
+                                       FalconSignatureWrapper* falcon,
+                                       ProtocolLane lane,
+                                       const HeightTracker::Snapshot& ht,
+                                       std::shared_ptr<spdlog::logger> logger,
+                                       const SubmitContext& submit_context = {});
 
     // =========================================================================
     // Channel-aware payload sizing helpers
