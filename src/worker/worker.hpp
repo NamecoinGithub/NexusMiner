@@ -5,7 +5,18 @@
 #include <functional>
 #include <optional>
 #include <vector>
-#ifdef PRIME_ENABLED
+
+#if defined(__has_include)
+#if __has_include(<boost/multiprecision/cpp_int.hpp>)
+#define NEXUSMINER_HAS_BOOST_MULTIPRECISION 1
+#else
+#define NEXUSMINER_HAS_BOOST_MULTIPRECISION 0
+#endif
+#else
+#define NEXUSMINER_HAS_BOOST_MULTIPRECISION 0
+#endif
+
+#if NEXUSMINER_HAS_BOOST_MULTIPRECISION
 #include <boost/multiprecision/cpp_int.hpp>
 #endif
 #include "LLC/types/uint1024.h"
@@ -35,7 +46,7 @@ public:
 		return GetBlockHeaderBytes(ToBlock(), excludeNonce);
 	}
 
-#ifdef PRIME_ENABLED
+#if NEXUSMINER_HAS_BOOST_MULTIPRECISION
 	boost::multiprecision::uint1024_t GetPrimeBaseHash() const
 	{
 		const auto proof_hash = GetPrimeProofHash(ToBlock());
@@ -90,7 +101,7 @@ private:
 class WorkPackage
 {
 public:
-#ifdef PRIME_ENABLED
+#if NEXUSMINER_HAS_BOOST_MULTIPRECISION
     using uint1k = boost::multiprecision::uint1024_t;
 #endif
 
@@ -111,7 +122,7 @@ public:
 
     // Optional precomputed base hash for prime workers
     // Set via set_prime_base_hash() after construction for prime channel
-#ifdef PRIME_ENABLED
+#if NEXUSMINER_HAS_BOOST_MULTIPRECISION
     const std::optional<uint1k>& get_prime_base_hash() const { return m_prime_base_hash; }
 
     // Setter for prime base hash (called only for prime channel blocks)
@@ -122,7 +133,7 @@ private:
     ::LLP::CBlock m_block;                      // Original block from protocol
     std::uint32_t m_nbits;                      // Difficulty target
     std::vector<unsigned char> m_header_bytes;  // Precomputed header (shared)
-#ifdef PRIME_ENABLED
+#if NEXUSMINER_HAS_BOOST_MULTIPRECISION
     std::optional<uint1k> m_prime_base_hash;    // Precomputed base hash for prime (Skein+Keccak)
 #endif
 };

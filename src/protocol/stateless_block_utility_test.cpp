@@ -157,7 +157,9 @@ static ::LLP::CBlock make_patterned_block(uint64_t nonce = 0x0123456789ABCDEFULL
     return blk;
 }
 
-static std::vector<unsigned char> raw_block_bytes(const ::LLP::CBlock& block, bool exclude_nonce) {
+static std::vector<unsigned char> get_raw_block_header_bytes(const ::LLP::CBlock& block, bool exclude_nonce) {
+    // Intentional independent oracle: this mirrors the raw BEGIN/END span directly
+    // so the tests verify GetBlockHeaderBytes() instead of reusing its implementation.
     const auto* begin = reinterpret_cast<const unsigned char*>(BEGIN(block.nVersion));
     const auto* end = exclude_nonce
         ? reinterpret_cast<const unsigned char*>(END(block.nBits))
@@ -443,7 +445,7 @@ static void test_set_channel_height_no_corruption_guard() {
 // Test 16 -- worker header bytes with nonce match raw CBlock memory hashed by node
 static void test_worker_header_bytes_match_raw_block_with_nonce() {
     auto blk = make_patterned_block();
-    const auto expected = raw_block_bytes(blk, false);
+    const auto expected = get_raw_block_header_bytes(blk, false);
     const auto actual = nexusminer::GetBlockHeaderBytes(blk, false);
     print_result("GetBlockHeaderBytes(false) matches raw CBlock nVersion..nNonce bytes",
                  actual == expected && actual.size() == 216);
@@ -452,7 +454,7 @@ static void test_worker_header_bytes_match_raw_block_with_nonce() {
 // Test 17 -- worker prime header bytes exclude nonce and match raw ProofHash span
 static void test_worker_prime_header_bytes_match_raw_block_without_nonce() {
     auto blk = make_patterned_block();
-    const auto expected = raw_block_bytes(blk, true);
+    const auto expected = get_raw_block_header_bytes(blk, true);
     const auto actual = nexusminer::GetBlockHeaderBytes(blk, true);
     print_result("GetBlockHeaderBytes(true) matches raw CBlock nVersion..nBits bytes",
                  actual == expected && actual.size() == 208);
@@ -461,7 +463,10 @@ static void test_worker_prime_header_bytes_match_raw_block_without_nonce() {
 // Test 18 -- prime base hash uses upstream LLC::SK1024 on raw ProofHash span
 static void test_worker_prime_base_hash_matches_llc_sk1024() {
     auto blk = make_patterned_block();
-    const auto expected = LLC::SK1024(nexusminer::GetBlockHeaderBytes(blk, true));
+    // Intentional: the vector overload is the independent oracle here. It should
+    // hash the same raw nVersion..nBits bytes as the BEGIN/END pointer span used
+    // by GetPrimeProofHash(), without calling the production helper itself.
+    const auto expected = LLC::SK1024(get_raw_block_header_bytes(blk, true));
     const auto actual = nexusminer::GetPrimeProofHash(blk);
     print_result("GetPrimeProofHash() matches LLC::SK1024(raw nVersion..nBits bytes)",
                  actual == expected);
