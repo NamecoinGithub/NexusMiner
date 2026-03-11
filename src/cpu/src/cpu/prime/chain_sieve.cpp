@@ -1,7 +1,6 @@
 #include "chain_sieve.hpp"
 #include <primesieve.hpp>
 #include <vector>
-#include <array>
 #include <queue>
 #include <chrono>
 #include <bitset>
@@ -194,6 +193,18 @@ namespace nexusminer {
             m_logger->info("Generating sieving primes up to {}...", sieving_prime_limit);
             auto start = std::chrono::steady_clock::now();
             primesieve::generate_primes(sieving_start_prime, sieving_prime_limit, &m_sieving_primes);
+            m_wheel_step_tables.resize(m_sieving_primes.size());
+            for (std::size_t i = 0; i < m_sieving_primes.size(); ++i)
+            {
+                const uint32_t sieving_prime = m_sieving_primes[i];
+                auto& wheel_steps = m_wheel_step_tables[i];
+                for (int idx = 0; idx < 8; ++idx)
+                {
+                    wheel_steps.sizes[idx] = sieving_prime * sieve30_gaps[idx];
+                    wheel_steps.bytes[idx] = wheel_steps.sizes[idx] / 30;
+                    wheel_steps.offsets[idx] = wheel_steps.sizes[idx] % 30;
+                }
+            }
             auto end = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
             std::stringstream ss;
@@ -243,27 +254,18 @@ namespace nexusminer {
             for (std::size_t i = 0; i < m_sieving_primes.size(); i++)
             {
                 uint32_t j = m_multiples[i];
-                uint32_t k = m_sieving_primes[i];
                 uint32_t sieve_byte = j / 30;
                 uint32_t sieve_offset = j % 30;
                 //where are we in the wheel
                 int wheel_index = m_wheel_indices[i];
-                std::array<uint32_t, 8> wheel_step_sizes{};
-                std::array<uint32_t, 8> wheel_step_bytes{};
-                std::array<uint32_t, 8> wheel_step_offsets{};
-                for (int wheel = 0; wheel < 8; ++wheel)
-                {
-                    wheel_step_sizes[wheel] = k * sieve30_gaps[wheel];
-                    wheel_step_bytes[wheel] = wheel_step_sizes[wheel] / 30;
-                    wheel_step_offsets[wheel] = wheel_step_sizes[wheel] % 30;
-                }
+                const auto& wheel_steps = m_wheel_step_tables[i];
                 while (j < m_segment_size)
                 {
                     m_sieve[sieve_byte] &= unset_bit_mask[sieve_offset];
                     //increment the next multiple of the current prime (rotate the wheel).
-                    j += wheel_step_sizes[wheel_index];
-                    sieve_byte += wheel_step_bytes[wheel_index];
-                    sieve_offset += wheel_step_offsets[wheel_index];
+                    j += wheel_steps.sizes[wheel_index];
+                    sieve_byte += wheel_steps.bytes[wheel_index];
+                    sieve_offset += wheel_steps.offsets[wheel_index];
                     if (sieve_offset >= 30)
                     {
                         sieve_offset -= 30;
