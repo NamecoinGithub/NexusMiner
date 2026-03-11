@@ -1020,8 +1020,9 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     const auto template_age_seconds = m_template_interface ? m_template_interface->get_template_age() : 0u;
     const auto prev_hash_bytes = block_to_submit.hashPrevBlock.GetBytes();
     std::array<uint8_t, 4> prevblock_suffix{};
+    const auto prevblock_suffix_size = static_cast<std::ptrdiff_t>(prevblock_suffix.size());
     if (prev_hash_bytes.size() >= prevblock_suffix.size()) {
-        std::copy(prev_hash_bytes.end() - static_cast<std::ptrdiff_t>(prevblock_suffix.size()),
+        std::copy(prev_hash_bytes.end() - prevblock_suffix_size,
                   prev_hash_bytes.end(),
                   prevblock_suffix.begin());
     }

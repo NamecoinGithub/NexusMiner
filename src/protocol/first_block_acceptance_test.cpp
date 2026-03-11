@@ -179,14 +179,18 @@ std::vector<uint8_t> strip_wire_header(const std::vector<uint8_t>& framed, Proto
 
 uint32_t extract_serialized_block_height(const std::vector<uint8_t>& block_payload)
 {
-    if (block_payload.size() < 204u) {
+    constexpr std::size_t TRITIUM_HEIGHT_OFFSET = 200u;
+    constexpr std::size_t TRITIUM_HEIGHT_FIELD_SIZE = 4u;
+    if (block_payload.size() < TRITIUM_HEIGHT_OFFSET + TRITIUM_HEIGHT_FIELD_SIZE) {
         return 0;
     }
 
-    return (static_cast<uint32_t>(block_payload[200]) << 24) |
-           (static_cast<uint32_t>(block_payload[201]) << 16) |
-           (static_cast<uint32_t>(block_payload[202]) << 8) |
-            static_cast<uint32_t>(block_payload[203]);
+    // Tritium submit payload serializes nHeight as a big-endian uint32 at bytes
+    // [200..203], matching the existing block serialization contract.
+    return (static_cast<uint32_t>(block_payload[TRITIUM_HEIGHT_OFFSET]) << 24) |
+           (static_cast<uint32_t>(block_payload[TRITIUM_HEIGHT_OFFSET + 1]) << 16) |
+           (static_cast<uint32_t>(block_payload[TRITIUM_HEIGHT_OFFSET + 2]) << 8) |
+            static_cast<uint32_t>(block_payload[TRITIUM_HEIGHT_OFFSET + 3]);
 }
 
 struct AcceptedSubmissionTracker
