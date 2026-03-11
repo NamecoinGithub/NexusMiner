@@ -37,7 +37,7 @@ boundaries, ownership rules, and upgrade path.
 | Testing | [testing/first-block-acceptance-plan.md](testing/first-block-acceptance-plan.md) | Acceptance harness needed for first accepted mined block |
 | Testing | [testing/multi-miner-scale-tests.md](testing/multi-miner-scale-tests.md) | Multi-session and multi-miner collision coverage |
 | Testing | [testing/session-recovery-and-reconnect-tests.md](testing/session-recovery-and-reconnect-tests.md) | Reconnect, reward persistence, ingress preflight, and race tests |
-| RISC-V | [riscv/README.md](riscv/README.md) | Miner-specific RISC-V landing page |
+| RISC-V | [riscv/README.md](riscv/README.md) | Miner-specific RISC-V landing page, including Julia QTV hook guidance |
 
 ## Upgrade-Path Diagram Index
 

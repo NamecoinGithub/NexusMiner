@@ -22,6 +22,7 @@ These pages focus on miner-specific portability rules:
 | [endianness-and-serialization.md](endianness-and-serialization.md) | Canonical byte-order and serialization rules |
 | [atomic-locking-considerations.md](atomic-locking-considerations.md) | Lock and atomic considerations for session/container code |
 | [diagnostics-and-testing.md](diagnostics-and-testing.md) | Cross-architecture diagnostics and test expectations |
+| [julia-qtv-hooks.md](julia-qtv-hooks.md) | Recommended Julia fixture hooks and isolated C++ bridge/engine boundary |
 
 ## Relationship to existing RISC-V docs
 
