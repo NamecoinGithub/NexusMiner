@@ -69,7 +69,36 @@ public:
         LEGACY,     // 220 bytes
         COMPACT     // 92 bytes (pool format)
     };
-    
+
+    /**
+     * @brief Captures the unified GET_BLOCK height that owns a template.
+     *
+     * The guard is initialized when a template is decoded from the node and
+     * checked again immediately before submission. This prevents later
+     * channel-height bookkeeping from silently overwriting block.nHeight,
+     * which would make the node's ProofHash() check reject the block.
+     */
+    struct BlockTemplateHeightGuard {
+        UnifiedHeight unified_height{};
+        ChannelHeight channel_height{};
+
+        constexpr void capture_unified_height(uint32_t height) noexcept {
+            unified_height = UnifiedHeight{height};
+        }
+
+        constexpr void capture_channel_height(uint32_t height) noexcept {
+            channel_height = ChannelHeight{height};
+        }
+
+        constexpr bool matches(uint32_t block_height) const noexcept {
+            return block_height == unified_height.get();
+        }
+
+        constexpr bool matches(const ::LLP::CBlock& block) const noexcept {
+            return matches(block.nHeight);
+        }
+    };
+     
     /**
      * @brief Mining template data structure
      */
@@ -91,6 +120,7 @@ public:
         // Stateless-lane metadata (12-byte prefix, big-endian; diagnostic only)
         uint32_t nUnifiedHeightMeta{0};  // unified_height from STATELESS_GET_BLOCK prefix
         uint32_t nChannelHeightMeta{0};  // channel_height from STATELESS_GET_BLOCK prefix
+        BlockTemplateHeightGuard height_guard{};
     };
     
     /**
@@ -524,11 +554,11 @@ private:
     uint8_t m_channel;
     uint32_t m_session_id;
     uint64_t m_session_epoch{0};
-    uint32_t m_current_height;
+    uint32_t m_current_unified_height;
     uint32_t m_current_channel_height;
     uint32_t m_template_channel_height_snapshot;
     bool m_has_snapshot;
-    uint32_t m_last_unified_height;  // Track last unified height for sanity checking
+    uint32_t m_last_unified_height;  // Track last unified height from GET_BLOCK for submission guards
     std::chrono::steady_clock::time_point m_template_received_time;  // Track template age
     
     MiningTemplate m_current_template;

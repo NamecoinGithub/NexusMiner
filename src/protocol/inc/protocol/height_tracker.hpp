@@ -12,6 +12,32 @@
 namespace nexusminer {
 namespace protocol {
 
+struct UnifiedHeight {
+    uint32_t value{0};
+
+    constexpr uint32_t get() const noexcept { return value; }
+    constexpr explicit operator uint32_t() const noexcept { return value; }
+};
+
+struct ChannelHeight {
+    uint32_t value{0};
+
+    constexpr uint32_t get() const noexcept { return value; }
+    constexpr explicit operator uint32_t() const noexcept { return value; }
+};
+
+// Type marker helpers used by submission guards. They intentionally answer
+// whether a height was wrapped as ChannelHeight rather than validating the
+// runtime value against chain state.
+constexpr bool is_channel_height(ChannelHeight channel_height) noexcept {
+    (void)channel_height;
+    return true;
+}
+constexpr bool is_channel_height(uint32_t raw_height) noexcept {
+    (void)raw_height;
+    return false;
+}
+
 /**
  * @brief Centralized height tracking utility (single source of truth)
  *
@@ -196,6 +222,10 @@ public:
         uint32_t channel_target{0};           ///< Template channel target (0 = unset)
         uint32_t channel{0};                  ///< Mining channel (1=Prime, 2=Hash)
         uint32_t template_unified_height{0}; ///< Unified height at time of last template receipt
+        UnifiedHeight unified_block_height{};       ///< Typed alias of unified_height for submission-path guards
+        ChannelHeight channel_tip_height{};         ///< Typed alias of channel_height (current channel tip)
+        ChannelHeight template_channel_target{};    ///< Typed alias of channel_target (tip + 1)
+        UnifiedHeight template_block_height{};      ///< Typed alias of template_unified_height
         uint1024_t hash_prev_block{};         ///< hashPrevBlock captured at template parse time (tip anchor)
         UpdateSource last_update_source{UpdateSource::NONE};
 
@@ -203,6 +233,9 @@ public:
         uint32_t prime_height{0};   ///< Prime channel height (max of canonical and push/GET_ROUND)
         uint32_t hash_height{0};    ///< Hash channel height  (max of canonical and push/GET_ROUND)
         uint32_t stake_height{0};   ///< Stake channel height (diagnostic/keepalive only)
+        ChannelHeight prime_channel_height{}; ///< Typed alias of prime_height
+        ChannelHeight hash_channel_height{};  ///< Typed alias of hash_height
+        ChannelHeight stake_channel_height{}; ///< Typed alias of stake_height
 
         // ── Fork detection (diagnostic only — from keepalive ACKs) ─────────────
         uint32_t hash_tip_lo32{0};   ///< Lo32 of node's hashBestChain from last keepalive response

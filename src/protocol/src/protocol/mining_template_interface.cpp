@@ -1,18 +1,29 @@
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/protocol_constants.hpp"
 #include "LLP/block_utils.hpp"
+#include <cassert>
 #include <chrono>
 #include <cstring>
 #include <sstream>
 #include <iomanip>
+#include <type_traits>
+#include <utility>
 
 namespace nexusminer {
 namespace protocol {
 
+namespace {
+
+using BlockHeightField = std::remove_cv_t<std::remove_reference_t<decltype(std::declval<::LLP::CBlock>().nHeight)>>;
+static_assert(std::is_same_v<BlockHeightField, uint32_t>,
+              "CBlock::nHeight must remain uint32_t for unified-height submission guards");
+
+} // namespace
+
 MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t session_id)
     : m_channel(channel)
     , m_session_id(session_id)
-    , m_current_height(0)
+    , m_current_unified_height(0)
     , m_current_channel_height(0)
     , m_template_channel_height_snapshot(0)
     , m_has_snapshot(false)
@@ -163,7 +174,8 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     
     // Initialize channel height (will be set later when GET_ROUND response arrives)
     tmpl.nChannelHeight = 0;
-    
+    tmpl.height_guard.capture_unified_height(tmpl.block.nHeight);
+     
     tmpl.state = TemplateState::RECEIVED;
     tmpl.nBits = tmpl.block.nBits;
     
@@ -182,7 +194,7 @@ MiningTemplateInterface::read_template(const network::Payload& data,
         {
             std::lock_guard<std::mutex> lock(m_template_mutex);
             m_current_template = tmpl;
-            m_current_height = tmpl.block.nHeight;
+            m_current_unified_height = tmpl.block.nHeight;
             m_template_channel_height_snapshot = 0;
             m_has_snapshot = false;
             
@@ -496,28 +508,32 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     
     // Create a copy of the current block template with the solved merkle root and nonce
     ::LLP::CBlock solved_block = m_current_template.block;
-    
+    const auto height_guard = m_current_template.height_guard;
+     
     // Update with the mined merkle root
     solved_block.hashMerkleRoot.SetBytes(merkle_root);
     
     // Update with the found nonce
     solved_block.nNonce = nonce;
     
-    // CRITICAL HEIGHT AUDIT: block.nHeight must be unified height, NOT channel height.
-    // The node's ProofHash() hashes nVersion→nBits which includes nHeight.
-    // If nHeight != unified_height, ProofHash() will mismatch → Prime rejected.
-    m_logger->info("[SUBMIT AUDIT] solved_block.nHeight = {} (must be unified height ~{})",
-        solved_block.nHeight, m_last_unified_height);
-    m_logger->info("[SUBMIT AUDIT] nChannelHeight (metadata) = {} (NOT in block bytes)",
-        m_current_template.nChannelHeight);
-    
-    // Defensive guard: abort if nHeight looks like channel height (much smaller than unified).
-    // This is a heuristic: channel heights are typically far below unified heights on Nexus
-    // (e.g., unified ~4M, prime channel ~2M, hash channel ~5M). The threshold of /2 errs
-    // conservatively to avoid blocking valid blocks near genesis while catching obvious corruption.
-    if (m_last_unified_height > 0 && solved_block.nHeight < m_last_unified_height / 2) {
-        m_logger->error("[SUBMIT AUDIT] ❌ ABORT: block.nHeight {} appears to be channel height, not unified height {}",
-            solved_block.nHeight, m_last_unified_height);
+    // CRITICAL HEIGHT AUDIT: block.nHeight must match the unified height captured
+    // when GET_BLOCK / BLOCK_DATA constructed this template, never the channel tip/target.
+    const bool height_guard_ok = height_guard.matches(solved_block);
+    if (!height_guard_ok) {
+        m_logger->error("[SUBMIT AUDIT] Height guard mismatch: actual={} expected_unified={} channel_height={}",
+            solved_block.nHeight, height_guard.unified_height.get(), height_guard.channel_height.get());
+    }
+    assert(height_guard_ok && "block.nHeight must remain the unified GET_BLOCK height");
+    m_logger->info("[SUBMIT AUDIT] solved_block.nHeight = {} (must equal unified GET_BLOCK height {})",
+        solved_block.nHeight, height_guard.unified_height.get());
+    m_logger->info("[SUBMIT AUDIT] nChannelHeight (metadata) = {} (channel marker={}, NOT in block bytes)",
+        m_current_template.nChannelHeight, is_channel_height(height_guard.channel_height));
+
+    if (!height_guard_ok) {
+        m_logger->error("[SUBMIT AUDIT] ❌ ABORT: block.nHeight {} != unified GET_BLOCK height {}",
+            solved_block.nHeight, height_guard.unified_height.get());
+        m_logger->error("[SUBMIT AUDIT]   Channel height marker={} value={}",
+            is_channel_height(height_guard.channel_height), height_guard.channel_height.get());
         return {};
     }
     
@@ -550,13 +566,12 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
         m_logger->info("[SUBMIT AUDIT]   block.nNonce       = 0x{:016x}", solved_block.nNonce);
         m_logger->info("[SUBMIT AUDIT]   serialized size    = {} bytes (expected 216 for Tritium)", payload.size());
         
-        // Heuristic abort: if block.nHeight looks like channel height (far below unified),
-        // it has been wrongly overwritten — abort to prevent submitting a corrupt block.
-        if (m_last_unified_height > 0 && solved_block.nHeight < m_last_unified_height / 2)
+        if (!height_guard_ok)
         {
-            m_logger->error("[SUBMIT AUDIT]   ❌ ABORT: block.nHeight {} appears to be channel height, not unified height ~{}",
-                solved_block.nHeight, m_last_unified_height + 1);
-            m_logger->error("[SUBMIT AUDIT]   ProofHash() would mismatch — block.nHeight must not be overwritten.");
+            m_logger->error("[SUBMIT AUDIT]   ❌ ABORT: block.nHeight {} != unified GET_BLOCK height {}",
+                solved_block.nHeight, height_guard.unified_height.get());
+            m_logger->error("[SUBMIT AUDIT]   ProofHash() would mismatch — block.nHeight must never be substituted with channel height {}.",
+                height_guard.channel_height.get());
             m_blocks_verified.fetch_add(1, std::memory_order_relaxed);
             return {};
         }
@@ -722,7 +737,7 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
         tmpl.block.nChannel, m_channel);
     m_logger->info("[TemplateInterface]   - nBits: 0x{:08x}", tmpl.block.nBits);
     m_logger->info("[TemplateInterface]   - nVersion: {}", tmpl.block.nVersion);
-    m_logger->info("[TemplateInterface]   - Unified height: {}", m_current_height);
+    m_logger->info("[TemplateInterface]   - Unified height: {}", m_current_unified_height);
     m_logger->info("[TemplateInterface]   - Node channel height: {}", m_current_channel_height);
     m_logger->info("[TemplateInterface]   - Channel height: {}",
         (tmpl.nChannelHeight != 0) ? std::to_string(tmpl.nChannelHeight) : "pending");
@@ -831,9 +846,9 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
             node_channel_height, tmpl.nChannelHeight);
         
         // If unified height differs, log informational message
-        if (tmpl.block.nHeight != m_current_height) {
+        if (tmpl.block.nHeight != m_current_unified_height) {
             m_logger->debug("[TemplateInterface] ℹ️  Unified height differs (template={}, current={})",
-                tmpl.block.nHeight, m_current_height);
+                tmpl.block.nHeight, m_current_unified_height);
             m_logger->debug("[TemplateInterface]    This is NORMAL when other channels mine blocks");
         }
     } else {
@@ -1007,17 +1022,17 @@ bool MiningTemplateInterface::update_height(uint32_t new_height)
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
     
-    m_logger->debug("[TemplateInterface] Height update: {} -> {}", m_current_height, new_height);
+    m_logger->debug("[TemplateInterface] Height update: {} -> {}", m_current_unified_height, new_height);
     
     // Check if template should be discarded due to height change
     bool template_discarded = false;
     
-    if (new_height > m_current_height && has_valid_template_unsafe()) {
+    if (new_height > m_current_unified_height && has_valid_template_unsafe()) {
         // Height has advanced - discard current template
         uint32_t old_height = m_current_template.block.nHeight;
         
         m_logger->info("[TemplateInterface] 🔔 Height changed: {} -> {} (template at height {})",
-            m_current_height, new_height, old_height);
+            m_current_unified_height, new_height, old_height);
         
         if (old_height < new_height) {
             m_logger->info("[TemplateInterface] ❌ Template is now stale - discarding");
@@ -1028,7 +1043,7 @@ bool MiningTemplateInterface::update_height(uint32_t new_height)
     }
     
     // Always update current height
-    m_current_height = new_height;
+    m_current_unified_height = new_height;
     
     return template_discarded;
 }
@@ -1140,9 +1155,16 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
     // templates, nUnifiedHeightMeta is the current chain tip (block.nHeight - 1);
     // using it here would cause a false mismatch on every stateless template.
     // So both should be identical; any difference indicates in-flight corruption.
-    if (m_last_unified_height > 0 && m_current_template.block.nHeight != m_last_unified_height) {
+    const auto expected_unified_height = m_current_template.height_guard.unified_height.get();
+    if (expected_unified_height > 0 && !m_current_template.height_guard.matches(m_current_template.block)) {
+        m_logger->error("[TemplateInterface] Height guard mismatch: actual={} expected_unified={}",
+            m_current_template.block.nHeight, expected_unified_height);
+    }
+    assert(m_current_template.height_guard.matches(m_current_template.block) &&
+           "set_channel_height() must not overwrite block.nHeight");
+    if (expected_unified_height > 0 && !m_current_template.height_guard.matches(m_current_template.block)) {
         m_logger->error("[TemplateInterface] ❌ CRITICAL: block.nHeight ({}) != last_unified_height ({})!",
-            m_current_template.block.nHeight, m_last_unified_height);
+            m_current_template.block.nHeight, expected_unified_height);
         m_logger->error("[TemplateInterface]   block.nHeight was corrupted — discarding template");
         discard_template_unsafe("block.nHeight corruption detected");
         return;
@@ -1150,6 +1172,7 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
     
     // Only update metadata field, NEVER block.nHeight
     m_current_template.nChannelHeight = channel_height;
+    m_current_template.height_guard.capture_channel_height(channel_height);
     m_current_channel_height = (channel_height > 0) ? (channel_height - 1) : 0;
     m_template_channel_height_snapshot = 0;
     m_has_snapshot = false;

@@ -506,6 +506,17 @@ int main()
         // The two values must differ (they represent different things)
         print_test_result("block.nHeight != nChannelHeight (unified vs channel)",
             tmpl != nullptr && tmpl->block.nHeight != tmpl->nChannelHeight);
+
+        // Negative case: if block.nHeight were silently replaced with the template's
+        // channel target, the guard must reject it because ProofHash() requires the
+        // unified GET_BLOCK height, not the channel height dimension.
+        print_test_result("test_block_with_channel_height_in_nHeight_fails_guard()",
+            tmpl != nullptr &&
+            is_channel_height(tmpl->height_guard.channel_height) &&
+            !tmpl->height_guard.matches(tmpl->height_guard.channel_height.get()));
+        print_test_result("test_block_with_unified_height_passes_guard()",
+            tmpl != nullptr &&
+            tmpl->height_guard.matches(tmpl->block));
     }
 
     // ====================================================================
