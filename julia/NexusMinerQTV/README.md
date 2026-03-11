@@ -131,12 +131,6 @@ println(swap_log_summary(qtv))
 
 ```sh
 cd julia/NexusMinerQTV
-julia --project=. -e 'using Pkg; Pkg.test()'
-```
-
-Or, if you want to run the test entrypoint directly after dependency resolution:
-
-```sh
 julia --project=. test/runtests.jl
 ```
 

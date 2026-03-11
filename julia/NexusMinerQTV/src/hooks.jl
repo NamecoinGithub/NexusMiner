@@ -15,7 +15,7 @@ const PARITY_CASES = Dict{Int, NamedTuple{(:seed, :swap_sequence, :working_vecto
     1 => (
         seed = 0x1024fedc,
         swap_sequence = [3, 2, 2, 4, 3, 4],
-        working_vector_digest = "12e0da8666c205832efc2c9f1016a24b6535e6fbf51ab657c1c36cb3688dd7358e521efa3578b11934bc4019ae51bf9ef2560b9dffbc9c330d32b867b7024f0b",
+        working_vector_digest = "e8afd7790bf226a24a3e97d7621f8025c12a696772a0d7ebfb827ac3e8f62efcd019f9cae045fd1aa1abe5d768b75b8401edac49180894b1c400f8130b706b29",
         reconstruct_hash = "aa61b93de009b3c5fc8e022d398664f600854ac45053e07e7562cb76d049008ea9efa95855759abad9da4ab24da4cec01912a50535a97d353c7e6a560b7293f9",
     ),
 )

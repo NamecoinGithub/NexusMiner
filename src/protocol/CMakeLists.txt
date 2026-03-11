@@ -43,6 +43,9 @@ target_include_directories(chacha20_test PRIVATE
 # Falcon Quantum Tunnel Vector parity + benchmark test
 add_executable(falcon_qtv_parity_test falcon_qtv_parity_test.cpp)
 target_link_libraries(falcon_qtv_parity_test PRIVATE ${OPENSSL_LIBRARIES})
+target_include_directories(falcon_qtv_parity_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+)
 
 # Genesis Utils and Serialization Helpers Unit Test
 add_executable(genesis_serialization_utils_test genesis_serialization_utils_test.cpp)

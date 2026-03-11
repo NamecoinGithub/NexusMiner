@@ -15,4 +15,4 @@ Test = "8dfed614-e22c-358a-b018-d7645df9e58a"
 test = ["Test"]
 
 [compat]
-julia = "1.9, 1.10, 1.11"
+julia = "1.9, 1.10, 1.11, 1.12"
