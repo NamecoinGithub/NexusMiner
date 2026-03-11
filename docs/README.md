@@ -13,6 +13,7 @@
 | **RISC-V** | [riscv/RISCV-DIAGRAMS.md](riscv/RISCV-DIAGRAMS.md) | Full RISC-V diagram set (diagrams 7–12) |
 | **RISC-V** | [riscv/CPU-INFRASTRUCTURE.md](riscv/CPU-INFRASTRUCTURE.md) | CPU worker thread model, sieve ownership invariant (PR #348) |
 | **RISC-V** | [riscv/CPU-INFRASTRUCTURE-DIAGRAMS.md](riscv/CPU-INFRASTRUCTURE-DIAGRAMS.md) | CPU Infrastructure diagram set (diagrams 13–16) |
+| **RISC-V / Julia** | [current/node/riscv/JuliaProgrammingLanguage/crypto/falcon-quantum-tunnel-vector.md](current/node/riscv/JuliaProgrammingLanguage/crypto/falcon-quantum-tunnel-vector.md) | Falcon Quantum Tunnel Vector research primitive and Julia parity notes |
 | **Authentication** | [current/authentication/falcon-integration.md](current/authentication/falcon-integration.md) | Falcon post-quantum auth guide |
 | **Authentication** | [current/authentication/falcon-keygen-guide.md](current/authentication/falcon-keygen-guide.md) | Key generation |
 | **Authentication** | [current/authentication/genesis-first-protocol.md](current/authentication/genesis-first-protocol.md) | Genesis-based key derivation |
