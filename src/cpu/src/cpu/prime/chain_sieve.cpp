@@ -193,18 +193,6 @@ namespace nexusminer {
             m_logger->info("Generating sieving primes up to {}...", sieving_prime_limit);
             auto start = std::chrono::steady_clock::now();
             primesieve::generate_primes(sieving_start_prime, sieving_prime_limit, &m_sieving_primes);
-            m_wheel_step_tables.resize(m_sieving_primes.size());
-            for (std::size_t i = 0; i < m_sieving_primes.size(); ++i)
-            {
-                const uint32_t sieving_prime = m_sieving_primes[i];
-                auto& wheel_steps = m_wheel_step_tables[i];
-                for (int idx = 0; idx < 8; ++idx)
-                {
-                    wheel_steps.sizes[idx] = sieving_prime * sieve30_gaps[idx];
-                    wheel_steps.bytes[idx] = wheel_steps.sizes[idx] / 30;
-                    wheel_steps.offsets[idx] = wheel_steps.sizes[idx] % 30;
-                }
-            }
             auto end = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
             std::stringstream ss;
@@ -254,27 +242,17 @@ namespace nexusminer {
             for (std::size_t i = 0; i < m_sieving_primes.size(); i++)
             {
                 uint32_t j = m_multiples[i];
-                uint32_t sieve_byte = j / 30;
-                uint32_t sieve_offset = j % 30;
+                uint32_t k = m_sieving_primes[i];
                 //where are we in the wheel
                 int wheel_index = m_wheel_indices[i];
-                const auto& wheel_steps = m_wheel_step_tables[i];
+                int next_wheel_gap = sieve30_gaps[wheel_index];
                 while (j < m_segment_size)
                 {
-                    m_sieve[sieve_byte] &= unset_bit_mask[sieve_offset];
+                    m_sieve[j / 30] &= unset_bit_mask[j % 30];
                     //increment the next multiple of the current prime (rotate the wheel).
-                    j += wheel_steps.sizes[wheel_index];
-                    sieve_byte += wheel_steps.bytes[wheel_index];
-                    sieve_offset += wheel_steps.offsets[wheel_index];
-                    if (sieve_offset >= 30)
-                    {
-                        sieve_offset -= 30;
-                        ++sieve_byte;
-                    }
-                    if (++wheel_index == 8)
-                    {
-                        wheel_index = 0;
-                    }
+                    j += k * next_wheel_gap;
+                    wheel_index = (wheel_index + 1) % 8;
+                    next_wheel_gap = sieve30_gaps[wheel_index];
                 }
                 //save the starting multiple and wheel index for the next segment
                 m_multiples[i] = j - m_segment_size;
