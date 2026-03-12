@@ -165,6 +165,14 @@ namespace nexusminer {
 			  4, 5, 5, 6, 5, 6, 6, 7, 5, 6, 6, 7, 6, 7, 7, 8
 			};
 
+			/// Per-wheel-position step sizes precomputed once per sieving prime.
+			/// byte_delta   = (k * gap) / 30  — whole sieve-bytes to advance
+			/// offset_delta = (k * gap) % 30  — sub-byte remainder
+			struct WheelStep {
+				uint32_t byte_delta;
+				uint8_t  offset_delta;
+			};
+
 			//the sieve.  each bit that is set represents a possible prime.
 			std::vector<uint8_t> m_sieve;
 			std::vector<uint32_t> m_sieving_primes;
