@@ -48,7 +48,6 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
 
     m_last_update_source = UpdateSource::GET_ROUND;
     auto now = std::chrono::steady_clock::now();
-    m_last_height_update = now;
     m_diagnostic.last_round_at = now;
 }
 
@@ -169,7 +168,6 @@ void HeightTracker::OnKeepaliveResponse(uint32_t unified_height,
         m_diagnostic.keepalive_peak_fork_score = fork_score;
     m_last_update_source = UpdateSource::KEEPALIVE;
     auto now = std::chrono::steady_clock::now();
-    m_last_height_update = now;
     m_diagnostic.last_keepalive_ack_at = now;
 }
 
@@ -217,6 +215,7 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
 
     // Timing
     s.last_keepalive_ack_at = m_diagnostic.last_keepalive_ack_at;
+    s.last_push_notification_at = m_diagnostic.last_push_at;
     s.last_height_update = m_last_height_update;
     s.last_template_update = m_last_template_update;
 

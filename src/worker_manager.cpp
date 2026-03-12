@@ -824,11 +824,11 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
         auto push_protocol = m_primary_node_session->get_primary_protocol();
         if (push_protocol) {
             auto ht_snap = push_protocol->get_height_tracker_snapshot();
-            bool push_received = (ht_snap.last_height_update != std::chrono::steady_clock::time_point{});
+            bool push_received = (ht_snap.last_push_notification_at != std::chrono::steady_clock::time_point{});
             if (push_received) {
                 auto now = std::chrono::steady_clock::now();
                 auto since_push_s = std::chrono::duration_cast<std::chrono::seconds>(
-                    now - ht_snap.last_height_update).count();
+                    now - ht_snap.last_push_notification_at).count();
                 if (since_push_s < PUSH_ALIVE_THRESHOLD_SECONDS) {
                     // Conditional auth guard: suppress duplicate login() only if auth is recent.
                     // If auth has been in-flight longer than 10s it is likely stuck from a dead
@@ -1441,9 +1441,13 @@ void Worker_manager::check_template_health()
                 : INT64_MAX;
             bool ack_recent = keepalive_ack_received && (since_ack_s <= KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS);
 
-            bool push_received = (ht_snap.last_height_update != std::chrono::steady_clock::time_point{});
+            // Use last_push_notification_at — set ONLY by OnPushNotification() (actual BLOCK_AVAILABLE opcodes).
+            // last_height_update was formerly also updated by keepalive ACKs and GET_ROUND, making it
+            // unsuitable for session liveness decisions. last_push_notification_at is the canonical
+            // "is the node pushing to us?" signal for the escape ladder and retry_connect guard.
+            bool push_received = (ht_snap.last_push_notification_at != std::chrono::steady_clock::time_point{});
             int64_t since_push_s = push_received
-                ? std::chrono::duration_cast<std::chrono::seconds>(now - ht_snap.last_height_update).count()
+                ? std::chrono::duration_cast<std::chrono::seconds>(now - ht_snap.last_push_notification_at).count()
                 : INT64_MAX;
             bool push_recent = push_received && (since_push_s <= PUSH_ALIVE_THRESHOLD_SECONDS);
 
@@ -1594,6 +1598,10 @@ void Worker_manager::check_template_health()
     // clear_recovery_state() was somehow bypassed), clear it now so the stats
     // printer stops showing "MINING STOPPED" and the health monitor doesn't
     // keep triggering spurious recoveries on every 30 s tick.
+    //
+    // IMPORTANT: only call clear_recovery_state() AFTER verifying workers actually
+    // received the template. Clearing before confirmation resets m_degraded_since
+    // and the escape ladder timer, preventing Stage 2/3/Hard-Limit from ever firing.
     if (m_degraded_mode) {
         m_logger->warn("[Worker_manager] ⚠️  Valid template exists but m_degraded_mode=true — clearing outdated degraded flag");
         bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
@@ -1605,11 +1613,20 @@ void Worker_manager::check_template_health()
             clear_recovery_state();
         } else {
             // Workers are dead — restart them and re-feed the template.
+            // Only clear recovery state if the template was successfully delivered.
+            // If feed fails, keep degraded mode so the escape ladder can proceed.
             m_logger->info("[Worker_manager] Belt-and-suspenders: workers dead, restarting and re-feeding template");
             create_workers();
-            clear_recovery_state();
             // Re-feed the template so the newly created workers receive it.
-            template_interface->feed_current_template();
+            bool fed = template_interface->feed_current_template();
+            if (fed) {
+                m_logger->info("[Worker_manager] ✅ Belt-and-suspenders recovery: template fed to workers — clearing degraded mode");
+                clear_recovery_state();
+            } else {
+                m_logger->error("[Worker_manager] Belt-and-suspenders recovery FAILED: "
+                                "workers created but template feed returned false — keeping degraded mode for escape ladder");
+                // Do NOT call clear_recovery_state() — let the escape ladder proceed
+            }
         }
     }
 
