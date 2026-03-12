@@ -1624,7 +1624,8 @@ void Worker_manager::check_template_health()
                 clear_recovery_state();
             } else {
                 m_logger->error("[Worker_manager] Belt-and-suspenders recovery FAILED: "
-                                "workers created but template feed returned false — keeping degraded mode for escape ladder");
+                                "workers created but template feed returned false — keeping degraded mode for escape ladder. "
+                                "Check that workers are properly configured and the template interface has a registered feed handler.");
                 // Do NOT call clear_recovery_state() — let the escape ladder proceed
             }
         }
