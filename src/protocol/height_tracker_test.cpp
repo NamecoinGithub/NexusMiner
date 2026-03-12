@@ -1377,6 +1377,64 @@ void test_on_template_received_sets_template_unified_height() {
 }
 
 // ============================================================================
+// Test 36: last_push_notification_at is set ONLY by OnPushNotification —
+//          not by OnKeepaliveResponse or OnGetRound.
+//          last_height_update is also set ONLY by OnPushNotification (Bug #1 fix).
+// ============================================================================
+void test_push_notification_at_isolated_from_keepalive_and_getround() {
+    std::cout << "\nTest 36: last_push_notification_at set only by push, not by keepalive or GET_ROUND\n";
+    HeightTracker tracker;
+
+    // After keepalive only, last_push_notification_at must remain epoch (unset).
+    tracker.OnKeepaliveResponse(6000, 450, 800, 999, 0xCAFEBABEu, 0);
+    auto snap = tracker.GetSnapshot();
+    print_test_result("last_push_notification_at == epoch after keepalive only",
+                      snap.last_push_notification_at == std::chrono::steady_clock::time_point{});
+    // last_height_update must also remain epoch after keepalive (Bug #1 fix)
+    print_test_result("last_height_update == epoch after keepalive only (Bug #1 fix)",
+                      snap.last_height_update == std::chrono::steady_clock::time_point{});
+
+    // After GET_ROUND only, last_push_notification_at must remain epoch.
+    tracker.OnGetRound(6001, 451, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    print_test_result("last_push_notification_at == epoch after GET_ROUND only",
+                      snap.last_push_notification_at == std::chrono::steady_clock::time_point{});
+    // last_height_update must also remain epoch after GET_ROUND (Bug #3 fix)
+    print_test_result("last_height_update == epoch after GET_ROUND only (Bug #3 fix)",
+                      snap.last_height_update == std::chrono::steady_clock::time_point{});
+
+    // After OnPushNotification, last_push_notification_at and last_height_update must be set.
+    tracker.OnPushNotification(6002, 452, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    print_test_result("last_push_notification_at set after OnPushNotification",
+                      snap.last_push_notification_at != std::chrono::steady_clock::time_point{});
+    print_test_result("last_height_update set after OnPushNotification",
+                      snap.last_height_update != std::chrono::steady_clock::time_point{});
+
+    // Both timestamps must be consistent (same push event)
+    print_test_result("last_push_notification_at == last_height_update after push",
+                      snap.last_push_notification_at == snap.last_height_update);
+
+    // A subsequent keepalive must NOT advance last_push_notification_at or last_height_update.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    auto push_time = snap.last_push_notification_at;
+    tracker.OnKeepaliveResponse(6005, 455, 805, 999, 0u, 0u);
+    snap = tracker.GetSnapshot();
+    print_test_result("last_push_notification_at unchanged after subsequent keepalive",
+                      snap.last_push_notification_at == push_time);
+    print_test_result("last_height_update unchanged after subsequent keepalive",
+                      snap.last_height_update == push_time);
+
+    // A subsequent GET_ROUND must NOT advance last_push_notification_at or last_height_update.
+    tracker.OnGetRound(6006, 456, 0x1d00ffff);
+    snap = tracker.GetSnapshot();
+    print_test_result("last_push_notification_at unchanged after subsequent GET_ROUND",
+                      snap.last_push_notification_at == push_time);
+    print_test_result("last_height_update unchanged after subsequent GET_ROUND",
+                      snap.last_height_update == push_time);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -1424,6 +1482,7 @@ int main() {
     test_diagnostic_latest_received_at();
     test_advance_channel_target_updates_canonical();
     test_on_template_received_sets_template_unified_height();
+    test_push_notification_at_isolated_from_keepalive_and_getround();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

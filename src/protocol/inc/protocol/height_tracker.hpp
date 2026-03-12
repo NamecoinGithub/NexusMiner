@@ -245,7 +245,18 @@ public:
         // ── Keepalive timing ───────────────────────────────────────────────────
         std::chrono::steady_clock::time_point last_keepalive_ack_at{}; ///< Time of last OnKeepaliveResponse() call
 
-        /// Time of last push/GET_ROUND update
+        /// Time of last actual push notification (PRIME/HASH_BLOCK_AVAILABLE opcode ONLY).
+        /// NOT updated by keepalive ACKs or GET_ROUND responses.
+        /// Use this field — not last_height_update — for session liveness decisions
+        /// (escape ladder push_recent, retry_connect guard). This is the canonical
+        /// "is the node pushing to us?" signal.
+        std::chrono::steady_clock::time_point last_push_notification_at{};
+
+        /// Time of last push update (set ONLY by OnPushNotification — NOT by keepalive or GET_ROUND).
+        /// Serves the temporal post-push guard in check_template_health(): comparing
+        /// last_template_update >= last_height_update answers "was the template received
+        /// after the last push?" (doom-loop prevention). Use last_push_notification_at —
+        /// not this field — for session liveness decisions (escape ladder, retry_connect).
         std::chrono::steady_clock::time_point last_height_update{};
         /// Time of last template update
         std::chrono::steady_clock::time_point last_template_update{};
