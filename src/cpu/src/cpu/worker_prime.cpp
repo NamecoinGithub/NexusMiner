@@ -372,6 +372,7 @@ void Worker_prime::run()
 	uint64_t low = 0;
 	uint64_t range_searched_this_cycle = 0;
 
+	constexpr int64_t diagnostics_interval_ms = 30000;  // emit sieve diagnostics every 30 seconds
 	auto start = std::chrono::steady_clock::now();
 	auto interval_start = std::chrono::steady_clock::now();
 
@@ -501,37 +502,48 @@ void Worker_prime::run()
 				iteration_end - m_cpu_tracking_start);
 		}
 		
-		//debug
 		auto end = std::chrono::steady_clock::now();
 		auto interval_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - interval_start);
-		bool print_debug = false;
-		if (print_debug && interval_elapsed.count() > 10000)
+		if (interval_elapsed.count() > diagnostics_interval_ms)  // emit diagnostics every 30 seconds
 		{
-			std::cout << "--debug--" << std::endl;
-			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-			elapsed_ms = elapsed.count();
-			double chains_per_mm = 1.0e6 * m_segmented_sieve->m_chain_count / m_range_searched;
-			double chains_per_sec = 1.0e3 * m_segmented_sieve->m_chain_count / elapsed_ms;
-			double fermat_positive_rate = 1.0 * m_segmented_sieve->m_fermat_prime_count / m_segmented_sieve->m_fermat_test_count;
-			double fermat_tests_per_chain = 1.0 * m_segmented_sieve->m_fermat_test_count / m_segmented_sieve->m_chain_count;
-			std::cout << std::fixed << std::setprecision(2) << m_range_searched / 1.0e9 << " billion integers searched." <<
-				" Found " << m_segmented_sieve->m_chain_count << " chain candidates. (" << chains_per_mm << " chains per million integers)" << std::endl;
-			std::cout << "Fermat Tests: " << m_segmented_sieve->m_fermat_test_count << " Fermat Primes: " << m_segmented_sieve->m_fermat_prime_count <<
-				" Fermat Positive Rate: " << std::fixed << std::setprecision(3) <<
-				100.0 * fermat_positive_rate << "% Fermat tests per million integers sieved: " <<
-				1.0e6 * m_segmented_sieve->m_fermat_test_count / m_range_searched << std::endl;
+			auto elapsed  = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+			elapsed_ms    = elapsed.count();
 
-			std::cout << "Search rate: " << std::fixed << std::setprecision(1) << range_searched_this_cycle / (elapsed.count() * 1.0e3) << " million integers per second." << std::endl;
-			double predicted_8chain_positivity_rate = std::pow(fermat_positive_rate, 8);
-			//std::cout << "Predicted chains tested to find one Fermat 8-chains: " << 1 / predicted_8chain_positivity_rate << std::endl;
-			//double predicted_days_between_8chains = 1.0 / (predicted_8chain_positivity_rate * chains_per_sec * 3600 * 24);
-			//std::cout << "Predicted days between 8 chains per core: " << std::fixed << std::setprecision(2) << predicted_days_between_8chains << std::endl;
-			std::cout << "Elapsed time: " << std::fixed << std::setprecision(2) << elapsed_ms / 1000.0 << "s. Sieving: " <<
-				100.0 * sieving_ms / elapsed_ms << "% Chain filtering: " << 100.0 * find_chains_ms / elapsed_ms
-				<< "% Fermat testing: " << 100.0 * test_chains_ms / elapsed_ms << "% Other: " <<
-				100.0 * (elapsed_ms - (sieving_ms + find_chains_ms + test_chains_ms)) / elapsed_ms << "%" << std::endl;
+			double chains_per_mm        = (m_range_searched > 0)
+				? 1.0e6 * m_segmented_sieve->m_chain_count / (double)m_range_searched : 0.0;
+			double chains_per_sec       = (elapsed_ms > 0)
+				? 1.0e3 * m_segmented_sieve->m_chain_count / (double)elapsed_ms : 0.0;
+			double fermat_positive_rate = (m_segmented_sieve->m_fermat_test_count > 0)
+				? 1.0 * m_segmented_sieve->m_fermat_prime_count / m_segmented_sieve->m_fermat_test_count
+				: 0.0;
+			double search_rate_mips = (elapsed.count() > 0)
+				? range_searched_this_cycle / (elapsed.count() * 1.0e3) : 0.0;
+
+			uint64_t sieve_calls  = m_segmented_sieve->m_diag_sieve_calls;
+			uint64_t inner_hits   = m_segmented_sieve->m_diag_inner_hits;
+			double   hits_per_seg = (sieve_calls > 0) ? (double)inner_hits / sieve_calls : 0.0;
+			double   sort_ms      = m_segmented_sieve->m_diag_sort_us / 1000.0;
+			uint32_t prime_count  = m_segmented_sieve->m_diag_prime_count;
+
+			m_logger->info(m_log_leader + "── Sieve Diagnostics (PR1/AoS) ─────────────────────────");
+			m_logger->info(m_log_leader + "  Range: {:.2f}B integers | Rate: {:.1f} Mint/s",
+				m_range_searched / 1.0e9, search_rate_mips);
+			m_logger->info(m_log_leader + "  Chains: {} candidates | {:.2f}/Mint | {:.1f}/s",
+				m_segmented_sieve->m_chain_count, chains_per_mm, chains_per_sec);
+			m_logger->info(m_log_leader + "  Fermat: {} tests | {} primes | {:.3f}% positive",
+				m_segmented_sieve->m_fermat_test_count,
+				m_segmented_sieve->m_fermat_prime_count,
+				100.0 * fermat_positive_rate);
+			m_logger->info(m_log_leader + "  AoS: {} primes | {} seg calls | {:.0f} hits/seg | sort: {:.1f}ms (once/block)",
+				prime_count, sieve_calls, hits_per_seg, sort_ms);
+			m_logger->info(m_log_leader + "  Time — Sieve: {:.1f}% | Chains: {:.1f}% | Fermat: {:.1f}% | Other: {:.1f}%",
+				elapsed_ms > 0 ? 100.0 * sieving_ms    / elapsed_ms : 0.0,
+				elapsed_ms > 0 ? 100.0 * find_chains_ms / elapsed_ms : 0.0,
+				elapsed_ms > 0 ? 100.0 * test_chains_ms / elapsed_ms : 0.0,
+				elapsed_ms > 0 ? 100.0 * (elapsed_ms - sieving_ms - find_chains_ms - test_chains_ms) / elapsed_ms : 0.0);
+			m_logger->info(m_log_leader + "─────────────────────────────────────────────────────");
+
 			interval_start = std::chrono::steady_clock::now();
-			std::cout << std::endl;
 		}
 	}
 
