@@ -189,15 +189,25 @@ namespace nexusminer {
 
         void Sieve::generate_sieving_primes()
         {
-            //generate sieving primes
             m_logger->info("Generating sieving primes up to {}...", sieving_prime_limit);
             auto start = std::chrono::steady_clock::now();
-            primesieve::generate_primes(sieving_start_prime, sieving_prime_limit, &m_sieving_primes);
+
+            // primesieve API requires a std::vector reference — use a temporary.
+            std::vector<uint32_t> tmp_primes;
+            primesieve::generate_primes(sieving_start_prime, sieving_prime_limit, &tmp_primes);
+            m_primes_aos.clear();
+            m_primes_aos.resize(tmp_primes.size());
+            std::transform(tmp_primes.begin(), tmp_primes.end(), m_primes_aos.begin(),
+                [](uint32_t p) -> SievePrime { return { p, 0, 0 }; });  // multiples/indices populated in calculate_starting_multiples
+
             auto end = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
             std::stringstream ss;
-            ss << "Done. " << m_sieving_primes.size() << " primes generated in " << std::fixed << std::setprecision(3) << elapsed.count() / 1000.0 << " seconds.";
+            ss << "Done. " << m_primes_aos.size() << " primes generated in "
+               << std::fixed << std::setprecision(3) << elapsed.count() / 1000.0 << " seconds.";
             m_logger->info(ss.str());
+
+            m_diag_prime_count = static_cast<uint32_t>(m_primes_aos.size());
         }
 
         void Sieve::set_sieve_start(boost::multiprecision::uint1024_t sieve_start)
@@ -217,56 +227,71 @@ namespace nexusminer {
 
         void Sieve::calculate_starting_multiples()
         {
-            //generate starting multiples of the sieving primes
-            m_multiples = {};
-            m_wheel_indices = {};
-            m_logger->info("Calculating starting multiples.");
-            auto start = std::chrono::steady_clock::now();
-            for (auto s : m_sieving_primes)
+            // ── PR1: AoS single-pass build + large-prime-first sort ────────────────────
+            // Fill each SievePrime's multiple and wheel_index fields in one pass,
+            // then sort descending by prime so large (cold, low-hit-count) primes
+            // are processed first. Small primes (high hit-count, warm sieve) run
+            // last, when the 4 MB sieve byte array is already resident in L3.
+            //
+            // This sort is paid ONCE per block template (~every 2 minutes).
+            // Zero cost per sieve_segment() call.
+
+            m_logger->info("Calculating starting multiples (AoS, large-prime-first sort).");
+            auto t0 = std::chrono::steady_clock::now();
+
+            for (auto& sp : m_primes_aos)
             {
-                uint32_t m = get_offset_to_next_multiple(m_sieve_start, s);
-                m_multiples.push_back(m);
-                //where is the starting multiple relative to the wheel
-                int wheel_index = (boost::integer::mod_inverse((int)s, 30) * m) % 30;
-                m_wheel_indices.push_back(sieve30_index[wheel_index]);
+                sp.multiple    = get_offset_to_next_multiple(m_sieve_start, sp.prime);
+                int wi         = (boost::integer::mod_inverse((int)sp.prime, 30) * sp.multiple) % 30;
+                sp.wheel_index = sieve30_index[wi];
             }
-            auto end = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-            //std::stringstream ss;
-            //ss << "Done. (" << std::fixed << std::setprecision(3) << elapsed.count() / 1000.0 << " seconds)";
-            //m_logger->info(ss.str());
+
+            // ── Large-prime-first descending sort ─────────────────────────────────────────
+            // Large primes: stride k/30 >> cache line → cold L3 misses regardless of order.
+            // Small primes: dense hits → bring entire 4 MB sieve into L3.
+            // Processing large primes FIRST while sieve is cold, then small primes LAST
+            // on a now-warm sieve means the high-frequency small-prime hits execute
+            // against L3 instead of DRAM. Sort paid once per block, not per segment.
+            std::sort(m_primes_aos.begin(), m_primes_aos.end(),
+                [](const SievePrime& a, const SievePrime& b) {
+                    return a.prime > b.prime;  // descending: largest prime first
+                });
+
+            auto t1 = std::chrono::steady_clock::now();
+            m_diag_sort_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+
+            m_logger->info("Starting multiples calculated. Sort took {:.1f} ms. {} primes, largest={}, smallest={}.",
+                m_diag_sort_us / 1000.0,
+                m_primes_aos.size(),
+                m_primes_aos.empty() ? 0u : m_primes_aos.front().prime,
+                m_primes_aos.empty() ? 0u : m_primes_aos.back().prime);
         }
 
         void Sieve::sieve_segment()
         {
-            // segment_bytes == sieve_size; loop bound in byte domain avoids per-hit j/30.
             const uint32_t segment_bytes = m_segment_size / 30;
+            uint64_t seg_hits = 0;
 
-            for (std::size_t i = 0; i < m_sieving_primes.size(); i++)
+            for (auto& sp : m_primes_aos)
             {
-                const uint32_t k = m_sieving_primes[i];
-                int wheel_index  = m_wheel_indices[i];
+                const uint32_t k = sp.prime;
+                int wheel_index  = sp.wheel_index;
 
-                // ── Precompute wheel step table for this prime ────────────────────
-                // 8 divisions total here instead of one division per inner-loop hit
-                // (potentially millions per prime per segment call).
                 WheelStep steps[8];
                 for (int w = 0; w < 8; ++w)
                 {
-                    const uint32_t adv = k * static_cast<uint32_t>(sieve30_gaps[w]);
+                    const uint32_t adv    = k * static_cast<uint32_t>(sieve30_gaps[w]);
                     steps[w].byte_delta   = adv / 30;
                     steps[w].offset_delta = static_cast<uint8_t>(adv % 30);
                 }
 
-                // ── Decompose starting multiple into byte + offset domain ──────────
-                uint32_t j = m_multiples[i];
-                uint32_t sieve_byte   = j / 30;  // 1 division per prime — unavoidable
-                uint32_t sieve_offset = j % 30;  // 1 division per prime — unavoidable
+                uint32_t sieve_byte   = sp.multiple / 30;
+                uint32_t sieve_offset = sp.multiple % 30;
 
-                // ── Inner loop: zero integer divisions ────────────────────────────
                 while (sieve_byte < segment_bytes)
                 {
                     m_sieve[sieve_byte] &= unset_bit_mask[sieve_offset];
+                    ++seg_hits;
 
                     const WheelStep& step = steps[wheel_index];
                     sieve_byte   += step.byte_delta;
@@ -279,12 +304,15 @@ namespace nexusminer {
                     wheel_index = (wheel_index + 1) & 7;
                 }
 
-                // ── Save-back: convert byte domain back to j ──────────────────────
-                m_multiples[i]     = sieve_byte * 30 + sieve_offset - m_segment_size;
-                m_wheel_indices[i] = wheel_index;
+                // Write-back into struct fields directly
+                sp.multiple    = sieve_byte * 30 + sieve_offset - m_segment_size;
+                sp.wheel_index = wheel_index;
+                // sp.prime is read-only -- never written
             }
+
+            ++m_diag_sieve_calls;
+            m_diag_inner_hits += seg_hits;
         }
-		
 		//batch sieve on the cpu for debug
         void Sieve::sieve_batch_cpu(uint64_t low)
         {
@@ -330,6 +358,9 @@ namespace nexusminer {
             m_chain_count = 0;
             m_chain_candidate_max_length = 0;
             m_chain_candidate_total_length = 0;
+            m_diag_sieve_calls = 0;
+            m_diag_inner_hits  = 0;
+            m_diag_sort_us     = 0;
         }
 
         //search the sieve for chains that meet the minimum length requirement.  Chains can cross segment boundaries.
