@@ -100,7 +100,8 @@ public:
 
     /**
      * @brief Node shutdown handler: invoked when NODE_SHUTDOWN (0xD0FF) is received from node.
-     * Worker_manager registers this to stop workers and set reconnect backoff.
+     * Worker_manager registers this to stop workers gracefully.
+     * Reconnect backoff is handled automatically by the Solo protocol layer.
      * @param reason Shutdown reason (GRACEFUL=0x01, MAINTENANCE=0x02)
      */
     using Node_shutdown_handler = std::function<void(uint8_t reason)>;
