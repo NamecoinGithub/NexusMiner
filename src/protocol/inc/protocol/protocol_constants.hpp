@@ -157,6 +157,26 @@ namespace ProtocolConstants {
      */
     constexpr int64_t DEGRADED_MODE_HARD_LIMIT_SECONDS = 300;
 
+    /**
+     * Stage 0 fast-reconnect: both-signals-dead threshold (seconds)
+     *
+     * If neither keepalive ACK nor push notification has been received for this
+     * many seconds, the TCP connection is considered certainly dead and the
+     * miner skips the Stage 1/2 ladder, reconnecting immediately.
+     * Cuts recovery time from up to 180 s down to ~30 s for clean disconnects.
+     */
+    constexpr int64_t FAST_RECONNECT_SIGNAL_DEAD_SECONDS = 90;
+
+    /**
+     * Stage 0 fast-reconnect: minimum degraded-mode duration (seconds)
+     *
+     * The fast-reconnect path is only taken when both signals have been dead
+     * for FAST_RECONNECT_SIGNAL_DEAD_SECONDS AND the miner has been in
+     * degraded mode for at least this long — preventing spurious fast-reconnects
+     * on momentary signal gaps at degraded-mode entry.
+     */
+    constexpr int64_t FAST_RECONNECT_DEGRADED_SECONDS = 30;
+
     //==========================================================================
     // Session ID Mismatch Threshold
     //==========================================================================
