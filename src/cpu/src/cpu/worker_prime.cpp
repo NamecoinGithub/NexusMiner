@@ -364,17 +364,8 @@ void Worker_prime::run()
 			m_segmented_sieve->calculate_starting_multiples();
 		}
 		uint32_t segment_size = m_segmented_sieve->get_segment_size();
-		uint64_t find_chains_ms = 0;
-		uint64_t sieving_ms = 0;
-		uint64_t test_chains_ms = 0;
-	uint64_t elapsed_ms = 0;
 	uint64_t high = 0;
 	uint64_t low = 0;
-	uint64_t range_searched_this_cycle = 0;
-
-	constexpr int64_t diagnostics_interval_ms = 30000;  // emit sieve diagnostics every 30 seconds
-	auto start = std::chrono::steady_clock::now();
-	auto interval_start = std::chrono::steady_clock::now();
 
 	// Initialize CPU tracking (protected by mutex to prevent races with update_statistics)
 	{
@@ -406,24 +397,11 @@ void Worker_prime::run()
 		high = low + segment_size - 1;
 		uint64_t sieve_size = (high - low) / 30 + 1;
 		m_range_searched += segment_size;
-		range_searched_this_cycle += segment_size;
 
-		auto sieve_start = std::chrono::steady_clock::now();
 		m_segmented_sieve->sieve_segment();
-		auto sieve_stop = std::chrono::steady_clock::now();
-		auto sieve_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(sieve_stop - sieve_start);
-		sieving_ms += sieve_elapsed.count();
 		if (m_stop) break;  // Check after expensive sieve_segment() operation
-		auto find_chains_start = std::chrono::steady_clock::now();
 		m_segmented_sieve->find_chains(low, false);
-		auto find_chains_stop = std::chrono::steady_clock::now();
-		auto find_chains_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(find_chains_stop - find_chains_start);
-		find_chains_ms += find_chains_elapsed.count();
-		auto test_chains_start = std::chrono::steady_clock::now();
 		m_segmented_sieve->test_chains();
-		auto test_chains_stop = std::chrono::steady_clock::now();
-		auto test_chains_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(test_chains_stop - test_chains_start);
-		test_chains_ms += test_chains_elapsed.count();
 		//check difficulty of any chains that passed through the filter
 		for (auto x : m_segmented_sieve->m_long_chain_starts)
 		{
@@ -501,50 +479,6 @@ void Worker_prime::run()
 			m_cpu_total_time = std::chrono::duration_cast<std::chrono::milliseconds>(
 				iteration_end - m_cpu_tracking_start);
 		}
-		
-		auto end = std::chrono::steady_clock::now();
-		auto interval_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - interval_start);
-		if (interval_elapsed.count() > diagnostics_interval_ms)  // emit diagnostics every 30 seconds
-		{
-			auto elapsed  = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-			elapsed_ms    = elapsed.count();
-
-			double chains_per_mm        = (m_range_searched > 0)
-				? 1.0e6 * m_segmented_sieve->m_chain_count / (double)m_range_searched : 0.0;
-			double chains_per_sec       = (elapsed_ms > 0)
-				? 1.0e3 * m_segmented_sieve->m_chain_count / (double)elapsed_ms : 0.0;
-			double fermat_positive_rate = (m_segmented_sieve->m_fermat_test_count > 0)
-				? 1.0 * m_segmented_sieve->m_fermat_prime_count / m_segmented_sieve->m_fermat_test_count
-				: 0.0;
-			double search_rate_mips = (elapsed.count() > 0)
-				? range_searched_this_cycle / (elapsed.count() * 1.0e3) : 0.0;
-
-			uint64_t sieve_calls  = m_segmented_sieve->m_diag_sieve_calls;
-			uint64_t inner_hits   = m_segmented_sieve->m_diag_inner_hits;
-			double   hits_per_seg = (sieve_calls > 0) ? (double)inner_hits / sieve_calls : 0.0;
-			double   sort_ms      = m_segmented_sieve->m_diag_sort_us / 1000.0;
-			uint32_t prime_count  = m_segmented_sieve->m_diag_prime_count;
-
-			m_logger->info(m_log_leader + "── Sieve Diagnostics (PR1/AoS) ─────────────────────────");
-			m_logger->info(m_log_leader + "  Range: {:.2f}B integers | Rate: {:.1f} Mint/s",
-				m_range_searched / 1.0e9, search_rate_mips);
-			m_logger->info(m_log_leader + "  Chains: {} candidates | {:.2f}/Mint | {:.1f}/s",
-				m_segmented_sieve->m_chain_count, chains_per_mm, chains_per_sec);
-			m_logger->info(m_log_leader + "  Fermat: {} tests | {} primes | {:.3f}% positive",
-				m_segmented_sieve->m_fermat_test_count,
-				m_segmented_sieve->m_fermat_prime_count,
-				100.0 * fermat_positive_rate);
-			m_logger->info(m_log_leader + "  AoS: {} primes | {} seg calls | {:.0f} hits/seg | sort: {:.1f}ms (once/block)",
-				prime_count, sieve_calls, hits_per_seg, sort_ms);
-			m_logger->info(m_log_leader + "  Time — Sieve: {:.1f}% | Chains: {:.1f}% | Fermat: {:.1f}% | Other: {:.1f}%",
-				elapsed_ms > 0 ? 100.0 * sieving_ms    / elapsed_ms : 0.0,
-				elapsed_ms > 0 ? 100.0 * find_chains_ms / elapsed_ms : 0.0,
-				elapsed_ms > 0 ? 100.0 * test_chains_ms / elapsed_ms : 0.0,
-				elapsed_ms > 0 ? 100.0 * (elapsed_ms - sieving_ms - find_chains_ms - test_chains_ms) / elapsed_ms : 0.0);
-			m_logger->info(m_log_leader + "─────────────────────────────────────────────────────");
-
-			interval_start = std::chrono::steady_clock::now();
-		}
 	}
 
 		m_logger->info(m_log_leader + "Mining stopped, waiting for new work...");
@@ -620,6 +554,20 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 	m_primes = 0;
 	m_chains = 0;
 	m_range_searched.store(0);                                     // Reset range delta (atomic)
+
+	// ── PR-A: Sieve diagnostics emitted here on the stats collector thread ──
+	// All m_logger->info() calls for sieve counters live here — NEVER on the mining thread.
+	// The mining thread only does relaxed atomic increments; we do relaxed loads below.
+	if (m_segmented_sieve) {
+		uint64_t calls      = m_segmented_sieve->m_diag_sieve_calls.load(std::memory_order_relaxed);
+		uint64_t hits       = m_segmented_sieve->m_diag_inner_hits.load(std::memory_order_relaxed);
+		uint64_t sort_us    = m_segmented_sieve->m_diag_sort_us.load(std::memory_order_relaxed);
+		uint32_t primes     = m_segmented_sieve->m_diag_prime_count.load(std::memory_order_relaxed);
+		double hits_per_seg = (calls > 0) ? static_cast<double>(hits) / calls : 0.0;
+
+		m_logger->info(m_log_leader + "[Sieve Diag] {} primes | {} seg calls | {:.0f} hits/seg | sort: {:.1f}ms (once/block)",
+			primes, calls, hits_per_seg, sort_us / 1000.0);
+	}
 
 	// Reset CPU-load tracking under mutex to prevent races with mining loop
 	{
