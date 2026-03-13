@@ -90,8 +90,6 @@ namespace nexusminer {
 			static constexpr int sieve30_index[]{ -1,0,-1,-1,-1,-1,-1, 1, -1, -1, -1, 2, -1, 3, -1, -1, -1, 4, -1, 5, -1, -1, -1, 6, -1, -1, -1, -1, -1, 7 };  //reverse lookup table (offset mod 30 to index)
 
 		public:
-			
-			//const uint32_t sieve_size_bytes = Cuda_sieve::m_kernel_sieve_size_bytes;  //size of the sieve in bytes
 			//const uint32_t sieve_size_words = Cuda_sieve::m_kernel_sieve_size_words;  //size of the sieve in words
 			//const uint32_t sieve_size = Cuda_sieve::m_kernel_sieve_size_words;  
 			static constexpr uint32_t m_sieve_range_per_word = Cuda_sieve::m_sieve_word_range;  
@@ -143,6 +141,23 @@ namespace nexusminer {
 
 			std::vector<uint8_t>m_small_primes;
 			std::vector<uint16_t>m_small_prime_offsets;
+			// GPU sieve layout review (vs. CPU AoS in chain_sieve.hpp):
+			// The CPU sieve was refactored from SoA to AoS (m_primes_aos) for cache-line
+			// locality in its hot sieve_segment() loop, which runs entirely on the CPU.
+			//
+			// The GPU sieve intentionally retains SoA (separate prime and multiple arrays)
+			// because:
+			//   1. CUDA kernels read each array in a warp-stride pattern — SoA provides
+			//      contiguous per-field access that maps to coalesced global-memory loads.
+			//      AoS would interleave fields and break coalescing, increasing memory
+			//      transaction count per warp.
+			//   2. Cuda_sieve::load_sieve() / init_sieve() require separate raw pointers
+			//      for primes and multiples; the CUDA API cannot take an AoS pointer.
+			//   3. The CPU-side calculate_starting_multiples() that writes these arrays is
+			//      a one-time per-block setup call, not a hot path, so any per-call
+			//      cache-line overhead is negligible.
+			//
+			// Conclusion: the GPU SoA layout is correct and should NOT be converted to AoS.
 			std::vector<uint32_t> m_sieving_primes;
 			std::vector<uint32_t> m_multiples;
 			std::vector<Prime_plus_multiple_32> m_medium_primes_plus_multiples;

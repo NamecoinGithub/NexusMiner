@@ -1584,12 +1584,10 @@ void Worker_manager::check_template_health()
             // If neither ACK nor push has been received for 90+ seconds, the TCP connection
             // is almost certainly dead. Skip the Stage 1/2 ladder and reconnect immediately.
             // This cuts recovery time from up to 180s down to ~30s for clean disconnects.
-            constexpr int64_t FAST_RECONNECT_SIGNAL_DEAD_SECONDS = 90;
-            constexpr int64_t FAST_RECONNECT_DEGRADED_SECONDS = 30;
             if (!ack_recent && !push_recent &&
-                since_ack_s > FAST_RECONNECT_SIGNAL_DEAD_SECONDS &&
-                since_push_s > FAST_RECONNECT_SIGNAL_DEAD_SECONDS &&
-                degraded_duration > FAST_RECONNECT_DEGRADED_SECONDS &&
+                since_ack_s > protocol::ProtocolConstants::FAST_RECONNECT_SIGNAL_DEAD_SECONDS &&
+                since_push_s > protocol::ProtocolConstants::FAST_RECONNECT_SIGNAL_DEAD_SECONDS &&
+                degraded_duration > protocol::ProtocolConstants::FAST_RECONNECT_DEGRADED_SECONDS &&
                 !m_reconnect_in_progress)
             {
                 m_logger->error("[Worker_manager] Stage 0 FAST RECONNECT: both signals dead "
