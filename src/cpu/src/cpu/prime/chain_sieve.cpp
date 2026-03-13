@@ -207,7 +207,7 @@ namespace nexusminer {
                << std::fixed << std::setprecision(3) << elapsed.count() / 1000.0 << " seconds.";
             m_logger->info(ss.str());
 
-            m_diag_prime_count.store(static_cast<uint32_t>(m_primes_aos.size()), std::memory_order_relaxed);
+            m_diag_prime_count = static_cast<uint32_t>(m_primes_aos.size());
         }
 
         void Sieve::set_sieve_start(boost::multiprecision::uint1024_t sieve_start)
@@ -258,12 +258,10 @@ namespace nexusminer {
                 });
 
             auto t1 = std::chrono::steady_clock::now();
-            m_diag_sort_us.store(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count()),
-                std::memory_order_relaxed);
+            m_diag_sort_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
 
             m_logger->info("Starting multiples calculated. Sort took {:.1f} ms. {} primes, largest={}, smallest={}.",
-                m_diag_sort_us.load(std::memory_order_relaxed) / 1000.0,
+                m_diag_sort_us / 1000.0,
                 m_primes_aos.size(),
                 m_primes_aos.empty() ? 0u : m_primes_aos.front().prime,
                 m_primes_aos.empty() ? 0u : m_primes_aos.back().prime);
@@ -312,9 +310,8 @@ namespace nexusminer {
                 // sp.prime is read-only -- never written
             }
 
-            // Atomic relaxed stores — safe to read from stats thread without lock
-            m_diag_sieve_calls.fetch_add(1, std::memory_order_relaxed);
-            m_diag_inner_hits.fetch_add(seg_hits, std::memory_order_relaxed);
+            ++m_diag_sieve_calls;
+            m_diag_inner_hits += seg_hits;
         }
 		//batch sieve on the cpu for debug
         void Sieve::sieve_batch_cpu(uint64_t low)
@@ -361,9 +358,9 @@ namespace nexusminer {
             m_chain_count = 0;
             m_chain_candidate_max_length = 0;
             m_chain_candidate_total_length = 0;
-            m_diag_sieve_calls.store(0, std::memory_order_relaxed);
-            m_diag_inner_hits.store(0, std::memory_order_relaxed);
-            m_diag_sort_us.store(0, std::memory_order_relaxed);
+            m_diag_sieve_calls = 0;
+            m_diag_inner_hits  = 0;
+            m_diag_sort_us     = 0;
         }
 
         //search the sieve for chains that meet the minimum length requirement.  Chains can cross segment boundaries.

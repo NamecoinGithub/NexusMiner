@@ -41,11 +41,6 @@ public:
     bool is_running() const override { return m_running.load(); }
     void update_statistics(stats::Collector& stats_collector) override;
 
-    // Expose sieve for off-thread diagnostic reads (PR-A)
-    // Returns const raw pointer — caller must not store or delete it.
-    // Lifetime: owned by Worker_prime, valid while worker is alive.
-    const cpu::Sieve* get_sieve() const { return m_segmented_sieve.get(); }
-
 private:
 
     void run();
