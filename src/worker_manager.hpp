@@ -175,6 +175,10 @@ private:
     // Guards against processing stale callbacks during reconnect window.
     bool m_reconnect_in_progress{false};
 
+    // Track when retry_connect() set m_reconnect_in_progress = true.
+    // Used by check_template_health() to timeout a stalled reconnect attempt.
+    std::chrono::steady_clock::time_point m_reconnect_started_at{};
+
     // ── Session authentication retry state (infinite loop prevention) ─────────
     uint32_t m_session_auth_fail_count{0};          // consecutive session_id=0 failures on primary
 
