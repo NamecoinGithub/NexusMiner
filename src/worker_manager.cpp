@@ -79,6 +79,12 @@ namespace {
     // Only force a hard TCP reconnect when BOTH signals are stale.
     constexpr int64_t PUSH_ALIVE_THRESHOLD_SECONDS = protocol::ProtocolConstants::PUSH_LIVENESS_THRESHOLD_SECONDS;
 
+    // Fix A: push-alive guard in retry_connect() uses a much shorter window (30s).
+    // A push received in the last 30s proves the TCP connection is alive RIGHT NOW.
+    // A push received 5 minutes ago proves nothing about current TCP state and must
+    // not suppress a TCP reconnect — that causes the doom loop.
+    constexpr int64_t RETRY_CONNECT_PUSH_LIVE_SECONDS = 30;
+
     // Aggressive secondary reconnect delay during degraded mode.
     // Unified height drift threshold: if HeightTracker.unified_height exceeds
     // template.block.nHeight by more than this many blocks, the template is
@@ -600,6 +606,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 m_session_auth_fail_count = 0;
                 // Clear reconnect guard now that connection is fully authenticated
                 m_reconnect_in_progress = false;
+                m_reconnect_started_at = {};
 
                 if (m_using_failover)
                 {
@@ -829,7 +836,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                 auto now = std::chrono::steady_clock::now();
                 auto since_push_s = std::chrono::duration_cast<std::chrono::seconds>(
                     now - ht_snap.last_push_notification_at).count();
-                if (since_push_s < PUSH_ALIVE_THRESHOLD_SECONDS) {
+                if (since_push_s < RETRY_CONNECT_PUSH_LIVE_SECONDS) {
                     // Conditional auth guard: suppress duplicate login() only if auth is recent.
                     // If auth has been in-flight longer than 10s it is likely stuck from a dead
                     // TCP mid-handshake — reset and retry rather than silently blocking.
@@ -868,6 +875,10 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                         m_logger->error("[Worker_manager] retry_connect guard: failed to generate re-auth payload");
                     }
                     return;
+                } else {
+                    m_logger->warn("[Worker_manager] retry_connect() push guard expired "
+                                   "(push {}s ago > {}s threshold) — proceeding with TCP reconnect",
+                                   since_push_s, RETRY_CONNECT_PUSH_LIVE_SECONDS);
                 }
             }
         }
@@ -875,6 +886,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
 
     // Set reconnect guard to prevent stale RX callbacks from processing during reconnect
     m_reconnect_in_progress = true;
+    m_reconnect_started_at = std::chrono::steady_clock::now();
 
     // Reset NodeSession for reconnection
     if (m_primary_node_session) {
@@ -1017,6 +1029,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 
         // Clear reconnect guard now that connection is fully authenticated
         self->m_reconnect_in_progress = false;
+        self->m_reconnect_started_at = {};
 
         // Start timers once only (guarded by flags)
         auto const print_statistics_interval = self->m_config.get_print_statistics_interval();
@@ -1415,6 +1428,28 @@ void Worker_manager::check_template_health()
         return;
     }
 
+    // Fix B: Guard against a stalled reconnect. If m_reconnect_in_progress has been true
+    // for more than 60 seconds, the TCP connect attempt itself has likely failed silently.
+    // Clear the flag so the escape ladder is not indefinitely suppressed.
+    if (m_reconnect_in_progress) {
+        if (m_reconnect_started_at == std::chrono::steady_clock::time_point{}) {
+            // m_reconnect_started_at should always be set alongside m_reconnect_in_progress.
+            // If it is unset here, that indicates a logic error — log and recover defensively.
+            m_logger->warn("[Worker_manager] m_reconnect_in_progress=true but m_reconnect_started_at unset — "
+                           "logic error detected; stamping now to allow timeout guard to function");
+            m_reconnect_started_at = std::chrono::steady_clock::now();
+        }
+        auto reconnect_age_s = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - m_reconnect_started_at).count();
+        constexpr int64_t MAX_RECONNECT_WAIT_SECONDS = 60;
+        if (reconnect_age_s > MAX_RECONNECT_WAIT_SECONDS) {
+            m_logger->warn("[Worker_manager] Reconnect in-progress for {}s > {}s — clearing stale flag",
+                           reconnect_age_s, MAX_RECONNECT_WAIT_SECONDS);
+            m_reconnect_in_progress = false;
+            m_reconnect_started_at = {};
+        }
+    }
+
     auto* template_interface = solo_protocol->get_template_interface();
     if (!template_interface) {
         return;
@@ -1542,6 +1577,27 @@ void Worker_manager::check_template_health()
                                "TCP session alive, retrying template request (node-side responder silent)",
                                since_ack_s, since_push_s);
                 retry_template_request(true);
+                return;
+            }
+
+            // ── Stage 0 (fast path): both signals dead for > 90s and degraded > 30s ──────────
+            // If neither ACK nor push has been received for 90+ seconds, the TCP connection
+            // is almost certainly dead. Skip the Stage 1/2 ladder and reconnect immediately.
+            // This cuts recovery time from up to 180s down to ~30s for clean disconnects.
+            constexpr int64_t FAST_RECONNECT_SIGNAL_DEAD_SECONDS = 90;
+            constexpr int64_t FAST_RECONNECT_DEGRADED_SECONDS = 30;
+            if (!ack_recent && !push_recent &&
+                since_ack_s > FAST_RECONNECT_SIGNAL_DEAD_SECONDS &&
+                since_push_s > FAST_RECONNECT_SIGNAL_DEAD_SECONDS &&
+                degraded_duration > FAST_RECONNECT_DEGRADED_SECONDS &&
+                !m_reconnect_in_progress)
+            {
+                m_logger->error("[Worker_manager] Stage 0 FAST RECONNECT: both signals dead "
+                                "(ACK {}s ago, push {}s ago, {}s degraded) — skipping ladder",
+                                since_ack_s == INT64_MAX ? -1LL : since_ack_s,
+                                since_push_s == INT64_MAX ? -1LL : since_push_s,
+                                degraded_duration);
+                retry_connect(m_primary_endpoint);
                 return;
             }
 
