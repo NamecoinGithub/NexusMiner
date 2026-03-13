@@ -167,12 +167,18 @@ void test_node_session_handlers()
         session_start_handler_called = true;
     });
 
+    bool node_shutdown_handler_called = false;
+    node_session->set_node_shutdown_handler([&node_shutdown_handler_called](uint8_t) {
+        node_shutdown_handler_called = true;
+    });
+
     std::cout << "  ✓ Template handler registered" << std::endl;
     std::cout << "  ✓ Block accepted handler registered" << std::endl;
     std::cout << "  ✓ Recovery handler registered" << std::endl;
     std::cout << "  ✓ Session expired handler registered" << std::endl;
     std::cout << "  ✓ Session authenticated handler registered" << std::endl;
     std::cout << "  ✓ Session start handler registered" << std::endl;
+    std::cout << "  ✓ Node shutdown handler registered" << std::endl;
 }
 
 void test_node_session_protocol_access()
