@@ -3,8 +3,6 @@
 
 #include <vector>
 #include <atomic>
-#include <algorithm>
-#include <numeric>
 #include <spdlog/spdlog.h>
 #include <boost/multiprecision/cpp_int.hpp>
 #include <boost/multiprecision/gmp.hpp>
@@ -103,14 +101,6 @@ namespace nexusminer {
 			uint64_t m_chain_candidate_total_length = 0;
 			double m_best_chain = 0;
 
-			// ── Diagnostic counters (PR1) ──────────────────────────────────────────
-			// Accumulate across segment calls; reset by reset_stats(). Read by worker_prime for periodic logging.
-			// Thread-local to each Sieve instance — no mutex needed.
-			uint64_t m_diag_sieve_calls = 0;   // total sieve_segment() invocations
-			uint64_t m_diag_inner_hits  = 0;   // total inner-loop sieve write hits
-			uint64_t m_diag_sort_us     = 0;   // µs spent in calculate_starting_multiples sort (last call)
-			uint32_t m_diag_prime_count = 0;   // number of sieving primes in m_primes_aos
-
 		private:
 			class Fermat_test_candidate {
 			public:
@@ -183,29 +173,11 @@ namespace nexusminer {
 				uint8_t  offset_delta;
 			};
 
-			// ── PR1: AoS SievePrime — replaces three separate ~62 MB vectors ──────────
-			// OLD layout (SoA): m_sieving_primes[], m_multiples[], m_wheel_indices[]
-			//   Each outer-loop iteration fetches from 3 independent DRAM regions.
-			//   A 64-byte cache line delivers values from only ONE of the three arrays.
-			//   The CPU must issue 3 independent prefetch/load streams that thrash in L3.
-			//
-			// NEW layout (AoS): one contiguous SievePrime[] at 12 bytes per entry.
-			//   A 64-byte cache line delivers 5 complete SievePrime entries.
-			//   The outer-loop prefetcher sees a single stride-12 stream and loads
-			//   prime, multiple, AND wheel_index for each entry in one fetch.
-			//
-			// Memory footprint is unchanged (~188 MB). No mutex changes required —
-			// m_primes_aos is exclusively owned by the sieve worker thread.
-			struct SievePrime {
-				uint32_t prime;        // 4 bytes: was m_sieving_primes[i]
-				uint32_t multiple;     // 4 bytes: was m_multiples[i]
-				int32_t  wheel_index;  // 4 bytes: was m_wheel_indices[i]
-				// Total: 12 bytes, naturally aligned, 5.33 entries per 64-byte cache line
-			};
-
 			//the sieve.  each bit that is set represents a possible prime.
 			std::vector<uint8_t> m_sieve;
-			std::vector<SievePrime> m_primes_aos;
+			std::vector<uint32_t> m_sieving_primes;
+			std::vector<uint32_t> m_multiples;
+			std::vector<int> m_wheel_indices;
 			std::vector<Chain> m_chain;
 			std::vector<uint8_t> m_sieve_results;  //accumulated results of sieving
 			boost::multiprecision::uint1024_t m_sieve_start;  //starting integer for the sieve.  This must be a multiple of 30.
