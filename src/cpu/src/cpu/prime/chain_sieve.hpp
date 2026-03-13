@@ -103,14 +103,13 @@ namespace nexusminer {
 			uint64_t m_chain_candidate_total_length = 0;
 			double m_best_chain = 0;
 
-			// ── PR-A diagnostic counters: written ONLY by mining thread, read ONLY by stats thread ──
-			// std::atomic so the stats collector thread can safely read without a lock.
-			// The mining thread does only ++/+= (relaxed stores); the stats thread does
-			// .load(std::memory_order_relaxed) — no synchronisation needed beyond atomicity.
-			std::atomic<uint64_t> m_diag_sieve_calls{0};    // total sieve_segment() calls since last reset
-			std::atomic<uint64_t> m_diag_inner_hits{0};     // total inner-loop sieve-write hits since last reset
-			std::atomic<uint64_t> m_diag_sort_us{0};        // µs for the last calculate_starting_multiples sort
-			std::atomic<uint32_t> m_diag_prime_count{0};    // count of sieving primes in m_primes_aos
+			// ── Diagnostic counters (PR1) ──────────────────────────────────────────
+			// Accumulate across segment calls; reset by reset_stats(). Read by worker_prime for periodic logging.
+			// Thread-local to each Sieve instance — no mutex needed.
+			uint64_t m_diag_sieve_calls = 0;   // total sieve_segment() invocations
+			uint64_t m_diag_inner_hits  = 0;   // total inner-loop sieve write hits
+			uint64_t m_diag_sort_us     = 0;   // µs spent in calculate_starting_multiples sort (last call)
+			uint32_t m_diag_prime_count = 0;   // number of sieving primes in m_primes_aos
 
 		private:
 			class Fermat_test_candidate {
