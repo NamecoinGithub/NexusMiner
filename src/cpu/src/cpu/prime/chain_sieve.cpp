@@ -192,12 +192,25 @@ namespace nexusminer {
             //generate sieving primes
             m_logger->info("Generating sieving primes up to {}...", sieving_prime_limit);
             auto start = std::chrono::steady_clock::now();
-            primesieve::generate_primes(sieving_start_prime, sieving_prime_limit, &m_sieving_primes);
+            std::vector<uint32_t> temp_primes;
+            primesieve::generate_primes(sieving_start_prime, sieving_prime_limit, &temp_primes);
             auto end = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
             std::stringstream ss;
-            ss << "Done. " << m_sieving_primes.size() << " primes generated in " << std::fixed << std::setprecision(3) << elapsed.count() / 1000.0 << " seconds.";
+            ss << "Done. " << temp_primes.size() << " primes generated in " << std::fixed << std::setprecision(3) << elapsed.count() / 1000.0 << " seconds.";
             m_logger->info(ss.str());
+
+            // Build AoS from temporary vector
+            m_primes_aos.resize(temp_primes.size());
+            for (size_t i = 0; i < temp_primes.size(); ++i)
+            {
+                m_primes_aos[i].prime       = temp_primes[i];
+                m_primes_aos[i].multiple    = 0;   // calculated per-block in calculate_starting_multiples()
+                m_primes_aos[i].wheel_index = 0;
+            }
+            // free temporary storage (~16 MB)
+            temp_primes.clear();
+            temp_primes.shrink_to_fit();
         }
 
         void Sieve::set_sieve_start(boost::multiprecision::uint1024_t sieve_start)
@@ -218,34 +231,42 @@ namespace nexusminer {
         void Sieve::calculate_starting_multiples()
         {
             //generate starting multiples of the sieving primes
-            m_multiples = {};
-            m_wheel_indices = {};
             m_logger->info("Calculating starting multiples.");
-            auto start = std::chrono::steady_clock::now();
-            for (auto s : m_sieving_primes)
+            for (auto& sp : m_primes_aos)
             {
-                uint32_t m = get_offset_to_next_multiple(m_sieve_start, s);
-                m_multiples.push_back(m);
+                uint32_t m = get_offset_to_next_multiple(m_sieve_start, sp.prime);
+                sp.multiple = m;
                 //where is the starting multiple relative to the wheel
-                int wheel_index = (boost::integer::mod_inverse((int)s, 30) * m) % 30;
-                m_wheel_indices.push_back(sieve30_index[wheel_index]);
+                int wheel_index = (boost::integer::mod_inverse((int)sp.prime, 30) * m) % 30;
+                sp.wheel_index = sieve30_index[wheel_index];
             }
-            auto end = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-            //std::stringstream ss;
-            //ss << "Done. (" << std::fixed << std::setprecision(3) << elapsed.count() / 1000.0 << " seconds)";
-            //m_logger->info(ss.str());
+
+            // Sort large-prime-first: large primes advance the multiple pointer the fastest
+            // through the sieve bitmap, reducing the number of inner-loop iterations for
+            // the first N primes and improving cache hit rate on the sieve[] array.
+            auto sort_start = std::chrono::steady_clock::now();
+            std::sort(m_primes_aos.begin(), m_primes_aos.end(),
+                [](const SievePrime& a, const SievePrime& b) { return a.prime > b.prime; });
+            auto sort_end = std::chrono::steady_clock::now();
+
+            // Update diagnostic: record sort latency for the stats thread (relaxed — no fence needed)
+            uint64_t sort_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                sort_end - sort_start).count();
+            m_diag_sort_us.store(sort_us, std::memory_order_relaxed);
+            m_diag_prime_count.store(static_cast<uint32_t>(m_primes_aos.size()),
+                                      std::memory_order_relaxed);
         }
 
         void Sieve::sieve_segment()
         {
             // segment_bytes == sieve_size; loop bound in byte domain avoids per-hit j/30.
             const uint32_t segment_bytes = m_segment_size / 30;
+            uint64_t seg_hits = 0;
 
-            for (std::size_t i = 0; i < m_sieving_primes.size(); i++)
+            for (auto& sp : m_primes_aos)
             {
-                const uint32_t k = m_sieving_primes[i];
-                int wheel_index  = m_wheel_indices[i];
+                const uint32_t k = sp.prime;
+                int wheel_index  = sp.wheel_index;
 
                 // ── Precompute wheel step table for this prime ────────────────────
                 // 8 divisions total here instead of one division per inner-loop hit
@@ -259,7 +280,7 @@ namespace nexusminer {
                 }
 
                 // ── Decompose starting multiple into byte + offset domain ──────────
-                uint32_t j = m_multiples[i];
+                uint32_t j = sp.multiple;
                 uint32_t sieve_byte   = j / 30;  // 1 division per prime — unavoidable
                 uint32_t sieve_offset = j % 30;  // 1 division per prime — unavoidable
 
@@ -267,6 +288,7 @@ namespace nexusminer {
                 while (sieve_byte < segment_bytes)
                 {
                     m_sieve[sieve_byte] &= unset_bit_mask[sieve_offset];
+                    ++seg_hits;
 
                     const WheelStep& step = steps[wheel_index];
                     sieve_byte   += step.byte_delta;
@@ -279,10 +301,14 @@ namespace nexusminer {
                     wheel_index = (wheel_index + 1) & 7;
                 }
 
-                // ── Save-back: convert byte domain back to j ──────────────────────
-                m_multiples[i]     = sieve_byte * 30 + sieve_offset - m_segment_size;
-                m_wheel_indices[i] = wheel_index;
+                // ── Save-back: convert byte domain back to multiple ───────────────
+                sp.multiple    = sieve_byte * 30 + sieve_offset - m_segment_size;
+                sp.wheel_index = wheel_index;
             }
+
+            // Update diagnostics: one atomic op per sieve_segment() call (relaxed — stats thread reads)
+            m_diag_sieve_calls.fetch_add(1, std::memory_order_relaxed);
+            m_diag_inner_hits.fetch_add(seg_hits, std::memory_order_relaxed);
         }
 		
 		//batch sieve on the cpu for debug
@@ -330,6 +356,10 @@ namespace nexusminer {
             m_chain_count = 0;
             m_chain_candidate_max_length = 0;
             m_chain_candidate_total_length = 0;
+            m_diag_sieve_calls.store(0, std::memory_order_relaxed);
+            m_diag_inner_hits.store(0, std::memory_order_relaxed);
+            m_diag_sort_us.store(0, std::memory_order_relaxed);
+            m_diag_prime_count.store(0, std::memory_order_relaxed);
         }
 
         //search the sieve for chains that meet the minimum length requirement.  Chains can cross segment boundaries.
