@@ -619,7 +619,7 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 		if (sieve_calls > 0) {
 			m_logger->debug("[Sieve Diag] calls={} hits={} hits/call={:.1f} sort={:.2f}ms primes={}",
 				sieve_calls, inner_hits,
-				static_cast<double>(inner_hits) / static_cast<double>(sieve_calls),
+				static_cast<double>(inner_hits) / sieve_calls,
 				sort_us / 1000.0,
 				prime_count);
 		}

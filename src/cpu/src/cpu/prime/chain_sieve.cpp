@@ -201,16 +201,12 @@ namespace nexusminer {
             m_logger->info(ss.str());
 
             // Build AoS from temporary vector
-            m_primes_aos.resize(temp_primes.size());
-            for (size_t i = 0; i < temp_primes.size(); ++i)
+            m_primes_aos.clear();
+            m_primes_aos.reserve(temp_primes.size());
+            for (uint32_t p : temp_primes)
             {
-                m_primes_aos[i].prime       = temp_primes[i];
-                m_primes_aos[i].multiple    = 0;   // calculated per-block in calculate_starting_multiples()
-                m_primes_aos[i].wheel_index = 0;
+                m_primes_aos.push_back({p, 0, 0});
             }
-            // free temporary storage (~16 MB)
-            temp_primes.clear();
-            temp_primes.shrink_to_fit();
         }
 
         void Sieve::set_sieve_start(boost::multiprecision::uint1024_t sieve_start)
