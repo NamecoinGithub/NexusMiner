@@ -3,6 +3,8 @@
 
 #include <vector>
 #include <atomic>
+#include <algorithm>
+#include <numeric>
 #include <spdlog/spdlog.h>
 #include <boost/multiprecision/cpp_int.hpp>
 #include <boost/multiprecision/gmp.hpp>
@@ -101,6 +103,15 @@ namespace nexusminer {
 			uint64_t m_chain_candidate_total_length = 0;
 			double m_best_chain = 0;
 
+			// ── Diagnostic counters: written ONLY by mining thread, read ONLY by stats thread ──
+			// std::atomic so the stats collector thread can safely read without a mutex lock.
+			// The mining thread does only fetch_add (relaxed); the stats thread does
+			// .load(std::memory_order_relaxed) — no synchronisation needed beyond atomicity.
+			std::atomic<uint64_t> m_diag_sieve_calls{0};   // total sieve_segment() calls since last reset
+			std::atomic<uint64_t> m_diag_inner_hits{0};    // total inner-loop sieve-write hits since last reset
+			std::atomic<uint64_t> m_diag_sort_us{0};       // µs for the last calculate_starting_multiples sort
+			std::atomic<uint32_t> m_diag_prime_count{0};   // count of sieving primes in m_primes_aos
+
 		private:
 			class Fermat_test_candidate {
 			public:
@@ -165,6 +176,14 @@ namespace nexusminer {
 			  4, 5, 5, 6, 5, 6, 6, 7, 5, 6, 6, 7, 6, 7, 7, 8
 			};
 
+			/// Array-of-Structs sieving prime record — keeps prime + multiple + wheel index
+			/// co-located for better cache locality during sieve_segment().
+			struct SievePrime {
+				uint32_t prime;        ///< the sieving prime value
+				uint32_t multiple;     ///< current multiple (updated each segment)
+				int32_t  wheel_index;  ///< index into sieve30_offsets[] / unset_bit_mask[]
+			};
+
 			/// Per-wheel-position step sizes precomputed once per sieving prime.
 			/// byte_delta   = (k * gap) / 30  — whole sieve-bytes to advance
 			/// offset_delta = (k * gap) % 30  — sub-byte remainder
@@ -175,9 +194,7 @@ namespace nexusminer {
 
 			//the sieve.  each bit that is set represents a possible prime.
 			std::vector<uint8_t> m_sieve;
-			std::vector<uint32_t> m_sieving_primes;
-			std::vector<uint32_t> m_multiples;
-			std::vector<int> m_wheel_indices;
+			std::vector<SievePrime> m_primes_aos;
 			std::vector<Chain> m_chain;
 			std::vector<uint8_t> m_sieve_results;  //accumulated results of sieving
 			boost::multiprecision::uint1024_t m_sieve_start;  //starting integer for the sieve.  This must be a multiple of 30.
