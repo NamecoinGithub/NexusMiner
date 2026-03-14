@@ -338,7 +338,8 @@ void Solo::reset()
 
     // Reset template interface for new session
     if (m_template_interface) {
-        m_template_interface->set_session_id(0);
+        propagate_session_to_template_interface("Solo Reset");
+        m_logger->info("[Solo] MiningTemplateInterface session ID cleared for session reset");
         m_template_interface->reset_stats();
         m_template_interface->clear_template_channel_height_snapshot();
     }
@@ -347,6 +348,18 @@ void Solo::reset()
 bool Solo::session_context_is_authenticated() const
 {
     return m_session_context && m_session_context->is_authenticated();
+}
+
+void Solo::propagate_session_to_template_interface(const char* log_scope)
+{
+    if (!m_template_interface) {
+        return;
+    }
+
+    m_template_interface->set_session_epoch(m_session_epoch);
+    m_template_interface->set_session_id(m_session_id);
+    m_logger->debug("[{}] Propagated session binding to MiningTemplateInterface: session_id=0x{:08x}, epoch={}",
+                    log_scope, m_session_id, m_session_epoch);
 }
 
 void Solo::resync_auth_from_session_context(const char* log_scope)
@@ -360,6 +373,11 @@ void Solo::resync_auth_from_session_context(const char* log_scope)
     m_auth_in_flight_since = {};
     m_logger->warn("[{}] Resynced m_authenticated from session_context — local flag was stale",
                    log_scope);
+
+    refresh_cached_session_state(log_scope);
+    if (m_session_id != 0) {
+        propagate_session_to_template_interface(log_scope);
+    }
 }
 
 void Solo::refresh_cached_session_state(const char* log_scope)
@@ -383,9 +401,6 @@ void Solo::refresh_cached_session_state(const char* log_scope)
         m_session_epoch = session.session_epoch;
         m_has_seen_session_epoch = true;
         m_height_tracker.set_session_epoch(m_session_epoch);
-        if (m_template_interface) {
-            m_template_interface->set_session_epoch(m_session_epoch);
-        }
     }
 
     if (m_authenticated != session.authenticated) {
@@ -408,9 +423,10 @@ void Solo::refresh_cached_session_state(const char* log_scope)
                            log_scope, m_session_id, session.session_id);
         }
         m_session_id = session.session_id;
-        if (m_template_interface) {
-            m_template_interface->set_session_id(m_session_id);
-        }
+    }
+
+    if (session.authenticated && session.session_id != 0) {
+        propagate_session_to_template_interface(log_scope);
     }
 
     if (m_reward_bound != session.reward_bound) {
@@ -2629,6 +2645,8 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 m_logger->debug("[Solo Auth]   - Session ID bytes (LE): {:02x} {:02x} {:02x} {:02x}",
                     (*packet.m_data)[1], (*packet.m_data)[2], (*packet.m_data)[3], (*packet.m_data)[4]);
 
+                propagate_session_to_template_interface("Solo Auth");
+
                 // Start session in session manager
                 if (m_session_context) {
                     m_session_context->commit_authenticated_session(
@@ -2646,7 +2664,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
 
                 // Update template interface with authenticated session ID (FALCON tunnel established)
                 if (m_template_interface) {
-                    m_template_interface->set_session_id(m_session_id);
+                    propagate_session_to_template_interface("Solo Auth");
                     m_template_interface->clear_template_channel_height_snapshot();
                     m_logger->info("[Solo Phase 2] FALCON tunnel established - Template interface bound to session");
                 }

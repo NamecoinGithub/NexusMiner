@@ -288,6 +288,7 @@ private:
     // NodeSessionContext is the authoritative session source; use it to detect
     // whether a stale local auth flag needs resynchronization.
     bool session_context_is_authenticated() const;
+    void propagate_session_to_template_interface(const char* log_scope);
     void resync_auth_from_session_context(const char* log_scope);
     void refresh_cached_session_state(const char* log_scope);
     void update_connection_metadata(const std::shared_ptr<network::Connection>& connection);

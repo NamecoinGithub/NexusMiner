@@ -479,6 +479,15 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* the TCP connection. Uses existing session auth backoff infrastructure.    */
         m_primary_node_session->set_session_expired_handler(
             [this]() {
+                if (m_reconnect_in_progress || (m_recovery_pending && m_recovery_epoch > 0)) {
+                    m_logger->warn("[Worker_manager] Session EXPIRED ignored: reconnect/recovery already in progress "
+                                   "(reconnect_in_progress={}, recovery_pending={}, recovery_epoch={})",
+                                   m_reconnect_in_progress ? "true" : "false",
+                                   m_recovery_pending ? "true" : "false",
+                                   m_recovery_epoch);
+                    return;
+                }
+
                 m_logger->warn("[Worker_manager] Session EXPIRED — initiating in-band re-authentication");
                 mark_recovery_initiated("session_expired");
 
