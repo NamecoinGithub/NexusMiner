@@ -341,7 +341,8 @@ void Solo::reset()
         m_template_interface->reset_stats();
         m_template_interface->clear_template_channel_height_snapshot();
     }
-    // Deliberately invalidate MTI session binding for reconnect (session_id is already 0)
+    // Deliberately zero MTI session binding for reconnect (m_session_id was
+    // cleared to 0 above; propagate ensures MTI is explicitly invalidated).
     propagate_session_to_template_interface("Solo Reset");
 }
 
@@ -2666,7 +2667,6 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 propagate_session_to_template_interface("Solo Auth");
                 if (m_template_interface) {
                     m_template_interface->clear_template_channel_height_snapshot();
-                    m_logger->info("[Solo Phase 2] FALCON tunnel established - Template interface bound to session");
                 }
 
                 // BUG FIX (Bug 2): Invoke session_authenticated handler AFTER session_id is fully set.
