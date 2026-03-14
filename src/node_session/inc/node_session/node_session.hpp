@@ -99,6 +99,14 @@ public:
     using Session_start_handler = std::function<void(uint16_t keepalive_hours)>;
 
     /**
+     * @brief Node shutdown handler: invoked when NODE_SHUTDOWN (0xD0FF) is received from node.
+     * Worker_manager registers this to stop workers gracefully.
+     * Reconnect backoff is handled automatically by the Solo protocol layer.
+     * @param reason Shutdown reason (GRACEFUL=0x01, MAINTENANCE=0x02)
+     */
+    using Node_shutdown_handler = std::function<void(uint8_t reason)>;
+
+    /**
      * @brief Constructor
      * @param io_context ASIO io_context for async operations
      * @param config Configuration reference
@@ -193,6 +201,12 @@ public:
      * @param handler Session start callback
      */
     void set_session_start_handler(Session_start_handler handler);
+
+    /**
+     * @brief Set node shutdown handler
+     * @param handler Node shutdown callback
+     */
+    void set_node_shutdown_handler(Node_shutdown_handler handler);
 
     /**
      * @brief Set Falcon miner keys
@@ -326,6 +340,7 @@ private:
     Session_expired_handler m_session_expired_handler;
     Session_authenticated_handler m_session_authenticated_handler;
     Session_start_handler m_session_start_handler;
+    Node_shutdown_handler m_node_shutdown_handler;
 
     // Configuration
     std::vector<uint8_t> m_miner_pubkey;

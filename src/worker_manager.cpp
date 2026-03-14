@@ -665,9 +665,21 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         );
         m_logger->info("[Worker_manager] Block accepted handler registered");
 
-        // TODO: Add node shutdown handler to NodeSession API if needed
-        // Currently NodeSession doesn't expose set_node_shutdown_handler
-        // This handler was used to stop workers and set reconnect backoff when node shuts down
+        // Node shutdown handler: stop workers and log the reason when the node
+        // sends NODE_SHUTDOWN (0xD0FF).  The Solo protocol already applies its
+        // own reconnect backoff (NODE_SHUTDOWN_BACKOFF_S); we just need to park
+        // the workers so they don't churn on stale work.
+        m_primary_node_session->set_node_shutdown_handler(
+            [self = weak_from_this()](uint8_t reason) {
+                auto mgr = self.lock();
+                if (!mgr) return;
+
+                mgr->m_logger->warn("[Worker_manager] NODE_SHUTDOWN received (reason=0x{:02X}) — stopping workers",
+                    reason);
+                mgr->stop_all_workers();
+            }
+        );
+        m_logger->info("[Worker_manager] Node shutdown handler registered");
 
         m_logger->info("[Worker_manager] NodeSession configured and handlers registered");
 

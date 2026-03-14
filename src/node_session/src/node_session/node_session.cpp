@@ -657,6 +657,19 @@ void NodeSession::set_session_start_handler(Session_start_handler handler)
     }
 }
 
+void NodeSession::set_node_shutdown_handler(Node_shutdown_handler handler)
+{
+    m_node_shutdown_handler = std::move(handler);
+
+    if (m_primary_protocol) {
+        m_primary_protocol->set_node_shutdown_handler([this](uint8_t reason) {
+            if (m_node_shutdown_handler) {
+                m_node_shutdown_handler(reason);
+            }
+        });
+    }
+}
+
 void NodeSession::set_miner_keys(const std::vector<uint8_t>& pubkey, const std::vector<uint8_t>& privkey)
 {
     m_miner_pubkey = pubkey;

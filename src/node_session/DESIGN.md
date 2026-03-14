@@ -145,6 +145,9 @@ void set_session_authenticated_handler(Session_authenticated_handler handler);
 
 // Session start handler (called on SESSION_START with keepalive interval)
 void set_session_start_handler(Session_start_handler handler);
+
+// Node shutdown handler (called when NODE_SHUTDOWN received from node)
+void set_node_shutdown_handler(Node_shutdown_handler handler);
 ```
 
 These handlers are registered with both Solo protocol instances internally, ensuring consistent behavior regardless of which port receives the event.
