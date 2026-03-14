@@ -290,6 +290,18 @@ private:
     bool session_context_is_authenticated() const;
     void resync_auth_from_session_context(const char* log_scope);
     void refresh_cached_session_state(const char* log_scope);
+
+    /** propagate_session_to_template_interface
+     *
+     *  Unconditionally binds the current m_session_id and m_session_epoch
+     *  to MiningTemplateInterface.  Called from:
+     *    1. MINER_AUTH_RESULT success handler
+     *    2. resync_auth_from_session_context() when authenticated=true
+     *    3. refresh_cached_session_state() when session_id drifts
+     *    4. reset() (with session_id = 0 to invalidate for reconnect)
+     */
+    void propagate_session_to_template_interface(const char* log_scope);
+
     void update_connection_metadata(const std::shared_ptr<network::Connection>& connection);
     bool validate_authoritative_session(const char* log_scope, bool require_reward_binding) const;
     void log_session_container_summary(const char* log_scope) const;

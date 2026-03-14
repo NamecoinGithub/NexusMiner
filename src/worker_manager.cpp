@@ -479,6 +479,17 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* the TCP connection. Uses existing session auth backoff infrastructure.    */
         m_primary_node_session->set_session_expired_handler(
             [this]() {
+                // GUARD: If a TCP reconnect just completed and re-auth is already
+                // in flight (m_reconnect_in_progress), do not trigger a second
+                // in-band login — it races with the post-reconnect auth and can
+                // leave MiningTemplateInterface in an inconsistent zero-session
+                // state (Bug #2).
+                if (m_reconnect_in_progress) {
+                    m_logger->info("[Worker_manager] Session expired handler suppressed — "
+                                   "TCP reconnect in progress, post-reconnect auth will handle re-authentication");
+                    return;
+                }
+
                 m_logger->warn("[Worker_manager] Session EXPIRED — initiating in-band re-authentication");
                 mark_recovery_initiated("session_expired");
 
