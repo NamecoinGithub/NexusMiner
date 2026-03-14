@@ -2664,7 +2664,6 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
 
                 // Update template interface with authenticated session ID (FALCON tunnel established)
                 if (m_template_interface) {
-                    propagate_session_to_template_interface("Solo Auth");
                     m_template_interface->clear_template_channel_height_snapshot();
                     m_logger->info("[Solo Phase 2] FALCON tunnel established - Template interface bound to session");
                 }
