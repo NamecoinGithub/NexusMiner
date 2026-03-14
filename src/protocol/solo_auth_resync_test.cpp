@@ -26,6 +26,13 @@ bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_
     return !local_has_state && authoritative_has_state;
 }
 
+bool should_schedule_in_band_reauth(bool reconnect_in_progress,
+                                    bool recovery_pending,
+                                    uint64_t recovery_epoch)
+{
+    return !(reconnect_in_progress || (recovery_pending && recovery_epoch > 0));
+}
+
 int tests_run = 0;
 int tests_passed = 0;
 int tests_failed = 0;
@@ -47,14 +54,18 @@ struct SimulatedSoloAuthGuard
     struct AuthoritativeSession {
         bool authenticated{false};
         uint32_t session_id{0};
+        uint64_t session_epoch{0};
         bool reward_bound{false};
         std::vector<unsigned char> chacha_key;
     };
 
     bool m_authenticated{false};
     uint32_t m_session_id{0};
+    uint64_t m_session_epoch{0};
     bool m_reward_bound{false};
     std::vector<unsigned char> m_chacha_key;
+    uint32_t template_interface_session_id{0};
+    uint64_t template_interface_session_epoch{0};
     bool session_context_authenticated{false};
     AuthState m_auth_state{AuthState::NOT_AUTHENTICATED};
     std::chrono::steady_clock::time_point m_auth_in_flight_since{};
@@ -69,6 +80,12 @@ struct SimulatedSoloAuthGuard
         return session_context_authenticated;
     }
 
+    void propagate_session_to_template_interface()
+    {
+        template_interface_session_id = m_session_id;
+        template_interface_session_epoch = m_session_epoch;
+    }
+
     void resync_auth_from_session_context()
     {
         if (m_authenticated || !session_context_is_authenticated()) {
@@ -78,12 +95,19 @@ struct SimulatedSoloAuthGuard
         m_authenticated = true;
         m_auth_state = AuthState::AUTHENTICATED;
         m_auth_in_flight_since = {};
+        refresh_cached_session_state();
+        if (m_session_id != 0) {
+            propagate_session_to_template_interface();
+        }
     }
 
     void refresh_cached_session_state()
     {
         if (m_authenticated != authoritative.authenticated) {
             m_authenticated = authoritative.authenticated;
+        }
+        if (m_session_epoch != authoritative.session_epoch) {
+            m_session_epoch = authoritative.session_epoch;
         }
         if (m_session_id != authoritative.session_id) {
             m_session_id = authoritative.session_id;
@@ -93,6 +117,9 @@ struct SimulatedSoloAuthGuard
         }
         if (m_chacha_key != authoritative.chacha_key) {
             m_chacha_key = authoritative.chacha_key;
+        }
+        if (authoritative.authenticated && authoritative.session_id != 0) {
+            propagate_session_to_template_interface();
         }
     }
 
@@ -114,12 +141,17 @@ struct SimulatedSoloAuthGuard
         return true;
     }
 
-    void handle_auth_result(bool auth_success)
+    void handle_auth_result(bool auth_success, uint32_t new_session_id = 0, uint64_t new_session_epoch = 0)
     {
         if (auth_success) {
             m_authenticated = true;
+            m_session_id = new_session_id;
+            m_session_epoch = new_session_epoch;
             m_auth_state = AuthState::AUTHENTICATED;
             m_auth_in_flight_since = {};
+            if (m_session_id != 0) {
+                propagate_session_to_template_interface();
+            }
             return;
         }
 
@@ -283,6 +315,7 @@ void test_guard_resyncs_stale_local_flag_from_session_context()
     SimulatedSoloAuthGuard guard;
     guard.m_authenticated = false;
     guard.session_context_authenticated = true;
+    guard.authoritative = {true, 0xD0D0A11E, 42, false, {}};
     guard.m_auth_state = AuthState::WAITING_FOR_RESULT;
     guard.m_auth_in_flight_since = std::chrono::steady_clock::now();
 
@@ -294,25 +327,39 @@ void test_guard_resyncs_stale_local_flag_from_session_context()
                       guard.m_auth_state == AuthState::AUTHENTICATED);
     print_test_result("In-flight timestamp is cleared on resync",
                       guard.m_auth_in_flight_since == std::chrono::steady_clock::time_point{});
+    print_test_result("Resync pulls session ID from authoritative container",
+                      guard.m_session_id == 0xD0D0A11E);
+    print_test_result("Resync pulls session epoch from authoritative container",
+                      guard.m_session_epoch == 42);
+    print_test_result("Resync rebinds template interface session ID",
+                      guard.template_interface_session_id == 0xD0D0A11E);
+    print_test_result("Resync rebinds template interface session epoch",
+                      guard.template_interface_session_epoch == 42);
     print_test_result("Re-auth is not requested during resync", guard.reauth_requests == 0);
 }
 
 void test_auth_result_success_sets_authenticated_state()
 {
-    std::cout << "\nTest 3: successful auth result finalizes the enum state\n";
+    std::cout << "\nTest 3: successful auth result finalizes state and rebinds template interface\n";
 
     SimulatedSoloAuthGuard guard;
     guard.m_authenticated = false;
     guard.m_auth_state = AuthState::WAITING_FOR_RESULT;
     guard.m_auth_in_flight_since = std::chrono::steady_clock::now();
 
-    guard.handle_auth_result(true);
+    guard.handle_auth_result(true, 0x1234ABCD, 77);
 
     print_test_result("Auth success sets local flag", guard.m_authenticated);
+    print_test_result("Auth success sets session ID", guard.m_session_id == 0x1234ABCD);
+    print_test_result("Auth success sets session epoch", guard.m_session_epoch == 77);
     print_test_result("Auth success sets enum to AUTHENTICATED",
                       guard.m_auth_state == AuthState::AUTHENTICATED);
     print_test_result("Auth success clears in-flight timestamp",
                       guard.m_auth_in_flight_since == std::chrono::steady_clock::time_point{});
+    print_test_result("Auth success immediately rebinds template session ID",
+                      guard.template_interface_session_id == 0x1234ABCD);
+    print_test_result("Auth success immediately rebinds template session epoch",
+                      guard.template_interface_session_epoch == 77);
 }
 
 void test_auth_result_failure_clears_in_flight_state()
@@ -341,15 +388,20 @@ void test_cached_session_state_resyncs_from_authoritative_container()
     guard.m_authenticated = false;
     guard.m_session_id = 0;
     guard.m_reward_bound = false;
-    guard.authoritative = {true, 0x12345678, true, std::vector<unsigned char>(32, 0xAB)};
+    guard.authoritative = {true, 0x12345678, 99, true, std::vector<unsigned char>(32, 0xAB)};
 
     guard.refresh_cached_session_state();
 
     print_test_result("Auth flag resynced from authoritative container", guard.m_authenticated);
     print_test_result("Session ID resynced from authoritative container", guard.m_session_id == 0x12345678);
+    print_test_result("Session epoch resynced from authoritative container", guard.m_session_epoch == 99);
     print_test_result("Reward binding resynced from authoritative container", guard.m_reward_bound);
     print_test_result("ChaCha20 key resynced from authoritative container",
                       guard.m_chacha_key == std::vector<unsigned char>(32, 0xAB));
+    print_test_result("Resync updates template interface session ID",
+                      guard.template_interface_session_id == 0x12345678);
+    print_test_result("Resync updates template interface session epoch",
+                      guard.template_interface_session_epoch == 99);
 }
 
 void test_reward_send_validates_before_packet_build()
@@ -373,15 +425,20 @@ void test_process_messages_entry_resyncs_cached_reward_binding()
     guard.m_authenticated = false;
     guard.m_session_id = 0;
     guard.m_reward_bound = false;
-    guard.authoritative = {true, 0xABCDEF01, true, std::vector<unsigned char>(32, 0xCD)};
+    guard.authoritative = {true, 0xABCDEF01, 123, true, std::vector<unsigned char>(32, 0xCD)};
 
     guard.process_messages_entry();
 
     print_test_result("Process entry resyncs auth flag", guard.m_authenticated);
     print_test_result("Process entry resyncs session ID", guard.m_session_id == 0xABCDEF01);
+    print_test_result("Process entry resyncs session epoch", guard.m_session_epoch == 123);
     print_test_result("Process entry resyncs reward binding", guard.m_reward_bound);
     print_test_result("Process entry resyncs ChaCha20 key",
                       guard.m_chacha_key == std::vector<unsigned char>(32, 0xCD));
+    print_test_result("Process entry rebinds template interface session ID",
+                      guard.template_interface_session_id == 0xABCDEF01);
+    print_test_result("Process entry rebinds template interface session epoch",
+                      guard.template_interface_session_epoch == 123);
 }
 
 void test_push_during_handshake_is_queued_until_auth_completes()
@@ -623,6 +680,18 @@ void test_degraded_dead_session_policy_forces_reconnect()
     print_test_result("Hard-limit degraded dead session is marked degraded", decision.mark_degraded);
 }
 
+void test_session_expired_reauth_guard_skips_when_reconnect_or_recovery_active()
+{
+    std::cout << "\nTest 20: session-expired handler guard blocks duplicate in-band login\n";
+
+    print_test_result("Guard blocks in-band re-auth while reconnect is in progress",
+                      !should_schedule_in_band_reauth(true, false, 0));
+    print_test_result("Guard blocks in-band re-auth while recovery epoch is active",
+                      !should_schedule_in_band_reauth(false, true, 3));
+    print_test_result("Guard allows in-band re-auth when reconnect/recovery are idle",
+                      should_schedule_in_band_reauth(false, false, 0));
+}
+
 }  // namespace
 
 int main()
@@ -650,6 +719,7 @@ int main()
     test_session_status_ack_force_reauth_when_node_reports_expired();
     test_degraded_live_session_policy_prefers_reauth_over_reconnect();
     test_degraded_dead_session_policy_forces_reconnect();
+    test_session_expired_reauth_guard_skips_when_reconnect_or_recovery_active();
 
     std::cout << "\n========================================\n";
     std::cout << "Results: " << tests_passed << "/" << tests_run
