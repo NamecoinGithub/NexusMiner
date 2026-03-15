@@ -21,8 +21,12 @@ enum class ProtocolLane : uint8_t {
 
 // Port constants for lane determination
 namespace ProtocolPorts {
-    static constexpr uint16_t STATELESS_PORT = 9323;
-    static constexpr uint16_t LEGACY_PORT = 8323;
+    static constexpr uint16_t STATELESS_PORT     = 9323;
+    static constexpr uint16_t LEGACY_PORT        = 8323;
+    // Forward-reserved TLS mining ports — require the node to have PORT_SSL != 0 before use.
+    // The LLL-TAO MiningServerFactory currently sets PORT_SSL = 0 (not yet implemented).
+    static constexpr uint16_t STATELESS_SSL_PORT = 9326;  // Reserved TLS mining (mirrors node PORT_SSL intent)
+    static constexpr uint16_t LEGACY_SSL_PORT    = 8326;  // Reserved legacy TLS mining
 }
 
 /**
