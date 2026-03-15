@@ -189,6 +189,15 @@ namespace FalconConstants {
     /** Compact block header size (Phase-2 stateless mining protocol, legacy pool format) */
     constexpr size_t COMPACT_BLOCK_HEADER_SIZE = 92;
 
+    /** Prime-channel vOffsets size appended to the block payload during submission.
+     *  Format (per prime_validation.cpp GetOffsets()):
+     *    N × 1-byte chain offsets  (one per prime in the chain beyond the base)
+     *    + 4 bytes fractional difficulty (uint32_t LE, always present)
+     *  At current mining difficulty (chain length ≥ 7), this is consistently 10 bytes:
+     *    6 offset bytes + 4 fraction bytes = 10 bytes.
+     *  Hash-channel submissions carry no vOffsets (empty vector — zero overhead). */
+    constexpr size_t PRIME_VOFFSETS_SIZE = 10;
+
     //==========================================================================
     // Submit Block Message (What Gets Signed)
     //==========================================================================
@@ -222,23 +231,26 @@ namespace FalconConstants {
     //==========================================================================
     
     /** Submit Block wrapper - Tritium LOCALHOST (no encryption)
-     *  Format: [compact_header(216)][timestamp(8)][sig_len(2)][signature(1577 max)]
-     *  Calculation: 216 + 8 + 2 + 1577 = 1803 bytes
+     *  Format: [compact_header(216)][vOffsets(10)][timestamp(8)][sig_len(2)][signature(1577 max)]
+     *  vOffsets: 10 bytes for Prime channel (6 chain offsets + 4 fraction bytes).
+     *            Hash channel carries no vOffsets, so this size also covers Hash (conservative max).
+     *  Calculation: 216 + 10 + 8 + 2 + 1577 = 1813 bytes
      */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX = 
-        FULL_BLOCK_TRITIUM_SIZE + TIMESTAMP_SIZE + 
-        LENGTH_FIELD_SIZE + FALCON1024_SIG_ABSOLUTE_MAX;  // 1803 bytes
-    static_assert(SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX == 1803, "SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX size calculation mismatch");
+        FULL_BLOCK_TRITIUM_SIZE + PRIME_VOFFSETS_SIZE + TIMESTAMP_SIZE + 
+        LENGTH_FIELD_SIZE + FALCON1024_SIG_ABSOLUTE_MAX;  // 1813 bytes
+    static_assert(SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX == 1813, "SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX size calculation mismatch");
     
     /** Submit Block wrapper - Tritium PUBLIC MINER (with ChaCha20 encryption)
      *  ChaCha20-Poly1305 overhead: nonce(12) + auth_tag(16) = 28 bytes
-     *  Calculation: 1803 + 28 = 1831 bytes
+     *  Calculation: 1813 + 28 = 1841 bytes
      */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX = 
-        SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX + CHACHA20_OVERHEAD;  // 1831 bytes
-    static_assert(SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX == 1831, "SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX size calculation mismatch");
+        SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX + CHACHA20_OVERHEAD;  // 1841 bytes
+    static_assert(SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX == 1841, "SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX size calculation mismatch");
     
     /** Submit Block wrapper - Legacy LOCALHOST (no encryption)
+     *  Legacy (Hash channel) submissions carry no vOffsets.
      *  Format: [compact_header(220)][timestamp(8)][sig_len(2)][signature(1577 max)]
      *  Calculation: 220 + 8 + 2 + 1577 = 1807 bytes
      */
