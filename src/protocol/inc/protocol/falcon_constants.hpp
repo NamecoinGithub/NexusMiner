@@ -8,30 +8,41 @@ namespace nexusminer {
 namespace protocol {
 
 /**
- * @brief Falcon-512 and Protocol Constants for Stateless Mining
- * 
+ * @brief Falcon-512/1024 Protocol Constants for Stateless Mining
+ *
  * These constants define size limits for the Falcon signature protocol
  * used in NexusMiner ↔ LLL-TAO Node communication.
- * 
+ *
+ * DEFAULT KEY MODE: Falcon-1024 (256-bit quantum security).
+ * Falcon-512 constants are retained for backward-compatibility and opt-in testing only.
+ *
  * IMPORTANT: All multi-byte integer fields use LITTLE-ENDIAN byte order
  * for consistency with the rest of the protocol (nonce, timestamp, etc.)
- * 
+ *
+ * STATELESS MINING RESPONSIBILITIES:
+ * - Miner receives a compact block template (header metadata only) from the node.
+ *   Templates are ~216 bytes (Tritium) or ~220 bytes (Legacy) — NOT 2 MB.
+ * - Miner mines the template (finds a valid nonce/hash prevalidation payload).
+ * - Miner submits the solved compact header + Falcon signature back to the node.
+ * - Authoritative transaction assembly is performed exclusively by the node.
+ *   The miner does NOT load, store, or transmit the transaction set.
+ *
  * SIGNATURE ARCHITECTURE:
  * The miner uses a SINGLE Falcon key pair (the auth key) for ALL operations:
- * 1. Authentication - Signs challenge with auth private key during handshake
- * 2. Block Submission - Signs block data with SAME auth private key
- * 3. Node Verification - Node uses auth public key (from mapSessionKeys) to verify ALL signatures
- * 
+ * 1. Authentication - Signs challenge with auth private key during handshake.
+ * 2. Block Submission - Signs block data with SAME auth private key.
+ * 3. Node Verification - Node uses auth public key (from mapSessionKeys) to verify ALL signatures.
+ *
  * This ensures signature verification succeeds because signing and verifying keys match.
- * The auth key is session-specific (generated fresh for each mining session) but is 
+ * The auth key is session-specific (generated fresh for each mining session) but is
  * used consistently throughout that session for both authentication and block signatures.
- * 
+ *
  * Disposable Falcon signatures are ALWAYS ON and NOT stored on blockchain (0 bytes overhead).
  * Block signing does not store signatures on-chain.
- * 
+ *
  * References:
- * - LLL-TAO: src/LLC/falcon/falcon.h (FALCON_SIG_VARTIME_MAXSIZE)
- * - LLL-TAO: src/TAO/Ledger/include/constants.h (MAX_BLOCK_SIZE)
+ * - LLL-TAO: src/LLC/falcon/falcon.h (FALCON_SIG_VARTIME_MAXSIZE / FALCON_SIG_CT_SIZE)
+ * - LLL-TAO: src/TAO/Ledger/include/constants.h (MAX_BLOCK_SIZE — node-side protocol limit)
  * - LLL-TAO: src/LLP/disposable_falcon.cpp (SignedWorkSubmission format)
  */
 namespace FalconConstants {
@@ -105,6 +116,24 @@ namespace FalconConstants {
     constexpr size_t FALCON1024_SIG_MAX = FALCON1024_SIG_ABSOLUTE_MAX;
 
     //==========================================================================
+    // Default Falcon Constants (Falcon-1024)
+    // Use these in new code where both variants could theoretically be used
+    // but Falcon-1024 is the required default deployment mode.
+    //==========================================================================
+
+    /** Default public key size — Falcon-1024 (1793 bytes) */
+    constexpr size_t DEFAULT_PUBKEY_SIZE    = FALCON1024_PUBKEY_SIZE;
+
+    /** Default private key size — Falcon-1024 (2305 bytes) */
+    constexpr size_t DEFAULT_PRIVKEY_SIZE   = FALCON1024_PRIVKEY_SIZE;
+
+    /** Default signature size (CT mode) — Falcon-1024 (1577 bytes) */
+    constexpr size_t DEFAULT_SIG_CT_SIZE    = FALCON1024_SIG_CT_SIZE;
+
+    /** Default maximum signature size — Falcon-1024 (1577 bytes) */
+    constexpr size_t DEFAULT_SIG_MAX        = FALCON1024_SIG_ABSOLUTE_MAX;
+
+    //==========================================================================
     // ChaCha20-Poly1305 AEAD Encryption Constants
     //==========================================================================
     
@@ -137,36 +166,37 @@ namespace FalconConstants {
     constexpr size_t GENESIS_HASH_SIZE = 32;
 
     //==========================================================================
-    // Full Block Size Constants (PR #65: Full Block Serialization)
+    // Compact Block Header Sizes (Stateless Mining Protocol)
     //==========================================================================
-    
-    /** Full Tritium block size
-     *  UPDATED: Now supports blocks with transactions (up to 2MB)
-     *  Previous: 216 bytes (empty Tritium block with coinbase only)
-     *  Current: 2MB (maximum network block size with transactions)
-     *  
-     *  NOTE: Block size varies:
-     *  - Empty block (coinbase only): 216 bytes
-     *  - Block with transactions: up to 2MB (2,097,152 bytes)
-     *  
-     *  This constant defines the maximum buffer size needed for block handling.
-     *  Matches LLL-TAO MAX_BLOCK_SIZE from TAO/Ledger/include/constants.h
-     */
-    constexpr size_t FULL_BLOCK_TRITIUM_SIZE = 2 * 1024 * 1024;  // 2,097,152 bytes (was: 216)
-    
-    /** Full Legacy block size
-     *  UPDATED: Now supports blocks with transactions (up to 2MB)
-     *  Previous: 220 bytes (empty Legacy block with coinbase only)
-     *  Current: 2MB (maximum network block size with transactions)
-     *  
-     *  NOTE: Block size varies:
-     *  - Empty block (coinbase only): 220 bytes
-     *  - Block with transactions: up to 2MB (2,097,152 bytes)
-     */
-    constexpr size_t FULL_BLOCK_LEGACY_SIZE = 2 * 1024 * 1024;  // 2,097,152 bytes (was: 220)
-    
+    //
+    // In stateless mining the miner receives a compact block template
+    // (header metadata only) from the node and submits a solved compact
+    // header back.  The node holds the full transaction set and assembles
+    // the complete block after a successful submission.  The miner NEVER
+    // handles 2 MB full blocks — the historical "2 MB max" values in this
+    // section were an early beta assumption that has been corrected here.
+
+    /** Compact Tritium block header size as seen by the miner (header only, no transactions).
+     *  This is the payload the miner receives from the node as a mining template
+     *  and what it includes when submitting a solved block.
+     *  Value: 216 bytes (fixed Tritium header fields). */
+    constexpr size_t FULL_BLOCK_TRITIUM_SIZE = 216;
+
+    /** Compact Legacy block header size as seen by the miner (header only, no transactions).
+     *  Value: 220 bytes (fixed Legacy header fields). */
+    constexpr size_t FULL_BLOCK_LEGACY_SIZE = 220;
+
     /** Compact block header size (Phase-2 stateless mining protocol, legacy pool format) */
     constexpr size_t COMPACT_BLOCK_HEADER_SIZE = 92;
+
+    /** Prime-channel vOffsets size appended to the block payload during submission.
+     *  Format (per prime_validation.cpp GetOffsets()):
+     *    N × 1-byte chain offsets  (one per prime in the chain beyond the base)
+     *    + 4 bytes fractional difficulty (uint32_t LE, always present)
+     *  At current mining difficulty (chain length ≥ 7), this is consistently 10 bytes:
+     *    6 offset bytes + 4 fraction bytes = 10 bytes.
+     *  Hash-channel submissions carry no vOffsets (empty vector — zero overhead). */
+    constexpr size_t PRIME_VOFFSETS_SIZE = 10;
 
     //==========================================================================
     // Submit Block Message (What Gets Signed)
@@ -178,66 +208,63 @@ namespace FalconConstants {
     constexpr size_t SUBMIT_BLOCK_MESSAGE_COMPACT_SIZE = 
         MERKLE_ROOT_SIZE + NONCE_SIZE + TIMESTAMP_SIZE;  // 80 bytes
     
-    /** NEW Tritium full block format (full_block + timestamp)
-     *  UPDATED: Now uses 2MB max block size constant
-     *  full_block(2MB max) + timestamp(8) = 2,097,160 bytes max
-     *  Used for SOLO mining after PR #65 */
+    /** Tritium compact-header format (compact_header + timestamp)
+     *  compact_header(216) + timestamp(8) = 224 bytes
+     *  Used for SOLO mining: miner submits compact solved header, node assembles full block. */
     constexpr size_t SUBMIT_BLOCK_MESSAGE_TRITIUM_SIZE = 
-        FULL_BLOCK_TRITIUM_SIZE + TIMESTAMP_SIZE;  // 2,097,160 bytes max (was: 224)
+        FULL_BLOCK_TRITIUM_SIZE + TIMESTAMP_SIZE;  // 224 bytes
     
-    /** NEW Legacy full block format (full_block + timestamp)
-     *  UPDATED: Now uses 2MB max block size constant
-     *  full_block(2MB max) + timestamp(8) = 2,097,160 bytes max
-     *  Used for SOLO mining after PR #65 */
+    /** Legacy compact-header format (compact_header + timestamp)
+     *  compact_header(220) + timestamp(8) = 228 bytes
+     *  Used for SOLO mining: miner submits compact solved header, node assembles full block. */
     constexpr size_t SUBMIT_BLOCK_MESSAGE_LEGACY_SIZE = 
-        FULL_BLOCK_LEGACY_SIZE + TIMESTAMP_SIZE;  // 2,097,160 bytes max (was: 228)
+        FULL_BLOCK_LEGACY_SIZE + TIMESTAMP_SIZE;  // 228 bytes
     
     /** Legacy alias for backward compatibility (deprecated, use SUBMIT_BLOCK_MESSAGE_TRITIUM_SIZE) */
     constexpr size_t SUBMIT_BLOCK_MESSAGE_SIZE = SUBMIT_BLOCK_MESSAGE_COMPACT_SIZE;  // 80 bytes (old)
 
     //==========================================================================
     // Submit Block Wrapper Sizes (Serialized Transmission)
+    // Falcon-1024 signature size (1577 bytes CT) is used throughout because
+    // Falcon-1024 is the default key mode.  Falcon-512 (809 bytes) is
+    // supported for opt-in/testing only.
     //==========================================================================
     
     /** Submit Block wrapper - Tritium LOCALHOST (no encryption)
-     *  UPDATED: Now supports 2MB blocks with transactions
-     *  Format: [block(2MB max)][timestamp(8)][sig_len(2)][signature(809 max)]
-     *  Calculation: 2,097,152 + 8 + 2 + 809 = 2,097,971 bytes
-     *  Previous: 1,035 bytes (216-byte empty block)
+     *  Format: [compact_header(216)][vOffsets(10)][timestamp(8)][sig_len(2)][signature(1577 max)]
+     *  vOffsets: 10 bytes for Prime channel (6 chain offsets + 4 fraction bytes).
+     *            Hash channel carries no vOffsets, so this size also covers Hash (conservative max).
+     *  Calculation: 216 + 10 + 8 + 2 + 1577 = 1813 bytes
      */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX = 
-        FULL_BLOCK_TRITIUM_SIZE + TIMESTAMP_SIZE + 
-        LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 2,097,971 bytes (was: 1,035)
-    static_assert(SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX == 2097971, "SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX size calculation mismatch");
+        FULL_BLOCK_TRITIUM_SIZE + PRIME_VOFFSETS_SIZE + TIMESTAMP_SIZE + 
+        LENGTH_FIELD_SIZE + FALCON1024_SIG_ABSOLUTE_MAX;  // 1813 bytes
+    static_assert(SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX == 1813, "SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX size calculation mismatch");
     
     /** Submit Block wrapper - Tritium PUBLIC MINER (with ChaCha20 encryption)
-     *  UPDATED: Now supports 2MB blocks with transactions
      *  ChaCha20-Poly1305 overhead: nonce(12) + auth_tag(16) = 28 bytes
-     *  Calculation: 2,097,971 + 28 = 2,097,999 bytes
-     *  Previous: 1,063 bytes
+     *  Calculation: 1813 + 28 = 1841 bytes
      */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX = 
-        SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX + CHACHA20_OVERHEAD;  // 2,097,999 bytes (was: 1,063)
-    static_assert(SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX == 2097999, "SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX size calculation mismatch");
+        SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX + CHACHA20_OVERHEAD;  // 1841 bytes
+    static_assert(SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX == 1841, "SUBMIT_BLOCK_WRAPPER_TRITIUM_ENCRYPTED_MAX size calculation mismatch");
     
     /** Submit Block wrapper - Legacy LOCALHOST (no encryption)
-     *  UPDATED: Now supports 2MB blocks with transactions
-     *  Calculation: 2,097,152 + 8 + 2 + 809 = 2,097,971 bytes
-     *  Previous: 1,039 bytes (220-byte empty block)
+     *  Legacy (Hash channel) submissions carry no vOffsets.
+     *  Format: [compact_header(220)][timestamp(8)][sig_len(2)][signature(1577 max)]
+     *  Calculation: 220 + 8 + 2 + 1577 = 1807 bytes
      */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_LEGACY_MAX = 
         FULL_BLOCK_LEGACY_SIZE + TIMESTAMP_SIZE + 
-        LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 2,097,971 bytes (was: 1,039)
-    static_assert(SUBMIT_BLOCK_WRAPPER_LEGACY_MAX == 2097971, "SUBMIT_BLOCK_WRAPPER_LEGACY_MAX size calculation mismatch");
+        LENGTH_FIELD_SIZE + FALCON1024_SIG_ABSOLUTE_MAX;  // 1807 bytes
+    static_assert(SUBMIT_BLOCK_WRAPPER_LEGACY_MAX == 1807, "SUBMIT_BLOCK_WRAPPER_LEGACY_MAX size calculation mismatch");
     
     /** Submit Block wrapper - Legacy PUBLIC MINER (with ChaCha20 encryption)
-     *  UPDATED: Now supports 2MB blocks with transactions
-     *  Calculation: 2,097,971 + 28 = 2,097,999 bytes
-     *  Previous: 1,067 bytes
+     *  Calculation: 1807 + 28 = 1835 bytes
      */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_LEGACY_ENCRYPTED_MAX = 
-        SUBMIT_BLOCK_WRAPPER_LEGACY_MAX + CHACHA20_OVERHEAD;  // 2,097,999 bytes (was: 1,067)
-    static_assert(SUBMIT_BLOCK_WRAPPER_LEGACY_ENCRYPTED_MAX == 2097999, "SUBMIT_BLOCK_WRAPPER_LEGACY_ENCRYPTED_MAX size calculation mismatch");
+        SUBMIT_BLOCK_WRAPPER_LEGACY_MAX + CHACHA20_OVERHEAD;  // 1835 bytes
+    static_assert(SUBMIT_BLOCK_WRAPPER_LEGACY_ENCRYPTED_MAX == 1835, "SUBMIT_BLOCK_WRAPPER_LEGACY_ENCRYPTED_MAX size calculation mismatch");
     
     /** Legacy aliases for backward compatibility (point to Tritium values) */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_MAX = SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX;
@@ -245,36 +272,44 @@ namespace FalconConstants {
 
     //==========================================================================
     // Authentication Response Sizes
+    // Falcon-1024 pubkey (1793 bytes) and signature (1577 bytes CT) used as
+    // defaults.  Falcon-512 (897-byte pubkey, 809-byte sig) is supported for
+    // compatibility but is not the expected deployment mode.
     //==========================================================================
     
     /** Auth response - LOCALHOST (no encryption on pubkey)
-     *  pubkey_len(2) + pubkey(897) + timestamp(8) + sig_len(2) + sig(809) = 1718 bytes */
+     *  pubkey_len(2) + pubkey(1793) + timestamp(8) + sig_len(2) + sig(1577) = 3382 bytes */
     constexpr size_t AUTH_RESPONSE_MAX = 
-        LENGTH_FIELD_SIZE + FALCON512_PUBKEY_SIZE + TIMESTAMP_SIZE + 
-        LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 1718 bytes
-    static_assert(AUTH_RESPONSE_MAX == 1718, "AUTH_RESPONSE_MAX size calculation mismatch");
+        LENGTH_FIELD_SIZE + FALCON1024_PUBKEY_SIZE + TIMESTAMP_SIZE + 
+        LENGTH_FIELD_SIZE + FALCON1024_SIG_ABSOLUTE_MAX;  // 3382 bytes
+    static_assert(AUTH_RESPONSE_MAX == 3382, "AUTH_RESPONSE_MAX size calculation mismatch");
     
     /** Auth response - PUBLIC MINER (ChaCha20 wrapped pubkey)
-     *  pubkey_len(2) + wrapped_pubkey(897+28) + timestamp(8) + sig_len(2) + sig(809) = 1746 bytes */
+     *  pubkey_len(2) + wrapped_pubkey(1793+28) + timestamp(8) + sig_len(2) + sig(1577) = 3410 bytes */
     constexpr size_t AUTH_RESPONSE_ENCRYPTED_MAX = 
-        LENGTH_FIELD_SIZE + FALCON512_PUBKEY_SIZE + CHACHA20_OVERHEAD + 
-        TIMESTAMP_SIZE + LENGTH_FIELD_SIZE + FALCON512_SIG_ABSOLUTE_MAX;  // 1746 bytes
-    static_assert(AUTH_RESPONSE_ENCRYPTED_MAX == 1746, "AUTH_RESPONSE_ENCRYPTED_MAX size calculation mismatch");
+        LENGTH_FIELD_SIZE + FALCON1024_PUBKEY_SIZE + CHACHA20_OVERHEAD + 
+        TIMESTAMP_SIZE + LENGTH_FIELD_SIZE + FALCON1024_SIG_ABSOLUTE_MAX;  // 3410 bytes
+    static_assert(AUTH_RESPONSE_ENCRYPTED_MAX == 3410, "AUTH_RESPONSE_ENCRYPTED_MAX size calculation mismatch");
     
     /** Auth response with optional GenesisHash binding
      *  Add 32 bytes for Tritium genesis hash */
     constexpr size_t AUTH_RESPONSE_WITH_GENESIS_MAX = 
-        AUTH_RESPONSE_ENCRYPTED_MAX + GENESIS_HASH_SIZE;  // 1778 bytes
-    static_assert(AUTH_RESPONSE_WITH_GENESIS_MAX == 1778, "AUTH_RESPONSE_WITH_GENESIS_MAX size calculation mismatch");
+        AUTH_RESPONSE_ENCRYPTED_MAX + GENESIS_HASH_SIZE;  // 3442 bytes
+    static_assert(AUTH_RESPONSE_WITH_GENESIS_MAX == 3442, "AUTH_RESPONSE_WITH_GENESIS_MAX size calculation mismatch");
 
     //==========================================================================
-    // Block Size Limits (Mirrored from LLL-TAO TAO::Ledger::constants.h)
+    // Block Size Limits (Reference — Node-Side Protocol Constants)
+    // These values mirror LLL-TAO TAO::Ledger::constants.h and are provided
+    // as reference only.  The stateless miner does NOT operate on 2 MB blocks;
+    // it handles compact headers (see FULL_BLOCK_TRITIUM_SIZE / FULL_BLOCK_LEGACY_SIZE).
     //==========================================================================
     
-    /** Maximum block size in transit (2 MB) */
+    /** Node-side maximum block size in transit (2 MB) — reference only.
+     *  The miner never sends or receives a full 2 MB block; this is the
+     *  upper bound enforced by the node when assembling the complete block. */
     constexpr uint32_t MAX_BLOCK_SIZE = 1024 * 1024 * 2;  // 2,097,152 bytes
     
-    /** Maximum block size for generation (~1 MB) */
+    /** Node-side maximum block size for generation (~1 MB) — reference only. */
     constexpr uint32_t MAX_BLOCK_SIZE_GEN = 1000000;  // 1,000,000 bytes
     
     /** Maximum contracts per transaction */

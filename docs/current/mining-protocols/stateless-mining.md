@@ -15,6 +15,19 @@
 
 The stateless mining protocol is a modern push-notification based protocol that eliminates polling overhead and provides instant block updates. It represents a significant improvement over the legacy GET_ROUND polling protocol.
 
+### Miner / Node Responsibility Boundary
+
+> **Important:** The miner does **not** load, store, or transmit the transaction set.
+>
+> - **Node** — holds the full transaction set, builds and validates the complete block, assembles
+>   the final serialized block when the miner submits a solved header.
+> - **Miner** — receives a compact block template (header metadata only, ~216/220 bytes) from the
+>   node, finds a valid nonce/hash, and submits the solved compact header plus a Falcon signature
+>   back to the node.  The miner never handles 2 MB full block payloads.
+>
+> Any previous documentation or comments implying that the miner sends a full transaction-bearing
+> block to the node reflected an early beta design that was not carried forward.
+
 ## Key Features
 
 ✅ **Push Notifications** - Node pushes templates to miner (no polling)  
@@ -35,7 +48,9 @@ Miner                                    Node
   |                                       |
   |--- MINER_AUTH (0xD000) ------------->|
   |    [genesis(32)][pubkey_len(2)]      |
-  |    [pubkey(897/925)][miner_id]       |
+  |    [pubkey(1793)][miner_id]          |
+  |    (Falcon-1024 default; 897 bytes   |
+  |     when Falcon-512 opt-in is used)  |
   |                                       |
   |<-- MINER_AUTH_RESPONSE (0xD001) -----|
   |    [success(1)][session_id(32)]      |
@@ -149,16 +164,22 @@ Offset | Size | Field          | Description
 -------|------|----------------|----------------------------------
 0      | 32   | hashGenesis    | Tritium account genesis hash
 32     | 2    | pubkey_len     | Falcon public key length
+34     | 1793 | falcon_pubkey  | Falcon-1024 public key (unwrapped) [default]
+       | or   |                | OR
+34     | 1821 | falcon_pubkey  | Falcon-1024 public key (ChaCha20 wrapped)
+       |      |                | [nonce(12)][ciphertext(1793)][tag(16)]
+       | or   |                | OR (Falcon-512 opt-in only)
 34     | 897  | falcon_pubkey  | Falcon-512 public key (unwrapped)
        | or   |                | OR
 34     | 925  | falcon_pubkey  | Falcon-512 public key (ChaCha20 wrapped)
-       |      |                | [nonce(12)][ciphertext(897)][tag(16)]
-931    | 2    | miner_id_len   | Miner ID string length
-933    | var  | miner_id       | Miner ID string (e.g., "NexusMiner")
+34+N   | 2    | miner_id_len   | Miner ID string length (N = pubkey field size above)
+36+N   | var  | miner_id       | Miner ID string (e.g., "NexusMiner")
 ```
 
 **Notes:**
 - Genesis hash sent FIRST enables key derivation before pubkey parsing
+- **Falcon-1024 is the default** (1793-byte public key, 1577-byte CT signature)
+- Falcon-512 is available as an explicit opt-in for compatibility/testing only
 - ChaCha20 wrapping auto-enabled for remote mining
 - Session key = SHA256("nexus-mining-chacha20-v1" || genesis)
 

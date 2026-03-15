@@ -1,4 +1,5 @@
 #include "protocol/chacha20_wrapper.hpp"
+#include "protocol/falcon_constants.hpp"
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
@@ -13,9 +14,6 @@ namespace protocol {
 constexpr size_t CHACHA20_KEY_SIZE = 32;    // 256 bits
 constexpr size_t CHACHA20_NONCE_SIZE = 12;  // 96 bits
 constexpr size_t CHACHA20_TAG_SIZE = 16;    // 128 bits
-
-// Falcon-512 public key size
-constexpr size_t FALCON512_PUBKEY_SIZE = 897;
 
 ChaCha20Wrapper::ChaCha20Wrapper()
     : m_logger(spdlog::get("logger"))
@@ -286,15 +284,15 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::wrap_falcon_pubkey(
     const std::vector<uint8_t>& session_key,
     const std::vector<uint8_t>& nonce)
 {
-    if (falcon_pubkey.size() != FALCON512_PUBKEY_SIZE) {
+    if (!FalconConstants::is_valid_pubkey_size(falcon_pubkey.size())) {
         CryptoResult result;
         result.success = false;
-        result.error_message = "Invalid Falcon-512 public key size (expected 897 bytes)";
+        result.error_message = "Invalid Falcon public key size (expected 1793 bytes for Falcon-1024 or 897 bytes for Falcon-512)";
         m_logger->error("[ChaCha20] {}", result.error_message);
         return result;
     }
     
-    m_logger->info("[ChaCha20] Wrapping Falcon-512 public key ({} bytes)", falcon_pubkey.size());
+    m_logger->info("[ChaCha20] Wrapping Falcon public key ({} bytes)", falcon_pubkey.size());
     
     // Use "FALCON_PUBKEY" as AAD to bind encryption to this specific use case
     std::vector<uint8_t> aad{'F', 'A', 'L', 'C', 'O', 'N', '_', 'P', 'U', 'B', 'K', 'E', 'Y'};
@@ -314,7 +312,7 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::unwrap_falcon_pubkey(
     const std::vector<uint8_t>& session_key,
     const std::vector<uint8_t>& nonce)
 {
-    m_logger->info("[ChaCha20] Unwrapping Falcon-512 public key ({} bytes)", wrapped_pubkey.size());
+    m_logger->info("[ChaCha20] Unwrapping Falcon public key ({} bytes)", wrapped_pubkey.size());
     
     // Use same AAD as wrapping
     std::vector<uint8_t> aad{'F', 'A', 'L', 'C', 'O', 'N', '_', 'P', 'U', 'B', 'K', 'E', 'Y'};
@@ -322,10 +320,10 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::unwrap_falcon_pubkey(
     auto result = decrypt(wrapped_pubkey, session_key, nonce, aad);
     
     if (result.success) {
-        // Validate unwrapped key size
-        if (result.data.size() != FALCON512_PUBKEY_SIZE) {
+        // Validate unwrapped key size — accept Falcon-1024 (1793) and Falcon-512 (897)
+        if (!FalconConstants::is_valid_pubkey_size(result.data.size())) {
             result.success = false;
-            result.error_message = "Unwrapped key has invalid size (expected 897 bytes)";
+            result.error_message = "Unwrapped key has invalid size (expected 1793 bytes for Falcon-1024 or 897 bytes for Falcon-512)";
             m_logger->error("[ChaCha20] {}", result.error_message);
             result.data.clear();
         } else {
