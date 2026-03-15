@@ -526,6 +526,10 @@ public:
      * @brief Update the authoritative session epoch associated with future snapshots
      *
      * Used to reject stale snapshots/submissions after a session restart.
+     *
+     * When the epoch changes, the keepalive ACK timestamp is invalidated so that
+     * stale-epoch keepalive responses cannot falsely signal liveness in the new
+     * epoch's escape ladder (check_template_health ack_recent computation).
      */
     void set_session_epoch(uint64_t session_epoch);
 

@@ -1428,6 +1428,17 @@ void Worker_manager::retry_template_request(bool bForce)
         return;
     }
 
+    // Early-exit if primary TCP connection is down — request_work() would silently
+    // return nullptr in this case (NodeSession checks m_primary_connected before
+    // calling get_work).  Detect it here so we can log the real reason and trigger
+    // reconnect immediately instead of burning a recovery tick.
+    if (!m_primary_node_session->is_primary_connected()) {
+        m_logger->warn("[Worker_manager] GET_BLOCK deferred — primary TCP connection is not established; "
+                       "initiating reconnect");
+        retry_connect(m_primary_endpoint);
+        return;
+    }
+
     // Request template via NodeSession
     m_logger->info("[Worker_manager] Requesting fresh template via NodeSession");
     auto work_payload = m_primary_node_session->request_work();
@@ -1438,7 +1449,13 @@ void Worker_manager::retry_template_request(bool bForce)
         m_recovery_get_block_transmitted = true;
         m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
     } else {
-        m_logger->info("[Worker_manager]   GET_BLOCK not sent — request_work() returned empty (unexpected)");
+        // request_work() returned empty despite passing all guards above.
+        // Most likely cause: 100ms GET_BLOCK dedup guard in Solo::get_work() or
+        // transient reward-binding gap.  The recovery timer will retry at the next tick.
+        m_logger->warn("[Worker_manager]   GET_BLOCK not sent — request_work() returned empty "
+                       "(authenticated={}, primary_connected={}, see Solo logs for specific suppression reason)",
+                       solo_protocol->is_authenticated(),
+                       m_primary_node_session->is_primary_connected());
     }
 }
 
@@ -1506,6 +1523,16 @@ void Worker_manager::check_template_health()
                 ? std::chrono::duration_cast<std::chrono::seconds>(now - ht_snap.last_push_notification_at).count()
                 : INT64_MAX;
             bool push_recent = push_received && (since_push_s <= PUSH_ALIVE_THRESHOLD_SECONDS);
+
+            // Diagnostic: log keepalive epoch alongside timestamps so future incidents can
+            // identify split between session epoch and last-ack epoch without log scraping.
+            m_logger->info("[Worker_manager] Degraded-mode liveness: epoch={} keepalive_ack={}s ago (recent={}) "
+                           "push={}s ago (recent={})",
+                           ht_snap.session_epoch,
+                           keepalive_ack_received ? since_ack_s : static_cast<int64_t>(-1),
+                           ack_recent ? "YES" : "NO",
+                           push_received ? since_push_s : static_cast<int64_t>(-1),
+                           push_recent ? "YES" : "NO");
 
             // ── Hard limit: reconnect after DEGRADED_MODE_HARD_LIMIT_SECONDS ─────────────────
             // But only if push notifications are also stale — a recent push proves the TCP
