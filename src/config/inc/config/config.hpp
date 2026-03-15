@@ -66,6 +66,8 @@ public:
 	
 	// TLS/HTTPS configuration
 	bool get_enable_tls() const { return m_enable_tls; }
+	// SSL mining port (0 = use plaintext port, non-zero = connect to this port over TLS)
+	std::uint16_t get_ssl_port() const { return m_ssl_port; }
 	std::string const& get_tls_ca_cert_path() const { return m_tls_ca_cert_path; }
 	bool get_tls_verify_peer() const { return m_tls_verify_peer; }
 	std::string const& get_tls_server_name() const { return m_tls_server_name; }
@@ -131,6 +133,8 @@ public:
 	// ChaCha20 and TLS setters
 	void set_enable_chacha20_wrapping(bool enable) { m_enable_chacha20_wrapping = enable; }
 	void set_enable_tls(bool enable) { m_enable_tls = enable; }
+	// Dedicated TLS mining port (0 = disabled/use plaintext port)
+	void set_ssl_port(std::uint16_t port) { m_ssl_port = port; }
 	void set_enable_sim_link(bool enable) { m_enable_sim_link = enable; }
 	void set_get_block_interval_ms(uint32_t ms) { m_get_block_interval_ms = ms; }
 	void set_colin_enabled(bool enabled) { m_colin_enabled = enabled; }
@@ -187,6 +191,7 @@ private:
 	
 	// TLS/HTTPS configuration (auto-enabled for remote connections)
 	bool m_enable_tls;  // Enable TLS/SSL for remote connections (default: auto-detect)
+	std::uint16_t m_ssl_port;  // Dedicated TLS mining port (0 = disabled/use plaintext port)
 	std::string m_tls_ca_cert_path;  // Path to CA certificate bundle (empty = system default)
 	bool m_tls_verify_peer;  // Verify peer certificate (default: true)
 	std::string m_tls_server_name;  // Server name for SNI and verification (default: wallet_ip)

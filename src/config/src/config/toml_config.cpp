@@ -3,6 +3,7 @@
 #include "config/types.hpp"
 #include "config/worker_config.hpp"
 #include "config/stats_printer_config.hpp"
+#include <limits>
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <sstream>
@@ -324,31 +325,42 @@ namespace config
                 }
                 else if (current_section == "tls")
                 {
-                    if (key == "enable")
+                    if (key == "enable" || key == "enable_tls")
                     {
                         config.set_enable_tls(parse_bool_value(value));
                     }
-                    else if (key == "ca_cert_path")
+                    else if (key == "ssl_port")
+                    {
+                        // Dedicated TLS mining port (0 = use [wallet] port with TLS)
+                        // Forward-reserved: 9325 (stateless TLS) / 8325 (legacy TLS)
+                        int port = parse_int_value(value);
+                        if (port >= 0 && port <= std::numeric_limits<std::uint16_t>::max())
+                            config.set_ssl_port(static_cast<std::uint16_t>(port));
+                        else
+                            m_logger->warn("[Config] ssl_port={} out of range [0-{}] — using default (0)",
+                                          port, std::numeric_limits<std::uint16_t>::max());
+                    }
+                    else if (key == "ca_cert_path" || key == "tls_ca_cert_path")
                     {
                         config.set_tls_ca_cert_path(parse_string_value(value));
                     }
-                    else if (key == "verify_peer")
+                    else if (key == "verify_peer" || key == "tls_verify_peer")
                     {
                         config.set_tls_verify_peer(parse_bool_value(value));
                     }
-                    else if (key == "server_name")
+                    else if (key == "server_name" || key == "tls_server_name")
                     {
                         config.set_tls_server_name(parse_string_value(value));
                     }
-                    else if (key == "client_cert_path")
+                    else if (key == "client_cert_path" || key == "tls_client_cert_path")
                     {
                         config.set_tls_client_cert_path(parse_string_value(value));
                     }
-                    else if (key == "client_key_path")
+                    else if (key == "client_key_path" || key == "tls_client_key_path")
                     {
                         config.set_tls_client_key_path(parse_string_value(value));
                     }
-                    else if (key == "client_key_password")
+                    else if (key == "client_key_password" || key == "tls_client_key_password")
                     {
                         config.set_tls_client_key_password(parse_string_value(value));
                     }

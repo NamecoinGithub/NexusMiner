@@ -37,6 +37,7 @@ namespace config
 		, m_keepalive_interval{24}  // Default: 1 ping per day
 		, m_enable_chacha20_wrapping{true}  // ALWAYS ON - Core security implementation
 		, m_enable_tls{false}  // Default: auto-detect based on connection
+		, m_ssl_port{0}  // Default: no dedicated SSL port; use m_port
 		, m_tls_ca_cert_path{""}  // Default: use system CA bundle
 		, m_tls_verify_peer{true}  // Default: always verify peer
 		, m_tls_server_name{""}  // Default: use wallet_ip
@@ -247,6 +248,13 @@ namespace config
 			if (j.count("enable_tls") != 0)
 			{
 				j.at("enable_tls").get_to(m_enable_tls);
+			}
+			
+			// Dedicated SSL mining port (0 = use m_port with TLS, non-zero overrides port for TLS connections)
+			m_ssl_port = 0;  // Default
+			if (j.count("ssl_port") != 0)
+			{
+				j.at("ssl_port").get_to(m_ssl_port);
 			}
 			
 			// TLS CA certificate path (empty = use system default)
