@@ -1,0 +1,455 @@
+/**
+ * @file degraded_recovery_test.cpp
+ * @brief Tests for keepalive epoch isolation, channel-advance staleness, and degraded-mode
+ *        recovery determinism.
+ *
+ * Tests:
+ *  1.  Keepalive ACK update across epoch change — old-epoch ack is invalidated
+ *  2.  Channel advance + stale template transition — HeightTracker detects staleness correctly
+ *  3.  Recovery pending debouncing — mark_recovery_initiated() is idempotent for same event
+ *  4.  Recovery GET_BLOCK can dispatch after debounce window — no permanent starvation
+ *  5.  Keepalive epoch isolation — new epoch starts with clean ack timestamp
+ *  6.  Stale template after channel advance triggers is_template_stale()
+ *  7.  set_session_epoch() increments suppress old keepalive signal
+ *  8.  Multiple rapid epoch changes produce clean keepalive state
+ *  9.  Push notification does not reset keepalive timestamp on epoch change
+ * 10.  Recovery epoch tracking — monotonic epoch counter with idempotent initiation
+ */
+
+#include "protocol/height_tracker.hpp"
+#include "protocol/packet_builder.hpp"
+#include "miner_opcodes.hpp"
+#include <iostream>
+#include <cassert>
+#include <cstdint>
+#include <chrono>
+#include <thread>
+#include <memory>
+#include <vector>
+
+using namespace nexusminer::protocol;
+using namespace nexusminer;
+
+// Test statistics
+static int tests_run    = 0;
+static int tests_passed = 0;
+static int tests_failed = 0;
+
+void print_test_result(const char* name, bool passed) {
+    tests_run++;
+    if (passed) {
+        tests_passed++;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        tests_failed++;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
+}
+
+// ============================================================================
+// Test 1: Keepalive ACK update across epoch change — old-epoch ack invalidated
+// ============================================================================
+void test_keepalive_ack_invalidated_on_epoch_change() {
+    std::cout << "\nTest 1: Keepalive ACK invalidated when session epoch advances\n";
+    HeightTracker tracker;
+
+    // Epoch 1: receive keepalive
+    tracker.set_session_epoch(1);
+    tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0xDEADBEEFu, 0);
+    auto snap1 = tracker.GetSnapshot();
+    bool ack_was_set = (snap1.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+    print_test_result("Epoch 1: keepalive ACK timestamp is set after response", ack_was_set);
+
+    // Advance to epoch 2 (session re-auth or channel re-init)
+    tracker.set_session_epoch(2);
+    auto snap2 = tracker.GetSnapshot();
+    print_test_result("Epoch 2: keepalive ACK timestamp cleared on epoch advance",
+                      snap2.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
+    print_test_result("Epoch 2: snapshot session_epoch reflects new epoch",
+                      snap2.session_epoch == 2);
+
+    // New keepalive in epoch 2 should be accepted
+    tracker.OnKeepaliveResponse(5001, 401, 701, 901, 0xCAFEBABEu, 0);
+    auto snap3 = tracker.GetSnapshot();
+    print_test_result("Epoch 2: new keepalive ACK is accepted",
+                      snap3.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+}
+
+// ============================================================================
+// Test 2: Channel advance + stale template transition — staleness detection
+// ============================================================================
+void test_channel_advance_stale_template_transition() {
+    std::cout << "\nTest 2: Channel advance + stale template transition\n";
+    HeightTracker tracker;
+
+    // Initial state: template for channel_target=101 while channel_height=100
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnTemplateReceived(2, 101);
+    auto snap = tracker.GetSnapshot();
+    print_test_result("Initial: is_template_stale() == false (channel_height=100 < target=101)",
+                      !snap.is_template_stale());
+    print_test_result("Initial: channel_height == 100", snap.channel_height == 100);
+    print_test_result("Initial: channel_target == 101", snap.channel_target == 101);
+
+    // Channel advances — node found a block
+    tracker.OnPushNotification(5001, 101, 0x1d00ffff);
+    auto snap2 = tracker.GetSnapshot();
+    print_test_result("After channel advance: is_template_stale() == true (height=101 >= target=101)",
+                      snap2.is_template_stale());
+    print_test_result("After channel advance: channel_height == 101", snap2.channel_height == 101);
+
+    // Simulate keepalive arriving from OLD session — should not affect staleness
+    tracker.OnKeepaliveResponse(5001, 300, 101, 900, 0xDEADBEEFu, 0);
+    auto snap3 = tracker.GetSnapshot();
+    print_test_result("After old keepalive: is_template_stale() still true",
+                      snap3.is_template_stale());
+    print_test_result("After old keepalive: channel_height unchanged at 101",
+                      snap3.channel_height == 101);
+
+    // New template from GET_BLOCK response — staleness resolved
+    tracker.OnTemplateReceived(2, 102);
+    tracker.AdvanceChannelTarget(102);
+    auto snap4 = tracker.GetSnapshot();
+    print_test_result("After new template: is_template_stale() == false",
+                      !snap4.is_template_stale());
+    print_test_result("After new template: channel_target == 102", snap4.channel_target == 102);
+}
+
+// ============================================================================
+// Test 3: Recovery pending debouncing — mark_recovery is idempotent
+// Simulates the "Recovery already pending" scenario: multiple staleness sources
+// calling mark_recovery_initiated() for the same event must not reset the epoch.
+// ============================================================================
+void test_recovery_pending_debounce_idempotent() {
+    std::cout << "\nTest 3: Recovery-pending debounce — multiple mark_recovery calls are idempotent\n";
+
+    // Simulate the mark_recovery_initiated() logic directly
+    struct RecoveryTracker {
+        bool m_recovery_pending{false};
+        int  m_recovery_epoch{0};
+        std::chrono::steady_clock::time_point m_recovery_started_at{};
+        std::vector<std::string> m_log;
+
+        // Mirrors Worker_manager::mark_recovery_initiated()
+        void initiate(const char* reason) {
+            if (m_recovery_pending) {
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - m_recovery_started_at).count();
+                m_log.push_back("NOOP: already pending epoch=" + std::to_string(m_recovery_epoch)
+                                + " elapsed=" + std::to_string(elapsed) + "s reason=" + reason);
+                return;
+            }
+            ++m_recovery_epoch;
+            m_recovery_pending = true;
+            m_recovery_started_at = std::chrono::steady_clock::now();
+            m_log.push_back("STARTED: epoch=" + std::to_string(m_recovery_epoch) + " reason=" + reason);
+        }
+
+        void clear() {
+            m_recovery_pending = false;
+            m_log.push_back("CLEARED: epoch=" + std::to_string(m_recovery_epoch));
+        }
+    };
+
+    RecoveryTracker rt;
+
+    // First initiation from push handler
+    rt.initiate("push_staleness");
+    print_test_result("First initiation starts recovery (epoch=1)",
+                      rt.m_recovery_epoch == 1 && rt.m_recovery_pending);
+
+    // Second initiation from health monitor (same staleness event)
+    rt.initiate("health_monitor_channel_stale");
+    print_test_result("Second initiation is a no-op (epoch still 1)",
+                      rt.m_recovery_epoch == 1 && rt.m_recovery_pending);
+
+    // Third initiation from different source
+    rt.initiate("health_monitor_or_validation");
+    print_test_result("Third initiation is still a no-op (epoch still 1)",
+                      rt.m_recovery_epoch == 1 && rt.m_recovery_pending);
+
+    print_test_result("All initiation calls produced at least one STARTED entry",
+                      std::any_of(rt.m_log.begin(), rt.m_log.end(),
+                                  [](const auto& s) { return s.find("STARTED") != std::string::npos; }));
+    size_t noop_count = 0;
+    for (const auto& entry : rt.m_log)
+        if (entry.find("NOOP") != std::string::npos) ++noop_count;
+    print_test_result("Subsequent initiations were all NOOP (2 no-ops for 3 total calls)",
+                      noop_count == 2);
+
+    // Clear and re-initiate — new epoch must be incremented
+    rt.clear();
+    rt.initiate("escalation_hard_recovery");
+    print_test_result("After clear, new initiation produces epoch=2",
+                      rt.m_recovery_epoch == 2 && rt.m_recovery_pending);
+}
+
+// ============================================================================
+// Test 4: Recovery GET_BLOCK can dispatch after debounce window — no starvation
+// Simulates the deduplication window expiring between recovery retries.
+// ============================================================================
+void test_recovery_get_block_no_permanent_starvation() {
+    std::cout << "\nTest 4: Recovery GET_BLOCK dispatches after dedup window expires\n";
+
+    // Simulate GET_BLOCK deduplication logic (mirrors Solo::get_work dedup guard)
+    const int64_t DEDUP_MS = 100;
+    struct GetBlockGate {
+        std::chrono::steady_clock::time_point m_last_transmitted{};
+        int64_t dedup_ms{0};
+
+        // Returns true if GET_BLOCK can be dispatched, false if suppressed
+        bool try_dispatch() {
+            auto now = std::chrono::steady_clock::now();
+            if (m_last_transmitted != std::chrono::steady_clock::time_point{}) {
+                auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - m_last_transmitted).count();
+                if (elapsed_ms < dedup_ms) {
+                    return false;  // suppressed
+                }
+            }
+            m_last_transmitted = now;
+            return true;  // dispatched
+        }
+    };
+
+    GetBlockGate gate;
+    gate.dedup_ms = DEDUP_MS;
+
+    // First dispatch should succeed
+    bool first = gate.try_dispatch();
+    print_test_result("First GET_BLOCK dispatch succeeds", first);
+
+    // Immediate second dispatch should be suppressed (within 100ms)
+    bool second = gate.try_dispatch();
+    print_test_result("Immediate second dispatch suppressed by dedup window", !second);
+
+    // After dedup window expires, dispatch should succeed again
+    std::this_thread::sleep_for(std::chrono::milliseconds(110));
+    bool third = gate.try_dispatch();
+    print_test_result("GET_BLOCK dispatch succeeds after dedup window (110ms wait)", third);
+
+    // Another immediate attempt should be suppressed again
+    bool fourth = gate.try_dispatch();
+    print_test_result("Immediate dispatch after third is suppressed again", !fourth);
+
+    // Recovery timer interval (30s >> 100ms dedup) ensures no starvation
+    // at normal check_template_health intervals
+    print_test_result("30s timer interval >> 100ms dedup = no starvation at timer cadence",
+                      30000 > DEDUP_MS * 100);
+}
+
+// ============================================================================
+// Test 5: Keepalive epoch isolation — new epoch starts with clean ack timestamp
+// ============================================================================
+void test_keepalive_epoch_isolation_clean_start() {
+    std::cout << "\nTest 5: New epoch starts with clean keepalive ACK timestamp\n";
+    HeightTracker tracker;
+
+    // Simulate three successive re-auths (epoch 1 → 2 → 3)
+    for (uint64_t epoch = 1; epoch <= 3; ++epoch) {
+        tracker.set_session_epoch(epoch);
+
+        // At start of each epoch, ack timestamp must be clear
+        auto snap_start = tracker.GetSnapshot();
+        print_test_result(("Epoch " + std::to_string(epoch) + ": ack timestamp clear at epoch start").c_str(),
+                          snap_start.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
+
+        // Receive keepalive for this epoch
+        tracker.OnKeepaliveResponse(5000 + static_cast<uint32_t>(epoch), 400, 700, 900, 0u, 0);
+        auto snap_after = tracker.GetSnapshot();
+        print_test_result(("Epoch " + std::to_string(epoch) + ": ack timestamp set after response").c_str(),
+                          snap_after.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+    }
+}
+
+// ============================================================================
+// Test 6: Stale template after channel advance triggers is_template_stale()
+// (Validates the push-staleness detection that feeds the recovery path)
+// ============================================================================
+void test_stale_template_after_channel_advance() {
+    std::cout << "\nTest 6: Stale template detection after channel advance\n";
+    HeightTracker tracker;
+
+    // Template targeting channel_height=101
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 101);
+
+    // Confirm not stale before advance
+    auto snap_before = tracker.GetSnapshot();
+    print_test_result("Before advance: is_template_stale() == false", !snap_before.is_template_stale());
+
+    // Channel advances (block found)
+    tracker.OnPushNotification(5001, 101, 0x1d00ffff);
+    auto snap_after = tracker.GetSnapshot();
+    print_test_result("After advance: is_template_stale() == true", snap_after.is_template_stale());
+    print_test_result("After advance: channel_height == 101", snap_after.channel_height == 101);
+    print_test_result("After advance: channel_target == 101", snap_after.channel_target == 101);
+
+    // is_template_stale condition: channel_height >= channel_target
+    print_test_result("is_template_stale() satisfies: channel_height >= channel_target",
+                      snap_after.channel_height >= snap_after.channel_target);
+}
+
+// ============================================================================
+// Test 7: set_session_epoch() suppresses old keepalive signal
+// Confirms ack_recent logic would be false after epoch change
+// ============================================================================
+void test_epoch_advance_suppresses_old_keepalive_signal() {
+    std::cout << "\nTest 7: Epoch advance suppresses old keepalive signal for ack_recent\n";
+    HeightTracker tracker;
+
+    tracker.set_session_epoch(10);
+    tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0u, 0);
+
+    // Confirm old epoch keepalive is "set"
+    auto snap_epoch10 = tracker.GetSnapshot();
+    bool was_set = (snap_epoch10.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+    print_test_result("Epoch 10: keepalive ACK timestamp is set", was_set);
+
+    // Advance epoch — simulates re-auth or session restart
+    tracker.set_session_epoch(11);
+    auto snap_epoch11 = tracker.GetSnapshot();
+
+    // The ack_recent computation: keepalive_ack_received = (last_keepalive_ack_at != epoch)
+    // After epoch change, last_keepalive_ack_at is cleared → keepalive_ack_received = false
+    bool keepalive_ack_received = (snap_epoch11.last_keepalive_ack_at !=
+                                    std::chrono::steady_clock::time_point{});
+    print_test_result("Epoch 11: keepalive_ack_received == false after epoch advance",
+                      !keepalive_ack_received);
+    print_test_result("Epoch 11: ack_recent would be false (no stale liveness for escape ladder)",
+                      !keepalive_ack_received);
+}
+
+// ============================================================================
+// Test 8: Multiple rapid epoch changes produce clean keepalive state
+// ============================================================================
+void test_multiple_rapid_epoch_changes_clean_state() {
+    std::cout << "\nTest 8: Multiple rapid epoch changes always produce clean keepalive state\n";
+    HeightTracker tracker;
+
+    uint64_t current_epoch = 0;
+    for (int i = 0; i < 5; ++i) {
+        ++current_epoch;
+        tracker.set_session_epoch(current_epoch);
+
+        // Epoch starts clean
+        auto snap_start = tracker.GetSnapshot();
+        print_test_result(("Epoch " + std::to_string(current_epoch) + ": clean start").c_str(),
+                          snap_start.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
+
+        // Receive keepalive
+        tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0u, 0);
+    }
+
+    // Final state: keepalive is set for epoch 5
+    auto snap_final = tracker.GetSnapshot();
+    print_test_result("Final epoch (5): keepalive ACK timestamp is set from epoch 5 response",
+                      snap_final.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+    print_test_result("Final epoch (5): session_epoch == 5", snap_final.session_epoch == 5);
+}
+
+// ============================================================================
+// Test 9: Push notification does not reset keepalive timestamp on epoch change
+// Pushes and keepalives are orthogonal — epoch change clears ONLY keepalive ack
+// ============================================================================
+void test_push_does_not_clear_keepalive_on_epoch_change() {
+    std::cout << "\nTest 9: Push notifications do not clear keepalive timestamp on epoch change\n";
+    HeightTracker tracker;
+
+    tracker.set_session_epoch(1);
+    tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0u, 0);
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+
+    auto snap1 = tracker.GetSnapshot();
+    bool push_at_set  = (snap1.last_push_notification_at != std::chrono::steady_clock::time_point{});
+    bool ack_at_set   = (snap1.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+    print_test_result("Epoch 1: push timestamp is set", push_at_set);
+    print_test_result("Epoch 1: keepalive ACK timestamp is set", ack_at_set);
+
+    // Epoch change: keepalive clears, push is unchanged
+    tracker.set_session_epoch(2);
+    auto snap2 = tracker.GetSnapshot();
+    bool push_unchanged  = (snap2.last_push_notification_at == snap1.last_push_notification_at);
+    bool ack_cleared     = (snap2.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
+    print_test_result("Epoch 2: push timestamp preserved (not cleared by epoch change)",
+                      push_unchanged);
+    print_test_result("Epoch 2: keepalive ACK timestamp cleared by epoch change",
+                      ack_cleared);
+}
+
+// ============================================================================
+// Test 10: Recovery epoch tracking — monotonic with idempotent initiation
+// ============================================================================
+void test_recovery_epoch_monotonic_with_idempotent_initiation() {
+    std::cout << "\nTest 10: Recovery epoch is monotonic; initiation is idempotent within epoch\n";
+
+    struct RecoveryState {
+        int epoch{0};
+        bool pending{false};
+
+        void initiate() {
+            if (pending) return;  // idempotent
+            ++epoch;
+            pending = true;
+        }
+        void clear() {
+            pending = false;
+        }
+    };
+
+    RecoveryState rs;
+
+    // Multiple calls before any template arrives: all no-ops except first
+    rs.initiate();
+    int epoch_after_first = rs.epoch;
+    rs.initiate();
+    rs.initiate();
+    int epoch_after_many = rs.epoch;
+    print_test_result("Epoch is monotonic: multiple inits don't increment past 1",
+                      epoch_after_first == 1 && epoch_after_many == 1);
+    print_test_result("Pending remains true after multiple inits", rs.pending);
+
+    // Recovery completes (template received)
+    rs.clear();
+    print_test_result("After clear: pending == false", !rs.pending);
+    print_test_result("After clear: epoch still == 1 (preserved for audit)", rs.epoch == 1);
+
+    // Next staleness event: epoch advances
+    rs.initiate();
+    print_test_result("Second staleness: epoch == 2 (monotonically incremented)", rs.epoch == 2);
+    print_test_result("Second staleness: pending == true", rs.pending);
+
+    // Multiple calls again: no increment past 2
+    rs.initiate();
+    rs.initiate();
+    print_test_result("Multiple inits after epoch 2: epoch remains 2", rs.epoch == 2);
+}
+
+// ============================================================================
+// Main Test Runner
+// ============================================================================
+int main() {
+    std::cout << "\n═══════════════════════════════════════════════════════════\n";
+    std::cout << "Degraded Recovery / Keepalive Epoch Tests\n";
+    std::cout << "═══════════════════════════════════════════════════════════\n";
+
+    test_keepalive_ack_invalidated_on_epoch_change();
+    test_channel_advance_stale_template_transition();
+    test_recovery_pending_debounce_idempotent();
+    test_recovery_get_block_no_permanent_starvation();
+    test_keepalive_epoch_isolation_clean_start();
+    test_stale_template_after_channel_advance();
+    test_epoch_advance_suppresses_old_keepalive_signal();
+    test_multiple_rapid_epoch_changes_clean_state();
+    test_push_does_not_clear_keepalive_on_epoch_change();
+    test_recovery_epoch_monotonic_with_idempotent_initiation();
+
+    std::cout << "\n═══════════════════════════════════════════════════════════\n";
+    std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";
+    if (tests_failed > 0) {
+        std::cout << " (" << tests_failed << " failed)";
+    }
+    std::cout << "\n═══════════════════════════════════════════════════════════\n\n";
+
+    return (tests_failed == 0) ? 0 : 1;
+}

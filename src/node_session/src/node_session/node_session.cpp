@@ -484,6 +484,11 @@ bool NodeSession::is_authenticated() const
     return m_session_context ? m_session_context->is_authenticated() : false;
 }
 
+bool NodeSession::is_primary_connected() const
+{
+    return m_primary_connected.load();
+}
+
 bool NodeSession::is_session_active() const
 {
     // Query the authoritative session context

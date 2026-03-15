@@ -187,6 +187,16 @@ target_include_directories(get_block_dedup_recovery_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+# Degraded mode recovery and keepalive epoch isolation tests
+add_executable(degraded_recovery_test degraded_recovery_test.cpp)
+target_link_libraries(degraded_recovery_test PRIVATE protocol LLP spdlog)
+target_include_directories(degraded_recovery_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src
+)
+
 # Solo auth/session resync regression tests
 add_executable(solo_auth_resync_test solo_auth_resync_test.cpp)
 target_link_libraries(solo_auth_resync_test PRIVATE protocol spdlog)
@@ -212,6 +222,7 @@ add_test(NAME mined_block_cache_dedup_test COMMAND $<TARGET_FILE:mined_block_cac
 add_test(NAME node_shutdown_wire_test COMMAND $<TARGET_FILE:node_shutdown_wire_test>)
 add_test(NAME get_block_dedup_recovery_test COMMAND $<TARGET_FILE:get_block_dedup_recovery_test>)
 add_test(NAME solo_auth_resync_test COMMAND $<TARGET_FILE:solo_auth_resync_test>)
+add_test(NAME degraded_recovery_test COMMAND $<TARGET_FILE:degraded_recovery_test>)
 # SESSION_START packet parser unit tests
 add_executable(session_start_parser_test session_start_parser_test.cpp)
 target_link_libraries(session_start_parser_test PRIVATE protocol)

@@ -151,6 +151,12 @@ public:
     bool is_authenticated() const;
 
     /**
+     * @brief Check if the primary TCP connection is currently established
+     * @return True if the primary connection is up (may be authenticated or pending auth)
+     */
+    bool is_primary_connected() const;
+
+    /**
      * @brief Check if session is active
      * @return True if session is active
      */

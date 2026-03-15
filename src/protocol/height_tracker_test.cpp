@@ -13,6 +13,11 @@
  *  8. Channel height advancing DOES make template stale
  *  9. is_tip_moved() detects unified tip advance (Phase 3A: tip_moved refresh reason)
  * 10. is_tip_moved() resets to false after new template received
+ * 37. set_session_epoch() clears last_keepalive_ack_at on epoch change (keepalive epoch isolation)
+ * 38. set_session_epoch() does NOT clear last_keepalive_ack_at when epoch is unchanged
+ * 39. Keepalive timestamp from old epoch does not survive into new epoch (liveness isolation)
+ * 40. set_session_epoch(0) does NOT clear last_keepalive_ack_at (sentinel epoch = no-op)
+ * 41. Session epoch reflected in Snapshot.session_epoch field
  * 11. Difficulty from push updates is reflected in HeightTracker snapshot
  *     (GET_ROUND and keepalive difficulty go to diagnostic only — not in snapshot)
  * 12. Post-push guard — last_template_update >= last push time
@@ -1435,6 +1440,140 @@ void test_push_notification_at_isolated_from_keepalive_and_getround() {
 }
 
 // ============================================================================
+// Test 37: set_session_epoch() clears last_keepalive_ack_at on epoch change
+// This is the core fix for the keepalive tracking split:
+// a stale-epoch keepalive ACK must not signal liveness for the new epoch.
+// ============================================================================
+void test_set_session_epoch_clears_keepalive_on_epoch_change() {
+    std::cout << "\nTest 37: set_session_epoch() clears last_keepalive_ack_at on epoch change\n";
+    HeightTracker tracker;
+
+    // Epoch 1: session established, keepalives flowing
+    tracker.set_session_epoch(1);
+    tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0xDEADBEEFu, 0);
+
+    auto snap_before = tracker.GetSnapshot();
+    print_test_result("Epoch 1: last_keepalive_ack_at is set after OnKeepaliveResponse",
+                      snap_before.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+    print_test_result("Epoch 1: session_epoch == 1 in snapshot",
+                      snap_before.session_epoch == 1);
+
+    // Advance the session epoch (simulates re-auth / channel advance causing epoch bump)
+    tracker.set_session_epoch(2);
+
+    auto snap_after = tracker.GetSnapshot();
+    print_test_result("Epoch 2: last_keepalive_ack_at CLEARED after epoch change",
+                      snap_after.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
+    print_test_result("Epoch 2: session_epoch == 2 in snapshot",
+                      snap_after.session_epoch == 2);
+}
+
+// ============================================================================
+// Test 38: set_session_epoch() does NOT clear last_keepalive_ack_at when epoch unchanged
+// ============================================================================
+void test_set_session_epoch_no_clear_when_unchanged() {
+    std::cout << "\nTest 38: set_session_epoch() does NOT clear keepalive timestamp when epoch unchanged\n";
+    HeightTracker tracker;
+
+    tracker.set_session_epoch(5);
+    tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0xDEADBEEFu, 0);
+
+    auto snap_before = tracker.GetSnapshot();
+    auto ack_time = snap_before.last_keepalive_ack_at;
+    print_test_result("last_keepalive_ack_at is set initially",
+                      ack_time != std::chrono::steady_clock::time_point{});
+
+    // Re-setting the SAME epoch should NOT clear the keepalive timestamp
+    tracker.set_session_epoch(5);
+
+    auto snap_after = tracker.GetSnapshot();
+    print_test_result("last_keepalive_ack_at preserved when same epoch re-set",
+                      snap_after.last_keepalive_ack_at == ack_time);
+}
+
+// ============================================================================
+// Test 39: Keepalive timestamp from old epoch does not survive into new epoch
+// (Simulates the real-world deadlock: channel advances → epoch bumps → stale
+// keepalive should not falsely report ack_recent=true in new epoch)
+// ============================================================================
+void test_old_epoch_keepalive_does_not_signal_new_epoch_liveness() {
+    std::cout << "\nTest 39: Old-epoch keepalive timestamp does not survive into new epoch\n";
+    HeightTracker tracker;
+
+    // Epoch 1: session established, keepalives flowing
+    tracker.set_session_epoch(1);
+    tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0xDEADBEEFu, 0);
+
+    // Confirm keepalive is "recent" for epoch 1
+    auto snap1 = tracker.GetSnapshot();
+    print_test_result("Epoch 1: keepalive ACK timestamp is set",
+                      snap1.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+
+    // Channel advance + re-auth → epoch 2
+    tracker.set_session_epoch(2);
+    tracker.OnPushNotification(5001, 101, 0x1d00ffff);  // channel advances
+
+    // In the new epoch, before any keepalive for epoch 2,
+    // the old epoch's keepalive must NOT make ack_recent appear true.
+    auto snap2 = tracker.GetSnapshot();
+    print_test_result("Epoch 2: old-epoch keepalive timestamp is cleared (no stale liveness signal)",
+                      snap2.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
+    print_test_result("Epoch 2: channel_height updated by push (not affected by epoch change)",
+                      snap2.channel_height == 101);
+
+    // Now receive a keepalive for epoch 2 — should work normally
+    tracker.OnKeepaliveResponse(5001, 401, 701, 901, 0xCAFEBABEu, 0);
+    auto snap3 = tracker.GetSnapshot();
+    print_test_result("Epoch 2: new keepalive ACK is accepted and timestamp set",
+                      snap3.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+}
+
+// ============================================================================
+// Test 40: set_session_epoch(0) does NOT clear last_keepalive_ack_at
+// (Epoch 0 is the sentinel "no active session" baseline — must not invalidate)
+// ============================================================================
+void test_set_session_epoch_zero_no_clear() {
+    std::cout << "\nTest 40: set_session_epoch(0) does NOT clear keepalive timestamp (sentinel epoch)\n";
+    HeightTracker tracker;
+
+    tracker.set_session_epoch(3);
+    tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0xDEADBEEFu, 0);
+    auto ack_time = tracker.GetSnapshot().last_keepalive_ack_at;
+    print_test_result("Initial keepalive timestamp is set",
+                      ack_time != std::chrono::steady_clock::time_point{});
+
+    // Setting epoch to 0 (sentinel) should be a no-op for keepalive clearing
+    tracker.set_session_epoch(0);
+    auto snap_after = tracker.GetSnapshot();
+    print_test_result("set_session_epoch(0) does not clear keepalive timestamp",
+                      snap_after.last_keepalive_ack_at == ack_time);
+    print_test_result("session_epoch updated to 0",
+                      snap_after.session_epoch == 0);
+}
+
+// ============================================================================
+// Test 41: Session epoch reflected in Snapshot.session_epoch
+// ============================================================================
+void test_session_epoch_in_snapshot() {
+    std::cout << "\nTest 41: session_epoch field in Snapshot reflects set_session_epoch()\n";
+    HeightTracker tracker;
+
+    auto snap0 = tracker.GetSnapshot();
+    print_test_result("Initial session_epoch == 0",
+                      snap0.session_epoch == 0);
+
+    tracker.set_session_epoch(42);
+    auto snap42 = tracker.GetSnapshot();
+    print_test_result("session_epoch == 42 after set",
+                      snap42.session_epoch == 42);
+
+    tracker.set_session_epoch(99);
+    auto snap99 = tracker.GetSnapshot();
+    print_test_result("session_epoch == 99 after second set",
+                      snap99.session_epoch == 99);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -1483,6 +1622,11 @@ int main() {
     test_advance_channel_target_updates_canonical();
     test_on_template_received_sets_template_unified_height();
     test_push_notification_at_isolated_from_keepalive_and_getround();
+    test_set_session_epoch_clears_keepalive_on_epoch_change();
+    test_set_session_epoch_no_clear_when_unchanged();
+    test_old_epoch_keepalive_does_not_signal_new_epoch_liveness();
+    test_set_session_epoch_zero_no_clear();
+    test_session_epoch_in_snapshot();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
