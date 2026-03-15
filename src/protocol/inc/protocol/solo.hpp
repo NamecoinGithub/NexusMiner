@@ -4,6 +4,7 @@
 #include "protocol/protocol.hpp"
 #include "protocol/falcon_wrapper.hpp"
 #include "protocol/chacha20_wrapper.hpp"
+#include "protocol/chacha20_evp_manager.hpp"
 #include "protocol/session_manager.hpp"
 #include "protocol/node_session_context.hpp"
 #include "protocol/mining_template_interface.hpp"
@@ -435,8 +436,8 @@ private:
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
     bool m_disposable_falcon_enabled;     // Disposable Falcon signing (ALWAYS ON - core protocol, 0 blockchain overhead)
     
-    // ChaCha20 encryption wrapper for Falcon pubkey protection
-    std::unique_ptr<ChaCha20Wrapper> m_chacha20_wrapper;
+    // ChaCha20 EVP lifecycle manager (centralized key + monotonic nonce)
+    std::shared_ptr<ChaCha20EvpManager> m_evp_manager;
     bool m_enable_chacha20;  // ChaCha20 encryption (ALWAYS ON - core security for localhost + SessionID)
 
     // Session context for centralized session management (passed from NodeSession)
