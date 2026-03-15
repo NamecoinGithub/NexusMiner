@@ -332,7 +332,7 @@ namespace config
                     else if (key == "ssl_port")
                     {
                         // Dedicated TLS mining port (0 = use [wallet] port with TLS)
-                        // Forward-reserved: 9326 (stateless TLS) / 8326 (legacy TLS)
+                        // Forward-reserved: 9325 (stateless TLS) / 8325 (legacy TLS)
                         int port = parse_int_value(value);
                         if (port >= 0 && port <= std::numeric_limits<std::uint16_t>::max())
                             config.set_ssl_port(static_cast<std::uint16_t>(port));
