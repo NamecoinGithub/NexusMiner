@@ -10,7 +10,7 @@
  *  4.  Recovery GET_BLOCK can dispatch after debounce window — no permanent starvation
  *  5.  Keepalive epoch isolation — new epoch starts with clean ack timestamp
  *  6.  Stale template after channel advance triggers is_template_stale()
- *  7.  set_session_epoch() increments suppress old keepalive signal
+ *  7.  set_session_epoch() with a higher epoch suppresses the old keepalive signal
  *  8.  Multiple rapid epoch changes produce clean keepalive state
  *  9.  Push notification does not reset keepalive timestamp on epoch change
  * 10.  Recovery epoch tracking — monotonic epoch counter with idempotent initiation
