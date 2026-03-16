@@ -724,13 +724,13 @@ void NodeSession::set_keepalive_interval(uint16_t hours)
     }
 }
 
-network::Shared_payload NodeSession::request_work()
+network::Shared_payload NodeSession::request_work(bool bypass_dedup)
 {
     if (m_primary_protocol && m_primary_connected) {
-        return m_primary_protocol->get_work();
+        return m_primary_protocol->get_work(bypass_dedup);
     }
     if (m_secondary_protocol && m_secondary_connected) {
-        return m_secondary_protocol->get_work();
+        return m_secondary_protocol->get_work(bypass_dedup);
     }
     return nullptr;
 }

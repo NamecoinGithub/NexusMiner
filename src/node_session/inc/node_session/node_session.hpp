@@ -255,7 +255,7 @@ public:
      * @brief Request fresh mining template
      * @return Payload to transmit (null if not authenticated)
      */
-    network::Shared_payload request_work();
+    network::Shared_payload request_work(bool bypass_dedup = false);
 
     /**
      * @brief Submit a solved block

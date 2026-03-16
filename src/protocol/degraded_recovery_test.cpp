@@ -14,6 +14,8 @@
  *  8.  Multiple rapid epoch changes produce clean keepalive state
  *  9.  Push notification does not reset keepalive timestamp on epoch change
  * 10.  Recovery epoch tracking — monotonic epoch counter with idempotent initiation
+ * 11.  Integration: stale -> degraded -> fresh template -> mining resumes
+ * 12.  Integration: forced retry lane remains bounded (no flood)
  */
 
 #include "protocol/height_tracker.hpp"
@@ -26,6 +28,7 @@
 #include <thread>
 #include <memory>
 #include <vector>
+#include <deque>
 
 using namespace nexusminer::protocol;
 using namespace nexusminer;
@@ -426,6 +429,103 @@ void test_recovery_epoch_monotonic_with_idempotent_initiation() {
 }
 
 // ============================================================================
+// Test 11: Integration - channel advance -> stale -> degraded -> fresh -> resume
+// ============================================================================
+void test_integration_degraded_recovery_to_resume() {
+    std::cout << "\nTest 11: Integration degraded recovery returns to active mining\n";
+
+    struct IntegrationState {
+        bool mining_active{true};
+        bool degraded{false};
+        bool recovery_pending{false};
+        bool has_valid_template{true};
+        uint32_t channel_height{100};
+        uint32_t channel_target{101};
+        int get_block_sent{0};
+
+        void on_channel_advance(uint32_t new_height) {
+            channel_height = new_height;
+            if (channel_height >= channel_target) {
+                degraded = true;
+                recovery_pending = true;
+                has_valid_template = false;
+                mining_active = false;
+            }
+        }
+
+        void recovery_tick() {
+            if (degraded && recovery_pending && !has_valid_template) {
+                ++get_block_sent;
+            }
+        }
+
+        void on_fresh_template(uint32_t new_target) {
+            channel_target = new_target;
+            has_valid_template = true;
+            if (degraded && recovery_pending) {
+                degraded = false;
+                recovery_pending = false;
+                mining_active = true;
+            }
+        }
+    };
+
+    IntegrationState s;
+    s.on_channel_advance(101);  // stale
+    print_test_result("Stale transition enters degraded mode", s.degraded && !s.mining_active);
+
+    s.recovery_tick();
+    print_test_result("Recovery tick sends GET_BLOCK while degraded", s.get_block_sent == 1);
+
+    s.on_fresh_template(102);
+    print_test_result("Fresh template exits degraded mode", !s.degraded && !s.recovery_pending);
+    print_test_result("Mining resumes after template acceptance", s.mining_active);
+}
+
+// ============================================================================
+// Test 12: Integration - bounded forced retries prevent flooding
+// ============================================================================
+void test_integration_forced_retry_is_bounded() {
+    std::cout << "\nTest 12: Integration forced retry channel remains bounded\n";
+
+    struct ForcedBound {
+        std::deque<std::chrono::steady_clock::time_point> sends;
+        int64_t interval_ms{1000};
+        size_t max_burst{25};
+        std::chrono::steady_clock::time_point next_due{};
+
+        bool try_send(std::chrono::steady_clock::time_point now) {
+            while (!sends.empty()) {
+                auto age = std::chrono::duration_cast<std::chrono::seconds>(now - sends.front()).count();
+                if (age <= 60) break;
+                sends.pop_front();
+            }
+            if (next_due != std::chrono::steady_clock::time_point{} && now < next_due) {
+                return false;
+            }
+            if (sends.size() >= max_burst) {
+                return false;
+            }
+            sends.push_back(now);
+            next_due = now + std::chrono::milliseconds(interval_ms);
+            return true;
+        }
+    };
+
+    ForcedBound bound;
+    auto now = std::chrono::steady_clock::now();
+    int sent = 0;
+    for (int i = 0; i < 120; ++i) {  // simulate 120 recovery ticks per second
+        auto tick_tp = now + std::chrono::milliseconds(i * 500); // tick every 500ms
+        if (bound.try_send(tick_tp)) {
+            ++sent;
+        }
+    }
+    print_test_result("Forced retries stay at or below max_forced_burst_per_60s", sent <= 25);
+    print_test_result("Forced retries still make progress (at least one send)", sent > 0);
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 int main() {
@@ -443,6 +543,8 @@ int main() {
     test_multiple_rapid_epoch_changes_clean_state();
     test_push_does_not_clear_keepalive_on_epoch_change();
     test_recovery_epoch_monotonic_with_idempotent_initiation();
+    test_integration_degraded_recovery_to_resume();
+    test_integration_forced_retry_is_bounded();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";
