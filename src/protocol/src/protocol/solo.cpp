@@ -4384,65 +4384,6 @@ void Solo::handle_reward_result(const Packet& packet)
     m_logger->info("[Solo Reward] Received MINER_REWARD_RESULT");
     refresh_cached_session_state("Solo RewardResult");
 
-    struct RewardResultInvariantSnapshot {
-        bool local_authenticated{false};
-        uint32_t local_session_id{0};
-        uint64_t local_session_epoch{0};
-        AuthState local_auth_state{AuthState::NOT_AUTHENTICATED};
-        bool authoritative_authenticated{false};
-        bool authoritative_falcon_authenticated{false};
-        uint32_t authoritative_session_id{0};
-        uint64_t authoritative_session_epoch{0};
-    };
-    const auto capture_invariants = [this]() {
-        RewardResultInvariantSnapshot snapshot;
-        snapshot.local_authenticated = m_authenticated;
-        snapshot.local_session_id = m_session_id;
-        snapshot.local_session_epoch = m_session_epoch;
-        snapshot.local_auth_state = m_auth_state;
-        if (m_session_context) {
-            const auto info = m_session_context->get_session_info();
-            snapshot.authoritative_authenticated = info.authenticated;
-            snapshot.authoritative_falcon_authenticated = info.falcon_authenticated;
-            snapshot.authoritative_session_id = info.session_id;
-            snapshot.authoritative_session_epoch = info.session_epoch;
-        }
-        return snapshot;
-    };
-    const auto verify_invariants = [this, &capture_invariants](const char* scope, const RewardResultInvariantSnapshot& before) {
-        RewardResultInvariantSnapshot after = capture_invariants();
-        if (after.local_authenticated != before.local_authenticated ||
-            after.local_session_id != before.local_session_id ||
-            after.local_session_epoch != before.local_session_epoch ||
-            after.local_auth_state != before.local_auth_state ||
-            after.authoritative_authenticated != before.authoritative_authenticated ||
-            after.authoritative_falcon_authenticated != before.authoritative_falcon_authenticated ||
-            after.authoritative_session_id != before.authoritative_session_id ||
-            after.authoritative_session_epoch != before.authoritative_session_epoch) {
-            m_logger->error("[Solo Reward] 0xD06 invariant guard violation during {}: local_auth {}->{} sid {}->{} epoch {}->{} state {}->{} authoritative_auth {}->{} falcon_auth {}->{} authoritative_sid {}->{} authoritative_epoch {}->{}",
-                            scope,
-                            before.local_authenticated ? "true" : "false",
-                            after.local_authenticated ? "true" : "false",
-                            before.local_session_id,
-                            after.local_session_id,
-                            before.local_session_epoch,
-                            after.local_session_epoch,
-                            static_cast<int>(before.local_auth_state),
-                            static_cast<int>(after.local_auth_state),
-                            before.authoritative_authenticated ? "true" : "false",
-                            after.authoritative_authenticated ? "true" : "false",
-                            before.authoritative_falcon_authenticated ? "true" : "false",
-                            after.authoritative_falcon_authenticated ? "true" : "false",
-                            before.authoritative_session_id,
-                            after.authoritative_session_id,
-                            before.authoritative_session_epoch,
-                            after.authoritative_session_epoch);
-        } else {
-            m_logger->debug("[Solo Reward] 0xD06 invariant guard ok during {} (no auth/session lifecycle mutation)", scope);
-        }
-    };
-    const RewardResultInvariantSnapshot invariant_before_decode = capture_invariants();
-
     PacketIngressPreflightOptions preflight;
     preflight.owner = &m_last_reward_request_owner;
     preflight.require_crypto_ready = m_enable_chacha20;
@@ -4467,163 +4408,18 @@ void Solo::handle_reward_result(const Packet& packet)
     // Decrypt if ChaCha20 is enabled
     if (m_enable_chacha20)
     {
-        const bool mode_locked_evp = (m_transport_crypto_selector.active_mode() == "evp");
         const auto session = m_session_context ? m_session_context->get_session_info()
                                                : SessionManager::SessionInfo{};
         const auto& reward_session_key = session.chacha20_session_key;
         const uint32_t reward_session_id = session.session_id;
-        enum class RewardResultDecodeFailReason {
-            FRAME_TOO_SHORT,
-            FLAGS_MISMATCH,
-            SESSION_MISMATCH,
-            AUTH_TAG_FAIL
-        };
-        const auto reward_decode_reason_name = [](RewardResultDecodeFailReason reason) {
-            switch (reason) {
-                case RewardResultDecodeFailReason::FRAME_TOO_SHORT: return "REWARD_RESULT_FRAME_TOO_SHORT";
-                case RewardResultDecodeFailReason::FLAGS_MISMATCH: return "REWARD_RESULT_FLAGS_MISMATCH";
-                case RewardResultDecodeFailReason::SESSION_MISMATCH: return "REWARD_RESULT_SESSION_MISMATCH";
-                case RewardResultDecodeFailReason::AUTH_TAG_FAIL: return "REWARD_RESULT_AUTH_TAG_FAIL";
-            }
-            return "REWARD_RESULT_UNKNOWN_REASON";
-        };
-        const auto log_reward_decode_failure = [this, reward_session_id, reward_decode_reason_name](RewardResultDecodeFailReason reason,
-                                                                                                      std::size_t expected_len,
-                                                                                                      std::size_t actual_len,
-                                                                                                      uint32_t expected_sid,
-                                                                                                      uint32_t actual_sid) {
-            if (reason == RewardResultDecodeFailReason::FRAME_TOO_SHORT) {
-                ++m_reward_result_decode_fail_frame_too_short_total;
-            } else if (reason == RewardResultDecodeFailReason::FLAGS_MISMATCH) {
-                ++m_reward_result_decode_fail_flags_mismatch_total;
-            } else if (reason == RewardResultDecodeFailReason::SESSION_MISMATCH) {
-                ++m_reward_result_decode_fail_session_mismatch_total;
-            } else if (reason == RewardResultDecodeFailReason::AUTH_TAG_FAIL) {
-                ++m_reward_result_decode_fail_auth_tag_fail_total;
-            }
-
-            // Best-effort aggregate: exact point-in-time coherence is not required for this diagnostic counter.
-            const uint64_t fail_total =
-                m_reward_result_decode_fail_frame_too_short_total.load() +
-                m_reward_result_decode_fail_flags_mismatch_total.load() +
-                m_reward_result_decode_fail_session_mismatch_total.load() +
-                m_reward_result_decode_fail_auth_tag_fail_total.load();
-            m_logger->error("[Solo Reward] reward_result_decode_fail_total{{reason={}}}={} mode={} sid={} expected_len={} actual_len={} expected_sid={} actual_sid={}",
-                            reward_decode_reason_name(reason),
-                            fail_total,
-                            m_transport_crypto_selector.active_mode(),
-                            reward_session_id,
-                            expected_len,
-                            actual_len,
-                            expected_sid,
-                            actual_sid);
-        };
-
-        if (mode_locked_evp) {
-            const auto& encrypted = *packet.m_data;
-            constexpr std::size_t kMinEvpRewardFrame = packet_crypto_constants::EVP_FRAME_FIXED_OVERHEAD;
-            if (encrypted.size() < kMinEvpRewardFrame) {
-                log_reward_decode_failure(RewardResultDecodeFailReason::FRAME_TOO_SHORT,
-                                          kMinEvpRewardFrame,
-                                          encrypted.size(),
-                                          reward_session_id,
-                                          0);
-                verify_invariants("REWARD_RESULT_FRAME_TOO_SHORT", invariant_before_decode);
-                m_reward_bound = false;
-                return;
-            }
-
-            if (encrypted[0] != packet_crypto_constants::EVP_FRAME_VERSION ||
-                (encrypted[1] & packet_crypto_constants::EVP_FLAG_SESSION_BOUND) == 0) {
-                log_reward_decode_failure(RewardResultDecodeFailReason::FLAGS_MISMATCH,
-                                          kMinEvpRewardFrame,
-                                          encrypted.size(),
-                                          reward_session_id,
-                                          0);
-                verify_invariants("REWARD_RESULT_FLAGS_MISMATCH", invariant_before_decode);
-                m_reward_bound = false;
-                return;
-            }
-
-            const auto read_u32_le_checked = [](const std::vector<uint8_t>& data, std::size_t offset, uint32_t& value) {
-                if (offset + sizeof(uint32_t) > data.size()) {
-                    return false;
-                }
-                value = static_cast<uint32_t>(data[offset]) |
-                        (static_cast<uint32_t>(data[offset + 1]) << 8U) |
-                        (static_cast<uint32_t>(data[offset + 2]) << 16U) |
-                        (static_cast<uint32_t>(data[offset + 3]) << 24U);
-                return true;
-            };
-            const auto read_u64_le_checked = [](const std::vector<uint8_t>& data, std::size_t offset, uint64_t& value) {
-                if (offset + sizeof(uint64_t) > data.size()) {
-                    return false;
-                }
-                value = 0;
-                for (std::size_t i = 0; i < sizeof(uint64_t); ++i) {
-                    value |= (static_cast<uint64_t>(data[offset + i]) << (8U * i));
-                }
-                return true;
-            };
-
-            uint32_t packet_session_id = 0;
-            uint64_t packet_session_epoch = 0;
-            if (!read_u32_le_checked(encrypted, packet_crypto_constants::EVP_FRAME_SESSION_ID_OFFSET, packet_session_id) ||
-                !read_u64_le_checked(encrypted, packet_crypto_constants::EVP_FRAME_SESSION_EPOCH_OFFSET, packet_session_epoch)) {
-                log_reward_decode_failure(RewardResultDecodeFailReason::FRAME_TOO_SHORT,
-                                          kMinEvpRewardFrame,
-                                          encrypted.size(),
-                                          reward_session_id,
-                                          0);
-                verify_invariants("REWARD_RESULT_FRAME_TOO_SHORT", invariant_before_decode);
-                m_reward_bound = false;
-                return;
-            }
-            if (reward_session_key.empty() ||
-                reward_session_id == 0 ||
-                packet_session_id != reward_session_id ||
-                packet_session_epoch != session.session_epoch) {
-                log_reward_decode_failure(RewardResultDecodeFailReason::SESSION_MISMATCH,
-                                          kMinEvpRewardFrame,
-                                          encrypted.size(),
-                                          reward_session_id,
-                                          packet_session_id);
-                verify_invariants("REWARD_RESULT_SESSION_MISMATCH", invariant_before_decode);
-                m_reward_bound = false;
-                return;
-            }
-
-            auto decrypt_result = m_transport_crypto_selector.decrypt_packet(
-                encrypted,
-                reward_session_key,
-                reward_session_id,
-                PacketCryptoPhase::SESSION_BOUND,
-                AAD_REWARD_RESULT,
-                session.session_epoch);
-            if (!decrypt_result.success) {
-                log_reward_decode_failure(RewardResultDecodeFailReason::AUTH_TAG_FAIL,
-                                          kMinEvpRewardFrame,
-                                          encrypted.size(),
-                                          reward_session_id,
-                                          packet_session_id);
-                verify_invariants("REWARD_RESULT_AUTH_TAG_FAIL", invariant_before_decode);
-                m_reward_bound = false;
-                return;
-            }
-
-            result_data = decrypt_result.data;
-            ++m_reward_result_decode_ok_total;
-            m_logger->info("[Solo Reward] reward_result_decode_ok_total={} mode={} sid={}",
-                           m_reward_result_decode_ok_total.load(),
-                           m_transport_crypto_selector.active_mode(),
-                           reward_session_id);
-            verify_invariants("REWARD_RESULT_DECODE_OK", invariant_before_decode);
-        } else if (!reward_session_key.empty()) {
+        const bool is_session_bound = reward_session_id != 0;
+        const PacketCryptoPhase crypto_phase = is_session_bound
+            ? PacketCryptoPhase::SESSION_BOUND
+            : PacketCryptoPhase::PRE_AUTH;
+        if (!reward_session_key.empty())
+        {
             try {
-                const bool is_session_bound = reward_session_id != 0;
-                const PacketCryptoPhase crypto_phase = is_session_bound
-                    ? PacketCryptoPhase::SESSION_BOUND
-                    : PacketCryptoPhase::PRE_AUTH;
+                // Decrypt response using matching AAD
                 auto decrypt_result = m_transport_crypto_selector.decrypt_packet(
                     *packet.m_data,
                     reward_session_key,
@@ -4631,21 +4427,48 @@ void Solo::handle_reward_result(const Packet& packet)
                     crypto_phase,
                     AAD_REWARD_RESULT,
                     session.session_epoch);
-
+                
                 if (decrypt_result.success) {
                     result_data = decrypt_result.data;
                     m_logger->debug("[Solo Reward] Decrypted with AAD: REWARD_RESULT ({} bytes)", AAD_REWARD_RESULT.size());
                 } else {
                     m_logger->error("[Solo Reward] Failed to decrypt result: {}", decrypt_result.error_message);
+                    if (is_session_bound &&
+                        (decrypt_result.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::SESSION_ID_MISMATCH ||
+                         decrypt_result.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::NONCE_REPLAY ||
+                         decrypt_result.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::AUTH_FAILURE)) {
+                        m_logger->error("[Solo Reward] Session-bound EVP decrypt failure requires session rebind: {}",
+                                        decrypt_result.error_message);
+                        if (get_session_manager()) {
+                            get_session_manager()->set_state(SessionManager::SessionState::EXPIRED);
+                        }
+                        if (m_session_expired_handler) {
+                            m_session_expired_handler();
+                        }
+                    }
                     m_reward_bound = false;
                     return;
                 }
-            } catch (const std::exception& e) {
+            }
+            catch (const std::exception& e) {
                 m_logger->error("[Solo Reward] Decryption failed: {}", e.what());
                 m_reward_bound = false;
                 return;
             }
-        } else {
+        }
+        else
+        {
+            if (is_session_bound && m_transport_crypto_selector.active_mode() == "evp") {
+                m_logger->error("[Solo Reward] SESSION_BOUND EVP mode requires encrypted reward result with session key");
+                m_reward_bound = false;
+                if (get_session_manager()) {
+                    get_session_manager()->set_state(SessionManager::SessionState::EXPIRED);
+                }
+                if (m_session_expired_handler) {
+                    m_session_expired_handler();
+                }
+                return;
+            }
             // No session key, allow legacy/plain pre-auth compatibility path
             result_data.assign(packet.m_data->begin(), packet.m_data->end());
         }

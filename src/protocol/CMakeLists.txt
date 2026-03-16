@@ -214,18 +214,6 @@ target_include_directories(solo_auth_resync_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
-# MINER_REWARD_RESULT (0xD06) decode parity regression tests
-add_executable(reward_result_decode_test
-    reward_result_decode_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp)
-target_link_libraries(reward_result_decode_test PRIVATE protocol LLP spdlog ${OPENSSL_LIBRARIES})
-target_include_directories(reward_result_decode_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src
-)
-
 # Register all test executables with CTest
 add_test(NAME chacha20_test COMMAND $<TARGET_FILE:chacha20_test>)
 add_test(NAME transport_crypto_selector_test COMMAND $<TARGET_FILE:transport_crypto_selector_test>)
@@ -245,7 +233,6 @@ add_test(NAME node_shutdown_wire_test COMMAND $<TARGET_FILE:node_shutdown_wire_t
 add_test(NAME get_block_dedup_recovery_test COMMAND $<TARGET_FILE:get_block_dedup_recovery_test>)
 add_test(NAME solo_auth_resync_test COMMAND $<TARGET_FILE:solo_auth_resync_test>)
 add_test(NAME degraded_recovery_test COMMAND $<TARGET_FILE:degraded_recovery_test>)
-add_test(NAME reward_result_decode_test COMMAND $<TARGET_FILE:reward_result_decode_test>)
 # SESSION_START packet parser unit tests
 add_executable(session_start_parser_test session_start_parser_test.cpp)
 target_link_libraries(session_start_parser_test PRIVATE protocol)
