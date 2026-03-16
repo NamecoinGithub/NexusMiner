@@ -4419,7 +4419,8 @@ void Solo::handle_reward_result(const Packet& packet)
                     m_logger->error("[Solo Reward] Failed to decrypt result: {}", decrypt_result.error_message);
                     if (is_session_bound &&
                         (decrypt_result.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::SESSION_ID_MISMATCH ||
-                         decrypt_result.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::NONCE_REPLAY)) {
+                         decrypt_result.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::NONCE_REPLAY ||
+                         decrypt_result.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::AUTH_FAILURE)) {
                         m_logger->error("[Solo Reward] Session-bound EVP decrypt failure requires session rebind: {}",
                                         decrypt_result.error_message);
                         if (get_session_manager()) {

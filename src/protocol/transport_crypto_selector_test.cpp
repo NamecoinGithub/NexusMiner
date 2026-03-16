@@ -154,6 +154,25 @@ int main()
         }
     }
 
+    // 7) AAD mismatch => auth failure in SESSION_BOUND EVP mode
+    {
+        TransportCryptoSelector selector(logger);
+        selector.configure("evp");
+        if (selector.active_mode() == "evp") {
+            constexpr uint32_t sid = 0x8899AABB;
+            const std::vector<uint8_t> aad_a{'M', 'S', 'G', '_', 'A'};
+            const std::vector<uint8_t> aad_b{'M', 'S', 'G', '_', 'B'};
+            auto enc = selector.encrypt_packet(plaintext, key, sid, PacketCryptoPhase::SESSION_BOUND, aad_a);
+            check("aad mismatch encrypt succeeds", enc.success);
+            auto dec = selector.decrypt_packet(enc.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad_b);
+            check("aad mismatch rejected", !dec.success);
+            check("aad mismatch auth-failure code",
+                  dec.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::AUTH_FAILURE);
+        } else {
+            check("aad mismatch test skipped on legacy fallback", true);
+        }
+    }
+
     std::cout << "\nTests run: " << tests_run << ", failed: " << tests_failed << std::endl;
     return tests_failed == 0 ? 0 : 1;
 }

@@ -24,6 +24,7 @@ constexpr std::uint8_t EVP_FRAME_VERSION = 1;
 constexpr std::uint8_t EVP_FLAG_SESSION_BOUND = 0x01;
 constexpr std::size_t EVP_FRAME_VERSION_BYTES = 1;
 constexpr std::size_t EVP_FRAME_FLAGS_BYTES = 1;
+// SessionID wire width is fixed to uint32 little-endian.
 constexpr std::size_t EVP_FRAME_SESSION_ID_BYTES = 4;
 constexpr std::size_t EVP_FRAME_HEADER_BYTES =
     EVP_FRAME_VERSION_BYTES + EVP_FRAME_FLAGS_BYTES + EVP_FRAME_SESSION_ID_BYTES;

@@ -1,5 +1,6 @@
 #include "protocol/transport_crypto_selector.hpp"
 #include <algorithm>
+#include <limits>
 #include <openssl/rand.h>
 
 namespace nexusminer {
@@ -27,6 +28,12 @@ uint32_t read_u32_le(const std::vector<uint8_t>& in, std::size_t offset)
            (static_cast<uint32_t>(in[offset + 1]) << 8) |
            (static_cast<uint32_t>(in[offset + 2]) << 16) |
            (static_cast<uint32_t>(in[offset + 3]) << 24);
+}
+
+std::vector<uint8_t> make_submit_block_message_type()
+{
+    static constexpr char submit_type[] = "SUBMIT_BLOCK";
+    return std::vector<uint8_t>(submit_type, submit_type + sizeof(submit_type) - 1);
 }
 } // namespace
 
@@ -119,6 +126,44 @@ bool EVPAdapter::increment_nonce(
     return false;
 }
 
+std::vector<uint8_t> EVPAdapter::compose_session_bound_aad(const std::vector<uint8_t>& message_type,
+                                                           uint32_t session_id,
+                                                           std::size_t payload_length)
+{
+    std::vector<uint8_t> bound_aad;
+    const auto version_len = std::char_traits<char>::length(packet_crypto_constants::PROTOCOL_VERSION_TAG);
+    bound_aad.reserve(version_len + 1 + packet_crypto_constants::EVP_FRAME_SESSION_ID_BYTES +
+                      sizeof(uint32_t) + message_type.size() + sizeof(uint32_t));
+    bound_aad.insert(bound_aad.end(),
+                     packet_crypto_constants::PROTOCOL_VERSION_TAG,
+                     packet_crypto_constants::PROTOCOL_VERSION_TAG + version_len);
+    bound_aad.push_back(0x00);
+    append_u32_le(bound_aad, session_id);
+    append_u32_le(bound_aad, static_cast<uint32_t>(message_type.size()));
+    bound_aad.insert(bound_aad.end(), message_type.begin(), message_type.end());
+    append_u32_le(bound_aad, static_cast<uint32_t>(payload_length));
+    return bound_aad;
+}
+
+bool EVPAdapter::ensure_session_context(uint32_t session_id, CryptoResult& error_result)
+{
+    std::lock_guard<std::mutex> lock(m_nonce_mutex);
+    if (m_has_active_session && m_active_session_id == session_id) {
+        return true;
+    }
+
+    if (RAND_bytes(m_next_tx_nonce.data(), static_cast<int>(m_next_tx_nonce.size())) != 1) {
+        m_ready = false;
+        error_result.error_message = "Failed to initialize session nonce context";
+        error_result.error_code = CryptoResult::ErrorCode::INTERNAL;
+        return false;
+    }
+    m_has_last_rx_nonce = false;
+    m_active_session_id = session_id;
+    m_has_active_session = true;
+    return true;
+}
+
 TransportCryptoAdapter::CryptoResult EVPAdapter::encrypt_packet(
     const std::vector<uint8_t>& plaintext,
     const std::vector<uint8_t>& key,
@@ -141,7 +186,17 @@ TransportCryptoAdapter::CryptoResult EVPAdapter::encrypt_packet(
         result.error_code = CryptoResult::ErrorCode::INVALID_INPUT;
         return result;
     }
+    if (aad.size() > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) ||
+        plaintext.size() > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
+        result.error_message = "SESSION_BOUND AAD or payload fields exceed uint32 limits";
+        result.error_code = CryptoResult::ErrorCode::INVALID_INPUT;
+        return result;
+    }
+    if (!ensure_session_context(session_id, result)) {
+        return result;
+    }
 
+    std::vector<uint8_t> bound_aad = compose_session_bound_aad(aad, session_id, plaintext.size());
     std::array<uint8_t, packet_crypto_constants::CHACHA20_NONCE_LENGTH> nonce{};
     {
         std::lock_guard<std::mutex> lock(m_nonce_mutex);
@@ -156,7 +211,7 @@ TransportCryptoAdapter::CryptoResult EVPAdapter::encrypt_packet(
     }
 
     std::vector<uint8_t> nonce_vec(nonce.begin(), nonce.end());
-    auto enc = m_manager.encrypt(plaintext, key, nonce_vec, aad);
+    auto enc = m_manager.encrypt(plaintext, key, nonce_vec, bound_aad);
     if (!enc.success) {
         return enc;
     }
@@ -191,6 +246,14 @@ TransportCryptoAdapter::CryptoResult EVPAdapter::decrypt_packet(
     if (session_id == 0) {
         result.error_message = "Missing session_id for SESSION_BOUND EVP decryption";
         result.error_code = CryptoResult::ErrorCode::INVALID_INPUT;
+        return result;
+    }
+    if (aad.size() > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
+        result.error_message = "SESSION_BOUND message_type exceeds uint32 limits";
+        result.error_code = CryptoResult::ErrorCode::INVALID_INPUT;
+        return result;
+    }
+    if (!ensure_session_context(session_id, result)) {
         return result;
     }
     if (encrypted_packet.size() <= packet_crypto_constants::EVP_FRAME_FIXED_OVERHEAD) {
@@ -231,8 +294,17 @@ TransportCryptoAdapter::CryptoResult EVPAdapter::decrypt_packet(
     std::vector<uint8_t> nonce_vec(nonce.begin(), nonce.end());
     std::vector<uint8_t> ciphertext(encrypted_packet.begin() + nonce_offset + packet_crypto_constants::CHACHA20_NONCE_LENGTH,
                                     encrypted_packet.end());
-    auto dec = m_manager.decrypt(ciphertext, key, nonce_vec, aad);
+    const std::size_t payload_length =
+        ciphertext.size() - packet_crypto_constants::CHACHA20_AUTH_TAG_LENGTH;
+    std::vector<uint8_t> bound_aad = compose_session_bound_aad(aad, session_id, payload_length);
+    auto dec = m_manager.decrypt(ciphertext, key, nonce_vec, bound_aad);
     if (!dec.success) {
+        if (dec.error_code == CryptoResult::ErrorCode::NONE) {
+            dec.error_code = CryptoResult::ErrorCode::AUTH_FAILURE;
+        }
+        if (dec.error_message.empty()) {
+            dec.error_message = "EVP decrypt auth failure";
+        }
         return dec;
     }
 
@@ -253,7 +325,7 @@ TransportCryptoAdapter::CryptoResult EVPAdapter::encrypt_submit_block_payload(
     const SubmitBlockPayloadInfo& payload_info)
 {
     (void)payload_info;
-    return encrypt_packet(plaintext, session_key, session_id, phase, {});
+    return encrypt_packet(plaintext, session_key, session_id, phase, make_submit_block_message_type());
 }
 
 TransportCryptoSelector::TransportCryptoSelector(std::shared_ptr<spdlog::logger> logger)

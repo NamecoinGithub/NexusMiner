@@ -89,6 +89,10 @@ public:
     const char* name() const override { return "evp"; }
 
 private:
+    bool ensure_session_context(uint32_t session_id, CryptoResult& error_result);
+    static std::vector<uint8_t> compose_session_bound_aad(const std::vector<uint8_t>& message_type,
+                                                          uint32_t session_id,
+                                                          std::size_t payload_length);
     static bool increment_nonce(std::array<uint8_t, packet_crypto_constants::CHACHA20_NONCE_LENGTH>& nonce);
 
     ChaCha20EvpManager m_manager;
@@ -98,6 +102,8 @@ private:
     std::array<uint8_t, packet_crypto_constants::CHACHA20_NONCE_LENGTH> m_next_tx_nonce{};
     bool m_has_last_rx_nonce{false};
     std::array<uint8_t, packet_crypto_constants::CHACHA20_NONCE_LENGTH> m_last_rx_nonce{};
+    bool m_has_active_session{false};
+    uint32_t m_active_session_id{0};
     LegacyAdapter m_legacy_preauth_fallback;
 };
 
