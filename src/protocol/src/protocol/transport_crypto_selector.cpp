@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <openssl/crypto.h>
 #include <openssl/rand.h>
 
 namespace nexusminer {
@@ -79,7 +80,7 @@ bool SessionCryptoContext::bind(uint32_t session_id, uint64_t session_epoch, std
     const bool transition = m_has_active_session &&
         (m_active_session_id != session_id || m_active_session_epoch != session_epoch);
     if (transition && logger) {
-        logger->warn("[PacketCryptoService] event=session_context_rotated old_session_id={} old_epoch={} new_session_id={} new_epoch={} old_generation={} next_generation={}",
+        logger->warn("[PacketCryptoService] event=session_context_rotated old_session_id={} old_epoch={} new_session_id={} new_epoch={} old_generation={} new_generation={}",
                      m_active_session_id,
                      m_active_session_epoch,
                      session_id,
@@ -126,8 +127,8 @@ void SessionCryptoContext::commit_rx_nonce(
 
 void SessionCryptoContext::zeroize()
 {
-    std::fill(m_next_tx_nonce.begin(), m_next_tx_nonce.end(), 0);
-    std::fill(m_last_rx_nonce.begin(), m_last_rx_nonce.end(), 0);
+    OPENSSL_cleanse(m_next_tx_nonce.data(), m_next_tx_nonce.size());
+    OPENSSL_cleanse(m_last_rx_nonce.data(), m_last_rx_nonce.size());
     m_has_last_rx_nonce = false;
     m_has_active_session = false;
     m_active_session_id = 0;
@@ -405,14 +406,15 @@ TransportCryptoAdapter::CryptoResult PacketCryptoService::decode(
         }
     }
 
-    std::vector<uint8_t> ciphertext(encrypted_packet.begin() + nonce_offset + packet_crypto_constants::CHACHA20_NONCE_LENGTH,
-                                    encrypted_packet.end());
-    if (ciphertext.size() < packet_crypto_constants::CHACHA20_AUTH_TAG_LENGTH) {
+    if (encrypted_packet.size() < nonce_offset + packet_crypto_constants::CHACHA20_NONCE_LENGTH +
+                                      packet_crypto_constants::CHACHA20_AUTH_TAG_LENGTH) {
         result.error_message = "Malformed EVP frame: missing auth tag";
         result.error_code = TransportCryptoAdapter::CryptoResult::ErrorCode::FRAME_FORMAT_ERROR;
         ++m_decrypt_fail;
         return result;
     }
+    std::vector<uint8_t> ciphertext(encrypted_packet.begin() + nonce_offset + packet_crypto_constants::CHACHA20_NONCE_LENGTH,
+                                    encrypted_packet.end());
     const std::size_t payload_length =
         ciphertext.size() - packet_crypto_constants::CHACHA20_AUTH_TAG_LENGTH;
 

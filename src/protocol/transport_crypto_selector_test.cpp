@@ -145,13 +145,12 @@ int main()
         TransportCryptoSelector selector(logger);
         selector.configure("evp");
         if (selector.active_mode() == "evp") {
-            constexpr uint64_t epoch = 0;
             auto preauth = selector.encrypt_packet(plaintext, key, 0, PacketCryptoPhase::PRE_AUTH, aad);
             check("pre-auth encrypt accepted", preauth.success);
             auto preauth_dec = selector.decrypt_packet(preauth.data, key, 0, PacketCryptoPhase::PRE_AUTH, aad);
             check("pre-auth decrypt accepted", preauth_dec.success);
 
-            auto postauth_reject = selector.decrypt_packet(preauth.data, key, 0x12345678, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
+            auto postauth_reject = selector.decrypt_packet(preauth.data, key, 0x12345678, PacketCryptoPhase::SESSION_BOUND, aad, 0);
             check("post-auth enforces session-bound envelope", !postauth_reject.success);
         } else {
             check("phase transition test skipped on legacy fallback", true);
