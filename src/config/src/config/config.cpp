@@ -5,8 +5,6 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
-#include <algorithm>
-#include <cctype>
 
 using json = nlohmann::json;
 
@@ -14,20 +12,6 @@ namespace nexusminer
 {
 namespace config
 {
-	namespace {
-		std::string normalize_crypto_mode(const std::string& mode)
-		{
-			std::string normalized = mode;
-			std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-				[](unsigned char c) { return static_cast<char>(::tolower(c)); });
-			if (normalized == "legacy" || normalized == "evp" || normalized == "tls")
-			{
-				return normalized;
-			}
-			return "legacy";
-		}
-	}
-
 	// NXS address validation constants
 	// Base58 encoded NXS addresses are typically 49-52 characters
 	constexpr size_t NXS_ADDRESS_MIN_LENGTH = 40;  // Minimum expected length
@@ -52,7 +36,6 @@ namespace config
 		, m_tritium_genesis{""}
 		, m_keepalive_interval{24}  // Default: 1 ping per day
 		, m_enable_chacha20_wrapping{true}  // ALWAYS ON - Core security implementation
-		, m_crypto_mode{"legacy"}  // Compatibility-first default path
 		, m_enable_tls{false}  // Default: auto-detect based on connection
 		, m_ssl_port{0}  // Default: no dedicated SSL port; use m_port
 		, m_tls_ca_cert_path{""}  // Default: use system CA bundle
@@ -258,21 +241,6 @@ namespace config
 					m_logger->warn("enable_chacha20_wrapping=false is deprecated. ChaCha20 is ALWAYS ON (core security).");
 					m_enable_chacha20_wrapping = true;  // Force to true
 				}
-			}
-
-			if (j.count("crypto_mode") != 0)
-			{
-				std::string requested_mode;
-				j.at("crypto_mode").get_to(requested_mode);
-				std::string lowered_mode = requested_mode;
-				std::transform(lowered_mode.begin(), lowered_mode.end(), lowered_mode.begin(),
-					[](unsigned char c) { return static_cast<char>(::tolower(c)); });
-				const std::string normalized_mode = normalize_crypto_mode(requested_mode);
-				if (normalized_mode == "legacy" && lowered_mode != "legacy")
-				{
-					m_logger->warn("Invalid crypto_mode='{}'. Falling back to legacy.", requested_mode);
-				}
-				m_crypto_mode = normalized_mode;
 			}
 			
 			// TLS/HTTPS configuration (default: false, auto-enabled for remote connections)

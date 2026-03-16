@@ -2,8 +2,6 @@ add_library(protocol STATIC src/protocol/solo.cpp
                             src/protocol/pool_base.cpp
                             src/protocol/falcon_wrapper.cpp
                             src/protocol/chacha20_wrapper.cpp
-                            src/protocol/chacha20_evp_manager.cpp
-                            src/protocol/transport_crypto_selector.cpp
                             src/protocol/session_manager.cpp
                             src/protocol/node_session_context.cpp
                             src/protocol/mining_template_interface.cpp
@@ -39,13 +37,6 @@ add_test(NAME mining_template_validation_test COMMAND $<TARGET_FILE:mining_templ
 add_executable(chacha20_test chacha20_test.cpp)
 target_link_libraries(chacha20_test PRIVATE protocol spdlog ${OPENSSL_LIBRARIES})
 target_include_directories(chacha20_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-)
-
-# Transport crypto selector/adapters unit tests
-add_executable(transport_crypto_selector_test transport_crypto_selector_test.cpp)
-target_link_libraries(transport_crypto_selector_test PRIVATE protocol spdlog ${OPENSSL_LIBRARIES})
-target_include_directories(transport_crypto_selector_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
 )
 
@@ -216,7 +207,6 @@ target_include_directories(solo_auth_resync_test PRIVATE
 
 # Register all test executables with CTest
 add_test(NAME chacha20_test COMMAND $<TARGET_FILE:chacha20_test>)
-add_test(NAME transport_crypto_selector_test COMMAND $<TARGET_FILE:transport_crypto_selector_test>)
 add_test(NAME falcon_qtv_parity_test COMMAND $<TARGET_FILE:falcon_qtv_parity_test>)
 add_test(NAME genesis_serialization_utils_test COMMAND $<TARGET_FILE:genesis_serialization_utils_test>)
 add_test(NAME height_tracker_test COMMAND $<TARGET_FILE:height_tracker_test>)
