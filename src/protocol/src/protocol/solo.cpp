@@ -758,8 +758,8 @@ network::Shared_payload Solo::login(Login_handler handler)
         try {
             // Derive session key from genesis
             auto session_key = derive_chacha20_session_key(tritium_genesis);
-            auto wrap_result = m_transport_crypto_selector.encrypt_with_nonce_prefix(
-                m_miner_pubkey, session_key, AAD_DOMAIN_VEC);
+            auto wrap_result = m_transport_crypto_selector.encrypt_packet(
+                m_miner_pubkey, session_key, 0, PacketCryptoPhase::PRE_AUTH, AAD_DOMAIN_VEC);
 
             if (wrap_result.success)
             {
@@ -1155,6 +1155,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     const auto session = m_session_context ? m_session_context->get_session_info()
                                            : SessionManager::SessionInfo{};
     const auto& submit_session_key = session.chacha20_session_key;
+    const uint32_t submit_session_id = session.session_id;
 
     // Use the authoritative session key from the session container.
     if (submit_session_key.empty()) {
@@ -1164,7 +1165,11 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
 
     try {
         auto enc_result = m_transport_crypto_selector.encrypt_submit_block_payload(
-            plaintextPayload, submit_session_key, payload_info);
+            plaintextPayload,
+            submit_session_key,
+            submit_session_id,
+            PacketCryptoPhase::SESSION_BOUND,
+            payload_info);
 
         if (!enc_result.success || enc_result.data.empty()) {
             m_logger->error("[Solo Submit] ChaCha20 encryption failed: {}",
@@ -4043,6 +4048,7 @@ network::Shared_payload Solo::send_set_reward()
         const auto session = m_session_context ? m_session_context->get_session_info()
                                                : SessionManager::SessionInfo{};
         const auto& reward_session_key = session.chacha20_session_key;
+        const uint32_t reward_session_id = session.session_id;
         if (reward_session_key.empty())
         {
             m_logger->error("[Solo Reward] No session key available (authentication required)");
@@ -4050,8 +4056,12 @@ network::Shared_payload Solo::send_set_reward()
         }
 
         try {
-            auto encrypt_result = m_transport_crypto_selector.encrypt_with_nonce_prefix(
-                vHash, reward_session_key, AAD_REWARD_ADDRESS);
+            auto encrypt_result = m_transport_crypto_selector.encrypt_packet(
+                vHash,
+                reward_session_key,
+                reward_session_id,
+                PacketCryptoPhase::SESSION_BOUND,
+                AAD_REWARD_ADDRESS);
 
             if (encrypt_result.success)
             {
@@ -4381,23 +4391,44 @@ void Solo::handle_reward_result(const Packet& packet)
     std::vector<uint8_t> result_data;
     
     // Decrypt if ChaCha20 is enabled
-    if (m_enable_chacha20 && packet.m_length > 13)
+    if (m_enable_chacha20)
     {
         const auto session = m_session_context ? m_session_context->get_session_info()
                                                : SessionManager::SessionInfo{};
         const auto& reward_session_key = session.chacha20_session_key;
+        const uint32_t reward_session_id = session.session_id;
+        const bool is_session_bound = reward_session_id != 0;
+        const PacketCryptoPhase crypto_phase = is_session_bound
+            ? PacketCryptoPhase::SESSION_BOUND
+            : PacketCryptoPhase::PRE_AUTH;
         if (!reward_session_key.empty())
         {
             try {
                 // Decrypt response using matching AAD
-                auto decrypt_result = m_transport_crypto_selector.decrypt_with_nonce_prefix(
-                    *packet.m_data, reward_session_key, AAD_REWARD_RESULT);
+                auto decrypt_result = m_transport_crypto_selector.decrypt_packet(
+                    *packet.m_data,
+                    reward_session_key,
+                    reward_session_id,
+                    crypto_phase,
+                    AAD_REWARD_RESULT);
                 
                 if (decrypt_result.success) {
                     result_data = decrypt_result.data;
                     m_logger->debug("[Solo Reward] Decrypted with AAD: REWARD_RESULT ({} bytes)", AAD_REWARD_RESULT.size());
                 } else {
                     m_logger->error("[Solo Reward] Failed to decrypt result: {}", decrypt_result.error_message);
+                    if (is_session_bound &&
+                        (decrypt_result.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::SESSION_ID_MISMATCH ||
+                         decrypt_result.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::NONCE_REPLAY)) {
+                        m_logger->error("[Solo Reward] Session-bound EVP decrypt failure requires session rebind: {}",
+                                        decrypt_result.error_message);
+                        if (get_session_manager()) {
+                            get_session_manager()->set_state(SessionManager::SessionState::EXPIRED);
+                        }
+                        if (m_session_expired_handler) {
+                            m_session_expired_handler();
+                        }
+                    }
                     m_reward_bound = false;
                     return;
                 }
@@ -4410,7 +4441,18 @@ void Solo::handle_reward_result(const Packet& packet)
         }
         else
         {
-            // No genesis, try unencrypted
+            if (is_session_bound && m_transport_crypto_selector.active_mode() == "evp") {
+                m_logger->error("[Solo Reward] SESSION_BOUND EVP mode requires encrypted reward result with session key");
+                m_reward_bound = false;
+                if (get_session_manager()) {
+                    get_session_manager()->set_state(SessionManager::SessionState::EXPIRED);
+                }
+                if (m_session_expired_handler) {
+                    m_session_expired_handler();
+                }
+                return;
+            }
+            // No session key, allow legacy/plain pre-auth compatibility path
             result_data.assign(packet.m_data->begin(), packet.m_data->end());
         }
     }

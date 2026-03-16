@@ -66,12 +66,12 @@ int main()
     {
         TransportCryptoSelector selector(logger);
         selector.configure("legacy");
-        auto enc = selector.encrypt_with_nonce_prefix(plaintext, key, aad);
+        auto enc = selector.encrypt_packet(plaintext, key, 0, PacketCryptoPhase::PRE_AUTH, aad);
         check("legacy encrypt succeeds", enc.success);
         check("legacy frame includes nonce+cipher+tag",
               enc.data.size() == plaintext.size() + 12 + 16);
 
-        auto dec = selector.decrypt_with_nonce_prefix(enc.data, key, aad);
+        auto dec = selector.decrypt_packet(enc.data, key, 0, PacketCryptoPhase::PRE_AUTH, aad);
         check("legacy decrypt succeeds", dec.success);
         check("legacy round-trip unchanged", dec.data == plaintext);
     }
@@ -84,9 +84,10 @@ int main()
               selector.active_mode() == "evp" || selector.active_mode() == "legacy");
 
         if (selector.active_mode() == "evp") {
-            auto enc = selector.encrypt_with_nonce_prefix(plaintext, key, aad);
+            constexpr uint32_t sid = 0x11223344;
+            auto enc = selector.encrypt_packet(plaintext, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
             check("evp encrypt succeeds", enc.success);
-            auto dec = selector.decrypt_with_nonce_prefix(enc.data, key, aad);
+            auto dec = selector.decrypt_packet(enc.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
             check("evp decrypt succeeds", dec.success);
             check("evp round-trip matches", dec.data == plaintext);
         }
@@ -96,23 +97,60 @@ int main()
     {
         EVPAdapter evp(logger);
         if (evp.is_ready()) {
-            auto enc1 = evp.encrypt_with_nonce_prefix(plaintext, key, aad);
+            constexpr uint32_t sid = 0xAABBCCDD;
+            auto enc1 = evp.encrypt_packet(plaintext, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
             check("evp direct encrypt #1 succeeds", enc1.success);
-            auto dec1 = evp.decrypt_with_nonce_prefix(enc1.data, key, aad);
+            auto dec1 = evp.decrypt_packet(enc1.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
             check("evp direct decrypt #1 succeeds", dec1.success);
 
-            auto duplicate = evp.decrypt_with_nonce_prefix(enc1.data, key, aad);
+            auto duplicate = evp.decrypt_packet(enc1.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
             check("evp duplicate nonce rejected", !duplicate.success);
+            check("evp duplicate nonce error code", duplicate.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::NONCE_REPLAY);
 
-            auto enc2 = evp.encrypt_with_nonce_prefix(test_plaintext(64), key, aad);
+            auto enc2 = evp.encrypt_packet(test_plaintext(64), key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
             check("evp direct encrypt #2 succeeds", enc2.success);
-            auto dec2 = evp.decrypt_with_nonce_prefix(enc2.data, key, aad);
+            auto dec2 = evp.decrypt_packet(enc2.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
             check("evp direct decrypt #2 succeeds", dec2.success);
 
-            auto rewind = evp.decrypt_with_nonce_prefix(enc1.data, key, aad);
+            auto rewind = evp.decrypt_packet(enc1.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
             check("evp rewind nonce rejected", !rewind.success);
+            check("evp rewind nonce error code", rewind.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::NONCE_REPLAY);
         } else {
             check("evp adapter availability", true);
+        }
+    }
+
+    // 5) SID mismatch => expected auth failure in SESSION_BOUND EVP mode
+    {
+        TransportCryptoSelector selector(logger);
+        selector.configure("evp");
+        if (selector.active_mode() == "evp") {
+            constexpr uint32_t sid_ok = 0x01020304;
+            constexpr uint32_t sid_bad = 0xDEADBEEF;
+            auto enc = selector.encrypt_packet(plaintext, key, sid_ok, PacketCryptoPhase::SESSION_BOUND, aad);
+            check("sid test encrypt succeeds", enc.success);
+            auto bad = selector.decrypt_packet(enc.data, key, sid_bad, PacketCryptoPhase::SESSION_BOUND, aad);
+            check("sid mismatch rejected", !bad.success);
+            check("sid mismatch error code", bad.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::SESSION_ID_MISMATCH);
+        } else {
+            check("sid mismatch test skipped on legacy fallback", true);
+        }
+    }
+
+    // 6) PRE_AUTH acceptance + SESSION_BOUND enforcement transition
+    {
+        TransportCryptoSelector selector(logger);
+        selector.configure("evp");
+        if (selector.active_mode() == "evp") {
+            auto preauth = selector.encrypt_packet(plaintext, key, 0, PacketCryptoPhase::PRE_AUTH, aad);
+            check("pre-auth encrypt accepted", preauth.success);
+            auto preauth_dec = selector.decrypt_packet(preauth.data, key, 0, PacketCryptoPhase::PRE_AUTH, aad);
+            check("pre-auth decrypt accepted", preauth_dec.success);
+
+            auto postauth_reject = selector.decrypt_packet(preauth.data, key, 0x12345678, PacketCryptoPhase::SESSION_BOUND, aad);
+            check("post-auth enforces session-bound envelope", !postauth_reject.success);
+        } else {
+            check("phase transition test skipped on legacy fallback", true);
         }
     }
 

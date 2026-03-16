@@ -11,10 +11,9 @@
 namespace nexusminer {
 namespace protocol {
 
-enum class TransportCryptoMode {
-    LEGACY,
-    EVP,
-    TLS
+enum class PacketCryptoPhase {
+    PRE_AUTH,
+    SESSION_BOUND
 };
 
 class TransportCryptoAdapter {
@@ -23,14 +22,20 @@ public:
     using SubmitBlockPayloadInfo = ChaCha20Wrapper::SubmitBlockPayloadInfo;
 
     virtual ~TransportCryptoAdapter() = default;
-    virtual CryptoResult encrypt_with_nonce_prefix(const std::vector<uint8_t>& plaintext,
-                                                   const std::vector<uint8_t>& key,
-                                                   const std::vector<uint8_t>& aad) = 0;
-    virtual CryptoResult decrypt_with_nonce_prefix(const std::vector<uint8_t>& encrypted_with_nonce,
-                                                   const std::vector<uint8_t>& key,
-                                                   const std::vector<uint8_t>& aad) = 0;
+    virtual CryptoResult encrypt_packet(const std::vector<uint8_t>& plaintext,
+                                        const std::vector<uint8_t>& key,
+                                        uint32_t session_id,
+                                        PacketCryptoPhase phase,
+                                        const std::vector<uint8_t>& aad) = 0;
+    virtual CryptoResult decrypt_packet(const std::vector<uint8_t>& encrypted_packet,
+                                        const std::vector<uint8_t>& key,
+                                        uint32_t session_id,
+                                        PacketCryptoPhase phase,
+                                        const std::vector<uint8_t>& aad) = 0;
     virtual CryptoResult encrypt_submit_block_payload(const std::vector<uint8_t>& plaintext,
                                                       const std::vector<uint8_t>& session_key,
+                                                      uint32_t session_id,
+                                                      PacketCryptoPhase phase,
                                                       const SubmitBlockPayloadInfo& payload_info) = 0;
     virtual const char* name() const = 0;
 };
@@ -39,14 +44,20 @@ class LegacyAdapter final : public TransportCryptoAdapter {
 public:
     explicit LegacyAdapter(std::shared_ptr<spdlog::logger> logger = nullptr);
 
-    CryptoResult encrypt_with_nonce_prefix(const std::vector<uint8_t>& plaintext,
-                                           const std::vector<uint8_t>& key,
-                                           const std::vector<uint8_t>& aad) override;
-    CryptoResult decrypt_with_nonce_prefix(const std::vector<uint8_t>& encrypted_with_nonce,
-                                           const std::vector<uint8_t>& key,
-                                           const std::vector<uint8_t>& aad) override;
+    CryptoResult encrypt_packet(const std::vector<uint8_t>& plaintext,
+                                const std::vector<uint8_t>& key,
+                                uint32_t session_id,
+                                PacketCryptoPhase phase,
+                                const std::vector<uint8_t>& aad) override;
+    CryptoResult decrypt_packet(const std::vector<uint8_t>& encrypted_packet,
+                                const std::vector<uint8_t>& key,
+                                uint32_t session_id,
+                                PacketCryptoPhase phase,
+                                const std::vector<uint8_t>& aad) override;
     CryptoResult encrypt_submit_block_payload(const std::vector<uint8_t>& plaintext,
                                               const std::vector<uint8_t>& session_key,
+                                              uint32_t session_id,
+                                              PacketCryptoPhase phase,
                                               const SubmitBlockPayloadInfo& payload_info) override;
     const char* name() const override { return "legacy"; }
 
@@ -60,14 +71,20 @@ public:
 
     bool is_ready() const { return m_ready; }
 
-    CryptoResult encrypt_with_nonce_prefix(const std::vector<uint8_t>& plaintext,
-                                           const std::vector<uint8_t>& key,
-                                           const std::vector<uint8_t>& aad) override;
-    CryptoResult decrypt_with_nonce_prefix(const std::vector<uint8_t>& encrypted_with_nonce,
-                                           const std::vector<uint8_t>& key,
-                                           const std::vector<uint8_t>& aad) override;
+    CryptoResult encrypt_packet(const std::vector<uint8_t>& plaintext,
+                                const std::vector<uint8_t>& key,
+                                uint32_t session_id,
+                                PacketCryptoPhase phase,
+                                const std::vector<uint8_t>& aad) override;
+    CryptoResult decrypt_packet(const std::vector<uint8_t>& encrypted_packet,
+                                const std::vector<uint8_t>& key,
+                                uint32_t session_id,
+                                PacketCryptoPhase phase,
+                                const std::vector<uint8_t>& aad) override;
     CryptoResult encrypt_submit_block_payload(const std::vector<uint8_t>& plaintext,
                                               const std::vector<uint8_t>& session_key,
+                                              uint32_t session_id,
+                                              PacketCryptoPhase phase,
                                               const SubmitBlockPayloadInfo& payload_info) override;
     const char* name() const override { return "evp"; }
 
@@ -81,6 +98,7 @@ private:
     std::array<uint8_t, packet_crypto_constants::CHACHA20_NONCE_LENGTH> m_next_tx_nonce{};
     bool m_has_last_rx_nonce{false};
     std::array<uint8_t, packet_crypto_constants::CHACHA20_NONCE_LENGTH> m_last_rx_nonce{};
+    LegacyAdapter m_legacy_preauth_fallback;
 };
 
 class TransportCryptoSelector {
@@ -90,19 +108,25 @@ public:
     void configure(const std::string& requested_mode);
     const std::string& active_mode() const { return m_active_mode; }
 
-    TransportCryptoAdapter::CryptoResult encrypt_with_nonce_prefix(
+    TransportCryptoAdapter::CryptoResult encrypt_packet(
         const std::vector<uint8_t>& plaintext,
         const std::vector<uint8_t>& key,
+        uint32_t session_id,
+        PacketCryptoPhase phase,
         const std::vector<uint8_t>& aad);
 
-    TransportCryptoAdapter::CryptoResult decrypt_with_nonce_prefix(
-        const std::vector<uint8_t>& encrypted_with_nonce,
+    TransportCryptoAdapter::CryptoResult decrypt_packet(
+        const std::vector<uint8_t>& encrypted_packet,
         const std::vector<uint8_t>& key,
+        uint32_t session_id,
+        PacketCryptoPhase phase,
         const std::vector<uint8_t>& aad);
 
     TransportCryptoAdapter::CryptoResult encrypt_submit_block_payload(
         const std::vector<uint8_t>& plaintext,
         const std::vector<uint8_t>& session_key,
+        uint32_t session_id,
+        PacketCryptoPhase phase,
         const TransportCryptoAdapter::SubmitBlockPayloadInfo& payload_info);
 
 private:

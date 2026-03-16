@@ -63,9 +63,21 @@ public:
      * @brief Encryption/Decryption result structure
      */
     struct CryptoResult {
+        enum class ErrorCode {
+            NONE,
+            INVALID_INPUT,
+            FRAME_FORMAT_ERROR,
+            PHASE_VIOLATION,
+            SESSION_ID_MISMATCH,
+            NONCE_REPLAY,
+            AUTH_FAILURE,
+            UNAVAILABLE,
+            INTERNAL
+        };
         bool success;
         std::vector<uint8_t> data;
         std::string error_message;
+        ErrorCode error_code{ErrorCode::NONE};
     };
     
     /**
