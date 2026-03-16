@@ -868,6 +868,11 @@ network::Shared_payload Solo::login(Login_handler handler)
 
 network::Shared_payload Solo::get_work()
 {
+    return get_work(false);
+}
+
+network::Shared_payload Solo::get_work(bool bypass_dedup)
+{
     /// Request a fresh mining template via GET_BLOCK.
     /// Authentication-guarded; returns null if not authenticated or reward not bound.
     /// No miner-side rate limiting — the node's 2-second AutoCoolDown enforces the server-side floor.
@@ -876,6 +881,7 @@ network::Shared_payload Solo::get_work()
 
     /* Validate prerequisites */
     if (!m_authenticated) {
+        m_last_get_block_request_status.store(GetBlockRequestStatus::UNAUTHENTICATED);
         m_logger->error("[Solo] Cannot request work - not authenticated");
         m_logger->error("[Solo]   Current auth state: {}",
             m_auth_state == AuthState::NOT_AUTHENTICATED ? "NOT_AUTHENTICATED" :
@@ -887,12 +893,14 @@ network::Shared_payload Solo::get_work()
     }
 
     if (!validate_authoritative_session("Solo GET_BLOCK", !m_reward_address.empty())) {
+        m_last_get_block_request_status.store(GetBlockRequestStatus::SESSION_INVALID);
         return nullptr;
     }
 
     // Only validate reward binding if a reward address was configured
     // (Reward binding is optional for localhost/testing, but required for production)
     if (!m_reward_address.empty() && !m_reward_bound) {
+        m_last_get_block_request_status.store(GetBlockRequestStatus::REWARD_NOT_BOUND);
         m_logger->error("[Solo] Cannot request work - reward address not bound");
         return nullptr;
     }
@@ -902,10 +910,14 @@ network::Shared_payload Solo::get_work()
     // Worker_manager when both independently respond to the same staleness event.
     // Deduplicate within GET_BLOCK_DEDUP_MS (100ms) window.
     auto now_tp = std::chrono::steady_clock::now();
-    if (m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
+    if (bypass_dedup) {
+        m_logger->info("[Solo] GET_BLOCK deduplication bypass active for degraded recovery retry");
+    }
+    if (!bypass_dedup && m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now_tp - m_last_get_block_transmitted_tp).count();
         if (elapsed_ms < GET_BLOCK_DEDUP_MS) {
+            m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
             m_logger->info("[Solo] GET_BLOCK deduplication: suppressing duplicate request "
                           "({}ms since last transmission, threshold {}ms)",
                           elapsed_ms, GET_BLOCK_DEDUP_MS);
@@ -929,12 +941,14 @@ network::Shared_payload Solo::get_work()
         m_last_get_block_request_owner = capture_session_ownership();
         // Record transmission timestamp for deduplication
         m_last_get_block_transmitted_tp = now_tp;
+        m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
 
         m_logger->debug("[Solo] GET_BLOCK encoded payload size: {} bytes", payload->size());
         // TRAINING WHEELS: Show GET_BLOCK packet (should be just header byte)
         m_logger->info("[Solo] GET_BLOCK packet hex dump:");
         m_logger->info("\n{}", format_llp_payload_hexdump(payload, 16));
     } else {
+        m_last_get_block_request_status.store(GetBlockRequestStatus::BUILD_EMPTY);
         m_logger->error("[Solo] GET_BLOCK PacketBuilder::build returned null or empty payload!");
     }
 

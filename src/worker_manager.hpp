@@ -14,8 +14,10 @@
 #include "Util/include/exponential_backoff.h"
 #include "protocol/inc/protocol/protocol_constants.hpp"
 #include "node_session/inc/node_session/node_session.hpp"
+#include <asio/steady_timer.hpp>
 
 #include <memory>
+#include <array>
 #include <deque>
 #include <mutex>
 #include <atomic>
@@ -66,6 +68,24 @@ public:
     FailoverStatus get_failover_status() const;
 
 private:
+
+    enum class GetBlockSuppressionReason : uint8_t {
+        NONE = 0,
+        DUPLICATE_WINDOW,
+        REQUEST_WORK_EMPTY,
+        UNAUTHENTICATED,
+        BACKPRESSURE,
+        RATE_LIMIT_LOCAL,
+        COUNT
+    };
+
+    static const char* suppression_reason_name(GetBlockSuppressionReason reason);
+    void log_get_block_decision(bool sent, bool forced_retry, GetBlockSuppressionReason reason, const char* context);
+    void schedule_forced_recovery_retry(const char* trigger_reason);
+    int64_t next_forced_retry_jitter_ms();
+    bool has_valid_template_available(const std::shared_ptr<protocol::Solo>& solo_protocol) const;
+    bool can_send_forced_retry(std::chrono::steady_clock::time_point now);
+    void prune_forced_retry_window(std::chrono::steady_clock::time_point now);
 
     void create_stats_printers();
     void create_workers();
@@ -162,6 +182,18 @@ private:
     // Used by check_template_health() to detect the doom-loop symptom where every
     // GET_BLOCK attempt is rate-limited and the node never receives the request.
     bool m_recovery_get_block_transmitted{false};
+    std::chrono::steady_clock::time_point m_next_forced_retry_due{};
+    std::deque<std::chrono::steady_clock::time_point> m_forced_retry_send_timestamps{};
+    std::shared_ptr<asio::steady_timer> m_forced_retry_timer{};
+    bool m_forced_retry_timer_pending{false};
+    uint64_t m_forced_retry_timer_token{0};
+    GetBlockSuppressionReason m_last_get_block_suppression_reason{GetBlockSuppressionReason::NONE};
+    uint64_t m_get_block_sent_total{0};
+    std::array<uint64_t, static_cast<size_t>(GetBlockSuppressionReason::COUNT)> m_get_block_suppressed_total{};
+    uint64_t m_get_block_forced_retry_total{0};
+    uint64_t m_degraded_enter_total{0};
+    uint64_t m_degraded_exit_total{0};
+    uint64_t m_time_in_degraded_ms{0};
 
     // Connection retry state for exponential backoff
     uint32_t m_connection_retry_count{0};

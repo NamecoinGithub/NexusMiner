@@ -10,6 +10,9 @@
  *  5. Deduplication state can be reset
  *  6. Three successive GET_BLOCK calls with proper timing
  *  7. Verify packet format for GET_BLOCK
+ *  8. Degraded forced retry sends within bounded interval
+ *  9. Dedup still allows periodic forced retry in degraded mode
+ * 10. request_work empty schedules delayed retry (no starvation)
  */
 
 #include "protocol/packet_builder.hpp"
@@ -20,6 +23,7 @@
 #include <chrono>
 #include <thread>
 #include <memory>
+#include <deque>
 
 using namespace nexusminer;
 using namespace nexusminer::protocol;
@@ -54,7 +58,7 @@ public:
     {}
 
     // Simulates Solo::get_work() with deduplication logic
-    network::Shared_payload get_work() {
+    network::Shared_payload get_work(bool bypass_dedup = false) {
         m_get_block_call_count++;
 
         if (!m_authenticated || !m_reward_bound) {
@@ -63,7 +67,7 @@ public:
 
         // GET_BLOCK deduplication guard (mirrors solo.cpp lines 546-556)
         auto now_tp = std::chrono::steady_clock::now();
-        if (m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
+        if (!bypass_dedup && m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
             auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now_tp - m_last_get_block_transmitted_tp).count();
             if (elapsed_ms < 100) {  // GET_BLOCK_DEDUP_MS = 100
@@ -101,6 +105,58 @@ private:
     ProtocolLane m_protocol_lane;
     std::chrono::steady_clock::time_point m_last_get_block_transmitted_tp;
     int m_get_block_call_count;
+};
+
+class DegradedForcedRetryController {
+public:
+    bool degraded{true};
+    bool authenticated{true};
+    bool no_valid_template{true};
+    bool request_work_empty_once{false};
+    int sent_count{0};
+    int scheduled_retry_count{0};
+    std::deque<std::chrono::steady_clock::time_point> forced_send_timestamps;
+    std::chrono::steady_clock::time_point next_due{};
+    GetBlockDeduplicator dedup;
+
+    bool tick(std::chrono::steady_clock::time_point now) {
+        if (!(degraded && authenticated && no_valid_template)) {
+            return false;
+        }
+        if (next_due != std::chrono::steady_clock::time_point{} && now < next_due) {
+            return false;
+        }
+        while (!forced_send_timestamps.empty()) {
+            auto age_s = std::chrono::duration_cast<std::chrono::seconds>(now - forced_send_timestamps.front()).count();
+            if (age_s <= 60) break;
+            forced_send_timestamps.pop_front();
+        }
+        if (forced_send_timestamps.size() >= 25) {
+            return false;
+        }
+
+        if (request_work_empty_once) {
+            request_work_empty_once = false;
+            schedule_retry(now);
+            return false;
+        }
+
+        auto payload = dedup.get_work(true);
+        if (payload && !payload->empty()) {
+            ++sent_count;
+            forced_send_timestamps.push_back(now);
+            schedule_retry(now);
+            return true;
+        }
+        schedule_retry(now);
+        return false;
+    }
+
+private:
+    void schedule_retry(std::chrono::steady_clock::time_point now) {
+        ++scheduled_retry_count;
+        next_due = now + std::chrono::milliseconds(1000 + 125);
+    }
 };
 
 // ============================================================================
@@ -304,6 +360,59 @@ void test_packet_format() {
 }
 
 // ============================================================================
+// Test 8: Degraded forced retry sends within bounded interval
+// ============================================================================
+void test_degraded_forced_retry_sends_within_interval() {
+    std::cout << "\nTest 8: Degraded forced retry sends within bounded interval\n";
+    DegradedForcedRetryController controller;
+    auto now = std::chrono::steady_clock::now();
+
+    bool first_sent = controller.tick(now);
+    print_test_result("Forced retry sends immediately on degraded tick", first_sent);
+
+    bool second_sent_too_early = controller.tick(now + std::chrono::milliseconds(50));
+    print_test_result("Second retry before interval is suppressed", !second_sent_too_early);
+
+    bool third_sent = controller.tick(now + std::chrono::milliseconds(1200));
+    print_test_result("Forced retry sends again after interval", third_sent);
+}
+
+// ============================================================================
+// Test 9: Dedup window cannot starve degraded forced retry lane
+// ============================================================================
+void test_dedup_still_allows_periodic_forced_retry() {
+    std::cout << "\nTest 9: Dedup still allows periodic forced retry in degraded mode\n";
+    DegradedForcedRetryController controller;
+    auto now = std::chrono::steady_clock::now();
+
+    bool first_sent = controller.tick(now);
+    bool immediate_retry = controller.tick(now + std::chrono::milliseconds(10));  // interval gate
+    bool second_sent = controller.tick(now + std::chrono::milliseconds(1200));
+
+    print_test_result("First forced send succeeds", first_sent);
+    print_test_result("Immediate retry is suppressed by local interval", !immediate_retry);
+    print_test_result("Periodic forced retry succeeds after interval despite dedup", second_sent);
+}
+
+// ============================================================================
+// Test 10: request_work empty schedules delayed retry (no starvation)
+// ============================================================================
+void test_request_work_empty_delayed_retry_path() {
+    std::cout << "\nTest 10: request_work empty triggers delayed retry path\n";
+    DegradedForcedRetryController controller;
+    controller.request_work_empty_once = true;
+    auto now = std::chrono::steady_clock::now();
+
+    bool first_sent = controller.tick(now);
+    print_test_result("Initial empty work does not send", !first_sent);
+    print_test_result("Empty work schedules retry token", controller.scheduled_retry_count == 1);
+
+    bool retry_sent = controller.tick(now + std::chrono::milliseconds(1200));
+    print_test_result("Delayed retry sends GET_BLOCK", retry_sent);
+    print_test_result("No starvation after empty work transient", controller.sent_count >= 1);
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 int main() {
@@ -318,6 +427,9 @@ int main() {
     test_dedup_reset();
     test_three_successive_calls();
     test_packet_format();
+    test_degraded_forced_retry_sends_within_interval();
+    test_dedup_still_allows_periodic_forced_retry();
+    test_request_work_empty_delayed_retry_path();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";

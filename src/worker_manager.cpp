@@ -26,6 +26,8 @@
 #include "protocol/session_status_policy.hpp"
 #include <asio/steady_timer.hpp>
 #include <variant>
+#include <algorithm>
+#include <random>
 #include <iomanip>
 #include <sstream>
 #include <deque>
@@ -94,6 +96,11 @@ namespace {
     // push notification and new BLOCK_DATA template is normal during the propagation
     // window. Set threshold to 5 to avoid false-positive template discards.
     constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
+    constexpr int64_t FORCED_RETRY_INTERVAL_MS = 1000;
+    constexpr int64_t FORCED_RETRY_JITTER_MIN_MS = 100;
+    constexpr int64_t FORCED_RETRY_JITTER_MAX_MS = 250;
+    constexpr int64_t FORCED_RETRY_WINDOW_SECONDS = 60;
+    constexpr size_t MAX_FORCED_BURST_PER_60S = 25;
 
 }
 
@@ -1002,6 +1009,137 @@ Worker_manager::FailoverStatus Worker_manager::get_failover_status() const
     return fs;
 }
 
+const char* Worker_manager::suppression_reason_name(GetBlockSuppressionReason reason)
+{
+    switch (reason) {
+        case GetBlockSuppressionReason::NONE: return "NONE";
+        case GetBlockSuppressionReason::DUPLICATE_WINDOW: return "DUPLICATE_WINDOW";
+        case GetBlockSuppressionReason::REQUEST_WORK_EMPTY: return "REQUEST_WORK_EMPTY";
+        case GetBlockSuppressionReason::UNAUTHENTICATED: return "UNAUTHENTICATED";
+        case GetBlockSuppressionReason::BACKPRESSURE: return "BACKPRESSURE";
+        case GetBlockSuppressionReason::RATE_LIMIT_LOCAL: return "RATE_LIMIT_LOCAL";
+        case GetBlockSuppressionReason::COUNT: return "COUNT";
+    }
+    return "UNKNOWN";
+}
+
+void Worker_manager::prune_forced_retry_window(std::chrono::steady_clock::time_point now)
+{
+    while (!m_forced_retry_send_timestamps.empty()) {
+        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - m_forced_retry_send_timestamps.front()).count();
+        if (age <= FORCED_RETRY_WINDOW_SECONDS) {
+            break;
+        }
+        m_forced_retry_send_timestamps.pop_front();
+    }
+}
+
+int64_t Worker_manager::next_forced_retry_jitter_ms()
+{
+    thread_local std::mt19937 rng([]() {
+        std::random_device rd;
+        auto now = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+        std::seed_seq seed{
+            rd(), rd(),
+            static_cast<uint32_t>(now & 0xffffffffu),
+            static_cast<uint32_t>((now >> 32) & 0xffffffffu)
+        };
+        return std::mt19937(seed);
+    }());
+    std::uniform_int_distribution<int64_t> dist(FORCED_RETRY_JITTER_MIN_MS, FORCED_RETRY_JITTER_MAX_MS);
+    return dist(rng);
+}
+
+bool Worker_manager::has_valid_template_available(const std::shared_ptr<protocol::Solo>& solo_protocol) const
+{
+    auto* template_interface = solo_protocol ? solo_protocol->get_template_interface() : nullptr;
+    return (template_interface && template_interface->has_valid_template());
+}
+
+bool Worker_manager::can_send_forced_retry(std::chrono::steady_clock::time_point now)
+{
+    prune_forced_retry_window(now);
+    if (m_forced_retry_send_timestamps.size() >= MAX_FORCED_BURST_PER_60S) {
+        return false;
+    }
+    if (m_next_forced_retry_due != std::chrono::steady_clock::time_point{} && now < m_next_forced_retry_due) {
+        return false;
+    }
+    return true;
+}
+
+void Worker_manager::log_get_block_decision(bool sent,
+                                            bool forced_retry,
+                                            GetBlockSuppressionReason reason,
+                                            const char* context)
+{
+    m_last_get_block_suppression_reason = reason;
+    if (sent) {
+        ++m_get_block_sent_total;
+        if (forced_retry) {
+            ++m_get_block_forced_retry_total;
+        }
+        m_logger->info("[Worker_manager] GET_BLOCK decision: action=sent context={} forced_retry={} "
+                       "get_block_sent_total={} get_block_forced_retry_total={}",
+                       context ? context : "unknown",
+                       forced_retry ? "true" : "false",
+                       m_get_block_sent_total,
+                       m_get_block_forced_retry_total);
+        return;
+    }
+
+    const auto idx = static_cast<size_t>(reason);
+    if (idx < m_get_block_suppressed_total.size()) {
+        ++m_get_block_suppressed_total[idx];
+    }
+    m_logger->warn("[Worker_manager] GET_BLOCK decision: action=suppressed context={} forced_retry={} "
+                   "reason={} get_block_suppressed_total{{reason={}}}={}",
+                   context ? context : "unknown",
+                   forced_retry ? "true" : "false",
+                   suppression_reason_name(reason),
+                   suppression_reason_name(reason),
+                   (idx < m_get_block_suppressed_total.size()) ? m_get_block_suppressed_total[idx] : 0ULL);
+}
+
+void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
+{
+    if (!m_io_context || !m_degraded_mode || !m_recovery_pending) {
+        return;
+    }
+    if (m_forced_retry_timer_pending) {
+        return;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    auto delay_ms = FORCED_RETRY_INTERVAL_MS + next_forced_retry_jitter_ms();
+    auto due = now + std::chrono::milliseconds(delay_ms);
+    if (m_next_forced_retry_due != std::chrono::steady_clock::time_point{} && due < m_next_forced_retry_due) {
+        due = m_next_forced_retry_due;
+    }
+
+    auto wait_ms = std::max<int64_t>(
+        1,
+        std::chrono::duration_cast<std::chrono::milliseconds>(due - now).count());
+    m_next_forced_retry_due = due;
+    m_forced_retry_timer_pending = true;
+    ++m_forced_retry_timer_token;
+    const auto token = m_forced_retry_timer_token;
+    m_forced_retry_timer = std::make_shared<asio::steady_timer>(*m_io_context, std::chrono::milliseconds(wait_ms));
+    m_logger->info("[Worker_manager] Queue forced degraded retry token={} in {}ms (reason={})",
+                   token, wait_ms, trigger_reason ? trigger_reason : "unknown");
+    m_forced_retry_timer->async_wait([self = shared_from_this(), token](const asio::error_code& ec) {
+        if (ec) {
+            return;
+        }
+        if (!self->m_degraded_mode || !self->m_recovery_pending || token != self->m_forced_retry_timer_token) {
+            self->m_forced_retry_timer_pending = false;
+            return;
+        }
+        self->m_forced_retry_timer_pending = false;
+        self->retry_template_request(true);
+    });
+}
+
 bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 {
     // Save the primary endpoint on the very first connect() call from Miner::run()
@@ -1317,6 +1455,14 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
     m_recovery_last_get_block_sent_at = {};         // cleared so first health-monitor check can resend
     m_recovery_last_get_block_transmitted_at = {};  // no confirmed transmission in new epoch yet
     m_recovery_get_block_transmitted = false;  // no confirmed transmission in new epoch yet
+    m_next_forced_retry_due = {};
+    m_forced_retry_send_timestamps.clear();
+    m_forced_retry_timer_pending = false;
+    ++m_forced_retry_timer_token;
+    if (m_forced_retry_timer) {
+        m_forced_retry_timer->cancel();
+    }
+    m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
     m_logger->warn("[Worker_manager] ⚑ RECOVERY INITIATED — epoch {} (reason: {})",
                    m_recovery_epoch, reason ? reason : "unknown");
     m_logger->warn("[Worker_manager]   Health monitor will NOT stop workers during channel recovery window");
@@ -1327,7 +1473,22 @@ void Worker_manager::clear_recovery_state()
     if (!m_degraded_mode && !m_recovery_pending)
         return;  // Nothing to clear
 
+    auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
+    if (m_degraded_mode && !has_valid_template_available(solo_protocol)) {
+        m_logger->warn("[Worker_manager] clear_recovery_state() deferred: no valid template accepted yet");
+        return;
+    }
+
     m_logger->info("[Worker_manager] ✅ Recovery complete — clearing degraded mode");
+    auto now = std::chrono::steady_clock::now();
+    if (m_degraded_since != std::chrono::steady_clock::time_point{}) {
+        auto elapsed_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - m_degraded_since).count());
+        m_time_in_degraded_ms += elapsed_ms;
+    }
+    if (m_degraded_mode) {
+        ++m_degraded_exit_total;
+    }
     m_degraded_mode = false;
     m_recovery_pending = false;
     m_template_withheld = false;
@@ -1336,6 +1497,13 @@ void Worker_manager::clear_recovery_state()
     m_recovery_last_get_block_sent_at = {};
     m_recovery_last_get_block_transmitted_at = {};
     m_recovery_get_block_transmitted = false;
+    m_next_forced_retry_due = {};
+    m_forced_retry_send_timestamps.clear();
+    m_forced_retry_timer_pending = false;
+    ++m_forced_retry_timer_token;
+    if (m_forced_retry_timer) {
+        m_forced_retry_timer->cancel();
+    }
     m_degraded_since = {};  // Clear escape-ladder timer; next outage will re-anchor it
     // Note: m_recovery_workers_spawned is intentionally NOT reset here.
     // It is only reset in stop_all_workers() which actually destroys workers,
@@ -1346,6 +1514,9 @@ void Worker_manager::clear_recovery_state()
     global_stats.m_degraded_mode = false;
     m_stats_collector->update_global_stats(global_stats);
     m_last_escalation_at = {};
+
+    m_logger->info("[Worker_manager] degraded_exit_total={} time_in_degraded_ms={}",
+                   m_degraded_exit_total, m_time_in_degraded_ms);
 
     // Reset start time so GISPS/hashrate calculation excludes the degraded-mode idle period
     m_stats_collector->reset_start_time();
@@ -1360,6 +1531,7 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
     
     // Set degraded mode flag
+    bool first_entry = !m_degraded_mode;
     m_degraded_mode = true;
     m_template_withheld = false;  // Full stop supersedes soft-pause
 
@@ -1368,6 +1540,9 @@ void Worker_manager::stop_all_workers()
     // measures wall-clock time from the true start of the outage).
     if (m_degraded_since == std::chrono::steady_clock::time_point{}) {
         m_degraded_since = std::chrono::steady_clock::now();
+    }
+    if (first_entry) {
+        ++m_degraded_enter_total;
     }
     
     // Update stats to reflect degraded mode
@@ -1389,13 +1564,16 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
     m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
     m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK (0xD081)");
+    m_logger->warn("[Worker_manager] degraded_enter_total={}", m_degraded_enter_total);
 }
 
 void Worker_manager::retry_template_request(bool bForce)
 {
-    m_logger->info("[Worker_manager] Requesting fresh template...");
+    auto now = std::chrono::steady_clock::now();
+    m_logger->info("[Worker_manager] Requesting fresh template... (force={})", bForce ? "true" : "false");
 
     if (!m_primary_node_session || !m_primary_node_session->is_authenticated()) {
+        log_get_block_decision(false, bForce, GetBlockSuppressionReason::BACKPRESSURE, "missing_authenticated_session");
         m_logger->error("[Worker_manager] No authenticated session available to request template");
         // Reconstruct wallet endpoint from config and retry connection
         auto const ip_address = m_config.get_wallet_ip();
@@ -1408,9 +1586,12 @@ void Worker_manager::retry_template_request(bool bForce)
 
     auto solo_protocol = m_primary_node_session->get_primary_protocol();
     if (!solo_protocol) {
+        log_get_block_decision(false, bForce, GetBlockSuppressionReason::BACKPRESSURE, "no_protocol");
         m_logger->error("[Worker_manager] Failed to get protocol from NodeSession");
         return;
     }
+
+    bool no_valid_template = !has_valid_template_available(solo_protocol);
 
     // When this is a forced recovery (bForce=true) and not already tracked as such,
     // mark a new recovery epoch so check_template_health() knows recovery is pending.
@@ -1423,6 +1604,7 @@ void Worker_manager::retry_template_request(bool bForce)
     // before MINER_AUTH_RESULT has set m_authenticated.  This is a normal transient
     // startup/reconnect condition; the health monitor will retry at the next tick.
     if (!solo_protocol->is_authenticated()) {
+        log_get_block_decision(false, bForce, GetBlockSuppressionReason::UNAUTHENTICATED, "solo_not_authenticated");
         m_logger->info("[Worker_manager] GET_BLOCK deferred — not yet authenticated (auth in progress); "
                        "health monitor will retry when session is established");
         return;
@@ -1433,22 +1615,56 @@ void Worker_manager::retry_template_request(bool bForce)
     // calling get_work).  Detect it here so we can log the real reason and trigger
     // reconnect immediately instead of burning a recovery tick.
     if (!m_primary_node_session->is_primary_connected()) {
+        log_get_block_decision(false, bForce, GetBlockSuppressionReason::BACKPRESSURE, "primary_disconnected");
         m_logger->warn("[Worker_manager] GET_BLOCK deferred — primary TCP connection is not established; "
                        "initiating reconnect");
         retry_connect(m_primary_endpoint);
         return;
     }
 
+    bool forced_lane = bForce && m_degraded_mode && solo_protocol->is_authenticated() && no_valid_template;
+    if (forced_lane && !can_send_forced_retry(now)) {
+        log_get_block_decision(false, true, GetBlockSuppressionReason::RATE_LIMIT_LOCAL, "forced_lane_rate_limit");
+        schedule_forced_recovery_retry("forced_lane_rate_limit");
+        return;
+    }
+
     // Request template via NodeSession
-    m_logger->info("[Worker_manager] Requesting fresh template via NodeSession");
-    auto work_payload = m_primary_node_session->request_work();
+    m_logger->info("[Worker_manager] Requesting fresh template via NodeSession (forced_lane={})",
+                   forced_lane ? "true" : "false");
+    auto work_payload = m_primary_node_session->request_work(forced_lane);
     if (work_payload && !work_payload->empty()) {
         m_primary_node_session->transmit(work_payload);
         m_recovery_last_get_block_sent_at = std::chrono::steady_clock::now();
         m_recovery_last_get_block_transmitted_at = m_recovery_last_get_block_sent_at;
         m_recovery_get_block_transmitted = true;
+        if (forced_lane) {
+            m_forced_retry_send_timestamps.push_back(m_recovery_last_get_block_sent_at);
+            m_next_forced_retry_due = m_recovery_last_get_block_sent_at +
+                std::chrono::milliseconds(FORCED_RETRY_INTERVAL_MS + next_forced_retry_jitter_ms());
+            prune_forced_retry_window(m_recovery_last_get_block_sent_at);
+        }
+        log_get_block_decision(true, forced_lane, GetBlockSuppressionReason::NONE, "request_work_sent");
         m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
     } else {
+        GetBlockSuppressionReason reason = GetBlockSuppressionReason::REQUEST_WORK_EMPTY;
+        auto last_status = solo_protocol->get_last_get_block_request_status();
+        switch (last_status) {
+            case protocol::Solo::GetBlockRequestStatus::DUPLICATE_WINDOW:
+                reason = GetBlockSuppressionReason::DUPLICATE_WINDOW;
+                break;
+            case protocol::Solo::GetBlockRequestStatus::UNAUTHENTICATED:
+            case protocol::Solo::GetBlockRequestStatus::SESSION_INVALID:
+                reason = GetBlockSuppressionReason::UNAUTHENTICATED;
+                break;
+            case protocol::Solo::GetBlockRequestStatus::REWARD_NOT_BOUND:
+            case protocol::Solo::GetBlockRequestStatus::BUILD_EMPTY:
+            case protocol::Solo::GetBlockRequestStatus::NONE:
+            case protocol::Solo::GetBlockRequestStatus::SENT:
+                reason = GetBlockSuppressionReason::REQUEST_WORK_EMPTY;
+                break;
+        }
+        log_get_block_decision(false, forced_lane, reason, "request_work_empty");
         // request_work() returned empty despite passing all guards above.
         // Most likely cause: 100ms GET_BLOCK dedup guard in Solo::get_work() or
         // transient reward-binding gap.  The recovery timer will retry at the next tick.
@@ -1456,6 +1672,9 @@ void Worker_manager::retry_template_request(bool bForce)
                        "(authenticated={}, primary_connected={}, see Solo logs for specific suppression reason)",
                        solo_protocol->is_authenticated(),
                        m_primary_node_session->is_primary_connected());
+        if (m_degraded_mode && solo_protocol->is_authenticated() && no_valid_template) {
+            schedule_forced_recovery_retry("request_work_empty");
+        }
     }
 }
 

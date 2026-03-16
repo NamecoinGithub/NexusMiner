@@ -36,6 +36,15 @@ enum class AuthState {
 
 class Solo : public Protocol {
 public:
+    enum class GetBlockRequestStatus : uint8_t {
+        NONE = 0,
+        SENT,
+        DUPLICATE_WINDOW,
+        UNAUTHENTICATED,
+        REWARD_NOT_BOUND,
+        SESSION_INVALID,
+        BUILD_EMPTY
+    };
 
     Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
          std::shared_ptr<NodeSessionContext> session_context);
@@ -46,6 +55,8 @@ public:
     /// Authentication-guarded; returns null if not authenticated or reward not bound.
     /// No miner-side rate limiting — the node's 2-second AutoCoolDown enforces the server-side floor.
     network::Shared_payload get_work() override;
+    network::Shared_payload get_work(bool bypass_dedup);
+    GetBlockRequestStatus get_last_get_block_request_status() const { return m_last_get_block_request_status.load(); }
     network::Shared_payload submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce) override;
     void set_block_handler(Set_block_handler handler) override { m_set_block_handler = std::move(handler); }
 
@@ -594,6 +605,7 @@ private:
     // Tracks the last GET_BLOCK transmission time to prevent duplicate requests
     // from push_notification_handler and Worker_manager within the same millisecond.
     std::chrono::steady_clock::time_point m_last_get_block_transmitted_tp{};
+    std::atomic<GetBlockRequestStatus> m_last_get_block_request_status{GetBlockRequestStatus::NONE};
     static constexpr int64_t GET_BLOCK_DEDUP_MS = 100;  // 100ms deduplication window
     
     // ═══════════════════════════════════════════════════════════════════════
