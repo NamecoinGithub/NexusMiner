@@ -118,7 +118,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_miner_id{"NexusMiner"}  // Default miner ID
 , m_falcon_wrapper{nullptr}
 , m_disposable_falcon_enabled{true}  // ALWAYS ON - Disposable Falcon (core protocol, accepts both F-512/F-1024)
-, m_chacha20_wrapper{nullptr}  // Lazy initialization when needed
+, m_transport_crypto_selector{m_logger}
 , m_enable_chacha20{true}  // ALWAYS ON - Core implementation (localhost miners, SessionID protection, etc.)
 , m_session_context{std::move(session_context)}
 , m_template_interface{nullptr}
@@ -152,8 +152,8 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     m_colin_ping_handler.set_logger(m_logger);
     m_colin_ping_handler.set_channel(m_channel);
 
-    // Note: ChaCha20 wrapper is lazily initialized when enable_chacha20_wrapping() is called
-    // This avoids unnecessary resource allocation when ChaCha20 is not needed
+    m_transport_crypto_selector.configure("legacy");
+    m_logger->info("[Solo] Transport crypto mode initialized: {}", m_transport_crypto_selector.active_mode());
 
     // Session manager is now provided via NodeSessionContext (shared across primary/secondary protocols)
     if (!get_session_manager()) {
@@ -324,8 +324,7 @@ void Solo::reset()
     m_subscribed_to_notifications = false;  // Reset push notification subscription
     m_pending_push_after_auth = false;
 
-    // Note: m_chacha20_wrapper is intentionally NOT cleared here — the wrapper object
-    // is stateless (no per-session state) and can be reused across reconnects.
+    // Note: transport crypto adapter state is intentionally retained across reconnects.
 
     // Reset session manager
     if (m_session_context) {
@@ -759,23 +758,17 @@ network::Shared_payload Solo::login(Login_handler handler)
         try {
             // Derive session key from genesis
             auto session_key = derive_chacha20_session_key(tritium_genesis);
-            auto nonce = ChaCha20Wrapper::generate_nonce();  // Random 12 bytes
-
-            // Log the nonce being used for encryption
-            m_logger->info("[Solo Auth] ChaCha20 nonce (12 bytes): {}", nexusminer::keys::to_hex(nonce));
-
-            if (!m_chacha20_wrapper)
-                m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
-
-            // Use AAD for domain separation
-            auto wrap_result = m_chacha20_wrapper->encrypt(m_miner_pubkey, session_key, nonce, AAD_DOMAIN_VEC);
+            auto wrap_result = m_transport_crypto_selector.encrypt_with_nonce_prefix(
+                m_miner_pubkey, session_key, AAD_DOMAIN_VEC);
 
             if (wrap_result.success)
             {
-                // Build wrapped format: nonce(12) + ciphertext+tag(897+16)
-                pubkey_to_send.clear();
-                pubkey_to_send.insert(pubkey_to_send.end(), nonce.begin(), nonce.end());
-                pubkey_to_send.insert(pubkey_to_send.end(), wrap_result.data.begin(), wrap_result.data.end());
+                pubkey_to_send = wrap_result.data;
+                if (pubkey_to_send.size() >= packet_crypto_constants::CHACHA20_NONCE_LENGTH) {
+                    std::vector<uint8_t> nonce(pubkey_to_send.begin(),
+                                               pubkey_to_send.begin() + packet_crypto_constants::CHACHA20_NONCE_LENGTH);
+                    m_logger->info("[Solo Auth] ChaCha20 nonce (12 bytes): {}", nexusminer::keys::to_hex(nonce));
+                }
 
                 wrapped = true;
 
@@ -1170,12 +1163,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     }
 
     try {
-        if (!m_chacha20_wrapper)
-            m_chacha20_wrapper = std::make_unique<ChaCha20Wrapper>();
-
-        // Canonical wrapper path: nonce generation, size validation, and
-        // [nonce(12)][ciphertext][tag(16)] assembly are all internal.
-        auto enc_result = m_chacha20_wrapper->encrypt_submit_block_payload(
+        auto enc_result = m_transport_crypto_selector.encrypt_submit_block_payload(
             plaintextPayload, submit_session_key, payload_info);
 
         if (!enc_result.success || enc_result.data.empty()) {
@@ -3698,6 +3686,12 @@ void Solo::set_keepalive_interval(std::uint16_t hours)
     }
 }
 
+void Solo::set_transport_crypto_mode(const std::string& mode)
+{
+    m_transport_crypto_selector.configure(mode);
+    m_logger->info("[Solo] Active transport crypto mode: {}", m_transport_crypto_selector.active_mode());
+}
+
 std::uint32_t Solo::get_session_id() const
 {
     if (get_session_manager()) {
@@ -4045,11 +4039,6 @@ network::Shared_payload Solo::send_set_reward()
     // If ChaCha20 encryption is enabled, encrypt the address
     if (m_enable_chacha20)
     {
-        if (!m_chacha20_wrapper)
-        {
-            m_logger->error("[Solo Reward] ChaCha20 enabled but wrapper not initialized — cannot send reward unencrypted");
-            return nullptr;  // hard fail — do NOT send unencrypted
-        }
         // Use the authoritative session key from the session container.
         const auto session = m_session_context ? m_session_context->get_session_info()
                                                : SessionManager::SessionInfo{};
@@ -4061,16 +4050,12 @@ network::Shared_payload Solo::send_set_reward()
         }
 
         try {
-            auto nonce = ChaCha20Wrapper::generate_nonce();
-
-            // Encrypt the 32-byte hash (NOT the 37-byte address!)
-            auto encrypt_result = m_chacha20_wrapper->encrypt(vHash, reward_session_key, nonce, AAD_REWARD_ADDRESS);
+            auto encrypt_result = m_transport_crypto_selector.encrypt_with_nonce_prefix(
+                vHash, reward_session_key, AAD_REWARD_ADDRESS);
 
             if (encrypt_result.success)
             {
-                // Build encrypted format: nonce(12) + ciphertext+tag
-                payload_data.insert(payload_data.end(), nonce.begin(), nonce.end());
-                payload_data.insert(payload_data.end(), encrypt_result.data.begin(), encrypt_result.data.end());
+                payload_data = encrypt_result.data;
 
                 m_logger->info("[Solo Reward] Address encrypted: {} → {} bytes (using authoritative session key)",
                                vHash.size(), payload_data.size());
@@ -4396,7 +4381,7 @@ void Solo::handle_reward_result(const Packet& packet)
     std::vector<uint8_t> result_data;
     
     // Decrypt if ChaCha20 is enabled
-    if (m_enable_chacha20 && m_chacha20_wrapper && packet.m_length > 13)
+    if (m_enable_chacha20 && packet.m_length > 13)
     {
         const auto session = m_session_context ? m_session_context->get_session_info()
                                                : SessionManager::SessionInfo{};
@@ -4404,12 +4389,9 @@ void Solo::handle_reward_result(const Packet& packet)
         if (!reward_session_key.empty())
         {
             try {
-                // Extract nonce (first 12 bytes)
-                std::vector<uint8_t> nonce(packet.m_data->begin(), packet.m_data->begin() + 12);
-                std::vector<uint8_t> ciphertext(packet.m_data->begin() + 12, packet.m_data->end());
-                
                 // Decrypt response using matching AAD
-                auto decrypt_result = m_chacha20_wrapper->decrypt(ciphertext, reward_session_key, nonce, AAD_REWARD_RESULT);
+                auto decrypt_result = m_transport_crypto_selector.decrypt_with_nonce_prefix(
+                    *packet.m_data, reward_session_key, AAD_REWARD_RESULT);
                 
                 if (decrypt_result.success) {
                     result_data = decrypt_result.data;

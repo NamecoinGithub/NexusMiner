@@ -108,11 +108,19 @@ Standard SOLO mining configuration:
 **Default behavior**: 
 - Disposable Falcon signatures: **ALWAYS ON** (core protocol, cannot be disabled)
 - Physical Falcon signatures: **OFF** (optional, for blockchain storage)
-- ChaCha20 encryption: **ALWAYS ON** (core security)
+- Transport packet crypto mode: **legacy** (deployed-safe default)
+- ChaCha20 packet encryption remains enabled by default via legacy mode
 
 ### Note on Configuration
 
-**Important**: Disposable Falcon signatures and ChaCha20 encryption are ALWAYS ON and cannot be configured. The configuration options `enable_block_signing` and `enable_chacha20_wrapping` are deprecated and ignored (forced to true).
+**Important**:
+- Disposable Falcon signatures are ALWAYS ON and cannot be disabled.
+- `crypto_mode` controls transport packet crypto selection: `legacy | evp | tls`.
+- Use `legacy` for compatibility with existing Falcon1024-linked wrapper flows.
+- Use `evp` only after staged validation (strict nonce monotonicity is enforced).
+- `tls` selects TLS transport while preserving compatibility-safe legacy packet framing.
+- Plain/none transport crypto mode is intentionally unsupported for production.
+- `enable_block_signing` and `enable_chacha20_wrapping` remain deprecated compatibility keys.
 
 For Physical Falcon signatures (optional blockchain storage), use the `enable_physical_falcon()` API method instead of configuration files.
 

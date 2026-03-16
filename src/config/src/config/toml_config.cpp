@@ -322,6 +322,21 @@ namespace config
                     {
                         config.set_enable_chacha20_wrapping(parse_bool_value(value));
                     }
+                    else if (key == "crypto_mode")
+                    {
+                        std::string mode = parse_string_value(value);
+                        std::transform(mode.begin(), mode.end(), mode.begin(),
+                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        if (mode == "legacy" || mode == "evp" || mode == "tls")
+                        {
+                            config.set_crypto_mode(mode);
+                        }
+                        else
+                        {
+                            m_logger->warn("[Config] Invalid crypto_mode='{}' — using default 'legacy'", mode);
+                            config.set_crypto_mode("legacy");
+                        }
+                    }
                 }
                 else if (current_section == "tls")
                 {
