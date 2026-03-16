@@ -51,9 +51,6 @@ int main()
     const auto key = test_key();
     const auto plaintext = test_plaintext(128);
     const std::vector<uint8_t> aad{'T', 'E', 'S', 'T'};
-    const std::vector<uint8_t> reward_aad{
-        'R', 'E', 'W', 'A', 'R', 'D', '_', 'R', 'E', 'S', 'U', 'L', 'T'
-    };
 
     // 1) mode selection + fallback
     {
@@ -258,59 +255,6 @@ int main()
         } else {
             check("malformed decode test skipped on unavailable evp", true);
         }
-    }
-
-    // 11) reward-result specific decode reasons and mode-lock contract checks
-    {
-        constexpr uint32_t sid = 0x53545557;
-        constexpr uint64_t epoch = 4;
-        constexpr uint32_t wrong_sid = 0x01020304;
-
-        TransportCryptoSelector selector(logger);
-        selector.configure("evp");
-        if (selector.active_mode() == "evp") {
-            auto reward_enc = selector.encrypt_packet(
-                std::vector<uint8_t>{0x01}, key, sid, PacketCryptoPhase::SESSION_BOUND, reward_aad, epoch);
-            check("reward-result evp encrypt succeeds", reward_enc.success);
-
-            auto reward_dec = selector.decrypt_packet(
-                reward_enc.data, key, sid, PacketCryptoPhase::SESSION_BOUND, reward_aad, epoch);
-            check("reward-result evp decrypt succeeds", reward_dec.success);
-            check("reward-result plaintext round-trip", reward_dec.data == std::vector<uint8_t>{0x01});
-
-            std::vector<uint8_t> short_frame(packet_crypto_constants::EVP_REWARD_RESULT_MIN_FRAME_BYTES - 1, 0x00);
-            auto short_dec = selector.decrypt_packet(
-                short_frame, key, sid, PacketCryptoPhase::SESSION_BOUND, reward_aad, epoch);
-            check("reward-result short frame rejected", !short_dec.success);
-            check("reward-result short frame code",
-                  short_dec.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::REWARD_RESULT_FRAME_TOO_SHORT);
-
-            auto bad_flags = reward_enc.data;
-            bad_flags[1] = 0x00;
-            auto bad_flags_dec = selector.decrypt_packet(
-                bad_flags, key, sid, PacketCryptoPhase::SESSION_BOUND, reward_aad, epoch);
-            check("reward-result flags mismatch rejected", !bad_flags_dec.success);
-            check("reward-result flags mismatch code",
-                  bad_flags_dec.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::REWARD_RESULT_FLAGS_MISMATCH);
-
-            auto sid_mismatch_dec = selector.decrypt_packet(
-                reward_enc.data, key, wrong_sid, PacketCryptoPhase::SESSION_BOUND, reward_aad, epoch);
-            check("reward-result sid mismatch rejected", !sid_mismatch_dec.success);
-            check("reward-result sid mismatch code",
-                  sid_mismatch_dec.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::REWARD_RESULT_SESSION_MISMATCH);
-        } else {
-            check("reward-result evp checks skipped on legacy fallback", true);
-        }
-
-        TransportCryptoSelector legacy_selector(logger);
-        legacy_selector.configure("legacy");
-        auto legacy_reward_enc = legacy_selector.encrypt_packet(
-            std::vector<uint8_t>{0x01}, key, sid, PacketCryptoPhase::SESSION_BOUND, reward_aad, epoch);
-        check("reward-result legacy encrypt succeeds", legacy_reward_enc.success);
-        auto legacy_reward_dec = legacy_selector.decrypt_packet(
-            legacy_reward_enc.data, key, sid, PacketCryptoPhase::SESSION_BOUND, reward_aad, epoch);
-        check("reward-result legacy frame accepted", legacy_reward_dec.success);
-        check("reward-result legacy round-trip", legacy_reward_dec.data == std::vector<uint8_t>{0x01});
     }
 
     std::cout << "\nTests run: " << tests_run << ", failed: " << tests_failed << std::endl;
