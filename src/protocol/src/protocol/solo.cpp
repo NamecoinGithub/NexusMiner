@@ -39,16 +39,19 @@ bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_
     return !local_has_state && authoritative_has_state;
 }
 
-uint32_t read_u32_le(const std::vector<uint8_t>& in, std::size_t offset)
+bool is_evp_session_bound_frame_header(const std::vector<uint8_t>& in)
 {
-    return static_cast<uint32_t>(in[offset]) |
-           (static_cast<uint32_t>(in[offset + 1]) << 8) |
-           (static_cast<uint32_t>(in[offset + 2]) << 16) |
-           (static_cast<uint32_t>(in[offset + 3]) << 24);
+    return in.size() >= packet_crypto_constants::EVP_FRAME_VERSION_BYTES +
+                            packet_crypto_constants::EVP_FRAME_FLAGS_BYTES &&
+           in[0] == packet_crypto_constants::EVP_FRAME_VERSION &&
+           (in[1] & packet_crypto_constants::EVP_FLAG_SESSION_BOUND) != 0;
 }
 
 uint64_t read_u64_le(const std::vector<uint8_t>& in, std::size_t offset)
 {
+    if (in.size() < offset + sizeof(uint64_t)) {
+        return 0;
+    }
     uint64_t value = 0;
     for (std::size_t i = 0; i < 8; ++i) {
         value |= static_cast<uint64_t>(in[offset + i]) << (i * 8);
@@ -4473,7 +4476,7 @@ void Solo::on_reward_result_decode_failure(const RewardResultDecodeResult& decod
     }
 
     const auto now = std::chrono::steady_clock::now();
-    if (m_last_reward_result_recovery_at.time_since_epoch().count() != 0 &&
+    if (m_last_reward_result_recovery_at != std::chrono::steady_clock::time_point::min() &&
         (now - m_last_reward_result_recovery_at) < REWARD_RESULT_RECOVERY_COOLDOWN) {
         m_logger->warn(
             "[Solo Reward] event=reward_result_recovery_suppressed reason={} cooldown_ms={} sid=0x{:08x} epoch={}",
@@ -4526,7 +4529,7 @@ Solo::RewardResultDecodeResult Solo::decode_reward_result_payload(const Packet& 
         result.expected_min_len = mode == "evp"
             ? packet_crypto_constants::EVP_REWARD_RESULT_MIN_FRAME_BYTES
             : (packet_crypto_constants::LEGACY_FRAME_FIXED_OVERHEAD +
-               packet_crypto_constants::REWARD_RESULT_MIN_PLAINTEXT_BYTES);
+               packet_crypto_constants::MIN_REWARD_RESULT_PLAINTEXT_BYTES);
         return result;
     }
 
@@ -4536,28 +4539,25 @@ Solo::RewardResultDecodeResult Solo::decode_reward_result_payload(const Packet& 
             result.reason = RewardResultDecodeReason::REWARD_RESULT_FRAME_TOO_SHORT;
             return result;
         }
-        result.packet_sid = read_u32_le(*packet.m_data, packet_crypto_constants::EVP_FRAME_SESSION_ID_OFFSET);
-        result.packet_epoch = read_u64_le(*packet.m_data, packet_crypto_constants::EVP_FRAME_SESSION_EPOCH_OFFSET);
-        result.packet_generation = read_u64_le(*packet.m_data, packet_crypto_constants::EVP_FRAME_GENERATION_OFFSET);
-        if ((*packet.m_data)[0] != packet_crypto_constants::EVP_FRAME_VERSION ||
-            ((*packet.m_data)[1] & packet_crypto_constants::EVP_FLAG_SESSION_BOUND) == 0) {
+        if (!is_evp_session_bound_frame_header(*packet.m_data)) {
             result.reason = RewardResultDecodeReason::REWARD_RESULT_FLAGS_MISMATCH;
             return result;
         }
+        result.packet_sid = serialization::read_uint32_le(*packet.m_data, packet_crypto_constants::EVP_FRAME_SESSION_ID_OFFSET);
+        result.packet_epoch = read_u64_le(*packet.m_data, packet_crypto_constants::EVP_FRAME_SESSION_EPOCH_OFFSET);
+        result.packet_generation = read_u64_le(*packet.m_data, packet_crypto_constants::EVP_FRAME_GENERATION_OFFSET);
         if (result.packet_sid != reward_session_id || result.packet_epoch != reward_session_epoch) {
             result.reason = RewardResultDecodeReason::REWARD_RESULT_SESSION_MISMATCH;
             return result;
         }
     } else if (mode_locked && mode == "legacy") {
         result.expected_min_len = packet_crypto_constants::LEGACY_FRAME_FIXED_OVERHEAD +
-            packet_crypto_constants::REWARD_RESULT_MIN_PLAINTEXT_BYTES;
+            packet_crypto_constants::MIN_REWARD_RESULT_PLAINTEXT_BYTES;
         if (result.actual_len < result.expected_min_len) {
             result.reason = RewardResultDecodeReason::REWARD_RESULT_FRAME_TOO_SHORT;
             return result;
         }
-        if (result.actual_len >= packet_crypto_constants::EVP_FRAME_VERSION_BYTES + packet_crypto_constants::EVP_FRAME_FLAGS_BYTES &&
-            (*packet.m_data)[0] == packet_crypto_constants::EVP_FRAME_VERSION &&
-            ((*packet.m_data)[1] & packet_crypto_constants::EVP_FLAG_SESSION_BOUND) != 0) {
+        if (is_evp_session_bound_frame_header(*packet.m_data)) {
             result.reason = RewardResultDecodeReason::REWARD_RESULT_MODE_MISMATCH;
             return result;
         }

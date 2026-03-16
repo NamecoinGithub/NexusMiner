@@ -514,7 +514,9 @@ private:
     std::atomic<uint64_t> m_reward_result_fail_session_mismatch_total{0};
     std::atomic<uint64_t> m_reward_result_fail_auth_tag_total{0};
     std::atomic<uint64_t> m_reward_result_fail_nonce_reject_total{0};
-    std::chrono::steady_clock::time_point m_last_reward_result_recovery_at{};
+    std::chrono::steady_clock::time_point m_last_reward_result_recovery_at{
+        std::chrono::steady_clock::time_point::min()
+    };
     
     // Push notification subscription state (MINER_READY sent after auth)
     std::atomic<bool> m_subscribed_to_notifications{false};
