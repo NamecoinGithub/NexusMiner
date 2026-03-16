@@ -4,6 +4,7 @@
 #include "protocol/protocol.hpp"
 #include "protocol/falcon_wrapper.hpp"
 #include "protocol/chacha20_wrapper.hpp"
+#include "protocol/transport_crypto_selector.hpp"
 #include "protocol/session_manager.hpp"
 #include "protocol/node_session_context.hpp"
 #include "protocol/mining_template_interface.hpp"
@@ -106,6 +107,8 @@ public:
     // Session management configuration
     void set_keepalive_interval(std::uint16_t hours);
     void enable_chacha20_wrapping(bool enable) { m_enable_chacha20 = enable; }
+    void set_transport_crypto_mode(const std::string& mode);
+    const std::string& get_transport_crypto_mode() const { return m_transport_crypto_selector.active_mode(); }
     bool is_chacha20_enabled() const { return m_enable_chacha20; }
     
     // Disposable Falcon is ALWAYS ON (core protocol) - method kept for backward compatibility only
@@ -435,8 +438,8 @@ private:
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
     bool m_disposable_falcon_enabled;     // Disposable Falcon signing (ALWAYS ON - core protocol, 0 blockchain overhead)
     
-    // ChaCha20 encryption wrapper for Falcon pubkey protection
-    std::unique_ptr<ChaCha20Wrapper> m_chacha20_wrapper;
+    // Transport crypto selector (legacy ChaCha20 wrapper vs EVP manager)
+    TransportCryptoSelector m_transport_crypto_selector;
     bool m_enable_chacha20;  // ChaCha20 encryption (ALWAYS ON - core security for localhost + SessionID)
 
     // Session context for centralized session management (passed from NodeSession)

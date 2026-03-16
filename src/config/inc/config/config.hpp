@@ -132,6 +132,8 @@ public:
 	
 	// ChaCha20 and TLS setters
 	void set_enable_chacha20_wrapping(bool enable) { m_enable_chacha20_wrapping = enable; }
+	std::string const& get_crypto_mode() const { return m_crypto_mode; }
+	void set_crypto_mode(const std::string& mode) { m_crypto_mode = mode; }
 	void set_enable_tls(bool enable) { m_enable_tls = enable; }
 	// Dedicated TLS mining port (0 = disabled/use plaintext port)
 	void set_ssl_port(std::uint16_t port) { m_ssl_port = port; }
@@ -188,6 +190,7 @@ private:
 	std::string m_tritium_genesis;  // Tritium account genesis hash (32 bytes hex) for reward binding
 	std::uint16_t m_keepalive_interval;  // Keep-alive ping interval in hours (default: 24)
 	bool m_enable_chacha20_wrapping;  // Enable ChaCha20 wrapping of Falcon pubkey (auto for remote, optional for localhost)
+	std::string m_crypto_mode;  // Transport packet crypto mode: legacy | evp | tls
 	
 	// TLS/HTTPS configuration (auto-enabled for remote connections)
 	bool m_enable_tls;  // Enable TLS/SSL for remote connections (default: auto-detect)

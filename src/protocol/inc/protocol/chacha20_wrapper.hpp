@@ -7,6 +7,7 @@
 #include <string>
 #include <memory>
 #include "spdlog/spdlog.h"
+#include "protocol/packet_crypto_constants.hpp"
 
 namespace nexusminer {
 namespace protocol {
@@ -43,7 +44,8 @@ public:
         size_t   signature_size{0};       ///< parsed/actual Falcon signature length
 
         /// ChaCha20-Poly1305 overhead: nonce(12) + auth_tag(16)
-        static constexpr size_t CHACHA20_OVERHEAD = 28;
+        static constexpr size_t CHACHA20_OVERHEAD =
+            packet_crypto_constants::CHACHA20_AEAD_OVERHEAD;
 
         /// Expected plaintext size: block + offsets + timestamp + sig_len + sig
         size_t expected_plaintext_size() const {
@@ -61,9 +63,21 @@ public:
      * @brief Encryption/Decryption result structure
      */
     struct CryptoResult {
+        enum class ErrorCode {
+            NONE,
+            INVALID_INPUT,
+            FRAME_FORMAT_ERROR,
+            PHASE_VIOLATION,
+            SESSION_ID_MISMATCH,
+            NONCE_REPLAY,
+            AUTH_FAILURE,
+            UNAVAILABLE,
+            INTERNAL
+        };
         bool success;
         std::vector<uint8_t> data;
         std::string error_message;
+        ErrorCode error_code{ErrorCode::NONE};
     };
     
     /**
