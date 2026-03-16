@@ -42,7 +42,6 @@ NodeSession::NodeSession(
     // Pass shared NodeSessionContext so primary and secondary protocols share session state
     uint8_t channel = (m_config.get_mining_mode() == config::Mining_mode::PRIME) ? 1U : 2U;
     m_primary_protocol = std::make_shared<protocol::Solo>(channel, m_stats_collector, m_session_context);
-    m_primary_protocol->set_transport_crypto_mode(m_config.get_crypto_mode());
 
     m_logger->info("[NodeSession:{}] Initialized with channel {}", m_node_label, channel);
 }
@@ -193,7 +192,6 @@ void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
     }
     m_secondary_protocol->set_keepalive_interval(m_keepalive_interval_hours);
     m_secondary_protocol->enable_chacha20_wrapping(true);
-    m_secondary_protocol->set_transport_crypto_mode(m_config.get_crypto_mode());
     m_secondary_protocol->enable_disposable_falcon(true);
 
     // Register handlers (reuse the same handlers as primary)

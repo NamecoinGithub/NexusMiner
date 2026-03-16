@@ -1,6 +1,5 @@
 #include "protocol/chacha20_wrapper.hpp"
 #include "protocol/falcon_constants.hpp"
-#include "protocol/packet_crypto_constants.hpp"
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
@@ -10,6 +9,11 @@
 
 namespace nexusminer {
 namespace protocol {
+
+// ChaCha20-Poly1305 constants
+constexpr size_t CHACHA20_KEY_SIZE = 32;    // 256 bits
+constexpr size_t CHACHA20_NONCE_SIZE = 12;  // 96 bits
+constexpr size_t CHACHA20_TAG_SIZE = 16;    // 128 bits
 
 ChaCha20Wrapper::ChaCha20Wrapper()
     : m_logger(spdlog::get("logger"))
@@ -43,8 +47,8 @@ bool ChaCha20Wrapper::is_available()
 
 std::vector<uint8_t> ChaCha20Wrapper::generate_nonce()
 {
-    std::vector<uint8_t> nonce(packet_crypto_constants::CHACHA20_NONCE_LENGTH);
-    if (RAND_bytes(nonce.data(), packet_crypto_constants::CHACHA20_NONCE_LENGTH) != 1) {
+    std::vector<uint8_t> nonce(CHACHA20_NONCE_SIZE);
+    if (RAND_bytes(nonce.data(), CHACHA20_NONCE_SIZE) != 1) {
         throw std::runtime_error("Failed to generate random nonce: OpenSSL RAND_bytes() failed");
     }
     return nonce;
@@ -52,8 +56,8 @@ std::vector<uint8_t> ChaCha20Wrapper::generate_nonce()
 
 std::vector<uint8_t> ChaCha20Wrapper::generate_key()
 {
-    std::vector<uint8_t> key(packet_crypto_constants::CHACHA20_KEY_LENGTH);
-    if (RAND_bytes(key.data(), packet_crypto_constants::CHACHA20_KEY_LENGTH) != 1) {
+    std::vector<uint8_t> key(CHACHA20_KEY_SIZE);
+    if (RAND_bytes(key.data(), CHACHA20_KEY_SIZE) != 1) {
         throw std::runtime_error("Failed to generate random key: OpenSSL RAND_bytes() failed");
     }
     return key;
@@ -69,13 +73,13 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::encrypt(
     result.success = false;
     
     // Validate inputs
-    if (key.size() != packet_crypto_constants::CHACHA20_KEY_LENGTH) {
+    if (key.size() != CHACHA20_KEY_SIZE) {
         result.error_message = "Invalid key size (expected 32 bytes)";
         m_logger->error("[ChaCha20] {}", result.error_message);
         return result;
     }
     
-    if (nonce.size() != packet_crypto_constants::CHACHA20_NONCE_LENGTH) {
+    if (nonce.size() != CHACHA20_NONCE_SIZE) {
         result.error_message = "Invalid nonce size (expected 12 bytes)";
         m_logger->error("[ChaCha20] {}", result.error_message);
         return result;
@@ -124,7 +128,7 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::encrypt(
     }
     
     // Allocate output buffer (plaintext size + tag)
-    result.data.resize(plaintext.size() + packet_crypto_constants::CHACHA20_AUTH_TAG_LENGTH);
+    result.data.resize(plaintext.size() + CHACHA20_TAG_SIZE);
     
     // Encrypt plaintext
     if (EVP_EncryptUpdate(ctx, result.data.data(), &len, plaintext.data(), plaintext.size()) != 1) {
@@ -145,7 +149,7 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::encrypt(
     ciphertext_len += len;
     
     // Get authentication tag
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, packet_crypto_constants::CHACHA20_AUTH_TAG_LENGTH, 
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, CHACHA20_TAG_SIZE, 
                             result.data.data() + ciphertext_len) != 1) {
         result.error_message = "Failed to get authentication tag";
         m_logger->error("[ChaCha20] {}", result.error_message);
@@ -154,7 +158,7 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::encrypt(
     }
     
     // Resize to actual size (ciphertext + tag)
-    result.data.resize(ciphertext_len + packet_crypto_constants::CHACHA20_AUTH_TAG_LENGTH);
+    result.data.resize(ciphertext_len + CHACHA20_TAG_SIZE);
     
     EVP_CIPHER_CTX_free(ctx);
     result.success = true;
@@ -175,27 +179,27 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::decrypt(
     result.success = false;
     
     // Validate inputs
-    if (key.size() != packet_crypto_constants::CHACHA20_KEY_LENGTH) {
+    if (key.size() != CHACHA20_KEY_SIZE) {
         result.error_message = "Invalid key size (expected 32 bytes)";
         m_logger->error("[ChaCha20] {}", result.error_message);
         return result;
     }
     
-    if (nonce.size() != packet_crypto_constants::CHACHA20_NONCE_LENGTH) {
+    if (nonce.size() != CHACHA20_NONCE_SIZE) {
         result.error_message = "Invalid nonce size (expected 12 bytes)";
         m_logger->error("[ChaCha20] {}", result.error_message);
         return result;
     }
     
-    if (ciphertext.size() < packet_crypto_constants::CHACHA20_AUTH_TAG_LENGTH) {
+    if (ciphertext.size() < CHACHA20_TAG_SIZE) {
         result.error_message = "Ciphertext too short (must include 16-byte tag)";
         m_logger->error("[ChaCha20] {}", result.error_message);
         return result;
     }
     
     // Split ciphertext and tag
-    size_t ciphertext_len = ciphertext.size() - packet_crypto_constants::CHACHA20_AUTH_TAG_LENGTH;
-    std::vector<uint8_t> tag(ciphertext.end() - packet_crypto_constants::CHACHA20_AUTH_TAG_LENGTH, ciphertext.end());
+    size_t ciphertext_len = ciphertext.size() - CHACHA20_TAG_SIZE;
+    std::vector<uint8_t> tag(ciphertext.end() - CHACHA20_TAG_SIZE, ciphertext.end());
     
     // Create and initialize context
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
@@ -246,7 +250,7 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::decrypt(
     int plaintext_len = len;
     
     // Set expected tag
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, packet_crypto_constants::CHACHA20_AUTH_TAG_LENGTH, 
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, CHACHA20_TAG_SIZE, 
                             const_cast<uint8_t*>(tag.data())) != 1) {
         result.error_message = "Failed to set authentication tag";
         m_logger->error("[ChaCha20] {}", result.error_message);
