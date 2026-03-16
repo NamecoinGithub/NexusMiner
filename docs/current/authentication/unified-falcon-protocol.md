@@ -117,10 +117,20 @@ Standard SOLO mining configuration:
 - Disposable Falcon signatures are ALWAYS ON and cannot be disabled.
 - `crypto_mode` controls transport packet crypto selection: `legacy | evp | tls`.
 - Use `legacy` for compatibility with existing Falcon1024-linked wrapper flows.
-- Use `evp` only after staged validation (strict nonce monotonicity is enforced).
+- Use `evp` only after staged validation (session-scoped nonce monotonicity, epoch/generation stale-drop, and AEAD-bound framing are enforced).
 - `tls` selects TLS transport while preserving compatibility-safe legacy packet framing.
 - Plain/none transport crypto mode is intentionally unsupported for production.
 - `enable_block_signing` and `enable_chacha20_wrapping` remain deprecated compatibility keys.
+
+### Packet crypto migration and cleanup plan
+
+- `legacy` remains the deployment-safe default while operators validate `evp` in staged environments.
+- `evp` now uses a unified packet crypto boundary (`PacketCryptoService`) with session-scoped context (`SessionCryptoContext`) and explicit lifecycle rotation by session epoch.
+- The legacy wrapper path is retained only as a compatibility shim for PRE_AUTH flows and for explicit `crypto_mode=legacy`.
+- Future cleanup plan:
+  1. Keep `legacy` default while rollout telemetry (encrypt/decrypt success/failure, nonce reject, stale-session drop) is monitored.
+  2. Promote `evp` to default once node/operator parity is confirmed.
+  3. Remove legacy wrapper transport path after deprecation window and TLS transport hardening are complete.
 
 For Physical Falcon signatures (optional blockchain storage), use the `enable_physical_falcon()` API method instead of configuration files.
 

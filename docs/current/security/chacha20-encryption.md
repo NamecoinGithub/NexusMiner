@@ -57,6 +57,29 @@ This document summarizes the security aspects of the ChaCha20 wrapper implementa
 
 ### 3. Protocol Security
 
+#### Unified packet crypto service (SESSION_BOUND path)
+- `PacketCryptoService` is the single encode/decode boundary for transport packet AEAD in `crypto_mode=evp`.
+- AAD is schema-bound to:
+  - `protocol_version`
+  - `session_id` (LE u32)
+  - `message_type` bytes
+  - `payload_length` (LE u32)
+- Session-bound frame layout:
+  - `[version:1][flags:1][session_id:4][session_epoch:8][generation:8][nonce:12][ciphertext][tag:16]`
+- Session lifecycle safety:
+  - independent TX/RX nonce tracking
+  - strict RX monotonic nonce rejection
+  - epoch/generation stale-frame rejection
+  - context zeroization on teardown/rotation
+- Strict failure policy:
+  - AEAD auth failure => packet dropped, decrypt failure counter incremented, no partial processing
+
+#### Observability counters
+- `encrypt_ok` / `encrypt_fail`
+- `decrypt_ok` / `decrypt_fail`
+- `nonce_reject`
+- `stale_session_drop`
+
 #### Additional Authenticated Data (AAD)
 - **Value**: "FALCON_PUBKEY" constant string
 - **Purpose**: Binds encryption to specific use case

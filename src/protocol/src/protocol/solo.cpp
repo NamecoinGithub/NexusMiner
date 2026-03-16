@@ -4075,7 +4075,8 @@ network::Shared_payload Solo::send_set_reward()
                 reward_session_key,
                 reward_session_id,
                 PacketCryptoPhase::SESSION_BOUND,
-                AAD_REWARD_ADDRESS);
+                AAD_REWARD_ADDRESS,
+                session.session_epoch);
 
             if (encrypt_result.success)
             {
@@ -4424,7 +4425,8 @@ void Solo::handle_reward_result(const Packet& packet)
                     reward_session_key,
                     reward_session_id,
                     crypto_phase,
-                    AAD_REWARD_RESULT);
+                    AAD_REWARD_RESULT,
+                    session.session_epoch);
                 
                 if (decrypt_result.success) {
                     result_data = decrypt_result.data;

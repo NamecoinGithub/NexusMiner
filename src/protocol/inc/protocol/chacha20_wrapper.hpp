@@ -69,6 +69,7 @@ public:
             FRAME_FORMAT_ERROR,
             PHASE_VIOLATION,
             SESSION_ID_MISMATCH,
+            STALE_SESSION,
             NONCE_REPLAY,
             AUTH_FAILURE,
             UNAVAILABLE,

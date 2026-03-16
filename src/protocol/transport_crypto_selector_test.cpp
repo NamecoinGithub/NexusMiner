@@ -85,9 +85,10 @@ int main()
 
         if (selector.active_mode() == "evp") {
             constexpr uint32_t sid = 0x11223344;
-            auto enc = selector.encrypt_packet(plaintext, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
+            constexpr uint64_t epoch = 1;
+            auto enc = selector.encrypt_packet(plaintext, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
             check("evp encrypt succeeds", enc.success);
-            auto dec = selector.decrypt_packet(enc.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
+            auto dec = selector.decrypt_packet(enc.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
             check("evp decrypt succeeds", dec.success);
             check("evp round-trip matches", dec.data == plaintext);
         }
@@ -98,21 +99,22 @@ int main()
         EVPAdapter evp(logger);
         if (evp.is_ready()) {
             constexpr uint32_t sid = 0xAABBCCDD;
-            auto enc1 = evp.encrypt_packet(plaintext, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
+            constexpr uint64_t epoch = 1;
+            auto enc1 = evp.encrypt_packet(plaintext, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
             check("evp direct encrypt #1 succeeds", enc1.success);
-            auto dec1 = evp.decrypt_packet(enc1.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
+            auto dec1 = evp.decrypt_packet(enc1.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
             check("evp direct decrypt #1 succeeds", dec1.success);
 
-            auto duplicate = evp.decrypt_packet(enc1.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
+            auto duplicate = evp.decrypt_packet(enc1.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
             check("evp duplicate nonce rejected", !duplicate.success);
             check("evp duplicate nonce error code", duplicate.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::NONCE_REPLAY);
 
-            auto enc2 = evp.encrypt_packet(test_plaintext(64), key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
+            auto enc2 = evp.encrypt_packet(test_plaintext(64), key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
             check("evp direct encrypt #2 succeeds", enc2.success);
-            auto dec2 = evp.decrypt_packet(enc2.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
+            auto dec2 = evp.decrypt_packet(enc2.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
             check("evp direct decrypt #2 succeeds", dec2.success);
 
-            auto rewind = evp.decrypt_packet(enc1.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad);
+            auto rewind = evp.decrypt_packet(enc1.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
             check("evp rewind nonce rejected", !rewind.success);
             check("evp rewind nonce error code", rewind.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::NONCE_REPLAY);
         } else {
@@ -127,11 +129,12 @@ int main()
         if (selector.active_mode() == "evp") {
             constexpr uint32_t sid_ok = 0x01020304;
             constexpr uint32_t sid_bad = 0xDEADBEEF;
-            auto enc = selector.encrypt_packet(plaintext, key, sid_ok, PacketCryptoPhase::SESSION_BOUND, aad);
+            constexpr uint64_t epoch = 1;
+            auto enc = selector.encrypt_packet(plaintext, key, sid_ok, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
             check("sid test encrypt succeeds", enc.success);
-            auto bad = selector.decrypt_packet(enc.data, key, sid_bad, PacketCryptoPhase::SESSION_BOUND, aad);
+            auto bad = selector.decrypt_packet(enc.data, key, sid_bad, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
             check("sid mismatch rejected", !bad.success);
-            check("sid mismatch error code", bad.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::SESSION_ID_MISMATCH);
+            check("sid mismatch error code", bad.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::STALE_SESSION);
         } else {
             check("sid mismatch test skipped on legacy fallback", true);
         }
@@ -147,7 +150,7 @@ int main()
             auto preauth_dec = selector.decrypt_packet(preauth.data, key, 0, PacketCryptoPhase::PRE_AUTH, aad);
             check("pre-auth decrypt accepted", preauth_dec.success);
 
-            auto postauth_reject = selector.decrypt_packet(preauth.data, key, 0x12345678, PacketCryptoPhase::SESSION_BOUND, aad);
+            auto postauth_reject = selector.decrypt_packet(preauth.data, key, 0x12345678, PacketCryptoPhase::SESSION_BOUND, aad, 0);
             check("post-auth enforces session-bound envelope", !postauth_reject.success);
         } else {
             check("phase transition test skipped on legacy fallback", true);
@@ -160,16 +163,97 @@ int main()
         selector.configure("evp");
         if (selector.active_mode() == "evp") {
             constexpr uint32_t sid = 0x8899AABB;
+            constexpr uint64_t epoch = 1;
             const std::vector<uint8_t> aad_a{'M', 'S', 'G', '_', 'A'};
             const std::vector<uint8_t> aad_b{'M', 'S', 'G', '_', 'B'};
-            auto enc = selector.encrypt_packet(plaintext, key, sid, PacketCryptoPhase::SESSION_BOUND, aad_a);
+            auto enc = selector.encrypt_packet(plaintext, key, sid, PacketCryptoPhase::SESSION_BOUND, aad_a, epoch);
             check("aad mismatch encrypt succeeds", enc.success);
-            auto dec = selector.decrypt_packet(enc.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad_b);
+            auto dec = selector.decrypt_packet(enc.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad_b, epoch);
             check("aad mismatch rejected", !dec.success);
             check("aad mismatch auth-failure code",
                   dec.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::AUTH_FAILURE);
         } else {
             check("aad mismatch test skipped on legacy fallback", true);
+        }
+    }
+
+    // 8) tamper detection (ciphertext/tag)
+    {
+        EVPAdapter evp(logger);
+        if (evp.is_ready()) {
+            constexpr uint32_t sid = 0x0A0B0C0D;
+            constexpr uint64_t epoch = 7;
+            auto enc = evp.encrypt_packet(plaintext, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
+            check("tamper test encrypt succeeds", enc.success);
+            if (enc.success && enc.data.size() > 10) {
+                auto tampered_cipher = enc.data;
+                tampered_cipher[tampered_cipher.size() - 17] ^= 0x01;
+                auto dec_cipher = evp.decrypt_packet(tampered_cipher, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
+                check("tampered ciphertext rejected", !dec_cipher.success);
+                check("tampered ciphertext auth-failure code", dec_cipher.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::AUTH_FAILURE);
+
+                auto tampered_tag = enc.data;
+                tampered_tag.back() ^= 0x80;
+                auto dec_tag = evp.decrypt_packet(tampered_tag, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
+                check("tampered tag rejected", !dec_tag.success);
+                check("tampered tag auth-failure code", dec_tag.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::AUTH_FAILURE);
+            }
+        } else {
+            check("tamper detection skipped on unavailable evp", true);
+        }
+    }
+
+    // 9) stale epoch/session + reconnect/session rotate invalidation
+    {
+        EVPAdapter evp(logger);
+        if (evp.is_ready()) {
+            constexpr uint32_t sid = 0x41424344;
+            constexpr uint64_t epoch1 = 1;
+            constexpr uint64_t epoch2 = 2;
+            auto enc_epoch1 = evp.encrypt_packet(plaintext, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch1);
+            check("epoch #1 encrypt succeeds", enc_epoch1.success);
+            auto stale = evp.decrypt_packet(enc_epoch1.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch2);
+            check("stale epoch rejected", !stale.success);
+            check("stale epoch code", stale.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::STALE_SESSION);
+
+            auto enc_epoch2 = evp.encrypt_packet(test_plaintext(32), key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch2);
+            check("epoch #2 encrypt succeeds", enc_epoch2.success);
+            auto old_after_rotate = evp.decrypt_packet(enc_epoch1.data, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch2);
+            check("old context invalidated after rotate", !old_after_rotate.success);
+            check("old context invalidated code", old_after_rotate.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::STALE_SESSION);
+        } else {
+            check("stale epoch/session test skipped on unavailable evp", true);
+        }
+    }
+
+    // 10) malformed decode boundaries
+    {
+        EVPAdapter evp(logger);
+        if (evp.is_ready()) {
+            constexpr uint32_t sid = 0x53545556;
+            constexpr uint64_t epoch = 3;
+            auto enc = evp.encrypt_packet(plaintext, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
+            check("malformed test encrypt succeeds", enc.success);
+            if (enc.success) {
+                std::vector<uint8_t> truncated(enc.data.begin(), enc.data.begin() + 10);
+                auto short_dec = evp.decrypt_packet(truncated, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
+                check("short frame rejected", !short_dec.success);
+                check("short frame code", short_dec.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::FRAME_FORMAT_ERROR);
+
+                auto bad_version = enc.data;
+                bad_version[0] = 0xFF;
+                auto bad_version_dec = evp.decrypt_packet(bad_version, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
+                check("bad version rejected", !bad_version_dec.success);
+                check("bad version code", bad_version_dec.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::FRAME_FORMAT_ERROR);
+
+                auto bad_flags = enc.data;
+                bad_flags[1] = 0x00;
+                auto bad_flags_dec = evp.decrypt_packet(bad_flags, key, sid, PacketCryptoPhase::SESSION_BOUND, aad, epoch);
+                check("bad flags rejected", !bad_flags_dec.success);
+                check("bad flags code", bad_flags_dec.error_code == ChaCha20Wrapper::CryptoResult::ErrorCode::PHASE_VIOLATION);
+            }
+        } else {
+            check("malformed decode test skipped on unavailable evp", true);
         }
     }
 

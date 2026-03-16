@@ -192,6 +192,32 @@ To revert to old behavior (localhost only):
 
 ---
 
+## 4. Legacy Packet Crypto Wrapper (Deprecation Path)
+
+### What Changed?
+
+- Transport packet crypto now has a unified boundary under `PacketCryptoService` when `crypto_mode=evp`.
+- The old wrapper path is retained only as a compatibility shim for:
+  - PRE_AUTH packet handling
+  - explicit `crypto_mode=legacy` deployments
+
+### Migration Path
+
+1. Keep production on `crypto_mode=legacy` while validating EVP mode in staging.
+2. Enable `crypto_mode=evp` and verify counters/logging:
+   - `encrypt_ok/encrypt_fail`
+   - `decrypt_ok/decrypt_fail`
+   - `nonce_reject`
+   - `stale_session_drop`
+3. Roll out EVP mode broadly only after session rotate/reconnect behavior is validated.
+
+### Future Cleanup Plan
+
+- Legacy wrapper transport path will remain until EVP mode is promoted to default.
+- After operator migration and compatibility window closure, legacy packet wrapper code will be removed.
+
+---
+
 ## New Features Available
 
 ### 1. GPU Power Controls
