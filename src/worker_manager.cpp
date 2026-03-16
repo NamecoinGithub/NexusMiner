@@ -27,6 +27,7 @@
 #include <asio/steady_timer.hpp>
 #include <variant>
 #include <algorithm>
+#include <random>
 #include <iomanip>
 #include <sstream>
 #include <deque>
@@ -1035,19 +1036,28 @@ void Worker_manager::prune_forced_retry_window(std::chrono::steady_clock::time_p
 
 int64_t Worker_manager::next_forced_retry_jitter_ms()
 {
-    constexpr int64_t jitter_span = (FORCED_RETRY_JITTER_MAX_MS - FORCED_RETRY_JITTER_MIN_MS) + 1;
-    auto jitter = FORCED_RETRY_JITTER_MIN_MS + static_cast<int64_t>(m_forced_retry_jitter_counter % jitter_span);
-    ++m_forced_retry_jitter_counter;
-    return jitter;
+    thread_local std::mt19937 rng([]() {
+        std::random_device rd;
+        auto now = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+        std::seed_seq seed{
+            rd(), rd(),
+            static_cast<uint32_t>(now & 0xffffffffu),
+            static_cast<uint32_t>((now >> 32) & 0xffffffffu)
+        };
+        return std::mt19937(seed);
+    }());
+    std::uniform_int_distribution<int64_t> dist(FORCED_RETRY_JITTER_MIN_MS, FORCED_RETRY_JITTER_MAX_MS);
+    return dist(rng);
 }
 
-bool Worker_manager::can_send_forced_retry(std::chrono::steady_clock::time_point now,
-                                           bool authenticated,
-                                           bool no_valid_template)
+bool Worker_manager::has_valid_template_available(const std::shared_ptr<protocol::Solo>& solo_protocol) const
 {
-    if (!m_degraded_mode || !authenticated || !no_valid_template) {
-        return true;
-    }
+    auto* template_interface = solo_protocol ? solo_protocol->get_template_interface() : nullptr;
+    return (template_interface && template_interface->has_valid_template());
+}
+
+bool Worker_manager::can_send_forced_retry(std::chrono::steady_clock::time_point now)
+{
     prune_forced_retry_window(now);
     if (m_forced_retry_send_timestamps.size() >= MAX_FORCED_BURST_PER_60S) {
         return false;
@@ -1464,8 +1474,7 @@ void Worker_manager::clear_recovery_state()
         return;  // Nothing to clear
 
     auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
-    auto* template_interface = solo_protocol ? solo_protocol->get_template_interface() : nullptr;
-    if (m_degraded_mode && (!template_interface || !template_interface->has_valid_template())) {
+    if (m_degraded_mode && !has_valid_template_available(solo_protocol)) {
         m_logger->warn("[Worker_manager] clear_recovery_state() deferred: no valid template accepted yet");
         return;
     }
@@ -1582,8 +1591,7 @@ void Worker_manager::retry_template_request(bool bForce)
         return;
     }
 
-    auto* template_interface = solo_protocol->get_template_interface();
-    bool no_valid_template = (!template_interface || !template_interface->has_valid_template());
+    bool no_valid_template = !has_valid_template_available(solo_protocol);
 
     // When this is a forced recovery (bForce=true) and not already tracked as such,
     // mark a new recovery epoch so check_template_health() knows recovery is pending.
@@ -1615,7 +1623,7 @@ void Worker_manager::retry_template_request(bool bForce)
     }
 
     bool forced_lane = bForce && m_degraded_mode && solo_protocol->is_authenticated() && no_valid_template;
-    if (forced_lane && !can_send_forced_retry(now, true, true)) {
+    if (forced_lane && !can_send_forced_retry(now)) {
         log_get_block_decision(false, true, GetBlockSuppressionReason::RATE_LIMIT_LOCAL, "forced_lane_rate_limit");
         schedule_forced_recovery_retry("forced_lane_rate_limit");
         return;
@@ -1641,10 +1649,20 @@ void Worker_manager::retry_template_request(bool bForce)
     } else {
         GetBlockSuppressionReason reason = GetBlockSuppressionReason::REQUEST_WORK_EMPTY;
         auto last_status = solo_protocol->get_last_get_block_request_status();
-        if (last_status == protocol::Solo::GetBlockRequestStatus::DUPLICATE_WINDOW) {
-            reason = GetBlockSuppressionReason::DUPLICATE_WINDOW;
-        } else if (last_status == protocol::Solo::GetBlockRequestStatus::UNAUTHENTICATED) {
-            reason = GetBlockSuppressionReason::UNAUTHENTICATED;
+        switch (last_status) {
+            case protocol::Solo::GetBlockRequestStatus::DUPLICATE_WINDOW:
+                reason = GetBlockSuppressionReason::DUPLICATE_WINDOW;
+                break;
+            case protocol::Solo::GetBlockRequestStatus::UNAUTHENTICATED:
+            case protocol::Solo::GetBlockRequestStatus::SESSION_INVALID:
+                reason = GetBlockSuppressionReason::UNAUTHENTICATED;
+                break;
+            case protocol::Solo::GetBlockRequestStatus::REWARD_NOT_BOUND:
+            case protocol::Solo::GetBlockRequestStatus::BUILD_EMPTY:
+            case protocol::Solo::GetBlockRequestStatus::NONE:
+            case protocol::Solo::GetBlockRequestStatus::SENT:
+                reason = GetBlockSuppressionReason::REQUEST_WORK_EMPTY;
+                break;
         }
         log_get_block_decision(false, forced_lane, reason, "request_work_empty");
         // request_work() returned empty despite passing all guards above.

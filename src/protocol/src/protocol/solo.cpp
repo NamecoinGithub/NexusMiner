@@ -917,6 +917,9 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
     // Worker_manager when both independently respond to the same staleness event.
     // Deduplicate within GET_BLOCK_DEDUP_MS (100ms) window.
     auto now_tp = std::chrono::steady_clock::now();
+    if (bypass_dedup) {
+        m_logger->info("[Solo] GET_BLOCK deduplication bypass active for degraded recovery retry");
+    }
     if (!bypass_dedup && m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now_tp - m_last_get_block_transmitted_tp).count();
@@ -927,9 +930,6 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
                           elapsed_ms, GET_BLOCK_DEDUP_MS);
             return nullptr;  // Suppress duplicate
         }
-    }
-    if (bypass_dedup) {
-        m_logger->info("[Solo] GET_BLOCK deduplication bypass active for degraded recovery retry");
     }
 
     m_logger->info("[Solo] Requesting mining template via GET_BLOCK");
