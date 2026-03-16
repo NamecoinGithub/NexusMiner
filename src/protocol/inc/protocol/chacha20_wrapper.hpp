@@ -72,6 +72,11 @@ public:
             STALE_SESSION,
             NONCE_REPLAY,
             AUTH_FAILURE,
+            REWARD_RESULT_FRAME_TOO_SHORT,
+            REWARD_RESULT_FLAGS_MISMATCH,
+            REWARD_RESULT_SESSION_MISMATCH,
+            REWARD_RESULT_AUTH_TAG_FAIL,
+            REWARD_RESULT_NONCE_REJECT,
             UNAVAILABLE,
             INTERNAL
         };

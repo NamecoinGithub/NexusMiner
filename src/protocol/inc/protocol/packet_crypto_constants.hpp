@@ -41,6 +41,9 @@ constexpr std::size_t EVP_FRAME_GENERATION_OFFSET =
 constexpr std::size_t EVP_FRAME_NONCE_OFFSET = EVP_FRAME_HEADER_BYTES;
 constexpr std::size_t EVP_FRAME_FIXED_OVERHEAD =
     EVP_FRAME_HEADER_BYTES + CHACHA20_NONCE_LENGTH + CHACHA20_AUTH_TAG_LENGTH;
+constexpr std::size_t REWARD_RESULT_MIN_PLAINTEXT_BYTES = 1;
+constexpr std::size_t EVP_REWARD_RESULT_MIN_FRAME_BYTES =
+    EVP_FRAME_FIXED_OVERHEAD + REWARD_RESULT_MIN_PLAINTEXT_BYTES;
 
 } // namespace packet_crypto_constants
 } // namespace protocol
