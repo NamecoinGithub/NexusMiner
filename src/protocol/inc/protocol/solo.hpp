@@ -281,6 +281,29 @@ private:
     void handle_miner_auth_challenge(const Packet& packet);
     
     // Handle reward result response from node (MINER_REWARD_RESULT)
+    enum class RewardResultDecodeReason {
+        NONE,
+        REWARD_RESULT_FRAME_TOO_SHORT,
+        REWARD_RESULT_FLAGS_MISMATCH,
+        REWARD_RESULT_SESSION_MISMATCH,
+        REWARD_RESULT_AUTH_TAG_FAIL,
+        REWARD_RESULT_NONCE_REJECT,
+        REWARD_RESULT_MODE_MISMATCH,
+        REWARD_RESULT_DECRYPT_FAIL
+    };
+    struct RewardResultDecodeResult {
+        bool success{false};
+        std::vector<uint8_t> data;
+        RewardResultDecodeReason reason{RewardResultDecodeReason::NONE};
+        uint32_t packet_sid{0};
+        uint64_t packet_epoch{0};
+        uint64_t packet_generation{0};
+        std::size_t expected_min_len{0};
+        std::size_t actual_len{0};
+    };
+    RewardResultDecodeResult decode_reward_result_payload(const Packet& packet);
+    void on_reward_result_decode_failure(const RewardResultDecodeResult& decode_result);
+    static const char* reward_result_reason_name(RewardResultDecodeReason reason);
     void handle_reward_result(const Packet& packet);
     
     // Unified handler for initial template reception (called by both BLOCK_DATA and STATELESS_GET_BLOCK handlers)
@@ -483,6 +506,17 @@ private:
     // Stateless mining reward address binding (MINER_SET_REWARD protocol)
     std::string m_reward_address;  // NXS account address for mining rewards
     bool m_reward_bound;  // True after successful MINER_REWARD_RESULT
+    std::atomic<uint64_t> m_reward_result_decode_ok_total{0};
+    std::atomic<uint64_t> m_reward_result_decode_fail_total{0};
+    std::atomic<uint64_t> m_reward_result_mode_mismatch_total{0};
+    std::atomic<uint64_t> m_reward_result_fail_frame_too_short_total{0};
+    std::atomic<uint64_t> m_reward_result_fail_flags_mismatch_total{0};
+    std::atomic<uint64_t> m_reward_result_fail_session_mismatch_total{0};
+    std::atomic<uint64_t> m_reward_result_fail_auth_tag_total{0};
+    std::atomic<uint64_t> m_reward_result_fail_nonce_reject_total{0};
+    std::chrono::steady_clock::time_point m_last_reward_result_recovery_at{
+        std::chrono::steady_clock::time_point::min()
+    };
     
     // Push notification subscription state (MINER_READY sent after auth)
     std::atomic<bool> m_subscribed_to_notifications{false};

@@ -53,6 +53,15 @@ std::vector<uint8_t> make_submit_block_message_type()
     static constexpr char submit_type[] = "SUBMIT_BLOCK";
     return std::vector<uint8_t>(submit_type, submit_type + sizeof(submit_type) - 1);
 }
+
+bool is_reward_result_message_type(const std::vector<uint8_t>& message_type)
+{
+    static constexpr char reward_result_type[] = "REWARD_RESULT";
+    static const std::vector<uint8_t> expected(
+        reward_result_type,
+        reward_result_type + sizeof(reward_result_type) - 1);
+    return message_type == expected;
+}
 } // namespace
 
 SessionCryptoContext::~SessionCryptoContext()
@@ -334,9 +343,15 @@ TransportCryptoAdapter::CryptoResult PacketCryptoService::decode(
         ++m_decrypt_fail;
         return result;
     }
-    if (encrypted_packet.size() <= packet_crypto_constants::EVP_FRAME_FIXED_OVERHEAD) {
+    const bool reward_result_message = is_reward_result_message_type(message_type);
+    const std::size_t min_frame_len = reward_result_message
+        ? packet_crypto_constants::EVP_REWARD_RESULT_MIN_FRAME_BYTES
+        : (packet_crypto_constants::EVP_FRAME_FIXED_OVERHEAD + 1);
+    if (encrypted_packet.size() < min_frame_len) {
         result.error_message = "Encrypted payload too short for EVP session-bound frame";
-        result.error_code = TransportCryptoAdapter::CryptoResult::ErrorCode::FRAME_FORMAT_ERROR;
+        result.error_code = reward_result_message
+            ? TransportCryptoAdapter::CryptoResult::ErrorCode::REWARD_RESULT_FRAME_TOO_SHORT
+            : TransportCryptoAdapter::CryptoResult::ErrorCode::FRAME_FORMAT_ERROR;
         ++m_decrypt_fail;
         return result;
     }
@@ -348,7 +363,9 @@ TransportCryptoAdapter::CryptoResult PacketCryptoService::decode(
     }
     if ((encrypted_packet[1] & packet_crypto_constants::EVP_FLAG_SESSION_BOUND) == 0) {
         result.error_message = "Rejected non-session-bound EVP packet";
-        result.error_code = TransportCryptoAdapter::CryptoResult::ErrorCode::PHASE_VIOLATION;
+        result.error_code = reward_result_message
+            ? TransportCryptoAdapter::CryptoResult::ErrorCode::REWARD_RESULT_FLAGS_MISMATCH
+            : TransportCryptoAdapter::CryptoResult::ErrorCode::PHASE_VIOLATION;
         ++m_decrypt_fail;
         return result;
     }
@@ -365,7 +382,9 @@ TransportCryptoAdapter::CryptoResult PacketCryptoService::decode(
                        packet_session_epoch,
                        packet_generation);
         result.error_message = "EVP stale session/epoch frame";
-        result.error_code = TransportCryptoAdapter::CryptoResult::ErrorCode::STALE_SESSION;
+        result.error_code = reward_result_message
+            ? TransportCryptoAdapter::CryptoResult::ErrorCode::REWARD_RESULT_SESSION_MISMATCH
+            : TransportCryptoAdapter::CryptoResult::ErrorCode::STALE_SESSION;
         ++m_stale_session_drop;
         ++m_decrypt_fail;
         return result;
@@ -388,7 +407,9 @@ TransportCryptoAdapter::CryptoResult PacketCryptoService::decode(
                            m_context.generation(),
                            packet_generation);
             result.error_message = "EVP stale generation";
-            result.error_code = TransportCryptoAdapter::CryptoResult::ErrorCode::STALE_SESSION;
+            result.error_code = reward_result_message
+                ? TransportCryptoAdapter::CryptoResult::ErrorCode::REWARD_RESULT_SESSION_MISMATCH
+                : TransportCryptoAdapter::CryptoResult::ErrorCode::STALE_SESSION;
             ++m_stale_session_drop;
             ++m_decrypt_fail;
             return result;
@@ -399,7 +420,9 @@ TransportCryptoAdapter::CryptoResult PacketCryptoService::decode(
                            session_epoch,
                            packet_generation);
             result.error_message = "Rejected non-monotonic nonce (duplicate or rewind)";
-            result.error_code = TransportCryptoAdapter::CryptoResult::ErrorCode::NONCE_REPLAY;
+            result.error_code = reward_result_message
+                ? TransportCryptoAdapter::CryptoResult::ErrorCode::REWARD_RESULT_NONCE_REJECT
+                : TransportCryptoAdapter::CryptoResult::ErrorCode::NONCE_REPLAY;
             ++m_nonce_reject;
             ++m_decrypt_fail;
             return result;
@@ -423,7 +446,12 @@ TransportCryptoAdapter::CryptoResult PacketCryptoService::decode(
     auto dec = m_manager.decrypt(ciphertext, key, nonce_vec, bound_aad);
     if (!dec.success) {
         if (dec.error_code == TransportCryptoAdapter::CryptoResult::ErrorCode::NONE) {
-            dec.error_code = TransportCryptoAdapter::CryptoResult::ErrorCode::AUTH_FAILURE;
+            dec.error_code = reward_result_message
+                ? TransportCryptoAdapter::CryptoResult::ErrorCode::REWARD_RESULT_AUTH_TAG_FAIL
+                : TransportCryptoAdapter::CryptoResult::ErrorCode::AUTH_FAILURE;
+        } else if (reward_result_message &&
+                   dec.error_code == TransportCryptoAdapter::CryptoResult::ErrorCode::AUTH_FAILURE) {
+            dec.error_code = TransportCryptoAdapter::CryptoResult::ErrorCode::REWARD_RESULT_AUTH_TAG_FAIL;
         }
         if (dec.error_message.empty()) {
             dec.error_message = "EVP decrypt auth failure";
