@@ -483,6 +483,11 @@ private:
     // Stateless mining reward address binding (MINER_SET_REWARD protocol)
     std::string m_reward_address;  // NXS account address for mining rewards
     bool m_reward_bound;  // True after successful MINER_REWARD_RESULT
+    std::atomic<uint64_t> m_reward_result_decode_ok_total{0};
+    std::atomic<uint64_t> m_reward_result_decode_fail_frame_too_short_total{0};
+    std::atomic<uint64_t> m_reward_result_decode_fail_flags_mismatch_total{0};
+    std::atomic<uint64_t> m_reward_result_decode_fail_session_mismatch_total{0};
+    std::atomic<uint64_t> m_reward_result_decode_fail_auth_tag_fail_total{0};
     
     // Push notification subscription state (MINER_READY sent after auth)
     std::atomic<bool> m_subscribed_to_notifications{false};
