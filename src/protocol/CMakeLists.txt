@@ -2,6 +2,7 @@ add_library(protocol STATIC src/protocol/solo.cpp
                             src/protocol/pool_base.cpp
                             src/protocol/falcon_wrapper.cpp
                             src/protocol/chacha20_wrapper.cpp
+                            src/protocol/chacha20_evp_manager.cpp
                             src/protocol/session_manager.cpp
                             src/protocol/node_session_context.cpp
                             src/protocol/mining_template_interface.cpp
