@@ -928,11 +928,12 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
     // Prevent duplicate GET_BLOCK requests from push_notification_handler and
     // Worker_manager when both independently respond to the same staleness event.
     // Deduplicate within GET_BLOCK_DEDUP_MS (100ms) window.
+    // When bypass_dedup=true (degraded recovery), unconditionally skip the entire
+    // dedup mechanism — Worker_manager's own MAX_FORCED_BURST_PER_60S is sufficient.
     auto now_tp = std::chrono::steady_clock::now();
     if (bypass_dedup) {
         m_logger->info("[Solo] GET_BLOCK deduplication bypass active for degraded recovery retry");
-    }
-    if (!bypass_dedup && m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
+    } else if (m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now_tp - m_last_get_block_transmitted_tp).count();
         if (elapsed_ms < GET_BLOCK_DEDUP_MS) {
@@ -958,8 +959,12 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
 
     if (payload && !payload->empty()) {
         m_last_get_block_request_owner = capture_session_ownership();
-        // Record transmission timestamp for deduplication
-        m_last_get_block_transmitted_tp = now_tp;
+        // Record transmission timestamp for deduplication — but only for non-bypass calls.
+        // Bypass calls (degraded recovery) must not poison the dedup window for subsequent
+        // normal calls; Worker_manager's MAX_FORCED_BURST_PER_60S provides rate limiting.
+        if (!bypass_dedup) {
+            m_last_get_block_transmitted_tp = now_tp;
+        }
         m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
 
         m_logger->debug("[Solo] GET_BLOCK encoded payload size: {} bytes", payload->size());

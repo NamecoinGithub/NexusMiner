@@ -486,12 +486,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* the TCP connection. Uses existing session auth backoff infrastructure.    */
         m_primary_node_session->set_session_expired_handler(
             [this]() {
-                if (m_reconnect_in_progress || (m_recovery_pending && m_recovery_epoch > 0)) {
-                    m_logger->warn("[Worker_manager] Session EXPIRED ignored: reconnect/recovery already in progress "
-                                   "(reconnect_in_progress={}, recovery_pending={}, recovery_epoch={})",
+                if (m_reconnect_in_progress || m_reauth_in_flight) {
+                    m_logger->warn("[Worker_manager] Session EXPIRED ignored: reconnect/re-auth already in progress "
+                                   "(reconnect_in_progress={}, reauth_in_flight={})",
                                    m_reconnect_in_progress,
-                                   m_recovery_pending,
-                                   m_recovery_epoch);
+                                   m_reauth_in_flight);
                     return;
                 }
 
@@ -566,6 +565,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         });
 
                         if (auth_payload && !auth_payload->empty()) {
+                            self->m_reauth_in_flight = true;
                             self->m_primary_node_session->transmit(auth_payload);
                         } else {
                             self->m_logger->error("[Session] Failed to generate re-authentication payload");
@@ -582,6 +582,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* fires before MINER_AUTH_RESULT arrives). Triggers retry with exponential backoff. */
         m_primary_node_session->set_session_authenticated_handler(
             [this](uint32_t session_id) {
+                // Clear re-auth in-flight guard: MINER_AUTH_RESULT received (Bug 3 fix).
+                m_reauth_in_flight = false;
+
                 // CRITICAL: If session_id = 0, the node rejected authentication or didn't provide a session.
                 // Mining cannot proceed without a valid session_id (work submissions will be silently rejected).
                 // Use exponential backoff with max retry limit to prevent infinite tight retry loops.
@@ -914,6 +917,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
 
     // Set reconnect guard to prevent stale RX callbacks from processing during reconnect
     m_reconnect_in_progress = true;
+    m_reauth_in_flight = false;  // TCP reconnect supersedes any in-band re-auth
     m_reconnect_started_at = std::chrono::steady_clock::now();
 
     // Reset NodeSession for reconnection
@@ -1510,6 +1514,7 @@ void Worker_manager::clear_recovery_state()
         m_forced_retry_timer->cancel();
     }
     m_degraded_since = {};  // Clear escape-ladder timer; next outage will re-anchor it
+    m_reauth_in_flight = false;  // Clear re-auth guard; recovery is complete
     // Note: m_recovery_workers_spawned is intentionally NOT reset here.
     // It is only reset in stop_all_workers() which actually destroys workers,
     // preventing a mid-recovery clear_recovery_state() call (e.g. from a
@@ -1873,6 +1878,11 @@ void Worker_manager::check_template_health()
                             }
                         });
                         if (auth_payload && !auth_payload->empty()) {
+                            m_reauth_in_flight = true;
+                            // Bug 6: Reset m_degraded_since so the next health-monitor tick
+                            // does not immediately re-trigger hard-limit re-auth before
+                            // MINER_AUTH_RESULT arrives.
+                            m_degraded_since = std::chrono::steady_clock::now();
                             m_primary_node_session->transmit(auth_payload);
                         } else {
                             m_logger->error("[Worker_manager] Hard-limit re-auth: failed to generate payload");
