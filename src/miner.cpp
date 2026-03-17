@@ -7,6 +7,7 @@
 #include "worker_manager.hpp"
 #include "worker.hpp"
 #include "version.h"
+#include "protocol/chacha20_evp_manager.hpp"
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -96,6 +97,11 @@ namespace nexusminer
 
 		m_logger->set_level(static_cast<spdlog::level::level_enum>(m_config.get_log_level()));
 
+		// Configure EVP encryption mode (default: ChaCha20-Poly1305).
+		// EVP and TLS are mutually exclusive; configure() handles the Either/Or gate.
+		nexusminer::protocol::ChaCha20EVPManager::Get().configure(
+			nexusminer::protocol::EncryptionMode::EVP);
+
 		// timer initialisation
 		chrono::Timer_factory::Sptr timer_factory = std::make_shared<chrono::Timer_factory>(m_io_context);
 
@@ -146,6 +152,10 @@ namespace nexusminer
 			m_logger->error("Worker manager is not initialized");
 			return;
 		}
+
+		// Lock EVP mode before any connection is established.
+		// After this point, configure() calls are rejected to prevent mid-flight mode changes.
+		nexusminer::protocol::ChaCha20EVPManager::Get().lock_mode();
 		
 		auto result = m_worker_manager->connect(wallet_endpoint);
 		if (!result)

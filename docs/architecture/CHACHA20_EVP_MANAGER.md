@@ -148,8 +148,46 @@ auto pruned = ChaCha20EVPManager::Get().prune_expired_sessions(live_session_ids)
 
 ## Follow-Up Work (Not in This PR)
 
-- Wire `ChaCha20EVPManager` into both lane packet handlers (Legacy: `miner.cpp`, Stateless: `stateless_miner_connection.cpp`)
-- Wire `register_session()` into `solo.cpp` auth completion path
-- Wire `remove_session()` into session expiry / disconnect handlers
-- Wire `prune_expired_sessions()` into `CleanupExpiredSessions()` timer task
-- Add TLS ↔ EVP startup configuration flag parsing in `Config`
+*(All items below were completed in the follow-up wire-in PR.)*
+
+---
+
+## Wire-In Status (Follow-Up PR)
+
+### Completed ✅
+
+| Item | File | Change |
+|------|------|--------|
+| `configure(EVP)` at startup | `src/miner.cpp::Miner::init()` | Called after logger is set up, before connections |
+| `lock_mode()` before first connection | `src/miner.cpp::Miner::run()` | Called just before `m_worker_manager->connect()` |
+| `register_session()` after auth | `src/protocol/src/protocol/solo.cpp::on_miner_auth_response()` | Called after `commit_authenticated_session()`, uses `chacha20_session_key` from session context |
+| `remove_session()` on expiry | `src/protocol/src/protocol/solo.cpp::handle_session_expired()` | Called before `m_session_id` is zeroed |
+| `remove_session()` on reset | `src/protocol/src/protocol/solo.cpp::reset()` | Called if `m_session_id != 0` before zero |
+| `prune_expired_sessions({})` on reset | `src/protocol/src/protocol/solo.cpp::reset()` | Cleans up any stale keys on full session reset |
+| EVP encrypt outbound SESSION_KEEPALIVE | `src/protocol/src/protocol/session_manager.cpp::build_keepalive_packet()` | Gate: `is_evp_active() && has_session_key(session_id)` |
+| EVP encrypt outbound SESSION_STATUS | `src/protocol/src/protocol/session_manager.cpp::build_session_status_packet()` | Gate: `is_evp_active() && has_session_key(session_id)` |
+| EVP decrypt inbound SESSION_STATUS_ACK | `src/protocol/src/protocol/solo.cpp::on_session_status_ack()` | Gate: `is_evp_active() && has_session_key(m_session_id)` |
+| Unit tests | `src/protocol/chacha20_evp_manager_test.cpp` | Round-trip, remove/encrypt failure, prune, MITM simulation, mode gate |
+
+### EVP-Encrypted Packet Opcodes (MITM Hardening)
+
+The following opcodes carry `SessionID` in their payload and are now protected
+by ChaCha20-Poly1305 EVP encryption when `EncryptionMode::EVP` is active:
+
+| Direction | Opcode | Legacy | Stateless |
+|-----------|--------|--------|-----------|
+| Miner → Node | SESSION_KEEPALIVE | `0xD4` (212) | `0xD0D4` |
+| Miner → Node | SESSION_STATUS | `0xDB` (219) | `0xD0DB` |
+| Node → Miner | SESSION_STATUS_ACK | `0xDC` (220) | `0xD0DC` |
+
+AAD for each packet is the opcode byte(s) in little-endian order, providing
+domain separation between packet types.
+
+### Deployment Note
+
+The outbound SESSION_KEEPALIVE / SESSION_STATUS encryption and the inbound
+SESSION_STATUS_ACK decryption form a coordinated pair: both the miner (this
+PR) and the node (LLL-TAO follow-up PR to #417) must be deployed together for
+the EVP gate to activate for these packet types. The gate check
+(`is_evp_active() && has_session_key(...)`) ensures that plaintext mode is
+used automatically during the transition window when only one side is upgraded.

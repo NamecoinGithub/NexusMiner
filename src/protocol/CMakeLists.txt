@@ -41,6 +41,13 @@ target_include_directories(chacha20_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
 )
 
+# ChaCha20EVPManager Unit Test
+add_executable(chacha20_evp_manager_test chacha20_evp_manager_test.cpp)
+target_link_libraries(chacha20_evp_manager_test PRIVATE protocol spdlog ${OPENSSL_LIBRARIES})
+target_include_directories(chacha20_evp_manager_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+)
+
 # Falcon Quantum Tunnel Vector parity + benchmark test
 add_executable(falcon_qtv_parity_test falcon_qtv_parity_test.cpp)
 target_link_libraries(falcon_qtv_parity_test PRIVATE ${OPENSSL_LIBRARIES})
@@ -224,6 +231,7 @@ add_test(NAME node_shutdown_wire_test COMMAND $<TARGET_FILE:node_shutdown_wire_t
 add_test(NAME get_block_dedup_recovery_test COMMAND $<TARGET_FILE:get_block_dedup_recovery_test>)
 add_test(NAME solo_auth_resync_test COMMAND $<TARGET_FILE:solo_auth_resync_test>)
 add_test(NAME degraded_recovery_test COMMAND $<TARGET_FILE:degraded_recovery_test>)
+add_test(NAME chacha20_evp_manager_test COMMAND $<TARGET_FILE:chacha20_evp_manager_test>)
 # SESSION_START packet parser unit tests
 add_executable(session_start_parser_test session_start_parser_test.cpp)
 target_link_libraries(session_start_parser_test PRIVATE protocol)
