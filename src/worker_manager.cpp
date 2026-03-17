@@ -1406,9 +1406,14 @@ void Worker_manager::log_lane_health()
 void Worker_manager::send_session_status_if_due()
 {
     auto now = std::chrono::steady_clock::now();
-    constexpr int64_t SESSION_STATUS_INTERVAL_SECONDS = 60;
+    // Bug 5 fix: Reduce session status interval to 15s when in degraded mode so the
+    // node receives more frequent liveness signals from the miner and is less likely
+    // to evict the session during recovery.  Use 60s during normal mining.
+    const int64_t effective_interval = m_degraded_mode
+        ? protocol::ProtocolConstants::SESSION_STATUS_INTERVAL_DEGRADED_SECONDS
+        : protocol::ProtocolConstants::SESSION_STATUS_INTERVAL_SECONDS;
     if (std::chrono::duration_cast<std::chrono::seconds>(
-            now - m_last_session_status_sent).count() < SESSION_STATUS_INTERVAL_SECONDS)
+            now - m_last_session_status_sent).count() < effective_interval)
         return;
     m_last_session_status_sent = now;
 
@@ -1509,6 +1514,27 @@ void Worker_manager::clear_recovery_state()
     // It is only reset in stop_all_workers() which actually destroys workers,
     // preventing a mid-recovery clear_recovery_state() call (e.g. from a
     // different epoch's template feed) from allowing duplicate worker creation.
+
+    // Bug 4 fix: Log per-epoch suppression totals before clearing so Colin diagnostics
+    // can distinguish ongoing vs. historical suppressions.  Reset after logging so the
+    // next epoch starts with clean counters.
+    bool any_suppression = false;
+    for (size_t i = 0; i < m_get_block_suppressed_total.size(); ++i) {
+        if (m_get_block_suppressed_total[i] > 0) {
+            any_suppression = true;
+            m_logger->info("[Worker_manager] Epoch {} suppression summary: reason={} count={}",
+                m_recovery_epoch,
+                suppression_reason_name(static_cast<GetBlockSuppressionReason>(i)),
+                m_get_block_suppressed_total[i]);
+        }
+    }
+    if (any_suppression) {
+        m_logger->info("[Worker_manager] Epoch {} GET_BLOCK totals: sent={} forced_retry={} — clearing for next epoch",
+            m_recovery_epoch, m_get_block_sent_total, m_get_block_forced_retry_total);
+    }
+    m_get_block_suppressed_total.fill(0);
+    m_get_block_sent_total = 0;
+    m_get_block_forced_retry_total = 0;
 
     auto global_stats = m_stats_collector->get_global_stats();
     global_stats.m_degraded_mode = false;
@@ -1712,6 +1738,50 @@ void Worker_manager::check_template_health()
         return;
     }
 
+    // ── Bug 3 fix: Standalone session liveness check ─────────────────────────────────────
+    // Fires independently of m_degraded_mode.  If BOTH keepalive ACK AND push notifications
+    // have been absent for more than SESSION_LIVENESS_TIMEOUT_SECONDS (600s), the node has
+    // almost certainly dropped the session — even when workers appear healthy with a valid
+    // template.  Force a TCP reconnect unconditionally to recover.
+    //
+    // This prevents the 11-hour silent session-death scenario where the miner continued
+    // mining against a dead node session because m_degraded_mode was never set.
+    //
+    // Skip if a reconnect is already in progress to avoid duplicate reconnects.
+    if (!m_reconnect_in_progress) {
+        auto now_liveness = std::chrono::steady_clock::now();
+        auto ht_snap_liveness = solo_protocol->get_height_tracker_snapshot();
+
+        bool ack_ever_received  = (ht_snap_liveness.last_keepalive_ack_at  != std::chrono::steady_clock::time_point{});
+        bool push_ever_received = (ht_snap_liveness.last_push_notification_at != std::chrono::steady_clock::time_point{});
+
+        int64_t liveness_since_ack_s = ack_ever_received
+            ? std::chrono::duration_cast<std::chrono::seconds>(
+                  now_liveness - ht_snap_liveness.last_keepalive_ack_at).count()
+            : INT64_MAX;
+        int64_t liveness_since_push_s = push_ever_received
+            ? std::chrono::duration_cast<std::chrono::seconds>(
+                  now_liveness - ht_snap_liveness.last_push_notification_at).count()
+            : INT64_MAX;
+
+        if (liveness_since_ack_s > protocol::ProtocolConstants::SESSION_LIVENESS_TIMEOUT_SECONDS &&
+            liveness_since_push_s > protocol::ProtocolConstants::SESSION_LIVENESS_TIMEOUT_SECONDS)
+        {
+            m_logger->error("[Worker_manager] SESSION LIVENESS TIMEOUT — "
+                            "no node signal for keepalive_ack={}s push={}s (threshold={}s) — "
+                            "forcing reconnect (degraded={})",
+                            ack_ever_received  ? liveness_since_ack_s  : static_cast<int64_t>(-1),
+                            push_ever_received ? liveness_since_push_s : static_cast<int64_t>(-1),
+                            protocol::ProtocolConstants::SESSION_LIVENESS_TIMEOUT_SECONDS,
+                            m_degraded_mode ? "true" : "false");
+            // Reset degraded-mode timers so the reconnect gets a clean escalation ladder.
+            m_degraded_since = {};
+            m_last_escalation_at = {};
+            retry_connect(m_primary_endpoint);
+            return;
+        }
+    }
+
     if (!template_interface->has_valid_template()) {
         // In degraded mode with no valid template — apply escape ladder to prevent permanent lockout.
         if (m_degraded_mode) {
@@ -1819,6 +1889,12 @@ void Worker_manager::check_template_health()
                                hard_limit_decision.reason,
                                keepalive_ack_received ? since_ack_s : static_cast<int64_t>(-1),
                                push_received ? since_push_s : static_cast<int64_t>(-1));
+                // Bug 2 fix: Reset escape-ladder timers before reconnect so the new session
+                // gets a clean escalation clock.  Without this reset, m_degraded_since retains
+                // its pre-reconnect timestamp and the escalation ladder fires again almost
+                // immediately after the new session authenticates.
+                m_degraded_since = {};
+                m_last_escalation_at = {};
                 retry_connect(m_primary_endpoint);
                 return;
             }
@@ -1832,6 +1908,9 @@ void Worker_manager::check_template_health()
                                degraded_duration,
                                keepalive_ack_received ? since_ack_s : static_cast<int64_t>(-1),
                                push_received ? since_push_s : static_cast<int64_t>(-1));
+                // Bug 2 fix: Reset escape-ladder timers before reconnect.
+                m_degraded_since = {};
+                m_last_escalation_at = {};
                 retry_connect(m_primary_endpoint);
                 return;
             }
@@ -1862,6 +1941,9 @@ void Worker_manager::check_template_health()
                                 since_ack_s == INT64_MAX ? -1LL : since_ack_s,
                                 since_push_s == INT64_MAX ? -1LL : since_push_s,
                                 degraded_duration);
+                // Bug 2 fix: Reset escape-ladder timers before reconnect.
+                m_degraded_since = {};
+                m_last_escalation_at = {};
                 retry_connect(m_primary_endpoint);
                 return;
             }
