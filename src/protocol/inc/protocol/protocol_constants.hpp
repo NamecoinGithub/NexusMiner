@@ -178,6 +178,36 @@ namespace ProtocolConstants {
     constexpr int64_t FAST_RECONNECT_DEGRADED_SECONDS = 30;
 
     //==========================================================================
+    // Standalone Session Liveness Timeout
+    //==========================================================================
+
+    /**
+     * Standalone session liveness timeout (seconds)
+     *
+     * If BOTH keepalive ACK AND push notifications have been absent for this
+     * many seconds, the node has almost certainly dropped the session — even
+     * if m_degraded_mode is false and workers appear healthy.  The miner
+     * forces a TCP reconnect unconditionally to recover the dead session.
+     *
+     * This prevents the 11-hour silent session-death scenario where the escape
+     * ladder never fires because m_degraded_mode was not set.
+     *
+     * Suggested value: 600 s (10 minutes without any node-originated signal).
+     */
+    constexpr int64_t SESSION_LIVENESS_TIMEOUT_SECONDS = 600;
+
+    /**
+     * Session status packet interval during degraded mode (seconds)
+     *
+     * During degraded mode, session status packets are sent at this interval
+     * (instead of SESSION_STATUS_INTERVAL_SECONDS) so the node receives more
+     * frequent liveness signals from the miner and is less likely to evict the
+     * session during recovery.
+     */
+    constexpr int64_t SESSION_STATUS_INTERVAL_SECONDS = 60;
+    constexpr int64_t SESSION_STATUS_INTERVAL_DEGRADED_SECONDS = 15;
+
+    //==========================================================================
     // Session ID Mismatch Threshold
     //==========================================================================
 
