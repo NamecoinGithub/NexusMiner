@@ -65,7 +65,7 @@ public:
             return nullptr;
         }
 
-        // GET_BLOCK deduplication guard (mirrors solo.cpp lines 546-556)
+        // GET_BLOCK deduplication guard (mirrors solo.cpp)
         auto now_tp = std::chrono::steady_clock::now();
         if (!bypass_dedup && m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
             auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -81,7 +81,11 @@ public:
         auto payload = PacketBuilder::build(m_protocol_lane, nexusminer::LLP::GET_BLOCK);
 
         if (payload && !payload->empty()) {
-            m_last_get_block_transmitted_tp = now_tp;
+            // Bug 1 fix: bypass calls must not update the dedup timestamp —
+            // Worker_manager's MAX_FORCED_BURST_PER_60S is sufficient rate limiting.
+            if (!bypass_dedup) {
+                m_last_get_block_transmitted_tp = now_tp;
+            }
             std::cout << "    [Transmitted] GET_BLOCK sent successfully\n";
         }
 

@@ -211,6 +211,14 @@ private:
     // Used by check_template_health() to timeout a stalled reconnect attempt.
     std::chrono::steady_clock::time_point m_reconnect_started_at{};
 
+    // ── Re-auth in-flight guard ──────────────────────────────────────────────
+    // Set to true when an in-band re-authentication payload is successfully
+    // transmitted (SESSION_EXPIRED handler or hard-limit path); cleared in
+    // session_authenticated_handler after MINER_AUTH_RESULT is received.
+    // Prevents duplicate re-auth dispatches and allows SESSION_EXPIRED to be
+    // properly handled during recovery (Bug 2/3 fix).
+    bool m_reauth_in_flight{false};
+
     // ── Session authentication retry state (infinite loop prevention) ─────────
     uint32_t m_session_auth_fail_count{0};          // consecutive session_id=0 failures on primary
 
