@@ -3897,6 +3897,12 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     
     m_logger->info("[Solo Auth] Challenge nonce length: {} bytes (big-endian encoding)", nonce_len);
     m_logger->info("[Solo Auth]   Bytes 0-1: {:02x} {:02x}", (*packet.m_data)[0], (*packet.m_data)[1]);
+
+    if (nonce_len == 0) {
+        m_logger->error("[Solo Phase 2] MINER_AUTH_CHALLENGE: nonce_len is zero (invalid)");
+        reset_auth_state();
+        return;
+    }
     
     if (packet.m_data->size() < static_cast<size_t>(2 + nonce_len)) {
         m_logger->error("[Solo Phase 2] MINER_AUTH_CHALLENGE: incomplete nonce (expected {} bytes, got {})", 
