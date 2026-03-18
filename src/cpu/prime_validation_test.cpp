@@ -5,6 +5,7 @@
 
 #include <cstring>
 #include <iostream>
+#include <stdexcept>
 #include <sstream>
 #include <vector>
 
@@ -12,6 +13,8 @@ using boost_uint1024_t = boost::multiprecision::uint1024_t;
 
 namespace
 {
+constexpr std::size_t kBoostUint1kLimbBytes = sizeof(boost::multiprecision::limb_type);
+
 int tests_run = 0;
 int tests_failed = 0;
 
@@ -35,8 +38,12 @@ uint1024_t hex_roundtrip_reference(const boost_uint1024_t& value)
 
 uint1024_t optimized_conversion(const boost_uint1024_t& value)
 {
-    uint1024_t result;
-    std::memcpy(&result, value.backend().limbs(), sizeof(result));
+    uint1024_t result{};
+    const auto limb_bytes = value.backend().size() * kBoostUint1kLimbBytes;
+    if (limb_bytes > sizeof(result))
+        throw std::runtime_error("Boost uint1024 limb storage exceeds LLC uint1024_t size");
+
+    std::memcpy(&result, value.backend().limbs(), limb_bytes);
     return result;
 }
 

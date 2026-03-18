@@ -10,6 +10,7 @@
 #include <primesieve.hpp>
 #include <cassert>
 #include <cstring>
+#include <stdexcept>
 #include <sstream> 
 #include <boost/random.hpp>
 
@@ -21,6 +22,7 @@ namespace
 {
 constexpr std::size_t kPrimeOffsetFractionBytes = sizeof(std::uint32_t);
 constexpr std::size_t kMaxSerializedPrimeOffsets = 10;
+constexpr std::size_t kBoostUint1kLimbBytes = sizeof(boost::multiprecision::limb_type);
 
 bool has_expected_prime_offsets(const std::vector<uint8_t>& offsets)
 {
@@ -320,11 +322,11 @@ void Worker_prime::run()
 			m_logger->info("Actual difficulty {} required {}", actual_difficulty, required_difficulty);
 			if (is_valid)
 			{
-				assert(offsets.size() == kMaxSerializedPrimeOffsets &&
-					"Expected 6 offsets + 4-byte LE fraction");
+				assert(has_expected_prime_offsets(offsets) &&
+					"Expected 10 total bytes (6 prime-gap bytes + 4-byte LE fraction)");
 				if (!has_expected_prime_offsets(offsets))
 				{
-					m_logger->error(m_log_leader + "Rejecting prime candidate with malformed serialized offsets ({} bytes, expected {} = {} offsets + {}-byte LE fraction)",
+					m_logger->error(m_log_leader + "Rejecting prime candidate with malformed serialized offsets ({} bytes, expected {} total bytes = {} prime-gap bytes + {}-byte LE fraction)",
 						offsets.size(),
 						kMaxSerializedPrimeOffsets,
 						kMaxSerializedPrimeOffsets - kPrimeOffsetFractionBytes,
@@ -432,8 +434,17 @@ LLC::CBigNum Worker_prime::boost_uint1024_t_to_CBignum(const uint1k& p)
 
 uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(const uint1k& p)
 {
-	uint1024_t result;
-	std::memcpy(&result, p.backend().limbs(), sizeof(result));
+	uint1024_t result{};
+	const auto limb_bytes = p.backend().size() * kBoostUint1kLimbBytes;
+	if (limb_bytes > sizeof(result))
+	{
+		throw std::runtime_error("Boost uint1024 limb storage exceeds LLC uint1024_t size");
+	}
+
+	// Both boost::uint1024_t and LLC::uint1024_t store little-endian limbs in the
+	// active numeric payload. prime_validation_test verifies this limb copy matches
+	// the legacy hex round-trip used previously.
+	std::memcpy(&result, p.backend().limbs(), limb_bytes);
 	return result;
 }
 
