@@ -311,7 +311,7 @@ void Worker_prime::run()
 				if (m_found_nonce_callback)
 				{
 					m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
-					auto captured_offsets = offsets;
+					auto captured_offsets = std::move(offsets);
 					auto block_copy = local_block;
 					::asio::post(*m_io_context, [self = shared_from_this(), block_copy, captured_offsets = std::move(captured_offsets)]()
 					{
@@ -374,6 +374,8 @@ double Worker_prime::getDifficulty(uint1k p)
 {
 	std::vector<uint8_t> offsets_to_test;
 	double difficulty = 0.0;
+	// Pass a zero threshold when we only need the canonical LLL-TAO difficulty
+	// calculation and serialized offsets, not submission gating.
 	nexusminer::prime::ValidatePrimeCandidate(
 		boost_uint1024_t_to_uint1024_t(p),
 		0.0,
@@ -405,6 +407,8 @@ LLC::CBigNum Worker_prime::boost_uint1024_t_to_CBignum(uint1k p)
 
 uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(uint1k p)
 {
+	// Mirror the CPU worker's existing hex-path conversion so CPU/GPU feed the
+	// shared prime_validation.cpp code with identical uint1024_t values.
 	std::stringstream ss;
 	ss << std::hex << p;
 	std::string p_hex_str = ss.str();
