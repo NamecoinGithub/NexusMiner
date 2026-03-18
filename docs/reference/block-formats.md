@@ -89,8 +89,24 @@ when Tritium mining was introduced.
 The log line `✓ Timestamp updated` from `sign_block()` on the node confirms the Tritium
 path is active — the node is setting `nTime` itself, not trusting a miner-provided value.
 
+## Prime Channel: Canonical Submission Format
+
+Both the Prime channel (channel=1) and Hash channel (channel=2) submit exactly
+**216 bytes** of block data. The miner submits only the canonical solved identity:
+- `hashMerkleRoot` (solved by the miner during template construction)
+- `nNonce` (found by the prime/hash worker)
+
+**Prime `vOffsets` (Cunningham chain offsets) are NOT included in the canonical wire
+payload.** The node reconstructs and validates the prime cluster server-side via
+`VerifyWork()` / `TritiumBlock::Check()`. This aligns NexusMiner with the upstream
+LLL-TAO semantics where the node is the authoritative source for prime proof validation.
+
+> See [prime-submission-alignment.md](../architecture/prime-submission-alignment.md)
+> for the full rationale and migration history.
+
 ## Related Documents
 
 - [Protocol Lane Architecture](../PROTOCOL_LANES.md) — framing/opcode differences between lanes
 - [IMPLEMENTATION_SUMMARY.md](../../IMPLEMENTATION_SUMMARY.md) — port-lane separation implementation
 - [Stateless Mining Protocol](../current/mining-protocols/stateless-mining.md)
+- [Prime Submission Alignment](../architecture/prime-submission-alignment.md) — upstream-alignment migration

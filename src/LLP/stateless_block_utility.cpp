@@ -196,11 +196,19 @@ SubmitResult StatelessBlockUtility::encode_submit(
     }
 
     // ── Pre-check 7: Delegate serialization to MiningTemplateInterface ────────
-    // prepare_block_submission(merkle_root, nonce, vOffsets) handles Tritium
-    // format, submit-audit logging, and Prime-channel vOffsets appending.
+    // Upstream-alignment: submit only the canonical solved identity (merkle root
+    // + nonce). miner-computed vOffsets are NOT appended to the wire payload.
+    // The node reconstructs and validates prime chain offsets server-side via
+    // VerifyWork() / TritiumBlock::Check(), so the node remains the authoritative
+    // source for prime proof validation.  See docs/architecture/prime-submission-alignment.md.
     auto merkle_bytes = solved_block.hashMerkleRoot.GetBytes();
+    if (!vOffsets.empty() && solved_block.nChannel == 1 && logger)
+        logger->debug("[StatelessBlockUtility::encode_submit] "
+                      "Prime channel: {} vOffset bytes available (not appended — "
+                      "nonce-only canonical submission)",
+                      vOffsets.size());
     auto block_bytes = tmpl_iface.prepare_block_submission(
-        merkle_bytes, solved_block.nNonce, vOffsets);
+        merkle_bytes, solved_block.nNonce);
 
     if (block_bytes.empty()) {
         result.rejection_reason =
@@ -255,8 +263,10 @@ SubmitResult StatelessBlockUtility::encode_submit(
                           "signed: block({})+ts(8)+siglen(2)+sig({}) = {} bytes",
                           block_bytes.size(), sig_len, plaintext.size());
     } else {
-        // No signing -- payload is just the serialized block bytes (+ any vOffsets
-        // already appended by prepare_block_submission for Prime channel)
+        // No signing -- payload is just the serialized block bytes.
+        // For Prime channel, miner vOffsets are intentionally omitted
+        // (nonce-only canonical submission — node derives/validates offsets
+        // server-side).
         plaintext = std::move(block_bytes);
         if (logger)
             logger->debug("[StatelessBlockUtility::encode_submit] "

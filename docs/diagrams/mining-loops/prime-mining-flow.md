@@ -36,16 +36,22 @@ flowchart TD
     F -- Yes --> H[Fermat Primality Test]
     H --> I{Passes Difficulty?}
     I -- No --> G
-    I -- Yes --> J[Submit Nonce via SUBMIT_BLOCK]
+    I -- Yes --> J[Submit nonce via SUBMIT_BLOCK]
     J --> K{Response}
     K -- BLOCK_ACCEPTED --> L[Log & Wait for Next Template]
     K -- BLOCK_REJECTED --> G
 ```
 
+> **Canonical submit:** The miner submits only `hashMerkleRoot` + `nNonce` (216 bytes).
+> Prime `vOffsets` (Cunningham chain offsets) are computed locally for worker validation
+> but are **not** included in the canonical wire payload. The node validates the prime
+> cluster server-side. See [prime-submission-alignment.md](../../architecture/prime-submission-alignment.md).
+
 ## Key Details
 
 - **Channel:** Prime (channel 1)
 - **Template size:** 228 bytes (12-byte metadata + 216-byte Tritium block)
+- **Submit payload:** 216 bytes (nonce-only canonical — same as Hash channel)
 - **Opcodes:** `GET_BLOCK` (129 / 0xD081), `SUBMIT_BLOCK` (1 / 0xD001)
 - **Push notifications:** `PRIME_BLOCK_AVAILABLE` (217) — sent on **any** channel block (universal PoW tip push)
 - **Stale detection:** Two reasons trigger a template refresh:

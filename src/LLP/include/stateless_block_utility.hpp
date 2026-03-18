@@ -19,9 +19,16 @@
  *   encode/decode logic is duplicated here.
  *
  * Encode (Miner -> Node)
- *   encode_submit() delegates block serialization (including Prime-channel
- *   vOffsets) to MiningTemplateInterface::prepare_block_submission(), then
- *   optionally signs with Disposable Falcon and frames with PacketBuilder.
+ *   encode_submit() delegates block serialization to
+ *   MiningTemplateInterface::prepare_block_submission(merkle_root, nNonce)
+ *   (nonce-only canonical overload), then optionally signs with Disposable
+ *   Falcon and frames with PacketBuilder.
+ *
+ *   Upstream-alignment: miner-computed Prime vOffsets are NOT appended to the
+ *   wire payload.  The node remains the authoritative source for prime proof
+ *   validation (VerifyWork() / TritiumBlock::Check()).  The vOffsets parameter
+ *   of encode_submit() is retained for logging/diagnostic purposes only.
+ *   See docs/architecture/prime-submission-alignment.md.
  *
  * Namespace separation (canonical vs diagnostic):
  *   Canonical inputs  -- block.nHeight, block.nBits, block.nChannel,
@@ -176,15 +183,17 @@ public:
      *  3. Height validity:  solved_block.nHeight > 0
      *  4. Staleness (warn, do not block -- node is authoritative)
      *  5. Tip-moved  (warn, do not block)
-     *  6. MiningTemplateInterface::prepare_block_submission(merkle_root, nNonce, vOffsets)
+     *  6. MiningTemplateInterface::prepare_block_submission(merkle_root, nNonce)
+     *     [nonce-only canonical overload; vOffsets are NOT appended]
      *  7. Falcon sign: if falcon != nullptr, sign serialized block bytes and append.
      *  8. PacketBuilder::build(lane, SUBMIT_BLOCK, payload).
      *
      * @param tmpl_iface    MiningTemplateInterface that owns the active template.
      *                      Must have a valid template (has_valid_template() == true).
      * @param solved_block  Block header with nNonce filled by the worker.
-     * @param vOffsets      Prime chain offsets from ValidatePrimeCandidate()
-     *                      (empty for Hash channel).
+     * @param vOffsets      Prime chain offsets from ValidatePrimeCandidate().
+     *                      TRANSITIONAL: accepted for logging/diagnostic purposes only.
+     *                      NOT appended to the canonical wire payload (nonce-only submission).
      * @param falcon        Disposable Falcon wrapper; nullptr = skip signing.
      * @param lane          ProtocolLane::STATELESS -> opcode 0xD001,
      *                      ProtocolLane::LEGACY    -> opcode 0x01.
@@ -214,15 +223,16 @@ public:
     /**
      * @brief Build a SubmitBlockPayloadInfo from runtime submit data.
      *
-     * This helper computes expected sizes from real inputs rather than
-     * assuming a universal fixed Tritium payload size.  Hash submissions
-     * are fixed-size; Prime submissions are variable because
-     * prepare_block_submission() appends vOffsets.
+     * Computes expected sizes from real inputs. Following the upstream-alignment
+     * migration, Prime submissions now use nonce-only canonical submission and
+     * are therefore also fixed-size (216 bytes), matching Hash.
+     * offset_bytes_count is expected to be zero for both channels under the
+     * canonical path.  The parameter is retained for compatibility.
      *
      * @param channel          1 = Prime, 2 = Hash
      * @param block_data_size  Total serialized block bytes returned by
-     *                         prepare_block_submission() (includes vOffsets
-     *                         for Prime).  For Hash this is always 216.
+     *                         prepare_block_submission() (should be 216 for
+     *                         both Prime and Hash under the canonical path).
      * @param signature_size   Actual Falcon signature length (0 when unsigned).
      * @return Populated SubmitBlockPayloadInfo with all size fields.
      */

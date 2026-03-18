@@ -5,24 +5,31 @@
  * Validates the complete critical path:
  *   encode_submit() → strip wire header → ChaCha20 encrypt → decrypt → verify
  *
+ * Upstream-alignment note:
+ *   Since the nonce-only canonical submission migration, miner-computed Prime
+ *   vOffsets are NOT appended to the wire payload.  Both Prime and Hash channel
+ *   submissions produce exactly BLOCK_BODY_SIZE (216) bytes of block data.
+ *   The node remains the authoritative source for prime proof validation.
+ *   See docs/architecture/prime-submission-alignment.md.
+ *
  * Tests (acceptance criteria):
  *  1.  Hash channel: encode_submit → ChaCha20 encrypt → decrypt round-trip
- *  2.  Prime channel: encode_submit with vOffsets → ChaCha20 round-trip
+ *  2.  Prime channel: encode_submit (nonce-only, vOffsets ignored) → ChaCha20 round-trip
  *  3.  Decrypted Hash payload is exactly BLOCK_BODY_SIZE (216) bytes
- *  4.  Decrypted Prime payload = BLOCK_BODY_SIZE + vOffsets.size()
- *  5.  vOffsets bytes survive the full pipeline (byte-exact verification)
+ *  4.  Decrypted Prime payload is exactly BLOCK_BODY_SIZE (216) bytes (no vOffsets appended)
+ *  5.  Prime and Hash payloads are the same size (nonce-only canonical submission)
  *  6.  KDF session key is deterministic (same genesis → same key)
  *  7.  Wrong session key → ChaCha20 decrypt fails
  *  8.  AAD mismatch (non-empty vs empty) → decrypt fails
  *  9.  STATELESS lane: final SUBMIT_BLOCK packet has correct structure
  * 10.  LEGACY lane: final SUBMIT_BLOCK packet has correct structure
- * 11.  Prime-channel vOffsets flow through prepare_block_submission()
+ * 11.  prepare_block_submission(nonce-only overload) returns 216 bytes for Prime channel
  * 12.  Empty vOffsets for Hash channel (no extra bytes appended)
  * 13.  SubmitBlockPayloadInfo: Hash Falcon-1024 fixed-size (pt=1803, enc=1831)
- * 14.  SubmitBlockPayloadInfo: Prime + 10 offsets (pt=1813, enc=1841)
- * 15.  SubmitBlockPayloadInfo: Prime != Hash when offsets present
+ * 14.  SubmitBlockPayloadInfo: Prime nonce-only (pt=1803, enc=1831) — same as Hash
+ * 15.  SubmitBlockPayloadInfo: Prime nonce-only == Hash (no vOffsets in canonical path)
  * 16.  E2E: Hash unsigned payload_info + encrypt size correct
- * 17.  E2E: Prime with vOffsets full pipeline size correct
+ * 17.  E2E: Prime nonce-only full pipeline size correct (216 bytes)
  */
 
 #include "include/stateless_block_utility.hpp"
@@ -226,22 +233,23 @@ static void test_e2e_hash_channel_round_trip() {
     print_result("E2E Hash: encode_submit → ChaCha20 encrypt → decrypt round-trip", ok);
 }
 
-// Test 2: Prime channel with vOffsets full pipeline
+// Test 2: Prime channel encode_submit — nonce-only canonical path (vOffsets NOT appended)
 static void test_e2e_prime_channel_voffsets_round_trip() {
     auto mti  = make_loaded_mti(1);  // Prime channel
     auto blk  = make_solved_block(1);
     auto snap = make_snapshot();
+    // vOffsets are passed for diagnostic logging only — NOT appended to payload.
     std::vector<uint8_t> vOffsets = {0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40};
 
-    // Step 1: encode_submit with vOffsets
+    // Step 1: encode_submit — vOffsets accepted but NOT included in wire payload
     auto submit = StatelessBlockUtility::encode_submit(
         *mti, blk, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     if (!submit.valid) {
-        print_result("E2E Prime: encode_submit with vOffsets succeeds", false);
+        print_result("E2E Prime: encode_submit (nonce-only canonical) succeeds", false);
         return;
     }
 
-    // Step 2: strip wire header
+    // Step 2: strip wire header — plaintext should be exactly 216 bytes
     auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
 
     // Step 3: encrypt (miner side)
@@ -254,7 +262,7 @@ static void test_e2e_prime_channel_voffsets_round_trip() {
     // Step 4: decrypt (node side)
     auto dec = wrapper.decrypt(enc.data, session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
     bool ok = dec.success && (dec.data == plaintext);
-    print_result("E2E Prime: encode_submit + vOffsets → ChaCha20 round-trip", ok);
+    print_result("E2E Prime: encode_submit (nonce-only) → ChaCha20 round-trip", ok);
 }
 
 // Test 3: Hash decrypted payload is exactly BLOCK_BODY_SIZE (216 bytes)
@@ -270,51 +278,47 @@ static void test_hash_payload_size() {
     print_result("E2E Hash: decrypted payload = 216 bytes (BLOCK_BODY_SIZE)", ok);
 }
 
-// Test 4: Prime decrypted payload = BLOCK_BODY_SIZE + vOffsets.size()
+// Test 4: Prime decrypted payload is exactly BLOCK_BODY_SIZE (216 bytes) — nonce-only canonical
 static void test_prime_payload_size() {
     auto mti  = make_loaded_mti(1);
     auto blk  = make_solved_block(1);
     auto snap = make_snapshot();
+    // vOffsets passed for diagnostics only; NOT appended to canonical payload
     std::vector<uint8_t> vOffsets = {0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40};
 
     auto submit = StatelessBlockUtility::encode_submit(
         *mti, blk, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
+    // Canonical nonce-only: Prime payload = 216 bytes (same as Hash — no vOffsets)
     bool ok = submit.valid &&
-              (plaintext.size() == StatelessBlockUtility::BLOCK_BODY_SIZE + vOffsets.size());
-    print_result("E2E Prime: decrypted payload = 216 + vOffsets.size() bytes", ok);
+              (plaintext.size() == StatelessBlockUtility::BLOCK_BODY_SIZE);
+    print_result("E2E Prime: decrypted payload = 216 bytes (nonce-only, no vOffsets)", ok);
 }
 
-// Test 5: vOffsets bytes survive the full pipeline (byte-exact)
-static void test_voffsets_byte_exact() {
-    auto mti  = make_loaded_mti(1);
-    auto blk  = make_solved_block(1);
+// Test 5: Prime and Hash payloads are the same size (nonce-only canonical submission)
+static void test_prime_hash_payloads_equal() {
+    auto mti_prime = make_loaded_mti(1);
+    auto mti_hash  = make_loaded_mti(2);
+    auto blk_prime = make_solved_block(1);
+    auto blk_hash  = make_solved_block(2);
     auto snap = make_snapshot();
+    // vOffsets passed to Prime encode_submit for diagnostic logging — NOT appended
     std::vector<uint8_t> vOffsets = {0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40};
 
-    // encode_submit
-    auto submit = StatelessBlockUtility::encode_submit(
-        *mti, blk, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
-    auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
+    auto prime_submit = StatelessBlockUtility::encode_submit(
+        *mti_prime, blk_prime, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+    auto hash_submit = StatelessBlockUtility::encode_submit(
+        *mti_hash, blk_hash, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
 
-    // ChaCha20 round-trip
-    std::vector<uint8_t> genesis(32, 0xAB);
-    auto session_key = derive_session_key(genesis);
-    ChaCha20Wrapper wrapper;
-    auto enc_nonce = ChaCha20Wrapper::generate_nonce();
-    auto enc = wrapper.encrypt(plaintext, session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
-    auto dec = wrapper.decrypt(enc.data, session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
+    auto prime_plaintext = strip_wire_header(*prime_submit.wire_bytes, ProtocolLane::STATELESS);
+    auto hash_plaintext  = strip_wire_header(*hash_submit.wire_bytes, ProtocolLane::STATELESS);
 
-    // Verify vOffsets at tail of decrypted payload
-    bool ok = false;
-    if (dec.success && dec.data.size() >= StatelessBlockUtility::BLOCK_BODY_SIZE + vOffsets.size()) {
-        size_t offset_start = StatelessBlockUtility::BLOCK_BODY_SIZE;
-        std::vector<uint8_t> recovered(
-            dec.data.begin() + offset_start,
-            dec.data.begin() + offset_start + vOffsets.size());
-        ok = (recovered == vOffsets);
-    }
-    print_result("E2E: vOffsets bytes survive full pipeline (byte-exact match)", ok);
+    // Both are 216 bytes — vOffsets are NOT in the canonical pipeline
+    bool ok = prime_submit.valid && hash_submit.valid &&
+              (prime_plaintext.size() == StatelessBlockUtility::BLOCK_BODY_SIZE) &&
+              (prime_plaintext.size() == hash_plaintext.size());
+    print_result("E2E: Prime canonical = Hash canonical = 216 bytes "
+                 "(vOffsets not in pipeline — nonce-only canonical submission)", ok);
 }
 
 // Test 6: KDF determinism — same genesis → same session key
@@ -440,7 +444,9 @@ static void test_legacy_submit_packet_structure() {
     print_result("E2E LEGACY: SUBMIT_BLOCK packet = [0x01][len][nonce(12)][ct+tag]", ok);
 }
 
-// Test 11: vOffsets flow through prepare_block_submission (Prime channel)
+// Test 11: prepare_block_submission() nonce-only overload returns 216 bytes for Prime channel
+// Verifies that the canonical submit path does NOT append vOffsets.
+// The transitional overload (with vOffsets) still appends them for backward compat.
 static void test_voffsets_flow_prepare_block_submission() {
     MiningTemplateInterface mti_prime(1, 0);
     auto payload = make_template_payload(6000000, 2000000, DEFAULT_DIFFICULTY,
@@ -449,33 +455,27 @@ static void test_voffsets_flow_prepare_block_submission() {
 
     const auto* tmpl = mti_prime.get_current_template();
     if (!tmpl) {
-        print_result("vOffsets flow: template loaded", false);
+        print_result("Prime nonce-only: template loaded", false);
         return;
     }
 
     std::vector<uint8_t> vOffsets = {0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40};
 
-    // prepare_block_submission with vOffsets (Prime)
+    // Canonical nonce-only overload — must be exactly 216 bytes regardless of vOffsets
+    auto nonce_only = mti_prime.prepare_block_submission(
+        tmpl->block.hashMerkleRoot.GetBytes(), 0xDEADBEEFCAFEBABEULL);
+
+    // Transitional overload (retained for backward compat) still appends vOffsets
     auto with_offsets = mti_prime.prepare_block_submission(
         tmpl->block.hashMerkleRoot.GetBytes(), 0xDEADBEEFCAFEBABEULL, vOffsets);
 
-    // prepare_block_submission without vOffsets
-    auto without_offsets = mti_prime.prepare_block_submission(
-        tmpl->block.hashMerkleRoot.GetBytes(), 0xDEADBEEFCAFEBABEULL, {});
+    bool nonce_only_ok = (nonce_only.size() == StatelessBlockUtility::BLOCK_BODY_SIZE);
+    bool transitional_ok = (with_offsets.size() == nonce_only.size() + vOffsets.size());
 
-    // With vOffsets should be exactly vOffsets.size() bytes larger
-    bool size_ok = (with_offsets.size() == without_offsets.size() + vOffsets.size());
-
-    // Verify vOffsets appear at the tail
-    bool tail_ok = false;
-    if (with_offsets.size() >= vOffsets.size()) {
-        std::vector<uint8_t> tail(
-            with_offsets.end() - vOffsets.size(), with_offsets.end());
-        tail_ok = (tail == vOffsets);
-    }
-
-    print_result("vOffsets flow: prepare_block_submission() appends vOffsets "
-                 "(Prime channel, byte-exact at tail)", size_ok && tail_ok);
+    print_result("Prime nonce-only: prepare_block_submission() = 216 bytes "
+                 "(canonical path does NOT append vOffsets)", nonce_only_ok);
+    print_result("Prime transitional: prepare_block_submission(vOffsets) = 216 + vOffsets.size() "
+                 "(backward-compat overload retained)", transitional_ok);
 }
 
 // Test 12: Hash channel prepare_block_submission with empty vOffsets
@@ -519,39 +519,40 @@ static void test_payload_info_hash_falcon1024() {
                  siglen_ok && sig_ok && plain_ok && enc_ok);
 }
 
-// ── Test 14: SubmitBlockPayloadInfo Prime with 10 offset bytes ──────────────
-// Prime: plaintext = 216 + 10 + 8 + 2 + 1577 = 1813, encrypted = 1813 + 28 = 1841
+// ── Test 14: SubmitBlockPayloadInfo Prime nonce-only (same as Hash) ──────────
+// Canonical path: Prime submissions no longer include vOffsets in the payload.
+// Both Prime and Hash submit exactly 216 bytes → same PayloadInfo sizes.
 static void test_payload_info_prime_with_offsets() {
-    const size_t offset_count = 10;
+    // Canonical Prime: block_data_size = 216 (no vOffsets — nonce-only path)
     auto info = StatelessBlockUtility::compute_submit_payload_info(
-        /*channel=*/1, /*block_data_size=*/216 + offset_count,
+        /*channel=*/1, /*block_data_size=*/216,
         /*signature_size=*/FalconConstants::FALCON1024_SIG_CT_SIZE);
 
     bool channel_ok   = (info.channel == 1);
     bool base_ok      = (info.base_block_size == 216);
-    bool offset_ok    = (info.offset_bytes_count == offset_count);
-    bool plain_ok     = (info.expected_plaintext_size() == 1813);
-    bool enc_ok       = (info.expected_encrypted_size() == 1841);
+    bool offset_ok    = (info.offset_bytes_count == 0);
+    bool plain_ok     = (info.expected_plaintext_size() == 1803);
+    bool enc_ok       = (info.expected_encrypted_size() == 1831);
 
-    print_result("PayloadInfo Prime F1024 (10 offsets): plaintext=1813, encrypted=1841",
+    print_result("PayloadInfo Prime F1024 (nonce-only): plaintext=1803, encrypted=1831 "
+                 "(same as Hash — no vOffsets in canonical path)",
                  channel_ok && base_ok && offset_ok && plain_ok && enc_ok);
 }
 
-// ── Test 15: Prime variable-size is NOT Hash fixed-size ─────────────────────
-// Verifies that Hash and Prime with offsets produce different expected sizes.
+// ── Test 15: Prime nonce-only == Hash fixed-size ─────────────────────────────
+// Verifies that the canonical Prime and Hash PayloadInfo produce the same sizes.
 static void test_payload_info_prime_not_equal_hash() {
     auto hash_info = StatelessBlockUtility::compute_submit_payload_info(
         2, 216, FalconConstants::FALCON1024_SIG_CT_SIZE);
     auto prime_info = StatelessBlockUtility::compute_submit_payload_info(
-        1, 216 + 7, FalconConstants::FALCON1024_SIG_CT_SIZE);
+        1, 216, FalconConstants::FALCON1024_SIG_CT_SIZE);
 
-    bool sizes_differ = (prime_info.expected_plaintext_size() !=
-                         hash_info.expected_plaintext_size());
-    bool prime_larger  = (prime_info.expected_plaintext_size() ==
-                          hash_info.expected_plaintext_size() + 7);
+    // Both Prime and Hash now submit 216 bytes — sizes should be equal
+    bool sizes_equal = (prime_info.expected_plaintext_size() ==
+                        hash_info.expected_plaintext_size());
 
-    print_result("PayloadInfo: Prime(7 offsets) != Hash, differs by offset count",
-                 sizes_differ && prime_larger);
+    print_result("PayloadInfo: Prime nonce-only == Hash (both 216 bytes — no vOffsets in canonical path)",
+                 sizes_equal);
 }
 
 // ── Test 16: E2E integration — encode_submit → compute_payload_info → ChaCha20 ──
@@ -588,23 +589,25 @@ static void test_e2e_payload_info_hash_unsigned() {
                  actual_ok && enc_ok);
 }
 
-// ── Test 17: E2E integration — Prime with vOffsets through full pipeline ─────
-// Exercises prepare_block_submission → encode_submit → ChaCha20 → verify sizes
+// ── Test 17: E2E integration — Prime nonce-only canonical pipeline ────────────
+// Exercises prepare_block_submission (nonce-only) → encode_submit → ChaCha20 → verify sizes
 static void test_e2e_payload_info_prime_pipeline() {
     auto mti  = make_loaded_mti(1);  // Prime
     auto blk  = make_solved_block(1);
     auto snap = make_snapshot();
-    std::vector<uint8_t> vOffsets(10, 0x42);  // 10 offset bytes
+    // vOffsets passed to encode_submit for diagnostic logging only (NOT appended)
+    std::vector<uint8_t> vOffsets(10, 0x42);
 
     auto submit = StatelessBlockUtility::encode_submit(
         *mti, blk, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     if (!submit.valid) {
-        print_result("E2E PayloadInfo Prime pipeline: encode_submit succeeds", false);
+        print_result("E2E Prime nonce-only pipeline: encode_submit succeeds", false);
         return;
     }
 
     auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
-    bool plain_ok = (plaintext.size() == StatelessBlockUtility::BLOCK_BODY_SIZE + vOffsets.size());
+    // Canonical: Prime submit = 216 bytes only (no vOffsets appended)
+    bool plain_ok = (plaintext.size() == StatelessBlockUtility::BLOCK_BODY_SIZE);
 
     // Encrypt
     std::vector<uint8_t> genesis(32, 0xAB);
@@ -617,9 +620,9 @@ static void test_e2e_payload_info_prime_pipeline() {
     auto dec = wrapper.decrypt(enc.data, session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
     bool rt_ok = dec.success && (dec.data == plaintext);
 
-    // Verify payload info matches
-    auto info = StatelessBlockUtility::compute_submit_payload_info(1, 216 + 10, 0);
-    bool info_ok = (info.offset_bytes_count == 10) && (info.channel == 1);
+    // Verify payload info matches (nonce-only: 0 offset bytes)
+    auto info = StatelessBlockUtility::compute_submit_payload_info(1, 216, 0);
+    bool info_ok = (info.offset_bytes_count == 0) && (info.channel == 1);
 
     // Final encrypted wire payload = nonce(12) + ciphertext(plaintext.size()) + tag(16)
     size_t expected_wire = 12 + plaintext.size() + 16;
@@ -628,7 +631,7 @@ static void test_e2e_payload_info_prime_pipeline() {
     wire_payload.insert(wire_payload.end(), enc.data.begin(), enc.data.end());
     bool wire_ok = (wire_payload.size() == expected_wire);
 
-    print_result("E2E PayloadInfo Prime (10 offsets): full pipeline size correct",
+    print_result("E2E Prime nonce-only (216 bytes): full pipeline size correct",
                  plain_ok && rt_ok && info_ok && wire_ok);
 }
 
@@ -673,11 +676,12 @@ static void test_e2e_encrypt_submit_block_payload() {
                      enc.success && enc.data.size() == expected_size);
     }
 
-    // ── Case B: Prime channel with 10 vOffsets (unsigned) ────────────────
+    // ── Case B: Prime channel — nonce-only canonical (unsigned) ──────────
     {
         auto mti  = make_loaded_mti(1);   // Prime
         auto blk  = make_solved_block(1);
         auto snap = make_snapshot();
+        // vOffsets passed for diagnostic logging only — NOT appended
         std::vector<uint8_t> vOffsets(10, 0x42);
 
         auto submit = StatelessBlockUtility::encode_submit(
@@ -689,16 +693,16 @@ static void test_e2e_encrypt_submit_block_payload() {
 
         auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
 
-        // Unsigned Prime: plaintext = block(216) + offsets(10)
+        // Canonical nonce-only: Prime plaintext = block(216) only (no vOffsets)
         auto info = StatelessBlockUtility::compute_submit_payload_info(
             1, plaintext.size(), 0);
 
         auto enc = wrapper.encrypt_submit_block_payload(plaintext, session_key, info);
-        print_result("E2E encrypt_submit_block_payload: Prime+10-offsets unsigned — succeeds",
+        print_result("E2E encrypt_submit_block_payload: Prime nonce-only unsigned — succeeds",
                      enc.success);
 
         const size_t expected_size = 12 + plaintext.size() + 16;
-        print_result("E2E encrypt_submit_block_payload: Prime+10-offsets — size = nonce+ct+tag",
+        print_result("E2E encrypt_submit_block_payload: Prime nonce-only — size = nonce+ct+tag",
                      enc.success && enc.data.size() == expected_size);
 
         // Two calls must produce different outputs (fresh nonce each time)
@@ -731,7 +735,7 @@ int main() {
     test_e2e_prime_channel_voffsets_round_trip();// 2
     test_hash_payload_size();                    // 3
     test_prime_payload_size();                   // 4
-    test_voffsets_byte_exact();                  // 5
+    test_prime_hash_payloads_equal();              // 5
 
     std::cout << "\n--- Crypto Correctness ---\n";
     test_kdf_determinism();                      // 6

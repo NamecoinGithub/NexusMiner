@@ -620,17 +620,21 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     uint64_t nonce,
     const std::vector<uint8_t>& vOffsets)
 {
+    // TRANSITIONAL: This overload retains the legacy vOffsets-appending behaviour
+    // for callers that have not yet migrated to the canonical nonce-only path.
+    // Canonical submit (encode_submit) now calls the base overload directly and
+    // does NOT use this path.  See docs/architecture/prime-submission-alignment.md.
+
     // Delegate the block serialization to the base overload
     auto payload = prepare_block_submission(merkle_root, nonce);
     if (payload.empty())
         return payload;
 
-    // For Prime channel, append Cunningham-chain offsets so the node can verify
-    // the prime cluster via GetPrimeDifficulty() / GetOffsets().
-    // Hash channel vOffsets are always empty — no-op.
+    // For Prime channel, append Cunningham-chain offsets (retained for diagnostic
+    // / backward-compat callers only — NOT used on the canonical encode_submit path).
     if (!vOffsets.empty() && m_channel == 1) {
         payload.insert(payload.end(), vOffsets.begin(), vOffsets.end());
-        m_logger->debug("[TemplateInterface] Appended {} vOffset bytes for Prime channel",
+        m_logger->debug("[TemplateInterface] (transitional) Appended {} vOffset bytes for Prime channel",
                         vOffsets.size());
     }
 

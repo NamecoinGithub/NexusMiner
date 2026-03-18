@@ -12,13 +12,15 @@
  *  7.  encode_submit() with STATELESS lane produces opcode 0xD001
  *  8.  encode_submit() with LEGACY lane produces opcode 0x01
  *  9.  encode_submit() with falcon=nullptr produces unsigned submit
- *      (payload = block bytes + any vOffsets, no Falcon signature suffix)
+ *      (payload = block bytes only — 216 bytes, no vOffsets suffix)
  * 10.  decode_template() populates metadata fields from 12-byte prefix (BE)
  * 11.  decode_template() populates canonical block fields from 216-byte body
  * 12.  decode_template() sets channel_consistent correctly
  * 13.  encode_submit() informational staleness/tip-moved do not block submission
- * 14.  encode_submit() with Prime-channel vOffsets produces larger payload than
- *      Hash-channel (no vOffsets) submission
+ * 14.  encode_submit() with Prime-channel vOffsets: canonical nonce-only submit
+ *      produces the SAME payload size as Hash-channel (both 216 bytes).
+ *      vOffsets are NOT appended; node derives/validates offsets server-side.
+ *      (Upstream-alignment: nonce-only canonical submission.)
  */
 
 #include "include/stateless_block_utility.hpp"
@@ -400,7 +402,9 @@ static void test_encode_prime_voffsets_appended() {
     auto blk_hash  = make_solved_block(2, 6000001, 0xDEADBEEFCAFEBABEULL);
     auto snap = make_snapshot();
 
-    // 7 bytes of dummy Prime offsets (chain length 3 + 4-byte fraction)
+    // 7 bytes of dummy Prime offsets — passed for diagnostic logging only.
+    // Under the upstream-alignment canonical path, vOffsets are NOT appended to
+    // the wire payload.  Both Prime and Hash submit exactly 216 bytes of block data.
     std::vector<uint8_t> vOffsets = {0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40};
 
     auto prime_result = StatelessBlockUtility::encode_submit(
@@ -408,11 +412,12 @@ static void test_encode_prime_voffsets_appended() {
     auto hash_result  = StatelessBlockUtility::encode_submit(
         mti_hash, blk_hash, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
 
+    // Canonical nonce-only submission: Prime payload == Hash payload (both 216 bytes).
+    // vOffsets are NOT appended; node derives/validates offsets server-side.
     bool ok = prime_result.valid && hash_result.valid &&
-              prime_result.wire_bytes->size() ==
-                  hash_result.wire_bytes->size() + vOffsets.size();
-    print_result("encode_submit(): Prime vOffsets are appended to payload "
-                 "(Prime payload > Hash payload by vOffsets.size())", ok);
+              prime_result.wire_bytes->size() == hash_result.wire_bytes->size();
+    print_result("encode_submit(): Prime canonical nonce-only submit == Hash payload size "
+                 "(vOffsets NOT appended — node-side proof validation)", ok);
 }
 
 // Test 15 -- read_stateless_payload() + set_channel_height() does not trigger

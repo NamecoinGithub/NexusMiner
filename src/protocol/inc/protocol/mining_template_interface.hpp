@@ -419,11 +419,24 @@ public:
                                                    uint64_t nonce);
 
     /**
-     * @brief Prepare block for submission, appending Prime channel vOffsets
+     * @brief [TRANSITIONAL — DEPRECATED since upstream-alignment PR] Prepare block for submission, appending Prime channel vOffsets
+     *
+     * @deprecated Use the nonce-only overload: prepare_block_submission(merkle_root, nonce).
+     *   Miner-submitted vOffsets are no longer treated as canonical submit data.
+     *   The canonical wire payload is nonce-only (216 bytes for Tritium).
+     *   The node derives and validates prime chain offsets server-side via
+     *   VerifyWork() / TritiumBlock::Check().
+     *   See docs/architecture/prime-submission-alignment.md.
+     *
+     *   Migration plan: this overload is retained for backward-compatibility with
+     *   any diagnostic/transitional callers. It should be removed once all callers
+     *   have migrated to the nonce-only overload and the LLL-TAO node-side alignment
+     *   PR has landed.
      *
      * For the Prime channel (nChannel == 1), the Cunningham-chain offsets computed
-     * by ValidatePrimeCandidate() must be appended to the serialized block bytes so
-     * the node can verify the prime cluster. For the Hash channel, vOffsets is ignored.
+     * by ValidatePrimeCandidate() were previously appended to the serialized block
+     * bytes. This overload is retained for backward-compatibility and diagnostic use
+     * only; it should NOT be used in new canonical submit paths.
      *
      * @param merkle_root Block's merkle root
      * @param nonce Block's nonce value
