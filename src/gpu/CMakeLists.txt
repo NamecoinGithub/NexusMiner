@@ -31,10 +31,15 @@ if (WITH_GPU_CUDA)
         $<INSTALL_INTERFACE:inc>    
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>)
 
+    if(WITH_PRIME)
+        target_include_directories(gpu PRIVATE ${CMAKE_SOURCE_DIR}/src/cpu/inc)
+    endif()
+
     target_link_libraries(gpu LLC worker LLP stats config TAO spdlog::spdlog)
 
 
     if(WITH_PRIME)
+        target_link_libraries(gpu cpu)
         target_link_libraries(gpu libprimesieve-static)
         if(WIN32)
             target_link_libraries(gpu mpir)

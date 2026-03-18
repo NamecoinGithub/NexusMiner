@@ -74,6 +74,7 @@ private:
     std::uint64_t m_nonce = 0;
     uint1k m_base_hash;
     static LLC::CBigNum boost_uint1024_t_to_CBignum(uint1k);
+    static uint1024_t boost_uint1024_t_to_uint1024_t(uint1k);
 
     //stats
     uint64_t m_range_searched = 0;

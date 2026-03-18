@@ -400,8 +400,8 @@ static void test_encode_prime_voffsets_appended() {
     auto blk_hash  = make_solved_block(2, 6000001, 0xDEADBEEFCAFEBABEULL);
     auto snap = make_snapshot();
 
-    // 7 bytes of dummy Prime offsets (chain length 3 + 4-byte fraction)
-    std::vector<uint8_t> vOffsets = {0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40};
+    // Canonical Prime vOffsets shape: 6 single-byte offsets + 4-byte LE fraction.
+    std::vector<uint8_t> vOffsets = {0x02, 0x04, 0x06, 0x02, 0x04, 0x06, 0x10, 0x20, 0x30, 0x40};
 
     auto prime_result = StatelessBlockUtility::encode_submit(
         mti_prime, blk_prime, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
