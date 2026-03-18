@@ -1,7 +1,6 @@
 #include "protocol/session_manager.hpp"
 #include "protocol/hex_prefix_utils.hpp"
 #include "protocol/serialization_helpers.hpp"
-#include "protocol/chacha20_evp_manager.hpp"
 #include "network/connection.hpp"
 #include "packet.hpp"
 #include "miner_opcodes.hpp"
@@ -380,40 +379,20 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
     }
 
     // v2 keepalive payload: [session_id(4 LE)][miner_prevblock_suffix(4 raw bytes)]
-    std::vector<uint8_t> plaintext_payload;
-    serialization::append_uint32_le(plaintext_payload, session_id);
-    plaintext_payload.insert(plaintext_payload.end(), prevblock_suffix.begin(), prevblock_suffix.end());
-
-    // EVP gate: encrypt keepalive payload to protect session_id in transit (MITM hardening).
-    // opcode byte used as AAD for domain separation.
-    bool use_stateless_opcode = (lane == ProtocolLane::STATELESS);
-    std::vector<uint8_t> wire_payload = plaintext_payload;
-    if (ChaCha20EVPManager::Get().is_evp_active() &&
-        ChaCha20EVPManager::Get().has_session_key(session_id))
-    {
-        static const std::vector<uint8_t> keepalive_aad_stateless{
-            static_cast<uint8_t>(LLP::StatelessMining::SESSION_KEEPALIVE & 0xFF),
-            static_cast<uint8_t>((LLP::StatelessMining::SESSION_KEEPALIVE >> 8) & 0xFF)
-        };
-        static const std::vector<uint8_t> keepalive_aad_legacy{
-            static_cast<uint8_t>(Packet::SESSION_KEEPALIVE)
-        };
-        const auto& aad = use_stateless_opcode ? keepalive_aad_stateless : keepalive_aad_legacy;
-        auto enc = ChaCha20EVPManager::Get().encrypt_packet(session_id, plaintext_payload, aad);
-        if (enc.success)
-            wire_payload = std::move(enc.data);
-        else
-            m_logger->error("[SessionManager] EVP encrypt failed for SESSION_KEEPALIVE: {}", enc.error_message);
-    }
+    std::vector<uint8_t> payload;
+    serialization::append_uint32_le(payload, session_id);
+    payload.insert(payload.end(), prevblock_suffix.begin(), prevblock_suffix.end());
 
     // Build lane-aware packet based on protocol lane
     // On stateless lane, use mirror-mapped SESSION_KEEPALIVE (0xD0D4)
     // On legacy lane, use legacy SESSION_KEEPALIVE (212)
+    bool use_stateless_opcode = (lane == ProtocolLane::STATELESS);
+
     Packet packet = use_stateless_opcode
         ? Packet{ LLP::StatelessMining::SESSION_KEEPALIVE,  // already uint16_t
-                  std::make_shared<network::Payload>(wire_payload) }
+                  std::make_shared<network::Payload>(payload) }
         : Packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE),
-                  std::make_shared<network::Payload>(wire_payload) };
+                  std::make_shared<network::Payload>(payload) };
 
     return packet.get_bytes();
 }
@@ -448,36 +427,16 @@ network::Shared_payload SessionManager::build_session_status_packet(
     ::LLP::SessionStatusFrame frame;
     frame.session_id   = session_id;
     frame.status_flags = status_flags;
-    auto plaintext_payload = frame.Serialize();
+    auto payload = frame.Serialize();
 
     bool use_stateless = (lane == ProtocolLane::STATELESS);
-
-    // EVP gate: encrypt SESSION_STATUS payload to protect session_id in transit (MITM hardening).
-    std::vector<uint8_t> wire_payload = plaintext_payload;
-    if (ChaCha20EVPManager::Get().is_evp_active() &&
-        ChaCha20EVPManager::Get().has_session_key(session_id))
-    {
-        static const std::vector<uint8_t> status_aad_stateless{
-            static_cast<uint8_t>(SESSION_STATUS & 0xFF),
-            static_cast<uint8_t>((SESSION_STATUS >> 8) & 0xFF)
-        };
-        static const std::vector<uint8_t> status_aad_legacy{
-            static_cast<uint8_t>(SESSION_STATUS_LEGACY)
-        };
-        const auto& aad = use_stateless ? status_aad_stateless : status_aad_legacy;
-        auto enc = ChaCha20EVPManager::Get().encrypt_packet(session_id, plaintext_payload, aad);
-        if (enc.success)
-            wire_payload = std::move(enc.data);
-        else
-            m_logger->error("[SessionManager] EVP encrypt failed for SESSION_STATUS: {}", enc.error_message);
-    }
 
     // Build lane-aware packet following the same framing as build_keepalive_packet()
     Packet packet = use_stateless
         ? Packet{ static_cast<uint16_t>(SESSION_STATUS),
-                  std::make_shared<network::Payload>(wire_payload) }
+                  std::make_shared<network::Payload>(payload) }
         : Packet{ static_cast<uint8_t>(SESSION_STATUS_LEGACY),
-                  std::make_shared<network::Payload>(wire_payload) };
+                  std::make_shared<network::Payload>(payload) };
 
     return packet.get_bytes();
 }
