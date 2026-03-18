@@ -541,9 +541,13 @@ void Worker_prime::run()
 
 double Worker_prime::getDifficulty(uint1k p)
 {
-	std::vector<unsigned int> offsets_to_test;
-	LLC::CBigNum prime_to_test = boost_uint1024_t_to_CBignum(p);
-	double difficulty = m_prime_helper->GetPrimeDifficulty(prime_to_test, 1, offsets_to_test);
+	std::vector<uint8_t> offsets_to_test;
+	double difficulty = 0.0;
+	nexusminer::prime::ValidatePrimeCandidate(
+		boost_uint1024_t_to_uint1024_t(p),
+		0.0,
+		offsets_to_test,
+		difficulty);
 	return difficulty;
 }
 
