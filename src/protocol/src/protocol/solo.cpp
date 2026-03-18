@@ -9,7 +9,6 @@
 #include "protocol/serialization_helpers.hpp"
 #include "protocol/session_status_policy.hpp"
 #include "protocol/session_start_parser.hpp"
-#include "protocol/chacha20_evp_manager.hpp"
 #include "packet.hpp"
 #include "network/connection.hpp"
 #include "stats/stats_collector.hpp"
@@ -317,12 +316,6 @@ void Solo::reset()
     m_current_height = 0;
     m_current_reward = 0;
     m_authenticated = false;
-
-    // Remove EVP session key before zeroing m_session_id so we still know which session to remove.
-    if (m_session_id != 0) {
-        ChaCha20EVPManager::Get().remove_session(m_session_id);
-    }
-
     m_session_id = 0;
     m_auth_timestamp = 0;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
@@ -342,11 +335,6 @@ void Solo::reset()
                                              m_reward_address.empty() ? "" : "config");
         m_session_context->end_session();
     }
-
-    // Prune any stale EVP session keys (single-session miner: no live sessions after reset).
-    auto nPruned = ChaCha20EVPManager::Get().prune_expired_sessions({});
-    if (nPruned > 0)
-        m_logger->debug("[EVPManager] Pruned {} stale session key(s) on reset", nPruned);
 
     // Reset template interface for new session
     if (m_template_interface) {
@@ -2691,15 +2679,6 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     m_session_context->mark_activity();
                     m_logger->info("[Solo Session] Session started in session manager");
                     m_logger->info("[Solo Session] Keepalive timer started (early ping + regular cadence)");
-
-                    // Register session key with the EVP manager so encrypt_packet /
-                    // decrypt_packet can gate on it for MITM-hardened SESSION_STATUS packets.
-                    const auto session_info = m_session_context->get_session_info();
-                    const auto& session_key = session_info.chacha20_session_key;
-                    if (!session_key.empty()) {
-                        const std::string fingerprint = format_hex_prefix(session_key, 8);
-                        ChaCha20EVPManager::Get().register_session(m_session_id, session_key, fingerprint);
-                    }
                 }
 
                 // Update template interface with authenticated session ID (FALCON tunnel established)
@@ -3562,30 +3541,6 @@ void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Conne
 void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
         std::vector<uint8_t> data = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
-
-        // EVP gate: decrypt SESSION_STATUS_ACK payload if the node encrypted it (MITM hardening).
-        if (m_session_id != 0 &&
-            ChaCha20EVPManager::Get().is_evp_active() &&
-            ChaCha20EVPManager::Get().has_session_key(m_session_id))
-        {
-            // opcode as AAD — must match what the node used on the encrypt side
-            const bool stateless = (packet.m_is_uint16_opcode);
-            static const std::vector<uint8_t> ack_aad_stateless{
-                static_cast<uint8_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK & 0xFF),
-                static_cast<uint8_t>((::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK >> 8) & 0xFF)
-            };
-            static const std::vector<uint8_t> ack_aad_legacy{
-                static_cast<uint8_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY)
-            };
-            const auto& aad = stateless ? ack_aad_stateless : ack_aad_legacy;
-            auto dec = ChaCha20EVPManager::Get().decrypt_packet(m_session_id, data, aad);
-            if (!dec.success) {
-                m_logger->error("[Solo] EVP decrypt failed for SESSION_STATUS_ACK: {}", dec.error_message);
-                return;
-            }
-            data = std::move(dec.data);
-        }
-
         ::LLP::SessionStatusAckFrame ack;
         if(ack.Parse(data))
         {
@@ -3882,10 +3837,6 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
 
     // STEP 2: CLEAR LOCAL SESSION STATE (mirror reset_auth_state)
     m_logger->info("[Solo] Clearing local session state");
-
-    // Remove session key from EVP manager before zeroing m_session_id.
-    ChaCha20EVPManager::Get().remove_session(expired_sid);
-
     m_session_id = 0;
     m_authenticated = false;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
