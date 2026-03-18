@@ -25,6 +25,11 @@ using namespace LLP;
 using namespace nexusminer;
 using namespace nexusminer::protocol;
 
+namespace {
+constexpr std::size_t LEGACY_SESSION_STATUS_WIRE_SIZE = 13u;    // 1-byte opcode + 4-byte length + 8-byte payload
+constexpr std::size_t STATELESS_SESSION_STATUS_WIRE_SIZE = 14u; // 2-byte opcode + 4-byte length + 8-byte payload
+}
+
 // Test statistics
 static int tests_run    = 0;
 static int tests_passed = 0;
@@ -409,7 +414,7 @@ void test_session_status_packet_builder_obeys_lane_width() {
     legacy_manager.start_session(0x01020304u);
     auto legacy_wire = legacy_manager.build_session_status_packet(false, true, true, false);
     print_test_result("Legacy SESSION_STATUS wire size is 13 bytes (1+4+8)",
-                      legacy_wire && legacy_wire->size() == 13u);
+                      legacy_wire && legacy_wire->size() == LEGACY_SESSION_STATUS_WIRE_SIZE);
     print_test_result("Legacy SESSION_STATUS wire[0] == 0xDB",
                       legacy_wire && (*legacy_wire)[0] == SessionStatusOpcodes::SESSION_STATUS_LEGACY);
 
@@ -418,7 +423,7 @@ void test_session_status_packet_builder_obeys_lane_width() {
     stateless_manager.start_session(0x01020304u);
     auto stateless_wire = stateless_manager.build_session_status_packet(false, true, true, false);
     print_test_result("Stateless SESSION_STATUS wire size is 14 bytes (2+4+8)",
-                      stateless_wire && stateless_wire->size() == 14u);
+                      stateless_wire && stateless_wire->size() == STATELESS_SESSION_STATUS_WIRE_SIZE);
     print_test_result("Stateless SESSION_STATUS wire[0:1] == 0xD0DB",
                       stateless_wire &&
                       (*stateless_wire)[0] == static_cast<uint8_t>(SessionStatusOpcodes::SESSION_STATUS >> 8) &&

@@ -70,7 +70,6 @@ namespace nexusminer
 		// MINER_READY (216), PING (253), CLOSE (254)
 		// Data opcodes (0-127), NEW_ROUND (204), OLD_ROUND (205), and auth/session opcodes
 		// (206-220, except MINER_READY) always have length+payload
-		// always have length+payload
 		inline bool is_legacy_header_only_opcode(uint8_t opcode) {
 			// Data packets (0-127): always have length + payload
 			if (opcode < 128) return false;

@@ -38,14 +38,14 @@ bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_
     return !local_has_state && authoritative_has_state;
 }
 
-bool matches_lane_mirrored_opcode(const Packet& packet, ProtocolLane lane, uint16_t legacy_opcode)
+bool matches_lane_mirrored_opcode(const Packet& packet, ProtocolLane lane, uint16_t base_opcode)
 {
     if (lane == ProtocolLane::LEGACY) {
-        return !packet.m_is_uint16_opcode && packet.m_header == legacy_opcode;
+        return !packet.m_is_uint16_opcode && packet.m_header == base_opcode;
     }
     if (lane == ProtocolLane::STATELESS) {
         return packet.m_is_uint16_opcode &&
-               packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
+               packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(base_opcode));
     }
     return false;
 }
@@ -3200,7 +3200,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
 
             if (remaining_timeout == 0) {
-                m_logger->warn("[Solo Session] Legacy SESSION_KEEPALIVE reported expired timeout — ignoring freshness extension");
+                m_logger->warn("[Solo Session] Legacy SESSION_KEEPALIVE reported expired timeout -- ignoring freshness extension");
             } else if (get_session_manager()) {
                 get_session_manager()->record_session_extension(
                     SessionManager::SessionExtensionSource::KEEPALIVE_ACK);
