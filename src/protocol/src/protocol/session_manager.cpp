@@ -443,19 +443,40 @@ network::Shared_payload SessionManager::build_session_status_packet(
 
 void SessionManager::record_keepalive()
 {
-    std::lock_guard<std::mutex> lock(m_session_mutex);
-    m_session.last_keepalive = std::chrono::system_clock::now();
-    m_session.keepalive_count++;
-    m_session.last_activity = now_epoch_seconds();
+    record_session_extension(SessionExtensionSource::KEEPALIVE_ACK);
+}
 
-    // Transition to ACTIVE state after first keepalive
-    if (m_session.state == SessionState::AUTHENTICATED) {
-        m_session.state = SessionState::ACTIVE;
+void SessionManager::record_session_extension(SessionExtensionSource source)
+{
+    const bool is_keepalive = (source == SessionExtensionSource::KEEPALIVE_ACK);
+    std::chrono::seconds uptime;
+    uint32_t keepalive_count = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(m_session_mutex);
+        if (is_keepalive) {
+            m_session.last_keepalive = std::chrono::system_clock::now();
+            m_session.keepalive_count++;
+            keepalive_count = m_session.keepalive_count;
+        }
+        m_session.last_activity = now_epoch_seconds();
+
+        // Transition to ACTIVE state after the first accepted freshness-extending ACK.
+        if (m_session.state == SessionState::AUTHENTICATED) {
+            m_session.state = SessionState::ACTIVE;
+        }
+
+        uptime = get_session_uptime_locked();
     }
 
-    auto uptime = get_session_uptime_locked();
-    m_logger->info("[SessionManager] Keepalive #{} sent - Session uptime: {}h",
-                  m_session.keepalive_count, uptime.count() / 3600);
+    if (is_keepalive) {
+        m_logger->info("[SessionManager] Keepalive #{} sent - Session uptime: {}h",
+                       keepalive_count, uptime.count() / 3600);
+        return;
+    }
+
+    m_logger->debug("[SessionManager] Session freshness extended by SESSION_STATUS_ACK - Session uptime: {}h",
+                    uptime.count() / 3600);
 }
 
 void SessionManager::set_state(SessionState state)

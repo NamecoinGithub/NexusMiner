@@ -12,6 +12,9 @@
  *  7. Parsing robustness: non-32 payload lengths rejected by Parse()
  *  8. KeepAliveV2AckFrame: stake_height at bytes [24-27], fork_score at [28-31]
  *  9. KeepAliveV2AckFrame::Parse() decodes session_id as little-endian at [0-3]
+ * 10. set_protocol_lane returns promptly and updates session + wire lane
+ * 11. Legacy keepalive keeps 1-byte lane header discipline
+ * 12. Unified session extension logic preserves keepalive bookkeeping semantics
  */
 
 #include "protocol/session_manager.hpp"
@@ -279,6 +282,48 @@ void test_set_protocol_lane_no_deadlock_and_updates_state() {
 }
 
 // ============================================================================
+// Test 11: Legacy keepalive packets keep 1-byte header discipline
+// ============================================================================
+void test_keepalive_packet_uses_legacy_header_on_legacy_lane() {
+    std::cout << "\nTest 11: Legacy keepalive uses 1-byte header on legacy lane\n";
+
+    auto wire = make_keepalive_bytes(0x0A0B0C0D, ProtocolLane::LEGACY);
+    bool legacy_header = wire.size() >= 1 &&
+                         wire[0] == static_cast<uint8_t>(nexusminer::LLP::SESSION_KEEPALIVE);
+    print_test_result("Legacy keepalive packet uses legacy opcode header", legacy_header);
+    print_test_result("Legacy keepalive packet does not carry mirrored stateless header",
+                      wire.size() < 2 || !(wire[0] == 0xD0 && wire[1] == 0xD4));
+}
+
+// ============================================================================
+// Test 12: Unified session extension logic preserves keepalive bookkeeping
+// ============================================================================
+void test_record_session_extension_distinguishes_keepalive_and_status_ack() {
+    std::cout << "\nTest 12: Session extension logic distinguishes keepalive vs status ACK\n";
+
+    auto mgr = std::make_shared<SessionManager>(24, nullptr);
+    mgr->start_session(0x01020304);
+
+    const auto before = mgr->get_session_info();
+    mgr->record_session_extension(SessionManager::SessionExtensionSource::STATUS_ACK);
+    const auto after_status = mgr->get_session_info();
+
+    print_test_result("STATUS_ACK transitions authenticated session to ACTIVE",
+                      after_status.state == SessionManager::SessionState::ACTIVE);
+    print_test_result("STATUS_ACK does not increment keepalive_count",
+                      after_status.keepalive_count == before.keepalive_count);
+    print_test_result("STATUS_ACK does not mutate last_keepalive timestamp",
+                      after_status.last_keepalive == before.last_keepalive);
+
+    mgr->record_session_extension(SessionManager::SessionExtensionSource::KEEPALIVE_ACK);
+    const auto after_keepalive = mgr->get_session_info();
+    print_test_result("KEEPALIVE_ACK increments keepalive_count",
+                      after_keepalive.keepalive_count == after_status.keepalive_count + 1);
+    print_test_result("KEEPALIVE_ACK refreshes last_keepalive timestamp",
+                      after_keepalive.last_keepalive >= after_status.last_keepalive);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -301,6 +346,8 @@ int main() {
     test_keepalive_v2_ack_frame_layout();
     test_parse_session_id_le();
     test_set_protocol_lane_no_deadlock_and_updates_state();
+    test_keepalive_packet_uses_legacy_header_on_legacy_lane();
+    test_record_session_extension_distinguishes_keepalive_and_status_ack();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

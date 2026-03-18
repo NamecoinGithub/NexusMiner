@@ -38,6 +38,31 @@ bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_
     return !local_has_state && authoritative_has_state;
 }
 
+bool matches_lane_mirrored_opcode(const Packet& packet, ProtocolLane lane, uint16_t legacy_opcode)
+{
+    if (lane == ProtocolLane::LEGACY) {
+        return !packet.m_is_uint16_opcode && packet.m_header == legacy_opcode;
+    }
+    if (lane == ProtocolLane::STATELESS) {
+        return packet.m_is_uint16_opcode &&
+               packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
+    }
+    return false;
+}
+
+bool matches_lane_session_status_ack(const Packet& packet, ProtocolLane lane)
+{
+    if (lane == ProtocolLane::LEGACY) {
+        return !packet.m_is_uint16_opcode &&
+               packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY);
+    }
+    if (lane == ProtocolLane::STATELESS) {
+        return packet.m_is_uint16_opcode &&
+               packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK);
+    }
+    return false;
+}
+
 }
 
 // Protocol constants
@@ -1477,8 +1502,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     {
         on_keepalive_ack(packet, connection);
     }
-    else if (packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK)
-          || packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY))
+    else if (matches_lane_session_status_ack(packet, m_protocol_lane))
     {
         on_session_status_ack(packet, connection);
     }
@@ -1544,8 +1568,8 @@ bool Solo::requires_active_session_packet(Packet const& packet)
            matches_opcode(packet, Packet::MINER_REWARD_RESULT) ||
            (packet.m_is_uint16_opcode &&
             packet.m_header == ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK) ||
-           packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK) ||
-           packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY);
+           matches_lane_session_status_ack(packet, ProtocolLane::LEGACY) ||
+           matches_lane_session_status_ack(packet, ProtocolLane::STATELESS);
 }
 
 void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connection> connection)
@@ -3119,7 +3143,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
         }
         log_session_container_summary("Solo SessionStart");
     }
-    else if (matches_opcode(packet, Packet::SESSION_KEEPALIVE))
+    else if (matches_lane_mirrored_opcode(packet, m_protocol_lane, Packet::SESSION_KEEPALIVE))
     {
         // KEEPALIVE receive handler: branch by payload length
         //   32 bytes → unified keepalive reply (v2): KeepAliveV2AckFrame; provides
@@ -3166,7 +3190,8 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 }
 
                 if (get_session_manager()) {
-                    get_session_manager()->record_keepalive();
+                    get_session_manager()->record_session_extension(
+                        SessionManager::SessionExtensionSource::KEEPALIVE_ACK);
                 }
             }
         } else if (packet.m_data && packet.m_length == 4) {
@@ -3174,8 +3199,11 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             uint32_t remaining_timeout = serialization::read_uint32_le(*packet.m_data);
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
 
-            if (get_session_manager()) {
-                get_session_manager()->record_keepalive();
+            if (remaining_timeout == 0) {
+                m_logger->warn("[Solo Session] Legacy SESSION_KEEPALIVE reported expired timeout — ignoring freshness extension");
+            } else if (get_session_manager()) {
+                get_session_manager()->record_session_extension(
+                    SessionManager::SessionExtensionSource::KEEPALIVE_ACK);
             }
         } else if (packet.m_length != 0) {
             // Unexpected payload length — ignore gracefully
@@ -3508,6 +3536,10 @@ void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Conne
                                                   ack.stake_height,
                                                   ack.hash_tip_lo32,
                                                   ack.fork_score);
+            if (get_session_manager()) {
+                get_session_manager()->record_session_extension(
+                    SessionManager::SessionExtensionSource::KEEPALIVE_ACK);
+            }
 
             // Fork detection: compare node's chain tip against the miner's own locally
             // stored prevHash lo32 (NOT the echoed value from the ACK, which could be
@@ -3555,14 +3587,19 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
             if (handle_session_id_mismatch(ack.session_id))
                 return;
 
-            record_session_event(SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED,
-                                 "session status ack accepted");
-
             m_last_session_status_ack      = ack;
             m_last_session_status_ack_time = std::chrono::steady_clock::now();
 
             const auto decision = SessionStatusPolicy::evaluate_ack_health(
                 { ack.uptime_seconds, ack.IsAuthenticated() });
+            if (!decision.force_reauth) {
+                record_session_event(SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED,
+                                     "session status ack accepted");
+                if (get_session_manager()) {
+                    get_session_manager()->record_session_extension(
+                        SessionManager::SessionExtensionSource::STATUS_ACK);
+                }
+            }
             if (decision.force_reauth) {
                 record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
                                      "session status ack unhealthy: " + decision.reason);

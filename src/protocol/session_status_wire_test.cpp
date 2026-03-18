@@ -9,9 +9,11 @@
  *  4. SESSION_STATUS opcode constants match LLL-TAO values
  *  5. SessionStatusAckFrame helper predicates work correctly
  *  6. IsSessionStatusOpcode() helper function
+ * 14. SessionManager emits lane-correct SESSION_STATUS packet headers
  */
 
 #include "LLP/include/colin_ping_protocol.h"
+#include "protocol/session_manager.hpp"
 #include "protocol/session_ingress_gate.hpp"
 #include "protocol_lane.hpp"
 #include <iostream>
@@ -397,6 +399,33 @@ void test_session_ingress_gate_requires_authenticated_session() {
 }
 
 // ============================================================================
+// Test 14: SessionManager emits lane-correct SESSION_STATUS packet headers
+// ============================================================================
+void test_session_status_packet_builder_obeys_lane_width() {
+    std::cout << "\nTest 14: SessionManager SESSION_STATUS builder obeys lane width\n";
+
+    SessionManager legacy_manager(24, nullptr);
+    legacy_manager.set_protocol_lane(ProtocolLane::LEGACY);
+    legacy_manager.start_session(0x01020304u);
+    auto legacy_wire = legacy_manager.build_session_status_packet(false, true, true, false);
+    print_test_result("Legacy SESSION_STATUS wire size is 13 bytes (1+4+8)",
+                      legacy_wire && legacy_wire->size() == 13u);
+    print_test_result("Legacy SESSION_STATUS wire[0] == 0xDB",
+                      legacy_wire && (*legacy_wire)[0] == SessionStatusOpcodes::SESSION_STATUS_LEGACY);
+
+    SessionManager stateless_manager(24, nullptr);
+    stateless_manager.set_protocol_lane(ProtocolLane::STATELESS);
+    stateless_manager.start_session(0x01020304u);
+    auto stateless_wire = stateless_manager.build_session_status_packet(false, true, true, false);
+    print_test_result("Stateless SESSION_STATUS wire size is 14 bytes (2+4+8)",
+                      stateless_wire && stateless_wire->size() == 14u);
+    print_test_result("Stateless SESSION_STATUS wire[0:1] == 0xD0DB",
+                      stateless_wire &&
+                      (*stateless_wire)[0] == static_cast<uint8_t>(SessionStatusOpcodes::SESSION_STATUS >> 8) &&
+                      (*stateless_wire)[1] == static_cast<uint8_t>(SessionStatusOpcodes::SESSION_STATUS & 0xFF));
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -417,6 +446,7 @@ int main() {
     test_session_ingress_gate_rejects_stale_owner_session_id();
     test_session_ingress_gate_rejects_lane_mismatch();
     test_session_ingress_gate_requires_authenticated_session();
+    test_session_status_packet_builder_obeys_lane_width();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

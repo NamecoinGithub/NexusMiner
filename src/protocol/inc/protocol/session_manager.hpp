@@ -73,6 +73,11 @@ public:
         SUBMIT_REJECTED
     };
 
+    enum class SessionExtensionSource {
+        KEEPALIVE_ACK,
+        STATUS_ACK
+    };
+
     struct SessionEvent {
         uint64_t timestamp{0};
         SessionEventKind kind{SessionEventKind::AUTH_INIT};
@@ -211,6 +216,15 @@ public:
      * @brief Record keepalive ping sent
      */
     void record_keepalive();
+
+    /**
+     * @brief Record an accepted session-extension acknowledgement.
+     *
+     * KEEPALIVE acknowledgements refresh keepalive timing and counters.
+     * SESSION_STATUS acknowledgements refresh session activity without
+     * mutating keepalive cadence bookkeeping.
+     */
+    void record_session_extension(SessionExtensionSource source);
     
     /**
      * @brief Update session state

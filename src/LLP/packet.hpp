@@ -68,7 +68,8 @@ namespace nexusminer
 		// Helper to determine if a legacy opcode is header-only (no length field follows)
 		// Header-only opcodes: requests (128-199), simple responses (200-203),
 		// MINER_READY (216), PING (253), CLOSE (254)
-		// Data opcodes (0-127), NEW_ROUND (204), OLD_ROUND (205), and auth opcodes (206-218, except MINER_READY)
+		// Data opcodes (0-127), NEW_ROUND (204), OLD_ROUND (205), and auth/session opcodes
+		// (206-220, except MINER_READY) always have length+payload
 		// always have length+payload
 		inline bool is_legacy_header_only_opcode(uint8_t opcode) {
 			// Data packets (0-127): always have length + payload
@@ -79,7 +80,7 @@ namespace nexusminer
 			if (opcode >= 200 && opcode <= 203) return true;
 			// NEW_ROUND (204) and OLD_ROUND (205): have length + payload (12 bytes preferred, legacy 16 bytes)
 			if (opcode == LLP::NEW_ROUND || opcode == LLP::OLD_ROUND) return false;
-			// Auth/session range (206-218): have length + payload, EXCEPT MINER_READY
+			// Auth/session range (206-220): have length + payload, EXCEPT MINER_READY
 			if (opcode == LLP::MINER_READY) return true;  // MINER_READY is header-only
 			if (opcode >= LEGACY_AUTH_OPCODE_MIN && opcode <= LLP::HASH_BLOCK_AVAILABLE) return false;
 			// SESSION_STATUS (219) and SESSION_STATUS_ACK (220): data-bearing (mirror-mapped opcodes)
@@ -470,7 +471,7 @@ namespace nexusminer
 		 * @brief Check if packet header is part of stateless mining protocol with payloads
 		 * 
 		 * Stateless mining protocol packets carry payloads despite having headers >= 128.
-		 * Covers the full consolidated opcode range 206-218:
+		 * Covers the full consolidated opcode range 206-220:
 		 * 
 		 * Core auth/session packets (206-214):
 		 * - CHANNEL_ACK (206): 1-byte channel confirmation payload
@@ -489,8 +490,12 @@ namespace nexusminer
 		 * Push notification packets with payloads (217-218):
 		 * - PRIME_BLOCK_AVAILABLE (217): 12-byte push notification payload
 		 * - HASH_BLOCK_AVAILABLE (218): 12-byte push notification payload
+		 *
+		 * Session status packets with payloads (219-220):
+		 * - SESSION_STATUS (219): 8-byte lane-health/status request payload
+		 * - SESSION_STATUS_ACK (220): 16-byte lane-health/status ack payload
 		 * 
-		 * @return true if packet header is in the stateless mining protocol range (206-218),
+		 * @return true if packet header is in the stateless/session protocol range (206-220),
 		 *         including header-only packets like MINER_READY (216)
 		 * 
 		 * @note This method identifies packets that may require length field parsing.
@@ -499,7 +504,8 @@ namespace nexusminer
 		 */
 		inline bool is_auth_packet() const
 		{
-			return (m_header >= CHANNEL_ACK && m_header <= HASH_BLOCK_AVAILABLE);
+			return (m_header >= CHANNEL_ACK &&
+			        m_header <= ::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY);
 		}
 
 		/**
@@ -540,12 +546,12 @@ namespace nexusminer
 			if (m_header < 128 && m_length == 0)
 				return "INVALID: Data packet (header < 128) requires payload but length is 0";
 			
-			// Stateless mining protocol packets (206-218): carry payloads with length field
+			// Consolidated auth/session packets (206-220): carry payloads with length field
 			if (is_auth_packet() && m_length > 0)
-				return "VALID: Stateless mining protocol packet with payload";
+				return "VALID: auth/session packet with payload";
 			
 			if (is_auth_packet() && m_length == 0)
-				return "INVALID: Stateless mining protocol packet (206-218) requires payload but length is 0";
+				return "INVALID: auth/session packet (206-220) requires payload but length is 0";
 			
 			// Generic request packets (>= 128, < 255): no payload
 			if (m_header >= 128 && m_header < 255 && m_length == 0)
@@ -594,7 +600,7 @@ namespace nexusminer
 			if (m_header < 128 && m_length > 0)
 				return true;
 
-			// Stateless mining protocol packets (206-218): carry payloads with length field
+			// Consolidated auth/session packets (206-220): carry payloads with length field
 			if (is_auth_packet() && m_length > 0)
 				return true;
 
@@ -995,7 +1001,7 @@ namespace nexusminer
 			packet.m_header = header_byte;
 			
 			// Check if this opcode is header-only (no length field follows on the wire)
-			// Data packets (< 128) and most auth packets (206-218) have length + payload
+			// Data packets (< 128) and most auth/session packets (206-220) have length + payload
 			// Request/response packets and MINER_READY/PING are header-only
 			if (PacketConstants::is_legacy_header_only_opcode(header_byte))
 			{
