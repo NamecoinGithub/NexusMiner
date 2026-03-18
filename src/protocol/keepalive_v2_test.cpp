@@ -271,11 +271,14 @@ void test_set_protocol_lane_no_deadlock_and_updates_state() {
                       info.active_lane == ProtocolLane::STATELESS);
 
     auto wire = mgr->build_keepalive_packet();
-    constexpr uint16_t expected_opcode = nexusminer::LLP::StatelessMining::SESSION_KEEPALIVE;
+    // Stateless lane now uses KEEPALIVE_V2 (0xD100) — the proper un-mirrored
+    // stateless keepalive opcode — instead of the mirror-mapped SESSION_KEEPALIVE
+    // (0xD0D4).  The node responds with KEEPALIVE_V2_ACK (0xD101).
+    constexpr uint16_t expected_opcode = ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2;  // 0xD100
     bool stateless_header = wire && wire->size() >= 2 &&
                             (*wire)[0] == static_cast<uint8_t>(expected_opcode >> 8) &&
                             (*wire)[1] == static_cast<uint8_t>(expected_opcode & 0xFF);
-    print_test_result("Keepalive packet uses stateless mirrored opcode header", stateless_header);
+    print_test_result("Keepalive packet uses KEEPALIVE_V2 (0xD100) opcode header", stateless_header);
 }
 
 // ============================================================================

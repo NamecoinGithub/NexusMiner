@@ -399,6 +399,7 @@ private:
     uint16_t m_keepalive_interval_hours;
     bool m_preserve_genesis_on_disconnect;  // Preserve genesis across sessions for reconnection
     ProtocolLane m_protocol_lane;  // Protocol lane for packet generation
+    mutable uint32_t m_keepalive_sequence{0};  // Monotonic sequence counter for KEEPALIVE_V2 frames
 
     std::shared_ptr<asio::io_context> m_io_context;
     std::shared_ptr<asio::steady_timer> m_keepalive_timer;

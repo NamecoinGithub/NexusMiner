@@ -359,11 +359,13 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
     uint32_t session_id;
     ProtocolLane lane;
     std::array<uint8_t, 4> prevblock_suffix;
+    uint32_t sequence;
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
         session_id = m_session.session_id;
         lane = m_protocol_lane;
         prevblock_suffix = m_session.prevblock_suffix;
+        sequence = ++m_keepalive_sequence;
     }
 
     if (session_id == 0) {
@@ -378,22 +380,32 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
         return network::Shared_payload{};
     }
 
-    // v2 keepalive payload: [session_id(4 LE)][miner_prevblock_suffix(4 raw bytes)]
+    if (lane == ProtocolLane::STATELESS) {
+        // Stateless lane: use KEEPALIVE_V2 (0xD100) — the proper stateless-only keepalive.
+        // Payload: [sequence(4 BE)][hashPrevBlock_lo32(4 BE)]
+        // The node responds with KEEPALIVE_V2_ACK (0xD101) carrying the 32-byte unified ACK frame.
+        ::LLP::KeepAliveV2Frame frame;
+        frame.sequence = sequence;
+        // Derive hashPrevBlock_lo32 from the stored prevblock_suffix (first 4 bytes, big-endian)
+        frame.hashPrevBlock_lo32 =
+            (static_cast<uint32_t>(prevblock_suffix[0]) << 24) |
+            (static_cast<uint32_t>(prevblock_suffix[1]) << 16) |
+            (static_cast<uint32_t>(prevblock_suffix[2]) <<  8) |
+             static_cast<uint32_t>(prevblock_suffix[3]);
+
+        auto v2_payload = frame.Serialize();
+        Packet packet{ static_cast<uint16_t>(::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2),
+                       std::make_shared<network::Payload>(v2_payload) };
+        return packet.get_bytes();
+    }
+
+    // Legacy lane: SESSION_KEEPALIVE (212) with [session_id(4 LE)][prevblock_suffix(4 raw bytes)]
     std::vector<uint8_t> payload;
     serialization::append_uint32_le(payload, session_id);
     payload.insert(payload.end(), prevblock_suffix.begin(), prevblock_suffix.end());
 
-    // Build lane-aware packet based on protocol lane
-    // On stateless lane, use mirror-mapped SESSION_KEEPALIVE (0xD0D4)
-    // On legacy lane, use legacy SESSION_KEEPALIVE (212)
-    bool use_stateless_opcode = (lane == ProtocolLane::STATELESS);
-
-    Packet packet = use_stateless_opcode
-        ? Packet{ LLP::StatelessMining::SESSION_KEEPALIVE,  // already uint16_t
-                  std::make_shared<network::Payload>(payload) }
-        : Packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE),
-                  std::make_shared<network::Payload>(payload) };
-
+    Packet packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE),
+                   std::make_shared<network::Payload>(payload) };
     return packet.get_bytes();
 }
 

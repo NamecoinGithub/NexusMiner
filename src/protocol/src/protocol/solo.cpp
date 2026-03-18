@@ -730,7 +730,13 @@ network::Shared_payload Solo::login(Login_handler handler)
     network::Payload auth_payload;
     
     // ═══════════════════════════════════════════════════════════
-    // STEP 1: hashGenesis FIRST (32 bytes) - enables key derivation
+    // STEP 1: hashGenesis (32 bytes) — only prepended when ChaCha20
+    //         key-derivation is active.  The genesis-first wire format
+    //         was introduced alongside ChaCha20 session-key derivation;
+    //         nodes that have reverted ChaCha20 support expect the legacy
+    //         format (pubkey-first, no genesis prefix) and will respond
+    //         with a zero-length MINER_AUTH_CHALLENGE when they encounter
+    //         an unexpected genesis prefix.
     // ═══════════════════════════════════════════════════════════
     std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
     if (m_session_context) {
@@ -739,9 +745,6 @@ network::Shared_payload Solo::login(Login_handler handler)
         m_session_context->set_channel_state(m_channel, false, false);
         m_session_context->mark_activity();
     }
-    
-    // Genesis goes FIRST in the packet
-    auth_payload.insert(auth_payload.end(), tritium_genesis.begin(), tritium_genesis.end());
     
     // ═══════════════════════════════════════════════════════════
     // STEP 2: Prepare pubkey (optionally ChaCha20 wrapped)
@@ -811,7 +814,17 @@ network::Shared_payload Solo::login(Login_handler handler)
     }
     
     // ═══════════════════════════════════════════════════════════
-    // STEP 3: pubkey_len + pubkey
+    // STEP 3: Conditionally prepend genesis (only when ChaCha20
+    //         wrapping was actually applied).  The genesis-first
+    //         wire format is only understood by nodes that also
+    //         support ChaCha20 session-key derivation.
+    // ═══════════════════════════════════════════════════════════
+    if (wrapped) {
+        auth_payload.insert(auth_payload.end(), tritium_genesis.begin(), tritium_genesis.end());
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // STEP 4: pubkey_len + pubkey
     // ═══════════════════════════════════════════════════════════
     uint16_t pubkey_len = static_cast<uint16_t>(pubkey_to_send.size());
     auth_payload.push_back(static_cast<uint8_t>((pubkey_len >> 8) & 0xFF));
@@ -819,7 +832,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     auth_payload.insert(auth_payload.end(), pubkey_to_send.begin(), pubkey_to_send.end());
     
     // ═══════════════════════════════════════════════════════════
-    // STEP 4: miner_id_len + miner_id
+    // STEP 5: miner_id_len + miner_id
     // ═══════════════════════════════════════════════════════════
     std::string miner_id = m_miner_id.empty() ? "NexusMiner" : m_miner_id;
     uint16_t miner_id_len = static_cast<uint16_t>(miner_id.size());
@@ -848,10 +861,12 @@ network::Shared_payload Solo::login(Login_handler handler)
     // ═══════════════════════════════════════════════════════════
     m_logger->info("");
     m_logger->info("═══════════════════════════════════════════════════════════");
-    m_logger->info("    MINER_AUTH_INIT (Genesis-First Protocol)");
+    m_logger->info("    MINER_AUTH_INIT ({})",
+                   wrapped ? "Genesis-First / ChaCha20-wrapped" : "Legacy format");
     m_logger->info("═══════════════════════════════════════════════════════════");
-    m_logger->info("  Genesis:     {} bytes ({})", tritium_genesis.size(),
-                   has_valid_genesis ? "VALID - key derivation enabled" : "ZERO");
+    m_logger->info("  Genesis:     {} ({})",
+                   wrapped ? "prepended" : "omitted",
+                   has_valid_genesis ? "VALID genesis available" : "no valid genesis");
     m_logger->info("  Public Key:  {} bytes {}", pubkey_len,
                    wrapped ? "(ChaCha20 wrapped)" : "(unwrapped)");
     m_logger->info("  Miner ID:    '{}'", miner_id);
@@ -3182,6 +3197,11 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             if (get_session_manager()) {
                 get_session_manager()->record_keepalive();
             }
+            // Update HeightTracker liveness so the session liveness check does not
+            // falsely fire when a v1 node responds with a 4-byte remaining-timeout
+            // payload.  Heights are unknown in v1, so pass zeros — only
+            // last_keepalive_ack_at matters for the liveness timer.
+            m_height_tracker.OnKeepaliveResponse(0, 0, 0, 0, 0, 0);
         } else if (packet.m_length != 0) {
             // Unexpected payload length — ignore gracefully
             m_logger->debug("[Solo Session] Unexpected KEEPALIVE payload length {} — ignored", packet.m_length);
@@ -3890,9 +3910,16 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     
     // Defensive bounds check
     if (!packet.m_data || packet.m_data->size() < 2) {
-        m_logger->error("[Solo Phase 2] MINER_AUTH_CHALLENGE too small: {} bytes", 
+        m_logger->error("[Solo Phase 2] MINER_AUTH_CHALLENGE too small: {} bytes — "
+                       "possible auth protocol mismatch; closing connection for clean reconnect",
                        packet.m_data ? packet.m_data->size() : 0);
         reset_auth_state();
+        // Close the connection so Worker_manager triggers a clean reconnect+re-auth
+        // cycle.  A zero-length challenge means the node cannot continue this auth
+        // handshake (possible protocol version mismatch after revert sequence).
+        if (m_connection) {
+            m_connection->close();
+        }
         return;
     }
     

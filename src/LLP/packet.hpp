@@ -53,10 +53,14 @@ namespace nexusminer
 		static constexpr uint16_t CORRUPT_OPCODE_LEGACY_SHIFT = 0xCF00;      // Observed byte-order corruption
 		static constexpr uint16_t CORRUPT_OPCODE_RANGE_OVERFLOW = 0xD400;    // Observed range overflow
 		
-		// Helper function to check if a uint16_t opcode is a stateless mining opcode
-		// Returns true if opcode is in range [0xD000, 0xD0FF] (mirror-mapped range)
+		// Helper function to check if a uint16_t opcode is a stateless mining opcode.
+		// Returns true for mirror-mapped opcodes [0xD000, 0xD0FF] AND for un-mirrored
+		// stateless-only data opcodes (KEEPALIVE_V2=0xD100, KEEPALIVE_V2_ACK=0xD101,
+		// PING_DIAG=0xD0E0, PONG_DIAG=0xD0E1).
+		// This is used by Packet constructors to set m_is_uint16_opcode correctly
+		// so that get_bytes() serialises the 2-byte header for ALL stateless opcodes.
 		inline bool is_stateless_opcode(uint16_t opcode) {
-			return LLP::IsStatelessOpcode(opcode);
+			return LLP::IsStatelessOpcode(opcode) || ::LLP::IsUnmirroredDataOpcode(opcode);
 		}
 		
 		// Helper function to check if a single byte is a legacy auth/session opcode
