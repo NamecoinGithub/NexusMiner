@@ -33,6 +33,17 @@ bool should_schedule_in_band_reauth(bool reconnect_in_progress,
     return !(reconnect_in_progress || (recovery_pending && recovery_epoch > 0));
 }
 
+bool should_reject_auth_challenge(size_t packet_size, uint16_t nonce_len)
+{
+    if (packet_size < 2) {
+        return true;
+    }
+    if (nonce_len == 0) {
+        return true;
+    }
+    return packet_size < static_cast<size_t>(2 + nonce_len);
+}
+
 int tests_run = 0;
 int tests_passed = 0;
 int tests_failed = 0;
@@ -47,6 +58,18 @@ void print_test_result(const char* name, bool passed)
         ++tests_failed;
         std::cout << "  [FAIL] " << name << '\n';
     }
+}
+
+void test_zero_length_auth_challenge_is_rejected()
+{
+    std::cout << "\nTest 0: zero-length MINER_AUTH_CHALLENGE is rejected\n";
+
+    print_test_result("Packet with only nonce_len field is rejected when nonce_len == 0",
+                      should_reject_auth_challenge(2, 0));
+    print_test_result("Valid non-empty nonce is not rejected by zero-length guard",
+                      !should_reject_auth_challenge(6, 4));
+    print_test_result("Incomplete non-empty nonce is still rejected",
+                      should_reject_auth_challenge(3, 4));
 }
 
 struct SimulatedSoloAuthGuard
@@ -700,6 +723,7 @@ int main()
     std::cout << "Solo Auth Resync Tests\n";
     std::cout << "========================================\n";
 
+    test_zero_length_auth_challenge_is_rejected();
     test_guard_requires_both_sources_to_be_unauthenticated();
     test_guard_resyncs_stale_local_flag_from_session_context();
     test_auth_result_success_sets_authenticated_state();
