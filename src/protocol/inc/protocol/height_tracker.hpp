@@ -57,11 +57,13 @@ constexpr bool is_channel_height(uint32_t raw_height) noexcept {
  * Push notifications, GET_ROUND, and keepalive ACKs update
  * DiagnosticObserverState only.
  *
- * GetSnapshot() backward-compat composition:
- *   channel_height = max(canonical, push, round)
- *   unified_height = max(canonical, push, round)
- * This preserves push-driven staleness detection while keepalive can never
- * regress the heights used for mining decisions.
+ * GetSnapshot() composition:
+ *   channel_height = max(canonical, push)
+ *   unified_height = max(canonical, push)
+ *   prime/hash/stake heights = last keepalive ACK telemetry
+ * This preserves push-driven staleness detection while still surfacing
+ * diagnostic keepalive channel telemetry without letting ACKs regress the
+ * heights used for mining decisions.
  *
  * Thread-safe: all public methods are protected by an internal mutex.
  * Snapshot() returns a plain-struct copy for lockless reads by callers.
@@ -229,10 +231,10 @@ public:
         uint1024_t hash_prev_block{};         ///< hashPrevBlock captured at template parse time (tip anchor)
         UpdateSource last_update_source{UpdateSource::NONE};
 
-        // ── All three channel heights, kept independently ──────────────────────
-        uint32_t prime_height{0};   ///< Prime channel height (max of canonical and push/GET_ROUND)
-        uint32_t hash_height{0};    ///< Hash channel height  (max of canonical and push/GET_ROUND)
-        uint32_t stake_height{0};   ///< Stake channel height (diagnostic/keepalive only)
+         // ── Per-channel telemetry from keepalive ACKs ───────────────────────────
+         uint32_t prime_height{0};   ///< Prime channel height from last keepalive ACK
+         uint32_t hash_height{0};    ///< Hash channel height from last keepalive ACK
+         uint32_t stake_height{0};   ///< Stake channel height from last keepalive ACK
         ChannelHeight prime_channel_height{}; ///< Typed alias of prime_height
         ChannelHeight hash_channel_height{};  ///< Typed alias of hash_height
         ChannelHeight stake_channel_height{}; ///< Typed alias of stake_height

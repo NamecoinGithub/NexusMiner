@@ -12,6 +12,8 @@
  *  7. Parsing robustness: non-32 payload lengths rejected by Parse()
  *  8. KeepAliveV2AckFrame: stake_height at bytes [24-27], fork_score at [28-31]
  *  9. KeepAliveV2AckFrame::Parse() decodes session_id as little-endian at [0-3]
+ * 10. Stateless keepalive uses 2-byte mirrored SESSION_KEEPALIVE header with 8-byte payload
+ * 11. KeepAliveV2Frame/KeepAliveV2AckFrame reject oversize buffers (fixed-size frames)
  */
 
 #include "protocol/session_manager.hpp"
@@ -184,15 +186,15 @@ void test_keepalive_parse_robustness_other_lengths() {
     std::cout << "\nTest 7: Parsing robustness: lengths < 32 rejected by KeepAliveV2AckFrame::Parse()\n";
     using ::LLP::KeepAliveV2AckFrame;
 
-    // All lengths < 32 must be rejected
-    std::vector<size_t> bad_lengths = { 0, 1, 4, 28, 31 };
+    // All lengths != 32 must be rejected
+    std::vector<size_t> bad_lengths = { 0, 1, 4, 28, 31, 33 };
     bool all_rejected = true;
     for (size_t len : bad_lengths) {
         std::vector<uint8_t> payload(len, 0xFF);
         KeepAliveV2AckFrame frame;
         if (frame.Parse(payload)) { all_rejected = false; break; }
     }
-    print_test_result("Lengths < 32 all rejected by Parse()", all_rejected);
+    print_test_result("Lengths != 32 all rejected by Parse()", all_rejected);
 
     // Confirm 32-byte buffer is accepted
     std::vector<uint8_t> good(32, 0);
@@ -247,10 +249,38 @@ void test_parse_session_id_le() {
 }
 
 // ============================================================================
-// Test 10: set_protocol_lane returns promptly and updates session + wire lane
+// Test 10: Stateless lane uses mirrored SESSION_KEEPALIVE header and 2+4+8 wire size
+// ============================================================================
+void test_stateless_keepalive_wire_format() {
+    std::cout << "\nTest 10: Stateless keepalive wire format\n";
+    auto bytes = make_keepalive_bytes(0x12345678, ProtocolLane::STATELESS);
+    constexpr uint16_t expected_opcode = nexusminer::LLP::StatelessMining::SESSION_KEEPALIVE;
+
+    bool ok = bytes.size() == 14 &&
+              bytes[0] == static_cast<uint8_t>(expected_opcode >> 8) &&
+              bytes[1] == static_cast<uint8_t>(expected_opcode & 0xFF) &&
+              bytes[2] == 0x00 && bytes[3] == 0x00 && bytes[4] == 0x00 && bytes[5] == 0x08 &&
+              read_le32(bytes, 6) == 0x12345678;
+    print_test_result("Stateless wire size == 14 (2+4+8) with mirrored SESSION_KEEPALIVE header", ok);
+}
+
+// ============================================================================
+// Test 11: KeepAliveV2 fixed-size frames reject oversize buffers
+// ============================================================================
+void test_keepalive_fixed_size_frames_reject_oversize() {
+    std::cout << "\nTest 11: KeepAliveV2 fixed-size frames reject oversize buffers\n";
+    ::LLP::KeepAliveV2Frame keepalive;
+    ::LLP::KeepAliveV2AckFrame ack;
+
+    print_test_result("KeepAliveV2Frame rejects 9-byte payload", !keepalive.Parse(std::vector<uint8_t>(9, 0)));
+    print_test_result("KeepAliveV2AckFrame rejects 33-byte payload", !ack.Parse(std::vector<uint8_t>(33, 0)));
+}
+
+// ============================================================================
+// Test 12: set_protocol_lane returns promptly and updates session + wire lane
 // ============================================================================
 void test_set_protocol_lane_no_deadlock_and_updates_state() {
-    std::cout << "\nTest 10: set_protocol_lane does not deadlock and updates packet lane\n";
+    std::cout << "\nTest 12: set_protocol_lane does not deadlock and updates packet lane\n";
 
     auto mgr = std::make_shared<SessionManager>(24, nullptr);
     mgr->start_session(0x01020304);
@@ -300,6 +330,8 @@ int main() {
     test_keepalive_parse_robustness_other_lengths();
     test_keepalive_v2_ack_frame_layout();
     test_parse_session_id_le();
+    test_stateless_keepalive_wire_format();
+    test_keepalive_fixed_size_frames_reject_oversize();
     test_set_protocol_lane_no_deadlock_and_updates_state();
 
     std::cout << "\n========================================\n";

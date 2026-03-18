@@ -346,7 +346,7 @@ namespace LLP
             return KeepAliveV2Opcodes::KEEPALIVE_V2_PAYLOAD_SIZE;     // 8
 
         if(opcode == KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
-            return KeepAliveV2Opcodes::KEEPALIVE_V2_ACK_PAYLOAD_SIZE; // 28
+            return KeepAliveV2Opcodes::KEEPALIVE_V2_ACK_PAYLOAD_SIZE; // 32
 
         if(opcode == ColinDiagOpcodes::PING_DIAG
         || opcode == ColinDiagOpcodes::PONG_DIAG)
@@ -410,7 +410,7 @@ namespace LLP
         /** Parse — deserialize 8-byte wire buffer **/
         bool Parse(const std::vector<uint8_t>& data)
         {
-            if(data.size() < 8) return false;
+            if(data.size() != PAYLOAD_SIZE) return false;
             sequence           = (uint32_t(data[0])<<24)|(uint32_t(data[1])<<16)
                                |(uint32_t(data[2])<<8)  | uint32_t(data[3]);
             hashPrevBlock_lo32 = (uint32_t(data[4])<<24)|(uint32_t(data[5])<<16)
@@ -462,7 +462,7 @@ namespace LLP
         /** Parse — unified 32-byte wire format, used on BOTH SESSION_KEEPALIVE and KEEPALIVE_V2_ACK paths **/
         bool Parse(const std::vector<uint8_t>& data)
         {
-            if(data.size() < 32) return false;
+            if(data.size() != PAYLOAD_SIZE) return false;
 
             // session_id: little-endian
             session_id = static_cast<uint32_t>(data[0])

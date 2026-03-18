@@ -475,24 +475,24 @@ void test_pre_push_template_identified_correctly() {
 }
 
 // ============================================================================
-// Test 14: OnKeepaliveResponse — keepalive sets diagnostic fields only
-//          (unified_height and channel_height in snapshot come from canonical/push)
+// Test 14: OnKeepaliveResponse — keepalive leaves unified/channel_height alone
+//          while surfacing per-channel telemetry in the snapshot
 // ============================================================================
 void test_on_keepalive_response_unified() {
-    std::cout << "\nTest 14: OnKeepaliveResponse sets diagnostic fields (not unified/channel_height)\n";
+    std::cout << "\nTest 14: OnKeepaliveResponse keeps unified/channel_height canonical while exposing telemetry\n";
     HeightTracker tracker;
     // Set channel to Hash (2) so channel_height can be verified
     tracker.OnTemplateReceived(2, 101);
     tracker.OnKeepaliveResponse(6000, 450, 800, 999, 0xCAFEBABEu, 3);
 
     auto snap = tracker.GetSnapshot();
-    // Keepalive heights must NOT appear in the snapshot (they are diagnostic only)
+    // Keepalive must not drive unified/channel_height, but per-channel telemetry is surfaced.
     print_test_result("unified_height == 0 (keepalive does not set canonical)",
                       snap.unified_height == 0);
-    print_test_result("prime_height == 0 (keepalive does not set canonical)",
-                      snap.prime_height == 0);
-    print_test_result("hash_height == 0 (keepalive does not set canonical)",
-                      snap.hash_height == 0);
+    print_test_result("prime_height == 450 from keepalive telemetry",
+                      snap.prime_height == 450);
+    print_test_result("hash_height == 800 from keepalive telemetry",
+                      snap.hash_height == 800);
     print_test_result("channel_height == 0 (keepalive does not set canonical)",
                       snap.channel_height == 0);
     print_test_result("stake_height == 999",    snap.stake_height == 999);
@@ -513,7 +513,7 @@ void test_on_keepalive_response_unified() {
 
 // ============================================================================
 // Test 15: OnKeepaliveResponse — legacy path (hash_tip_lo32=0, fork_score=0)
-//          is safe and does NOT corrupt canonical heights
+//          is safe, leaves canonical heights untouched, and still exposes telemetry
 // ============================================================================
 void test_on_keepalive_response_legacy_zeros_safe() {
     std::cout << "\nTest 15: OnKeepaliveResponse legacy zeros — safe, no canonical corruption\n";
@@ -521,13 +521,13 @@ void test_on_keepalive_response_legacy_zeros_safe() {
     tracker.OnKeepaliveResponse(6001, 451, 801, 999, 0u, 0u);
 
     auto snap = tracker.GetSnapshot();
-    // Keepalive heights must NOT appear in the snapshot
+    // Keepalive must not drive unified height, but per-channel telemetry remains visible.
     print_test_result("unified_height == 0 (keepalive does not set canonical)",
                       snap.unified_height == 0);
-    print_test_result("prime_height == 0 (keepalive does not set canonical)",
-                      snap.prime_height == 0);
-    print_test_result("hash_height == 0 (keepalive does not set canonical)",
-                      snap.hash_height == 0);
+    print_test_result("prime_height == 451 from keepalive telemetry",
+                      snap.prime_height == 451);
+    print_test_result("hash_height == 801 from keepalive telemetry",
+                      snap.hash_height == 801);
 
     // Stake and fork fields from diagnostic
     print_test_result("stake_height == 999",       snap.stake_height == 999);
@@ -581,57 +581,50 @@ void test_peak_fork_score_high_water_mark() {
 }
 
 // ============================================================================
-// Test 18: Push updates channel_height; prime_height is canonical-only
+// Test 18: Push updates channel_height; keepalive prime_height telemetry survives
 // ============================================================================
 void test_push_updates_per_channel_heights() {
-    std::cout << "\nTest 18: Push updates channel_height; prime_height is canonical-only\n";
+    std::cout << "\nTest 18: Push updates channel_height; keepalive prime_height telemetry survives\n";
     HeightTracker tracker;
     tracker.OnTemplateReceived(1, 101);
     tracker.OnKeepaliveResponse(5000, 100, 200, 300, 0, 0);
     auto snap1 = tracker.GetSnapshot();
-    // Keepalive prime_height does NOT appear in snapshot
-    print_test_result("prime_height == 0 after keepalive (canonical only)", snap1.prime_height == 0);
+    print_test_result("prime_height == 100 after keepalive telemetry", snap1.prime_height == 100);
     tracker.OnPushNotification(5002, 102, 0x1d00ffff);
     auto snap2 = tracker.GetSnapshot();
     print_test_result("channel_height == 102 after push", snap2.channel_height == 102);
-    // prime_height comes exclusively from canonical (OnBlockDataReceived) — push does NOT update it
-    print_test_result("prime_height == 0 after push (canonical only, not set yet)",
-                      snap2.prime_height == 0);
+    print_test_result("prime_height preserved at 100 after push", snap2.prime_height == 100);
 }
 
 // ============================================================================
-// Test 19: Push updates channel_height; hash_height is canonical-only
+// Test 19: Push updates channel_height; keepalive hash_height telemetry survives
 // ============================================================================
 void test_push_updates_hash_height() {
-    std::cout << "\nTest 19: Push updates channel_height; hash_height is canonical-only\n";
+    std::cout << "\nTest 19: Push updates channel_height; keepalive hash_height telemetry survives\n";
     HeightTracker tracker;
     tracker.OnTemplateReceived(2, 201);
     tracker.OnKeepaliveResponse(5000, 100, 200, 300, 0, 0);
     auto snap1 = tracker.GetSnapshot();
-    // Keepalive hash_height does NOT appear in snapshot
-    print_test_result("hash_height == 0 after keepalive (canonical only)", snap1.hash_height == 0);
+    print_test_result("hash_height == 200 after keepalive telemetry", snap1.hash_height == 200);
     tracker.OnPushNotification(5002, 202, 0x1d00ffff);
     auto snap2 = tracker.GetSnapshot();
     print_test_result("channel_height == 202 after push", snap2.channel_height == 202);
-    // hash_height comes exclusively from canonical (OnBlockDataReceived) — push does NOT update it
-    print_test_result("hash_height == 0 after push (canonical only, not set yet)",
-                      snap2.hash_height == 0);
+    print_test_result("hash_height preserved at 200 after push", snap2.hash_height == 200);
 }
 
 // ============================================================================
 // Test 20: Production regression (prime drift from 2331124 to 2331126)
-//          Push advances channel_height correctly; prime_height is canonical-only.
+//          Push advances channel_height correctly while keepalive telemetry remains visible.
 // ============================================================================
 void test_push_keepalive_no_regression() {
-    std::cout << "\nTest 20: Production regression — push advances channel_height; prime_height canonical-only\n";
+    std::cout << "\nTest 20: Production regression — push advances channel_height; keepalive telemetry preserved\n";
     HeightTracker tracker;
     tracker.OnTemplateReceived(1, 2331125);
     tracker.OnKeepaliveResponse(6609207, 2331124, 2193089, 2084996, 0, 0);
     tracker.OnPushNotification(6609208, 2331126, 0x0414b755);
     auto snap = tracker.GetSnapshot();
     print_test_result("channel_height == 2331126", snap.channel_height == 2331126);
-    // prime_height is canonical-only (not set without OnBlockDataReceived)
-    print_test_result("prime_height == 0 (canonical only, not set yet)", snap.prime_height == 0);
+    print_test_result("prime_height == 2331124 from keepalive telemetry", snap.prime_height == 2331124);
     print_test_result("is_template_stale (2331126 >= 2331125)", snap.is_template_stale());
 }
 

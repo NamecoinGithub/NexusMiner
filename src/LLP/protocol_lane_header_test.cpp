@@ -274,12 +274,18 @@ int main()
         uint8_t key_opcodes[] = {
             MinerLLP::SUBMIT_BLOCK, MinerLLP::SET_CHANNEL, MinerLLP::GET_BLOCK,
             MinerLLP::GET_ROUND, MinerLLP::MINER_READY,
-            MinerLLP::PRIME_BLOCK_AVAILABLE, MinerLLP::HASH_BLOCK_AVAILABLE
+            MinerLLP::PRIME_BLOCK_AVAILABLE, MinerLLP::HASH_BLOCK_AVAILABLE,
+            MinerLLP::MINER_AUTH_INIT, MinerLLP::MINER_AUTH_CHALLENGE,
+            MinerLLP::MINER_AUTH_RESPONSE, MinerLLP::MINER_AUTH_RESULT,
+            MinerLLP::SESSION_KEEPALIVE
         };
         const char* names[] = {
             "SUBMIT_BLOCK", "SET_CHANNEL", "GET_BLOCK",
             "GET_ROUND", "MINER_READY",
-            "PRIME_BLOCK_AVAILABLE", "HASH_BLOCK_AVAILABLE"
+            "PRIME_BLOCK_AVAILABLE", "HASH_BLOCK_AVAILABLE",
+            "MINER_AUTH_INIT", "MINER_AUTH_CHALLENGE",
+            "MINER_AUTH_RESPONSE", "MINER_AUTH_RESULT",
+            "SESSION_KEEPALIVE"
         };
         
         bool all_roundtrip = true;
@@ -296,6 +302,30 @@ int main()
             }
         }
         print_test_result("All key opcodes survive mirror/unmirror round-trip", all_roundtrip);
+    }
+
+    // ====================================================================
+    // Test 10: Auth/session mirror-mapped headers use 2-byte stateless format
+    // ====================================================================
+    std::cout << "\nTest 10: Auth/session mirror-mapped stateless headers" << std::endl;
+    {
+        Packet auth_init(static_cast<uint16_t>(MinerLLP::StatelessMining::MINER_AUTH_INIT));
+        auto auth_init_wire = auth_init.get_bytes();
+        print_test_result("STATELESS MINER_AUTH_INIT wire == [0xD0][0xCF]",
+            auth_init_wire && auth_init_wire->size() == 2 &&
+            (*auth_init_wire)[0] == 0xD0 && (*auth_init_wire)[1] == 0xCF);
+
+        Packet auth_result(static_cast<uint16_t>(MinerLLP::StatelessMining::MINER_AUTH_RESULT));
+        auto auth_result_wire = auth_result.get_bytes();
+        print_test_result("STATELESS MINER_AUTH_RESULT wire == [0xD0][0xD2]",
+            auth_result_wire && auth_result_wire->size() == 2 &&
+            (*auth_result_wire)[0] == 0xD0 && (*auth_result_wire)[1] == 0xD2);
+
+        Packet session_keepalive(static_cast<uint16_t>(MinerLLP::StatelessMining::SESSION_KEEPALIVE));
+        auto keepalive_wire = session_keepalive.get_bytes();
+        print_test_result("STATELESS SESSION_KEEPALIVE wire == [0xD0][0xD4]",
+            keepalive_wire && keepalive_wire->size() == 2 &&
+            (*keepalive_wire)[0] == 0xD0 && (*keepalive_wire)[1] == 0xD4);
     }
 
     // ====================================================================
