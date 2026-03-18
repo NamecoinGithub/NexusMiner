@@ -3154,10 +3154,37 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
         //              heights NOT updated — HeightTracker must rely on push notifications instead
         m_logger->debug("[Solo Session] Received SESSION_KEEPALIVE response ({} bytes)", packet.m_length);
 
-        if (packet.m_data && packet.m_length == 32) {
+        std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
+
+        // EVP gate: decrypt SESSION_KEEPALIVE payload if the node encrypted it (MITM hardening).
+        if (m_session_id != 0 &&
+            ChaCha20EVPManager::Get().is_evp_active() &&
+            ChaCha20EVPManager::Get().has_session_key(m_session_id))
+        {
+            const bool stateless = (packet.m_is_uint16_opcode);
+            // opcode as AAD — must match what the node used on the encrypt side
+            static constexpr uint16_t ka_mirror = LLP::MirrorOpcode(
+                static_cast<uint8_t>(Packet::SESSION_KEEPALIVE));
+            static const std::vector<uint8_t> ka_aad_stateless{
+                static_cast<uint8_t>(ka_mirror & 0xFF),
+                static_cast<uint8_t>((ka_mirror >> 8) & 0xFF)
+            };
+            static const std::vector<uint8_t> ka_aad_legacy{
+                static_cast<uint8_t>(Packet::SESSION_KEEPALIVE)
+            };
+            const auto& aad = stateless ? ka_aad_stateless : ka_aad_legacy;
+            auto dec = ChaCha20EVPManager::Get().decrypt_packet(m_session_id, payload, aad);
+            if (!dec.success) {
+                m_logger->error("[Solo] EVP decrypt failed for SESSION_KEEPALIVE: {}", dec.error_message);
+                return;
+            }
+            payload = std::move(dec.data);
+        }
+
+        if (!payload.empty() && payload.size() == 32) {
             // ── Unified 32-byte keepalive reply — parse using KeepAliveV2AckFrame ──
             ::LLP::KeepAliveV2AckFrame unified;
-            if (unified.Parse(*packet.m_data))
+            if (unified.Parse(payload))
             {
                 PacketIngressPreflightOptions preflight;
                 preflight.owner = &m_last_keepalive_request_owner;
@@ -3195,17 +3222,17 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     get_session_manager()->record_keepalive();
                 }
             }
-        } else if (packet.m_data && packet.m_length == 4) {
+        } else if (!payload.empty() && payload.size() == 4) {
             // ── KEEPALIVE v1: remaining timeout (4 bytes LE) ─────────────────────
-            uint32_t remaining_timeout = serialization::read_uint32_le(*packet.m_data);
+            uint32_t remaining_timeout = serialization::read_uint32_le(payload);
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
 
             if (get_session_manager()) {
                 get_session_manager()->record_keepalive();
             }
-        } else if (packet.m_length != 0) {
+        } else if (!payload.empty()) {
             // Unexpected payload length — ignore gracefully
-            m_logger->debug("[Solo Session] Unexpected KEEPALIVE payload length {} — ignored", packet.m_length);
+            m_logger->debug("[Solo Session] Unexpected KEEPALIVE payload length {} — ignored", payload.size());
         }
     }
     else if (matches_opcode(packet, Packet::MINER_REWARD_RESULT))
@@ -3492,8 +3519,27 @@ void Solo::on_ping_diag(Packet const& packet, std::shared_ptr<network::Connectio
 
 void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
-        /* Exact payload size enforcement for KEEPALIVE_V2_ACK (32 bytes) */
         std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
+
+        // EVP gate: decrypt KEEPALIVE_V2_ACK payload if the node encrypted it (MITM hardening).
+        if (m_session_id != 0 &&
+            ChaCha20EVPManager::Get().is_evp_active() &&
+            ChaCha20EVPManager::Get().has_session_key(m_session_id))
+        {
+            // AAD = KEEPALIVE_V2_ACK opcode bytes (LE of 0xD101)
+            static const std::vector<uint8_t> ack_aad{
+                static_cast<uint8_t>(::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK & 0xFF),
+                static_cast<uint8_t>((::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK >> 8) & 0xFF)
+            };
+            auto dec = ChaCha20EVPManager::Get().decrypt_packet(m_session_id, payload, ack_aad);
+            if (!dec.success) {
+                m_logger->error("[KEEPALIVE_V2] EVP decrypt failed for KEEPALIVE_V2_ACK: {}", dec.error_message);
+                return;
+            }
+            payload = std::move(dec.data);
+        }
+
+        /* Exact payload size enforcement for KEEPALIVE_V2_ACK (32 bytes) */
         uint32_t nExpected = ::LLP::GetExpectedPayloadSize(::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK);
         if(payload.size() != nExpected)
         {
