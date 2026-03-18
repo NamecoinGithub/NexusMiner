@@ -44,9 +44,9 @@ public:
 private:
 
     void run();
-    double getDifficulty(uint1k p);
+    double getDifficulty(const uint1k& p);
     double getNetworkDifficulty();
-    bool difficulty_check(uint1k p);
+    bool difficulty_check(const uint1k& p);
     //std::uint64_t leading_zero_mask();
     bool isPrime(uint1k p);
     void fermat_performance_test();
@@ -87,8 +87,8 @@ private:
     void generate_seive(uint1k);
     void analyze_chains();
     void mine_region(uint1k);
-    static LLC::CBigNum boost_uint1024_t_to_CBignum(uint1k);
-    static uint1024_t boost_uint1024_t_to_uint1024_t(uint1k);
+    static LLC::CBigNum boost_uint1024_t_to_CBignum(const uint1k&);
+    static uint1024_t boost_uint1024_t_to_uint1024_t(const uint1k&);
 
 
     std::vector<bool>m_sieve;
