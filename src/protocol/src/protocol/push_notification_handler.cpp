@@ -80,9 +80,19 @@ void PushNotificationHandler::handle_push_notification(
         m_logger->info("[Solo Push]   Difficulty: 0x{:08x}", difficulty);
     }
 
+    // Parse hashPrevBlock from extended payload for hash validation
+    uint1024_t notification_hash_prev_block{0};
+    bool has_hash_prev_block = false;
+
     if (is_extended)
     {
         // bytes [12-139]: hashPrevBlock (128 bytes, little-endian uint1024_t)
+        // Extract the 128-byte hash for comparison with current template
+        std::vector<uint8_t> hash_bytes(packet.m_data->begin() + 12,
+                                        packet.m_data->begin() + 140);
+        notification_hash_prev_block.SetBytes(hash_bytes);
+        has_hash_prev_block = true;
+
         // Log first 8 bytes as hex for cross-reference with node Guard 2 logs
         std::string prev_hash_hex;
         for (std::size_t i = 12; i < std::min(packet.m_data->size(), std::size_t(20)); ++i) {
@@ -113,6 +123,52 @@ void PushNotificationHandler::handle_push_notification(
     {
         // Take one snapshot for all decisions in this block.
         auto snap = height_tracker ? height_tracker->GetSnapshot() : HeightTracker::Snapshot{};
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // CRITICAL FIX: Cross-validate hashPrevBlock from notification vs template
+        // ═══════════════════════════════════════════════════════════════════════
+        // If the notification includes hashPrevBlock (extended stateless payload),
+        // compare it with the current template's hashPrevBlock. If they don't match,
+        // the chain has reorganized or our template is stale even if heights match.
+        if (has_hash_prev_block)
+        {
+            auto const* tmpl = template_interface->get_current_template();
+            if (tmpl && tmpl->block.hashPrevBlock != notification_hash_prev_block)
+            {
+                // Hash mismatch detected - either chain reorg or template is stale
+                m_logger->warn("[Solo Push] ❌ HASH MISMATCH: Template mining on OLD block!");
+                m_logger->warn("[Solo Push]   Current template hashPrevBlock != notification hashPrevBlock");
+                m_logger->warn("[Solo Push]   This indicates a same-height chain reorg or stale template");
+                m_logger->warn("[Solo Push]   Discarding current template and requesting fresh one...");
+
+                // Log hash comparison for debugging
+                auto tmpl_hash_bytes = tmpl->block.hashPrevBlock.GetBytes();
+                auto notif_hash_bytes = notification_hash_prev_block.GetBytes();
+                std::string tmpl_hash_hex, notif_hash_hex;
+                for (size_t i = 0; i < std::min(tmpl_hash_bytes.size(), size_t(8)); ++i) {
+                    char buf[3];
+                    snprintf(buf, sizeof(buf), "%02x", tmpl_hash_bytes[i]);
+                    tmpl_hash_hex += buf;
+                }
+                for (size_t i = 0; i < std::min(notif_hash_bytes.size(), size_t(8)); ++i) {
+                    char buf[3];
+                    snprintf(buf, sizeof(buf), "%02x", notif_hash_bytes[i]);
+                    notif_hash_hex += buf;
+                }
+                m_logger->info("[Solo Push]   Template hash (first 8): {}...", tmpl_hash_hex);
+                m_logger->info("[Solo Push]   Notification hash (first 8): {}...", notif_hash_hex);
+
+                // Invalidate and request fresh template
+                template_interface->discard_template("hash_mismatch_chain_reorg");
+                request_work_fn();
+                return;  // Exit early - template is invalid
+            }
+            else if (tmpl)
+            {
+                // Hashes match - template is still valid for this block
+                m_logger->debug("[Solo Push] ✓ hashPrevBlock matches current template");
+            }
+        }
 
         // Use HeightTracker as single source of truth for staleness decision.
         // is_template_stale() returns true when channel_height >= channel_target (both non-zero).
