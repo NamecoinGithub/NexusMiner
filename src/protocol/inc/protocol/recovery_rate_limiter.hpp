@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 
+namespace nexusminer {
 namespace protocol {
 
 /**
@@ -81,5 +82,6 @@ private:
 };
 
 } // namespace protocol
+} // namespace nexusminer
 
 #endif // NEXUS_PROTOCOL_RECOVERY_RATE_LIMITER_HPP

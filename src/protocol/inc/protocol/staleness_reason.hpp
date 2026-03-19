@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string_view>
 
+namespace nexusminer {
 namespace protocol {
 
 /**
@@ -52,5 +53,6 @@ constexpr std::string_view to_string(StalenessReason reason) noexcept {
 }
 
 } // namespace protocol
+} // namespace nexusminer
 
 #endif // NEXUS_PROTOCOL_STALENESS_REASON_HPP

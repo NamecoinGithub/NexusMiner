@@ -7,6 +7,7 @@
 #include <string>
 #include <array>
 
+namespace nexusminer {
 namespace protocol {
 
 /**
@@ -88,5 +89,6 @@ private:
 };
 
 } // namespace protocol
+} // namespace nexusminer
 
 #endif // NEXUS_PROTOCOL_RECOVERY_METRICS_HPP

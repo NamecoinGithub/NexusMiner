@@ -1,5 +1,6 @@
 #include "protocol/session_identity_manager.hpp"
 
+namespace nexusminer {
 namespace protocol {
 
 void SessionIdentityManager::set_node_session_id(uint32_t id) {
@@ -50,3 +51,4 @@ void SessionIdentityManager::reset() {
 }
 
 } // namespace protocol
+} // namespace nexusminer

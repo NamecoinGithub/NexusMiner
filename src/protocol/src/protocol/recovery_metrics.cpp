@@ -4,6 +4,7 @@
 
 using json = nlohmann::json;
 
+namespace nexusminer {
 namespace protocol {
 
 void RecoveryMetricsCollector::record_recovery_complete(uint64_t duration_ms,
@@ -133,3 +134,4 @@ bool RecoveryMetricsCollector::load_from_disk(const std::string& filepath) {
 }
 
 } // namespace protocol
+} // namespace nexusminer

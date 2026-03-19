@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string_view>
 
+namespace nexusminer {
 namespace protocol {
 
 /**
@@ -51,5 +52,6 @@ constexpr std::string_view to_string(RecoveryPhase phase) noexcept {
 }
 
 } // namespace protocol
+} // namespace nexusminer
 
 #endif // NEXUS_PROTOCOL_RECOVERY_PHASE_HPP

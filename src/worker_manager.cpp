@@ -24,6 +24,7 @@
 #include "protocol/solo.hpp"
 #include "protocol/protocol_constants.hpp"
 #include "protocol/session_status_policy.hpp"
+#include "protocol/staleness_reason.hpp"
 #include <asio/steady_timer.hpp>
 #include <variant>
 #include <algorithm>
@@ -34,6 +35,28 @@
 
 namespace nexusminer
 {
+
+// Helper function to convert legacy reason string to StalenessReason enum
+namespace {
+    protocol::StalenessReason parse_staleness_reason(const char* reason) {
+        if (!reason) {
+            return protocol::StalenessReason::NONE;
+        }
+        std::string r(reason);
+        if (r == "push_staleness") {
+            return protocol::StalenessReason::PUSH_STALENESS;
+        } else if (r == "session_expired") {
+            return protocol::StalenessReason::SESSION_EXPIRED;
+        } else if (r == "health_monitor_channel_stale" || r == "health_monitor_or_validation") {
+            return protocol::StalenessReason::HEALTH_MONITOR;
+        } else if (r == "escalation_hard_recovery") {
+            return protocol::StalenessReason::FORCED_RECONNECT;
+        } else if (r == "validation_failure") {
+            return protocol::StalenessReason::VALIDATION_FAILURE;
+        }
+        return protocol::StalenessReason::NONE;
+    }
+}
 
 // Recovery window: if no template arrives within this many seconds after a
 // GET_BLOCK recovery is initiated, the health monitor escalates to hard recovery.
@@ -1440,26 +1463,28 @@ void Worker_manager::send_session_status_if_due()
 
 void Worker_manager::mark_recovery_initiated(const char* reason)
 {
-    auto now = std::chrono::steady_clock::now();
-    if (m_recovery_pending) {
-        // Already in a recovery epoch — do NOT reset the start time or increment the
-        // epoch counter.  Multiple sources (push handler, health monitor) may both
-        // call mark_recovery_initiated() for the same staleness event; only the first
-        // call anchors the 60 s recovery window.  The reason parameter is logged here
-        // for observability (operators can see all sources that noticed the staleness)
-        // but the epoch is intentionally unchanged to avoid resetting the window clock.
-        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-            now - m_recovery_started_at).count();
+    // Parse reason string to enum
+    auto staleness_reason = parse_staleness_reason(reason);
+
+    // Use new recovery state manager
+    bool is_new_epoch = m_recovery_state.mark_staleness_detected(staleness_reason);
+
+    if (!is_new_epoch) {
+        // Already in recovery - log and return (idempotent)
+        auto elapsed = m_recovery_state.get_phase_duration_ms() / 1000;
         m_logger->info("[Worker_manager] Recovery already pending (epoch {}, {}s elapsed, reason: {})",
-                       m_recovery_epoch, elapsed, reason ? reason : "unknown");
+                       m_recovery_state.get_recovery_epoch(), elapsed, reason ? reason : "unknown");
         return;
     }
+
+    // New recovery epoch started - update legacy state for compatibility
+    auto now = std::chrono::steady_clock::now();
     ++m_recovery_epoch;
     m_recovery_pending = true;
     m_recovery_started_at = now;
-    m_recovery_last_get_block_sent_at = {};         // cleared so first health-monitor check can resend
-    m_recovery_last_get_block_transmitted_at = {};  // no confirmed transmission in new epoch yet
-    m_recovery_get_block_transmitted = false;  // no confirmed transmission in new epoch yet
+    m_recovery_last_get_block_sent_at = {};
+    m_recovery_last_get_block_transmitted_at = {};
+    m_recovery_get_block_transmitted = false;
     m_next_forced_retry_due = {};
     m_forced_retry_send_timestamps.clear();
     m_forced_retry_timer_pending = false;
@@ -1468,6 +1493,10 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
         m_forced_retry_timer->cancel();
     }
     m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
+
+    // Reset rate limiter for new epoch
+    m_recovery_rate_limiter.reset();
+
     m_logger->warn("[Worker_manager] ⚑ RECOVERY INITIATED — epoch {} (reason: {})",
                    m_recovery_epoch, reason ? reason : "unknown");
     m_logger->warn("[Worker_manager]   Health monitor will NOT stop workers during channel recovery window");
@@ -1485,18 +1514,34 @@ void Worker_manager::clear_recovery_state()
     }
 
     m_logger->info("[Worker_manager] Clearing recovery state — exiting degraded mode");
+
+    // Record recovery completion in metrics
+    auto recovery_duration_ms = m_recovery_state.get_phase_duration_ms();
+    auto staleness_reason = m_recovery_state.get_last_reason();
+    auto recovery_epoch = m_recovery_state.get_recovery_epoch();
+    if (recovery_duration_ms > 0 && staleness_reason != protocol::StalenessReason::NONE) {
+        m_recovery_metrics.record_recovery_complete(recovery_duration_ms, staleness_reason, recovery_epoch);
+    }
+
+    // Record degraded mode exit
     auto now = std::chrono::steady_clock::now();
     if (m_degraded_since != std::chrono::steady_clock::time_point{}) {
         auto elapsed_ms = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(now - m_degraded_since).count());
         m_time_in_degraded_ms += elapsed_ms;
+        m_recovery_metrics.record_degraded_exit(elapsed_ms);
     }
     if (m_degraded_mode) {
         ++m_degraded_exit_total;
     }
+
+    // Reset new recovery state manager
+    m_recovery_state.reset();
+
+    // Reset legacy state for compatibility
     m_degraded_mode = false;
     m_recovery_pending = false;
-    m_template_withheld = false;  // Clear any residual soft-pause flag (defensive)
+    m_template_withheld = false;
     m_recovery_epoch = 0;
     m_recovery_started_at = {};
     m_recovery_last_get_block_sent_at = {};
@@ -1509,11 +1554,7 @@ void Worker_manager::clear_recovery_state()
     if (m_forced_retry_timer) {
         m_forced_retry_timer->cancel();
     }
-    m_degraded_since = {};  // Clear escape-ladder timer; next outage will re-anchor it
-    // Note: m_recovery_workers_spawned is intentionally NOT reset here.
-    // It is only reset in stop_all_workers() which actually destroys workers,
-    // preventing a mid-recovery clear_recovery_state() call (e.g. from a
-    // different epoch's template feed) from allowing duplicate worker creation.
+    m_degraded_since = {};
 
     auto global_stats = m_stats_collector->get_global_stats();
     global_stats.m_degraded_mode = false;
@@ -1534,30 +1575,28 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
     m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
-    
+
     // Set degraded mode flag
     bool first_entry = !m_degraded_mode;
     m_degraded_mode = true;
     m_template_withheld = false;  // Full stop supersedes soft-pause
 
-    // Record when degraded mode was first entered (only on first entry — not overwritten
-    // by subsequent stop_all_workers() calls within the same outage, so the escape ladder
-    // measures wall-clock time from the true start of the outage).
+    // Record when degraded mode was first entered
     if (m_degraded_since == std::chrono::steady_clock::time_point{}) {
         m_degraded_since = std::chrono::steady_clock::now();
     }
     if (first_entry) {
         ++m_degraded_enter_total;
+        // Record degraded mode entry in metrics
+        m_recovery_metrics.record_degraded_enter();
     }
-    
+
     // Update stats to reflect degraded mode
     auto global_stats = m_stats_collector->get_global_stats();
     global_stats.m_degraded_mode = true;
     m_stats_collector->update_global_stats(global_stats);
-    
-    // Reset all worker instances so that the next create_workers() call starts fresh
-    // without duplicating existing workers.  The shared_ptr reset() destroys the Worker
-    // object (and joins its mining thread in the destructor), effectively stopping it.
+
+    // Reset all worker instances
     for (auto& worker : m_workers) {
         worker.reset();
     }

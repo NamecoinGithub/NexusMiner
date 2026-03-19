@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 
+namespace nexusminer {
 namespace protocol {
 
 /**
@@ -89,5 +90,6 @@ private:
 };
 
 } // namespace protocol
+} // namespace nexusminer
 
 #endif // NEXUS_PROTOCOL_SESSION_IDENTITY_MANAGER_HPP

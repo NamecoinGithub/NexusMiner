@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 
+namespace nexusminer {
 namespace protocol {
 
 /**
@@ -112,5 +113,6 @@ private:
 };
 
 } // namespace protocol
+} // namespace nexusminer
 
 #endif // NEXUS_PROTOCOL_RECOVERY_STATE_MANAGER_HPP

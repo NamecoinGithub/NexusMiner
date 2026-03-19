@@ -1,5 +1,6 @@
 #include "protocol/recovery_rate_limiter.hpp"
 
+namespace nexusminer {
 namespace protocol {
 
 RecoveryRateLimiter::RecoveryRateLimiter()
@@ -78,3 +79,4 @@ void RecoveryRateLimiter::cleanup_expired_timestamps() {
 }
 
 } // namespace protocol
+} // namespace nexusminer

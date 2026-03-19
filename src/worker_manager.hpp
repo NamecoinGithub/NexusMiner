@@ -13,6 +13,10 @@
 #include "stats/mined_block_cache.hpp"
 #include "Util/include/exponential_backoff.h"
 #include "protocol/inc/protocol/protocol_constants.hpp"
+#include "protocol/inc/protocol/recovery_state_manager.hpp"
+#include "protocol/inc/protocol/recovery_metrics.hpp"
+#include "protocol/inc/protocol/session_identity_manager.hpp"
+#include "protocol/inc/protocol/recovery_rate_limiter.hpp"
 #include "node_session/inc/node_session/node_session.hpp"
 #include <asio/steady_timer.hpp>
 
@@ -132,7 +136,19 @@ private:
 
     // Failover NodeSession (optional secondary node)
     std::shared_ptr<NodeSession> m_failover_node_session;
-    
+
+    // ── Centralized Recovery Architecture ────────────────────────────────────
+    // New unified recovery state management (replaces scattered flags below)
+    protocol::RecoveryStateManager m_recovery_state;
+    protocol::RecoveryMetricsCollector m_recovery_metrics;
+    protocol::SessionIdentityManager m_session_identity;
+    protocol::RecoveryRateLimiter m_recovery_rate_limiter;
+
+    // ── Legacy Recovery State (being migrated to m_recovery_state) ───────────
+    // DEPRECATED: These flags are being gradually replaced by RecoveryStateManager.
+    // They remain for compatibility during the migration period.
+    // TODO: Remove these once migration is complete.
+
     // Degraded mode flag - set when mining is stopped due to invalid template
     bool m_degraded_mode;
 

@@ -1,5 +1,6 @@
 #include "protocol/recovery_state_manager.hpp"
 
+namespace nexusminer {
 namespace protocol {
 
 bool RecoveryStateManager::mark_staleness_detected(StalenessReason reason) {
@@ -120,3 +121,4 @@ uint64_t RecoveryStateManager::get_phase_duration_ms() const {
 }
 
 } // namespace protocol
+} // namespace nexusminer
