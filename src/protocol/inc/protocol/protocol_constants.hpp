@@ -154,8 +154,12 @@ namespace ProtocolConstants {
      * Unconditional maximum time a miner may remain in degraded mode.
      * After this limit, retry_connect() is forced regardless of any liveness
      * signals. No miner should ever be stuck in degraded mode for this long.
+     *
+     * Set to 2 hours (7200s) to allow extended recovery attempts before forcing
+     * reconnection. This prevents premature connection resets during network issues
+     * while still providing an upper bound for recovery.
      */
-    constexpr int64_t DEGRADED_MODE_HARD_LIMIT_SECONDS = 300;
+    constexpr int64_t DEGRADED_MODE_HARD_LIMIT_SECONDS = 7200;  // 2 hours
 
     /**
      * Stage 0 fast-reconnect: both-signals-dead threshold (seconds)
