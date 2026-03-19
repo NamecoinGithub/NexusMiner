@@ -8,6 +8,9 @@
 #include "block.hpp"
 #include <asio.hpp>
 #include <primesieve.hpp>
+#include <cassert>
+#include <cstring>
+#include <stdexcept>
 #include <sstream> 
 #include <boost/random.hpp>
 
@@ -15,6 +18,18 @@ namespace nexusminer
 {
 namespace gpu
 {
+namespace
+{
+constexpr std::size_t kPrimeOffsetFractionBytes = sizeof(std::uint32_t);
+constexpr std::size_t kMaxSerializedPrimeOffsets = 10;
+constexpr std::size_t kBoostUint1kLimbBytes = sizeof(boost::multiprecision::limb_type);
+
+bool has_expected_prime_offsets(const std::vector<uint8_t>& offsets)
+{
+	return offsets.size() == kMaxSerializedPrimeOffsets;
+}
+}
+
 Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config::Worker_config& config)
 	: m_io_context{ std::move(io_context) }
 	, m_logger{ spdlog::get("logger") }
@@ -287,13 +302,13 @@ void Worker_prime::run()
 		if (m_stop) break;
 		//check for winners
 		m_segmented_sieve->get_long_chains();
+		const double required_difficulty = getNetworkDifficulty();
 		//check difficulty of any chains that passed through the filter
 		for (auto x : m_segmented_sieve->m_long_chain_starts)
 		{
 			local_block.nNonce = local_nonce + x;
 			uint1k chain_start = local_base_hash + local_block.nNonce;
 			uint1024_t hashPrime = boost_uint1024_t_to_uint1024_t(chain_start);
-			double required_difficulty = getNetworkDifficulty();
 			std::vector<uint8_t> offsets;
 			double actual_difficulty = 0.0;
 
@@ -307,6 +322,18 @@ void Worker_prime::run()
 			m_logger->info("Actual difficulty {} required {}", actual_difficulty, required_difficulty);
 			if (is_valid)
 			{
+				assert(has_expected_prime_offsets(offsets) &&
+					"Expected 10 total bytes (6 prime-gap bytes + 4-byte LE fraction)");
+				if (!has_expected_prime_offsets(offsets))
+				{
+					m_logger->error(m_log_leader + "Rejecting prime candidate with malformed serialized offsets ({} bytes, expected {} total bytes = {} prime-gap bytes + {}-byte LE fraction)",
+						offsets.size(),
+						kMaxSerializedPrimeOffsets,
+						kMaxSerializedPrimeOffsets - kPrimeOffsetFractionBytes,
+						kPrimeOffsetFractionBytes);
+					continue;
+				}
+
 				//we found a valid chain.  submit it.
 				if (m_found_nonce_callback)
 				{
@@ -370,7 +397,7 @@ void Worker_prime::run()
 	}  // End of persistent thread loop
 }
 
-double Worker_prime::getDifficulty(uint1k p)
+double Worker_prime::getDifficulty(const uint1k& p)
 {
 	std::vector<uint8_t> offsets_to_test;
 	double difficulty = 0.0;
@@ -389,13 +416,13 @@ double Worker_prime::getNetworkDifficulty()
 	return m_difficulty / 10000000.0;
 }
 
-bool Worker_prime::difficulty_check(uint1k p)
+bool Worker_prime::difficulty_check(const uint1k& p)
 {
 	return getDifficulty(p) >= getNetworkDifficulty();
 }
 
 
-LLC::CBigNum Worker_prime::boost_uint1024_t_to_CBignum(uint1k p)
+LLC::CBigNum Worker_prime::boost_uint1024_t_to_CBignum(const uint1k& p)
 {
 	std::stringstream ss;
 	ss << std::hex << p;
@@ -405,15 +432,19 @@ LLC::CBigNum Worker_prime::boost_uint1024_t_to_CBignum(uint1k p)
 	return p_CBignum;
 }
 
-uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(uint1k p)
+uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(const uint1k& p)
 {
-	// Mirror the CPU worker's existing hex-path conversion so CPU/GPU feed the
-	// shared prime_validation.cpp code with identical uint1024_t values.
-	std::stringstream ss;
-	ss << std::hex << p;
-	std::string p_hex_str = ss.str();
-	uint1024_t result;
-	result.SetHex(p_hex_str);
+	uint1024_t result{};
+	const auto limb_bytes = p.backend().size() * kBoostUint1kLimbBytes;
+	if (limb_bytes > sizeof(result))
+	{
+		throw std::runtime_error("Boost uint1024 limb storage exceeds LLC uint1024_t size");
+	}
+
+	// Both boost::uint1024_t and LLC::uint1024_t store little-endian limbs in the
+	// active numeric payload. prime_validation_test verifies this limb copy matches
+	// the legacy hex round-trip used previously.
+	std::memcpy(&result, p.backend().limbs(), limb_bytes);
 	return result;
 }
 

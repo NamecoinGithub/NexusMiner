@@ -20,4 +20,8 @@ if(WITH_PRIME)
     else()
        target_link_libraries(cpu gmp) # OpenSSL::Crypto OpenSSL::applink)
     endif()
+
+    add_executable(prime_validation_test prime_validation_test.cpp)
+    target_link_libraries(prime_validation_test PRIVATE cpu LLC spdlog::spdlog)
+    add_test(NAME prime_validation_test COMMAND $<TARGET_FILE:prime_validation_test>)
 endif()
