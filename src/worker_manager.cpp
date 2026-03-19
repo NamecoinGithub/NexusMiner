@@ -399,8 +399,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     if (m_recovery_pending) {
                         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                             std::chrono::steady_clock::now() - m_recovery_started_at).count();
-                        m_logger->info("[Worker_manager] ✅ Recovery cleared — template distributed after {}s (epoch {})",
-                                      elapsed, m_recovery_epoch);
+                        m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
+                        m_logger->warn("[Worker_manager] ✅ RECOVERY COMPLETE — epoch {} ({}s elapsed)", m_recovery_epoch, elapsed);
+                        m_logger->warn("[Worker_manager]    Fresh template distributed to workers successfully");
+                        m_logger->warn("[Worker_manager]    Workers resumed mining on valid template");
+                        m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
                     }
                     clear_recovery_state();
                 } else {
@@ -452,25 +455,27 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
     }
 
         /* ========== REGISTER RECOVERY INITIATED HANDLER ========== */
-        /* Priority 1 — "Pause not Destroy": Instead of stop_all_workers() on    */
-        /* push staleness, enter soft-pause (m_template_withheld). Workers keep   */
-        /* running their sieve — they just won't submit stale solutions. When a   */
-        /* fresh template arrives the set_block_handler clears the flag and       */
-        /* distributes the template in-place (no thread teardown/restart).        */
-        /* Escalation to stop_all_workers() only happens if the recovery window   */
-        /* expires without a fresh template (handled in check_template_health()). */
+        /* CRITICAL FIX: Workers must STOP immediately when template becomes stale.  */
+        /* The old "soft-pause" approach was BACKWARDS — it allowed workers to keep  */
+        /* mining on stale templates while blocking submissions. This wasted cycles. */
+        /*                                                                            */
+        /* CORRECT ARCHITECTURE:                                                     */
+        /*   1. Template becomes stale → STOP workers immediately                    */
+        /*   2. Request fresh template via GET_BLOCK                                 */
+        /*   3. When fresh template arrives → START workers with new template        */
+        /*                                                                            */
+        /* Workers will be recreated when the fresh template arrives (handled by the */
+        /* template distribution handler's degraded-mode guard at line ~385).        */
         m_primary_node_session->set_recovery_initiated_handler(
             [this]() {
                 bool was_pending = m_recovery_pending;
                 mark_recovery_initiated("push_staleness");
 
                 if (!was_pending) {
-                    // Soft-pause: suppress block submissions while keeping
-                    // workers running.  This eliminates the 2-5 second mining
-                    // gap caused by the old stop_all_workers() + recreate cycle.
-                    m_template_withheld = true;
-                    m_logger->info("[Worker_manager] Soft-pause: template withheld "
-                                   "(workers keep mining, submissions suppressed)");
+                    // CORRECT: Stop workers immediately — don't mine stale data.
+                    // Workers will restart when fresh template arrives.
+                    m_logger->warn("[Worker_manager] Recovery: STOPPING workers immediately (template stale, awaiting fresh template)");
+                    stop_all_workers();
                 }
 
                 // Request a fresh template
@@ -1479,7 +1484,7 @@ void Worker_manager::clear_recovery_state()
         return;
     }
 
-    m_logger->info("[Worker_manager] ✅ Recovery complete — clearing degraded mode");
+    m_logger->info("[Worker_manager] Clearing recovery state — exiting degraded mode");
     auto now = std::chrono::steady_clock::now();
     if (m_degraded_since != std::chrono::steady_clock::time_point{}) {
         auto elapsed_ms = static_cast<uint64_t>(
@@ -1491,7 +1496,7 @@ void Worker_manager::clear_recovery_state()
     }
     m_degraded_mode = false;
     m_recovery_pending = false;
-    m_template_withheld = false;
+    m_template_withheld = false;  // Clear any residual soft-pause flag (defensive)
     m_recovery_epoch = 0;
     m_recovery_started_at = {};
     m_recovery_last_get_block_sent_at = {};
@@ -1515,7 +1520,7 @@ void Worker_manager::clear_recovery_state()
     m_stats_collector->update_global_stats(global_stats);
     m_last_escalation_at = {};
 
-    m_logger->info("[Worker_manager] degraded_exit_total={} time_in_degraded_ms={}",
+    m_logger->info("[Worker_manager] Recovery state cleared — degraded_exit_count={} cumulative_degraded_time_ms={}",
                    m_degraded_exit_total, m_time_in_degraded_ms);
 
     // Reset start time so GISPS/hashrate calculation excludes the degraded-mode idle period
@@ -2055,9 +2060,13 @@ void Worker_manager::check_template_health()
             }
 
             // Escalate to hard recovery.
-            m_logger->warn("[Worker_manager] ⚡ Recovery timeout: {} epoch {} exceeded {}s window ({}s elapsed)",
-                channel_name, m_recovery_epoch, effective_recovery_window, recovery_elapsed_s);
-            m_logger->warn("[Worker_manager]    Escalating: stop workers + discard template + GET_BLOCK");
+            m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
+            m_logger->warn("[Worker_manager] ⚡ RECOVERY TIMEOUT: {} epoch {} exceeded {}s window",
+                channel_name, m_recovery_epoch, effective_recovery_window);
+            m_logger->warn("[Worker_manager]    Elapsed: {}s (exceeded {}s recovery window)",
+                recovery_elapsed_s, effective_recovery_window);
+            m_logger->warn("[Worker_manager]    Escalating: discard stale template + stop workers + request fresh GET_BLOCK");
+            m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
             m_recovery_pending = false;  // Reset so next staleness detection starts a fresh epoch
             m_template_withheld = false;  // Clear soft-pause — full escalation takes over
             template_interface->discard_template("Recovery timeout: " + std::to_string(recovery_elapsed_s) +
