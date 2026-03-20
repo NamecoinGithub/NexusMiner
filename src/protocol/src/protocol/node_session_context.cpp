@@ -288,6 +288,14 @@ bool NodeSessionContext::reward_binding_required() const
     return m_session_manager ? m_session_manager->reward_binding_required() : false;
 }
 
+SessionManager::RewardBindReadiness NodeSessionContext::get_reward_bind_readiness() const
+{
+    if (m_session_manager) {
+        return m_session_manager->get_reward_bind_readiness();
+    }
+    return SessionManager::RewardBindReadiness{false, "session manager unavailable"};
+}
+
 bool NodeSessionContext::can_submit_work() const
 {
     return m_session_manager ? m_session_manager->can_submit_work() : false;

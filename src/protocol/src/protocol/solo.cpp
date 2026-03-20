@@ -4131,14 +4131,17 @@ network::Shared_payload Solo::send_set_reward()
             return nullptr;  // hard fail — do NOT send unencrypted
         }
         // Use the authoritative session key from the session container.
+        const auto reward_readiness = m_session_context
+            ? m_session_context->get_reward_bind_readiness()
+            : SessionManager::RewardBindReadiness{false, "session context unavailable"};
+        if (!reward_readiness.ready) {
+            m_logger->error("[Solo Reward] Cannot send MINER_SET_REWARD: {}",
+                            reward_readiness.reason);
+            return nullptr;
+        }
         const auto session = m_session_context ? m_session_context->get_runtime_snapshot()
                                                : SessionManager::SessionInfo{};
         const auto& reward_session_key = session.chacha20_session_key;
-        if (reward_session_key.empty())
-        {
-            m_logger->error("[Solo Reward] No session key available (authentication required)");
-            return nullptr;
-        }
 
         try {
             auto nonce = ChaCha20Wrapper::generate_nonce();

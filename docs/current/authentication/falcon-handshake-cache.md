@@ -73,6 +73,34 @@ Manages authenticated sessions with adaptive cache management:
 - Keepalive tracking
 - Session uptime statistics
 
+### 3.1 Initial handshake key separation
+
+The initial handshake is security-sensitive because three similarly named values
+participate in different parts of the flow:
+
+1. **Falcon identity key material** — the miner's Falcon public/private keypair
+   proves miner identity and is what the node authenticates.
+2. **Falcon session key** — an optional node-provided field from
+   `SESSION_START`; this is distinct from the reward/submission encryption path.
+3. **ChaCha20 session key** — a deterministic 32-byte key derived from the
+   agreed `tritium_genesis` anchor and used for handshake wrapping, reward
+   binding, and encrypted submit traffic.
+
+`tritium_genesis` is therefore not "just another field". It is the blockchain
+anchor that both peers use to derive the same ChaCha20 key and to agree on a
+verifiable handshake context.
+
+#### Miner-side invariants
+
+- An authenticated authoritative session that still requires reward binding must
+  retain the ChaCha20 key material needed by `MINER_SET_REWARD`.
+- If generation-bound local caches are invalidated after a session epoch
+  advance, the authoritative session snapshot must already hold the genesis and
+  ChaCha20 state needed to repopulate those caches.
+- Reset/clear helpers must not drop the authoritative ChaCha20 reward key during
+  `begin_auth_handshake()` / auth-success transition unless the entire handshake
+  is being abandoned.
+
 ### 4. Adaptive Keep-Alive Protocol
 
 Maintains miner presence in node's cache through periodic pings:
@@ -281,6 +309,10 @@ Format: 64 hexadecimal characters (32 bytes)
 ### Session Key Management
 
 **Best Practices:**
+- Do not conflate the Falcon identity/session fields with the genesis-derived
+  ChaCha20 session key; reward binding depends on the latter.
+- The authoritative post-auth session snapshot must expose the crypto material
+  needed by both `MINER_SET_REWARD` and encrypted submit flows.
 - Session keys are derived during handshake
 - Keys are memory-cleared on session end
 - Re-authentication required after expiry

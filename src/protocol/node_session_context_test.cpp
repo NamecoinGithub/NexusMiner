@@ -310,6 +310,70 @@ void test_atomic_authenticated_session_commit_sets_auth_fields_together() {
     std::cout << "Atomic authenticated session commit test passed!" << std::endl;
 }
 
+void test_auth_handshake_preserves_reward_crypto_material() {
+    std::cout << "Testing auth handshake preserves authoritative reward crypto material..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    const std::vector<uint8_t> genesis(32, 0x5A);
+    const std::vector<uint8_t> chacha_key(32, 0x6B);
+    const auto fingerprint = format_hex_prefix(chacha_key, 8);
+
+    context.set_tritium_genesis(genesis);
+    context.set_reward_binding("reward-address", {}, false, "config");
+    context.set_chacha20_session_key(chacha_key, fingerprint, true);
+
+    context.begin_auth_handshake("preserve reward crypto");
+
+    auto snapshot = context.get_runtime_snapshot();
+    assert(snapshot.state == SessionManager::SessionState::AUTHENTICATING);
+    assert(snapshot.session_genesis == genesis);
+    assert(snapshot.chacha20_session_key == chacha_key);
+    assert(snapshot.chacha20_key_fingerprint == fingerprint);
+    assert(snapshot.chacha20_ready);
+    assert(snapshot.reward_address_string == "reward-address");
+    assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
+
+    context.commit_authenticated_session(0x11223344,
+                                         std::vector<uint8_t>(32, 0x21),
+                                         "preserved-handshake-key",
+                                         genesis);
+
+    snapshot = context.get_runtime_snapshot();
+    assert(snapshot.state == SessionManager::SessionState::AUTHENTICATED);
+    assert(snapshot.session_genesis == genesis);
+    assert(snapshot.chacha20_session_key == chacha_key);
+    assert(snapshot.chacha20_key_fingerprint == fingerprint);
+    assert(snapshot.chacha20_ready);
+
+    const auto readiness = context.get_reward_bind_readiness();
+    assert(readiness.ready);
+    assert(readiness.reason == "ready");
+
+    std::cout << "Auth handshake reward crypto preservation test passed!" << std::endl;
+}
+
+void test_reward_bind_readiness_reports_precise_missing_crypto_reason() {
+    std::cout << "Testing reward bind readiness reports precise missing-crypto reason..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    const std::vector<uint8_t> genesis(32, 0x4C);
+    context.set_reward_binding("reward-address", {}, false, "config");
+    context.commit_authenticated_session(0xA1B2C3D4,
+                                         std::vector<uint8_t>(32, 0x33),
+                                         "missing-crypto-key",
+                                         genesis);
+
+    const auto readiness = context.get_reward_bind_readiness();
+    assert(!readiness.ready);
+    assert(readiness.reason.find("ChaCha20 reward/session key") != std::string::npos);
+
+    std::cout << "Reward bind readiness missing-crypto reason test passed!" << std::endl;
+}
+
 void test_reset_session_credentials_clears_atomic_auth_flags() {
     std::cout << "Testing atomic credential reset..." << std::endl;
 
@@ -655,6 +719,8 @@ int main() {
         test_format_hex_prefix_matches_session_validation_fingerprint();
         test_miner_session_container_detects_inconsistent_state();
         test_atomic_authenticated_session_commit_sets_auth_fields_together();
+        test_auth_handshake_preserves_reward_crypto_material();
+        test_reward_bind_readiness_reports_precise_missing_crypto_reason();
         test_reset_session_credentials_clears_atomic_auth_flags();
         test_multiple_session_contexts_do_not_overlap();
         test_prevblock_suffix_is_authoritative_session_state();

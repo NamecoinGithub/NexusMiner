@@ -40,12 +40,16 @@ should preserve:
    fingerprint.**
 4. **Submit readiness must not be set ahead of reward binding.**
 5. **Reward-bound sessions must preserve the decoded reward hash, not just the
-   user-facing address string.**
+    user-facing address string.**
+6. **Reward-bind readiness must be decided from the authoritative session
+   snapshot, including genesis and ChaCha20 key readiness, rather than from
+   stale local caches.**
 
 Those invariants are enforced through
 `validate_miner_session_container_locked()` while `m_session_mutex` is held.
 That lock-scoped validation is the miner-side equivalent of a canonical
-`ValidateConsistency()` entry point.
+`ValidateConsistency()` entry point.  Reward-send code should likewise use the
+authoritative readiness predicate instead of guessing from partial local state.
 
 ## Authoritative container vs. local caches
 
