@@ -88,7 +88,11 @@ public:
     void set_session_expired_handler(SessionExpiredHandler h) { m_session_expired_handler = std::move(h); }
     
     /**
-     * @brief Session information structure
+     * @brief Authoritative runtime snapshot for the miner's current node session.
+     *
+     * This is the single source of truth for live session state. Other
+     * components should derive any local/cache state from copies of this
+     * snapshot rather than maintaining independent authorities.
      */
     struct MinerSessionContainer {
         std::string remote_endpoint;
@@ -123,7 +127,8 @@ public:
         std::chrono::system_clock::time_point session_start;
         uint32_t keepalive_count{0};
     };
-    using SessionInfo = MinerSessionContainer;
+    using RuntimeSessionSnapshot = MinerSessionContainer;
+    using SessionInfo = RuntimeSessionSnapshot;
     
     /**
      * @brief Constructor
@@ -325,6 +330,16 @@ public:
      *
      * @return SessionInfo structure with current session data
      */
+    RuntimeSessionSnapshot get_runtime_snapshot() const;
+
+    /**
+     * @brief Backward-compatible alias for get_runtime_snapshot().
+     *
+     * Prefer get_runtime_snapshot() at new call sites to make the
+     * authoritative-source semantics explicit.
+     *
+     * @return Copy of the authoritative runtime session snapshot
+     */
     SessionInfo get_session_info() const;
     
     /**
@@ -383,6 +398,10 @@ private:
     static bool validate_miner_session_container_locked(const MinerSessionContainer& session,
                                                         std::string* reason);
     static const char* session_event_kind_name(SessionEventKind kind);
+    void transition_to_authenticated_locked(uint32_t session_id,
+                                            const std::vector<uint8_t>& tritium_genesis);
+    void clear_runtime_session_locked(bool preserve_genesis,
+                                      bool clear_prevblock_suffix);
     void clear_session_event_journal_locked();
     void record_session_event_locked(SessionEventKind kind, const std::string& detail);
     void schedule_regular_keepalives(const std::shared_ptr<SessionManager>& self);

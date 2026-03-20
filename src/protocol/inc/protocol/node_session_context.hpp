@@ -19,7 +19,7 @@ namespace protocol {
  * for session management across NodeSession, Solo, and Worker_manager.
  *
  * Responsibilities:
- * - Session ID cache (authoritative source of truth)
+ * - Authoritative runtime session snapshot access
  * - Session state machine (disconnected/authenticating/authenticated/active/expired)
  * - Lane-aware packet building (keepalive + session status)
  * - Session constants (keepalive cadence rules, retry caps)
@@ -210,6 +210,12 @@ public:
 
     /**
      * @brief Get session information
+     * @return Copy of the authoritative runtime session snapshot
+     */
+    SessionManager::RuntimeSessionSnapshot get_runtime_snapshot() const;
+
+    /**
+     * @brief Backward-compatible alias for get_runtime_snapshot()
      * @return SessionInfo structure with current session data
      */
     SessionManager::SessionInfo get_session_info() const;

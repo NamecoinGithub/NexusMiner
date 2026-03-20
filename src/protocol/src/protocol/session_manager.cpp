@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <ctime>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
 namespace nexusminer {
@@ -61,6 +62,24 @@ const char* session_event_kind_name(SessionManager::SessionEventKind kind)
     return "unknown";
 }
 
+const char* session_state_name(SessionManager::SessionState state)
+{
+    switch (state) {
+        case SessionManager::SessionState::DISCONNECTED:
+            return "DISCONNECTED";
+        case SessionManager::SessionState::AUTHENTICATING:
+            return "AUTHENTICATING";
+        case SessionManager::SessionState::AUTHENTICATED:
+            return "AUTHENTICATED";
+        case SessionManager::SessionState::ACTIVE:
+            return "ACTIVE";
+        case SessionManager::SessionState::EXPIRED:
+            return "EXPIRED";
+    }
+
+    return "UNKNOWN";
+}
+
 } // namespace
 
 SessionManager::SessionManager(uint16_t keepalive_interval_hours,
@@ -110,33 +129,12 @@ void SessionManager::start_session(uint32_t session_id,
         if (m_session.state != SessionState::AUTHENTICATING) {
             clear_session_event_journal_locked();
         }
-        ++m_session.session_epoch;
-        m_session.session_id = session_id;
         m_session.session_key = session_key;
-        if (!tritium_genesis.empty()) {
-            m_session.session_genesis = tritium_genesis;
-        }
-        m_session.state = SessionState::AUTHENTICATED;
-        m_session.authenticated = (session_id != 0);
-        m_session.falcon_authenticated = (session_id != 0);
-        m_session.created_at = now_epoch_seconds();
-        m_session.ready_for_submit = false;
-        m_session.ready_for_get_block = false;
-        m_session.session_start = std::chrono::system_clock::now();
-        m_session.last_keepalive = m_session.session_start;
-        m_session.keepalive_count = 0;
-        m_session.last_auth_time = now_epoch_seconds();
-        m_session.last_activity = m_session.last_auth_time;
-        record_session_event_locked(SessionEventKind::AUTH_SUCCESS,
-                                    "session authenticated with node");
-        std::ostringstream session_detail;
-        session_detail << "session_id=0x" << std::hex << std::setw(8) << std::setfill('0')
-                       << session_id << std::dec;
-        record_session_event_locked(SessionEventKind::SESSION_START, session_detail.str());
+        transition_to_authenticated_locked(session_id, tritium_genesis);
     }
 
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
-                   session_id, get_session_info().session_epoch);
+                   session_id, get_runtime_snapshot().session_epoch);
 
     if (!session_key.empty()) {
         m_logger->info("[SessionManager] Session key received: {} bytes", session_key.size());
@@ -160,35 +158,14 @@ void SessionManager::commit_authenticated_session(uint32_t session_id,
         if (m_session.state != SessionState::AUTHENTICATING) {
             clear_session_event_journal_locked();
         }
-        ++m_session.session_epoch;
         m_session.falcon_pubkey = pubkey;
         m_session.falcon_key_id = key_id;
-        m_session.session_id = session_id;
         m_session.session_key.clear();
-        if (!tritium_genesis.empty()) {
-            m_session.session_genesis = tritium_genesis;
-        }
-        m_session.state = SessionState::AUTHENTICATED;
-        m_session.authenticated = (session_id != 0);
-        m_session.falcon_authenticated = (session_id != 0);
-        m_session.created_at = now_epoch_seconds();
-        m_session.ready_for_submit = false;
-        m_session.ready_for_get_block = false;
-        m_session.session_start = std::chrono::system_clock::now();
-        m_session.last_keepalive = m_session.session_start;
-        m_session.keepalive_count = 0;
-        m_session.last_auth_time = now_epoch_seconds();
-        m_session.last_activity = m_session.last_auth_time;
-        record_session_event_locked(SessionEventKind::AUTH_SUCCESS,
-                                    "session authenticated with node");
-        std::ostringstream session_detail;
-        session_detail << "session_id=0x" << std::hex << std::setw(8) << std::setfill('0')
-                       << session_id << std::dec;
-        record_session_event_locked(SessionEventKind::SESSION_START, session_detail.str());
+        transition_to_authenticated_locked(session_id, tritium_genesis);
     }
 
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
-                   session_id, get_session_info().session_epoch);
+                   session_id, get_runtime_snapshot().session_epoch);
 
     if (!pubkey.empty()) {
         m_logger->info("[SessionManager] Falcon identity committed: {} bytes", pubkey.size());
@@ -218,27 +195,8 @@ void SessionManager::end_session()
             uptime = get_session_uptime_locked();
         }
 
-        m_session.session_id = 0;
-        m_session.session_key.clear();
-        m_session.chacha20_session_key.clear();
-        m_session.chacha20_key_fingerprint.clear();
-        m_session.chacha20_ready = false;
-        m_session.authenticated = false;
-        m_session.falcon_authenticated = false;
-        m_session.reward_bound = false;
-        m_session.reward_hash.clear();
-        m_session.ready_for_submit = false;
-        m_session.ready_for_get_block = false;
-
-        // Preserve tritium_genesis if configured (enables reconnection without reconfiguration)
-        if (!m_preserve_genesis_on_disconnect) {
-            m_session.session_genesis.clear();
-        }
+        clear_runtime_session_locked(m_preserve_genesis_on_disconnect, false);
         genesis_size = m_session.session_genesis.size();
-
-        m_session.state = SessionState::DISCONNECTED;
-        m_session.keepalive_count = 0;
-        m_session.last_activity = now_epoch_seconds();
     }
 
     stop_keepalive_timer();
@@ -452,6 +410,9 @@ void SessionManager::record_keepalive()
 
     // Transition to ACTIVE state after first keepalive
     if (m_session.state == SessionState::AUTHENTICATED) {
+        m_logger->info("[SessionManager] State transition: {} -> {}",
+                       session_state_name(m_session.state),
+                       session_state_name(SessionState::ACTIVE));
         m_session.state = SessionState::ACTIVE;
     }
 
@@ -464,13 +425,9 @@ void SessionManager::set_state(SessionState state)
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
     if (m_session.state != state) {
-        const char* state_names[] = {
-            "DISCONNECTED", "AUTHENTICATING", "AUTHENTICATED", "ACTIVE", "EXPIRED"
-        };
-
         m_logger->info("[SessionManager] State transition: {} -> {}",
-                      state_names[static_cast<int>(m_session.state)],
-                      state_names[static_cast<int>(state)]);
+                      session_state_name(m_session.state),
+                      session_state_name(state));
 
         m_session.state = state;
         if (state != SessionState::DISCONNECTED) {
@@ -566,21 +523,7 @@ void SessionManager::reset_session_credentials()
 {
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
-        m_session.session_id = 0;
-        m_session.session_key.clear();
-        m_session.chacha20_session_key.clear();
-        m_session.chacha20_key_fingerprint.clear();
-        m_session.chacha20_ready = false;
-        m_session.authenticated = false;
-        m_session.falcon_authenticated = false;
-        m_session.reward_bound = false;
-        m_session.reward_hash.clear();
-        m_session.prevblock_suffix = CLEARED_PREVBLOCK_SUFFIX;
-        m_session.state = SessionState::DISCONNECTED;
-        m_session.ready_for_submit = false;
-        m_session.ready_for_get_block = false;
-        m_session.keepalive_count = 0;
-        m_session.last_activity = now_epoch_seconds();
+        clear_runtime_session_locked(true, true);
     }
 
     stop_keepalive_timer();
@@ -828,10 +771,15 @@ std::chrono::seconds SessionManager::get_time_until_keepalive() const
     return std::max(remaining, std::chrono::seconds(0));
 }
 
-SessionManager::SessionInfo SessionManager::get_session_info() const
+SessionManager::RuntimeSessionSnapshot SessionManager::get_runtime_snapshot() const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
     return m_session;
+}
+
+SessionManager::SessionInfo SessionManager::get_session_info() const
+{
+    return get_runtime_snapshot();
 }
 
 void SessionManager::set_prevblock_suffix(const std::array<uint8_t, 4>& suffix)
@@ -842,6 +790,64 @@ void SessionManager::set_prevblock_suffix(const std::array<uint8_t, 4>& suffix)
     }
     m_logger->debug("[SessionManager] prevblock_suffix updated: {:02x}{:02x}{:02x}{:02x}",
                    suffix[0], suffix[1], suffix[2], suffix[3]);
+}
+
+void SessionManager::transition_to_authenticated_locked(
+    uint32_t session_id,
+    const std::vector<uint8_t>& tritium_genesis)
+{
+    if (m_session.session_epoch == std::numeric_limits<uint64_t>::max()) {
+        m_logger->warn("[SessionManager] Session epoch overflow avoided; reusing max epoch value");
+    } else {
+        ++m_session.session_epoch;
+    }
+
+    m_session.session_id = session_id;
+    if (!tritium_genesis.empty()) {
+        m_session.session_genesis = tritium_genesis;
+    }
+    m_session.state = SessionState::AUTHENTICATED;
+    m_session.authenticated = (session_id != 0);
+    m_session.falcon_authenticated = (session_id != 0);
+    m_session.created_at = now_epoch_seconds();
+    m_session.ready_for_submit = false;
+    m_session.ready_for_get_block = false;
+    m_session.session_start = std::chrono::system_clock::now();
+    m_session.last_keepalive = m_session.session_start;
+    m_session.keepalive_count = 0;
+    m_session.last_auth_time = now_epoch_seconds();
+    m_session.last_activity = m_session.last_auth_time;
+    record_session_event_locked(SessionEventKind::AUTH_SUCCESS,
+                                "session authenticated with node");
+    std::ostringstream session_detail;
+    session_detail << "session_id=0x" << std::hex << std::setw(8) << std::setfill('0')
+                   << session_id << std::dec;
+    record_session_event_locked(SessionEventKind::SESSION_START, session_detail.str());
+}
+
+void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
+                                                  bool clear_prevblock_suffix)
+{
+    m_session.session_id = 0;
+    m_session.session_key.clear();
+    m_session.chacha20_session_key.clear();
+    m_session.chacha20_key_fingerprint.clear();
+    m_session.chacha20_ready = false;
+    m_session.authenticated = false;
+    m_session.falcon_authenticated = false;
+    m_session.reward_bound = false;
+    m_session.reward_hash.clear();
+    if (clear_prevblock_suffix) {
+        m_session.prevblock_suffix = CLEARED_PREVBLOCK_SUFFIX;
+    }
+    m_session.ready_for_submit = false;
+    m_session.ready_for_get_block = false;
+    if (!preserve_genesis) {
+        m_session.session_genesis.clear();
+    }
+    m_session.state = SessionState::DISCONNECTED;
+    m_session.keepalive_count = 0;
+    m_session.last_activity = now_epoch_seconds();
 }
 
 void SessionManager::set_keepalive_interval(uint16_t hours)
