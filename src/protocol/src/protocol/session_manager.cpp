@@ -797,7 +797,9 @@ void SessionManager::transition_to_authenticated_locked(
     const std::vector<uint8_t>& tritium_genesis)
 {
     if (m_session.session_epoch == std::numeric_limits<uint64_t>::max()) {
-        m_logger->warn("[SessionManager] Session epoch overflow avoided; reusing max epoch value");
+        // Saturate at max rather than wrapping to 0 so stale-packet guards never
+        // observe a "new" epoch that is numerically older than prior sessions.
+        m_logger->warn("[SessionManager] Session epoch overflow avoided; saturating at max epoch value");
     } else {
         ++m_session.session_epoch;
     }

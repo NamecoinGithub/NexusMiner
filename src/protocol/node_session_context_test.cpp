@@ -454,6 +454,8 @@ void test_runtime_snapshot_is_authoritative_copy() {
     assert(active_snapshot.session_id == authenticated_snapshot.session_id);
     assert(active_snapshot.session_epoch == authenticated_snapshot.session_epoch);
     assert(active_snapshot.state == SessionManager::SessionState::ACTIVE);
+    // Snapshots are read-only copies of the authoritative container, so an older
+    // snapshot must not change when the live session transitions forward.
     assert(authenticated_snapshot.state == SessionManager::SessionState::AUTHENTICATED);
 
     context.end_session();
