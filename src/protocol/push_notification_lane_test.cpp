@@ -268,21 +268,25 @@ int main()
     // Test 9: blocks_behind decision logic (regression: PR fix)
     //
     // Verifies the corrected push handler decision tree:
-    //   blocks_behind == 1  → normal anchor update, no recovery
-    //   blocks_behind == 2+ → multi-block lag, recovery triggered
-    //   blocks_behind == 0 + hash mismatch → same-height chain reorg, recovery
+    //   STEP 1 - stale (blocks_behind == 1): normal anchor update, no recovery
+    //   STEP 1 - stale (blocks_behind >= 2): discard template by height alone, recovery
+    //   STEP 2 - not stale + hash mismatch:  same-height chain reorg, discard, recovery
+    //   STEP 2 - not stale + hashes match:   healthy, no action
+    //
+    // Key invariant: hash check (step 2) ONLY runs when height says not stale (step 1).
+    // For stale templates hashPrevBlock ALWAYS differs from the notification — that is
+    // expected after any block advance, not a reorg.  Height alone is authoritative.
     // ====================================================================
     std::cout << "\nTest 9: blocks_behind decision logic (push handler ordering fix)" << std::endl;
     {
-        // Simulate handler decision using the same predicate the fixed handler uses.
-        // The handler now checks height FIRST, then hash — this struct captures the decision.
         struct HandlerDecision {
             bool request_work_called{false};
             bool discard_template_called{false};
             bool recovery_triggered{false};
         };
 
-        // Helper: simulate the fixed handler's decision for a given staleness state.
+        // Simulate the corrected handler decision tree.
+        // IMPORTANT: hash parameter is ignored for stale templates — height is authoritative.
         auto simulate_handler = [](bool stale, uint32_t blocks_behind,
                                     bool has_hash, bool hash_matches) -> HandlerDecision
         {
@@ -294,19 +298,18 @@ int main()
                     // No discard, no recovery signal
                     return d;
                 }
-                // Multi-block lag
-                if (has_hash && !hash_matches) {
-                    d.discard_template_called = true;
-                }
+                // blocks_behind >= 2: height alone is sufficient — discard and recover.
+                // Hash is NOT checked for stale templates (it will always differ anyway).
+                d.discard_template_called = true;
                 d.request_work_called = true;
-                d.recovery_triggered = true;  // blocks_behind > 1 triggers recovery
-            } else {
-                // Not stale — check for same-height chain reorg
-                if (has_hash && !hash_matches) {
-                    d.discard_template_called = true;
-                    d.request_work_called = true;
-                    d.recovery_triggered = false;  // reorg path uses its own recovery
-                }
+                d.recovery_triggered = true;
+                return d;
+            }
+            // Not stale — STEP 2: check hash for same-height chain reorg
+            if (has_hash && !hash_matches) {
+                d.discard_template_called = true;
+                d.request_work_called = true;
+                d.recovery_triggered = false;  // reorg path handles recovery separately
             }
             return d;
         };
@@ -324,38 +327,41 @@ int main()
                 !d.recovery_triggered);
         }
 
-        // Scenario B: Multi-block lag with hash mismatch (real problem)
-        // Expected: discard template, request work, trigger recovery
+        // Scenario B: Multi-block lag with hash mismatch
+        // Expected: discard by height alone (hash is irrelevant), request work, recovery
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/3,
                                        /*has_hash=*/true, /*hash_matches=*/false);
             print_test_result("Scenario B1: 3-block lag → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario B2: 3-block lag + hash mismatch → discard_template called",
+            print_test_result("Scenario B2: 3-block lag → discard_template called (height alone, no hash check)",
                 d.discard_template_called);
             print_test_result("Scenario B3: 3-block lag → recovery triggered",
                 d.recovery_triggered);
         }
 
-        // Scenario C: Multi-block lag but hashes match (unusual, no discard)
+        // Scenario C: Multi-block lag where hashes happen to match
+        // Expected: STILL discard — height is authoritative, hash result doesn't matter
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
                                        /*has_hash=*/true, /*hash_matches=*/true);
             print_test_result("Scenario C1: 2-block lag + hashes match → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario C2: 2-block lag + hashes match → discard_template NOT called",
-                !d.discard_template_called);
+            print_test_result("Scenario C2: 2-block lag + hashes match → discard_template called (height authoritative)",
+                d.discard_template_called);
+            print_test_result("Scenario C3: 2-block lag + hashes match → recovery triggered",
+                d.recovery_triggered);
         }
 
         // Scenario D: Compact payload (no hashPrevBlock) — multi-block lag
-        // Expected: refresh without discard (no hash data to compare)
+        // Expected: discard by height alone (hash data unavailable but irrelevant)
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
                                        /*has_hash=*/false, /*hash_matches=*/false);
             print_test_result("Scenario D1: 2-block lag, compact payload → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario D2: 2-block lag, compact payload → discard NOT called (no hash)",
-                !d.discard_template_called);
+            print_test_result("Scenario D2: 2-block lag, compact payload → discard called (height alone)",
+                d.discard_template_called);
         }
 
         // Scenario E: Same-height chain reorg (blocks_behind == 0, hash changed)
