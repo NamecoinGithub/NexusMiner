@@ -1961,6 +1961,8 @@ void Worker_manager::check_template_health()
     // source of truth).  Template is stale when channel_height >= channel_target (both non-zero).
     {
         if (ht_snap.is_template_stale()) {
+            uint32_t blocks_behind = ht_snap.blocks_behind();
+
             // ── Temporal guard (doom-loop prevention) ────────────────────────────────
             // Only stop workers and discard if the template is older than the last push.
             // If the template was received AFTER the last push, channel_target is already
@@ -1985,11 +1987,35 @@ void Worker_manager::check_template_health()
                 retry_template_request(false);
                 return;
             }
+
+            // A single-block lag is the normal case on every fresh block: the miner is
+            // still holding the template for the previous channel tip until the next
+            // GET_BLOCK arrives. Request a refresh, but keep workers running.
+            if (blocks_behind == 1) {
+                m_logger->info("[Worker_manager] {} template anchor advanced normally: channel_height {} -> next target {} (template target {}, 1 block behind) — requesting refresh without recovery",
+                    channel_name,
+                    ht_snap.channel_height,
+                    ht_snap.expected_template_target(),
+                    ht_snap.channel_target);
+                retry_template_request(false);
+                return;
+            }
+
+            if (blocks_behind == 0) {
+                m_logger->debug("[Worker_manager] {} stale snapshot reported with zero block lag (channel_height {}, channel_target {}) — requesting refresh without recovery",
+                    channel_name,
+                    ht_snap.channel_height,
+                    ht_snap.channel_target);
+                retry_template_request(false);
+                return;
+            }
+
             m_logger->warn("[Worker_manager] ⚠️  {} channel advanced: channel_height {} >= channel_target {} — age {}s",
                 channel_name, ht_snap.channel_height, ht_snap.channel_target, template_age);
-            m_logger->info("[Worker_manager]    Template (t={}) predates last push (t={}) — true staleness",
+            m_logger->info("[Worker_manager]    Template (t={}) predates last push (t={}) — true staleness ({} blocks behind)",
                 std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
-                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
+                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count(),
+                blocks_behind);
 
             // ── Recovery state gate (doom-loop prevention) ───────────────────────────
             // mark_recovery_initiated is idempotent: if the push handler already set

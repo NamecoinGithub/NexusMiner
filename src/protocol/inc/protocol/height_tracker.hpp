@@ -339,6 +339,21 @@ public:
         }
 
         /**
+         * @brief Number of blocks the template target trails the current channel tip
+         *
+         * Returns 0 when the template is current or when either height is unset.
+         * Returns 1 for the normal "previous block" case after a single channel
+         * advance, 2+ when the miner has fallen multiple channel blocks behind.
+         */
+        uint32_t blocks_behind() const {
+            uint32_t expected = expected_template_target();
+            if (expected == 0 || channel_target == 0 || channel_target >= expected) {
+                return 0;
+            }
+            return expected - channel_target;
+        }
+
+        /**
          * @brief Compute the drift between expected and actual template target
          *
          * A positive delta means the template target is ahead of expected (fine).

@@ -526,6 +526,70 @@ void test_integration_forced_retry_is_bounded() {
 }
 
 // ============================================================================
+// Test 13: Health policy — one-block stale refresh stays soft; multi-block lag
+//          escalates into recovery/degraded mode.
+// ============================================================================
+void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
+    std::cout << "\nTest 13: Health policy distinguishes 1-block refresh from 2+-block lag\n";
+
+    struct HealthDecision {
+        bool request_refresh{false};
+        bool recovery_initiated{false};
+        bool stop_workers{false};
+    };
+
+    auto decide = [](const HeightTracker::Snapshot& snap, bool template_is_newer_than_push) {
+        HealthDecision decision;
+
+        if (!snap.is_template_stale()) {
+            return decision;
+        }
+
+        if (template_is_newer_than_push) {
+            decision.request_refresh = true;
+            return decision;
+        }
+
+        uint32_t blocks_behind = snap.blocks_behind();
+        if (blocks_behind <= 1) {
+            decision.request_refresh = true;
+            return decision;
+        }
+
+        decision.request_refresh = true;
+        decision.recovery_initiated = true;
+        decision.stop_workers = true;
+        return decision;
+    };
+
+    HeightTracker one_block_tracker;
+    one_block_tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    one_block_tracker.OnTemplateReceived(2, 101);
+    one_block_tracker.OnPushNotification(5001, 101, 0x1d00ffff);
+    auto one_block = decide(one_block_tracker.GetSnapshot(), false);
+    print_test_result("One-block lag requests refresh", one_block.request_refresh);
+    print_test_result("One-block lag does not initiate recovery", !one_block.recovery_initiated);
+    print_test_result("One-block lag does not stop workers", !one_block.stop_workers);
+
+    HeightTracker two_block_tracker;
+    two_block_tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    two_block_tracker.OnTemplateReceived(2, 101);
+    two_block_tracker.OnPushNotification(5001, 101, 0x1d00ffff);
+    two_block_tracker.OnPushNotification(5002, 102, 0x1d00ffff);
+    auto two_block = decide(two_block_tracker.GetSnapshot(), false);
+    print_test_result("Two-block lag requests refresh", two_block.request_refresh);
+    print_test_result("Two-block lag initiates recovery", two_block.recovery_initiated);
+    print_test_result("Two-block lag stops workers", two_block.stop_workers);
+
+    HeightTracker::Snapshot post_push_snap;
+    post_push_snap.channel_height = 300;
+    post_push_snap.channel_target = 300;
+    auto post_push = decide(post_push_snap, true);
+    print_test_result("Post-push template freshness still stays soft", post_push.request_refresh);
+    print_test_result("Post-push template freshness does not initiate recovery", !post_push.recovery_initiated);
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 int main() {
@@ -545,6 +609,7 @@ int main() {
     test_recovery_epoch_monotonic_with_idempotent_initiation();
     test_integration_degraded_recovery_to_resume();
     test_integration_forced_retry_is_bounded();
+    test_health_policy_distinguishes_normal_refresh_from_multi_block_lag();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";
