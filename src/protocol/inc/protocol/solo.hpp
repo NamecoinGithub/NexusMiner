@@ -10,6 +10,7 @@
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/height_tracker.hpp"
 #include "protocol/session_ingress_gate.hpp"
+#include "protocol/session_recovery_policy.hpp"
 #include "protocol/submit_context.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"

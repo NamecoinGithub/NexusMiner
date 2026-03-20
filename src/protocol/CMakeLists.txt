@@ -205,6 +205,14 @@ target_include_directories(solo_auth_resync_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+# PacketIngressPreflight + SessionRecoveryPolicy unit tests
+add_executable(packet_ingress_preflight_test packet_ingress_preflight_test.cpp)
+target_link_libraries(packet_ingress_preflight_test PRIVATE protocol network asio spdlog)
+target_include_directories(packet_ingress_preflight_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src
+)
+
 # Register all test executables with CTest
 add_test(NAME chacha20_test COMMAND $<TARGET_FILE:chacha20_test>)
 add_test(NAME falcon_qtv_parity_test COMMAND $<TARGET_FILE:falcon_qtv_parity_test>)
@@ -223,6 +231,7 @@ add_test(NAME node_shutdown_wire_test COMMAND $<TARGET_FILE:node_shutdown_wire_t
 add_test(NAME get_block_dedup_recovery_test COMMAND $<TARGET_FILE:get_block_dedup_recovery_test>)
 add_test(NAME solo_auth_resync_test COMMAND $<TARGET_FILE:solo_auth_resync_test>)
 add_test(NAME degraded_recovery_test COMMAND $<TARGET_FILE:degraded_recovery_test>)
+add_test(NAME packet_ingress_preflight_test COMMAND $<TARGET_FILE:packet_ingress_preflight_test>)
 # SESSION_START packet parser unit tests
 add_executable(session_start_parser_test session_start_parser_test.cpp)
 target_link_libraries(session_start_parser_test PRIVATE protocol)

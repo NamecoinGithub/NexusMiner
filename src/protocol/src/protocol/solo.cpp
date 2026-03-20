@@ -562,21 +562,35 @@ bool Solo::ensure_session_ready_for_ingress(const char* log_scope,
                                             const char* packet_name,
                                             bool queue_post_auth_get_block)
 {
-    const bool session_says_auth = session_context_is_authenticated();
-    if (!m_authenticated && !session_says_auth) {
-        if (queue_post_auth_get_block) {
+    // Derive ingress readiness from authoritative session state first.
+    // The local m_authenticated flag is a cache that may lag behind the
+    // authoritative SessionManager; the policy treats authoritative state as
+    // the primary authority and local_auth_stale as a secondary indicator
+    // to trigger a cache resync before accepting the packet.
+    const bool authoritative_authenticated =
+        m_session_context && m_session_context->is_authenticated();
+    const auto decision = SessionRecoveryPolicy::evaluate_ingress_readiness({
+        m_session_context != nullptr,                              // has_session_context
+        authoritative_authenticated,                               // authoritative_authenticated
+        !m_authenticated && authoritative_authenticated,           // local_auth_stale
+        m_auth_state == AuthState::NOT_AUTHENTICATED               // auth_not_in_flight
+    });
+
+    if (!decision.allow_ingress) {
+        if (queue_post_auth_get_block && decision.queue_deferred_push) {
             queue_pending_push_after_auth(log_scope);
         }
 
-        const std::string reason = std::string(packet_name) +
-            " received while authoritative session is not authenticated";
+        const std::string reason = std::string(packet_name) + " deferred: " + decision.reason;
         m_logger->warn("[{}] Session ingress deferred: {} (auth_state={})",
                        log_scope, reason, static_cast<int>(m_auth_state));
 
+        // Always check whether an in-flight auth has timed out before deciding
+        // whether to trigger recovery; this may advance m_auth_state.
         check_auth_in_flight_timeout(log_scope);
-        if (m_auth_state == AuthState::NOT_AUTHENTICATED && m_session_expired_handler) {
+        if (decision.trigger_recovery && m_session_expired_handler) {
             record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
-                                 std::string(log_scope) + ": " + reason);
+                                 std::string(log_scope) + ": " + decision.reason);
             m_logger->warn("[{}] Triggering session-expired handler after ingress readiness failure",
                            log_scope);
             m_session_expired_handler();
@@ -584,7 +598,7 @@ bool Solo::ensure_session_ready_for_ingress(const char* log_scope,
         return false;
     }
 
-    if (!m_authenticated && session_says_auth) {
+    if (decision.resync_local_cache) {
         m_logger->info("[{}] Session ingress resyncing stale local auth cache before processing {}",
                        log_scope, packet_name);
         resync_auth_from_session_context(log_scope);
@@ -3848,18 +3862,24 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
     // SESSION_EXPIRED HANDLER (5-step response flow per LLL-TAO PR #354)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    // STEP 1: LOG & VERIFY session_id
+    // STEP 1: LOG & VERIFY session_id against authoritative session state.
+    // Use SessionRecoveryPolicy to make the stale-replay guard explicit and
+    // consistent with the authoritative session machine.
     m_logger->warn("[Solo] SESSION_EXPIRED received: session_id=0x{:08x} reason=0x{:02x}",
                    expired_sid, reason);
 
     const uint32_t authoritative_session_id = get_session_id();
+    const auto recovery_decision = SessionRecoveryPolicy::evaluate_session_expired({
+        m_session_context != nullptr,  // has_authoritative_session
+        expired_sid,                   // expired_session_id
+        authoritative_session_id,      // authoritative_session_id
+        reason                         // reason_code
+    });
 
-    // Verify session_id matches the authoritative session container rather than
-    // a potentially stale local cache copy.
-    if (expired_sid != authoritative_session_id) {
-        m_logger->warn("[Solo] SESSION_EXPIRED session_id mismatch: expired=0x{:08x} != authoritative=0x{:08x}",
-                      expired_sid, authoritative_session_id);
-        m_logger->warn("[Solo] Ignoring stale or replay SESSION_EXPIRED packet");
+    if (recovery_decision.is_stale_replay) {
+        m_logger->warn("[Solo] SESSION_EXPIRED stale or replay — ignoring: {} "
+                       "(expired=0x{:08x} authoritative=0x{:08x})",
+                       recovery_decision.reason, expired_sid, authoritative_session_id);
         return;
     }
 
@@ -3868,8 +3888,8 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
     if (reason == static_cast<uint8_t>(LLP::StatelessMining::SessionExpiredReason::EXPIRED_INACTIVITY)) {
         reason_str = "EXPIRED_INACTIVITY";
     }
-    m_logger->warn("[Solo] Session 0x{:08x} expired: reason={} ({})",
-                  authoritative_session_id, reason_str, reason);
+    m_logger->warn("[Solo] Session 0x{:08x} expired: reason={} ({}) — {}",
+                  authoritative_session_id, reason_str, reason, recovery_decision.reason);
 
     // STEP 2: CLEAR LOCAL SESSION STATE (mirror reset_auth_state)
     m_logger->info("[Solo] Clearing local session state");
