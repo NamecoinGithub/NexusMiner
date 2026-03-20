@@ -106,7 +106,7 @@ public:
     
     // Falcon miner authentication
     void set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_t> const& privkey);
-    bool is_authenticated() const { return m_authenticated; }
+    bool is_authenticated() const { return m_session_context ? m_session_context->is_authenticated() : m_authenticated; }
     void set_address(std::string const& address) { m_address = address; }
     void set_protocol_lane(ProtocolLane lane);
     
@@ -150,7 +150,9 @@ public:
     // Stateless mining reward address binding (MINER_SET_REWARD protocol)
     void set_reward_address(std::string const& address);
     bool has_reward_address() const { return !m_reward_address.empty(); }
-    bool is_reward_bound() const { return m_reward_bound; }
+    bool is_reward_bound() const {
+        return m_session_context ? m_session_context->get_runtime_snapshot().reward_bound : m_reward_bound;
+    }
     network::Shared_payload send_set_reward();
     
     // Push notification subscription (LLL-TAO PR #156)

@@ -3799,10 +3799,10 @@ bool Solo::check_auth_in_flight_timeout(const char* context)
 bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
 {
     auto* session_manager = get_session_manager();
-    const uint32_t local_session_id = session_manager ? session_manager->get_session_id() : 0;
+    const uint32_t authoritative_session_id = session_manager ? session_manager->get_session_id() : 0;
     const auto decision = SessionStatusPolicy::validate_ack({
         session_manager != nullptr,
-        local_session_id,
+        authoritative_session_id,
         ack_session_id,
         m_session_id_mismatch_count,
         protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD
@@ -3815,9 +3815,9 @@ bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
 
     record_session_event(SessionManager::SessionEventKind::STATUS_ACK_REJECTED, decision.reason);
 
-    m_logger->warn("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != local=0x{:08x}"
+    m_logger->warn("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != authoritative=0x{:08x}"
                    " — possible stale ACK or race condition (not self-expiring yet)",
-        decision.reason, m_session_id_mismatch_count, ack_session_id, local_session_id);
+        decision.reason, m_session_id_mismatch_count, ack_session_id, authoritative_session_id);
 
     if (decision.expire_session) {
         record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
@@ -3844,10 +3844,13 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
     m_logger->warn("[Solo] SESSION_EXPIRED received: session_id=0x{:08x} reason=0x{:02x}",
                    expired_sid, reason);
 
-    // Verify session_id matches our current session
-    if (expired_sid != m_session_id) {
-        m_logger->warn("[Solo] SESSION_EXPIRED session_id mismatch: expired=0x{:08x} != local=0x{:08x}",
-                      expired_sid, m_session_id);
+    const uint32_t authoritative_session_id = get_session_id();
+
+    // Verify session_id matches the authoritative session container rather than
+    // a potentially stale local cache copy.
+    if (expired_sid != authoritative_session_id) {
+        m_logger->warn("[Solo] SESSION_EXPIRED session_id mismatch: expired=0x{:08x} != authoritative=0x{:08x}",
+                      expired_sid, authoritative_session_id);
         m_logger->warn("[Solo] Ignoring stale or replay SESSION_EXPIRED packet");
         return;
     }
@@ -3858,7 +3861,7 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
         reason_str = "EXPIRED_INACTIVITY";
     }
     m_logger->warn("[Solo] Session 0x{:08x} expired: reason={} ({})",
-                  m_session_id, reason_str, reason);
+                  authoritative_session_id, reason_str, reason);
 
     // STEP 2: CLEAR LOCAL SESSION STATE (mirror reset_auth_state)
     m_logger->info("[Solo] Clearing local session state");
