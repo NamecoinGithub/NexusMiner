@@ -125,114 +125,99 @@ void PushNotificationHandler::handle_push_notification(
         auto snap = height_tracker ? height_tracker->GetSnapshot() : HeightTracker::Snapshot{};
 
         // ═══════════════════════════════════════════════════════════════════════
-        // CRITICAL FIX: Cross-validate hashPrevBlock from notification vs template
+        // STEP 1: HEIGHT-BASED STALENESS — authoritative, checked first
         // ═══════════════════════════════════════════════════════════════════════
-        // If the notification includes hashPrevBlock (extended stateless payload),
-        // compare it with the current template's hashPrevBlock. If they don't match,
-        // the chain has reorganized or our template is stale even if heights match.
+        // Height is the single source of truth for staleness.  The hash check
+        // (step 2) is irrelevant for stale templates: hashPrevBlock WILL differ
+        // after any block advance — that is normal, not a reorg.
+        bool stale = height_tracker && snap.is_template_stale();
+
+        if (stale)
+        {
+            uint32_t blocks_behind = snap.blocks_behind();
+
+            if (blocks_behind == 1)
+            {
+                // Normal case: exactly one block behind after a fresh block was found.
+                // Just request a fresh template; workers keep mining the current one.
+                m_logger->info("[Solo Push] ℹ️  Normal anchor update (blocks_behind=1) — requesting fresh {} template",
+                               ch_name);
+                request_work_fn();
+
+                // Advance channel_target so subsequent pushes at the same height
+                // do not re-trigger this path (doom-loop prevention).
+                if (height_tracker) {
+                    height_tracker->AdvanceChannelTarget(snap.channel_height + 1);
+                }
+                return;  // Early exit — hash check is irrelevant for stale templates
+            }
+
+            // blocks_behind >= 2: miner is multiple blocks behind — genuine recovery.
+            // Height alone is sufficient to determine staleness; no hash check needed.
+            m_logger->warn("[Solo Push] ⚠️  Template {} block(s) behind (channel_height {} >= channel_target {}) — discarding",
+                           blocks_behind, snap.channel_height, snap.channel_target);
+            template_interface->discard_template("multi_block_lag");
+            request_work_fn();
+
+            // Advance channel_target to prevent doom-loop.
+            if (height_tracker) {
+                height_tracker->AdvanceChannelTarget(snap.channel_height + 1);
+            }
+            return;  // Early exit — hash check is irrelevant for stale templates
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // STEP 2: HASH VALIDATION — only for templates that passed height check
+        // ═══════════════════════════════════════════════════════════════════════
+        // Height says the template is current (blocks_behind == 0).  A hash
+        // mismatch at the same height means the chain reorganized at equal height.
         if (has_hash_prev_block)
         {
             auto const* tmpl = template_interface->get_current_template();
             if (tmpl && tmpl->block.hashPrevBlock != notification_hash_prev_block)
             {
-                // Hash mismatch detected - either chain reorg or template is stale
-                m_logger->warn("[Solo Push] ❌ HASH MISMATCH: Template mining on OLD block!");
-                m_logger->warn("[Solo Push]   Current template hashPrevBlock != notification hashPrevBlock");
-                m_logger->warn("[Solo Push]   This indicates a same-height chain reorg or stale template");
-                m_logger->warn("[Solo Push]   Discarding current template and requesting fresh one...");
-
-                // Log hash comparison for debugging
-                auto tmpl_hash_bytes = tmpl->block.hashPrevBlock.GetBytes();
-                auto notif_hash_bytes = notification_hash_prev_block.GetBytes();
-                std::string tmpl_hash_hex, notif_hash_hex;
-                for (size_t i = 0; i < std::min(tmpl_hash_bytes.size(), size_t(8)); ++i) {
-                    char buf[3];
-                    snprintf(buf, sizeof(buf), "%02x", tmpl_hash_bytes[i]);
-                    tmpl_hash_hex += buf;
-                }
-                for (size_t i = 0; i < std::min(notif_hash_bytes.size(), size_t(8)); ++i) {
-                    char buf[3];
-                    snprintf(buf, sizeof(buf), "%02x", notif_hash_bytes[i]);
-                    notif_hash_hex += buf;
-                }
-                m_logger->info("[Solo Push]   Template hash (first 8): {}...", tmpl_hash_hex);
-                m_logger->info("[Solo Push]   Notification hash (first 8): {}...", notif_hash_hex);
-
-                // Invalidate and request fresh template
-                template_interface->discard_template("hash_mismatch_chain_reorg");
+                // Hash mismatch with current height: genuine same-height chain reorg.
+                m_logger->warn("[Solo Push] ⚠️  Same-height chain reorg detected: hashPrevBlock changed");
+                template_interface->discard_template("same_height_chain_reorg");
                 request_work_fn();
-                return;  // Exit early - template is invalid
+                return;
             }
             else if (tmpl)
             {
-                // Hashes match - template is still valid for this block
                 m_logger->debug("[Solo Push] ✓ hashPrevBlock matches current template");
             }
         }
 
-        // Use HeightTracker as single source of truth for staleness decision.
-        // is_template_stale() returns true when channel_height >= channel_target (both non-zero).
-        bool stale = height_tracker && snap.is_template_stale();
+        // ═══════════════════════════════════════════════════════════════════════
+        // STEP 3: SOFT REFRESH — tip moved on another channel
+        // ═══════════════════════════════════════════════════════════════════════
+        // Template is current and hash validates.  Check if the unified tip has
+        // advanced (another channel found a block).  Request a refresh
+        // opportunistically but do NOT stop workers.
+        bool tip_moved = height_tracker && snap.is_tip_moved();
 
-        if (stale)
+        if (tip_moved)
         {
-            if (lane == ProtocolLane::STATELESS) {
-                m_logger->info("[Solo Push] ✗ Stale (channel_height {} >= channel_target {}) [reason: channel_advanced]",
-                              snap.channel_height, snap.channel_target);
-            } else {
-                m_logger->info("[Solo Push] ✗ Template stale (channel_height {} >= channel_target {}) [reason: channel_advanced]",
-                              snap.channel_height, snap.channel_target);
-            }
-            m_logger->info("[Solo Push] Requesting fresh {} template...", ch_name);
-            request_work_fn();
-
-            // Advance channel_target so subsequent pushes with the same
-            // channel_height do not re-trigger the recovery/doom-loop.
-            // This must happen AFTER request_work_fn() so the first
-            // staleness detection still fires recovery + GET_BLOCK.
-            if (height_tracker) {
-                uint32_t next_expected_target = snap.channel_height + 1;
-                height_tracker->AdvanceChannelTarget(next_expected_target);
-            }
+            m_logger->info("[Solo Push] ↑ Tip moved (unified {} → {}) — requesting fresh {} template [reason: tip_moved]",
+                          snap.template_unified_height, snap.unified_height, ch_name);
+            request_work_fn();  // rate-limited GET_BLOCK — OK if it doesn't fire
+            m_logger->info("[Solo Push] ✓ Workers continue mining current template (channel not stale)");
         }
         else
         {
-            // Template is not channel-stale. Check if the unified tip has moved
-            // (another channel found a block after this template was issued).
-            // hashPrevBlock in the template is now stale even though the channel
-            // height hasn't changed, so we need a fresh template.
-            bool tip_moved = height_tracker && snap.is_tip_moved();
-
-            if (tip_moved)
+            // Template is fully current — log diagnostic and continue mining.
+            auto const* tmpl = template_interface->get_current_template();
+            if (tmpl)
             {
-                m_logger->info("[Solo Push] ↑ Tip moved (unified {} → {}) — requesting fresh {} template [reason: tip_moved]",
-                              snap.template_unified_height, snap.unified_height, ch_name);
-                // tip_moved is a SOFT refresh — channel is still valid, workers mine on.
-                // The current template remains valid; only the unified tip has advanced (another
-                // channel found a block).  Request a fresh template opportunistically, but do NOT
-                // stop workers — they continue mining the current template until the new one arrives.
-                request_work_fn();  // rate-limited GET_BLOCK — OK if it doesn't fire
-                m_logger->info("[Solo Push] ✓ Workers continue mining current template (channel not stale)");
-            }
-            else
-            {
-                // Log informational context (unified height may have advanced — that's OK)
-                auto const* tmpl = template_interface->get_current_template();
-                if (tmpl)
+                if (channel_height == tmpl->nChannelHeight)
                 {
-                    // Use HeightTracker snapshot for unified height (not template header nHeight,
-                    // which represents channel_target in stateless templates).
-                    if (channel_height == tmpl->nChannelHeight)
-                    {
-                        uint32_t snap_unified = height_tracker ? snap.unified_height : unified_height;
-                        m_logger->info("[Solo Push] ✓ {} channel_target={} unchanged, unified_height={}",
-                                      ch_name, tmpl->nChannelHeight, snap_unified);
-                        // Continue mining current template
-                    }
-                    else
-                    {
-                        m_logger->debug("[Solo Push] ✓ Template still valid");
-                    }
+                    uint32_t snap_unified = height_tracker ? snap.unified_height : unified_height;
+                    m_logger->info("[Solo Push] ✓ {} channel_target={} unchanged, unified_height={}",
+                                  ch_name, tmpl->nChannelHeight, snap_unified);
+                }
+                else
+                {
+                    m_logger->debug("[Solo Push] ✓ Template still valid");
                 }
             }
         }

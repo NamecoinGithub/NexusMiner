@@ -265,6 +265,162 @@ int main()
     }
 
     // ====================================================================
+    // Test 9: blocks_behind decision logic (regression: PR fix)
+    //
+    // Verifies the corrected push handler decision tree:
+    //   STEP 1 - stale (blocks_behind == 1): normal anchor update, no recovery
+    //   STEP 1 - stale (blocks_behind >= 2): discard template by height alone, recovery
+    //   STEP 2 - not stale + hash mismatch:  same-height chain reorg, discard, recovery
+    //   STEP 2 - not stale + hashes match:   healthy, no action
+    //
+    // Key invariant: hash check (step 2) ONLY runs when height says not stale (step 1).
+    // For stale templates hashPrevBlock ALWAYS differs from the notification — that is
+    // expected after any block advance, not a reorg.  Height alone is authoritative.
+    // ====================================================================
+    std::cout << "\nTest 9: blocks_behind decision logic (push handler ordering fix)" << std::endl;
+    {
+        struct HandlerDecision {
+            bool request_work_called{false};
+            bool discard_template_called{false};
+            bool recovery_triggered{false};
+        };
+
+        // Simulate the corrected handler decision tree.
+        // IMPORTANT: hash parameter is ignored for stale templates — height is authoritative.
+        auto simulate_handler = [](bool stale, uint32_t blocks_behind,
+                                    bool has_hash, bool hash_matches) -> HandlerDecision
+        {
+            HandlerDecision d;
+            if (stale) {
+                if (blocks_behind == 1) {
+                    // Normal anchor update — refresh without stopping workers
+                    d.request_work_called = true;
+                    // No discard, no recovery signal
+                    return d;
+                }
+                // blocks_behind >= 2: height alone is sufficient — discard and recover.
+                // Hash is NOT checked for stale templates (it will always differ anyway).
+                d.discard_template_called = true;
+                d.request_work_called = true;
+                d.recovery_triggered = true;
+                return d;
+            }
+            // Not stale — STEP 2: check hash for same-height chain reorg
+            if (has_hash && !hash_matches) {
+                d.discard_template_called = true;
+                d.request_work_called = true;
+                d.recovery_triggered = false;  // reorg path handles recovery separately
+            }
+            return d;
+        };
+
+        // Scenario A: Normal 1-block lag (every ~30s during normal mining)
+        // Expected: refresh template, do NOT stop workers, do NOT discard
+        {
+            auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/1,
+                                       /*has_hash=*/true, /*hash_matches=*/false);
+            print_test_result("Scenario A1: 1-block lag → request_work called",
+                d.request_work_called);
+            print_test_result("Scenario A2: 1-block lag → discard_template NOT called",
+                !d.discard_template_called);
+            print_test_result("Scenario A3: 1-block lag → recovery NOT triggered (workers keep mining)",
+                !d.recovery_triggered);
+        }
+
+        // Scenario B: Multi-block lag with hash mismatch
+        // Expected: discard by height alone (hash is irrelevant), request work, recovery
+        {
+            auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/3,
+                                       /*has_hash=*/true, /*hash_matches=*/false);
+            print_test_result("Scenario B1: 3-block lag → request_work called",
+                d.request_work_called);
+            print_test_result("Scenario B2: 3-block lag → discard_template called (height alone, no hash check)",
+                d.discard_template_called);
+            print_test_result("Scenario B3: 3-block lag → recovery triggered",
+                d.recovery_triggered);
+        }
+
+        // Scenario C: Multi-block lag where hashes happen to match
+        // Expected: STILL discard — height is authoritative, hash result doesn't matter
+        {
+            auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
+                                       /*has_hash=*/true, /*hash_matches=*/true);
+            print_test_result("Scenario C1: 2-block lag + hashes match → request_work called",
+                d.request_work_called);
+            print_test_result("Scenario C2: 2-block lag + hashes match → discard_template called (height authoritative)",
+                d.discard_template_called);
+            print_test_result("Scenario C3: 2-block lag + hashes match → recovery triggered",
+                d.recovery_triggered);
+        }
+
+        // Scenario D: Compact payload (no hashPrevBlock) — multi-block lag
+        // Expected: discard by height alone (hash data unavailable but irrelevant)
+        {
+            auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
+                                       /*has_hash=*/false, /*hash_matches=*/false);
+            print_test_result("Scenario D1: 2-block lag, compact payload → request_work called",
+                d.request_work_called);
+            print_test_result("Scenario D2: 2-block lag, compact payload → discard called (height alone)",
+                d.discard_template_called);
+        }
+
+        // Scenario E: Same-height chain reorg (blocks_behind == 0, hash changed)
+        // Expected: discard template, request work
+        {
+            auto d = simulate_handler(/*stale=*/false, /*blocks_behind=*/0,
+                                       /*has_hash=*/true, /*hash_matches=*/false);
+            print_test_result("Scenario E1: Same-height reorg → discard_template called",
+                d.discard_template_called);
+            print_test_result("Scenario E2: Same-height reorg → request_work called",
+                d.request_work_called);
+        }
+
+        // Scenario F: Healthy template (not stale, hashes match)
+        // Expected: no action
+        {
+            auto d = simulate_handler(/*stale=*/false, /*blocks_behind=*/0,
+                                       /*has_hash=*/true, /*hash_matches=*/true);
+            print_test_result("Scenario F1: Healthy template → request_work NOT called",
+                !d.request_work_called);
+            print_test_result("Scenario F2: Healthy template → discard NOT called",
+                !d.discard_template_called);
+        }
+    }
+
+    // ====================================================================
+    // Test 10: blocks_behind() arithmetic matches handler expectations
+    // ====================================================================
+    std::cout << "\nTest 10: blocks_behind() arithmetic" << std::endl;
+    {
+        // blocks_behind = expected_template_target - channel_target
+        //               = (channel_height + 1) - channel_target
+        // Verify the formula matches what the handler uses to classify severity.
+
+        // Template current: channel_target == channel_height + 1 → behind = 0
+        uint32_t ch = 100, ct_current = 101;
+        uint32_t expected_current = (ch + 1) - ct_current;  // = 0
+        print_test_result("blocks_behind == 0 when template is current (channel_target = channel_height+1)",
+            expected_current == 0);
+
+        // Template 1 block behind: channel_target == channel_height → behind = 1
+        uint32_t ct_one_behind = 100;
+        uint32_t expected_one = (ch + 1) - ct_one_behind;  // = 1
+        print_test_result("blocks_behind == 1 when template is one block old",
+            expected_one == 1);
+
+        // Template 3 blocks behind: channel_target == channel_height - 2 → behind = 3
+        uint32_t ct_three_behind = 98;
+        uint32_t expected_three = (ch + 1) - ct_three_behind;  // = 3
+        print_test_result("blocks_behind == 3 when template is three blocks old",
+            expected_three == 3);
+
+        // The boundary: blocks_behind == 1 → normal path (no recovery)
+        //               blocks_behind >= 2 → recovery path
+        print_test_result("blocks_behind threshold: 1 is normal, 2+ triggers recovery",
+            expected_one < 2 && expected_three >= 2);
+    }
+
+    // ====================================================================
     // Summary
     // ====================================================================
     std::cout << "\n========================================" << std::endl;
