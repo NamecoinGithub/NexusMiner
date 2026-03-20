@@ -624,16 +624,42 @@ void Solo::flush_pending_push_after_auth(const std::shared_ptr<network::Connecti
         return;
     }
 
+    refresh_cached_session_state(log_scope);
+
+    if (!m_authenticated) {
+        m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: canonical session not authenticated yet",
+                       log_scope);
+        return;
+    }
+
+    if (!validate_authoritative_session(log_scope, !m_reward_address.empty())) {
+        m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: authoritative session is not ready yet",
+                       log_scope);
+        return;
+    }
+
+    if (!m_reward_address.empty() && !m_reward_bound) {
+        m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: reward binding not finished yet",
+                       log_scope);
+        return;
+    }
+
     m_logger->info("[{}] Push arrived during auth handshake — sending queued GET_BLOCK now", log_scope);
-    m_pending_push_after_auth = false;
 
     auto work_payload = get_work();
     if (work_payload && !work_payload->empty()) {
+        m_pending_push_after_auth = false;
         connection->transmit(work_payload);
         return;
     }
 
-    m_logger->warn("[{}] Queued post-auth GET_BLOCK was unavailable after auth completion", log_scope);
+    if (m_last_get_block_request_status.load() == GetBlockRequestStatus::DUPLICATE_WINDOW) {
+        m_pending_push_after_auth = false;
+        m_logger->info("[{}] Queued post-auth GET_BLOCK already satisfied by a recent request", log_scope);
+        return;
+    }
+
+    m_logger->warn("[{}] Queued post-auth GET_BLOCK is still pending after readiness check", log_scope);
 }
 
 void Solo::update_connection_metadata(const std::shared_ptr<network::Connection>& connection)
