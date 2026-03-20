@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the implementation of `protocol::NodeSessionContext`, a thin façade over `SessionManager` that provides a unified, authoritative source for all session-domain decisions in the NexusMiner codebase.
+This document describes `protocol::NodeSessionContext` as a thin façade over `SessionManager`, with `SessionManager` remaining the single authoritative mutable session record for the NexusMiner protocol stack.
 
 ## Problem Statement
 
@@ -34,17 +34,21 @@ NodeSession
 
 ### Key Design Principles
 
-1. **Single Source of Truth**: NodeSessionContext is the SOLE authoritative source for session state
-2. **Thin Façade Pattern**: Wraps SessionManager without adding business logic
+1. **Single Source of Truth**: `SessionManager` owns authoritative live session truth
+2. **Thin Façade Pattern**: `NodeSessionContext` wraps `SessionManager` without adding competing business logic
 3. **Simplified Interface**: Provides session-centric accessors for protocol constants
 4. **Wire Protocol Helpers**: Colocates session parsing utilities (e.g., parse_session_start)
+5. **Explicit Transition APIs**: Auth, reward, recovery, expiry, and reset flows are requested through named `SessionManager` transitions
 
 ### Responsibilities
 
-`NodeSessionContext` owns all session-domain decisions:
+`NodeSessionContext` exposes the authoritative session-domain decisions owned by `SessionManager`:
 
-- **Session ID cache** - Authoritative source queried by all components
+- **Authoritative runtime snapshot** - queried by all components
 - **Session state machine** - DISCONNECTED → AUTHENTICATING → AUTHENTICATED → ACTIVE → EXPIRED
+- **Reward lifecycle state** - NONE / REQUIRED / BINDING / BOUND / REJECTED / STALE
+- **Recovery lifecycle state** - HEALTHY / SOFT_REFRESH_REQUESTED / RECOVERY_PENDING / FORCED_REAUTH / RECONNECT_REQUIRED
+- **Expiry/replay bookkeeping** - keepalive ACK state, expiry reason, deferred replay allowances
 - **Lane-aware packet building** - `build_keepalive_packet()`, `build_session_status_packet()`
 - **Session constants** - Keepalive cadence rules, retry caps (from ProtocolConstants)
 - **Expiry detection** - "Invalidate session" actions (e.g., on mismatch ACK)
@@ -131,9 +135,26 @@ bool is_active() const;
 SessionManager::SessionState get_state() const;
 
 // Session lifecycle
+void begin_auth_handshake(const std::string& detail = "");
 void start_session(uint32_t session_id,
                    const std::vector<uint8_t>& session_key = {},
                    const std::vector<uint8_t>& tritium_genesis = {});
+void commit_authenticated_session(uint32_t session_id,
+                                  const std::vector<uint8_t>& pubkey,
+                                  const std::string& key_id,
+                                  const std::vector<uint8_t>& tritium_genesis = {});
+void begin_reward_binding(const std::string& reward_address,
+                          const std::vector<uint8_t>& reward_hash = {},
+                          const std::string& source = "");
+void commit_reward_bound(const std::string& reward_address,
+                         const std::vector<uint8_t>& reward_hash,
+                         const std::string& source = "");
+void commit_reward_rejected(const std::string& reward_address,
+                            const std::string& source = "",
+                            const std::string& reason = "");
+void mark_session_expired(const std::string& reason);
+void clear_for_disconnect(...);
+void clear_for_reauth(...);
 void end_session();
 void set_state(SessionManager::SessionState state);
 
@@ -160,7 +181,8 @@ static bool parse_session_start(
 ## Benefits
 
 ### 1. Clear Ownership
-- `NodeSessionContext` is the authoritative source for session state
+- `SessionManager` is the authoritative source for mutable session state
+- `NodeSessionContext` is the façade that keeps other components from mutating overlapping local truth
 - No more ambiguity about which component owns session_id
 
 ### 2. Prevented Duplication Recurrence
@@ -222,4 +244,4 @@ NodeSession tests also pass with the updated implementation:
 
 ## Conclusion
 
-The NodeSessionContext implementation successfully addresses the session management duplication issues identified in the problem statement. By providing a single, authoritative source for session state, it simplifies the architecture and prevents future duplication errors.
+The current `NodeSessionContext`/`SessionManager` split addresses the session management duplication issues identified in the problem statement. `SessionManager` owns the runtime snapshot, transition validation, reset semantics, event journal, epoch advancement, and readiness/replay predicates, while `NodeSessionContext` remains a thin bridge for callers that should not depend on all `SessionManager` internals directly.

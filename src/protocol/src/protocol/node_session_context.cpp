@@ -60,6 +60,88 @@ void NodeSessionContext::commit_authenticated_session(uint32_t session_id,
     }
 }
 
+void NodeSessionContext::begin_auth_handshake(const std::string& detail)
+{
+    if (m_session_manager) {
+        m_session_manager->begin_auth_handshake(detail);
+    }
+}
+
+void NodeSessionContext::begin_reward_binding(const std::string& reward_address,
+                                              const std::vector<uint8_t>& reward_hash,
+                                              const std::string& source)
+{
+    if (m_session_manager) {
+        m_session_manager->begin_reward_binding(reward_address, reward_hash, source);
+    }
+}
+
+void NodeSessionContext::commit_reward_bound(const std::string& reward_address,
+                                             const std::vector<uint8_t>& reward_hash,
+                                             const std::string& source)
+{
+    if (m_session_manager) {
+        m_session_manager->commit_reward_bound(reward_address, reward_hash, source);
+    }
+}
+
+void NodeSessionContext::commit_reward_rejected(const std::string& reward_address,
+                                                const std::string& source,
+                                                const std::string& reason)
+{
+    if (m_session_manager) {
+        m_session_manager->commit_reward_rejected(reward_address, source, reason);
+    }
+}
+
+void NodeSessionContext::note_keepalive_ack(bool accepted, const std::string& detail)
+{
+    if (m_session_manager) {
+        m_session_manager->note_keepalive_ack(accepted, detail);
+    }
+}
+
+void NodeSessionContext::mark_soft_refresh_requested(const std::string& reason)
+{
+    if (m_session_manager) {
+        m_session_manager->mark_soft_refresh_requested(reason);
+    }
+}
+
+void NodeSessionContext::mark_recovery_required(const std::string& reason)
+{
+    if (m_session_manager) {
+        m_session_manager->mark_recovery_required(reason);
+    }
+}
+
+void NodeSessionContext::mark_session_expired(const std::string& reason)
+{
+    if (m_session_manager) {
+        m_session_manager->mark_session_expired(reason);
+    }
+}
+
+void NodeSessionContext::clear_for_disconnect(const std::string& reward_address,
+                                              const std::string& reward_source,
+                                              const std::string& reason,
+                                              bool preserve_genesis)
+{
+    if (m_session_manager) {
+        m_session_manager->clear_for_disconnect(reward_address, reward_source, reason, preserve_genesis);
+    }
+}
+
+void NodeSessionContext::clear_for_reauth(const std::string& reward_address,
+                                          const std::string& reward_source,
+                                          const std::string& reason,
+                                          bool preserve_genesis)
+{
+    if (m_session_manager) {
+        m_session_manager->clear_for_reauth(reward_address, reward_source, reason, preserve_genesis);
+    }
+}
+
 void NodeSessionContext::end_session()
 {
     if (m_session_manager) {
@@ -194,6 +276,36 @@ void NodeSessionContext::mark_activity()
     if (m_session_manager) {
         m_session_manager->mark_activity();
     }
+}
+
+bool NodeSessionContext::is_reward_bound() const
+{
+    return m_session_manager ? m_session_manager->is_reward_bound() : false;
+}
+
+bool NodeSessionContext::reward_binding_required() const
+{
+    return m_session_manager ? m_session_manager->reward_binding_required() : false;
+}
+
+bool NodeSessionContext::can_submit_work() const
+{
+    return m_session_manager ? m_session_manager->can_submit_work() : false;
+}
+
+bool NodeSessionContext::can_request_get_block() const
+{
+    return m_session_manager ? m_session_manager->can_request_get_block() : false;
+}
+
+bool NodeSessionContext::allow_deferred_push_replay() const
+{
+    return m_session_manager ? m_session_manager->allow_deferred_push_replay() : false;
+}
+
+bool NodeSessionContext::allow_get_block_replay() const
+{
+    return m_session_manager ? m_session_manager->allow_get_block_replay() : false;
 }
 
 bool NodeSessionContext::validate_miner_session(std::string* reason) const

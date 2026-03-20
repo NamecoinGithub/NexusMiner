@@ -330,10 +330,9 @@ void Solo::reset()
     // Reset session manager
     if (m_session_context) {
         m_session_context->set_chacha20_session_key({}, "", false);
-        m_session_context->set_channel_state(m_channel, false, false);
-        m_session_context->set_reward_binding(m_reward_address, {}, false,
-                                             m_reward_address.empty() ? "" : "config");
-        m_session_context->end_session();
+        m_session_context->clear_for_disconnect(m_reward_address,
+                                                m_reward_address.empty() ? "" : "config",
+                                                "solo session reset");
     }
 
     // Reset template interface for new session
@@ -889,7 +888,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_auth_state = AuthState::WAITING_FOR_CHALLENGE;
     m_auth_in_flight_since = std::chrono::steady_clock::now();
     if (m_session_context) {
-        m_session_context->set_state(SessionManager::SessionState::AUTHENTICATING);
+        m_session_context->begin_auth_handshake("falcon auth handshake started");
     }
     
     // Login handler will be called after successful authentication in MINER_AUTH_RESULT
@@ -3528,6 +3527,9 @@ void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Conne
             if (handle_session_id_mismatch(ack.session_id))
                 return;
 
+            if (m_session_context) {
+                m_session_context->note_keepalive_ack(true, "keepalive ack accepted");
+            }
             record_session_event(SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED,
                                  "keepalive ack accepted");
 
@@ -3585,6 +3587,9 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
             if (handle_session_id_mismatch(ack.session_id))
                 return;
 
+            if (m_session_context) {
+                m_session_context->note_keepalive_ack(true, "session status ack accepted");
+            }
             record_session_event(SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED,
                                  "session status ack accepted");
 
@@ -3814,6 +3819,9 @@ bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
     }
 
     record_session_event(SessionManager::SessionEventKind::STATUS_ACK_REJECTED, decision.reason);
+    if (m_session_context) {
+        m_session_context->note_keepalive_ack(false, decision.reason);
+    }
 
     m_logger->warn("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != authoritative=0x{:08x}"
                    " — possible stale ACK or race condition (not self-expiring yet)",
@@ -3825,7 +3833,7 @@ bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
         m_logger->error("[KEEPALIVE_V2] {} after {} consecutive mismatches — session presumed stale, expiring",
                         decision.reason, m_session_id_mismatch_count);
         m_session_id_mismatch_count = 0;
-        session_manager->set_state(SessionManager::SessionState::EXPIRED);
+        session_manager->mark_session_expired("ack mismatch expiry threshold reached");
         if (m_session_expired_handler)
             m_session_expired_handler();
         return true;
@@ -3875,11 +3883,10 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
     // Clear the authoritative session context
     if (m_session_context) {
         m_session_context->set_chacha20_session_key({}, "", false);
-        m_session_context->set_reward_binding(m_reward_address, {}, false,
-                                             m_reward_address.empty() ? "" : "config");
-        m_session_context->set_channel_state(m_channel, false, false);
         m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), false);
-        m_session_context->end_session();
+        m_session_context->clear_for_reauth(m_reward_address,
+                                            m_reward_address.empty() ? "" : "config",
+                                            "node signalled session expiry");
         m_logger->info("[Solo] Session context cleared");
     }
 
@@ -4080,7 +4087,7 @@ network::Shared_payload Solo::send_set_reward()
     // Extract bytes 1-32 (skip version byte at index 0, skip checksum at end)
     std::vector<uint8_t> vHash(vAddress.begin() + 1, vAddress.begin() + 33);
     if (m_session_context) {
-        m_session_context->set_reward_binding(m_reward_address, vHash, false, "config");
+        m_session_context->begin_reward_binding(m_reward_address, vHash, "config");
         m_session_context->mark_activity();
     }
     
@@ -4440,8 +4447,9 @@ void Solo::handle_reward_result(const Packet& packet)
         m_logger->error("[Solo Reward] Invalid MINER_REWARD_RESULT packet - no data");
         m_reward_bound = false;
         if (m_session_context) {
-            m_session_context->set_reward_binding(m_reward_address, {}, false,
-                                                 m_reward_address.empty() ? "" : "live bind");
+            m_session_context->commit_reward_rejected(m_reward_address,
+                                                      m_reward_address.empty() ? "" : "live bind",
+                                                      "empty reward result payload");
         }
         return;
     }
@@ -4516,7 +4524,7 @@ void Solo::handle_reward_result(const Packet& packet)
             reward_hash.assign(decoded.begin() + 1, decoded.begin() + 33);
         }
         if (m_session_context) {
-            m_session_context->set_reward_binding(m_reward_address, reward_hash, true, "live bind");
+            m_session_context->commit_reward_bound(m_reward_address, reward_hash, "live bind");
             m_session_context->set_channel_state(m_channel, false, true);
             m_session_context->mark_activity();
         }
@@ -4559,7 +4567,7 @@ void Solo::handle_reward_result(const Packet& packet)
         
         m_reward_bound = false;
         if (m_session_context) {
-            m_session_context->set_reward_binding(m_reward_address, {}, false, "live bind");
+            m_session_context->commit_reward_rejected(m_reward_address, "live bind", error_message);
             m_session_context->set_channel_state(m_channel, false, false);
         }
         

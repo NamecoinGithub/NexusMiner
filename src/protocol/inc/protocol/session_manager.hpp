@@ -51,6 +51,34 @@ public:
         EXPIRED           // Session expired, needs re-onboarding
     };
 
+    enum class RewardState {
+        NONE,
+        REQUIRED,
+        BINDING,
+        BOUND,
+        REJECTED,
+        STALE
+    };
+
+    enum class RecoveryState {
+        HEALTHY,
+        SOFT_REFRESH_REQUESTED,
+        RECOVERY_PENDING,
+        RECOVERY_IN_PROGRESS,
+        FORCED_REAUTH,
+        RECONNECT_REQUIRED
+    };
+
+    enum class ExpiryState {
+        FRESH,
+        KEEPALIVE_MISMATCH_WARNING,
+        STALE_ACK_IGNORED,
+        EXPIRED_ACCEPTED,
+        EXPIRED_REJECTED,
+        AUTH_TIMEOUT,
+        DEAD_SESSION_TIMEOUT
+    };
+
     /**
      * @brief Callback type invoked when session transitions to EXPIRED state.
      * Registered by Solo/Worker_manager to trigger recovery on session mismatch.
@@ -65,9 +93,12 @@ public:
         REWARD_BIND_RESULT,
         STATUS_ACK_ACCEPTED,
         STATUS_ACK_REJECTED,
+        KEEPALIVE_ACK,
         STALE_PACKET_DROPPED,
         EPOCH_MISMATCH,
+        RECOVERY_REQUESTED,
         FORCED_REAUTH,
+        SESSION_RESET,
         SUBMIT_SENT,
         SUBMIT_ACCEPTED,
         SUBMIT_REJECTED
@@ -113,10 +144,18 @@ public:
         std::string reward_address_string;
         std::vector<uint8_t> reward_hash;
         bool reward_bound{false};
+        RewardState reward_state{RewardState::NONE};
         std::string reward_binding_source;
         uint32_t channel{0};
         bool ready_for_submit{false};
         bool ready_for_get_block{false};
+        RecoveryState recovery_state{RecoveryState::HEALTHY};
+        std::string recovery_reason;
+        ExpiryState expiry_state{ExpiryState::FRESH};
+        std::string expiry_reason;
+        bool deferred_push_replay_allowed{false};
+        bool get_block_replay_allowed{false};
+        bool queued_replay_survives_partial_readiness{false};
         std::array<uint8_t, 4> prevblock_suffix{};
         uint64_t created_at{0};
         uint64_t last_auth_time{0};
@@ -158,6 +197,38 @@ public:
                                       const std::vector<uint8_t>& pubkey,
                                       const std::string& key_id,
                                       const std::vector<uint8_t>& tritium_genesis = {});
+
+    void begin_auth_handshake(const std::string& detail = "");
+
+    void begin_reward_binding(const std::string& reward_address,
+                              const std::vector<uint8_t>& reward_hash = {},
+                              const std::string& source = "");
+
+    void commit_reward_bound(const std::string& reward_address,
+                             const std::vector<uint8_t>& reward_hash,
+                             const std::string& source = "");
+
+    void commit_reward_rejected(const std::string& reward_address,
+                                const std::string& source = "",
+                                const std::string& reason = "");
+
+    void note_keepalive_ack(bool accepted, const std::string& detail = "");
+
+    void mark_soft_refresh_requested(const std::string& reason = "");
+
+    void mark_recovery_required(const std::string& reason);
+
+    void mark_session_expired(const std::string& reason);
+
+    void clear_for_disconnect(const std::string& reward_address = {},
+                              const std::string& reward_source = "",
+                              const std::string& reason = "",
+                              bool preserve_genesis = true);
+
+    void clear_for_reauth(const std::string& reward_address = {},
+                          const std::string& reward_source = "",
+                          const std::string& reason = "",
+                          bool preserve_genesis = true);
 
     /**
      * @brief End current session
@@ -301,6 +372,18 @@ public:
 
     void mark_activity();
 
+    bool is_reward_bound() const;
+
+    bool reward_binding_required() const;
+
+    bool can_submit_work() const;
+
+    bool can_request_get_block() const;
+
+    bool allow_deferred_push_replay() const;
+
+    bool allow_get_block_replay() const;
+
     bool validate_miner_session(std::string* reason = nullptr) const;
 
     std::string build_miner_session_diagnostics() const;
@@ -398,10 +481,14 @@ private:
     static bool validate_miner_session_container_locked(const MinerSessionContainer& session,
                                                         std::string* reason);
     static const char* session_event_kind_name(SessionEventKind kind);
+    static const char* reward_state_name(RewardState state);
+    static const char* recovery_state_name(RecoveryState state);
+    static const char* expiry_state_name(ExpiryState state);
     void transition_to_authenticated_locked(uint32_t session_id,
                                             const std::vector<uint8_t>& tritium_genesis);
     void clear_runtime_session_locked(bool preserve_genesis,
                                       bool clear_prevblock_suffix);
+    void update_replay_allowances_locked();
     void clear_session_event_journal_locked();
     void record_session_event_locked(SessionEventKind kind, const std::string& detail);
     void schedule_regular_keepalives(const std::shared_ptr<SessionManager>& self);
