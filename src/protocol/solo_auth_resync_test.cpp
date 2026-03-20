@@ -103,6 +103,16 @@ struct SimulatedSoloAuthGuard
         return session_context_authenticated;
     }
 
+    bool is_authenticated() const
+    {
+        return session_context_is_authenticated() ? authoritative.authenticated : m_authenticated;
+    }
+
+    bool is_reward_bound() const
+    {
+        return session_context_authenticated ? authoritative.reward_bound : m_reward_bound;
+    }
+
     void propagate_session_to_template_interface()
     {
         template_interface_session_id = m_session_id;
@@ -256,6 +266,24 @@ struct SimulatedSoloAuthGuard
             accepted.channel = fallback_channel;
         }
         return accepted;
+    }
+
+    bool handle_session_expired(uint32_t expired_sid)
+    {
+        const uint32_t authoritative_session_id = authoritative.session_id;
+        if (expired_sid != authoritative_session_id) {
+            return false;
+        }
+
+        authoritative = {};
+        session_context_authenticated = false;
+        m_session_id = 0;
+        m_authenticated = false;
+        m_auth_state = AuthState::NOT_AUTHENTICATED;
+        m_auth_in_flight_since = {};
+        m_reward_bound = false;
+        template_interface_session_id = 0;
+        return true;
     }
 };
 
@@ -464,9 +492,25 @@ void test_process_messages_entry_resyncs_cached_reward_binding()
                       guard.template_interface_session_epoch == 123);
 }
 
+void test_public_auth_accessors_prefer_authoritative_session_state()
+{
+    std::cout << "\nTest 8: public accessors prefer authoritative session state over stale local cache\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_authenticated = false;
+    guard.m_reward_bound = false;
+    guard.session_context_authenticated = true;
+    guard.authoritative = {true, 0xA1B2C3D4, 17, true, {}};
+
+    print_test_result("is_authenticated() follows authoritative session context",
+                      guard.is_authenticated());
+    print_test_result("is_reward_bound() follows authoritative reward binding",
+                      guard.is_reward_bound());
+}
+
 void test_push_during_handshake_is_queued_until_auth_completes()
 {
-    std::cout << "\nTest 8: push during auth handshake queues a post-auth GET_BLOCK\n";
+    std::cout << "\nTest 9: push during auth handshake queues a post-auth GET_BLOCK\n";
 
     SimulatedSoloAuthGuard guard;
     guard.m_authenticated = false;
@@ -486,6 +530,27 @@ void test_push_during_handshake_is_queued_until_auth_completes()
     print_test_result("Queued push flushes immediately after auth completes", flushed);
     print_test_result("Queued push sends exactly one GET_BLOCK after auth", guard.get_block_requests == 1);
     print_test_result("Queued push is cleared after the post-auth GET_BLOCK", !guard.m_pending_push_after_auth);
+}
+
+void test_session_expired_accepts_authoritative_session_id_when_local_cache_is_stale()
+{
+    std::cout << "\nTest 10: SESSION_EXPIRED is validated against authoritative session state\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_authenticated = false;
+    guard.m_session_id = 0;
+    guard.m_reward_bound = true;
+    guard.session_context_authenticated = true;
+    guard.authoritative = {true, 0xCAFEBABE, 88, true, {}};
+    guard.template_interface_session_id = 0xCAFEBABE;
+
+    const bool handled = guard.handle_session_expired(0xCAFEBABE);
+
+    print_test_result("SESSION_EXPIRED accepts authoritative session ID despite stale local cache", handled);
+    print_test_result("Authoritative session is cleared after expiry handling", !guard.authoritative.authenticated);
+    print_test_result("Session context auth is cleared after expiry handling", !guard.session_context_authenticated);
+    print_test_result("Local session ID cache is cleared after expiry handling", guard.m_session_id == 0);
+    print_test_result("Local reward binding cache is cleared after expiry handling", !guard.m_reward_bound);
 }
 
 void test_push_triggered_reauth_queues_followup_get_block()
@@ -754,7 +819,9 @@ int main()
     test_cached_session_state_resyncs_from_authoritative_container();
     test_reward_send_validates_before_packet_build();
     test_process_messages_entry_resyncs_cached_reward_binding();
+    test_public_auth_accessors_prefer_authoritative_session_state();
     test_push_during_handshake_is_queued_until_auth_completes();
+    test_session_expired_accepts_authoritative_session_id_when_local_cache_is_stale();
     test_push_triggered_reauth_queues_followup_get_block();
     test_multiple_pushes_during_handshake_queue_single_followup_get_block();
     test_queued_push_waits_for_reward_binding_before_flushing();
