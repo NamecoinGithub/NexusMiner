@@ -475,6 +475,42 @@ void test_pre_push_template_identified_correctly() {
 }
 
 // ============================================================================
+// Test 14: blocks_behind() distinguishes normal single-block refresh from
+//          true multi-block lag while leaving same-height tip moves at 0.
+// ============================================================================
+void test_blocks_behind_distinguishes_normal_vs_severe_lag() {
+    std::cout << "\nTest 14: blocks_behind() distinguishes normal vs severe lag\n";
+    HeightTracker tracker;
+
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnTemplateReceived(2, 101);
+
+    auto initial = tracker.GetSnapshot();
+    print_test_result("blocks_behind() == 0 before channel advances",
+                      initial.blocks_behind() == 0);
+
+    tracker.OnPushNotification(5001, 101, 0x1d00ffff);
+    auto one_block = tracker.GetSnapshot();
+    print_test_result("blocks_behind() == 1 when template is one block behind",
+                      one_block.blocks_behind() == 1);
+
+    tracker.OnPushNotification(5002, 102, 0x1d00ffff);
+    auto two_blocks = tracker.GetSnapshot();
+    print_test_result("blocks_behind() == 2 when template lags by two blocks",
+                      two_blocks.blocks_behind() == 2);
+
+    HeightTracker tip_move_tracker;
+    tip_move_tracker.OnPushNotification(6000, 200, 0x1d00ffff);
+    tip_move_tracker.OnTemplateReceived(2, 201);
+    tip_move_tracker.OnPushNotification(6001, 200, 0x1d00ffff);
+    auto tip_move = tip_move_tracker.GetSnapshot();
+    print_test_result("blocks_behind() == 0 when only unified tip moves",
+                      tip_move.blocks_behind() == 0);
+    print_test_result("is_tip_moved() == true when only unified tip moves",
+                      tip_move.is_tip_moved());
+}
+
+// ============================================================================
 // Test 14: OnKeepaliveResponse — keepalive sets diagnostic fields only
 //          (unified_height and channel_height in snapshot come from canonical/push)
 // ============================================================================
@@ -1594,6 +1630,7 @@ int main() {
     test_difficulty_from_push_reflected_in_snapshot();
     test_post_push_timestamps_ordered_correctly();
     test_pre_push_template_identified_correctly();
+    test_blocks_behind_distinguishes_normal_vs_severe_lag();
     test_on_keepalive_response_unified();
     test_on_keepalive_response_legacy_zeros_safe();
     test_keepalive_response_sets_stake_height();
