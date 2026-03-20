@@ -204,6 +204,9 @@ struct SimulatedSoloAuthGuard
         if (!validate_authoritative_session()) {
             return false;
         }
+        if (authoritative.session_id == 0 || !has_authoritative_chacha_key()) {
+            return false;
+        }
 
         ++packet_build_requests;
         return true;
@@ -466,6 +469,24 @@ void test_reward_send_validates_before_packet_build()
 
     print_test_result("Reward send fails when authoritative session is invalid", !sent);
     print_test_result("Reward send does not build a packet before validation", guard.packet_build_requests == 0);
+}
+
+void test_reward_send_requires_authoritative_reward_key_after_auth()
+{
+    std::cout << "\nTest 6b: reward send requires authoritative reward key after auth\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.session_context_authenticated = true;
+    guard.authoritative.authenticated = true;
+    guard.authoritative.session_id = 0x12345678;
+    guard.m_chacha_key = std::vector<unsigned char>(32, 0xAA);
+    guard.authoritative.chacha_key.clear();
+
+    const bool sent = guard.send_set_reward();
+
+    print_test_result("Reward send fails when authoritative reward key is missing after auth", !sent);
+    print_test_result("Reward send still does not build a packet without authoritative reward key",
+                      guard.packet_build_requests == 0);
 }
 
 void test_process_messages_entry_resyncs_cached_reward_binding()
@@ -818,6 +839,7 @@ int main()
     test_auth_result_failure_clears_in_flight_state();
     test_cached_session_state_resyncs_from_authoritative_container();
     test_reward_send_validates_before_packet_build();
+    test_reward_send_requires_authoritative_reward_key_after_auth();
     test_process_messages_entry_resyncs_cached_reward_binding();
     test_public_auth_accessors_prefer_authoritative_session_state();
     test_push_during_handshake_is_queued_until_auth_completes();

@@ -215,6 +215,8 @@ public:
 
     bool reward_binding_required() const;
 
+    SessionManager::RewardBindReadiness get_reward_bind_readiness() const;
+
     bool can_submit_work() const;
 
     bool can_request_get_block() const;

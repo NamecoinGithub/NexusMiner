@@ -233,9 +233,15 @@ void SessionManager::begin_auth_handshake(const std::string& detail)
     std::lock_guard<std::mutex> lock(m_session_mutex);
     const auto retained_reward_address = m_session.reward_address_string;
     const auto retained_reward_source = m_session.reward_binding_source;
+    const auto retained_chacha20_session_key = m_session.chacha20_session_key;
+    const auto retained_chacha20_key_fingerprint = m_session.chacha20_key_fingerprint;
+    const bool retained_chacha20_ready = m_session.chacha20_ready;
     clear_runtime_session_locked(true, true);
     m_session.reward_address_string = retained_reward_address;
     m_session.reward_binding_source = retained_reward_source;
+    m_session.chacha20_session_key = retained_chacha20_session_key;
+    m_session.chacha20_key_fingerprint = retained_chacha20_key_fingerprint;
+    m_session.chacha20_ready = retained_chacha20_ready;
     m_session.reward_state = retained_reward_address.empty() ? RewardState::NONE
                                                              : RewardState::REQUIRED;
     m_session.state = SessionState::AUTHENTICATING;
@@ -830,6 +836,52 @@ bool SessionManager::reward_binding_required() const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
     return !m_session.reward_address_string.empty() && !m_session.reward_bound;
+}
+
+SessionManager::RewardBindReadiness SessionManager::get_reward_bind_readiness() const
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+
+    RewardBindReadiness readiness;
+
+    if (m_session.reward_address_string.empty()) {
+        readiness.reason = "no reward address configured in authoritative session state";
+        return readiness;
+    }
+
+    if (!m_session.authenticated) {
+        readiness.reason = "authoritative session is not authenticated";
+        return readiness;
+    }
+
+    if (m_session.session_id == 0) {
+        readiness.reason = "authoritative session is authenticated but missing session_id";
+        return readiness;
+    }
+
+    if (m_session.reward_bound || m_session.reward_state == RewardState::BOUND) {
+        readiness.reason = "reward address is already bound for the authoritative session";
+        return readiness;
+    }
+
+    if (m_session.session_genesis.empty()) {
+        readiness.reason = "authoritative session is missing Tritium genesis required for reward encryption";
+        return readiness;
+    }
+
+    if (m_session.chacha20_session_key.empty()) {
+        readiness.reason = "authoritative session is missing the ChaCha20 reward/session key";
+        return readiness;
+    }
+
+    if (!m_session.chacha20_ready) {
+        readiness.reason = "authoritative ChaCha20 reward/session key is not marked ready";
+        return readiness;
+    }
+
+    readiness.ready = true;
+    readiness.reason = "ready";
+    return readiness;
 }
 
 bool SessionManager::can_submit_work() const

@@ -168,6 +168,11 @@ public:
     };
     using RuntimeSessionSnapshot = MinerSessionContainer;
     using SessionInfo = RuntimeSessionSnapshot;
+
+    struct RewardBindReadiness {
+        bool ready{false};
+        std::string reason;
+    };
     
     /**
      * @brief Constructor
@@ -375,6 +380,8 @@ public:
     bool is_reward_bound() const;
 
     bool reward_binding_required() const;
+
+    RewardBindReadiness get_reward_bind_readiness() const;
 
     bool can_submit_work() const;
 
