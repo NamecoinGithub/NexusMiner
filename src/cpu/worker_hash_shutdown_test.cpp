@@ -20,7 +20,15 @@ namespace nexusminer::cpu
 struct Worker_hash_test_access
 {
     static std::mutex& mutex(Worker_hash& worker) { return worker.m_mtx; }
-    static std::atomic<bool>& stop(Worker_hash& worker) { return worker.m_stop; }
+    static void store_stop(Worker_hash& worker, bool value)
+    {
+        worker.m_stop.store(value, std::memory_order_release);
+    }
+
+    static bool load_stop(Worker_hash& worker)
+    {
+        return worker.m_stop.load(std::memory_order_acquire);
+    }
 };
 }
 
@@ -52,14 +60,14 @@ void test_shutdown_sets_stop_before_locking_worker_mutex()
     auto worker = std::make_shared<cpu::Worker_hash>(io_context, worker_config);
     auto* raw_worker = worker.get();
 
-    cpu::Worker_hash_test_access::stop(*raw_worker) = false;
+    cpu::Worker_hash_test_access::store_stop(*raw_worker, false);
 
     std::atomic<bool> mutex_locked{false};
     std::thread lock_holder([raw_worker, &mutex_locked]() {
         std::unique_lock<std::mutex> lock(cpu::Worker_hash_test_access::mutex(*raw_worker));
         mutex_locked.store(true, std::memory_order_release);
 
-        while (!cpu::Worker_hash_test_access::stop(*raw_worker).load(std::memory_order_acquire)) {
+        while (!cpu::Worker_hash_test_access::load_stop(*raw_worker)) {
             std::this_thread::sleep_for(1ms);
         }
     });
@@ -73,14 +81,15 @@ void test_shutdown_sets_stop_before_locking_worker_mutex()
     });
 
     const auto status = shutdown.wait_for(250ms);
-    if (status != std::future_status::ready) {
-        cpu::Worker_hash_test_access::stop(*raw_worker) = true;
+    const bool timed_out = (status != std::future_status::ready);
+    if (timed_out) {
+        cpu::Worker_hash_test_access::store_stop(*raw_worker, true);
     }
 
     lock_holder.join();
     shutdown.wait();
 
-    assert(status == std::future_status::ready);
+    assert(!timed_out);
 }
 }
 
@@ -88,6 +97,6 @@ int main()
 {
     std::cout << "Test: Worker_hash shutdown sets stop before waiting on worker mutex..." << std::endl;
     test_shutdown_sets_stop_before_locking_worker_mutex();
-    std::cout << "  \xE2\x9C\x93 Worker_hash destructor completed without locking shutdown behind m_mtx" << std::endl;
+    std::cout << "  [PASS] Worker_hash destructor completed without locking shutdown behind m_mtx" << std::endl;
     return 0;
 }
