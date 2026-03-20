@@ -21,6 +21,8 @@ namespace stats { class Collector; }
 
 namespace cpu
 {
+struct Worker_hash_test_access;
+
 class Worker_hash : public Worker, public std::enable_shared_from_this<Worker_hash>
 {
 public:
@@ -41,6 +43,7 @@ public:
     void update_statistics(stats::Collector& stats_collector) override;
 
 private:
+    friend struct Worker_hash_test_access;
 
     void run();
     void mine_loop(uint32_t thread_id, uint32_t total_threads);

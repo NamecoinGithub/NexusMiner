@@ -13,6 +13,16 @@ target_include_directories(cpu
 
 # TODO reduce dependencies
 target_link_libraries(cpu hash worker LLP LLC stats config spdlog::spdlog)
+
+add_executable(worker_hash_shutdown_test worker_hash_shutdown_test.cpp)
+target_link_libraries(worker_hash_shutdown_test PRIVATE cpu spdlog::spdlog)
+target_include_directories(worker_hash_shutdown_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/config/inc
+    ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME worker_hash_shutdown_test COMMAND $<TARGET_FILE:worker_hash_shutdown_test>)
+
 if(WITH_PRIME)
     target_link_libraries(cpu libprimesieve-static)
     if(WIN32)

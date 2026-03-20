@@ -62,11 +62,12 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 
 Worker_prime::~Worker_prime() noexcept
 {
+	m_stop = true;  // Interrupt mining loops before competing for m_mtx during shutdown
+
 	// Signal shutdown and wake up the worker thread
 	{
 		std::lock_guard<std::mutex> lock(m_mtx);
 		m_shutdown = true;
-		m_stop = true;  // Also set m_stop to interrupt mining loops
 		m_running = false;
 	}
 	m_cv.notify_all();
