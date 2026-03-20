@@ -536,9 +536,32 @@ void test_multiple_pushes_during_handshake_queue_single_followup_get_block()
     print_test_result("Queued follow-up is cleared after the single replay", !guard.m_pending_push_after_auth);
 }
 
+void test_queued_push_waits_for_reward_binding_before_flushing()
+{
+    std::cout << "\nTest 11: queued push waits for reward binding before flushing\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_pending_push_after_auth = true;
+    guard.m_authenticated = true;
+    guard.m_reward_bound = false;
+
+    const bool flushed_before_binding = guard.flush_pending_push_after_auth();
+
+    print_test_result("Queued push does not flush before reward binding completes", !flushed_before_binding);
+    print_test_result("Queued push remains queued until reward binding completes", guard.m_pending_push_after_auth);
+    print_test_result("Queued push does not send GET_BLOCK before reward binding", guard.get_block_requests == 0);
+
+    guard.m_reward_bound = true;
+    const bool flushed_after_binding = guard.flush_pending_push_after_auth();
+
+    print_test_result("Queued push flushes once reward binding completes", flushed_after_binding);
+    print_test_result("Queued push sends exactly one GET_BLOCK after reward binding", guard.get_block_requests == 1);
+    print_test_result("Queued push clears after successful flush", !guard.m_pending_push_after_auth);
+}
+
 void test_cached_session_state_logging_downgrades_expected_reconnect_resyncs()
 {
-    std::cout << "\nTest 11: expected reconnect resyncs log at info while drift stays warn\n";
+    std::cout << "\nTest 12: expected reconnect resyncs log at info while drift stays warn\n";
 
     const auto auth_reconnect = is_expected_cached_session_resync(false, true)
         ? ResyncLogSeverity::INFO : ResyncLogSeverity::WARN;
@@ -570,7 +593,7 @@ void test_cached_session_state_logging_downgrades_expected_reconnect_resyncs()
 
 void test_submit_requires_authoritative_chacha20_key()
 {
-    std::cout << "\nTest 12: submit path only accepts authoritative session key\n";
+    std::cout << "\nTest 13: submit path only accepts authoritative session key\n";
 
     SimulatedSoloAuthGuard guard;
     guard.m_chacha_key = std::vector<unsigned char>(32, 0xAA);
@@ -583,7 +606,7 @@ void test_submit_requires_authoritative_chacha20_key()
 
 void test_block_accepted_consumes_snapshot_before_future_fallback()
 {
-    std::cout << "\nTest 13: accepted-block snapshot is consumed before later fallback use\n";
+    std::cout << "\nTest 14: accepted-block snapshot is consumed before later fallback use\n";
 
     SimulatedSoloAuthGuard guard;
     guard.m_last_submitted_valid = true;
@@ -605,7 +628,7 @@ void test_block_accepted_consumes_snapshot_before_future_fallback()
 
 void test_session_status_policy_resets_mismatch_counter_on_match()
 {
-    std::cout << "\nTest 14: matching SESSION_STATUS_ACK resets mismatch counter\n";
+    std::cout << "\nTest 15: matching SESSION_STATUS_ACK resets mismatch counter\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -621,7 +644,7 @@ void test_session_status_policy_resets_mismatch_counter_on_match()
 
 void test_session_status_ack_ignores_stale_session_id()
 {
-    std::cout << "\nTest 15: stale SESSION_STATUS_ACK does not overwrite cached status\n";
+    std::cout << "\nTest 16: stale SESSION_STATUS_ACK does not overwrite cached status\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -644,7 +667,7 @@ void test_session_status_ack_ignores_stale_session_id()
 
 void test_session_status_ack_expires_after_threshold_mismatches()
 {
-    std::cout << "\nTest 16: repeated mismatched SESSION_STATUS_ACKs expire the session\n";
+    std::cout << "\nTest 17: repeated mismatched SESSION_STATUS_ACKs expire the session\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -661,7 +684,7 @@ void test_session_status_ack_expires_after_threshold_mismatches()
 
 void test_session_status_ack_force_reauth_when_node_reports_expired()
 {
-    std::cout << "\nTest 17: unhealthy SESSION_STATUS_ACK forces re-auth\n";
+    std::cout << "\nTest 18: unhealthy SESSION_STATUS_ACK forces re-auth\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -675,7 +698,7 @@ void test_session_status_ack_force_reauth_when_node_reports_expired()
 
 void test_degraded_live_session_policy_prefers_reauth_over_reconnect()
 {
-    std::cout << "\nTest 18: stalled live degraded session prefers in-band re-auth\n";
+    std::cout << "\nTest 19: stalled live degraded session prefers in-band re-auth\n";
 
     const auto decision = nexusminer::protocol::SessionStatusPolicy::evaluate_degraded_session({
         nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1,
@@ -690,7 +713,7 @@ void test_degraded_live_session_policy_prefers_reauth_over_reconnect()
 
 void test_degraded_dead_session_policy_forces_reconnect()
 {
-    std::cout << "\nTest 19: degraded session without live push traffic reconnects\n";
+    std::cout << "\nTest 20: degraded session without live push traffic reconnects\n";
 
     const auto decision = nexusminer::protocol::SessionStatusPolicy::evaluate_degraded_session({
         nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1,
@@ -705,7 +728,7 @@ void test_degraded_dead_session_policy_forces_reconnect()
 
 void test_session_expired_reauth_guard_skips_when_reconnect_or_recovery_active()
 {
-    std::cout << "\nTest 20: session-expired handler guard blocks duplicate in-band login\n";
+    std::cout << "\nTest 21: session-expired handler guard blocks duplicate in-band login\n";
 
     print_test_result("Guard blocks in-band re-auth while reconnect is in progress",
                       !should_schedule_in_band_reauth(true, false, 0));
@@ -734,6 +757,7 @@ int main()
     test_push_during_handshake_is_queued_until_auth_completes();
     test_push_triggered_reauth_queues_followup_get_block();
     test_multiple_pushes_during_handshake_queue_single_followup_get_block();
+    test_queued_push_waits_for_reward_binding_before_flushing();
     test_cached_session_state_logging_downgrades_expected_reconnect_resyncs();
     test_submit_requires_authoritative_chacha20_key();
     test_block_accepted_consumes_snapshot_before_future_fallback();

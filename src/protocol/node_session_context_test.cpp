@@ -322,14 +322,24 @@ void test_reset_session_credentials_clears_atomic_auth_flags() {
         std::vector<uint8_t>(32, 0x33),
         "reset-session-key",
         std::vector<uint8_t>(32, 0x44));
+    context.set_chacha20_session_key(std::vector<uint8_t>(32, 0x55), "5555555555555555", true);
+    context.set_reward_binding("reward-address", std::vector<uint8_t>(32, 0x66), true, "live bind");
     context.set_channel_state(3, true, true);
+    context.set_prevblock_suffix({0xAA, 0xBB, 0xCC, 0xDD});
 
     context.reset_session_credentials();
 
     const auto info = context.get_session_info();
+    const std::array<uint8_t, 4> cleared_suffix{0, 0, 0, 0};
     assert(info.session_id == 0);
     assert(!info.authenticated);
     assert(!info.falcon_authenticated);
+    assert(info.chacha20_session_key.empty());
+    assert(info.chacha20_key_fingerprint.empty());
+    assert(!info.chacha20_ready);
+    assert(!info.reward_bound);
+    assert(info.reward_hash.empty());
+    assert(info.prevblock_suffix == cleared_suffix);
     assert(!info.ready_for_submit);
     assert(!info.ready_for_get_block);
     assert(context.get_state() == SessionManager::SessionState::DISCONNECTED);

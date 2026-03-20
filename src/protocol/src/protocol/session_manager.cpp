@@ -21,6 +21,8 @@ constexpr uint16_t KEEPALIVE_REGULAR_INTERVAL_DEFAULT = 12;           // Default
 
 namespace {
 
+constexpr std::array<uint8_t, 4> CLEARED_PREVBLOCK_SUFFIX{0, 0, 0, 0};
+
 uint64_t now_epoch_seconds()
 {
     return static_cast<uint64_t>(std::time(nullptr));
@@ -562,15 +564,26 @@ void SessionManager::set_falcon_identity(const std::vector<uint8_t>& pubkey,
 
 void SessionManager::reset_session_credentials()
 {
-    std::lock_guard<std::mutex> lock(m_session_mutex);
-    m_session.session_id = 0;
-    m_session.session_key.clear();
-    m_session.authenticated = false;
-    m_session.falcon_authenticated = false;
-    m_session.state = SessionState::DISCONNECTED;
-    m_session.ready_for_submit = false;
-    m_session.ready_for_get_block = false;
-    m_session.last_activity = now_epoch_seconds();
+    {
+        std::lock_guard<std::mutex> lock(m_session_mutex);
+        m_session.session_id = 0;
+        m_session.session_key.clear();
+        m_session.chacha20_session_key.clear();
+        m_session.chacha20_key_fingerprint.clear();
+        m_session.chacha20_ready = false;
+        m_session.authenticated = false;
+        m_session.falcon_authenticated = false;
+        m_session.reward_bound = false;
+        m_session.reward_hash.clear();
+        m_session.prevblock_suffix = CLEARED_PREVBLOCK_SUFFIX;
+        m_session.state = SessionState::DISCONNECTED;
+        m_session.ready_for_submit = false;
+        m_session.ready_for_get_block = false;
+        m_session.keepalive_count = 0;
+        m_session.last_activity = now_epoch_seconds();
+    }
+
+    stop_keepalive_timer();
 }
 
 void SessionManager::set_chacha20_session_key(const std::vector<uint8_t>& session_key,
