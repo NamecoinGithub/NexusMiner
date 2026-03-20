@@ -1991,13 +1991,21 @@ void Worker_manager::check_template_health()
             // A single-block lag is the normal case on every fresh block: the miner is
             // still holding the template for the previous channel tip until the next
             // GET_BLOCK arrives. Request a refresh, but keep workers running.
-            if (blocks_behind <= 1) {
-                m_logger->info("[Worker_manager] {} template anchor advanced normally: channel_height {} -> next target {} (template target {}, {} block behind) — requesting refresh without recovery",
+            if (blocks_behind == 1) {
+                m_logger->info("[Worker_manager] {} template anchor advanced normally: channel_height {} -> next target {} (template target {}, 1 block behind) — requesting refresh without recovery",
                     channel_name,
                     ht_snap.channel_height,
                     ht_snap.expected_template_target(),
-                    ht_snap.channel_target,
-                    blocks_behind == 0 ? 1U : blocks_behind);
+                    ht_snap.channel_target);
+                retry_template_request(false);
+                return;
+            }
+
+            if (blocks_behind == 0) {
+                m_logger->debug("[Worker_manager] {} stale snapshot reported with zero block lag (channel_height {}, channel_target {}) — requesting refresh without recovery",
+                    channel_name,
+                    ht_snap.channel_height,
+                    ht_snap.channel_target);
                 retry_template_request(false);
                 return;
             }

@@ -529,7 +529,7 @@ void test_integration_forced_retry_is_bounded() {
 // Test 13: Health policy — one-block stale refresh stays soft; multi-block lag
 //          escalates into recovery/degraded mode.
 // ============================================================================
-void test_health_policy_distinguishes_normal_refresh_from_true_lag() {
+void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
     std::cout << "\nTest 13: Health policy distinguishes 1-block refresh from 2+-block lag\n";
 
     struct HealthDecision {
@@ -609,7 +609,7 @@ int main() {
     test_recovery_epoch_monotonic_with_idempotent_initiation();
     test_integration_degraded_recovery_to_resume();
     test_integration_forced_retry_is_bounded();
-    test_health_policy_distinguishes_normal_refresh_from_true_lag();
+    test_health_policy_distinguishes_normal_refresh_from_multi_block_lag();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";
