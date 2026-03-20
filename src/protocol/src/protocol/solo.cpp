@@ -386,7 +386,7 @@ void Solo::refresh_cached_session_state(const char* log_scope)
         return;
     }
 
-    const auto session = m_session_context->get_session_info();
+    const auto session = m_session_context->get_runtime_snapshot();
 
     if (!m_has_seen_session_epoch || m_session_epoch != session.session_epoch) {
         if (!m_has_seen_session_epoch) {
@@ -457,7 +457,7 @@ SessionOwnershipStamp Solo::capture_session_ownership() const
         return {};
     }
 
-    const auto session = m_session_context->get_session_info();
+    const auto session = m_session_context->get_runtime_snapshot();
     return { SessionId(session.session_id), SessionEpoch(session.session_epoch) };
 }
 
@@ -472,7 +472,7 @@ SubmitContext Solo::capture_submit_context(uint32_t template_height,
         return context;
     }
 
-    const auto session = m_session_context->get_session_info();
+    const auto session = m_session_context->get_runtime_snapshot();
     context.session_id = SessionId(session.session_id);
     context.session_epoch = SessionEpoch(session.session_epoch);
     return context;
@@ -519,7 +519,7 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
 
     std::string validation_reason;
     const bool session_valid = m_session_context->validate_miner_session(&validation_reason);
-    const auto session = m_session_context->get_session_info();
+    const auto session = m_session_context->get_runtime_snapshot();
     const auto decision = PacketIngressPreflight::evaluate({
         true,
         session_valid,
@@ -691,7 +691,7 @@ bool Solo::validate_authoritative_session(const char* log_scope, bool require_re
         return false;
     }
 
-    const auto session = m_session_context->get_session_info();
+    const auto session = m_session_context->get_runtime_snapshot();
     if (require_reward_binding && !session.reward_address_string.empty() && !session.reward_bound) {
         m_logger->error("[{}] Authoritative miner session container requires reward binding before continuing", log_scope);
         m_logger->error("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
@@ -1199,7 +1199,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         return network::Shared_payload{};
     }
 
-    const auto session = m_session_context ? m_session_context->get_session_info()
+    const auto session = m_session_context ? m_session_context->get_runtime_snapshot()
                                            : SessionManager::SessionInfo{};
     const auto& submit_session_key = session.chacha20_session_key;
 
@@ -4101,7 +4101,7 @@ network::Shared_payload Solo::send_set_reward()
             return nullptr;  // hard fail — do NOT send unencrypted
         }
         // Use the authoritative session key from the session container.
-        const auto session = m_session_context ? m_session_context->get_session_info()
+        const auto session = m_session_context ? m_session_context->get_runtime_snapshot()
                                                : SessionManager::SessionInfo{};
         const auto& reward_session_key = session.chacha20_session_key;
         if (reward_session_key.empty())
@@ -4448,7 +4448,7 @@ void Solo::handle_reward_result(const Packet& packet)
     // Decrypt if ChaCha20 is enabled
     if (m_enable_chacha20 && m_chacha20_wrapper && packet.m_length > 13)
     {
-        const auto session = m_session_context ? m_session_context->get_session_info()
+        const auto session = m_session_context ? m_session_context->get_runtime_snapshot()
                                                : SessionManager::SessionInfo{};
         const auto& reward_session_key = session.chacha20_session_key;
         if (!reward_session_key.empty())

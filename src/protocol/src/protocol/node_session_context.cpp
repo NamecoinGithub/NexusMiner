@@ -242,10 +242,15 @@ std::chrono::seconds NodeSessionContext::get_session_uptime() const
 
 SessionManager::SessionInfo NodeSessionContext::get_session_info() const
 {
+    return get_runtime_snapshot();
+}
+
+SessionManager::RuntimeSessionSnapshot NodeSessionContext::get_runtime_snapshot() const
+{
     if (m_session_manager) {
-        return m_session_manager->get_session_info();
+        return m_session_manager->get_runtime_snapshot();
     }
-    return SessionManager::SessionInfo{};
+    return SessionManager::RuntimeSessionSnapshot{};
 }
 
 void NodeSessionContext::set_session_expired_handler(SessionManager::SessionExpiredHandler handler)

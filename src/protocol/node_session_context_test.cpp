@@ -430,6 +430,43 @@ void test_session_epoch_advances_across_session_restarts() {
     std::cout << "Session epoch advancement test passed!" << std::endl;
 }
 
+void test_runtime_snapshot_is_authoritative_copy() {
+    std::cout << "Testing authoritative runtime snapshot access..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    context.set_state(SessionManager::SessionState::AUTHENTICATING);
+    context.commit_authenticated_session(0x1234ABCD,
+                                         std::vector<uint8_t>(32, 0x11),
+                                         "snapshot-key",
+                                         std::vector<uint8_t>(32, 0x22));
+
+    const auto authenticated_snapshot = context.get_runtime_snapshot();
+    const auto compatibility_snapshot = context.get_session_info();
+    assert(authenticated_snapshot.session_id == 0x1234ABCD);
+    assert(authenticated_snapshot.session_epoch == compatibility_snapshot.session_epoch);
+    assert(authenticated_snapshot.state == SessionManager::SessionState::AUTHENTICATED);
+    assert(authenticated_snapshot.falcon_key_id == "snapshot-key");
+
+    session_manager->record_keepalive();
+    const auto active_snapshot = context.get_runtime_snapshot();
+    assert(active_snapshot.session_id == authenticated_snapshot.session_id);
+    assert(active_snapshot.session_epoch == authenticated_snapshot.session_epoch);
+    assert(active_snapshot.state == SessionManager::SessionState::ACTIVE);
+    // Snapshots are read-only copies of the authoritative container, so an older
+    // snapshot must not change when the live session transitions forward.
+    assert(authenticated_snapshot.state == SessionManager::SessionState::AUTHENTICATED);
+
+    context.end_session();
+    const auto disconnected_snapshot = context.get_runtime_snapshot();
+    assert(disconnected_snapshot.session_id == 0);
+    assert(disconnected_snapshot.state == SessionManager::SessionState::DISCONNECTED);
+    assert(disconnected_snapshot.session_epoch == active_snapshot.session_epoch);
+
+    std::cout << "Authoritative runtime snapshot test passed!" << std::endl;
+}
+
 void test_hex_prefix_header_supports_qualified_callers() {
     std::cout << "Testing hex_prefix_utils qualified-call documentation path..." << std::endl;
 
@@ -549,6 +586,7 @@ int main() {
         test_multiple_session_contexts_do_not_overlap();
         test_prevblock_suffix_is_authoritative_session_state();
         test_session_epoch_advances_across_session_restarts();
+        test_runtime_snapshot_is_authoritative_copy();
         test_hex_prefix_header_supports_qualified_callers();
         test_session_event_journal_tracks_current_session();
         test_session_event_journal_behaves_like_ring_buffer();
