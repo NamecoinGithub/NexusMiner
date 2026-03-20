@@ -21,6 +21,8 @@ constexpr uint16_t KEEPALIVE_REGULAR_INTERVAL_DEFAULT = 12;           // Default
 
 namespace {
 
+constexpr std::array<uint8_t, 4> CLEARED_PREVBLOCK_SUFFIX{0, 0, 0, 0};
+
 uint64_t now_epoch_seconds()
 {
     return static_cast<uint64_t>(std::time(nullptr));
@@ -573,7 +575,7 @@ void SessionManager::reset_session_credentials()
         m_session.falcon_authenticated = false;
         m_session.reward_bound = false;
         m_session.reward_hash.clear();
-        m_session.prevblock_suffix = {0, 0, 0, 0};
+        m_session.prevblock_suffix = CLEARED_PREVBLOCK_SUFFIX;
         m_session.state = SessionState::DISCONNECTED;
         m_session.ready_for_submit = false;
         m_session.ready_for_get_block = false;
