@@ -543,6 +543,79 @@ void test_session_event_journal_preserves_preflight_drop_detail() {
     std::cout << "Session event journal preflight detail test passed!" << std::endl;
 }
 
+void test_authoritative_transition_apis_drive_lifecycle_state() {
+    std::cout << "Testing authoritative transition APIs drive lifecycle state..." << std::endl;
+
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    context.set_reward_binding("reward-address", {}, false, "config");
+    context.begin_auth_handshake("unit test auth");
+    auto snapshot = context.get_runtime_snapshot();
+    assert(snapshot.state == SessionManager::SessionState::AUTHENTICATING);
+    assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
+    assert(snapshot.recovery_state == SessionManager::RecoveryState::HEALTHY);
+
+    context.commit_authenticated_session(0xABCDEF12,
+                                         std::vector<uint8_t>(32, 0x21),
+                                         "transition-key",
+                                         std::vector<uint8_t>(32, 0x34));
+    snapshot = context.get_runtime_snapshot();
+    assert(snapshot.state == SessionManager::SessionState::AUTHENTICATED);
+    assert(context.allow_deferred_push_replay());
+    assert(!context.can_request_get_block());
+    assert(context.reward_binding_required());
+
+    context.begin_reward_binding("reward-address", std::vector<uint8_t>(32, 0x45), "live bind");
+    snapshot = context.get_runtime_snapshot();
+    assert(snapshot.reward_state == SessionManager::RewardState::BINDING);
+    assert(!context.is_reward_bound());
+
+    context.commit_reward_bound("reward-address", std::vector<uint8_t>(32, 0x45), "live bind");
+    context.set_channel_state(2, true, true);
+    context.note_keepalive_ack(true, "ack ok");
+    context.mark_soft_refresh_requested("template refresh");
+    snapshot = context.get_runtime_snapshot();
+    assert(snapshot.state == SessionManager::SessionState::ACTIVE);
+    assert(snapshot.reward_state == SessionManager::RewardState::BOUND);
+    assert(snapshot.recovery_state == SessionManager::RecoveryState::SOFT_REFRESH_REQUESTED);
+    assert(snapshot.expiry_state == SessionManager::ExpiryState::FRESH);
+    assert(context.is_reward_bound());
+    assert(context.can_request_get_block());
+    assert(context.can_submit_work());
+    assert(context.allow_get_block_replay());
+
+    context.mark_recovery_required("epoch mismatch");
+    snapshot = context.get_runtime_snapshot();
+    assert(snapshot.recovery_state == SessionManager::RecoveryState::RECOVERY_PENDING);
+    assert(snapshot.recovery_reason == "epoch mismatch");
+
+    context.mark_session_expired("ack mismatch");
+    snapshot = context.get_runtime_snapshot();
+    assert(snapshot.state == SessionManager::SessionState::EXPIRED);
+    assert(snapshot.reward_state == SessionManager::RewardState::STALE);
+    assert(snapshot.recovery_state == SessionManager::RecoveryState::FORCED_REAUTH);
+    assert(snapshot.expiry_state == SessionManager::ExpiryState::EXPIRED_ACCEPTED);
+    assert(!context.can_submit_work());
+    assert(!context.allow_get_block_replay());
+
+    context.clear_for_reauth("reward-address", "config", "reauth requested");
+    snapshot = context.get_runtime_snapshot();
+    assert(snapshot.state == SessionManager::SessionState::DISCONNECTED);
+    assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
+    assert(snapshot.recovery_state == SessionManager::RecoveryState::FORCED_REAUTH);
+    assert(snapshot.reward_address_string == "reward-address");
+    assert(!snapshot.reward_bound);
+    assert(!context.allow_deferred_push_replay());
+
+    const auto diagnostics = context.build_miner_session_diagnostics();
+    assert(diagnostics.find("reward_state: REQUIRED") != std::string::npos);
+    assert(diagnostics.find("recovery_state: FORCED_REAUTH") != std::string::npos);
+    assert(diagnostics.find("expiry_state: FRESH") != std::string::npos);
+
+    std::cout << "Authoritative transition API test passed!" << std::endl;
+}
+
 void test_session_semantic_wrapper_types_are_distinct() {
     std::cout << "Testing strong semantic session wrapper types..." << std::endl;
 
@@ -591,6 +664,7 @@ int main() {
         test_session_event_journal_tracks_current_session();
         test_session_event_journal_behaves_like_ring_buffer();
         test_session_event_journal_preserves_preflight_drop_detail();
+        test_authoritative_transition_apis_drive_lifecycle_state();
         test_session_semantic_wrapper_types_are_distinct();
 
         std::cout << "\nAll NodeSessionContext tests passed!" << std::endl;

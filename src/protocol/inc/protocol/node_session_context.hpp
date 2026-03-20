@@ -83,6 +83,38 @@ public:
                                       const std::string& key_id,
                                       const std::vector<uint8_t>& tritium_genesis = {});
 
+    void begin_auth_handshake(const std::string& detail = "");
+
+    void begin_reward_binding(const std::string& reward_address,
+                              const std::vector<uint8_t>& reward_hash = {},
+                              const std::string& source = "");
+
+    void commit_reward_bound(const std::string& reward_address,
+                             const std::vector<uint8_t>& reward_hash,
+                             const std::string& source = "");
+
+    void commit_reward_rejected(const std::string& reward_address,
+                                const std::string& source = "",
+                                const std::string& reason = "");
+
+    void note_keepalive_ack(bool accepted, const std::string& detail = "");
+
+    void mark_soft_refresh_requested(const std::string& reason = "");
+
+    void mark_recovery_required(const std::string& reason);
+
+    void mark_session_expired(const std::string& reason);
+
+    void clear_for_disconnect(const std::string& reward_address = {},
+                              const std::string& reward_source = "",
+                              const std::string& reason = "",
+                              bool preserve_genesis = true);
+
+    void clear_for_reauth(const std::string& reward_address = {},
+                          const std::string& reward_source = "",
+                          const std::string& reason = "",
+                          bool preserve_genesis = true);
+
     /**
      * @brief End current session
      */
@@ -178,6 +210,18 @@ public:
                            bool ready_for_get_block);
 
     void mark_activity();
+
+    bool is_reward_bound() const;
+
+    bool reward_binding_required() const;
+
+    bool can_submit_work() const;
+
+    bool can_request_get_block() const;
+
+    bool allow_deferred_push_replay() const;
+
+    bool allow_get_block_replay() const;
 
     bool validate_miner_session(std::string* reason = nullptr) const;
 
