@@ -145,20 +145,20 @@ SessionManager::SessionManager(uint16_t keepalive_interval_hours,
     
     // Clamp keepalive interval to reasonable range
     if (m_keepalive_interval_hours < MIN_KEEPALIVE_HOURS) m_keepalive_interval_hours = MIN_KEEPALIVE_HOURS;
-     if (m_keepalive_interval_hours > MAX_KEEPALIVE_HOURS) m_keepalive_interval_hours = MAX_KEEPALIVE_HOURS;
-     
-     // Initialize session to disconnected state
-     m_session.created_at = now_epoch_seconds();
-     m_session.last_activity = m_session.created_at;
-      m_session.session_id = 0;
-      m_session.state = SessionState::DISCONNECTED;
-      m_session.reward_state = RewardState::NONE;
-      m_session.recovery_state = RecoveryState::HEALTHY;
-      m_session.expiry_state = ExpiryState::FRESH;
-      m_session.keepalive_count = 0;
-     
-    m_logger->info("[SessionManager] Initialized with keepalive interval: {} hours", 
-                  m_keepalive_interval_hours);
+    if (m_keepalive_interval_hours > MAX_KEEPALIVE_HOURS) m_keepalive_interval_hours = MAX_KEEPALIVE_HOURS;
+
+    // Initialize session to disconnected state
+    m_session.created_at = now_epoch_seconds();
+    m_session.last_activity = m_session.created_at;
+    m_session.session_id = 0;
+    m_session.state = SessionState::DISCONNECTED;
+    m_session.reward_state = RewardState::NONE;
+    m_session.recovery_state = RecoveryState::HEALTHY;
+    m_session.expiry_state = ExpiryState::FRESH;
+    m_session.keepalive_count = 0;
+
+    m_logger->info("[SessionManager] Initialized with keepalive interval: {} hours",
+                   m_keepalive_interval_hours);
 }
 
 SessionManager::~SessionManager()
@@ -223,7 +223,7 @@ void SessionManager::commit_authenticated_session(uint32_t session_id,
     if (!tritium_genesis.empty()) {
         m_logger->info("[SessionManager] Tritium genesis bound to session: {} bytes",
                        tritium_genesis.size());
-     }
+    }
 }
 
 void SessionManager::begin_auth_handshake(const std::string& detail)
