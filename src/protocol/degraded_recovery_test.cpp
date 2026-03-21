@@ -482,10 +482,75 @@ void test_authoritative_soft_refresh_backfills_local_state() {
 }
 
 // ============================================================================
-// Test 4f: Worker respawn guard prevents duplicate worker recreation on exit
+// Test 4f: tip_moved soft refresh shields workers from immediate HEIGHT_DRIFT
+//          escalation until the replacement-template window actually times out.
+// ============================================================================
+void test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout() {
+    std::cout << "\nTest 4f: tip_moved soft refresh defers HEIGHT_DRIFT stop until timeout\n";
+    constexpr int64_t RECOVERY_WINDOW_SECONDS = 60;
+    constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
+
+    struct HealthState {
+        bool m_degraded_mode{false};
+        bool m_recovery_pending{false};
+        bool m_template_withheld{false};
+        bool request_refresh{false};
+        bool stop_workers{false};
+        uint64_t m_recovery_epoch{0};
+
+        void tick(bool tip_moved, uint32_t unified_drift, int64_t recovery_elapsed_s) {
+            request_refresh = false;
+            stop_workers = false;
+
+            if (m_template_withheld && m_recovery_pending && !m_degraded_mode) {
+                if (recovery_elapsed_s < RECOVERY_WINDOW_SECONDS) {
+                    request_refresh = true;
+                    return;
+                }
+                m_template_withheld = false;
+                m_degraded_mode = true;
+                stop_workers = true;
+                return;
+            }
+
+            if (tip_moved) {
+                if (!m_recovery_pending) {
+                    ++m_recovery_epoch;
+                    m_recovery_pending = true;
+                }
+                m_template_withheld = true;
+                request_refresh = true;
+                return;
+            }
+
+            if (unified_drift > UNIFIED_DRIFT_THRESHOLD) {
+                m_degraded_mode = true;
+                stop_workers = true;
+            }
+        }
+    };
+
+    HealthState state;
+    state.tick(/*tip_moved=*/true, /*unified_drift=*/7, /*recovery_elapsed_s=*/0);
+    print_test_result("tip_moved starts a soft refresh instead of stopping workers",
+                      state.request_refresh && !state.stop_workers && !state.m_degraded_mode);
+    print_test_result("tip_moved withholds submissions while replacement is fetched",
+                      state.m_template_withheld && state.m_recovery_pending && state.m_recovery_epoch == 1);
+
+    state.tick(/*tip_moved=*/false, /*unified_drift=*/7, /*recovery_elapsed_s=*/10);
+    print_test_result("Soft refresh keeps retrying while unified drift grows inside the window",
+                      state.request_refresh && !state.stop_workers && !state.m_degraded_mode);
+
+    state.tick(/*tip_moved=*/false, /*unified_drift=*/7, /*recovery_elapsed_s=*/RECOVERY_WINDOW_SECONDS + 1);
+    print_test_result("Only the soft-refresh timeout escalates into degraded mode",
+                      state.stop_workers && state.m_degraded_mode && !state.m_template_withheld);
+}
+
+// ============================================================================
+// Test 4g: Worker respawn guard prevents duplicate worker recreation on exit
 // ============================================================================
 void test_worker_respawn_guard_is_single_shot_per_degraded_exit() {
-    std::cout << "\nTest 4f: Recovery worker respawn guard is single-shot per degraded exit\n";
+    std::cout << "\nTest 4g: Recovery worker respawn guard is single-shot per degraded exit\n";
 
     struct WorkerRestartTracker {
         bool m_degraded_mode{true};
@@ -515,10 +580,10 @@ void test_worker_respawn_guard_is_single_shot_per_degraded_exit() {
 }
 
 // ============================================================================
-// Test 4g: Workers only respawn after the prior generation is fully stopped
+// Test 4h: Workers only respawn after the prior generation is fully stopped
 // ============================================================================
 void test_worker_respawn_waits_for_authoritative_empty_generation() {
-    std::cout << "\nTest 4g: Worker respawn waits for authoritative empty generation\n";
+    std::cout << "\nTest 4h: Worker respawn waits for authoritative empty generation\n";
 
     struct WorkerLifecycleTracker {
         bool m_degraded_mode{true};
@@ -966,6 +1031,7 @@ int main() {
     test_same_height_soft_refresh_escalates_only_after_timeout();
     test_degraded_exit_normalizes_recovery_state();
     test_authoritative_soft_refresh_backfills_local_state();
+    test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout();
     test_worker_respawn_guard_is_single_shot_per_degraded_exit();
     test_worker_respawn_waits_for_authoritative_empty_generation();
     test_keepalive_epoch_isolation_clean_start();
