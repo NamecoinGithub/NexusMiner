@@ -354,6 +354,7 @@ void test_same_height_soft_refresh_escalates_only_after_timeout() {
 // ============================================================================
 void test_degraded_exit_normalizes_recovery_state() {
     std::cout << "\nTest 4d: Degraded exit normalization clears recovery bookkeeping\n";
+    constexpr int kSuppressionReasonRateLimitLocal = 3;
 
     struct RecoveryTracker {
         bool m_degraded_mode{true};
@@ -369,7 +370,7 @@ void test_degraded_exit_normalizes_recovery_state() {
             std::chrono::steady_clock::now()};
         bool m_forced_retry_timer_pending{true};
         uint64_t m_forced_retry_timer_token{2};
-        int m_last_get_block_suppression_reason{3};
+        int m_last_get_block_suppression_reason{kSuppressionReasonRateLimitLocal};
         bool authoritative_recovery_healthy_called{false};
         std::string authoritative_recovery_reason{"same_height_push_tip_replacement_pre_adoption"};
         std::chrono::steady_clock::time_point m_degraded_since{std::chrono::steady_clock::now()};
@@ -588,6 +589,9 @@ void test_epoch_change_clears_push_tip_anchor_hint() {
                       snap_after.last_push_notification_at == snap_before.last_push_notification_at);
 
     tracker.UpdatePushTipAnchor(uint1024_t(0x77));
+    auto snap_reseeded = tracker.GetSnapshot();
+    print_test_result("Explicit clear test re-seeds push tip-anchor hint first",
+                      snap_reseeded.push_hash_prev_block != uint1024_t{});
     tracker.ClearPushTipAnchor();
     auto snap_cleared = tracker.GetSnapshot();
     print_test_result("Explicit tip-anchor clear consumes replacement hint after adoption",
