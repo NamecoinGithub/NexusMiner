@@ -140,12 +140,6 @@ void PushNotificationHandler::handle_push_notification(
         {
             uint32_t blocks_behind = snap.blocks_behind();
 
-            const auto now = std::chrono::steady_clock::now();
-            const bool has_recent_template = (
-                snap.last_template_update != std::chrono::steady_clock::time_point{} &&
-                std::chrono::duration_cast<std::chrono::seconds>(
-                    now - snap.last_template_update).count() < BURST_RECOVERY_GRACE_SECONDS);
-
             if (blocks_behind == 1)
             {
                 // Normal case: exactly one block behind after a fresh block was found.
@@ -162,14 +156,22 @@ void PushNotificationHandler::handle_push_notification(
                 return;  // Early exit — hash check is irrelevant for stale templates
             }
 
-            if (blocks_behind == 2 && has_recent_template)
+            if (blocks_behind == 2)
             {
-                m_logger->info("[Solo Push] ℹ️  Burst guard active (template {}s old, 2 blocks behind) — requesting fresh {} template before degraded recovery",
-                               std::chrono::duration_cast<std::chrono::seconds>(
-                                   now - snap.last_template_update).count(),
-                               ch_name);
-                request_work_fn();
-                return;  // Keep current template briefly while burst GET_BLOCK catches up
+                const auto now = std::chrono::steady_clock::now();
+                const bool has_recent_template = (
+                    snap.last_template_update != std::chrono::steady_clock::time_point{} &&
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        now - snap.last_template_update).count() < BURST_RECOVERY_GRACE_SECONDS);
+                if (has_recent_template) {
+                    const auto template_age_s = std::chrono::duration_cast<std::chrono::seconds>(
+                        now - snap.last_template_update).count();
+                    m_logger->info("[Solo Push] ℹ️  Burst guard active (template {}s old, 2 blocks behind) — requesting fresh {} template before degraded recovery",
+                                   template_age_s,
+                                   ch_name);
+                    request_work_fn();
+                    return;  // Keep current template briefly while burst GET_BLOCK catches up
+                }
             }
 
             // blocks_behind >= 2: miner is multiple blocks behind — genuine recovery.
