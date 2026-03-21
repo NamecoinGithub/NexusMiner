@@ -203,6 +203,9 @@ void PushNotificationHandler::handle_push_notification(
         if (has_hash_prev_block)
         {
             auto const* tmpl = template_interface->get_current_template();
+            // Only let PUSH hot-swap a template when it proves the current target
+            // height already has a different canonical tip anchor. Older PUSH
+            // hints must not override a live template on their own.
             if (tmpl &&
                 snap.has_same_height_push_tip_replacement(tmpl->block.hashPrevBlock,
                                                           tmpl->nChannelHeight))
