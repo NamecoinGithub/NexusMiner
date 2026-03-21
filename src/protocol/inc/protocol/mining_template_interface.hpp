@@ -178,8 +178,9 @@ public:
      * @param source_endpoint Node endpoint source for logging
      * @return ValidationResult with validation status
      */
-    ValidationResult read_template(const network::Payload& data, 
-                                   const std::string& source_endpoint = "");
+    ValidationResult read_template(const network::Payload& data,
+                                   const std::string& source_endpoint = "",
+                                   bool auto_feed = true);
     
     /**
      * @brief Read template from shared payload (convenience overload)
@@ -188,7 +189,8 @@ public:
      * @return ValidationResult
      */
     ValidationResult read_template(network::Shared_payload data,
-                                   const std::string& source_endpoint = "");
+                                   const std::string& source_endpoint = "",
+                                   bool auto_feed = true);
     
     /**
      * @brief Read and process a STATELESS_GET_BLOCK / BLOCK_DATA payload (228 bytes)
@@ -208,7 +210,8 @@ public:
      * @return ValidationResult from the underlying read_template() call
      */
     ValidationResult read_stateless_payload(const network::Payload& payload228,
-                                            const std::string& source_endpoint = "");
+                                            const std::string& source_endpoint = "",
+                                            bool auto_feed = true);
     
     /**
      * @brief Check if a valid template is available for mining

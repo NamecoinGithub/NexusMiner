@@ -510,11 +510,113 @@ void Solo::clear_generation_bound_state(const char* reason)
     m_session_id_mismatch_count = 0;
     m_last_session_status_ack = {};
     m_last_session_status_ack_time = {};
+    m_last_known_hash_prev_block = uint1024_t(0);
+    m_last_keepalive_prevhash_lo32 = 0;
 
     if (m_template_interface) {
         m_template_interface->discard_template(reason);
         m_template_interface->clear_template_channel_height_snapshot();
     }
+}
+
+bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
+                                              uint32_t effective_channel_height,
+                                              const char* log_scope,
+                                              bool snapshot_round_channel_height)
+{
+    if (!m_template_interface) {
+        return false;
+    }
+
+    if (effective_channel_height > 0) {
+        m_template_interface->set_channel_height(effective_channel_height + 1);
+    }
+
+    auto const* tmpl = m_template_interface->get_current_template();
+    if (!tmpl) {
+        m_logger->error("[{}] No valid template available after finalization", log_scope);
+        return false;
+    }
+
+    m_current_height = unified_height;
+
+    auto format_hex8 = [](const uint1024_t& h) -> std::string {
+        auto bytes = h.GetBytes();
+        std::string s;
+        for (size_t i = 0; i < std::min(bytes.size(), size_t(8)); ++i) {
+            char buf[3];
+            snprintf(buf, sizeof(buf), "%02x", bytes[i]);
+            s += buf;
+        }
+        return s;
+    };
+
+    if (m_last_known_hash_prev_block != uint1024_t(0)) {
+        if (tmpl->block.hashPrevBlock != m_last_known_hash_prev_block) {
+            m_logger->warn("[TEMPLATE ANCHOR] ⚡ CHAIN TIP CHANGED: old={} new={}",
+                format_hex8(m_last_known_hash_prev_block), format_hex8(tmpl->block.hashPrevBlock));
+        } else {
+            m_logger->info("[TEMPLATE ANCHOR] ✅ Chain tip unchanged (channel advanced, same tip)");
+        }
+    }
+
+    m_last_known_hash_prev_block = tmpl->block.hashPrevBlock;
+    m_height_tracker.UpdateWithHashPrevBlock(tmpl->block.hashPrevBlock);
+
+    if (get_session_manager()) {
+        auto prev_bytes = m_last_known_hash_prev_block.GetBytes();
+        std::array<uint8_t, 4> suffix{};
+        if (prev_bytes.size() >= 4) {
+            suffix = { prev_bytes[0], prev_bytes[1], prev_bytes[2], prev_bytes[3] };
+        }
+        get_session_manager()->set_prevblock_suffix(suffix);
+        m_last_keepalive_prevhash_lo32 =
+            (uint32_t(suffix[0]) << 24) | (uint32_t(suffix[1]) << 16)
+          | (uint32_t(suffix[2]) <<  8) | uint32_t(suffix[3]);
+    }
+
+    auto prev_bytes = m_last_known_hash_prev_block.GetBytes();
+    std::string prev_hex;
+    for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
+        prev_hex += buf;
+    }
+    m_logger->info("[TEMPLATE ANCHOR] hashPrevBlock = {}... (tip anchor at template creation)", prev_hex);
+    m_logger->info("[TEMPLATE ANCHOR] block.nHeight = {} (unified blockchain height)", tmpl->block.nHeight);
+
+    if (snapshot_round_channel_height && m_last_round_status.has_channel_heights) {
+        uint32_t snapshot_height = m_last_round_status.get_channel_height(m_channel);
+        if (snapshot_height > 0) {
+            m_template_interface->set_template_channel_height_snapshot(snapshot_height);
+            m_logger->info("[Solo] 📸 Snapshot: {} at height {} (template is for height {})",
+                get_channel_name(m_channel), snapshot_height, tmpl->block.nHeight);
+        }
+    }
+
+    on_template_received(tmpl->block.nHeight);
+
+    if (m_template_interface->needs_channel_height_finalization()) {
+        m_logger->debug("[{}] Template pending channel height finalization", log_scope);
+    }
+
+    if (!m_set_block_handler) {
+        m_logger->error("[{}] CRITICAL: No block handler set - cannot process template", log_scope);
+        return false;
+    }
+
+    if (!m_template_interface->feed_current_template()) {
+        m_logger->debug("[{}] Template feed suppressed by unified debounce gate", log_scope);
+    }
+
+    auto stats = m_template_interface->get_stats();
+    if (stats.templates_received % 10 == 0) {
+        m_logger->debug("[Solo Template Stats] Received: {}, Validated: {}, Rejected: {}, Fed: {}",
+            stats.templates_received, stats.templates_validated,
+            stats.templates_rejected, stats.templates_fed);
+    }
+
+    return true;
 }
 
 const Solo::PacketIngressPreflightOptions Solo::kDefaultPacketIngressPreflightOptions{};
@@ -1736,7 +1838,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
         if (m_template_interface) {
             m_logger->info("[Solo READ/FEED] Processing template via Mining Template Interface");
             
-            auto validation_result = m_template_interface->read_template(block_serial, source_endpoint);
+            auto validation_result = m_template_interface->read_template(block_serial, source_endpoint, false);
             
             if (!validation_result.is_valid) {
                 m_logger->error("[Solo READ] Template validation failed: {}", validation_result.error_message);
@@ -1754,113 +1856,12 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 return;
             }
             
-            m_logger->info("[Solo READ] Template validated successfully in {} μs", 
+            m_logger->info("[Solo READ] Template validated successfully in {} μs",
                 validation_result.validation_time.count());
-            
-            // Get the validated template
-            auto const* tmpl = m_template_interface->get_current_template();
-            if (!tmpl) {
-                m_logger->error("[Solo FEED] No valid template available after validation");
-                return;
-            }
-
-            // Bug 4 fix: Update nChannelHeight in the template interface so the Colin
-            // diagnostic can display the correct channel_height.  Must be called AFTER
-            // read_template() so the template state is not EMPTY.  Internally calls
-            // HeightTracker::OnTemplateReceived() to set channel_target (idempotent with
-            // the earlier direct call above).
-            // Use effectiveChannelHeight (max of metadata and tracker) to prevent
-            // validate_current_template() from immediately discarding the template
-            // when push notifications have already advanced the tracker.
-            if (effectiveChannelHeight > 0) {
-                m_template_interface->set_channel_height(effectiveChannelHeight + 1);
-            }
-            
-            // Update diagnostic height tracker; the metadata prefix gives us the authoritative
-            // unified height directly — no need to poll HeightTracker snapshot.
-            m_current_height = nUnifiedHeight;
-
-            // Gap 1: Snapshot hashPrevBlock at template parse time (StakeMinter::hashLastBlock pattern).
-            // A new template with a different hashPrevBlock signals that the chain tip has moved.
-            // Detect tip-change BEFORE updating m_last_known_hash_prev_block (Change 1a).
-            bool tip_changed = false;
-            if (m_last_known_hash_prev_block != uint1024_t(0)) {
-                if (tmpl->block.hashPrevBlock != m_last_known_hash_prev_block) {
-                    tip_changed = true;
-                    auto format_hex8 = [](const uint1024_t& h) -> std::string {
-                        auto bytes = h.GetBytes();
-                        std::string s;
-                        for (size_t i = 0; i < std::min(bytes.size(), size_t(8)); ++i) {
-                            char buf[3]; snprintf(buf, sizeof(buf), "%02x", bytes[i]); s += buf;
-                        }
-                        return s;
-                    };
-                    m_logger->warn("[TEMPLATE ANCHOR] ⚡ CHAIN TIP CHANGED: old={} new={}",
-                        format_hex8(m_last_known_hash_prev_block), format_hex8(tmpl->block.hashPrevBlock));
-                    m_logger->warn("[TEMPLATE ANCHOR]   Node Guard 1 triggered re-push (StakeMinter pattern)");
-                } else {
-                    m_logger->info("[TEMPLATE ANCHOR] ✅ Chain tip unchanged (channel advanced, same tip)");
-                }
-            }
-            m_last_known_hash_prev_block = tmpl->block.hashPrevBlock;
-            m_height_tracker.UpdateWithHashPrevBlock(tmpl->block.hashPrevBlock);
-            {
-                auto prev_bytes = m_last_known_hash_prev_block.GetBytes();
-                std::string prev_hex;
-                for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i) {
-                    char buf[3];
-                    snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
-                    prev_hex += buf;
-                }
-                m_logger->info("[TEMPLATE ANCHOR] hashPrevBlock = {}... (tip anchor at template creation)", prev_hex);
-                m_logger->info("[TEMPLATE ANCHOR] block.nHeight = {} (unified blockchain height)", tmpl->block.nHeight);
-            }
-
-            // Update keepalive v2 suffix: first 4 bytes of hashPrevBlock (bytes[0..3] of GetBytes()).
-            // This suffix is appended to every outgoing SESSION_KEEPALIVE so the node can detect
-            // whether the miner is anchored to the current chain tip.
-            if (get_session_manager()) {
-                auto prev_bytes = tmpl->block.hashPrevBlock.GetBytes();
-                std::array<uint8_t, 4> suffix{};
-                if (prev_bytes.size() >= 4) {
-                    // BUG FIX: Use bytes 0-3 (same as node's hash_tip_lo32) for fork canary alignment
-                    suffix = { prev_bytes[0], prev_bytes[1], prev_bytes[2], prev_bytes[3] };
-                }
-                get_session_manager()->set_prevblock_suffix(suffix);
-                m_logger->debug("[Solo Keepalive v2] prevblock_suffix set to {:02x}{:02x}{:02x}{:02x}",
-                               suffix[0], suffix[1], suffix[2], suffix[3]);
-                // Track lo32 locally so KEEPALIVE_V2_ACK handler can verify without
-                // trusting the echoed value from the node (Defect 2 fix).
-                m_last_keepalive_prevhash_lo32 =
-                    (uint32_t(suffix[0]) << 24) | (uint32_t(suffix[1]) << 16)
-                  | (uint32_t(suffix[2]) <<  8) | uint32_t(suffix[3]);
-            }
-
-            // Snapshot current channel height for legacy GET_ROUND delta staleness
-            if (m_last_round_status.has_channel_heights) {
-                uint32_t snapshot_height = m_last_round_status.get_channel_height(m_channel);
-                if (snapshot_height > 0) {
-                    m_template_interface->set_template_channel_height_snapshot(snapshot_height);
-                    m_logger->info("[Solo] 📸 Snapshot: {} at height {} (template is for height {})",
-                        get_channel_name(m_channel), snapshot_height, tmpl->block.nHeight);
-                }
-            }
-            
-            // Track template reception for polling state
-            on_template_received(tmpl->block.nHeight);
-            
-            // Channel height finalization: push notifications and template health monitor
-            // handle this - no need to trigger GET_ROUND here (avoids feedback loop:
-            // template → GET_ROUND → NEW_ROUND → GET_BLOCK → template → repeat)
-            if (m_template_interface->needs_channel_height_finalization()) {
-                m_logger->debug("[Solo] Template pending channel height finalization");
-                m_logger->debug("[Solo]   Push notifications or health monitor will provide height updates");
-            }
-            
-            // FEED: Dispatch to block handler
-            if (!m_set_block_handler) {
-                m_logger->error("[Solo FEED] CRITICAL: No block handler set - cannot process BLOCK_DATA");
-                m_logger->error("[Solo FEED]   - This indicates an initialization failure");
+            if (!finalize_and_feed_current_template(nUnifiedHeight,
+                                                    effectiveChannelHeight,
+                                                    "Solo FEED",
+                                                    true)) {
                 m_logger->error("[Solo FEED] Recovery: Block will be discarded, requesting new work");
                 if (connection) {
                     auto work_payload = get_work();
@@ -1869,23 +1870,6 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                     }
                 }
                 return;
-            }
-
-            // Manual template feed: Attempt to feed the template to workers.
-            // Debounce is handled inside MiningTemplateInterface::feed_current_template()
-            // which will suppress duplicates if read_template() already fed this template.
-            // This provides defense-in-depth if the BLOCK_DATA handler is called multiple
-            // times for the same template within the debounce window.
-            if (!m_template_interface->feed_current_template()) {
-                m_logger->debug("[Solo FEED] Template feed suppressed by unified debounce gate");
-            }
-
-            // Log template interface statistics periodically
-            auto stats = m_template_interface->get_stats();
-            if (stats.templates_received % 10 == 0) {
-                m_logger->debug("[Solo Template Stats] Received: {}, Validated: {}, Rejected: {}, Fed: {}",
-                    stats.templates_received, stats.templates_validated, 
-                    stats.templates_rejected, stats.templates_fed);
             }
         }
         else {
@@ -3367,7 +3351,7 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
             return;
         }
         auto decoded = StatelessBlockUtility::decode_template(
-            *m_template_interface, *packet.m_data, m_channel, m_logger);
+            *m_template_interface, *packet.m_data, m_channel, m_logger, false);
 
         if (!decoded.valid) {
             m_logger->error("[Solo Stateless] Template decode failed: {}", decoded.error_message);
@@ -3433,42 +3417,12 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
                 unified_height, effectiveChannelHeight, difficulty, effectiveChannelHeight + 1);
         }
 
-        // ── hashPrevBlock change detector ────────────────────────────────────────
-        // decoded.block.hashPrevBlock is the canonical tip anchor from the block body.
-        {
-            if (m_last_known_hash_prev_block != uint1024_t(0) &&
-                decoded.block.hashPrevBlock != m_last_known_hash_prev_block)
-            {
-                auto old_bytes = m_last_known_hash_prev_block.GetBytes();
-                auto new_bytes = decoded.block.hashPrevBlock.GetBytes();
-                std::string old_hex, new_hex;
-                for (size_t i = 0; i < std::min(old_bytes.size(), size_t(8)); ++i) {
-                    char buf[3]; snprintf(buf, sizeof(buf), "%02x", old_bytes[i]); old_hex += buf;
-                }
-                for (size_t i = 0; i < std::min(new_bytes.size(), size_t(8)); ++i) {
-                    char buf[3]; snprintf(buf, sizeof(buf), "%02x", new_bytes[i]); new_hex += buf;
-                }
-                m_logger->info("[TEMPLATE DELTA] Tip moved: hashPrevBlock changed \u2192 new tip anchored");
-                m_logger->info("[TEMPLATE DELTA] Old: {}...", old_hex);
-                m_logger->info("[TEMPLATE DELTA] New: {}...", new_hex);
-            }
-            else
-            {
-                m_logger->debug("[TEMPLATE DELTA] Tip unchanged \u2014 same hashPrevBlock");
-            }
-            m_last_known_hash_prev_block = decoded.block.hashPrevBlock;
-        }
-
-        // ── Update diagnostic height reference ────────────────────────────────────
-        m_current_height = unified_height;  // diagnostic only
-
-        // ── Finalize channel height in template interface ─────────────────────────
-        if (effectiveChannelHeight > 0) {
-            m_template_interface->set_channel_height(effectiveChannelHeight + 1);
-            m_logger->info("[Solo Stateless] ✓ channel_height+1={} set (effective tip={}, targets next block)",
-                effectiveChannelHeight + 1, effectiveChannelHeight);
-        } else {
-            m_logger->warn("[Solo Stateless] ⚠️  channel_height==0 in metadata — skipping set_channel_height()");
+        if (!finalize_and_feed_current_template(unified_height,
+                                                effectiveChannelHeight,
+                                                "Solo Stateless",
+                                                false)) {
+            m_logger->error("[Solo Stateless] Failed to finalize decoded template");
+            return;
         }
 
         m_logger->info("[Solo Stateless] 🎯 Template ready! Mining for height {} (channel {})",

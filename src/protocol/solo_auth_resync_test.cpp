@@ -89,6 +89,10 @@ struct SimulatedSoloAuthGuard
     std::vector<unsigned char> m_chacha_key;
     uint32_t template_interface_session_id{0};
     uint64_t template_interface_session_epoch{0};
+    bool m_has_seen_session_epoch{false};
+    bool generation_bound_template_live{false};
+    uint32_t last_known_tip_stamp{0};
+    uint32_t last_keepalive_prevhash_lo32{0};
     bool session_context_authenticated{false};
     AuthState m_auth_state{AuthState::NOT_AUTHENTICATED};
     std::chrono::steady_clock::time_point m_auth_in_flight_since{};
@@ -119,6 +123,14 @@ struct SimulatedSoloAuthGuard
         template_interface_session_epoch = m_session_epoch;
     }
 
+    void clear_generation_bound_state()
+    {
+        generation_bound_template_live = false;
+        last_known_tip_stamp = 0;
+        last_keepalive_prevhash_lo32 = 0;
+        m_last_submitted_valid = false;
+    }
+
     void resync_auth_from_session_context()
     {
         if (m_authenticated || !session_context_is_authenticated()) {
@@ -136,11 +148,15 @@ struct SimulatedSoloAuthGuard
 
     void refresh_cached_session_state()
     {
+        if (!m_has_seen_session_epoch || m_session_epoch != authoritative.session_epoch) {
+            if (m_has_seen_session_epoch) {
+                clear_generation_bound_state();
+            }
+            m_session_epoch = authoritative.session_epoch;
+            m_has_seen_session_epoch = true;
+        }
         if (m_authenticated != authoritative.authenticated) {
             m_authenticated = authoritative.authenticated;
-        }
-        if (m_session_epoch != authoritative.session_epoch) {
-            m_session_epoch = authoritative.session_epoch;
         }
         if (m_session_id != authoritative.session_id) {
             m_session_id = authoritative.session_id;
@@ -180,6 +196,7 @@ struct SimulatedSoloAuthGuard
             m_authenticated = true;
             m_session_id = new_session_id;
             m_session_epoch = new_session_epoch;
+            m_has_seen_session_epoch = true;
             m_auth_state = AuthState::AUTHENTICATED;
             m_auth_in_flight_since = {};
             if (m_session_id != 0) {
@@ -513,6 +530,32 @@ void test_process_messages_entry_resyncs_cached_reward_binding()
                       guard.template_interface_session_epoch == 123);
 }
 
+void test_epoch_resync_clears_generation_bound_runtime_state()
+{
+    std::cout << "\nTest 7b: epoch resync clears generation-bound template and tip state\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_has_seen_session_epoch = true;
+    guard.m_session_epoch = 55;
+    guard.generation_bound_template_live = true;
+    guard.last_known_tip_stamp = 0xABCDEF01;
+    guard.last_keepalive_prevhash_lo32 = 0x11223344;
+    guard.m_last_submitted_valid = true;
+    guard.authoritative = {true, 0xABCDEF01, 56, true, {}};
+
+    guard.refresh_cached_session_state();
+
+    print_test_result("Epoch resync advances the local epoch", guard.m_session_epoch == 56);
+    print_test_result("Epoch resync clears generation-bound template state",
+                      !guard.generation_bound_template_live);
+    print_test_result("Epoch resync clears cached tip anchor",
+                      guard.last_known_tip_stamp == 0);
+    print_test_result("Epoch resync clears keepalive prevhash canary",
+                      guard.last_keepalive_prevhash_lo32 == 0);
+    print_test_result("Epoch resync invalidates stale submit snapshot",
+                      !guard.m_last_submitted_valid);
+}
+
 void test_public_auth_accessors_prefer_authoritative_session_state()
 {
     std::cout << "\nTest 8: public accessors prefer authoritative session state over stale local cache\n";
@@ -841,6 +884,7 @@ int main()
     test_reward_send_validates_before_packet_build();
     test_reward_send_requires_authoritative_reward_key_after_auth();
     test_process_messages_entry_resyncs_cached_reward_binding();
+    test_epoch_resync_clears_generation_bound_runtime_state();
     test_public_auth_accessors_prefer_authoritative_session_state();
     test_push_during_handshake_is_queued_until_auth_completes();
     test_session_expired_accepts_authoritative_session_id_when_local_cache_is_stale();

@@ -50,14 +50,15 @@ DecodedTemplate StatelessBlockUtility::decode_template(
     MiningTemplateInterface& tmpl_iface,
     const network::Payload& raw_payload,
     uint32_t mining_channel,
-    std::shared_ptr<spdlog::logger> logger)
+    std::shared_ptr<spdlog::logger> logger,
+    bool auto_feed)
 {
     DecodedTemplate result;
 
     // ── Delegate to MiningTemplateInterface::read_stateless_payload() ─────────
     // MTI handles the size gate, metadata prefix extraction, and block body
     // decode via llp_utils::deserialize_block_header().
-    auto vresult = tmpl_iface.read_stateless_payload(raw_payload, "stateless");
+    auto vresult = tmpl_iface.read_stateless_payload(raw_payload, "stateless", auto_feed);
     if (!vresult.is_valid) {
         result.error_message = vresult.error_message;
         if (logger)

@@ -73,7 +73,8 @@ MiningTemplateInterface::~MiningTemplateInterface()
 
 MiningTemplateInterface::ValidationResult 
 MiningTemplateInterface::read_template(const network::Payload& data,
-                                        const std::string& source_endpoint)
+                                        const std::string& source_endpoint,
+                                        bool auto_feed)
 {
     auto start_time = std::chrono::high_resolution_clock::now();
     
@@ -221,8 +222,9 @@ MiningTemplateInterface::read_template(const network::Payload& data,
         // The channel target height is only known after set_channel_height() is called.
         // HeightTracker will be notified from set_channel_height() with the correct value.
 
-        // Auto-feed to registered handlers
-        feed_current_template();
+        if (auto_feed) {
+            feed_current_template();
+        }
     } else {
         m_templates_rejected.fetch_add(1, std::memory_order_relaxed);
         
@@ -252,7 +254,8 @@ MiningTemplateInterface::read_template(const network::Payload& data,
 
 MiningTemplateInterface::ValidationResult 
 MiningTemplateInterface::read_template(network::Shared_payload data,
-                                        const std::string& source_endpoint)
+                                        const std::string& source_endpoint,
+                                        bool auto_feed)
 {
     if (!data || data->empty()) {
         ValidationResult result;
@@ -260,12 +263,13 @@ MiningTemplateInterface::read_template(network::Shared_payload data,
         result.error_message = "Empty or null template data";
         return result;
     }
-    return read_template(*data, source_endpoint);
+    return read_template(*data, source_endpoint, auto_feed);
 }
 
 MiningTemplateInterface::ValidationResult
 MiningTemplateInterface::read_stateless_payload(const network::Payload& payload228,
-                                                 const std::string& source_endpoint)
+                                                 const std::string& source_endpoint,
+                                                 bool auto_feed)
 {
     // ── Stateless BLOCK_DATA wire-format constants ────────────────────────────
     static constexpr size_t METADATA_SIZE = 12;   // [unified_height(4)][channel_height(4)][nBits(4)]
@@ -303,7 +307,7 @@ MiningTemplateInterface::read_stateless_payload(const network::Payload& payload2
 
     // ── Delegate the 216-byte block body to the canonical read_template() ────
     network::Payload block_body(payload228.begin() + METADATA_SIZE, payload228.end());
-    auto result = read_template(block_body, source_endpoint);
+    auto result = read_template(block_body, source_endpoint, auto_feed);
 
     // ── Store diagnostic metadata in the current template (if decode succeeded) ─
     if (result.is_valid) {
