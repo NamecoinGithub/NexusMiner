@@ -91,6 +91,42 @@ void test_shutdown_sets_stop_before_locking_worker_mutex()
 
     assert(!timed_out);
 }
+
+void test_set_block_resets_stop_for_new_work()
+{
+    using namespace std::chrono_literals;
+
+    install_test_logger();
+
+    auto io_context = std::make_shared<asio::io_context>();
+
+    config::Worker_config worker_config;
+    worker_config.m_id = "set-block-test";
+    worker_config.m_internal_id = 0;
+    worker_config.m_mode = config::Worker_mode::CPU;
+    worker_config.m_worker_mode = config::Worker_config_cpu{};
+
+    auto worker = std::make_shared<cpu::Worker_hash>(io_context, worker_config);
+
+    ::LLP::CBlock block;
+    block.nVersion = 8;
+    block.nChannel = 1;
+    block.nHeight = 6000001;
+    block.nBits = 0x1d00ffff;
+    block.nTime = 1234567890;
+
+    worker->set_block(block, 0, [](std::uint32_t, std::unique_ptr<Block_data>&&) {});
+
+    const auto deadline = std::chrono::steady_clock::now() + 250ms;
+    while (cpu::Worker_hash_test_access::load_stop(*worker)) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+
+    assert(!cpu::Worker_hash_test_access::load_stop(*worker));
+}
 }
 
 int main()
@@ -98,5 +134,8 @@ int main()
     std::cout << "Test: Worker_hash shutdown sets stop before waiting on worker mutex..." << std::endl;
     test_shutdown_sets_stop_before_locking_worker_mutex();
     std::cout << "  [PASS] Worker_hash destructor completed without locking shutdown behind m_mtx" << std::endl;
+    std::cout << "Test: Worker_hash set_block clears stop after new work is latched..." << std::endl;
+    test_set_block_resets_stop_for_new_work();
+    std::cout << "  [PASS] Worker_hash resumed mining after set_block signaled new work" << std::endl;
     return 0;
 }

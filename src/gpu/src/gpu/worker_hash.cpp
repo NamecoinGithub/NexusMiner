@@ -194,6 +194,7 @@ void Worker_hash::run()
 
             // Clear new work flag
             m_new_work = false;
+            m_stop = false;
         }
 
         // Start mining with the new work
