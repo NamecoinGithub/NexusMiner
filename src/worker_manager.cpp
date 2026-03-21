@@ -2098,9 +2098,9 @@ void Worker_manager::check_template_health()
             m_logger->info("[Worker_manager] Belt-and-suspenders: workers dead, restarting and re-feeding template");
             {
                 std::lock_guard<std::mutex> lock(m_worker_mutex);
-                bool still_no_workers = std::none_of(m_workers.begin(), m_workers.end(),
+                bool no_workers_present = std::none_of(m_workers.begin(), m_workers.end(),
                     [](const auto& w) { return bool(w); });
-                if (still_no_workers) {
+                if (no_workers_present) {
                     create_workers();
                     m_recovery_workers_spawned = !m_workers.empty();
                 }
