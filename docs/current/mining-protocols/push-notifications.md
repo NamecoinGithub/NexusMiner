@@ -85,6 +85,8 @@ On notification (PRIME/HASH_BLOCK_AVAILABLE):
   - Parse unified_height, channel_height, difficulty
   - Update HeightTracker with new heights
   - Take HeightTracker snapshot
+  - Treat the push as a lifeline opening event; it must not be stale-dropped by
+    active-session ownership/debug guards
   - If channel_advanced (channel_height >= channel_target):
       Request new template via GET_BLOCK  [reason: channel_advanced]
   - Elif tip_moved (unified_height > template_unified_height):
@@ -93,6 +95,16 @@ On notification (PRIME/HASH_BLOCK_AVAILABLE):
 
 No polling needed! (GET_ROUND is backup only)
 ```
+
+### Lifeline Rule
+
+- `PRIME_BLOCK_AVAILABLE` / `HASH_BLOCK_AVAILABLE` and their stateless mirrors are
+  lane-opening lifeline packets.
+- `BLOCK_DATA` and stateless `GET_BLOCK` template deliveries must remain open as
+  well; they are authoritative template feed packets and must not be blocked by
+  stale ownership/session-debug preflight checks.
+- Template freshness is enforced by `HeightTracker` and template validation, not
+  by dropping these delivery packets during ingress.
 
 ## Implementation (Post-PR #123)
 

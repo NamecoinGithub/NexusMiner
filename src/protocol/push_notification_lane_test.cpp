@@ -131,6 +131,29 @@ network::Payload create_extended_push_payload(uint32_t unified_height,
     return payload;
 }
 
+network::Payload create_template_delivery_payload(uint32_t unified_height,
+                                                  uint32_t channel_height,
+                                                  uint32_t difficulty,
+                                                  uint32_t block_height,
+                                                  uint8_t channel = 2)
+{
+    network::Payload payload(12, 0);
+    auto write_u32_be = [&](size_t offset, uint32_t value) {
+        payload[offset + 0] = static_cast<uint8_t>((value >> 24) & 0xFF);
+        payload[offset + 1] = static_cast<uint8_t>((value >> 16) & 0xFF);
+        payload[offset + 2] = static_cast<uint8_t>((value >> 8) & 0xFF);
+        payload[offset + 3] = static_cast<uint8_t>(value & 0xFF);
+    };
+
+    write_u32_be(0, unified_height);
+    write_u32_be(4, channel_height);
+    write_u32_be(8, difficulty);
+
+    auto block = create_mock_template(block_height, difficulty, channel);
+    payload.insert(payload.end(), block.begin(), block.end());
+    return payload;
+}
+
 int main()
 {
     auto null_sink = std::make_shared<spdlog::sinks::null_sink_mt>();
@@ -789,6 +812,97 @@ int main()
         print_test_result("Solo stale push does not trigger soft refresh handler", !soft_refresh_called);
         print_test_result("Solo stale push discards stale template",
             !solo.get_template_interface()->has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 17: Lifeline push bypasses active-session preflight
+    // ====================================================================
+    std::cout << "\nTest 17: Lifeline push still processes without active session" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::STATELESS);
+
+        bool recovery_called = false;
+        bool soft_refresh_called = false;
+        solo.set_recovery_initiated_handler([&recovery_called]() { recovery_called = true; });
+        solo.set_soft_refresh_requested_handler([&soft_refresh_called]() { soft_refresh_called = true; });
+
+        auto template_data = create_mock_template(9201, 0x1d00ffff, 2);
+        auto res = solo.get_template_interface()->read_template(template_data, "test_node", false);
+        print_test_result("Lifeline push setup template valid", res.is_valid);
+        solo.get_template_interface()->set_channel_height(101);
+
+        network::Payload payload = create_extended_push_payload(9200, 100, 0x1d00ffff, 0x42);
+        Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+        solo.process_messages(packet, nullptr);
+        auto push_snapshot = solo.get_height_tracker_snapshot();
+
+        print_test_result("Disconnected-session push triggers soft refresh handler", soft_refresh_called);
+        print_test_result("Disconnected-session push does not trigger hard recovery handler", !recovery_called);
+        print_test_result("Disconnected-session push updates unified height", push_snapshot.unified_height == 9200);
+        print_test_result("Disconnected-session push updates channel height", push_snapshot.channel_height == 100);
+        print_test_result("Disconnected-session push still discards obsolete template",
+            !solo.get_template_interface()->has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 18: Legacy BLOCK_DATA still processes without active session
+    // ====================================================================
+    std::cout << "\nTest 18: Legacy BLOCK_DATA still processes without active session" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::LEGACY);
+
+        bool block_handler_called = false;
+        solo.set_block_handler([&block_handler_called](const ::LLP::CBlock&, uint32_t) {
+            block_handler_called = true;
+        });
+
+        network::Payload payload = create_template_delivery_payload(9300, 100, 0x1d00ffff, 9301, 2);
+        Packet packet(static_cast<uint8_t>(Packet::BLOCK_DATA), payload);
+        solo.process_messages(packet, nullptr);
+        auto const* installed_template = solo.get_template_interface()->get_current_template();
+
+        print_test_result("BLOCK_DATA without active session still feeds a template", block_handler_called);
+        print_test_result("BLOCK_DATA without active session leaves a valid template installed",
+            solo.get_template_interface()->has_valid_template());
+        print_test_result("BLOCK_DATA without active session installs expected height",
+            installed_template && installed_template->block.nHeight == 9301);
+        print_test_result("BLOCK_DATA without active session installs expected difficulty",
+            installed_template && installed_template->nBits == 0x1d00ffff);
+    }
+
+    // ====================================================================
+    // Test 19: Stateless GET_BLOCK still processes without active session
+    // ====================================================================
+    std::cout << "\nTest 19: Stateless GET_BLOCK still processes without active session" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::STATELESS);
+
+        bool block_handler_called = false;
+        solo.set_block_handler([&block_handler_called](const ::LLP::CBlock&, uint32_t) {
+            block_handler_called = true;
+        });
+
+        network::Payload payload = create_template_delivery_payload(9400, 100, 0x1d00ffff, 9401, 2);
+        Packet packet(MinerLLP::MirrorOpcode(MinerLLP::GET_BLOCK), payload);
+        solo.process_messages(packet, nullptr);
+        auto const* installed_template = solo.get_template_interface()->get_current_template();
+
+        print_test_result("STATELESS_GET_BLOCK without active session still feeds a template", block_handler_called);
+        print_test_result("STATELESS_GET_BLOCK without active session leaves a valid template installed",
+            solo.get_template_interface()->has_valid_template());
+        print_test_result("STATELESS_GET_BLOCK without active session installs expected height",
+            installed_template && installed_template->block.nHeight == 9401);
+        print_test_result("STATELESS_GET_BLOCK without active session installs expected difficulty",
+            installed_template && installed_template->nBits == 0x1d00ffff);
     }
 
     std::cout << "\n========================================" << std::endl;
