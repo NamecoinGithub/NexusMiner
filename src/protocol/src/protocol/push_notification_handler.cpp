@@ -25,7 +25,8 @@ void PushNotificationHandler::handle_push_notification(
     MiningTemplateInterface* template_interface,
     HeightTracker* height_tracker,
     std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
-    std::function<void()> request_work_fn)
+    std::function<void()> request_work_fn,
+    std::function<void()> recovery_initiated_fn)
 {
     const char* ch_name = channel_name(expected_channel);
 
@@ -139,6 +140,12 @@ void PushNotificationHandler::handle_push_notification(
         {
             uint32_t blocks_behind = snap.blocks_behind();
 
+            const auto now = std::chrono::steady_clock::now();
+            const bool has_recent_template = (
+                snap.last_template_update != std::chrono::steady_clock::time_point{} &&
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    now - snap.last_template_update).count() < BURST_RECOVERY_GRACE_SECONDS);
+
             if (blocks_behind == 1)
             {
                 // Normal case: exactly one block behind after a fresh block was found.
@@ -155,11 +162,24 @@ void PushNotificationHandler::handle_push_notification(
                 return;  // Early exit — hash check is irrelevant for stale templates
             }
 
+            if (blocks_behind == 2 && has_recent_template)
+            {
+                m_logger->info("[Solo Push] ℹ️  Burst guard active (template {}s old, 2 blocks behind) — requesting fresh {} template before degraded recovery",
+                               std::chrono::duration_cast<std::chrono::seconds>(
+                                   now - snap.last_template_update).count(),
+                               ch_name);
+                request_work_fn();
+                return;  // Keep current template briefly while burst GET_BLOCK catches up
+            }
+
             // blocks_behind >= 2: miner is multiple blocks behind — genuine recovery.
             // Height alone is sufficient to determine staleness; no hash check needed.
             m_logger->warn("[Solo Push] ⚠️  Template {} block(s) behind (channel_height {} >= channel_target {}) — discarding",
                            blocks_behind, snap.channel_height, snap.channel_target);
             template_interface->discard_template("multi_block_lag");
+            if (recovery_initiated_fn) {
+                recovery_initiated_fn();
+            }
             request_work_fn();
 
             // Advance channel_target to prevent doom-loop.
@@ -182,6 +202,9 @@ void PushNotificationHandler::handle_push_notification(
                 // Hash mismatch with current height: same-height canonical tip-anchor replacement.
                 m_logger->warn("[Solo Push] ⚡ Unified Tip-Anchor Changed — same channel height, canonical prev hash replaced — replacing active template");
                 template_interface->discard_template("same_height_chain_reorg");
+                if (recovery_initiated_fn) {
+                    recovery_initiated_fn();
+                }
                 request_work_fn();
                 return;
             }

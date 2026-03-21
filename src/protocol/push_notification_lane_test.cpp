@@ -15,12 +15,18 @@
 
 #include "miner_opcodes.hpp"
 #include "protocol_lane.hpp"
+#include "protocol/push_notification_handler.hpp"
+#include "protocol/mining_template_interface.hpp"
+#include "protocol/height_tracker.hpp"
 #include "mining/client_block.h"
+#include "spdlog/spdlog.h"
+#include "spdlog/sinks/null_sink.h"
 #include <iostream>
 #include <cassert>
 #include <cstdint>
 
 using namespace nexusminer;
+namespace MinerLLP = nexusminer::LLP;
 
 // Test statistics
 static int tests_run = 0;
@@ -42,14 +48,14 @@ void print_test_result(const char* name, bool passed) {
  * Simulates the matches_opcode() lambda from solo.cpp process_messages():
  *   auto matches_opcode = [&packet](uint16_t legacy_opcode) {
  *       if (packet.m_is_uint16_opcode) {
- *           return packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
+ *           return packet.m_header == MinerLLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
  *       }
  *       return packet.m_header == legacy_opcode;
  *   };
  */
 bool simulated_matches_opcode(uint16_t packet_header, bool is_uint16_opcode, uint16_t legacy_opcode) {
     if (is_uint16_opcode) {
-        return packet_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
+        return packet_header == MinerLLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
     }
     return packet_header == legacy_opcode;
 }
@@ -58,16 +64,78 @@ bool simulated_matches_opcode(uint16_t packet_header, bool is_uint16_opcode, uin
  * Simulates the matches_stateless_opcode() lambda from solo.cpp:
  *   auto matches_stateless_opcode = [&packet](uint16_t legacy_opcode) {
  *       return packet.m_is_uint16_opcode &&
- *           packet.m_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
+ *           packet.m_header == MinerLLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
  *   };
  */
 bool simulated_matches_stateless_opcode(uint16_t packet_header, bool is_uint16_opcode, uint16_t legacy_opcode) {
     return is_uint16_opcode &&
-        packet_header == LLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
+        packet_header == MinerLLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
+}
+
+std::vector<uint8_t> create_mock_template(uint32_t height, uint32_t nBits = 0x1d00ffff,
+                                          uint8_t channel = 2) {
+    std::vector<uint8_t> data(216, 0);
+
+    size_t offset = 0;
+    auto write_u32_be = [&](uint32_t value) {
+        data[offset++] = (value >> 24) & 0xFF;
+        data[offset++] = (value >> 16) & 0xFF;
+        data[offset++] = (value >> 8) & 0xFF;
+        data[offset++] = value & 0xFF;
+    };
+
+    auto write_u64_be = [&](uint64_t value) {
+        data[offset++] = (value >> 56) & 0xFF;
+        data[offset++] = (value >> 48) & 0xFF;
+        data[offset++] = (value >> 40) & 0xFF;
+        data[offset++] = (value >> 32) & 0xFF;
+        data[offset++] = (value >> 24) & 0xFF;
+        data[offset++] = (value >> 16) & 0xFF;
+        data[offset++] = (value >> 8) & 0xFF;
+        data[offset++] = value & 0xFF;
+    };
+
+    write_u32_be(7);
+    offset += 128;
+    for (int i = 0; i < 64; ++i) {
+        data[offset++] = static_cast<uint8_t>(i + 1);
+    }
+    write_u32_be(static_cast<uint32_t>(channel));
+    write_u32_be(height);
+    write_u32_be(nBits);
+    write_u64_be(0);
+
+    return data;
+}
+
+network::Payload create_extended_push_payload(uint32_t unified_height,
+                                              uint32_t channel_height,
+                                              uint32_t difficulty,
+                                              uint8_t prev_hash_fill)
+{
+    network::Payload payload(140, 0);
+    auto write_u32_be = [&](size_t offset, uint32_t value) {
+        payload[offset + 0] = static_cast<uint8_t>((value >> 24) & 0xFF);
+        payload[offset + 1] = static_cast<uint8_t>((value >> 16) & 0xFF);
+        payload[offset + 2] = static_cast<uint8_t>((value >> 8) & 0xFF);
+        payload[offset + 3] = static_cast<uint8_t>(value & 0xFF);
+    };
+
+    write_u32_be(0, unified_height);
+    write_u32_be(4, channel_height);
+    write_u32_be(8, difficulty);
+    for (size_t i = 12; i < payload.size(); ++i) {
+        payload[i] = prev_hash_fill;
+    }
+    return payload;
 }
 
 int main()
 {
+    auto null_sink = std::make_shared<spdlog::sinks::null_sink_mt>();
+    auto logger = std::make_shared<spdlog::logger>("push_notification_lane_test", null_sink);
+    spdlog::set_default_logger(logger);
+
     std::cout << "========================================" << std::endl;
     std::cout << "Push Notification Lane Detection Tests" << std::endl;
     std::cout << "========================================" << std::endl;
@@ -77,17 +145,17 @@ int main()
     // ====================================================================
     std::cout << "\nTest 1: Mirror opcode mapping" << std::endl;
     {
-        uint16_t prime_mirror = LLP::MirrorOpcode(LLP::PRIME_BLOCK_AVAILABLE);
-        uint16_t hash_mirror = LLP::MirrorOpcode(LLP::HASH_BLOCK_AVAILABLE);
+        uint16_t prime_mirror = MinerLLP::MirrorOpcode(MinerLLP::PRIME_BLOCK_AVAILABLE);
+        uint16_t hash_mirror = MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE);
         
         print_test_result("PRIME_BLOCK_AVAILABLE mirrors to 0xD0D9",
             prime_mirror == 0xD0D9);
         print_test_result("HASH_BLOCK_AVAILABLE mirrors to 0xD0DA",
             hash_mirror == 0xD0DA);
         print_test_result("PRIME_BLOCK_AVAILABLE legacy value is 217 (0xD9)",
-            LLP::PRIME_BLOCK_AVAILABLE == 217);
+            MinerLLP::PRIME_BLOCK_AVAILABLE == 217);
         print_test_result("HASH_BLOCK_AVAILABLE legacy value is 218 (0xDA)",
-            LLP::HASH_BLOCK_AVAILABLE == 218);
+            MinerLLP::HASH_BLOCK_AVAILABLE == 218);
     }
 
     // ====================================================================
@@ -96,16 +164,16 @@ int main()
     std::cout << "\nTest 2: Legacy 8-bit opcode matching" << std::endl;
     {
         // Simulate legacy 8-bit PRIME_BLOCK_AVAILABLE (0xD9 = 217)
-        uint16_t header = LLP::PRIME_BLOCK_AVAILABLE;
+        uint16_t header = MinerLLP::PRIME_BLOCK_AVAILABLE;
         bool is_uint16 = false;
         
-        bool matches = simulated_matches_opcode(header, is_uint16, LLP::PRIME_BLOCK_AVAILABLE);
+        bool matches = simulated_matches_opcode(header, is_uint16, MinerLLP::PRIME_BLOCK_AVAILABLE);
         print_test_result("Legacy 8-bit PRIME_BLOCK_AVAILABLE matches matches_opcode()",
             matches);
         
         // Simulate legacy 8-bit HASH_BLOCK_AVAILABLE (0xDA = 218)
-        header = LLP::HASH_BLOCK_AVAILABLE;
-        matches = simulated_matches_opcode(header, is_uint16, LLP::HASH_BLOCK_AVAILABLE);
+        header = MinerLLP::HASH_BLOCK_AVAILABLE;
+        matches = simulated_matches_opcode(header, is_uint16, MinerLLP::HASH_BLOCK_AVAILABLE);
         print_test_result("Legacy 8-bit HASH_BLOCK_AVAILABLE matches matches_opcode()",
             matches);
     }
@@ -116,16 +184,16 @@ int main()
     std::cout << "\nTest 3: Stateless 16-bit opcode matching via matches_opcode()" << std::endl;
     {
         // Simulate stateless 16-bit PRIME_BLOCK_AVAILABLE (0xD0D9)
-        uint16_t header = LLP::MirrorOpcode(LLP::PRIME_BLOCK_AVAILABLE);
+        uint16_t header = MinerLLP::MirrorOpcode(MinerLLP::PRIME_BLOCK_AVAILABLE);
         bool is_uint16 = true;
         
-        bool matches = simulated_matches_opcode(header, is_uint16, LLP::PRIME_BLOCK_AVAILABLE);
+        bool matches = simulated_matches_opcode(header, is_uint16, MinerLLP::PRIME_BLOCK_AVAILABLE);
         print_test_result("Stateless 16-bit PRIME_BLOCK_AVAILABLE (0xD0D9) matches matches_opcode()",
             matches);
         
         // Simulate stateless 16-bit HASH_BLOCK_AVAILABLE (0xD0DA) 
-        header = LLP::MirrorOpcode(LLP::HASH_BLOCK_AVAILABLE);
-        matches = simulated_matches_opcode(header, is_uint16, LLP::HASH_BLOCK_AVAILABLE);
+        header = MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE);
+        matches = simulated_matches_opcode(header, is_uint16, MinerLLP::HASH_BLOCK_AVAILABLE);
         print_test_result("Stateless 16-bit HASH_BLOCK_AVAILABLE (0xD0DA) matches matches_opcode()",
             matches);
     }
@@ -136,11 +204,11 @@ int main()
     // ====================================================================
     std::cout << "\nTest 4: Stateless-specific match is subset of unified match" << std::endl;
     {
-        uint16_t header = LLP::MirrorOpcode(LLP::PRIME_BLOCK_AVAILABLE);
+        uint16_t header = MinerLLP::MirrorOpcode(MinerLLP::PRIME_BLOCK_AVAILABLE);
         bool is_uint16 = true;
         
-        bool unified = simulated_matches_opcode(header, is_uint16, LLP::PRIME_BLOCK_AVAILABLE);
-        bool stateless_only = simulated_matches_stateless_opcode(header, is_uint16, LLP::PRIME_BLOCK_AVAILABLE);
+        bool unified = simulated_matches_opcode(header, is_uint16, MinerLLP::PRIME_BLOCK_AVAILABLE);
+        bool stateless_only = simulated_matches_stateless_opcode(header, is_uint16, MinerLLP::PRIME_BLOCK_AVAILABLE);
         
         print_test_result("Both matches_opcode and matches_stateless_opcode match 0xD0D9",
             unified && stateless_only);
@@ -173,25 +241,25 @@ int main()
     {
         // Scenario A: Legacy connection receives 8-bit PRIME_BLOCK_AVAILABLE
         ProtocolLane m_protocol_lane_A = ProtocolLane::LEGACY;
-        uint16_t header_A = LLP::PRIME_BLOCK_AVAILABLE;
+        uint16_t header_A = MinerLLP::PRIME_BLOCK_AVAILABLE;
         bool is_uint16_A = false;
-        bool matches_A = simulated_matches_opcode(header_A, is_uint16_A, LLP::PRIME_BLOCK_AVAILABLE);
+        bool matches_A = simulated_matches_opcode(header_A, is_uint16_A, MinerLLP::PRIME_BLOCK_AVAILABLE);
         print_test_result("Scenario A: Legacy 8-bit → lane=LEGACY",
             matches_A && m_protocol_lane_A == ProtocolLane::LEGACY);
         
         // Scenario B: Stateless connection receives 16-bit PRIME_BLOCK_AVAILABLE
         ProtocolLane m_protocol_lane_B = ProtocolLane::STATELESS;
-        uint16_t header_B = LLP::MirrorOpcode(LLP::PRIME_BLOCK_AVAILABLE);
+        uint16_t header_B = MinerLLP::MirrorOpcode(MinerLLP::PRIME_BLOCK_AVAILABLE);
         bool is_uint16_B = true;
-        bool matches_B = simulated_matches_opcode(header_B, is_uint16_B, LLP::PRIME_BLOCK_AVAILABLE);
+        bool matches_B = simulated_matches_opcode(header_B, is_uint16_B, MinerLLP::PRIME_BLOCK_AVAILABLE);
         print_test_result("Scenario B: Stateless 16-bit → lane=STATELESS",
             matches_B && m_protocol_lane_B == ProtocolLane::STATELESS);
         
         // Scenario C: Legacy connection receives mirror 16-bit (firewall catch)
         ProtocolLane m_protocol_lane_C = ProtocolLane::LEGACY;
-        uint16_t header_C = LLP::MirrorOpcode(LLP::HASH_BLOCK_AVAILABLE);
+        uint16_t header_C = MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE);
         bool is_uint16_C = true;
-        bool matches_C = simulated_matches_opcode(header_C, is_uint16_C, LLP::HASH_BLOCK_AVAILABLE);
+        bool matches_C = simulated_matches_opcode(header_C, is_uint16_C, MinerLLP::HASH_BLOCK_AVAILABLE);
         print_test_result("Scenario C: Legacy lane + mirror opcode → lane=LEGACY (firewall)",
             matches_C && m_protocol_lane_C == ProtocolLane::LEGACY);
     }
@@ -202,17 +270,17 @@ int main()
     std::cout << "\nTest 7: Opcode classification helpers" << std::endl;
     {
         print_test_result("0xD0D9 is stateless opcode",
-            LLP::IsStatelessOpcode(0xD0D9));
+            MinerLLP::IsStatelessOpcode(0xD0D9));
         print_test_result("0xD0DA is stateless opcode",
-            LLP::IsStatelessOpcode(0xD0DA));
+            MinerLLP::IsStatelessOpcode(0xD0DA));
         print_test_result("0xD9 (217) is NOT stateless opcode",
-            !LLP::IsStatelessOpcode(0x00D9));
+            !MinerLLP::IsStatelessOpcode(0x00D9));
         print_test_result("0xDA (218) is NOT stateless opcode",
-            !LLP::IsStatelessOpcode(0x00DA));
+            !MinerLLP::IsStatelessOpcode(0x00DA));
         print_test_result("UnmirrorOpcode(0xD0D9) == 0xD9 (217)",
-            LLP::UnmirrorOpcode(0xD0D9) == LLP::PRIME_BLOCK_AVAILABLE);
+            MinerLLP::UnmirrorOpcode(0xD0D9) == MinerLLP::PRIME_BLOCK_AVAILABLE);
         print_test_result("UnmirrorOpcode(0xD0DA) == 0xDA (218)",
-            LLP::UnmirrorOpcode(0xD0DA) == LLP::HASH_BLOCK_AVAILABLE);
+            MinerLLP::UnmirrorOpcode(0xD0DA) == MinerLLP::HASH_BLOCK_AVAILABLE);
     }
 
     // ====================================================================
@@ -228,13 +296,13 @@ int main()
 
         // Legacy lane: Prime miner receives PRIME push → match
         bool prime_receives_prime_legacy = simulated_matches_opcode(
-            LLP::PRIME_BLOCK_AVAILABLE, false, LLP::PRIME_BLOCK_AVAILABLE);
+            MinerLLP::PRIME_BLOCK_AVAILABLE, false, MinerLLP::PRIME_BLOCK_AVAILABLE);
         print_test_result("Scenario A1: Prime miner receives legacy Prime push → match",
             prime_receives_prime_legacy);
 
         // Legacy lane: Prime miner receives HASH push → match in router, channel check in handler
         bool prime_receives_hash_legacy = simulated_matches_opcode(
-            LLP::HASH_BLOCK_AVAILABLE, false, LLP::HASH_BLOCK_AVAILABLE);
+            MinerLLP::HASH_BLOCK_AVAILABLE, false, MinerLLP::HASH_BLOCK_AVAILABLE);
         // Handler will see channel mismatch (mining_channel_prime != CHANNEL_HASH) and return early.
         // This is now treated as informational (not an error).
         print_test_result("Scenario A2: Prime miner receives legacy Hash push → routed (handler guards channel)",
@@ -242,13 +310,13 @@ int main()
 
         // Stateless lane: Hash miner receives Prime push (0xD0D9) → routed, handler guards channel
         bool hash_receives_prime_stateless = simulated_matches_opcode(
-            LLP::MirrorOpcode(LLP::PRIME_BLOCK_AVAILABLE), true, LLP::PRIME_BLOCK_AVAILABLE);
+            MinerLLP::MirrorOpcode(MinerLLP::PRIME_BLOCK_AVAILABLE), true, MinerLLP::PRIME_BLOCK_AVAILABLE);
         print_test_result("Scenario B1: Hash miner receives stateless Prime push (0xD0D9) → routed",
             hash_receives_prime_stateless);
 
         // Stateless lane: Hash miner receives Hash push (0xD0DA) → match + process
         bool hash_receives_hash_stateless = simulated_matches_opcode(
-            LLP::MirrorOpcode(LLP::HASH_BLOCK_AVAILABLE), true, LLP::HASH_BLOCK_AVAILABLE);
+            MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), true, MinerLLP::HASH_BLOCK_AVAILABLE);
         print_test_result("Scenario B2: Hash miner receives stateless Hash push (0xD0DA) → match",
             hash_receives_hash_stateless);
 
@@ -288,7 +356,8 @@ int main()
         // Simulate the corrected handler decision tree.
         // IMPORTANT: hash parameter is ignored for stale templates — height is authoritative.
         auto simulate_handler = [](bool stale, uint32_t blocks_behind,
-                                    bool has_hash, bool hash_matches) -> HandlerDecision
+                                    bool has_hash, bool hash_matches,
+                                    bool burst_grace_active) -> HandlerDecision
         {
             HandlerDecision d;
             if (stale) {
@@ -296,6 +365,10 @@ int main()
                     // Normal anchor update — refresh without stopping workers
                     d.request_work_called = true;
                     // No discard, no recovery signal
+                    return d;
+                }
+                if (blocks_behind == 2 && burst_grace_active) {
+                    d.request_work_called = true;
                     return d;
                 }
                 // blocks_behind >= 2: height alone is sufficient — discard and recover.
@@ -309,7 +382,7 @@ int main()
             if (has_hash && !hash_matches) {
                 d.discard_template_called = true;
                 d.request_work_called = true;
-                d.recovery_triggered = false;  // reorg path handles recovery separately
+                d.recovery_triggered = true;
             }
             return d;
         };
@@ -318,7 +391,8 @@ int main()
         // Expected: refresh template, do NOT stop workers, do NOT discard
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/1,
-                                       /*has_hash=*/true, /*hash_matches=*/false);
+                                       /*has_hash=*/true, /*hash_matches=*/false,
+                                       /*burst_grace_active=*/false);
             print_test_result("Scenario A1: 1-block lag → request_work called",
                 d.request_work_called);
             print_test_result("Scenario A2: 1-block lag → discard_template NOT called",
@@ -331,7 +405,8 @@ int main()
         // Expected: discard by height alone (hash is irrelevant), request work, recovery
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/3,
-                                       /*has_hash=*/true, /*hash_matches=*/false);
+                                       /*has_hash=*/true, /*hash_matches=*/false,
+                                       /*burst_grace_active=*/false);
             print_test_result("Scenario B1: 3-block lag → request_work called",
                 d.request_work_called);
             print_test_result("Scenario B2: 3-block lag → discard_template called (height alone, no hash check)",
@@ -340,49 +415,69 @@ int main()
                 d.recovery_triggered);
         }
 
-        // Scenario C: Multi-block lag where hashes happen to match
-        // Expected: STILL discard — height is authoritative, hash result doesn't matter
+        // Scenario C: 2-block burst within grace window
+        // Expected: request fresh work, but do NOT discard or enter recovery yet
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
-                                       /*has_hash=*/true, /*hash_matches=*/true);
-            print_test_result("Scenario C1: 2-block lag + hashes match → request_work called",
+                                       /*has_hash=*/true, /*hash_matches=*/true,
+                                       /*burst_grace_active=*/true);
+            print_test_result("Scenario C1: 2-block burst within grace → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario C2: 2-block lag + hashes match → discard_template called (height authoritative)",
+            print_test_result("Scenario C2: 2-block burst within grace → discard_template NOT called",
+                !d.discard_template_called);
+            print_test_result("Scenario C3: 2-block burst within grace → recovery NOT triggered",
+                !d.recovery_triggered);
+        }
+
+        // Scenario D: 2-block lag after grace expires
+        // Expected: discard by height alone and enter recovery
+        {
+            auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
+                                       /*has_hash=*/true, /*hash_matches=*/true,
+                                       /*burst_grace_active=*/false);
+            print_test_result("Scenario D1: 2-block lag after grace → request_work called",
+                d.request_work_called);
+            print_test_result("Scenario D2: 2-block lag after grace → discard_template called",
                 d.discard_template_called);
-            print_test_result("Scenario C3: 2-block lag + hashes match → recovery triggered",
+            print_test_result("Scenario D3: 2-block lag after grace → recovery triggered",
                 d.recovery_triggered);
         }
 
-        // Scenario D: Compact payload (no hashPrevBlock) — multi-block lag
+        // Scenario E: Compact payload (no hashPrevBlock) — multi-block lag
         // Expected: discard by height alone (hash data unavailable but irrelevant)
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
-                                       /*has_hash=*/false, /*hash_matches=*/false);
-            print_test_result("Scenario D1: 2-block lag, compact payload → request_work called",
+                                       /*has_hash=*/false, /*hash_matches=*/false,
+                                       /*burst_grace_active=*/false);
+            print_test_result("Scenario E1: 2-block lag, compact payload → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario D2: 2-block lag, compact payload → discard called (height alone)",
+            print_test_result("Scenario E2: 2-block lag, compact payload → discard called (height alone)",
                 d.discard_template_called);
         }
 
-        // Scenario E: Same-height chain reorg (blocks_behind == 0, hash changed)
-        // Expected: discard template, request work
+        // Scenario F: Same-height chain reorg (blocks_behind == 0, hash changed)
+        // Expected: discard template, request work, enter recovery
         {
             auto d = simulate_handler(/*stale=*/false, /*blocks_behind=*/0,
-                                       /*has_hash=*/true, /*hash_matches=*/false);
-            print_test_result("Scenario E1: Same-height reorg → discard_template called",
+                                       /*has_hash=*/true, /*hash_matches=*/false,
+                                       /*burst_grace_active=*/false);
+            print_test_result("Scenario F1: Same-height reorg → discard_template called",
                 d.discard_template_called);
-            print_test_result("Scenario E2: Same-height reorg → request_work called",
+            print_test_result("Scenario F2: Same-height reorg → request_work called",
                 d.request_work_called);
+            print_test_result("Scenario F3: Same-height reorg → recovery triggered",
+                d.recovery_triggered);
         }
 
-        // Scenario F: Healthy template (not stale, hashes match)
+        // Scenario G: Healthy template (not stale, hashes match)
         // Expected: no action
         {
             auto d = simulate_handler(/*stale=*/false, /*blocks_behind=*/0,
-                                       /*has_hash=*/true, /*hash_matches=*/true);
-            print_test_result("Scenario F1: Healthy template → request_work NOT called",
+                                       /*has_hash=*/true, /*hash_matches=*/true,
+                                       /*burst_grace_active=*/false);
+            print_test_result("Scenario G1: Healthy template → request_work NOT called",
                 !d.request_work_called);
-            print_test_result("Scenario F2: Healthy template → discard NOT called",
+            print_test_result("Scenario G2: Healthy template → discard NOT called",
                 !d.discard_template_called);
         }
     }
@@ -418,6 +513,82 @@ int main()
         //               blocks_behind >= 2 → recovery path
         print_test_result("blocks_behind threshold: 1 is normal, 2+ triggers recovery",
             expected_one < 2 && expected_three >= 2);
+    }
+
+    // ====================================================================
+    // Test 11: Actual handler enters recovery on same-height canonical replacement
+    // ====================================================================
+    std::cout << "\nTest 11: Same-height canonical replacement notifies recovery path" << std::endl;
+    {
+        protocol::HeightTracker tracker;
+        protocol::MiningTemplateInterface tmpl_interface(2, 0);
+        tmpl_interface.set_height_tracker(&tracker);
+        tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+
+        auto template_data = create_mock_template(5001, 0x1d00ffff, 2);
+        auto res = tmpl_interface.read_template(template_data, "test_node");
+        print_test_result("Handler setup: initial template valid", res.is_valid);
+        tmpl_interface.set_channel_height(101);
+
+        uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
+        protocol::PushNotificationHandler handler(logger, current_channel);
+        bool request_work_called = false;
+        bool recovery_called = false;
+
+        network::Payload payload = create_extended_push_payload(5000, 100, 0x1d00ffff, 0x42);
+        Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+
+        handler.handle_push_notification(
+            packet,
+            mining::CHANNEL_HASH,
+            ProtocolLane::STATELESS,
+            &tmpl_interface,
+            &tracker,
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
+            [&request_work_called]() { request_work_called = true; },
+            [&recovery_called]() { recovery_called = true; });
+
+        print_test_result("Same-height reorg requests fresh work", request_work_called);
+        print_test_result("Same-height reorg discards active template", !tmpl_interface.has_valid_template());
+        print_test_result("Same-height reorg notifies recovery path", recovery_called);
+    }
+
+    // ====================================================================
+    // Test 12: Burst guard keeps a fresh template alive for a short 2-block burst
+    // ====================================================================
+    std::cout << "\nTest 12: Burst guard suppresses immediate degraded recovery at 2 blocks behind" << std::endl;
+    {
+        protocol::HeightTracker tracker;
+        protocol::MiningTemplateInterface tmpl_interface(2, 0);
+        tmpl_interface.set_height_tracker(&tracker);
+        tracker.OnPushNotification(6000, 100, 0x1d00ffff);
+
+        auto template_data = create_mock_template(6001, 0x1d00ffff, 2);
+        auto res = tmpl_interface.read_template(template_data, "test_node");
+        print_test_result("Burst setup: initial template valid", res.is_valid);
+        tmpl_interface.set_channel_height(101);
+
+        uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
+        protocol::PushNotificationHandler handler(logger, current_channel);
+        bool request_work_called = false;
+        bool recovery_called = false;
+
+        network::Payload payload = create_extended_push_payload(6002, 102, 0x1d00ffff, 0x00);
+        Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+
+        handler.handle_push_notification(
+            packet,
+            mining::CHANNEL_HASH,
+            ProtocolLane::STATELESS,
+            &tmpl_interface,
+            &tracker,
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
+            [&request_work_called]() { request_work_called = true; },
+            [&recovery_called]() { recovery_called = true; });
+
+        print_test_result("2-block burst within grace requests fresh work", request_work_called);
+        print_test_result("2-block burst within grace keeps template valid", tmpl_interface.has_valid_template());
+        print_test_result("2-block burst within grace does not enter recovery", !recovery_called);
     }
 
     // ====================================================================

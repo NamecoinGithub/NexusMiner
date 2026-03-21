@@ -3277,11 +3277,6 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                 if (!ensure_session_ready_for_ingress("Solo Push", push_opcode_name, true)) {
                     return;
                 }
-                // Snapshot staleness and lag BEFORE calling get_work() so we capture
-                // the state that triggered this request_work_fn invocation.
-                auto snap = m_height_tracker.GetSnapshot();
-                bool is_stale_recovery = snap.is_template_stale();
-                uint32_t blocks_behind = snap.blocks_behind();
                 if (connection) {
                     auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
@@ -3294,13 +3289,10 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                     // for the lifetime of the session. GET_BLOCK (0xD081) is the correct recovery
                     // request — it asks for a fresh template without resetting the subscription state.
                 }
-                // Notify Worker_manager that a multi-block-lag recovery was initiated so it
-                // can set recovery_pending and stop workers while awaiting the GET_BLOCK response.
-                // For normal single-block refresh (blocks_behind == 1) workers keep mining —
-                // no recovery needed, the fresh template will arrive shortly.
-                if (is_stale_recovery && blocks_behind > 1 && m_recovery_handler) {
-                    m_logger->info("[Solo] Recovery initiated (channel_advanced {} blocks) — notifying Worker_manager",
-                                   blocks_behind);
+            },
+            [this]() {
+                if (m_recovery_handler) {
+                    m_logger->info("[Solo] Recovery initiated (push-triggered template replacement) — notifying Worker_manager");
                     m_recovery_handler();
                 }
             });
