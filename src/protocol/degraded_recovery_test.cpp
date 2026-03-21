@@ -254,10 +254,15 @@ void test_successful_reauth_restarts_recovery_epoch() {
         bool m_degraded_mode{true};
         bool m_recovery_pending{true};
         uint64_t m_recovery_epoch{1};
-        std::chrono::steady_clock::time_point m_recovery_started_at{
-            std::chrono::steady_clock::now() - std::chrono::seconds(1207)};
-        std::chrono::steady_clock::time_point m_degraded_since{
-            std::chrono::steady_clock::now() - std::chrono::seconds(1207)};
+        std::chrono::steady_clock::time_point m_recovery_started_at{};
+        std::chrono::steady_clock::time_point m_degraded_since{};
+
+        RecoveryTracker() {
+            constexpr auto simulated_stale_duration = std::chrono::seconds(1207);
+            const auto now = std::chrono::steady_clock::now();
+            m_recovery_started_at = now - simulated_stale_duration;
+            m_degraded_since = now - simulated_stale_duration;
+        }
 
         void restart_recovery_window() {
             m_recovery_pending = false;
