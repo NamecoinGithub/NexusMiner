@@ -436,6 +436,16 @@ public:
                             uint32_t nbits);
 
     /**
+     * @brief Record receipt of a BLOCK_AVAILABLE push for liveness only
+     *
+     * Updates the push timestamp without changing push-derived heights or
+     * last_height_update. Use this when a validated push is informational
+     * (e.g. non-subscribed channel broadcast) but should still prove the node
+     * is alive for degraded-mode recovery decisions.
+     */
+    void OnPushLiveness();
+
+    /**
      * @brief Update heights from a GET_ROUND / NEW_ROUND response
      *
      * Writes to DiagnosticObserverState only (round_* fields).
