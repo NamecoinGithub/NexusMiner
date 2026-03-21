@@ -316,13 +316,15 @@ void test_same_height_soft_refresh_escalates_only_after_timeout() {
         bool m_recovery_pending{false};
         uint64_t m_recovery_epoch{0};
         std::chrono::steady_clock::time_point m_recovery_started_at{};
+        std::string authoritative_recovery_reason;
         std::vector<std::string> m_log;
 
-        void start_soft_refresh() {
+        void start_soft_refresh(const std::string& reason) {
             ++m_recovery_epoch;
             m_recovery_pending = true;
             m_template_withheld = true;
             m_recovery_started_at = std::chrono::steady_clock::now();
+            authoritative_recovery_reason = reason;
             m_log.emplace_back("soft refresh requested");
         }
 
@@ -340,10 +342,12 @@ void test_same_height_soft_refresh_escalates_only_after_timeout() {
     };
 
     RecoveryTracker rt;
-    rt.start_soft_refresh();
+    rt.start_soft_refresh("same_height_push_tip_replacement_pre_adoption");
     print_test_result("Soft refresh starts recovery tracking", rt.m_recovery_pending && rt.m_recovery_epoch == 1);
     print_test_result("Soft refresh logs soft refresh requested",
                       !rt.m_log.empty() && rt.m_log.back() == "soft refresh requested");
+    print_test_result("Same-height pre-adoption replacement stays on soft-refresh reason",
+                      rt.authoritative_recovery_reason == "same_height_push_tip_replacement_pre_adoption");
     print_test_result("Soft refresh withholds submissions without degraded mode",
                       rt.m_template_withheld && !rt.m_degraded_mode);
     print_test_result("Soft refresh keeps workers running", rt.m_workers_running);
