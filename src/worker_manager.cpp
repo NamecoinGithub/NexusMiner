@@ -491,7 +491,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 mark_soft_refresh_requested("same_height_push_tip_replacement");
 
                 if (!had_pending) {
-                    m_logger->warn("[Worker_manager] Soft refresh requested — withholding submissions while same-height replacement template is fetched");
+                    m_logger->info("[Worker_manager] Same-height tip replacement — withholding submissions while fresh template is fetched");
                 } else {
                     m_logger->info("[Worker_manager] Soft refresh already pending — keeping template withheld until replacement arrives");
                 }
@@ -1524,9 +1524,9 @@ void Worker_manager::mark_soft_refresh_requested(const char* reason)
         m_forced_retry_timer->cancel();
     }
     m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
-    m_logger->warn("[Worker_manager] ⚑ SOFT REFRESH REQUESTED — epoch {} (reason: {})",
+    m_logger->info("[Worker_manager] Template refresh requested — epoch {} (reason: {})",
                    m_recovery_epoch, reason ? reason : "soft refresh requested");
-    m_logger->warn("[Worker_manager]   Workers keep running; only submissions are withheld during the replacement-template window");
+    m_logger->info("[Worker_manager]   Workers keep running; only submissions are withheld during the replacement-template window");
 }
 
 void Worker_manager::restart_recovery_window(const char* reason)
