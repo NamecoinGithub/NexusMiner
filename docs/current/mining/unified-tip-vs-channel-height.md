@@ -103,10 +103,18 @@ Log signature:
 ```
 On every push notification:
   1. Update HeightTracker (unified_height, channel_height, difficulty)
-  2. Take snapshot: snap = height_tracker.GetSnapshot()
-  3. if snap.is_template_stale()  → request_work()   [reason: channel_advanced]
-  4. elif snap.is_tip_moved()     → request_work()   [reason: tip_moved]
-  5. else                         → continue mining current template
+  2. If extended push carries hashPrevBlock, store it as the latest push tip-anchor hint
+  3. Take snapshot: snap = height_tracker.GetSnapshot()
+  4. if snap.is_template_stale()  → request_work()   [reason: channel_advanced]
+  5. elif snap.is_tip_moved()     → request_work()   [reason: tip_moved]
+  6. else                         → continue mining current template
+
+Before any freshly validated template is fed live:
+  A. finalize channel target metadata
+  B. if snap.has_same_height_push_tip_replacement(template.hashPrevBlock, template.nChannelHeight)
+       → discard template as same_height_chain_reorg
+       → request fresh work
+  C. otherwise feed workers
 ```
 
 ---

@@ -143,6 +143,7 @@ public:
         uint32_t push_unified_height{0};
         uint32_t push_channel_height{0};
         uint32_t push_difficulty_nbits{0};
+        uint1024_t push_hash_prev_block{};     ///< hashPrevBlock from latest extended push payload
         std::chrono::steady_clock::time_point last_push_at{};
 
         // ── Heights from GET_ROUND / NEW_ROUND responses ────────────────────────
@@ -218,6 +219,7 @@ public:
         uint64_t session_epoch{0};           ///< Authoritative session epoch captured with this snapshot
         uint32_t unified_height{0};           ///< Unified blockchain height (max of canonical and push)
         uint32_t channel_height{0};           ///< Channel-specific height (max of canonical and push)
+        uint32_t push_channel_height{0};      ///< Raw channel height from latest push notification
         uint32_t difficulty_nbits{0};         ///< Compact nBits difficulty
         uint32_t channel_target{0};           ///< Template channel target (0 = unset)
         uint32_t channel{0};                  ///< Mining channel (1=Prime, 2=Hash)
@@ -227,6 +229,7 @@ public:
         ChannelHeight template_channel_target{};    ///< Typed alias of channel_target (tip + 1)
         UnifiedHeight template_block_height{};      ///< Typed alias of template_unified_height
         uint1024_t hash_prev_block{};         ///< hashPrevBlock captured at template parse time (tip anchor)
+        uint1024_t push_hash_prev_block{};    ///< hashPrevBlock from latest extended push (pre-adoption tip hint)
         UpdateSource last_update_source{UpdateSource::NONE};
 
         // ── All three channel heights, kept independently ──────────────────────
@@ -339,6 +342,23 @@ public:
         }
 
         /**
+         * @brief True when the latest extended push already proves a would-be live template is obsolete
+         *
+         * This is the last adoption gate for the "already obsolete on arrival" race:
+         * an extended push has told us the current canonical tip anchor for this
+         * channel height, but a template targeting that same height still builds on a
+         * different hashPrevBlock. In that case the template must not be fed live.
+         */
+        bool has_same_height_push_tip_replacement(const uint1024_t& template_hash_prev_block,
+                                                  uint32_t template_channel_target) const {
+            return push_hash_prev_block != uint1024_t{} &&
+                   push_channel_height > 0 &&
+                   template_channel_target > 0 &&
+                   template_channel_target == (push_channel_height + 1) &&
+                   template_hash_prev_block != push_hash_prev_block;
+        }
+
+        /**
          * @brief Number of blocks the template target trails the current channel tip
          *
          * Returns 0 when the template is current or when either height is unset.
@@ -434,6 +454,16 @@ public:
      */
     void OnPushNotification(uint32_t unified_height, uint32_t channel_height,
                             uint32_t nbits);
+
+    /**
+     * @brief Record the tip anchor advertised by the latest extended push payload
+     *
+     * This is diagnostic/pre-adoption state only: unlike OnBlockDataReceived(), it
+     * does not claim canonical ownership. It simply preserves the newest push-side
+     * hashPrevBlock so first-template adoption can reject a template that is already
+     * obsolete before workers resume.
+     */
+    void UpdatePushTipAnchor(const uint1024_t& hash_prev_block);
 
     /**
      * @brief Record receipt of a BLOCK_AVAILABLE push for liveness only

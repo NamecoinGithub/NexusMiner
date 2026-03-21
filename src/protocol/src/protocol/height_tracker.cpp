@@ -35,6 +35,16 @@ void HeightTracker::OnPushNotification(uint32_t unified_height,
     m_diagnostic.last_push_at = now;
 }
 
+void HeightTracker::UpdatePushTipAnchor(const uint1024_t& hash_prev_block)
+{
+    if (hash_prev_block == uint1024_t{}) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_diagnostic.push_hash_prev_block = hash_prev_block;
+}
+
 void HeightTracker::OnPushLiveness()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -189,6 +199,7 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
                                 m_diagnostic.push_unified_height);
     s.channel_height = std::max(m_canonical.canonical_channel_height,
                                 m_diagnostic.push_channel_height);
+    s.push_channel_height = m_diagnostic.push_channel_height;
     s.unified_block_height = UnifiedHeight{s.unified_height};
     s.channel_tip_height = ChannelHeight{s.channel_height};
 
@@ -203,6 +214,7 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     s.template_unified_height = m_template_unified_height;
     s.template_block_height = UnifiedHeight{s.template_unified_height};
     s.hash_prev_block = m_canonical.canonical_hash_prev_block;
+    s.push_hash_prev_block = m_diagnostic.push_hash_prev_block;
     s.last_update_source = m_last_update_source;
 
     // Per-channel heights: sourced from keepalive ACKs (canonical per-channel fields are

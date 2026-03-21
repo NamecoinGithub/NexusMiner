@@ -116,6 +116,9 @@ void PushNotificationHandler::handle_push_notification(
     // Both update_height_fn and height_tracker* are expected to be non-null in production
     // (Solo always provides both); drift detection is advisory and safe to skip if null.
     if (height_tracker) {
+        if (has_hash_prev_block) {
+            height_tracker->UpdatePushTipAnchor(notification_hash_prev_block);
+        }
         std::string drift_msg = height_tracker->ExplainMismatch();
         if (!drift_msg.empty()) {
             m_logger->info("{}", drift_msg);
