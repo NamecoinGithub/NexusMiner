@@ -1882,7 +1882,10 @@ void Worker_manager::check_template_health()
                        recovery_elapsed_s,
                        has_valid_template ? "yes" : "no");
         m_recovery_pending = false;
-        mark_recovery_initiated("soft_refresh_timeout");
+        // Compatibility note: retain the legacy reason label because existing
+        // monitoring/log parsing may key off it, even though this timeout path
+        // now covers broader soft-refresh stalls (including tip_moved refreshes).
+        mark_recovery_initiated("same_height_soft_refresh_timeout");
         m_template_withheld = false;
         if (has_valid_template) {
             template_interface->discard_template("Soft refresh timeout: " + std::to_string(recovery_elapsed_s) +

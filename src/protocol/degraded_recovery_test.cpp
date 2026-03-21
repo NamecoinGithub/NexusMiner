@@ -487,6 +487,9 @@ void test_authoritative_soft_refresh_backfills_local_state() {
 // ============================================================================
 void test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout() {
     std::cout << "\nTest 4f: tip_moved soft refresh defers HEIGHT_DRIFT stop until timeout\n";
+    // Use a representative 60-second soft-refresh window here: this test validates
+    // the state-machine ordering (soft refresh first, degraded only after timeout),
+    // not the exact per-channel production timeout constant.
     constexpr int64_t RECOVERY_WINDOW_SECONDS = 60;
     constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
 
