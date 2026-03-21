@@ -567,6 +567,7 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
 
     m_last_known_hash_prev_block = tmpl->block.hashPrevBlock;
     m_height_tracker.UpdateWithHashPrevBlock(tmpl->block.hashPrevBlock);
+    m_height_tracker.ClearPushTipAnchor();
 
     if (get_session_manager()) {
         auto prev_bytes = m_last_known_hash_prev_block.GetBytes();

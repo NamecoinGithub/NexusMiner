@@ -390,6 +390,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 }
                 
                 if (workers_fed > 0) {
+                    auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
                     m_logger->info("[Worker_manager] ✓ Template distributed to {} workers - MINING STARTED", 
                                   workers_fed);
                     if (solo_protocol) {
@@ -1530,6 +1531,17 @@ void Worker_manager::clear_recovery_state()
         return;
     }
 
+    if (solo_protocol) {
+        auto* session_manager = solo_protocol->get_session_manager();
+        if (session_manager) {
+            const auto session_snapshot = session_manager->get_runtime_snapshot();
+            if (session_snapshot.recovery_state != protocol::SessionManager::RecoveryState::HEALTHY ||
+                !session_snapshot.recovery_reason.empty()) {
+                solo_protocol->mark_authoritative_recovery_healthy("worker_manager_clear_recovery_state");
+            }
+        }
+    }
+
     m_logger->info("[Worker_manager] Clearing recovery state — exiting degraded mode");
     auto now = std::chrono::steady_clock::now();
     if (m_degraded_since != std::chrono::steady_clock::time_point{}) {
@@ -1555,6 +1567,7 @@ void Worker_manager::clear_recovery_state()
     if (m_forced_retry_timer) {
         m_forced_retry_timer->cancel();
     }
+    m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
     m_degraded_since = {};  // Clear escape-ladder timer; next outage will re-anchor it
     // Note: m_recovery_workers_spawned is intentionally NOT reset here.
     // It is only reset in stop_all_workers() which actually destroys workers,

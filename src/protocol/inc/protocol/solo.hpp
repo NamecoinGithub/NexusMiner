@@ -178,6 +178,15 @@ public:
     // HeightTracker reference (for direct read access by ColinAgent)
     const HeightTracker& get_height_tracker() const { return m_height_tracker; }
 
+    // Helper to access SessionManager through NodeSessionContext
+    SessionManager* get_session_manager() const {
+        return m_session_context ? m_session_context->get_session_manager().get() : nullptr;
+    }
+
+    void mark_authoritative_soft_refresh(const std::string& reason);
+    void mark_authoritative_recovery_required(const std::string& reason);
+    void mark_authoritative_recovery_healthy(const std::string& reason = "");
+
     // Recovery callback: called by the push handler when a channel-stale recovery GET_BLOCK
     // is triggered (is_template_stale() is true at request_work_fn invocation time).
     // Worker_manager registers this to set its recovery_pending flag for doom-loop prevention.
@@ -304,11 +313,6 @@ private:
     mining::ClientChannelManager* get_channel_manager() const;
     mining::ClientChannelManager* get_channel_manager(uint32_t channel) const;
 
-    // Helper to access SessionManager through NodeSessionContext
-    SessionManager* get_session_manager() const {
-        return m_session_context ? m_session_context->get_session_manager().get() : nullptr;
-    }
-
     // NodeSessionContext is the authoritative session source; use it to detect
     // whether a stale local auth flag needs resynchronization.
     bool session_context_is_authenticated() const;
@@ -318,9 +322,6 @@ private:
     void update_connection_metadata(const std::shared_ptr<network::Connection>& connection);
     bool validate_authoritative_session(const char* log_scope, bool require_reward_binding) const;
     void log_session_container_summary(const char* log_scope) const;
-    void mark_authoritative_soft_refresh(const std::string& reason);
-    void mark_authoritative_recovery_required(const std::string& reason);
-    void mark_authoritative_recovery_healthy(const std::string& reason = "");
     struct PacketIngressPreflightOptions {
         const SessionOwnershipStamp* owner{nullptr};
         uint32_t packet_session_id{0};
