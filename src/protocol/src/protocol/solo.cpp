@@ -323,6 +323,7 @@ void Solo::reset()
     m_reward_bound = false;  // Reset reward binding for new session
     m_subscribed_to_notifications = false;  // Reset push notification subscription
     m_pending_push_after_auth = false;
+    clear_push_ingress_lifeline();
 
     // Note: m_chacha20_wrapper is intentionally NOT cleared here — the wrapper object
     // is stateless (no per-session state) and can be reused across reconnects.
@@ -718,6 +719,16 @@ bool Solo::ensure_session_ready_for_ingress(const char* log_scope,
     });
 
     if (!decision.allow_ingress) {
+        if (queue_post_auth_get_block && can_use_push_ingress_lifeline()) {
+            m_logger->warn("[{}] Accepting {} during auth-in-flight using preserved push lifeline "
+                           "(session_id=0x{:08x}, epoch={})",
+                           log_scope,
+                           packet_name,
+                           m_push_ingress_lifeline.session_id,
+                           m_push_ingress_lifeline.session_epoch);
+            return true;
+        }
+
         if (queue_post_auth_get_block && decision.queue_deferred_push) {
             queue_pending_push_after_auth(log_scope);
         }
@@ -764,6 +775,52 @@ void Solo::queue_pending_push_after_auth(const char* log_scope)
 
     m_pending_push_after_auth = true;
     m_logger->info("[{}] Queued GET_BLOCK to run after authentication flow completes", log_scope);
+}
+
+void Solo::capture_push_ingress_lifeline(const char* log_scope)
+{
+    clear_push_ingress_lifeline();
+
+    if (!m_session_context) {
+        return;
+    }
+
+    const auto session = m_session_context->get_runtime_snapshot();
+    if (!session.authenticated || session.session_id == 0 || !session.ready_for_get_block) {
+        return;
+    }
+
+    if (!session.reward_address_string.empty() && !session.reward_bound) {
+        return;
+    }
+
+    m_push_ingress_lifeline.active = true;
+    m_push_ingress_lifeline.session_id = session.session_id;
+    m_push_ingress_lifeline.session_epoch = session.session_epoch;
+    m_push_ingress_lifeline.reward_bound = session.reward_bound;
+    m_push_ingress_lifeline.ready_for_get_block = session.ready_for_get_block;
+
+    m_logger->info("[{}] Preserving mining-lane push lifeline across in-band auth "
+                   "(session_id=0x{:08x}, epoch={}, ready_for_get_block={}, reward_bound={})",
+                   log_scope,
+                   m_push_ingress_lifeline.session_id,
+                   m_push_ingress_lifeline.session_epoch,
+                   m_push_ingress_lifeline.ready_for_get_block ? "yes" : "no",
+                   m_push_ingress_lifeline.reward_bound ? "yes" : "no");
+}
+
+void Solo::clear_push_ingress_lifeline()
+{
+    // Reset all preserved pre-auth mining-lane readiness fields.
+    m_push_ingress_lifeline = {};
+}
+
+bool Solo::can_use_push_ingress_lifeline() const
+{
+    return m_push_ingress_lifeline.active &&
+           is_auth_in_progress() &&
+           m_push_ingress_lifeline.ready_for_get_block &&
+           m_push_ingress_lifeline.session_id != 0;
 }
 
 void Solo::flush_pending_push_after_auth(const std::shared_ptr<network::Connection>& connection,
@@ -1043,6 +1100,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     m_auth_state = AuthState::WAITING_FOR_CHALLENGE;
     m_auth_in_flight_since = std::chrono::steady_clock::now();
     if (m_session_context) {
+        capture_push_ingress_lifeline("Solo Auth");
         m_session_context->begin_auth_handshake("falcon auth handshake started");
     }
     
@@ -1065,9 +1123,10 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
     /// No miner-side rate limiting — the node's 2-second AutoCoolDown enforces the server-side floor.
 
     refresh_cached_session_state("Solo GET_BLOCK");
+    const bool using_push_lifeline = can_use_push_ingress_lifeline();
 
     /* Validate prerequisites */
-    if (!m_authenticated) {
+    if (!m_authenticated && !using_push_lifeline) {
         m_last_get_block_request_status.store(GetBlockRequestStatus::UNAUTHENTICATED);
         m_logger->error("[Solo] Cannot request work - not authenticated");
         m_logger->error("[Solo]   Current auth state: {}",
@@ -1079,14 +1138,17 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
         return nullptr;
     }
 
-    if (!validate_authoritative_session("Solo GET_BLOCK", !m_reward_address.empty())) {
+    if (!using_push_lifeline &&
+        !validate_authoritative_session("Solo GET_BLOCK", !m_reward_address.empty())) {
         m_last_get_block_request_status.store(GetBlockRequestStatus::SESSION_INVALID);
         return nullptr;
     }
 
     // Only validate reward binding if a reward address was configured
     // (Reward binding is optional for localhost/testing, but required for production)
-    if (!m_reward_address.empty() && !m_reward_bound) {
+    if (!m_reward_address.empty() &&
+        !m_reward_bound &&
+        !(using_push_lifeline && m_push_ingress_lifeline.reward_bound)) {
         m_last_get_block_request_status.store(GetBlockRequestStatus::REWARD_NOT_BOUND);
         m_logger->error("[Solo] Cannot request work - reward address not bound");
         return nullptr;
@@ -1114,9 +1176,15 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
 
     m_logger->info("[Solo] Requesting mining template via GET_BLOCK");
     m_logger->info("[Solo]   Session ID: 0x{:08x}", m_session_id);
-    m_logger->info("[Solo]   Authenticated: {}", m_authenticated ? "YES" : "NO");
-    m_logger->info("[Solo]   Reward bound: {}", m_reward_bound ? "YES" : "NO");
-    if (m_session_context) {
+    m_logger->info("[Solo]   Authenticated: {}", (m_authenticated || using_push_lifeline) ? "YES" : "NO");
+    m_logger->info("[Solo]   Reward bound: {}",
+                   (m_reward_bound || (using_push_lifeline && m_push_ingress_lifeline.reward_bound)) ? "YES" : "NO");
+    if (using_push_lifeline) {
+        m_logger->warn("[Solo] GET_BLOCK using preserved push lifeline during auth-in-flight "
+                       "(session_id=0x{:08x}, epoch={})",
+                       m_push_ingress_lifeline.session_id,
+                       m_push_ingress_lifeline.session_epoch);
+    } else if (m_session_context) {
         m_session_context->set_channel_state(m_channel, false, true);
         m_session_context->mark_activity();
     }
@@ -1125,7 +1193,14 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
     auto payload = PacketBuilder::build(m_protocol_lane, LLP::GET_BLOCK);
 
     if (payload && !payload->empty()) {
-        m_last_get_block_request_owner = capture_session_ownership();
+        if (using_push_lifeline) {
+            m_last_get_block_request_owner = {
+                SessionId(m_push_ingress_lifeline.session_id),
+                SessionEpoch(m_push_ingress_lifeline.session_epoch)
+            };
+        } else {
+            m_last_get_block_request_owner = capture_session_ownership();
+        }
         // Record transmission timestamp for deduplication
         m_last_get_block_transmitted_tp = now_tp;
         m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
@@ -2656,6 +2731,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             m_authenticated = true;
             m_auth_state = AuthState::AUTHENTICATED;
             m_auth_in_flight_since = {};  // Auth complete — clear in-flight timestamp
+            clear_push_ingress_lifeline();
 
             // Extract session ID if present (4 bytes, little-endian)
             if (packet.m_length >= 5) {
@@ -2678,6 +2754,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     m_auth_state = AuthState::NOT_AUTHENTICATED;
                     m_auth_in_flight_since = {};
                     m_pending_push_after_auth = false;
+                    clear_push_ingress_lifeline();
                     if (m_session_context) {
                         m_session_context->reset_session_credentials();
                         m_session_context->set_falcon_identity(
@@ -2742,6 +2819,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     m_logger->info("[Solo Session] Session started in session manager");
                     m_logger->info("[Solo Session] Keepalive timer started (early ping + regular cadence)");
                 }
+                clear_push_ingress_lifeline();
 
                 // Update template interface with authenticated session ID (FALCON tunnel established)
                 if (m_template_interface) {
@@ -2841,6 +2919,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             m_auth_state = AuthState::NOT_AUTHENTICATED;
             m_auth_in_flight_since = {};
             m_pending_push_after_auth = false;
+            clear_push_ingress_lifeline();
             if (m_session_context) {
                 m_session_context->reset_session_credentials();
                 m_session_context->set_falcon_identity(
@@ -3771,6 +3850,7 @@ void Solo::set_connection(std::shared_ptr<network::Connection> connection)
 
 void Solo::reset_auth_state()
 {
+    capture_push_ingress_lifeline("Solo AuthReset");
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_auth_in_flight_since = {};
     m_authenticated = false;
@@ -3793,6 +3873,7 @@ bool Solo::check_auth_in_flight_timeout(const char* context)
                        context, AUTH_IN_FLIGHT_TIMEOUT_S);
         m_auth_state = AuthState::NOT_AUTHENTICATED;
         m_auth_in_flight_since = {};
+        clear_push_ingress_lifeline();
         return true;
     }
     return false;
@@ -3882,6 +3963,7 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
     m_auth_in_flight_since = {};
     m_reward_bound = false;  // Reward binding dies with session
     m_subscribed_to_notifications = false;
+    clear_push_ingress_lifeline();
 
     // Clear the authoritative session context
     if (m_session_context) {

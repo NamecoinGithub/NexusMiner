@@ -21,6 +21,13 @@ enum class ResyncLogSeverity {
 
 namespace {
 
+constexpr uint32_t TEST_PUSH_LIFELINE_SESSION_ID = 0xABCDEF01;
+constexpr uint64_t TEST_PUSH_LIFELINE_SESSION_EPOCH = 123;
+constexpr uint32_t TEST_PUSH_LIFELINE_ALT_SESSION_ID = 0xCAFEBABE;
+constexpr uint64_t TEST_PUSH_LIFELINE_ALT_SESSION_EPOCH = 88;
+constexpr uint32_t TEST_PUSH_LIMBO_SESSION_ID = 0x11112222;
+constexpr uint64_t TEST_PUSH_LIMBO_SESSION_EPOCH = 9;
+
 bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_has_state)
 {
     return !local_has_state && authoritative_has_state;
@@ -100,6 +107,11 @@ struct SimulatedSoloAuthGuard
     int packet_build_requests{0};
     int get_block_requests{0};
     bool m_pending_push_after_auth{false};
+    bool push_lifeline_active{false};
+    uint32_t push_lifeline_session_id{0};
+    uint64_t push_lifeline_session_epoch{0};
+    bool push_lifeline_reward_bound{false};
+    bool push_lifeline_ready_for_get_block{false};
     AuthoritativeSession authoritative{};
 
     bool session_context_is_authenticated() const
@@ -201,6 +213,7 @@ struct SimulatedSoloAuthGuard
             m_has_seen_session_epoch = true;
             m_auth_state = AuthState::AUTHENTICATED;
             m_auth_in_flight_since = {};
+            clear_push_lifeline();
             if (m_session_id != 0) {
                 propagate_session_to_template_interface();
             }
@@ -211,6 +224,7 @@ struct SimulatedSoloAuthGuard
         m_auth_state = AuthState::NOT_AUTHENTICATED;
         m_auth_in_flight_since = {};
         m_pending_push_after_auth = false;
+        clear_push_lifeline();
     }
 
     bool validate_authoritative_session() const
@@ -234,6 +248,10 @@ struct SimulatedSoloAuthGuard
     bool on_push_notification()
     {
         const bool session_says_auth = session_context_is_authenticated();
+        if (!m_authenticated && !session_says_auth && can_use_push_lifeline()) {
+            ++get_block_requests;
+            return true;
+        }
         if (!m_authenticated && !session_says_auth) {
             m_pending_push_after_auth = true;
             if (m_auth_state == AuthState::NOT_AUTHENTICATED) {
@@ -248,6 +266,34 @@ struct SimulatedSoloAuthGuard
 
         ++get_block_requests;
         return true;
+    }
+
+    void preserve_push_lifeline(uint32_t session_id = TEST_PUSH_LIFELINE_SESSION_ID,
+                                uint64_t session_epoch = TEST_PUSH_LIFELINE_SESSION_EPOCH)
+    {
+        push_lifeline_active = true;
+        push_lifeline_session_id = session_id;
+        push_lifeline_session_epoch = session_epoch;
+        push_lifeline_reward_bound = true;
+        push_lifeline_ready_for_get_block = true;
+    }
+
+    void clear_push_lifeline()
+    {
+        push_lifeline_active = false;
+        push_lifeline_session_id = 0;
+        push_lifeline_session_epoch = 0;
+        push_lifeline_reward_bound = false;
+        push_lifeline_ready_for_get_block = false;
+    }
+
+    bool can_use_push_lifeline() const
+    {
+        return push_lifeline_active &&
+               m_auth_state != AuthState::NOT_AUTHENTICATED &&
+               push_lifeline_ready_for_get_block &&
+               push_lifeline_session_id != 0 &&
+               (m_reward_bound || push_lifeline_reward_bound);
     }
 
     bool flush_pending_push_after_auth()
@@ -598,6 +644,25 @@ void test_push_during_handshake_is_queued_until_auth_completes()
     print_test_result("Queued push is cleared after the post-auth GET_BLOCK", !guard.m_pending_push_after_auth);
 }
 
+void test_push_during_handshake_uses_preserved_lifeline()
+{
+    std::cout << "\nTest 9b: push during speculative re-auth uses preserved mining lifeline\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_authenticated = false;
+    guard.m_reward_bound = false;
+    guard.m_auth_state = AuthState::WAITING_FOR_RESULT;
+    guard.preserve_push_lifeline(TEST_PUSH_LIFELINE_ALT_SESSION_ID,
+                                 TEST_PUSH_LIFELINE_ALT_SESSION_EPOCH);
+
+    const bool push_handled_immediately = guard.on_push_notification();
+
+    print_test_result("Push lifeline accepts ingress during auth-in-flight", push_handled_immediately);
+    print_test_result("Push lifeline does not queue post-auth replay", !guard.m_pending_push_after_auth);
+    print_test_result("Push lifeline sends GET_BLOCK immediately", guard.get_block_requests == 1);
+    print_test_result("Push lifeline avoids duplicate re-auth", guard.reauth_requests == 0);
+}
+
 void test_session_expired_accepts_authoritative_session_id_when_local_cache_is_stale()
 {
     std::cout << "\nTest 10: SESSION_EXPIRED is validated against authoritative session state\n";
@@ -665,6 +730,26 @@ void test_multiple_pushes_during_handshake_queue_single_followup_get_block()
     print_test_result("Queued follow-up flushes once after auth completes", flushed);
     print_test_result("Multiple deferred pushes still produce exactly one GET_BLOCK", guard.get_block_requests == 1);
     print_test_result("Queued follow-up is cleared after the single replay", !guard.m_pending_push_after_auth);
+}
+
+void test_multiple_pushes_during_auth_limbo_continue_driving_get_block()
+{
+    std::cout << "\nTest 10b: repeated pushes during auth limbo keep driving GET_BLOCK via lifeline\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_authenticated = false;
+    guard.m_auth_state = AuthState::WAITING_FOR_CHALLENGE;
+    guard.preserve_push_lifeline(TEST_PUSH_LIMBO_SESSION_ID,
+                                 TEST_PUSH_LIMBO_SESSION_EPOCH);
+
+    const bool first_push_handled = guard.on_push_notification();
+    const bool second_push_handled = guard.on_push_notification();
+
+    print_test_result("First limbo push is accepted", first_push_handled);
+    print_test_result("Second limbo push is also accepted", second_push_handled);
+    print_test_result("Limbo pushes do not queue deferred replay", !guard.m_pending_push_after_auth);
+    print_test_result("Limbo pushes can continue driving replacement GET_BLOCK requests",
+                      guard.get_block_requests == 2);
 }
 
 void test_queued_push_waits_for_reward_binding_before_flushing()
@@ -889,9 +974,11 @@ int main()
     test_epoch_resync_clears_generation_bound_runtime_state();
     test_public_auth_accessors_prefer_authoritative_session_state();
     test_push_during_handshake_is_queued_until_auth_completes();
+    test_push_during_handshake_uses_preserved_lifeline();
     test_session_expired_accepts_authoritative_session_id_when_local_cache_is_stale();
     test_push_triggered_reauth_queues_followup_get_block();
     test_multiple_pushes_during_handshake_queue_single_followup_get_block();
+    test_multiple_pushes_during_auth_limbo_continue_driving_get_block();
     test_queued_push_waits_for_reward_binding_before_flushing();
     test_cached_session_state_logging_downgrades_expected_reconnect_resyncs();
     test_submit_requires_authoritative_chacha20_key();
