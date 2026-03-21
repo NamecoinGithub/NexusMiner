@@ -614,6 +614,47 @@ int main()
     }
 
     // ====================================================================
+    // Test 11b: Out-of-order push hash hint must not hot-swap a live template
+    // ====================================================================
+    std::cout << "\nTest 11b: Stale push hash hint does not override current template" << std::endl;
+    {
+        protocol::HeightTracker tracker;
+        protocol::MiningTemplateInterface tmpl_interface(2, 0);
+        tmpl_interface.set_height_tracker(&tracker);
+        tracker.OnPushNotification(5050, 100, 0x1d00ffff);
+
+        auto template_data = create_mock_template(5051, 0x1d00ffff, 2);
+        auto res = tmpl_interface.read_template(template_data, "test_node");
+        print_test_result("Stale-push setup template valid", res.is_valid);
+        tmpl_interface.set_channel_height(101);
+
+        uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
+        protocol::PushNotificationHandler handler(logger, current_channel);
+        bool request_work_called = false;
+        bool recovery_called = false;
+        bool soft_refresh_called = false;
+
+        network::Payload payload = create_extended_push_payload(5049, 99, 0x1d00ffff, 0x42);
+        Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+
+        handler.handle_push_notification(
+            packet,
+            mining::CHANNEL_HASH,
+            ProtocolLane::STATELESS,
+            &tmpl_interface,
+            &tracker,
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
+            [&request_work_called]() { request_work_called = true; },
+            [&recovery_called]() { recovery_called = true; },
+            [&soft_refresh_called]() { soft_refresh_called = true; });
+
+        print_test_result("Stale push does not request fresh work", !request_work_called);
+        print_test_result("Stale push keeps active template valid", tmpl_interface.has_valid_template());
+        print_test_result("Stale push does not notify soft-refresh path", !soft_refresh_called);
+        print_test_result("Stale push does not notify hard recovery path", !recovery_called);
+    }
+
+    // ====================================================================
     // Test 12: Extended push seeds first-install tip-anchor gate
     // ====================================================================
     std::cout << "\nTest 12: Extended push tip anchor can reject obsolete first template" << std::endl;
