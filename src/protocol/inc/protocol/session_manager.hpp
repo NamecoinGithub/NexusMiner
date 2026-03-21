@@ -97,6 +97,7 @@ public:
         STALE_PACKET_DROPPED,
         EPOCH_MISMATCH,
         RECOVERY_REQUESTED,
+        RECOVERY_HEALTHY,
         FORCED_REAUTH,
         SESSION_RESET,
         SUBMIT_SENT,

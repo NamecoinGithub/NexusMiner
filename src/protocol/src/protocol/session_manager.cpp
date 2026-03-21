@@ -55,6 +55,7 @@ const char* session_event_kind_name(SessionManager::SessionEventKind kind)
         case SessionManager::SessionEventKind::STALE_PACKET_DROPPED: return "stale_packet_dropped";
         case SessionManager::SessionEventKind::EPOCH_MISMATCH: return "epoch_mismatch";
         case SessionManager::SessionEventKind::RECOVERY_REQUESTED: return "recovery_requested";
+        case SessionManager::SessionEventKind::RECOVERY_HEALTHY: return "recovery_healthy";
         case SessionManager::SessionEventKind::FORCED_REAUTH: return "forced_reauth";
         case SessionManager::SessionEventKind::SESSION_RESET: return "session_reset";
         case SessionManager::SessionEventKind::SUBMIT_SENT: return "submit_sent";
@@ -362,13 +363,16 @@ void SessionManager::mark_recovery_healthy(const std::string& reason)
     if (m_session.recovery_state == RecoveryState::FORCED_REAUTH ||
         m_session.recovery_state == RecoveryState::RECONNECT_REQUIRED ||
         m_session.state == SessionState::EXPIRED) {
+        m_logger->debug("[SessionManager] mark_recovery_healthy suppressed (state={}, recovery_state={})",
+                        session_state_name(m_session.state),
+                        recovery_state_name(m_session.recovery_state));
         return;
     }
 
     m_session.recovery_state = RecoveryState::HEALTHY;
     m_session.recovery_reason.clear();
     m_session.last_activity = now_epoch_seconds();
-    record_session_event_locked(SessionEventKind::RECOVERY_REQUESTED,
+    record_session_event_locked(SessionEventKind::RECOVERY_HEALTHY,
                                 reason.empty() ? "recovery healthy" : reason);
 }
 

@@ -304,6 +304,8 @@ void test_successful_reauth_restarts_recovery_epoch() {
 // ============================================================================
 void test_same_height_soft_refresh_escalates_only_after_timeout() {
     std::cout << "\nTest 4c: Same-height replacement stays hot-swappable until timeout\n";
+    constexpr int64_t RECOVERY_WINDOW_SECONDS = 60;
+    constexpr int64_t TIMEOUT_TEST_SECONDS = RECOVERY_WINDOW_SECONDS + 1;
 
     struct RecoveryTracker {
         bool m_degraded_mode{false};
@@ -336,10 +338,10 @@ void test_same_height_soft_refresh_escalates_only_after_timeout() {
     print_test_result("Soft refresh starts recovery tracking", rt.m_recovery_pending && rt.m_recovery_epoch == 1);
     print_test_result("Soft refresh withholds submissions without degraded mode",
                       rt.m_template_withheld && !rt.m_degraded_mode);
-    print_test_result("Soft refresh does not escalate immediately", !rt.should_escalate(60));
+    print_test_result("Soft refresh does not escalate immediately", !rt.should_escalate(RECOVERY_WINDOW_SECONDS));
 
-    rt.m_recovery_started_at = std::chrono::steady_clock::now() - std::chrono::seconds(61);
-    print_test_result("Soft refresh escalates after timeout", rt.should_escalate(60));
+    rt.m_recovery_started_at = std::chrono::steady_clock::now() - std::chrono::seconds(TIMEOUT_TEST_SECONDS);
+    print_test_result("Soft refresh escalates after timeout", rt.should_escalate(RECOVERY_WINDOW_SECONDS));
     rt.escalate();
     print_test_result("Timeout escalation enters degraded mode", rt.m_degraded_mode);
     print_test_result("Timeout escalation clears soft-pause guard", !rt.m_template_withheld);
@@ -357,7 +359,7 @@ void test_degraded_exit_normalizes_recovery_state() {
         bool m_template_withheld{true};
         uint64_t m_recovery_epoch{7};
         std::chrono::steady_clock::time_point m_recovery_started_at{std::chrono::steady_clock::now()};
-        std::chrono::steady_clock::time_point m_recovery_last_get_block_sent_at{std::chrono::steady_clock::now()};
+        std::chrono::steady_clock::time_point m_recovery_last_get_block_attempted_at{std::chrono::steady_clock::now()};
         std::chrono::steady_clock::time_point m_recovery_last_get_block_transmitted_at{std::chrono::steady_clock::now()};
         bool m_recovery_get_block_transmitted{true};
         std::chrono::steady_clock::time_point m_next_forced_retry_due{std::chrono::steady_clock::now()};
@@ -374,7 +376,7 @@ void test_degraded_exit_normalizes_recovery_state() {
             m_template_withheld = false;
             m_recovery_epoch = 0;
             m_recovery_started_at = {};
-            m_recovery_last_get_block_sent_at = {};
+            m_recovery_last_get_block_attempted_at = {};
             m_recovery_last_get_block_transmitted_at = {};
             m_recovery_get_block_transmitted = false;
             m_next_forced_retry_due = {};
@@ -396,7 +398,7 @@ void test_degraded_exit_normalizes_recovery_state() {
     print_test_result("Recovery epoch reset", rt.m_recovery_epoch == 0);
     print_test_result("GET_BLOCK bookkeeping cleared",
                       rt.m_recovery_started_at == std::chrono::steady_clock::time_point{} &&
-                      rt.m_recovery_last_get_block_sent_at == std::chrono::steady_clock::time_point{} &&
+                      rt.m_recovery_last_get_block_attempted_at == std::chrono::steady_clock::time_point{} &&
                       rt.m_recovery_last_get_block_transmitted_at == std::chrono::steady_clock::time_point{} &&
                       !rt.m_recovery_get_block_transmitted);
     print_test_result("Forced retry state cleared",

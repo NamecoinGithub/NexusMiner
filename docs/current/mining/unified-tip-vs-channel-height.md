@@ -130,7 +130,7 @@ Before any freshly validated template is fed live:
 Every `PRIME_BLOCK_AVAILABLE` / `HASH_BLOCK_AVAILABLE` carries either:
 
 - **12 bytes** on the compact/legacy form, or
-- **140 bytes** on the extended/stateless form (`12-byte metadata + 128-byte hashPrevBlock`)
+- **140 bytes** on the extended/stateless form (`12-byte metadata + 128-byte hashPrevBlock (1024-bit hash)`)
 
 Common metadata fields are big-endian:
 
