@@ -554,9 +554,64 @@ int main()
     }
 
     // ====================================================================
-    // Test 12: Burst guard keeps a fresh template alive for a short 2-block burst
+    // Test 12: Extended push seeds first-install tip-anchor gate
     // ====================================================================
-    std::cout << "\nTest 12: Burst guard suppresses immediate degraded recovery at 2 blocks behind" << std::endl;
+    std::cout << "\nTest 12: Extended push tip anchor can reject obsolete first template" << std::endl;
+    {
+        protocol::HeightTracker tracker;
+        uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
+        protocol::PushNotificationHandler handler(logger, current_channel);
+        bool request_work_called = false;
+
+        network::Payload payload = create_extended_push_payload(7000, 100, 0x1d00ffff, 0x42);
+        Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+
+        handler.handle_push_notification(
+            packet,
+            mining::CHANNEL_HASH,
+            ProtocolLane::STATELESS,
+            nullptr,
+            &tracker,
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
+            [&request_work_called]() { request_work_called = true; },
+            nullptr);
+
+        protocol::MiningTemplateInterface stale_template(2, 0);
+        stale_template.set_height_tracker(&tracker);
+        auto stale_data = create_mock_template(7001, 0x1d00ffff, 2); // hashPrevBlock is all zeros
+        auto stale_res = stale_template.read_template(stale_data, "test_node");
+        print_test_result("Extended push still requests initial work when no template exists", request_work_called);
+        print_test_result("Obsolete-on-arrival setup template validates structurally", stale_res.is_valid);
+        stale_template.set_channel_height(101);
+
+        auto stale_snap = tracker.GetSnapshot();
+        auto const* stale_ptr = stale_template.get_current_template();
+        print_test_result("Push snapshot captured extended hashPrevBlock hint",
+            stale_snap.push_hash_prev_block != uint1024_t{});
+        print_test_result("First-install gate detects same-height obsolete template",
+            stale_ptr &&
+            stale_snap.has_same_height_push_tip_replacement(stale_ptr->block.hashPrevBlock,
+                                                           stale_ptr->nChannelHeight));
+
+        protocol::MiningTemplateInterface matching_template(2, 0);
+        matching_template.set_height_tracker(&tracker);
+        auto matching_data = create_mock_template(7001, 0x1d00ffff, 2);
+        std::fill(matching_data.begin() + 4, matching_data.begin() + 132, static_cast<uint8_t>(0x42));
+        auto matching_res = matching_template.read_template(matching_data, "test_node");
+        print_test_result("Matching-anchor setup template validates structurally", matching_res.is_valid);
+        matching_template.set_channel_height(101);
+
+        auto const* matching_ptr = matching_template.get_current_template();
+        print_test_result("First-install gate stays open when template anchor matches push",
+            matching_ptr &&
+            !stale_snap.has_same_height_push_tip_replacement(matching_ptr->block.hashPrevBlock,
+                                                             matching_ptr->nChannelHeight));
+    }
+
+    // ====================================================================
+    // Test 13: Burst guard keeps a fresh template alive for a short 2-block burst
+    // ====================================================================
+    std::cout << "\nTest 13: Burst guard suppresses immediate degraded recovery at 2 blocks behind" << std::endl;
     {
         protocol::HeightTracker tracker;
         protocol::MiningTemplateInterface tmpl_interface(2, 0);

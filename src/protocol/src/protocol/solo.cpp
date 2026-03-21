@@ -538,6 +538,11 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
         return false;
     }
 
+    if (!validate_current_template()) {
+        m_logger->warn("[{}] Template invalidated by final adoption gate before worker feed", log_scope);
+        return false;
+    }
+
     m_current_height = unified_height;
 
     auto format_hex8 = [](const uint1024_t& h) -> std::string {
@@ -4331,6 +4336,14 @@ bool Solo::validate_current_template()
             tmpl->nChannelHeight, expectedChannel);
         m_logger->warn("[Solo Validate] Unified height mismatch is expected when other channels advance");
         m_template_interface->discard_template("Channel height stale");
+        return false;
+    }
+
+    if (snap.has_same_height_push_tip_replacement(tmpl->block.hashPrevBlock, tmpl->nChannelHeight)) {
+        m_logger->warn("[Solo Validate] ⚡ Unified Tip-Anchor Changed before adoption — rejecting template as obsolete on arrival");
+        m_logger->warn("[Solo Validate]   push_channel_height={} template_channel_target={}",
+            snap.push_channel_height, tmpl->nChannelHeight);
+        m_template_interface->discard_template("same_height_chain_reorg");
         return false;
     }
 
