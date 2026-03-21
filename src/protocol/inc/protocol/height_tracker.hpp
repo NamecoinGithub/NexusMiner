@@ -563,11 +563,20 @@ public:
      * @param fork_score         Fork divergence score (0=healthy)
      */
     void OnKeepaliveResponse(uint32_t unified_height,
-                              uint32_t prime_height,
-                              uint32_t hash_height,
-                              uint32_t stake_height,
-                              uint32_t hash_tip_lo32,
-                              uint32_t fork_score);
+                               uint32_t prime_height,
+                               uint32_t hash_height,
+                               uint32_t stake_height,
+                               uint32_t hash_tip_lo32,
+                               uint32_t fork_score);
+
+    /**
+     * @brief Refresh ACK-liveness without overwriting keepalive height telemetry.
+     *
+     * Used by SESSION_STATUS_ACK and legacy 4-byte SESSION_KEEPALIVE replies,
+     * which prove the session is alive but do not carry unified keepalive
+     * height data.
+     */
+    void NoteKeepaliveAckLiveness();
 
     // =========================================================================
     // Read methods

@@ -280,25 +280,28 @@ void test_set_protocol_lane_no_deadlock_and_updates_state() {
 }
 
 // ============================================================================
-// Test 11: accepted keepalive bookkeeping refreshes state and increments count
-// Mirrors the hardened Solo keepalive / KeepAliveV2 alias path, where accepted
-// ACKs now update both acknowledgement state and keepalive counters.
+// Test 11: ACK acceptance refreshes state, while send bookkeeping remains separate
+// Mirrors the hardened Solo liveness path, where ACK-liveness and keepalive
+// transmit bookkeeping are intentionally distinct.
 // ============================================================================
 void test_keepalive_ack_bookkeeping_updates_runtime_snapshot() {
-    std::cout << "\nTest 11: accepted keepalive bookkeeping updates runtime snapshot\n";
+    std::cout << "\nTest 11: ACK acceptance refreshes state while transmit bookkeeping stays separate\n";
 
     auto mgr = std::make_shared<SessionManager>(24, nullptr);
     mgr->start_session(0x0BADB002);
 
     mgr->note_keepalive_ack(true, "keepalive ack accepted");
-    mgr->record_keepalive();
-
-    const auto info = mgr->get_runtime_snapshot();
+    auto info = mgr->get_runtime_snapshot();
     print_test_result("Accepted keepalive transitions session to ACTIVE",
                       info.state == SessionManager::SessionState::ACTIVE);
     print_test_result("Accepted keepalive leaves expiry_state fresh",
                       info.expiry_state == SessionManager::ExpiryState::FRESH);
-    print_test_result("Accepted keepalive increments keepalive_count",
+    print_test_result("Accepted keepalive does not increment keepalive_count until transmit bookkeeping runs",
+                      info.keepalive_count == 0);
+
+    mgr->record_keepalive();
+    info = mgr->get_runtime_snapshot();
+    print_test_result("Transmit bookkeeping increments keepalive_count",
                       info.keepalive_count == 1);
 }
 

@@ -189,8 +189,13 @@ void HeightTracker::OnKeepaliveResponse(uint32_t unified_height,
     if (fork_score > m_diagnostic.keepalive_peak_fork_score)
         m_diagnostic.keepalive_peak_fork_score = fork_score;
     m_last_update_source = UpdateSource::KEEPALIVE;
-    auto now = std::chrono::steady_clock::now();
-    m_diagnostic.last_keepalive_ack_at = now;
+    m_diagnostic.last_keepalive_ack_at = std::chrono::steady_clock::now();
+}
+
+void HeightTracker::NoteKeepaliveAckLiveness()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_diagnostic.last_keepalive_ack_at = std::chrono::steady_clock::now();
 }
 
 HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
