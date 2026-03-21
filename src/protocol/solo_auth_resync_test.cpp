@@ -21,6 +21,13 @@ enum class ResyncLogSeverity {
 
 namespace {
 
+constexpr uint32_t TEST_PUSH_LIFELINE_SESSION_ID = 0xABCDEF01;
+constexpr uint64_t TEST_PUSH_LIFELINE_SESSION_EPOCH = 123;
+constexpr uint32_t TEST_PUSH_LIFELINE_ALT_SESSION_ID = 0xCAFEBABE;
+constexpr uint64_t TEST_PUSH_LIFELINE_ALT_SESSION_EPOCH = 88;
+constexpr uint32_t TEST_PUSH_LIMBO_SESSION_ID = 0x11112222;
+constexpr uint64_t TEST_PUSH_LIMBO_SESSION_EPOCH = 9;
+
 bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_has_state)
 {
     return !local_has_state && authoritative_has_state;
@@ -261,7 +268,8 @@ struct SimulatedSoloAuthGuard
         return true;
     }
 
-    void preserve_push_lifeline(uint32_t session_id = 0xABCDEF01, uint64_t session_epoch = 123)
+    void preserve_push_lifeline(uint32_t session_id = TEST_PUSH_LIFELINE_SESSION_ID,
+                                uint64_t session_epoch = TEST_PUSH_LIFELINE_SESSION_EPOCH)
     {
         push_lifeline_active = true;
         push_lifeline_session_id = session_id;
@@ -644,7 +652,8 @@ void test_push_during_handshake_uses_preserved_lifeline()
     guard.m_authenticated = false;
     guard.m_reward_bound = false;
     guard.m_auth_state = AuthState::WAITING_FOR_RESULT;
-    guard.preserve_push_lifeline(0xCAFEBABE, 88);
+    guard.preserve_push_lifeline(TEST_PUSH_LIFELINE_ALT_SESSION_ID,
+                                 TEST_PUSH_LIFELINE_ALT_SESSION_EPOCH);
 
     const bool push_handled_immediately = guard.on_push_notification();
 
@@ -730,7 +739,8 @@ void test_multiple_pushes_during_auth_limbo_continue_driving_get_block()
     SimulatedSoloAuthGuard guard;
     guard.m_authenticated = false;
     guard.m_auth_state = AuthState::WAITING_FOR_CHALLENGE;
-    guard.preserve_push_lifeline(0x11112222, 9);
+    guard.preserve_push_lifeline(TEST_PUSH_LIMBO_SESSION_ID,
+                                 TEST_PUSH_LIMBO_SESSION_EPOCH);
 
     const bool first_push_handled = guard.on_push_notification();
     const bool second_push_handled = guard.on_push_notification();

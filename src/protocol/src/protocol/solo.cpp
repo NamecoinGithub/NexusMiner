@@ -811,6 +811,7 @@ void Solo::capture_push_ingress_lifeline(const char* log_scope)
 
 void Solo::clear_push_ingress_lifeline()
 {
+    // Reset all preserved pre-auth mining-lane readiness fields.
     m_push_ingress_lifeline = {};
 }
 
