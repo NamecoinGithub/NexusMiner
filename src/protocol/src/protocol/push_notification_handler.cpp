@@ -26,7 +26,8 @@ void PushNotificationHandler::handle_push_notification(
     HeightTracker* height_tracker,
     std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
     std::function<void()> request_work_fn,
-    std::function<void()> recovery_initiated_fn)
+    std::function<void()> recovery_initiated_fn,
+    std::function<void()> soft_refresh_requested_fn)
 {
     const char* ch_name = channel_name(expected_channel);
 
@@ -205,10 +206,10 @@ void PushNotificationHandler::handle_push_notification(
             if (tmpl && tmpl->block.hashPrevBlock != notification_hash_prev_block)
             {
                 // Hash mismatch with current height: same-height canonical tip-anchor replacement.
-                m_logger->warn("[Solo Push] ⚡ Unified Tip-Anchor Changed — same channel height, canonical prev hash replaced — replacing active template");
+                m_logger->warn("[Solo Push] ⚡ Unified Tip-Anchor Changed — same channel height, canonical prev hash replaced — hot-swapping template without degraded-mode escalation");
                 template_interface->discard_template("same_height_chain_reorg");
-                if (recovery_initiated_fn) {
-                    recovery_initiated_fn();
+                if (soft_refresh_requested_fn) {
+                    soft_refresh_requested_fn();
                 }
                 request_work_fn();
                 return;

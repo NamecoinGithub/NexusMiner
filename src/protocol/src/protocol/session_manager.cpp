@@ -355,6 +355,23 @@ void SessionManager::mark_recovery_required(const std::string& reason)
                                 reason.empty() ? "recovery required" : reason);
 }
 
+void SessionManager::mark_recovery_healthy(const std::string& reason)
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+
+    if (m_session.recovery_state == RecoveryState::FORCED_REAUTH ||
+        m_session.recovery_state == RecoveryState::RECONNECT_REQUIRED ||
+        m_session.state == SessionState::EXPIRED) {
+        return;
+    }
+
+    m_session.recovery_state = RecoveryState::HEALTHY;
+    m_session.recovery_reason.clear();
+    m_session.last_activity = now_epoch_seconds();
+    record_session_event_locked(SessionEventKind::RECOVERY_REQUESTED,
+                                reason.empty() ? "recovery healthy" : reason);
+}
+
 void SessionManager::mark_session_expired(const std::string& reason)
 {
     bool notify = false;

@@ -115,6 +115,13 @@ void NodeSessionContext::mark_recovery_required(const std::string& reason)
     }
 }
 
+void NodeSessionContext::mark_recovery_healthy(const std::string& reason)
+{
+    if (m_session_manager) {
+        m_session_manager->mark_recovery_healthy(reason);
+    }
+}
+
 void NodeSessionContext::mark_session_expired(const std::string& reason)
 {
     if (m_session_manager) {

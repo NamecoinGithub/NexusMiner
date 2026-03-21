@@ -618,6 +618,27 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     return true;
 }
 
+void Solo::mark_authoritative_soft_refresh(const std::string& reason)
+{
+    if (m_session_context) {
+        m_session_context->mark_soft_refresh_requested(reason);
+    }
+}
+
+void Solo::mark_authoritative_recovery_required(const std::string& reason)
+{
+    if (m_session_context) {
+        m_session_context->mark_recovery_required(reason);
+    }
+}
+
+void Solo::mark_authoritative_recovery_healthy(const std::string& reason)
+{
+    if (m_session_context) {
+        m_session_context->mark_recovery_healthy(reason);
+    }
+}
+
 const Solo::PacketIngressPreflightOptions Solo::kDefaultPacketIngressPreflightOptions{};
 
 bool Solo::run_packet_ingress_preflight(const char* log_scope,
@@ -3284,7 +3305,16 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                 }
             },
             [this]() {
+                mark_authoritative_soft_refresh("same_height_push_tip_replacement");
+                m_logger->info("[Solo] ⚡ Same-height PUSH hashPrevBlock replacement recorded as authoritative new tip hint; awaiting fresh template cross-check before degraded-mode decisions");
+                reset_get_block_dedup_state();
+                if (m_soft_refresh_handler) {
+                    m_soft_refresh_handler();
+                }
+            },
+            [this]() {
                 if (m_recovery_handler) {
+                    mark_authoritative_recovery_required("push_channel_stale_recovery");
                     m_logger->info("[Solo] ⚡ Unified Tip-Anchor Changed — recovery initiated (push-triggered template replacement), resetting dedup state and notifying Worker_manager");
                     // Reset dedup state so the recovery GET_BLOCK is not blocked by stale
                     // timestamp from the prior request that targeted the old canonical tip.
@@ -4343,6 +4373,8 @@ bool Solo::validate_current_template()
         m_logger->warn("[Solo Validate] ⚡ Unified Tip-Anchor Changed before adoption — rejecting template as obsolete on arrival");
         m_logger->warn("[Solo Validate]   push_channel_height={} template_channel_target={}",
             snap.push_channel_height, tmpl->nChannelHeight);
+        mark_authoritative_soft_refresh("same_height_push_tip_replacement_pre_adoption");
+        reset_get_block_dedup_state();
         m_template_interface->discard_template("same_height_chain_reorg");
         return false;
     }

@@ -654,6 +654,11 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     assert(snapshot.recovery_state == SessionManager::RecoveryState::RECOVERY_PENDING);
     assert(snapshot.recovery_reason == "epoch mismatch");
 
+    context.mark_recovery_healthy("template delivered");
+    snapshot = context.get_runtime_snapshot();
+    assert(snapshot.recovery_state == SessionManager::RecoveryState::HEALTHY);
+    assert(snapshot.recovery_reason.empty());
+
     context.mark_session_expired("ack mismatch");
     snapshot = context.get_runtime_snapshot();
     assert(snapshot.state == SessionManager::SessionState::EXPIRED);

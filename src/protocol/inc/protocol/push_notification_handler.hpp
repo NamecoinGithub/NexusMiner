@@ -46,8 +46,12 @@ public:
      *                          If null, the update is skipped.
      * @param request_work_fn   Callback to request a fresh mining template
      * @param recovery_initiated_fn Callback invoked when the push requires a hard recovery
-     *                              path (e.g. same-height canonical replacement or multi-block
-     *                              lag after the burst-grace window has expired).
+     *                              path (e.g. multi-block lag after the burst-grace
+     *                              window has expired).
+     * @param soft_refresh_requested_fn Callback invoked when the push proves the current
+     *                                  template's tip-anchor is obsolete but the miner should
+     *                                  stay in the lighter template-swap path until a timeout
+     *                                  or stall requires true degraded-mode escalation.
      */
     void handle_push_notification(
         const Packet& packet,
@@ -57,7 +61,8 @@ public:
         HeightTracker* height_tracker,
         std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
         std::function<void()> request_work_fn,
-        std::function<void()> recovery_initiated_fn = {}
+        std::function<void()> recovery_initiated_fn = {},
+        std::function<void()> soft_refresh_requested_fn = {}
     );
 
 private:
