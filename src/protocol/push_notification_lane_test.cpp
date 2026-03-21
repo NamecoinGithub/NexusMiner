@@ -17,6 +17,7 @@
 #include "protocol_lane.hpp"
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/mining_template_interface.hpp"
+#include "protocol/solo.hpp"
 #include "protocol/height_tracker.hpp"
 #include "mining/client_block.h"
 #include "spdlog/spdlog.h"
@@ -724,6 +725,70 @@ int main()
         print_test_result("Tip moved keeps active template valid", tmpl_interface.has_valid_template());
         print_test_result("Tip moved notifies soft-refresh path", soft_refresh_called);
         print_test_result("Tip moved does not notify hard recovery path", !recovery_called);
+    }
+
+    // ====================================================================
+    // Test 15: Solo wires same-height push replacement to soft refresh
+    // ====================================================================
+    std::cout << "\nTest 15: Solo routes same-height push replacement to soft refresh" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        session_manager->start_session(0x12345678);
+        session_manager->set_falcon_identity({0x01}, "push-lane-test-key", true);
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::STATELESS);
+
+        bool recovery_called = false;
+        bool soft_refresh_called = false;
+        solo.set_recovery_initiated_handler([&recovery_called]() { recovery_called = true; });
+        solo.set_soft_refresh_requested_handler([&soft_refresh_called]() { soft_refresh_called = true; });
+
+        auto template_data = create_mock_template(9001, 0x1d00ffff, 2);
+        auto res = solo.get_template_interface()->read_template(template_data, "test_node", false);
+        print_test_result("Solo same-height setup template valid", res.is_valid);
+        solo.get_template_interface()->set_channel_height(101);
+
+        network::Payload payload = create_extended_push_payload(9000, 100, 0x1d00ffff, 0x42);
+        Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+        solo.process_messages(packet, nullptr);
+
+        print_test_result("Solo same-height push triggers soft refresh handler", soft_refresh_called);
+        print_test_result("Solo same-height push does not trigger recovery handler", !recovery_called);
+        print_test_result("Solo same-height push discards obsolete template",
+            !solo.get_template_interface()->has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 16: Solo wires multi-block lag push to hard recovery
+    // ====================================================================
+    std::cout << "\nTest 16: Solo routes multi-block lag push to hard recovery" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        session_manager->start_session(0x87654321);
+        session_manager->set_falcon_identity({0x02}, "push-lane-test-key", true);
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::STATELESS);
+
+        bool recovery_called = false;
+        bool soft_refresh_called = false;
+        solo.set_recovery_initiated_handler([&recovery_called]() { recovery_called = true; });
+        solo.set_soft_refresh_requested_handler([&soft_refresh_called]() { soft_refresh_called = true; });
+
+        auto template_data = create_mock_template(9101, 0x1d00ffff, 2);
+        auto res = solo.get_template_interface()->read_template(template_data, "test_node", false);
+        print_test_result("Solo stale setup template valid", res.is_valid);
+        solo.get_template_interface()->set_channel_height(101);
+
+        network::Payload payload = create_extended_push_payload(9103, 103, 0x1d00ffff, 0x00);
+        Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+        solo.process_messages(packet, nullptr);
+
+        print_test_result("Solo stale push triggers recovery handler", recovery_called);
+        print_test_result("Solo stale push does not trigger soft refresh handler", !soft_refresh_called);
+        print_test_result("Solo stale push discards stale template",
+            !solo.get_template_interface()->has_valid_template());
     }
 
     std::cout << "\n========================================" << std::endl;

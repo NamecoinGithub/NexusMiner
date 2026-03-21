@@ -3306,14 +3306,6 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                 }
             },
             [this]() {
-                mark_authoritative_soft_refresh("same_height_push_tip_replacement");
-                m_logger->info("[Solo] ⚡ Same-height PUSH hashPrevBlock replacement — soft refresh requested; awaiting fresh template cross-check before degraded-mode decisions");
-                reset_get_block_dedup_state();
-                if (m_soft_refresh_handler) {
-                    m_soft_refresh_handler();
-                }
-            },
-            [this]() {
                 if (m_recovery_handler) {
                     mark_authoritative_recovery_required("push_channel_stale_recovery");
                     m_logger->info("[Solo] ⚡ Unified Tip-Anchor Changed — recovery initiated (push-triggered template replacement), resetting dedup state and notifying Worker_manager");
@@ -3321,6 +3313,14 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                     // timestamp from the prior request that targeted the old canonical tip.
                     reset_get_block_dedup_state();
                     m_recovery_handler();
+                }
+            },
+            [this]() {
+                mark_authoritative_soft_refresh("same_height_push_tip_replacement");
+                m_logger->info("[Solo] ⚡ Same-height PUSH hashPrevBlock replacement — soft refresh requested; awaiting fresh template cross-check before degraded-mode decisions");
+                reset_get_block_dedup_state();
+                if (m_soft_refresh_handler) {
+                    m_soft_refresh_handler();
                 }
             });
 }
