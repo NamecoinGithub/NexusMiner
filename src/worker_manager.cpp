@@ -1845,6 +1845,20 @@ void Worker_manager::check_template_health()
     const bool has_valid_template = template_interface->has_valid_template();
 
     if (m_template_withheld && m_recovery_pending && !m_degraded_mode) {
+        // Belt-and-suspenders: if a valid template was installed during the pending
+        // window (e.g. via a BLOCK_DATA path that raced with the health monitor tick),
+        // close out the recovery state immediately so we stop sending spurious GET_BLOCKs.
+        // Normally clear_recovery_state() is called by the template feed handler after
+        // workers are fed, but this guard catches the case where that path was skipped
+        // (e.g. duplicate-feed suppression) while the template itself is still valid.
+        if (has_valid_template) {
+            m_logger->info("[Worker_manager] ✓ Valid template present during soft-refresh pending window "
+                           "(epoch {}) — closing out recovery state",
+                           m_recovery_epoch);
+            clear_recovery_state();
+            return;
+        }
+
         auto now = std::chrono::steady_clock::now();
         if (m_recovery_started_at == std::chrono::steady_clock::time_point{}) {
             m_recovery_started_at = now;
