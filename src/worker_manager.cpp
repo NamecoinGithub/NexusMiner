@@ -186,8 +186,13 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* This lambda is called by the template feed handler (PR #62) when templates arrive */
         m_primary_node_session->set_template_handler(
             [this](const ::LLP::CBlock& block, uint32_t nBits) {
+                std::size_t worker_count = 0;
+                {
+                    std::lock_guard<std::mutex> lock(m_worker_mutex);
+                    worker_count = m_workers.size();
+                }
                 m_logger->info("[Worker_manager] ═══════════════════════════════════════");
-                m_logger->info("[Worker_manager] DISTRIBUTING TEMPLATE TO {} WORKERS", m_workers.size());
+                m_logger->info("[Worker_manager] DISTRIBUTING TEMPLATE TO {} WORKERS", worker_count);
                 m_logger->info("[Worker_manager]   Height:     {}", block.nHeight);
                 m_logger->info("[Worker_manager]   Channel:    {} ({})", 
                               block.nChannel,
@@ -221,51 +226,45 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // by stop_all_workers().  Restart them now so set_block() below actually
                 // starts mining threads; without this the template is silently dropped and
                 // workers_fed falsely reads 0 keeping the miner in a doom loop.
+                size_t workers_fed = 0;
                 {
                     std::lock_guard<std::mutex> lock(m_worker_mutex);
-                    if (m_degraded_mode && !m_recovery_workers_spawned) {
-                        bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
-                            [](const auto& w) { return bool(w); });
-                        if (!has_alive_workers) {
-                            m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
-                            m_workers.clear();  // prevent duplication if any stale null entries remain
-                            create_workers();
-                            m_recovery_workers_spawned = true;  // set AFTER success for exception safety
-                        }
+                    if (m_degraded_mode && !m_recovery_workers_spawned && m_workers.empty()) {
+                        m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
+                        create_workers_locked();
+                        m_recovery_workers_spawned = !m_workers.empty();  // set AFTER success for exception safety
                     }
-                }
 
-                /* Safety check - workers should be created by now */
-                if (m_workers.empty()) {
-                    m_logger->error("[Worker_manager] CRITICAL: No workers available for mining!");
-                    m_logger->error("[Worker_manager]   Workers may not be initialized yet");
-                    m_logger->error("[Worker_manager]   Template will be lost - mining cannot start");
-                    return;
-                }
+                    /* Safety check - workers should be created by now */
+                    if (m_workers.empty()) {
+                        m_logger->error("[Worker_manager] CRITICAL: No workers available for mining!");
+                        m_logger->error("[Worker_manager]   Workers may not be initialized yet");
+                        m_logger->error("[Worker_manager]   Template will be lost - mining cannot start");
+                        return;
+                    }
 
-                /* Create shared WorkPackage once for all workers */
-                auto work_package = std::make_shared<WorkPackage>(block, nBits);
-                m_logger->debug("[Worker_manager] Created shared WorkPackage (block height: {}, nBits: 0x{:08x})",
-                                block.nHeight, nBits);
+                    /* Create shared WorkPackage once for all workers */
+                    auto work_package = std::make_shared<WorkPackage>(block, nBits);
+                    m_logger->debug("[Worker_manager] Created shared WorkPackage (block height: {}, nBits: 0x{:08x})",
+                                    block.nHeight, nBits);
 
 #ifdef PRIME_ENABLED
-                /* Optimization: For prime channel, precompute base hash (Skein+Keccak) once
-                 * instead of having each worker compute it independently */
-                if (block.nChannel == 1) {  // Prime channel
-                    Block_data temp_block{block};
-                    work_package->set_prime_base_hash(temp_block.GetPrimeBaseHash());
+                    /* Optimization: For prime channel, precompute base hash (Skein+Keccak) once
+                     * instead of having each worker compute it independently */
+                    if (block.nChannel == 1) {  // Prime channel
+                        Block_data temp_block{block};
+                        work_package->set_prime_base_hash(temp_block.GetPrimeBaseHash());
 
-                    m_logger->debug("[Worker_manager] Precomputed prime base hash for all workers");
-                }
+                        m_logger->debug("[Worker_manager] Precomputed prime base hash for all workers");
+                    }
 #endif
 
-                /* Distribute template to all worker threads */
-                size_t workers_fed = 0;
-                for (size_t i = 0; i < m_workers.size(); ++i) {
-                    auto& worker = m_workers[i];
-                    if (worker) {
-                        worker->set_block(work_package, [this](auto id, auto block_data)
-                        {
+                    /* Distribute template to all worker threads */
+                    for (size_t i = 0; i < m_workers.size(); ++i) {
+                        auto& worker = m_workers[i];
+                        if (worker) {
+                            worker->set_block(work_package, [this](auto id, auto block_data)
+                            {
                             m_logger->info("════════════════════════════════════════════════════════");
                             m_logger->info("💎 BLOCK FOUND CALLBACK INVOKED!");
                             m_logger->info("   Worker ID:  {}", id);
@@ -380,17 +379,18 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             m_logger->info("[Worker_manager] Submitting block to protocol layer...");
 
                             // Submit the full block via NodeSession
-                            submit_solution(full_block_bytes, block_data->nNonce);
-                        });
-                        if (worker->is_running()) {
-                            workers_fed++;
-                            m_logger->debug("[Worker_manager] Template sent to worker {}/{}", 
-                                           workers_fed, m_workers.size());
+                                submit_solution(full_block_bytes, block_data->nNonce);
+                            });
+                            if (worker->is_running()) {
+                                workers_fed++;
+                                m_logger->debug("[Worker_manager] Template sent to worker {}/{}", 
+                                               workers_fed, m_workers.size());
+                            } else {
+                                m_logger->warn("[Worker_manager] Worker {} did not start after set_block() — not counted", i);
+                            }
                         } else {
-                            m_logger->warn("[Worker_manager] Worker {} did not start after set_block() — not counted", i);
+                            m_logger->warn("[Worker_manager] Skipping null worker at index {}", i);
                         }
-                    } else {
-                        m_logger->warn("[Worker_manager] Skipping null worker at index {}", i);
                     }
                 }
                 
@@ -763,13 +763,14 @@ void Worker_manager::create_stats_printers()
     }
 }
 
-void Worker_manager::create_workers()
+void Worker_manager::create_workers_locked()
 {
     // Guard: if workers are already alive, do not spawn duplicates.
-    // This prevents double-spawn if create_workers() is accidentally called
-    // while workers are still running (e.g. from two concurrent recovery paths).
+    // While m_worker_mutex is held, !m_workers.empty() means the prior generation
+    // still exists. stop_all_workers() resets the shared_ptrs under the same mutex,
+    // and each worker destructor blocks until its mining threads have fully joined.
     if (!m_workers.empty()) {
-        m_logger->warn("[Worker_manager] create_workers() called with {} workers already alive — skipping duplicate spawn",
+        m_logger->warn("[Worker_manager] create_workers_locked() called with {} workers already alive — skipping duplicate spawn",
                        m_workers.size());
         return;
     }
@@ -838,6 +839,12 @@ void Worker_manager::create_workers()
     }
 }
 
+void Worker_manager::create_workers()
+{
+    std::lock_guard<std::mutex> lock(m_worker_mutex);
+    create_workers_locked();
+}
+
 void Worker_manager::stop()
 {
     m_timer_manager.stop();
@@ -857,10 +864,12 @@ void Worker_manager::stop()
     }
 
     // destroy workers
+    std::lock_guard<std::mutex> lock(m_worker_mutex);
     for(auto& worker : m_workers)
     {
         worker.reset();
     }
+    m_workers.clear();
 }
 
 uint16_t Worker_manager::get_effective_keepalive_interval() const
@@ -2084,27 +2093,27 @@ void Worker_manager::check_template_health()
     // and the escape ladder timer, preventing Stage 2/3/Hard-Limit from ever firing.
     if (m_degraded_mode) {
         m_logger->warn("[Worker_manager] ⚠️  Valid template exists but m_degraded_mode=true — clearing outdated degraded flag");
-        bool has_alive_workers = std::any_of(m_workers.begin(), m_workers.end(),
-            [](const auto& w) { return bool(w); });
+        bool has_alive_workers = false;
+        bool should_refeed_template = false;
+        {
+            std::lock_guard<std::mutex> lock(m_worker_mutex);
+            has_alive_workers = !m_workers.empty();
+            if (!has_alive_workers) {
+                // Workers are dead — restart them and re-feed the template.
+                // Only clear recovery state if the template was successfully delivered.
+                // If feed fails, keep degraded mode so the escape ladder can proceed.
+                m_logger->info("[Worker_manager] Belt-and-suspenders: workers dead, restarting and re-feeding template");
+                create_workers_locked();
+                m_recovery_workers_spawned = !m_workers.empty();
+                should_refeed_template = !m_workers.empty();
+            }
+        }
         if (has_alive_workers) {
             // Workers are alive and mining — just clear the stale degraded flag.
             // No need to restart workers or re-feed template — they are already mining.
             m_logger->info("[Worker_manager] Belt-and-suspenders: workers already alive, clearing stale degraded flag only");
             clear_recovery_state();
-        } else {
-            // Workers are dead — restart them and re-feed the template.
-            // Only clear recovery state if the template was successfully delivered.
-            // If feed fails, keep degraded mode so the escape ladder can proceed.
-            m_logger->info("[Worker_manager] Belt-and-suspenders: workers dead, restarting and re-feeding template");
-            {
-                std::lock_guard<std::mutex> lock(m_worker_mutex);
-                bool no_workers_present = std::none_of(m_workers.begin(), m_workers.end(),
-                    [](const auto& w) { return bool(w); });
-                if (no_workers_present) {
-                    create_workers();
-                    m_recovery_workers_spawned = !m_workers.empty();
-                }
-            }
+        } else if (should_refeed_template) {
             // Re-feed the template so the newly created workers receive it.
             bool fed = template_interface->feed_current_template();
             if (fed) {
@@ -2116,6 +2125,8 @@ void Worker_manager::check_template_health()
                                 "Check that workers are properly configured and the template interface has a registered feed handler.");
                 // Do NOT call clear_recovery_state() — let the escape ladder proceed
             }
+        } else {
+            m_logger->error("[Worker_manager] Belt-and-suspenders recovery FAILED: worker recreation produced no workers");
         }
     }
 

@@ -89,6 +89,7 @@ private:
 
     void create_stats_printers();
     void create_workers();
+    void create_workers_locked();
 
     /// Log the three-tier mined-block cache summary.
     void log_mined_block_cache() const;

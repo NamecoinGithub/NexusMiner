@@ -515,6 +515,60 @@ void test_worker_respawn_guard_is_single_shot_per_degraded_exit() {
 }
 
 // ============================================================================
+// Test 4g: Workers only respawn after the prior generation is fully stopped
+// ============================================================================
+void test_worker_respawn_waits_for_authoritative_empty_generation() {
+    std::cout << "\nTest 4g: Worker respawn waits for authoritative empty generation\n";
+
+    struct WorkerLifecycleTracker {
+        bool m_degraded_mode{true};
+        bool m_recovery_workers_spawned{false};
+        bool stop_in_progress{false};
+        std::size_t worker_instances{8};
+        std::size_t create_calls{0};
+
+        void begin_stop() {
+            stop_in_progress = true;
+        }
+
+        void finish_stop() {
+            worker_instances = 0;
+            stop_in_progress = false;
+            m_recovery_workers_spawned = false;
+        }
+
+        bool restart_workers_if_needed() {
+            const bool degraded_mode_inactive = !m_degraded_mode;
+            const bool restart_already_consumed = m_recovery_workers_spawned;
+            const bool prior_generation_still_stopping = stop_in_progress;
+            const bool workers_still_present = worker_instances != 0;
+
+            if (degraded_mode_inactive || restart_already_consumed ||
+                prior_generation_still_stopping || workers_still_present) {
+                return false;
+            }
+            worker_instances = 8;
+            m_recovery_workers_spawned = true;
+            ++create_calls;
+            return true;
+        }
+    };
+
+    WorkerLifecycleTracker rt;
+    rt.begin_stop();
+    bool restart_during_stop = rt.restart_workers_if_needed();
+    rt.finish_stop();
+    bool restart_after_stop = rt.restart_workers_if_needed();
+    bool second_restart_after_stop = rt.restart_workers_if_needed();
+
+    print_test_result("Respawn is blocked while prior generation is still stopping", !restart_during_stop);
+    print_test_result("Respawn succeeds once workers are authoritatively gone", restart_after_stop);
+    print_test_result("Respawn remains single-shot after the restart", !second_restart_after_stop);
+    print_test_result("Only one new worker generation is created", rt.create_calls == 1);
+    print_test_result("Worker count returns to the expected 8 threads", rt.worker_instances == 8);
+}
+
+// ============================================================================
 // Test 5: Keepalive epoch isolation — new epoch starts with clean ack timestamp
 // ============================================================================
 void test_keepalive_epoch_isolation_clean_start() {
@@ -913,6 +967,7 @@ int main() {
     test_degraded_exit_normalizes_recovery_state();
     test_authoritative_soft_refresh_backfills_local_state();
     test_worker_respawn_guard_is_single_shot_per_degraded_exit();
+    test_worker_respawn_waits_for_authoritative_empty_generation();
     test_keepalive_epoch_isolation_clean_start();
     test_stale_template_after_channel_advance();
     test_epoch_advance_suppresses_old_keepalive_signal();
