@@ -392,6 +392,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 if (workers_fed > 0) {
                     m_logger->info("[Worker_manager] ✓ Template distributed to {} workers - MINING STARTED", 
                                   workers_fed);
+                    auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
                     if (solo_protocol) {
                         solo_protocol->mark_authoritative_recovery_healthy("fresh_template_distributed_to_workers");
                     }

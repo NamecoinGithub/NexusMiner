@@ -263,6 +263,13 @@ public:
     // Maximum time (seconds) auth is allowed to stay in-flight before being treated as failed.
     static constexpr int AUTH_IN_FLIGHT_TIMEOUT_S = 30;
 
+    // Recovery health reporting — called by Worker_manager after template distribution
+    // to record session-level recovery state in the authoritative SessionManager.
+    // These are public because Worker_manager observes the distribution outcome and
+    // must update session state accordingly; Solo itself cannot observe worker feed results.
+    void mark_authoritative_recovery_required(const std::string& reason);
+    void mark_authoritative_recovery_healthy(const std::string& reason = "");
+
 private:
     
     // Derive ChaCha20 session key from genesis hash
@@ -319,8 +326,6 @@ private:
     bool validate_authoritative_session(const char* log_scope, bool require_reward_binding) const;
     void log_session_container_summary(const char* log_scope) const;
     void mark_authoritative_soft_refresh(const std::string& reason);
-    void mark_authoritative_recovery_required(const std::string& reason);
-    void mark_authoritative_recovery_healthy(const std::string& reason = "");
     struct PacketIngressPreflightOptions {
         const SessionOwnershipStamp* owner{nullptr};
         uint32_t packet_session_id{0};
