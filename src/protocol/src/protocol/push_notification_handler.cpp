@@ -232,8 +232,11 @@ void PushNotificationHandler::handle_push_notification(
         {
             m_logger->info("[Solo Push] ↑ Tip moved (unified {} → {}) — requesting fresh {} template [reason: tip_moved]",
                           snap.template_unified_height, snap.unified_height, ch_name);
+            if (soft_refresh_requested_fn) {
+                soft_refresh_requested_fn();
+            }
             request_work_fn();  // rate-limited GET_BLOCK — OK if it doesn't fire
-            m_logger->info("[Solo Push] ✓ Workers continue mining current template (channel not stale)");
+            m_logger->info("[Solo Push] ✓ Workers continue mining current template (channel not stale); submissions withheld until replacement arrives");
         }
         else
         {

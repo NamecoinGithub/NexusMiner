@@ -308,6 +308,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                             if (channel_stale || age_stale)
                             {
+                                const char* soft_refresh_reason = channel_stale
+                                    ? "submit_side_channel_stale"
+                                    : "submit_side_age_stale";
                                 if (channel_stale) {
                                     m_logger->error("[Worker_manager] ❌ Solution found but channel height ADVANCED!");
                                     m_logger->error("[Worker_manager]    channel_height {} >= channel_target {}",
@@ -318,6 +321,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                                    template_age);
                                     m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
                                 }
+                                solo_protocol->mark_authoritative_soft_refresh(soft_refresh_reason);
+                                mark_soft_refresh_requested(soft_refresh_reason);
                                 template_interface->discard_template(channel_stale ? "Channel height advanced before submission"
                                                                                    : "Age exceeded 600s before submission");
 
@@ -1809,6 +1814,20 @@ void Worker_manager::check_template_health()
         return;
     }
 
+    if (auto* session_manager = solo_protocol->get_session_manager()) {
+        const auto session_snapshot = session_manager->get_runtime_snapshot();
+        if (session_snapshot.recovery_state == protocol::SessionManager::RecoveryState::SOFT_REFRESH_REQUESTED) {
+            if (!m_recovery_pending) {
+                m_logger->info("[Worker_manager] Syncing local recovery state from authoritative soft-refresh state");
+                m_recovery_pending = true;
+            }
+            if (m_recovery_started_at == std::chrono::steady_clock::time_point{}) {
+                m_recovery_started_at = std::chrono::steady_clock::now();
+            }
+            m_template_withheld = true;
+        }
+    }
+
     if (!template_interface->has_valid_template()) {
         if (m_recovery_pending && !m_degraded_mode) {
             auto now = std::chrono::steady_clock::now();
@@ -2077,7 +2096,15 @@ void Worker_manager::check_template_health()
             // Only clear recovery state if the template was successfully delivered.
             // If feed fails, keep degraded mode so the escape ladder can proceed.
             m_logger->info("[Worker_manager] Belt-and-suspenders: workers dead, restarting and re-feeding template");
-            create_workers();
+            {
+                std::lock_guard<std::mutex> lock(m_worker_mutex);
+                bool still_no_workers = std::none_of(m_workers.begin(), m_workers.end(),
+                    [](const auto& w) { return bool(w); });
+                if (still_no_workers) {
+                    create_workers();
+                    m_recovery_workers_spawned = !m_workers.empty();
+                }
+            }
             // Re-feed the template so the newly created workers receive it.
             bool fed = template_interface->feed_current_template();
             if (fed) {
@@ -2264,7 +2291,6 @@ void Worker_manager::check_template_health()
             template_interface->discard_template("Unified height drift: " +
                 std::to_string(drift) + " blocks behind");
             stop_all_workers();
-            create_workers();
             retry_template_request(true);
             return;
         }
@@ -2394,9 +2420,8 @@ void Worker_manager::check_template_health()
         template_interface->discard_template("Emergency: age " + std::to_string(template_age) +
                                              "s exceeded " + std::to_string(protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) + "s limit");
         stop_all_workers();
-        // Bug 3 fix: Recreate workers immediately after stopping them so they are alive
-        // and ready to receive the incoming template from retry_template_request().
-        create_workers();
+        // Keep degraded mode authoritative here: workers are recreated just-in-time by the
+        // template feed path once a valid replacement template actually arrives.
         retry_template_request(true);
     }
 }
