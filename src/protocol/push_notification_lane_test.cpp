@@ -848,9 +848,9 @@ int main()
     }
 
     // ====================================================================
-    // Test 18: BLOCK_DATA remains open even when no active session is ready
+    // Test 18: Legacy BLOCK_DATA still processes without active session
     // ====================================================================
-    std::cout << "\nTest 18: BLOCK_DATA remains open without active session" << std::endl;
+    std::cout << "\nTest 18: Legacy BLOCK_DATA still processes without active session" << std::endl;
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
@@ -877,9 +877,9 @@ int main()
     }
 
     // ====================================================================
-    // Test 19: Stateless GET_BLOCK template delivery remains open without session
+    // Test 19: Stateless GET_BLOCK still processes without active session
     // ====================================================================
-    std::cout << "\nTest 19: STATELESS_GET_BLOCK remains open without active session" << std::endl;
+    std::cout << "\nTest 19: Stateless GET_BLOCK still processes without active session" << std::endl;
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
