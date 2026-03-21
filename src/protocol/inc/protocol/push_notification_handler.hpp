@@ -45,6 +45,9 @@ public:
      *                          to update both HeightTracker and ClientChannelManager atomically.
      *                          If null, the update is skipped.
      * @param request_work_fn   Callback to request a fresh mining template
+     * @param recovery_initiated_fn Callback invoked when the push requires a hard recovery
+     *                              path (e.g. same-height canonical replacement or multi-block
+     *                              lag after the burst-grace window has expired).
      */
     void handle_push_notification(
         const Packet& packet,
@@ -53,7 +56,8 @@ public:
         MiningTemplateInterface* template_interface,
         HeightTracker* height_tracker,
         std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
-        std::function<void()> request_work_fn
+        std::function<void()> request_work_fn,
+        std::function<void()> recovery_initiated_fn = {}
     );
 
 private:
@@ -66,6 +70,7 @@ private:
     static constexpr std::size_t UNIFIED_HEIGHT_OFFSET = 0;
     static constexpr std::size_t CHANNEL_HEIGHT_OFFSET = 4;
     static constexpr std::size_t DIFFICULTY_OFFSET = 8;
+    static constexpr int64_t BURST_RECOVERY_GRACE_SECONDS = 5;
 
     static const char* channel_name(std::uint32_t channel);
 };
