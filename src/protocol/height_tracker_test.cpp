@@ -1359,7 +1359,7 @@ void test_diagnostic_latest_received_at() {
 // Test 34: NoteKeepaliveAckLiveness() refreshes ACK timestamp without heights
 // ============================================================================
 void test_ack_liveness_refresh_without_keepalive_heights() {
-    std::cout << "\nTest 34: NoteKeepaliveAckLiveness refreshes ACK timestamp without keepalive heights\n";
+    std::cout << "\nTest 34: ACK-only liveness refreshes timestamp without keepalive heights\n";
 
     HeightTracker tracker;
     auto before_ack = std::chrono::steady_clock::now();

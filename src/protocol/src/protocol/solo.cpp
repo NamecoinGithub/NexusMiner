@@ -491,7 +491,6 @@ void Solo::finalize_keepalive_ack(const char* detail)
     if (m_session_context) {
         m_session_context->note_keepalive_ack(true, detail ? detail : "keepalive ack accepted");
     }
-    m_height_tracker.NoteKeepaliveAckLiveness();
 }
 
 void Solo::handle_normalized_keepalive_ack(const char* source,
@@ -3340,6 +3339,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
 
             finalize_keepalive_ack("keepalive ack accepted");
+            m_height_tracker.NoteKeepaliveAckLiveness();
         } else if (packet.m_length != 0) {
             // Unexpected payload length — ignore gracefully
             m_logger->debug("[Solo Session] Unexpected KEEPALIVE payload length {} — ignored", packet.m_length);
@@ -3641,6 +3641,7 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
                 return;
 
             finalize_keepalive_ack("session status ack accepted");
+            m_height_tracker.NoteKeepaliveAckLiveness();
             record_session_event(SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED,
                                  "session status ack accepted");
 
