@@ -2298,7 +2298,7 @@ void Worker_manager::check_template_health()
         bool had_pending = m_recovery_pending;
         mark_soft_refresh_requested("health_monitor_tip_moved");
         if (!had_pending) {
-            m_logger->info("[Worker_manager] ↑ Unified tip moved (template_unified_height {} -> unified_height {}) — requesting refresh without degraded-mode escalation",
+            m_logger->info("[Worker_manager] ⚡ Unified tip moved (template_unified_height {} -> unified_height {}) — requesting refresh without degraded-mode escalation",
                            ht_snap.template_unified_height, ht_snap.unified_height);
         } else {
             m_logger->debug("[Worker_manager] Unified tip still ahead during soft refresh (template_unified_height {} -> unified_height {}, epoch {})",
