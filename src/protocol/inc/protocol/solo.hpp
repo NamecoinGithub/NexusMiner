@@ -57,6 +57,13 @@ public:
     network::Shared_payload get_work() override;
     network::Shared_payload get_work(bool bypass_dedup);
     GetBlockRequestStatus get_last_get_block_request_status() const { return m_last_get_block_request_status.load(); }
+
+    /// Reset the GET_BLOCK deduplication timestamp so the next get_work() call will
+    /// not be suppressed.  Must be called whenever the canonical tip-anchor changes
+    /// (same-height chain reorg) or a new degraded-recovery epoch begins, because the
+    /// outstanding dedup state refers to a request for the *old* canonical tip and is
+    /// therefore no longer valid as a duplicate guard.
+    void reset_get_block_dedup_state();
     network::Shared_payload submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce) override;
     void set_block_handler(Set_block_handler handler) override { m_set_block_handler = std::move(handler); }
 

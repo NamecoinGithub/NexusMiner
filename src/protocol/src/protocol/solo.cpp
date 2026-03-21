@@ -1107,6 +1107,16 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
     return payload;
 }
 
+void Solo::reset_get_block_dedup_state()
+{
+    // Clear the deduplication timestamp so the next get_work() call is not suppressed.
+    // This must be called when the canonical tip-anchor changes (same-height chain reorg)
+    // or a new degraded-recovery epoch begins — the prior outstanding request was for the
+    // old canonical state and is no longer a valid duplicate guard.
+    m_last_get_block_transmitted_tp = {};
+    m_logger->info("[Solo] ⚡ GET_BLOCK dedup state reset — tip-anchor or recovery epoch changed; next request will not be suppressed");
+}
+
 network::Shared_payload Solo::send_get_round()
 {
     // GET_ROUND — pure informational/sanity probe.
@@ -3270,7 +3280,10 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
             },
             [this]() {
                 if (m_recovery_handler) {
-                    m_logger->info("[Solo] Recovery initiated (push-triggered template replacement) — notifying Worker_manager");
+                    m_logger->info("[Solo] ⚡ Unified Tip-Anchor Changed — recovery initiated (push-triggered template replacement), resetting dedup state and notifying Worker_manager");
+                    // Reset dedup state so the recovery GET_BLOCK is not blocked by stale
+                    // timestamp from the prior request that targeted the old canonical tip.
+                    reset_get_block_dedup_state();
                     m_recovery_handler();
                 }
             });
