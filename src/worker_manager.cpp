@@ -1837,49 +1837,66 @@ void Worker_manager::check_template_health()
         }
     }
 
-    if (!template_interface->has_valid_template()) {
-        if (m_recovery_pending && !m_degraded_mode) {
-            auto now = std::chrono::steady_clock::now();
-            uint8_t channel = template_interface->get_channel();
-            std::string channel_name = (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
-            const int64_t effective_recovery_window =
-                (channel == mining::CHANNEL_PRIME) ? RECOVERY_WINDOW_SECONDS_PRIME
-                                                   : RECOVERY_WINDOW_SECONDS_HASH;
-            if (m_recovery_started_at == std::chrono::steady_clock::time_point{}) {
-                m_recovery_started_at = now;
+    uint8_t channel = template_interface->get_channel();
+    std::string channel_name = (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
+    const int64_t effective_recovery_window =
+        (channel == mining::CHANNEL_PRIME) ? RECOVERY_WINDOW_SECONDS_PRIME
+                                           : RECOVERY_WINDOW_SECONDS_HASH;
+    const bool has_valid_template = template_interface->has_valid_template();
+
+    if (m_template_withheld && m_recovery_pending && !m_degraded_mode) {
+        auto now = std::chrono::steady_clock::now();
+        if (m_recovery_started_at == std::chrono::steady_clock::time_point{}) {
+            m_recovery_started_at = now;
+        }
+        auto recovery_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
+            now - m_recovery_started_at).count();
+
+        if (recovery_elapsed_s < effective_recovery_window) {
+            bool first_send = (m_recovery_last_get_block_transmitted_at == std::chrono::steady_clock::time_point{});
+            auto since_last_s = first_send ? recovery_elapsed_s
+                : std::chrono::duration_cast<std::chrono::seconds>(
+                      now - m_recovery_last_get_block_transmitted_at).count();
+
+            if (first_send || since_last_s >= RECOVERY_RESEND_INTERVAL_SECONDS) {
+                m_logger->info("[Worker_manager] ⟳ Template swap pending on {} channel (epoch {}, {}s elapsed, valid_template={}) — requesting replacement template",
+                               channel_name,
+                               m_recovery_epoch,
+                               recovery_elapsed_s,
+                               has_valid_template ? "yes" : "no");
+                retry_template_request(true);
+            } else {
+                m_logger->info("[Worker_manager] ⧖ Template swap pending on {} channel (epoch {}, {}s elapsed, valid_template={}) — submissions withheld, next retry in {}s",
+                               channel_name,
+                               m_recovery_epoch,
+                               recovery_elapsed_s,
+                               has_valid_template ? "yes" : "no",
+                               RECOVERY_RESEND_INTERVAL_SECONDS - since_last_s);
             }
-            auto recovery_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
-                now - m_recovery_started_at).count();
-
-            if (recovery_elapsed_s < effective_recovery_window) {
-                bool first_send = (m_recovery_last_get_block_transmitted_at == std::chrono::steady_clock::time_point{});
-                auto since_last_s = first_send ? recovery_elapsed_s
-                    : std::chrono::duration_cast<std::chrono::seconds>(
-                          now - m_recovery_last_get_block_transmitted_at).count();
-
-                if (first_send || since_last_s >= RECOVERY_RESEND_INTERVAL_SECONDS) {
-                    m_logger->info("[Worker_manager] ⟳ Template swap pending on {} channel (epoch {}, {}s elapsed) — requesting replacement template",
-                                   channel_name, m_recovery_epoch, recovery_elapsed_s);
-                    retry_template_request(true);
-                } else {
-                    m_logger->info("[Worker_manager] ⧖ Template swap pending on {} channel (epoch {}, {}s elapsed) — submissions withheld, next retry in {}s",
-                                   channel_name,
-                                   m_recovery_epoch,
-                                   recovery_elapsed_s,
-                                   RECOVERY_RESEND_INTERVAL_SECONDS - since_last_s);
-                }
-                return;
-            }
-
-            m_logger->warn("[Worker_manager] ⚡ Template swap timeout on {} channel (epoch {}, {}s elapsed) — escalating soft refresh into degraded mode",
-                           channel_name, m_recovery_epoch, recovery_elapsed_s);
-            m_recovery_pending = false;
-            mark_recovery_initiated("same_height_soft_refresh_timeout");
-            m_template_withheld = false;
-            stop_all_workers();
-            retry_template_request(true);
             return;
         }
+
+        m_logger->warn("[Worker_manager] ⚡ Template swap timeout on {} channel (epoch {}, {}s elapsed, valid_template={}) — escalating soft refresh into degraded mode",
+                       channel_name,
+                       m_recovery_epoch,
+                       recovery_elapsed_s,
+                       has_valid_template ? "yes" : "no");
+        m_recovery_pending = false;
+        // Compatibility note: retain the legacy reason label because existing
+        // monitoring/log parsing may key off it, even though this timeout path
+        // now covers broader soft-refresh stalls (including tip_moved refreshes).
+        mark_recovery_initiated("same_height_soft_refresh_timeout");
+        m_template_withheld = false;
+        if (has_valid_template) {
+            template_interface->discard_template("Soft refresh timeout: " + std::to_string(recovery_elapsed_s) +
+                                                 "s > " + std::to_string(effective_recovery_window) + "s window");
+        }
+        stop_all_workers();
+        retry_template_request(true);
+        return;
+    }
+
+    if (!has_valid_template) {
 
         // In degraded mode with no valid template — apply escape ladder to prevent permanent lockout.
         if (m_degraded_mode) {
@@ -2073,14 +2090,6 @@ void Worker_manager::check_template_health()
     // Get HeightTracker snapshot for staleness and age checks (single source of truth)
     auto ht_snap = solo_protocol->get_height_tracker_snapshot();
     uint64_t template_age = ht_snap.get_template_age_seconds();
-    uint8_t channel = template_interface->get_channel();
-    std::string channel_name = (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
-
-    // Channel-aware recovery window: Prime blocks take 2-5+ min, so use a longer window
-    // to avoid spurious escalations during normal long Prime blocks.
-    const int64_t effective_recovery_window =
-        (channel == mining::CHANNEL_PRIME) ? RECOVERY_WINDOW_SECONDS_PRIME
-                                           : RECOVERY_WINDOW_SECONDS_HASH;
 
     // ── Belt-and-suspenders guard ────────────────────────────────────────────
     // If a valid template exists but m_degraded_mode is still set (e.g. because
@@ -2280,6 +2289,23 @@ void Worker_manager::check_template_health()
             retry_template_request(true);
             return;
         }
+    }
+
+    // Unified tip movement without channel staleness is the normal cross-channel
+    // refresh path: withhold submissions and fetch a replacement template first.
+    // Do not let the HEIGHT_DRIFT hard-stop path bypass this softer recovery mode.
+    if (ht_snap.is_tip_moved()) {
+        bool had_pending = m_recovery_pending;
+        mark_soft_refresh_requested("health_monitor_tip_moved");
+        if (!had_pending) {
+            m_logger->info("[Worker_manager] ↑ Unified tip moved (template_unified_height {} -> unified_height {}) — requesting refresh without degraded-mode escalation",
+                           ht_snap.template_unified_height, ht_snap.unified_height);
+        } else {
+            m_logger->debug("[Worker_manager] Unified tip still ahead during soft refresh (template_unified_height {} -> unified_height {}, epoch {})",
+                            ht_snap.template_unified_height, ht_snap.unified_height, m_recovery_epoch);
+        }
+        retry_template_request(false);
+        return;
     }
 
     // ── Unified height drift detection ──────────────────────────────────────
