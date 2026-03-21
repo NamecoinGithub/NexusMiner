@@ -93,7 +93,9 @@ target_include_directories(keepalive_v2_test PRIVATE
 )
 
 # Push notification lane detection unit tests
-add_executable(push_notification_lane_test push_notification_lane_test.cpp)
+add_executable(push_notification_lane_test
+    push_notification_lane_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp)
 target_link_libraries(push_notification_lane_test PRIVATE protocol LLP LLC spdlog)
 target_include_directories(push_notification_lane_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
