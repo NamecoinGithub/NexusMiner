@@ -118,8 +118,10 @@ Before any freshly validated template is fed live:
   A. finalize channel target metadata
   B. if snap.has_same_height_push_tip_replacement(template.hashPrevBlock, template.nChannelHeight)
        → discard template as same_height_chain_reorg
+       → notify the same soft-refresh/template-withheld handler used by PUSH-triggered same-height replacement
        → request fresh work
        → stay on the soft template-swap path until a replacement template is cross-checked
+       → only if that soft-refresh window times out may Worker_manager promote the incident into degraded mode
   C. otherwise feed workers
 ```
 

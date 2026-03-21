@@ -1845,6 +1845,8 @@ void Worker_manager::check_template_health()
 
             m_logger->warn("[Worker_manager] ⚡ Template swap timeout on {} channel (epoch {}, {}s elapsed) — escalating soft refresh into degraded mode",
                            channel_name, m_recovery_epoch, recovery_elapsed_s);
+            m_recovery_pending = false;
+            mark_recovery_initiated("same_height_soft_refresh_timeout");
             m_template_withheld = false;
             stop_all_workers();
             retry_template_request(true);

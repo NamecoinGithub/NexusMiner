@@ -4375,6 +4375,9 @@ bool Solo::validate_current_template()
         m_logger->warn("[Solo Validate]   push_channel_height={} template_channel_target={}",
             snap.push_channel_height, tmpl->nChannelHeight);
         mark_authoritative_soft_refresh("same_height_push_tip_replacement_pre_adoption");
+        if (m_soft_refresh_handler) {
+            m_soft_refresh_handler();
+        }
         reset_get_block_dedup_state();
         m_template_interface->discard_template("same_height_chain_reorg");
         return false;
