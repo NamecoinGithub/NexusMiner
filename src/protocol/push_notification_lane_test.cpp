@@ -362,12 +362,12 @@ int main()
     // Verifies the corrected push handler decision tree:
     //   STEP 1 - stale (blocks_behind == 1): normal anchor update, no recovery
     //   STEP 1 - stale (blocks_behind >= 2): discard template by height alone, recovery
-    //   STEP 2 - not stale + hash mismatch:  same-height chain reorg, discard, recovery
+    //   STEP 2 - not stale + hash mismatch:  same-height tip replacement, discard, soft refresh
     //   STEP 2 - not stale + hashes match:   healthy, no action
     //
     // Key invariant: hash check (step 2) ONLY runs when height says not stale (step 1).
     // For stale templates hashPrevBlock ALWAYS differs from the notification — that is
-    // expected after any block advance, not a reorg.  Height alone is authoritative.
+    // expected after any block advance.  Height alone is authoritative.
     // ====================================================================
     std::cout << "\nTest 9: blocks_behind decision logic (push handler ordering fix)" << std::endl;
     {
@@ -404,7 +404,7 @@ int main()
                 d.recovery_triggered = true;
                 return d;
             }
-            // Not stale — STEP 2: check hash for same-height chain reorg
+            // Not stale — STEP 2: check hash for same-height tip replacement
             if (has_hash && !hash_matches) {
                 d.discard_template_called = true;
                 d.request_work_called = true;
@@ -491,20 +491,20 @@ int main()
                 d.discard_template_called);
         }
 
-        // Scenario F: Same-height chain reorg (blocks_behind == 0, hash changed)
+        // Scenario F: Same-height tip replacement (blocks_behind == 0, hash changed)
         // Expected: discard template, request work, stay on soft refresh
         {
             auto d = simulate_handler(/*stale=*/false, /*blocks_behind=*/0,
                                        /*has_hash=*/true, /*hash_matches=*/false,
                                        /*burst_grace_active=*/false,
                                        /*tip_moved=*/false);
-            print_test_result("Scenario F1: Same-height reorg → discard_template called",
+            print_test_result("Scenario F1: Same-height tip replacement → discard_template called",
                 d.discard_template_called);
-            print_test_result("Scenario F2: Same-height reorg → request_work called",
+            print_test_result("Scenario F2: Same-height tip replacement → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario F3: Same-height reorg → soft refresh triggered",
+            print_test_result("Scenario F3: Same-height tip replacement → soft refresh triggered",
                 d.soft_refresh_triggered);
-            print_test_result("Scenario F4: Same-height reorg → hard recovery NOT triggered",
+            print_test_result("Scenario F4: Same-height tip replacement → hard recovery NOT triggered",
                 !d.recovery_triggered);
         }
 
@@ -607,10 +607,10 @@ int main()
             [&recovery_called]() { recovery_called = true; },
             [&soft_refresh_called]() { soft_refresh_called = true; });
 
-        print_test_result("Same-height reorg requests fresh work", request_work_called);
-        print_test_result("Same-height reorg discards active template", !tmpl_interface.has_valid_template());
-        print_test_result("Same-height reorg notifies soft-refresh path", soft_refresh_called);
-        print_test_result("Same-height reorg does not notify hard recovery path", !recovery_called);
+        print_test_result("Same-height tip replacement requests fresh work", request_work_called);
+        print_test_result("Same-height tip replacement discards active template", !tmpl_interface.has_valid_template());
+        print_test_result("Same-height tip replacement notifies soft-refresh path", soft_refresh_called);
+        print_test_result("Same-height tip replacement does not notify hard recovery path", !recovery_called);
     }
 
     // ====================================================================

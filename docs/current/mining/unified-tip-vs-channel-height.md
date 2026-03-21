@@ -117,7 +117,7 @@ On every push notification:
 Before any freshly validated template is fed live:
   A. finalize channel target metadata
   B. if snap.has_same_height_push_tip_replacement(template.hashPrevBlock, template.nChannelHeight)
-       → discard template as same_height_chain_reorg
+       → discard template as same_height_tip_update
        → notify the same soft-refresh/template-withheld handler used by PUSH-triggered same-height replacement
        → request fresh work
        → stay on the soft template-swap path until a replacement template is cross-checked

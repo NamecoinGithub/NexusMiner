@@ -199,7 +199,8 @@ void PushNotificationHandler::handle_push_notification(
         // STEP 2: HASH VALIDATION — only for templates that passed height check
         // ═══════════════════════════════════════════════════════════════════════
         // Height says the template is current (blocks_behind == 0).  A hash
-        // mismatch at the same height means the chain reorganized at equal height.
+        // mismatch at the same height means the tip anchor has been replaced at
+        // equal height — normal same-height tip update, not a fault condition.
         if (has_hash_prev_block)
         {
             auto const* tmpl = template_interface->get_current_template();
@@ -210,9 +211,10 @@ void PushNotificationHandler::handle_push_notification(
                 snap.has_same_height_push_tip_replacement(tmpl->block.hashPrevBlock,
                                                           tmpl->nChannelHeight))
             {
-                // Hash mismatch with current height: same-height canonical tip-anchor replacement.
-                m_logger->warn("[Solo Push] ⚡ Unified Tip-Anchor Changed — same channel height, canonical prev hash replaced — hot-swapping template without degraded-mode escalation");
-                template_interface->discard_template("same_height_chain_reorg");
+                // Same-height tip update: a newer canonical tip anchor is available
+                // for this height — refresh the template to mine on the current tip.
+                m_logger->info("[Solo Push] Same-height tip update — refreshing template for current target");
+                template_interface->discard_template("same_height_tip_update");
                 if (soft_refresh_requested_fn) {
                     soft_refresh_requested_fn();
                 }
