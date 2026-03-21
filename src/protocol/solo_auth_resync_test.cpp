@@ -148,6 +148,8 @@ struct SimulatedSoloAuthGuard
 
     void refresh_cached_session_state()
     {
+        // Epoch changes invalidate generation-bound template/tip caches before
+        // auth/session flags are resynced from the authoritative container.
         if (!m_has_seen_session_epoch || m_session_epoch != authoritative.session_epoch) {
             if (m_has_seen_session_epoch) {
                 clear_generation_bound_state();

@@ -575,14 +575,8 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
           | (uint32_t(suffix[2]) <<  8) | uint32_t(suffix[3]);
     }
 
-    auto prev_bytes = m_last_known_hash_prev_block.GetBytes();
-    std::string prev_hex;
-    for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i) {
-        char buf[3];
-        snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
-        prev_hex += buf;
-    }
-    m_logger->info("[TEMPLATE ANCHOR] hashPrevBlock = {}... (tip anchor at template creation)", prev_hex);
+    m_logger->info("[TEMPLATE ANCHOR] hashPrevBlock = {}... (tip anchor at template creation)",
+                   format_hex8(m_last_known_hash_prev_block));
     m_logger->info("[TEMPLATE ANCHOR] block.nHeight = {} (unified blockchain height)", tmpl->block.nHeight);
 
     if (snapshot_round_channel_height && m_last_round_status.has_channel_heights) {
