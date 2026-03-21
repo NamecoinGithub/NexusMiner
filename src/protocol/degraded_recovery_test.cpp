@@ -17,6 +17,8 @@
  * 11.  Integration: stale -> degraded -> fresh template -> mining resumes
  * 12.  Integration: forced retry lane remains bounded (no flood)
  * 13.  Successful re-authentication restarts the recovery window on a fresh epoch
+ * 14.  Session epoch advance clears stale push tip-anchor hints without clearing push liveness
+ * 15.  Recovery completion clears suppression and authoritative recovery-reason state
  */
 
 #include "protocol/height_tracker.hpp"
@@ -352,6 +354,7 @@ void test_same_height_soft_refresh_escalates_only_after_timeout() {
 // ============================================================================
 void test_degraded_exit_normalizes_recovery_state() {
     std::cout << "\nTest 4d: Degraded exit normalization clears recovery bookkeeping\n";
+    constexpr int kSuppressionReasonRateLimitLocal = 3;
 
     struct RecoveryTracker {
         bool m_degraded_mode{true};
@@ -367,10 +370,15 @@ void test_degraded_exit_normalizes_recovery_state() {
             std::chrono::steady_clock::now()};
         bool m_forced_retry_timer_pending{true};
         uint64_t m_forced_retry_timer_token{2};
+        int m_last_get_block_suppression_reason{kSuppressionReasonRateLimitLocal};
+        bool authoritative_recovery_healthy_called{false};
+        std::string authoritative_recovery_reason{"same_height_push_tip_replacement_pre_adoption"};
         std::chrono::steady_clock::time_point m_degraded_since{std::chrono::steady_clock::now()};
         std::chrono::steady_clock::time_point m_last_escalation_at{std::chrono::steady_clock::now()};
 
         void clear() {
+            authoritative_recovery_healthy_called = true;
+            authoritative_recovery_reason.clear();
             m_degraded_mode = false;
             m_recovery_pending = false;
             m_template_withheld = false;
@@ -383,6 +391,7 @@ void test_degraded_exit_normalizes_recovery_state() {
             m_forced_retry_send_timestamps.clear();
             m_forced_retry_timer_pending = false;
             ++m_forced_retry_timer_token;
+            m_last_get_block_suppression_reason = 0;
             m_degraded_since = {};
             m_last_escalation_at = {};
         }
@@ -406,6 +415,11 @@ void test_degraded_exit_normalizes_recovery_state() {
                       rt.m_forced_retry_send_timestamps.empty() &&
                       !rt.m_forced_retry_timer_pending &&
                       rt.m_forced_retry_timer_token == old_token + 1);
+    print_test_result("Suppression state cleared",
+                      rt.m_last_get_block_suppression_reason == 0);
+    print_test_result("Authoritative recovery state normalized",
+                      rt.authoritative_recovery_healthy_called &&
+                      rt.authoritative_recovery_reason.empty());
     print_test_result("Escalation timers cleared",
                       rt.m_degraded_since == std::chrono::steady_clock::time_point{} &&
                       rt.m_last_escalation_at == std::chrono::steady_clock::time_point{});
@@ -548,6 +562,40 @@ void test_push_does_not_clear_keepalive_on_epoch_change() {
                       push_unchanged);
     print_test_result("Epoch 2: keepalive ACK timestamp cleared by epoch change",
                       ack_cleared);
+}
+
+// ============================================================================
+// Test 9b: Session epoch advance clears stale push tip-anchor hints but keeps push liveness
+// ============================================================================
+void test_epoch_change_clears_push_tip_anchor_hint() {
+    std::cout << "\nTest 9b: Session epoch advance clears stale push tip-anchor hint only\n";
+    HeightTracker tracker;
+
+    tracker.set_session_epoch(7);
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.UpdatePushTipAnchor(uint1024_t(0x42));
+
+    auto snap_before = tracker.GetSnapshot();
+    print_test_result("Epoch 7: push tip-anchor hint is present before epoch change",
+                      snap_before.push_hash_prev_block != uint1024_t{});
+    print_test_result("Epoch 7: push liveness timestamp is present before epoch change",
+                      snap_before.last_push_notification_at != std::chrono::steady_clock::time_point{});
+
+    tracker.set_session_epoch(8);
+    auto snap_after = tracker.GetSnapshot();
+    print_test_result("Epoch 8: push tip-anchor hint cleared on epoch change",
+                      snap_after.push_hash_prev_block == uint1024_t{});
+    print_test_result("Epoch 8: push liveness timestamp preserved across epoch change",
+                      snap_after.last_push_notification_at == snap_before.last_push_notification_at);
+
+    tracker.UpdatePushTipAnchor(uint1024_t(0x77));
+    auto snap_reseeded = tracker.GetSnapshot();
+    print_test_result("Explicit clear test re-seeds push tip-anchor hint first",
+                      snap_reseeded.push_hash_prev_block != uint1024_t{});
+    tracker.ClearPushTipAnchor();
+    auto snap_cleared = tracker.GetSnapshot();
+    print_test_result("Explicit tip-anchor clear consumes replacement hint after adoption",
+                      snap_cleared.push_hash_prev_block == uint1024_t{});
 }
 
 // ============================================================================
@@ -779,6 +827,7 @@ int main() {
     test_epoch_advance_suppresses_old_keepalive_signal();
     test_multiple_rapid_epoch_changes_clean_state();
     test_push_does_not_clear_keepalive_on_epoch_change();
+    test_epoch_change_clears_push_tip_anchor_hint();
     test_recovery_epoch_monotonic_with_idempotent_initiation();
     test_integration_degraded_recovery_to_resume();
     test_integration_forced_retry_is_bounded();

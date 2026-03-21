@@ -45,6 +45,12 @@ void HeightTracker::UpdatePushTipAnchor(const uint1024_t& hash_prev_block)
     m_diagnostic.push_hash_prev_block = hash_prev_block;
 }
 
+void HeightTracker::ClearPushTipAnchor()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_diagnostic.push_hash_prev_block = uint1024_t{};
+}
+
 void HeightTracker::OnPushLiveness()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -262,6 +268,7 @@ void HeightTracker::set_session_epoch(uint64_t session_epoch)
     // is actually dead.
     if (session_epoch != m_session_epoch && session_epoch != 0) {
         m_diagnostic.last_keepalive_ack_at = {};
+        m_diagnostic.push_hash_prev_block = uint1024_t{};
     }
     m_session_epoch = session_epoch;
 }

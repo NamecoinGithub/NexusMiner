@@ -466,6 +466,14 @@ public:
     void UpdatePushTipAnchor(const uint1024_t& hash_prev_block);
 
     /**
+     * @brief Clear the pre-adoption push tip-anchor hint once it is no longer relevant
+     *
+     * This consumes the push-side replacement hint after a fresh template is adopted
+     * or when a new session epoch invalidates prior-session ingress state.
+     */
+    void ClearPushTipAnchor();
+
+    /**
      * @brief Record receipt of a BLOCK_AVAILABLE push for liveness only
      *
      * Updates the push timestamp without changing push-derived heights or
