@@ -458,7 +458,7 @@ public:
     /**
      * @brief Record the tip anchor advertised by the latest extended push payload
      *
-     * This is diagnostic/preadoption state only: unlike OnBlockDataReceived(), it
+     * This is diagnostic/pre-adoption state only: unlike OnBlockDataReceived(), it
      * does not claim canonical ownership. It simply preserves the newest push-side
      * hashPrevBlock so first-template adoption can reject a template that is already
      * obsolete before workers resume.
