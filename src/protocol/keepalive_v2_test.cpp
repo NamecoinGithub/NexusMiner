@@ -12,6 +12,7 @@
  *  7. Parsing robustness: non-32 payload lengths rejected by Parse()
  *  8. KeepAliveV2AckFrame: stake_height at bytes [24-27], fork_score at [28-31]
  *  9. KeepAliveV2AckFrame::Parse() decodes session_id as little-endian at [0-3]
+ * 10. Accepted keepalive bookkeeping refreshes state and increments keepalive count
  */
 
 #include "protocol/session_manager.hpp"
@@ -279,6 +280,29 @@ void test_set_protocol_lane_no_deadlock_and_updates_state() {
 }
 
 // ============================================================================
+// Test 11: accepted keepalive bookkeeping refreshes state and increments count
+// Mirrors the hardened Solo keepalive / KeepAliveV2 alias path, where accepted
+// ACKs now update both acknowledgement state and keepalive counters.
+// ============================================================================
+void test_keepalive_ack_bookkeeping_updates_runtime_snapshot() {
+    std::cout << "\nTest 11: accepted keepalive bookkeeping updates runtime snapshot\n";
+
+    auto mgr = std::make_shared<SessionManager>(24, nullptr);
+    mgr->start_session(0x0BADB002);
+
+    mgr->note_keepalive_ack(true, "keepalive ack accepted");
+    mgr->record_keepalive();
+
+    const auto info = mgr->get_runtime_snapshot();
+    print_test_result("Accepted keepalive transitions session to ACTIVE",
+                      info.state == SessionManager::SessionState::ACTIVE);
+    print_test_result("Accepted keepalive leaves expiry_state fresh",
+                      info.expiry_state == SessionManager::ExpiryState::FRESH);
+    print_test_result("Accepted keepalive increments keepalive_count",
+                      info.keepalive_count == 1);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -301,6 +325,7 @@ int main() {
     test_keepalive_v2_ack_frame_layout();
     test_parse_session_id_le();
     test_set_protocol_lane_no_deadlock_and_updates_state();
+    test_keepalive_ack_bookkeeping_updates_runtime_snapshot();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

@@ -16,6 +16,7 @@
  * 10.  Recovery epoch tracking — monotonic epoch counter with idempotent initiation
  * 11.  Integration: stale -> degraded -> fresh template -> mining resumes
  * 12.  Integration: forced retry lane remains bounded (no flood)
+ * 13.  Successful re-authentication restarts the recovery window on a fresh epoch
  */
 
 #include "protocol/height_tracker.hpp"
@@ -239,6 +240,58 @@ void test_recovery_get_block_no_permanent_starvation() {
     // at normal check_template_health intervals
     print_test_result("30s timer interval >> 100ms dedup = no starvation at timer cadence",
                       30000 > DEDUP_MS * 100);
+}
+
+// ============================================================================
+// Test 4b: Successful re-authentication restarts the recovery window
+// Mirrors Worker_manager::restart_recovery_window() + retry_template_request(true)
+// so a fresh session does not inherit a long-expired recovery epoch.
+// ============================================================================
+void test_successful_reauth_restarts_recovery_epoch() {
+    std::cout << "\nTest 4b: Re-authentication restarts recovery window on a fresh epoch\n";
+
+    struct RecoveryTracker {
+        bool m_degraded_mode{true};
+        bool m_recovery_pending{true};
+        uint64_t m_recovery_epoch{1};
+        std::chrono::steady_clock::time_point m_recovery_started_at{
+            std::chrono::steady_clock::now() - std::chrono::seconds(1207)};
+        std::chrono::steady_clock::time_point m_degraded_since{
+            std::chrono::steady_clock::now() - std::chrono::seconds(1207)};
+
+        void restart_recovery_window() {
+            m_recovery_pending = false;
+            m_recovery_started_at = {};
+        }
+
+        void on_reauthenticated() {
+            if (m_degraded_mode || m_recovery_pending) {
+                m_degraded_since = {};
+                restart_recovery_window();
+                ++m_recovery_epoch;
+                m_recovery_pending = true;
+                m_recovery_started_at = std::chrono::steady_clock::now();
+            }
+        }
+    };
+
+    RecoveryTracker rt;
+    const auto old_started_at = rt.m_recovery_started_at;
+    rt.on_reauthenticated();
+
+    print_test_result("Re-authentication starts a new recovery epoch",
+                      rt.m_recovery_epoch == 2);
+    print_test_result("Recovery remains pending after re-authentication",
+                      rt.m_recovery_pending);
+    print_test_result("Recovery start time is refreshed after re-authentication",
+                      rt.m_recovery_started_at != std::chrono::steady_clock::time_point{} &&
+                      rt.m_recovery_started_at > old_started_at);
+    auto elapsed_after_reauth = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - rt.m_recovery_started_at).count();
+    print_test_result("Fresh recovery epoch elapsed time is near-zero after re-authentication",
+                      elapsed_after_reauth >= 0 && elapsed_after_reauth <= 1);
+    print_test_result("Degraded timer is reset for the new authenticated session",
+                      rt.m_degraded_since == std::chrono::steady_clock::time_point{});
 }
 
 // ============================================================================
@@ -601,6 +654,7 @@ int main() {
     test_channel_advance_stale_template_transition();
     test_recovery_pending_debounce_idempotent();
     test_recovery_get_block_no_permanent_starvation();
+    test_successful_reauth_restarts_recovery_epoch();
     test_keepalive_epoch_isolation_clean_start();
     test_stale_template_after_channel_advance();
     test_epoch_advance_suppresses_old_keepalive_signal();

@@ -322,6 +322,7 @@ private:
                                          uint32_t chain_height) const;
     void record_session_event(SessionManager::SessionEventKind kind,
                               const std::string& detail) const;
+    void finalize_keepalive_ack(const char* detail);
     void clear_generation_bound_state(const char* reason);
     static const PacketIngressPreflightOptions kDefaultPacketIngressPreflightOptions;
     bool run_packet_ingress_preflight(
