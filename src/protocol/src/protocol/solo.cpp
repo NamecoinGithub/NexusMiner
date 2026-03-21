@@ -538,6 +538,14 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
         return false;
     }
 
+    // Clear the push tip anchor now that a fresh BLOCK_DATA template is in hand.
+    // This must happen BEFORE validate_current_template() so that any residual
+    // push_hash_prev_block from a prior same-height push does not cause
+    // validate_current_template() to log a spurious "push tip-anchor differs" note.
+    // The anchor was already used in the push handler to trigger the soft refresh;
+    // at this point BLOCK_DATA is authoritative and the anchor is stale.
+    m_height_tracker.ClearPushTipAnchor();
+
     if (!validate_current_template()) {
         m_logger->warn("[{}] Template invalidated by final adoption gate before worker feed", log_scope);
         return false;
@@ -4353,17 +4361,31 @@ bool Solo::validate_current_template()
         return false;
     }
 
+    // NOTE: The has_same_height_push_tip_replacement() check was intentionally removed
+    // from this gate.  Keeping it here created an infinite soft-refresh / template-swap
+    // pending loop: a push set push_hash_prev_block = H_new, but the BLOCK_DATA response
+    // to the subsequent GET_BLOCK returned a template with hashPrevBlock = H_old (the node's
+    // canonical template, which may legitimately differ from the push hint when the push was
+    // premature or from a competing chain tip).  The veto prevented adoption, ClearPushTipAnchor()
+    // was never reached, and each new GET_BLOCK response was rejected by the same check,
+    // looping indefinitely while Worker_manager reported valid_template=no.
+    //
+    // Architecture rule: BLOCK_DATA is canonical; push is a hint to request a refresh.
+    // Once the node responds to GET_BLOCK with BLOCK_DATA, that template is the ground truth.
+    // The push handler already discarded the prior template and triggered the soft refresh;
+    // there is no need to veto the replacement here.
+    //
+    // A push that genuinely represents a same-height chain reorg will be caught by the NEXT
+    // push notification after the new template is adopted (the push handler checks
+    // has_same_height_push_tip_replacement against the ACTIVE template at that point).
     if (snap.has_same_height_push_tip_replacement(tmpl->block.hashPrevBlock, tmpl->nChannelHeight)) {
-        m_logger->warn("[Solo Validate] ⚡ Unified Tip-Anchor Changed before adoption — rejecting template as obsolete on arrival");
-        m_logger->warn("[Solo Validate]   push_channel_height={} template_channel_target={}",
-            snap.push_channel_height, tmpl->nChannelHeight);
-        mark_authoritative_soft_refresh("same_height_push_tip_replacement_pre_adoption");
-        if (m_soft_refresh_handler) {
-            m_soft_refresh_handler();
-        }
-        reset_get_block_dedup_state();
-        m_template_interface->discard_template("same_height_chain_reorg");
-        return false;
+        m_logger->info("[Solo Validate] ℹ️  Push tip-anchor differs from incoming BLOCK_DATA "
+                       "(push_channel_height={} template_channel_target={}) — "
+                       "accepting BLOCK_DATA as canonical (push was a hint, not authoritative)",
+                       snap.push_channel_height, tmpl->nChannelHeight);
+        // Accept the template — do not discard, do not re-trigger soft refresh.
+        // The push anchor will be cleared by ClearPushTipAnchor() in finalize_and_feed_current_template()
+        // after successful adoption, preventing this informational log from repeating.
     }
 
     // Optional: hashPrevBlock staleness check (primary anchor, StakeMinter pattern).
