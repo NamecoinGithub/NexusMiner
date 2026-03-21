@@ -176,8 +176,8 @@ void PushNotificationHandler::handle_push_notification(
             auto const* tmpl = template_interface->get_current_template();
             if (tmpl && tmpl->block.hashPrevBlock != notification_hash_prev_block)
             {
-                // Hash mismatch with current height: genuine same-height chain reorg.
-                m_logger->warn("[Solo Push] ⚠️  Same-height chain reorg detected: hashPrevBlock changed");
+                // Hash mismatch with current height: same-height canonical tip-anchor replacement.
+                m_logger->warn("[Solo Push] ⚡ Unified Tip-Anchor Changed — same channel height, canonical prev hash replaced — replacing active template");
                 template_interface->discard_template("same_height_chain_reorg");
                 request_work_fn();
                 return;

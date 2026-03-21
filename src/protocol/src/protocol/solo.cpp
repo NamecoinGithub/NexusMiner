@@ -4383,7 +4383,7 @@ bool Solo::validate_current_template()
     // Warn-and-continue (compat mode) — node Guard 2 is the final arbiter.
     if (snap.hash_prev_block != uint1024_t(0) &&
         tmpl->block.hashPrevBlock != snap.hash_prev_block) {
-        m_logger->warn("[ValidateTemplate] hashPrevBlock mismatch — template may be stale (tip moved)");
+        m_logger->warn("[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch (warn-and-continue, node Guard 2 is final arbiter)");
     }
     
     // Note: Age timeout validation (60s safety net) is handled internally by
