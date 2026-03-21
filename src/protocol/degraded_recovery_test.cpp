@@ -538,7 +538,13 @@ void test_worker_respawn_waits_for_authoritative_empty_generation() {
         }
 
         bool restart_workers_if_needed() {
-            if (!m_degraded_mode || m_recovery_workers_spawned || stop_in_progress || worker_instances != 0) {
+            const bool degraded_mode_inactive = !m_degraded_mode;
+            const bool restart_already_consumed = m_recovery_workers_spawned;
+            const bool prior_generation_still_stopping = stop_in_progress;
+            const bool workers_still_present = worker_instances != 0;
+
+            if (degraded_mode_inactive || restart_already_consumed ||
+                prior_generation_still_stopping || workers_still_present) {
                 return false;
             }
             worker_instances = 8;

@@ -770,7 +770,7 @@ void Worker_manager::create_workers_locked()
     // still exists. stop_all_workers() resets the shared_ptrs under the same mutex,
     // and each worker destructor blocks until its mining threads have fully joined.
     if (!m_workers.empty()) {
-        m_logger->warn("[Worker_manager] create_workers() called with {} workers already alive — skipping duplicate spawn",
+        m_logger->warn("[Worker_manager] create_workers_locked() called with {} workers already alive — skipping duplicate spawn",
                        m_workers.size());
         return;
     }
