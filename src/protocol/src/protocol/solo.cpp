@@ -485,6 +485,16 @@ void Solo::record_session_event(SessionManager::SessionEventKind kind,
     }
 }
 
+void Solo::finalize_keepalive_ack(const char* detail)
+{
+    if (m_session_context) {
+        m_session_context->note_keepalive_ack(true, detail ? detail : "keepalive ack accepted");
+    }
+    if (auto* session_manager = get_session_manager()) {
+        session_manager->record_keepalive();
+    }
+}
+
 void Solo::clear_generation_bound_state(const char* reason)
 {
     m_last_keepalive_request_owner.clear();
@@ -3195,6 +3205,8 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     unified.hash_height, unified.stake_height,
                     unified.hash_tip_lo32, unified.fork_score);
 
+                finalize_keepalive_ack("keepalive ack accepted");
+
                 // Fork canary cross-check (legacy path: hash_tip_lo32 and fork_score will be 0)
                 // Diagnostic-only: PUSH notification system handles real chain tip advances.
                 if (unified.IsForkDetected(m_last_keepalive_prevhash_lo32))
@@ -3204,18 +3216,13 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                         m_last_keepalive_prevhash_lo32, unified.hash_tip_lo32, unified.fork_score);
                 }
 
-                if (get_session_manager()) {
-                    get_session_manager()->record_keepalive();
-                }
             }
         } else if (packet.m_data && packet.m_length == 4) {
             // ── KEEPALIVE v1: remaining timeout (4 bytes LE) ─────────────────────
             uint32_t remaining_timeout = serialization::read_uint32_le(*packet.m_data);
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
 
-            if (get_session_manager()) {
-                get_session_manager()->record_keepalive();
-            }
+            finalize_keepalive_ack("keepalive ack accepted");
         } else if (packet.m_length != 0) {
             // Unexpected payload length — ignore gracefully
             m_logger->debug("[Solo Session] Unexpected KEEPALIVE payload length {} — ignored", packet.m_length);
@@ -3541,15 +3548,11 @@ void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Conne
             if (handle_session_id_mismatch(ack.session_id))
                 return;
 
-            if (m_session_context) {
-                m_session_context->note_keepalive_ack(true, "keepalive ack accepted");
-            }
-            record_session_event(SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED,
-                                 "keepalive ack accepted");
+            finalize_keepalive_ack("keepalive ack accepted");
 
             // Update HeightTracker with ACK chain-state heights.
             m_height_tracker.OnKeepaliveResponse(ack.unified_height,
-                                                  ack.prime_height,
+                                                   ack.prime_height,
                                                   ack.hash_height,
                                                   ack.stake_height,
                                                   ack.hash_tip_lo32,

@@ -102,6 +102,7 @@ private:
      *               Pass false (default) from the periodic health-check timer.
      */
     void retry_template_request(bool bForce = false);
+    void restart_recovery_window(const char* reason);
 
     /// Mark that a GET_BLOCK recovery is now in progress.
     /// Sets m_recovery_pending, increments m_recovery_epoch, records start time.

@@ -651,6 +651,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // Reset m_degraded_since so the escape ladder timer restarts cleanly
                     // for this new authenticated session (avoids Stage 3 immediately firing).
                     m_degraded_since = {};
+                    restart_recovery_window("session_reauthenticated");
                     retry_template_request(true);
                 }
             }
@@ -1471,6 +1472,41 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
     m_logger->warn("[Worker_manager] ⚑ RECOVERY INITIATED — epoch {} (reason: {})",
                    m_recovery_epoch, reason ? reason : "unknown");
     m_logger->warn("[Worker_manager]   Health monitor will NOT stop workers during channel recovery window");
+}
+
+void Worker_manager::restart_recovery_window(const char* reason)
+{
+    const bool had_pending_recovery = m_recovery_pending;
+    const bool had_forced_retry_timer = m_forced_retry_timer_pending;
+    int64_t elapsed_s = 0;
+    if (had_pending_recovery && m_recovery_started_at != std::chrono::steady_clock::time_point{}) {
+        elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - m_recovery_started_at).count();
+    }
+
+    m_recovery_pending = false;
+    m_recovery_started_at = {};
+    m_recovery_last_get_block_sent_at = {};
+    m_recovery_last_get_block_transmitted_at = {};
+    m_recovery_get_block_transmitted = false;
+    m_next_forced_retry_due = {};
+    m_forced_retry_send_timestamps.clear();
+    m_forced_retry_timer_pending = false;
+    ++m_forced_retry_timer_token;
+    if (m_forced_retry_timer) {
+        m_forced_retry_timer->cancel();
+    }
+    m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
+    m_last_escalation_at = {};
+
+    if (had_pending_recovery || had_forced_retry_timer) {
+        m_logger->info("[Worker_manager] Restarting recovery window after {} "
+                       "(prior_epoch={} prior_elapsed={}s degraded_mode={})",
+                       reason ? reason : "unknown",
+                       m_recovery_epoch,
+                       elapsed_s,
+                       m_degraded_mode ? "true" : "false");
+    }
 }
 
 void Worker_manager::clear_recovery_state()
