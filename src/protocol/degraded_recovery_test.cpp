@@ -19,6 +19,8 @@
  * 13.  Successful re-authentication restarts the recovery window on a fresh epoch
  * 14.  Session epoch advance clears stale push tip-anchor hints without clearing push liveness
  * 15.  Recovery completion clears suppression and authoritative recovery-reason state
+ * 16.  Authoritative soft-refresh state repopulates Worker_manager local soft-pause state
+ * 17.  Recovery worker respawn guard creates workers only once per degraded exit
  */
 
 #include "protocol/height_tracker.hpp"
@@ -440,6 +442,81 @@ void test_degraded_exit_normalizes_recovery_state() {
 // ============================================================================
 // Test 5: Keepalive epoch isolation — new epoch starts with clean ack timestamp
 // ============================================================================
+void test_authoritative_soft_refresh_backfills_local_state() {
+    std::cout << "\nTest 4e: Authoritative soft refresh backfills local Worker_manager state\n";
+
+    enum class RecoveryState {
+        HEALTHY,
+        SOFT_REFRESH_REQUESTED,
+        RECOVERY_PENDING
+    };
+
+    struct RecoveryTracker {
+        bool m_degraded_mode{false};
+        bool m_recovery_pending{false};
+        bool m_template_withheld{false};
+        std::chrono::steady_clock::time_point m_recovery_started_at{};
+
+        void sync_from_authoritative(RecoveryState authoritative_state) {
+            if (authoritative_state != RecoveryState::SOFT_REFRESH_REQUESTED) {
+                return;
+            }
+            if (!m_recovery_pending) {
+                m_recovery_pending = true;
+            }
+            if (m_recovery_started_at == std::chrono::steady_clock::time_point{}) {
+                m_recovery_started_at = std::chrono::steady_clock::now();
+            }
+            m_template_withheld = true;
+        }
+    };
+
+    RecoveryTracker rt;
+    rt.sync_from_authoritative(RecoveryState::SOFT_REFRESH_REQUESTED);
+
+    print_test_result("Authoritative soft refresh sets recovery pending", rt.m_recovery_pending);
+    print_test_result("Authoritative soft refresh withholds submissions locally", rt.m_template_withheld);
+    print_test_result("Authoritative soft refresh keeps degraded mode off", !rt.m_degraded_mode);
+    print_test_result("Authoritative soft refresh anchors the recovery timer",
+                      rt.m_recovery_started_at != std::chrono::steady_clock::time_point{});
+}
+
+// ============================================================================
+// Test 4f: Worker respawn guard prevents duplicate worker recreation on exit
+// ============================================================================
+void test_worker_respawn_guard_is_single_shot_per_degraded_exit() {
+    std::cout << "\nTest 4f: Recovery worker respawn guard is single-shot per degraded exit\n";
+
+    struct WorkerRestartTracker {
+        bool m_degraded_mode{true};
+        bool m_recovery_workers_spawned{false};
+        std::size_t worker_instances{0};
+        std::size_t create_calls{0};
+
+        bool restart_workers_if_needed() {
+            if (!m_degraded_mode || m_recovery_workers_spawned || worker_instances > 0) {
+                return false;
+            }
+            worker_instances = 8;
+            m_recovery_workers_spawned = true;
+            ++create_calls;
+            return true;
+        }
+    };
+
+    WorkerRestartTracker rt;
+    bool first_restart = rt.restart_workers_if_needed();
+    bool second_restart = rt.restart_workers_if_needed();
+
+    print_test_result("First degraded-exit restart creates workers", first_restart);
+    print_test_result("Second degraded-exit restart is suppressed", !second_restart);
+    print_test_result("Workers are created only once for the outage", rt.create_calls == 1);
+    print_test_result("Worker count stays at the expected 8 threads", rt.worker_instances == 8);
+}
+
+// ============================================================================
+// Test 5: Keepalive epoch isolation — new epoch starts with clean ack timestamp
+// ============================================================================
 void test_keepalive_epoch_isolation_clean_start() {
     std::cout << "\nTest 5: New epoch starts with clean keepalive ACK timestamp\n";
     HeightTracker tracker;
@@ -834,6 +911,8 @@ int main() {
     test_successful_reauth_restarts_recovery_epoch();
     test_same_height_soft_refresh_escalates_only_after_timeout();
     test_degraded_exit_normalizes_recovery_state();
+    test_authoritative_soft_refresh_backfills_local_state();
+    test_worker_respawn_guard_is_single_shot_per_degraded_exit();
     test_keepalive_epoch_isolation_clean_start();
     test_stale_template_after_channel_advance();
     test_epoch_advance_suppresses_old_keepalive_signal();

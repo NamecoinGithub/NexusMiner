@@ -351,13 +351,15 @@ int main()
             bool request_work_called{false};
             bool discard_template_called{false};
             bool recovery_triggered{false};
+            bool soft_refresh_triggered{false};
         };
 
         // Simulate the corrected handler decision tree.
         // IMPORTANT: hash parameter is ignored for stale templates — height is authoritative.
         auto simulate_handler = [](bool stale, uint32_t blocks_behind,
                                     bool has_hash, bool hash_matches,
-                                    bool burst_grace_active) -> HandlerDecision
+                                    bool burst_grace_active,
+                                    bool tip_moved) -> HandlerDecision
         {
             HandlerDecision d;
             if (stale) {
@@ -382,7 +384,12 @@ int main()
             if (has_hash && !hash_matches) {
                 d.discard_template_called = true;
                 d.request_work_called = true;
-                d.recovery_triggered = true;
+                d.soft_refresh_triggered = true;
+                return d;
+            }
+            if (tip_moved) {
+                d.request_work_called = true;
+                d.soft_refresh_triggered = true;
             }
             return d;
         };
@@ -392,7 +399,8 @@ int main()
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/1,
                                        /*has_hash=*/true, /*hash_matches=*/false,
-                                       /*burst_grace_active=*/false);
+                                       /*burst_grace_active=*/false,
+                                       /*tip_moved=*/false);
             print_test_result("Scenario A1: 1-block lag → request_work called",
                 d.request_work_called);
             print_test_result("Scenario A2: 1-block lag → discard_template NOT called",
@@ -406,7 +414,8 @@ int main()
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/3,
                                        /*has_hash=*/true, /*hash_matches=*/false,
-                                       /*burst_grace_active=*/false);
+                                       /*burst_grace_active=*/false,
+                                       /*tip_moved=*/false);
             print_test_result("Scenario B1: 3-block lag → request_work called",
                 d.request_work_called);
             print_test_result("Scenario B2: 3-block lag → discard_template called (height alone, no hash check)",
@@ -420,7 +429,8 @@ int main()
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
                                        /*has_hash=*/true, /*hash_matches=*/true,
-                                       /*burst_grace_active=*/true);
+                                       /*burst_grace_active=*/true,
+                                       /*tip_moved=*/false);
             print_test_result("Scenario C1: 2-block burst within grace → request_work called",
                 d.request_work_called);
             print_test_result("Scenario C2: 2-block burst within grace → discard_template NOT called",
@@ -434,7 +444,8 @@ int main()
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
                                        /*has_hash=*/true, /*hash_matches=*/true,
-                                       /*burst_grace_active=*/false);
+                                       /*burst_grace_active=*/false,
+                                       /*tip_moved=*/false);
             print_test_result("Scenario D1: 2-block lag after grace → request_work called",
                 d.request_work_called);
             print_test_result("Scenario D2: 2-block lag after grace → discard_template called",
@@ -448,7 +459,8 @@ int main()
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
                                        /*has_hash=*/false, /*hash_matches=*/false,
-                                       /*burst_grace_active=*/false);
+                                       /*burst_grace_active=*/false,
+                                       /*tip_moved=*/false);
             print_test_result("Scenario E1: 2-block lag, compact payload → request_work called",
                 d.request_work_called);
             print_test_result("Scenario E2: 2-block lag, compact payload → discard called (height alone)",
@@ -456,17 +468,20 @@ int main()
         }
 
         // Scenario F: Same-height chain reorg (blocks_behind == 0, hash changed)
-        // Expected: discard template, request work, enter recovery
+        // Expected: discard template, request work, stay on soft refresh
         {
             auto d = simulate_handler(/*stale=*/false, /*blocks_behind=*/0,
                                        /*has_hash=*/true, /*hash_matches=*/false,
-                                       /*burst_grace_active=*/false);
+                                       /*burst_grace_active=*/false,
+                                       /*tip_moved=*/false);
             print_test_result("Scenario F1: Same-height reorg → discard_template called",
                 d.discard_template_called);
             print_test_result("Scenario F2: Same-height reorg → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario F3: Same-height reorg → recovery triggered",
-                d.recovery_triggered);
+            print_test_result("Scenario F3: Same-height reorg → soft refresh triggered",
+                d.soft_refresh_triggered);
+            print_test_result("Scenario F4: Same-height reorg → hard recovery NOT triggered",
+                !d.recovery_triggered);
         }
 
         // Scenario G: Healthy template (not stale, hashes match)
@@ -474,11 +489,29 @@ int main()
         {
             auto d = simulate_handler(/*stale=*/false, /*blocks_behind=*/0,
                                        /*has_hash=*/true, /*hash_matches=*/true,
-                                       /*burst_grace_active=*/false);
+                                       /*burst_grace_active=*/false,
+                                       /*tip_moved=*/false);
             print_test_result("Scenario G1: Healthy template → request_work NOT called",
                 !d.request_work_called);
             print_test_result("Scenario G2: Healthy template → discard NOT called",
                 !d.discard_template_called);
+        }
+
+        // Scenario H: Unified tip moved on another channel
+        // Expected: keep template, request work, withhold submits via soft refresh
+        {
+            auto d = simulate_handler(/*stale=*/false, /*blocks_behind=*/0,
+                                       /*has_hash=*/true, /*hash_matches=*/true,
+                                       /*burst_grace_active=*/false,
+                                       /*tip_moved=*/true);
+            print_test_result("Scenario H1: Tip moved → request_work called",
+                d.request_work_called);
+            print_test_result("Scenario H2: Tip moved → discard_template NOT called",
+                !d.discard_template_called);
+            print_test_result("Scenario H3: Tip moved → soft refresh triggered",
+                d.soft_refresh_triggered);
+            print_test_result("Scenario H4: Tip moved → hard recovery NOT triggered",
+                !d.recovery_triggered);
         }
     }
 
@@ -655,6 +688,44 @@ int main()
     // ====================================================================
     // Summary
     // ====================================================================
+    std::cout << "\nTest 14: Tip movement on another channel stays on soft-refresh path" << std::endl;
+    {
+        protocol::HeightTracker tracker;
+        protocol::MiningTemplateInterface tmpl_interface(2, 0);
+        tmpl_interface.set_height_tracker(&tracker);
+        tracker.OnPushNotification(8000, 100, 0x1d00ffff);
+
+        auto template_data = create_mock_template(8001, 0x1d00ffff, 2);
+        auto res = tmpl_interface.read_template(template_data, "test_node");
+        print_test_result("Tip-move setup: initial template valid", res.is_valid);
+        tmpl_interface.set_channel_height(101);
+
+        uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
+        protocol::PushNotificationHandler handler(logger, current_channel);
+        bool request_work_called = false;
+        bool recovery_called = false;
+        bool soft_refresh_called = false;
+
+        network::Payload payload = create_extended_push_payload(8002, 100, 0x1d00ffff, 0x00);
+        Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+
+        handler.handle_push_notification(
+            packet,
+            mining::CHANNEL_HASH,
+            ProtocolLane::STATELESS,
+            &tmpl_interface,
+            &tracker,
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
+            [&request_work_called]() { request_work_called = true; },
+            [&recovery_called]() { recovery_called = true; },
+            [&soft_refresh_called]() { soft_refresh_called = true; });
+
+        print_test_result("Tip moved requests fresh work", request_work_called);
+        print_test_result("Tip moved keeps active template valid", tmpl_interface.has_valid_template());
+        print_test_result("Tip moved notifies soft-refresh path", soft_refresh_called);
+        print_test_result("Tip moved does not notify hard recovery path", !recovery_called);
+    }
+
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Summary" << std::endl;
     std::cout << "========================================" << std::endl;
