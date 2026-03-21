@@ -37,20 +37,6 @@ void PushNotificationHandler::handle_push_notification(
         m_logger->info("[Solo Push] ✉️  {}_BLOCK_AVAILABLE received", ch_name);
     }
 
-    /* Validate channel — since node now broadcasts BOTH channels on every push update,
-     * receiving a push for the non-subscribed channel is expected and informational.
-     * Treat it as a no-op: update push-received timestamp (done by caller) but do not
-     * refresh the template or stop workers. */
-    if (m_current_channel != expected_channel)
-    {
-        m_logger->info("[Solo Push] ℹ️  {} push received on {} lane (mining {} channel) — informational only, ignoring",
-                       ch_name,
-                       (lane == ProtocolLane::STATELESS) ? "stateless" : "legacy",
-                       (m_current_channel == mining::CHANNEL_PRIME) ? "Prime" :
-                       (m_current_channel == mining::CHANNEL_HASH)  ? "Hash"  : "Unknown");
-        return;
-    }
-
     /* Validate payload (must be 12 or 140 bytes) */
     const bool is_compact  = (packet.m_length == PAYLOAD_SIZE_COMPACT);
     const bool is_extended = (packet.m_length == PAYLOAD_SIZE_EXTENDED);
@@ -59,6 +45,23 @@ void PushNotificationHandler::handle_push_notification(
     {
         m_logger->error("[Solo Push] Invalid payload: {} bytes (expected {} or {})",
                        packet.m_length, PAYLOAD_SIZE_COMPACT, PAYLOAD_SIZE_EXTENDED);
+        return;
+    }
+
+    /* Validate channel — since node now broadcasts BOTH channels on every push update,
+     * receiving a push for the non-subscribed channel is expected and informational.
+     * Treat it as a no-op for mining decisions, but still record push liveness so
+     * degraded-mode recovery knows the node is actively communicating. */
+    if (m_current_channel != expected_channel)
+    {
+        if (height_tracker) {
+            height_tracker->OnPushLiveness();
+        }
+        m_logger->info("[Solo Push] ℹ️  {} push received on {} lane (mining {} channel) — informational only, refreshed push liveness",
+                       ch_name,
+                       (lane == ProtocolLane::STATELESS) ? "stateless" : "legacy",
+                       (m_current_channel == mining::CHANNEL_PRIME) ? "Prime" :
+                       (m_current_channel == mining::CHANNEL_HASH)  ? "Hash"  : "Unknown");
         return;
     }
 

@@ -26,6 +26,7 @@
 #include <vector>
 #include <cstdint>
 #include <cassert>
+#include <chrono>
 #include <functional>
 #include <optional>
 
@@ -156,6 +157,50 @@ static void test_height_tracker_updated_via_callback()
     print_test_result("HeightTracker difficulty_nbits == DIFF",  snap.difficulty_nbits == DIFF);
     print_test_result("HeightTracker source == PUSH",
         snap.last_update_source == HeightTracker::UpdateSource::PUSH);
+}
+
+// ============================================================================
+// Test 2b: Channel-mismatch push refreshes liveness without updating heights
+// ============================================================================
+static void test_channel_mismatch_refreshes_push_liveness_only()
+{
+    std::cout << "\nTest 2b: channel-mismatch push refreshes liveness without height update\n";
+
+    constexpr uint32_t UNIFIED  = 5001;
+    constexpr uint32_t CHANNEL  = 301;
+    constexpr uint32_t DIFF     = 0x1c0e9f35;
+
+    HeightTracker tracker;
+
+    auto logger = spdlog::get("logger");
+    if (!logger) logger = spdlog::default_logger();
+    uint8_t mining_channel = CHANNEL_PRIME;
+    PushNotificationHandler handler(logger, mining_channel);
+    Packet pkt = make_push_packet(UNIFIED, CHANNEL, DIFF);
+    pkt.m_header = nexusminer::LLP::HASH_BLOCK_AVAILABLE;
+
+    bool callback_invoked = false;
+    auto before_push = std::chrono::steady_clock::now();
+    handler.handle_push_notification(
+        pkt, CHANNEL_HASH, ProtocolLane::LEGACY,
+        nullptr, &tracker,
+        [&](uint32_t, uint32_t, uint32_t) { callback_invoked = true; },
+        []() {}
+    );
+    auto after_push = std::chrono::steady_clock::now();
+
+    auto snap = tracker.GetSnapshot();
+    print_test_result("channel-mismatch push does not invoke height callback", !callback_invoked);
+    print_test_result("channel-mismatch push refreshes push liveness timestamp",
+        snap.last_push_notification_at >= before_push && snap.last_push_notification_at <= after_push);
+    print_test_result("channel-mismatch push does not set last_height_update",
+        snap.last_height_update == std::chrono::steady_clock::time_point{});
+    print_test_result("channel-mismatch push does not advance unified_height",
+        snap.unified_height == 0);
+    print_test_result("channel-mismatch push does not advance channel_height",
+        snap.channel_height == 0);
+    print_test_result("channel-mismatch push does not update difficulty",
+        snap.difficulty_nbits == 0);
 }
 
 // ============================================================================
@@ -352,6 +397,7 @@ int main()
 
     test_push_handler_callback_values();
     test_height_tracker_updated_via_callback();
+    test_channel_mismatch_refreshes_push_liveness_only();
     test_channel_manager_same_data_as_height_tracker();
     test_fork_detection_via_update_callback();
     test_height_tracker_staleness_matches_expected();

@@ -35,6 +35,12 @@ void HeightTracker::OnPushNotification(uint32_t unified_height,
     m_diagnostic.last_push_at = now;
 }
 
+void HeightTracker::OnPushLiveness()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_diagnostic.last_push_at = std::chrono::steady_clock::now();
+}
+
 // ── OnGetRound: updates DiagnosticObserverState round fields ONLY ─────────────
 void HeightTracker::OnGetRound(uint32_t unified_height,
                                 uint32_t channel_height,
