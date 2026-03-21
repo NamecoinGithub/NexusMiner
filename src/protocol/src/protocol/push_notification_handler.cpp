@@ -203,7 +203,9 @@ void PushNotificationHandler::handle_push_notification(
         if (has_hash_prev_block)
         {
             auto const* tmpl = template_interface->get_current_template();
-            if (tmpl && tmpl->block.hashPrevBlock != notification_hash_prev_block)
+            if (tmpl &&
+                snap.has_same_height_push_tip_replacement(tmpl->block.hashPrevBlock,
+                                                          tmpl->nChannelHeight))
             {
                 // Hash mismatch with current height: same-height canonical tip-anchor replacement.
                 m_logger->warn("[Solo Push] ⚡ Unified Tip-Anchor Changed — same channel height, canonical prev hash replaced — hot-swapping template without degraded-mode escalation");
@@ -216,7 +218,7 @@ void PushNotificationHandler::handle_push_notification(
             }
             else if (tmpl)
             {
-                m_logger->debug("[Solo Push] ✓ hashPrevBlock matches current template");
+                m_logger->debug("[Solo Push] ✓ Extended push hash hint does not invalidate current template");
             }
         }
 

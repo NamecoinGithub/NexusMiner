@@ -105,6 +105,10 @@ No polling needed! (GET_ROUND is backup only)
   stale ownership/session-debug preflight checks.
 - Template freshness is enforced by `HeightTracker` and template validation, not
   by dropping these delivery packets during ingress.
+- An extended PUSH `hashPrevBlock` hint may only hot-swap a template for the
+  same target height (`template_channel_target == push_channel_height + 1`).
+  Older or out-of-order push packets must never override the current template on
+  their own; `BLOCK_DATA` remains the canonical source.
 
 ## Implementation (Post-PR #123)
 
