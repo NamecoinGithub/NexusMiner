@@ -1481,6 +1481,11 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         return;
     }
 
+    // Template-lifeline packets (push notifications and template deliveries) must
+    // stay open even when older session-debugging logic would otherwise defer or
+    // stale-drop ingress. Dedicated handlers apply their own template validity
+    // checks; authoritative-session preflight remains reserved for packets whose
+    // semantics truly depend on the currently active session.
     if (requires_active_session_packet(packet)) {
         PacketIngressPreflightOptions preflight;
         preflight.validate_lane = true;
@@ -1713,16 +1718,12 @@ bool Solo::matches_stateless_opcode(Packet const& packet, uint16_t legacy_opcode
 
 bool Solo::requires_active_session_packet(Packet const& packet)
 {
-    return matches_opcode(packet, Packet::BLOCK_DATA) ||
-           matches_opcode(packet, Packet::ACCEPT) ||
+    return matches_opcode(packet, Packet::ACCEPT) ||
            matches_opcode(packet, LLP::GOOD_BLOCK) ||
            matches_opcode(packet, Packet::REJECT) ||
            matches_opcode(packet, LLP::ORPHAN_BLOCK) ||
            matches_opcode(packet, Packet::NEW_ROUND) ||
            matches_opcode(packet, Packet::OLD_ROUND) ||
-           matches_opcode(packet, Packet::PRIME_BLOCK_AVAILABLE) ||
-           matches_opcode(packet, Packet::HASH_BLOCK_AVAILABLE) ||
-           matches_stateless_opcode(packet, Packet::GET_BLOCK) ||
            matches_opcode(packet, Packet::MINER_REWARD_RESULT) ||
            (packet.m_is_uint16_opcode &&
             packet.m_header == ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK) ||
@@ -1732,12 +1733,6 @@ bool Solo::requires_active_session_packet(Packet const& packet)
 
 void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
-    PacketIngressPreflightOptions preflight;
-    preflight.owner = &m_last_get_block_request_owner;
-    if (!run_packet_ingress_preflight("Solo BlockData", preflight)) {
-        return;
-    }
-
         // Enhanced diagnostics: Check payload is non-null
         if (!packet.m_data) {
             m_logger->error("[Solo] CRITICAL: BLOCK_DATA received with null payload");
@@ -3327,18 +3322,6 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
 
 void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
-    PacketIngressPreflightOptions preflight;
-    preflight.owner = &m_last_get_block_request_owner;
-    if (!run_packet_ingress_preflight("Solo StatelessGetBlock", preflight)) {
-        return;
-    }
-
-    if (!ensure_session_ready_for_ingress("Solo Stateless",
-                                          "STATELESS_GET_BLOCK (0xD081)",
-                                          false)) {
-        return;
-    }
-
     // ═══════════════════════════════════════════════════════════════════
     // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!
     // ═══════════════════════════════════════════════════════════════════

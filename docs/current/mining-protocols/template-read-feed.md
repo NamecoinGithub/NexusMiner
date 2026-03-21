@@ -57,6 +57,8 @@ The READ operation processes incoming mining templates (BLOCK_DATA packets) from
 ### Template Reading Flow
 
 1. **Receive BLOCK_DATA packet**
+   - Treat `BLOCK_DATA` / stateless `GET_BLOCK` as template-delivery lifeline packets
+   - Never stale-drop them at ingress because of session-debug ownership checks
    - Validate packet structure
    - Check minimum size requirements (92 bytes for Phase 2)
 
@@ -233,6 +235,9 @@ The interface provides detailed logging at multiple levels:
 - All rejections trigger a new work request (GET_BLOCK)
 - Stale templates are rejected and trigger new work request
 - Parse failures indicate protocol mismatch - check node version
+- Freshness protection is applied after ingress by `HeightTracker` and template validation,
+  so stale responses cannot regress the canonical template feed even though delivery packets
+  remain open.
 
 ## Files
 
