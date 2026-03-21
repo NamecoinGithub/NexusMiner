@@ -13,6 +13,9 @@
  *  8. Degraded forced retry sends within bounded interval
  *  9. Dedup still allows periodic forced retry in degraded mode
  * 10. request_work empty schedules delayed retry (no starvation)
+ * 11. ⚡ Unified Tip-Anchor Changed — dedup reset allows fresh GET_BLOCK despite recent prior request
+ * 12. New recovery epoch does not inherit stale GET_BLOCK suppression state; anti-flood preserved within epoch
+ * 13. Anti-flood preserved — true duplicates in same epoch/state still suppressed
  */
 
 #include "protocol/packet_builder.hpp"
@@ -413,6 +416,114 @@ void test_request_work_empty_delayed_retry_path() {
 }
 
 // ============================================================================
+// Test 11: Same-height tip-anchor change: dedup reset allows fresh GET_BLOCK
+//
+// Simulates the Unified Tip-Anchor Changed path: the canonical prev hash
+// changes at the same channel height.  The old dedup timestamp refers to
+// a request for the wrong canonical state and must not suppress the new one.
+// ============================================================================
+void test_tip_anchor_change_resets_dedup_allows_fresh_get_block() {
+    std::cout << "\nTest 11: ⚡ Unified Tip-Anchor Changed — dedup reset allows fresh GET_BLOCK\n";
+
+    GetBlockDeduplicator dedup;
+
+    // First GET_BLOCK succeeds (current canonical tip-anchor, epoch 1)
+    auto payload1 = dedup.get_work();
+    bool first_success = (payload1 != nullptr && !payload1->empty());
+    print_test_result("Initial GET_BLOCK for first tip-anchor succeeds", first_success);
+
+    // Immediate second request within 100ms is suppressed (same epoch, no tip change)
+    auto payload_dup = dedup.get_work();
+    bool dup_suppressed = (payload_dup == nullptr);
+    print_test_result("Immediate duplicate within same epoch is suppressed", dup_suppressed);
+
+    // ⚡ Unified Tip-Anchor Changed — simulate recovery epoch reset:
+    // reset_get_block_dedup_state() clears the dedup timestamp so the new canonical
+    // tip-anchor's GET_BLOCK is not blocked by the old request's timestamp.
+    dedup.reset_timestamp();  // mirrors Solo::reset_get_block_dedup_state()
+
+    // Request for new canonical tip-anchor must succeed immediately despite
+    // being within 100ms of the previous request.
+    auto payload_recovery = dedup.get_work();
+    bool recovery_allowed = (payload_recovery != nullptr && !payload_recovery->empty());
+    print_test_result("GET_BLOCK after tip-anchor change succeeds (not suppressed)", recovery_allowed);
+}
+
+// ============================================================================
+// Test 12: New recovery epoch does not inherit stale dedup suppression state
+//
+// Confirms that once the dedup state is reset at recovery epoch boundary,
+// subsequent rapid-fire requests in the *new* epoch are correctly deduplicated
+// again (anti-flood preserved) while the first request is allowed through.
+// ============================================================================
+void test_new_recovery_epoch_does_not_inherit_stale_dedup() {
+    std::cout << "\nTest 12: New recovery epoch — anti-flood preserved within epoch\n";
+
+    GetBlockDeduplicator dedup;
+    auto now = std::chrono::steady_clock::now();
+
+    // Epoch 1: first request succeeds
+    auto p1 = dedup.get_work();
+    bool epoch1_first_ok = (p1 != nullptr && !p1->empty());
+    print_test_result("Epoch 1 first GET_BLOCK succeeds", epoch1_first_ok);
+
+    // Epoch 1: second rapid request is suppressed
+    auto p2 = dedup.get_work();
+    bool epoch1_second_suppressed = (p2 == nullptr);
+    print_test_result("Epoch 1 second rapid request suppressed (anti-flood)", epoch1_second_suppressed);
+
+    // ⚡ Recovery epoch transition (Unified Tip-Anchor Changed or degraded recovery begin)
+    dedup.reset_timestamp();  // mirrors Solo::reset_get_block_dedup_state()
+
+    // Epoch 2: first request after reset succeeds (new canonical state)
+    auto p3 = dedup.get_work();
+    bool epoch2_first_ok = (p3 != nullptr && !p3->empty());
+    print_test_result("Epoch 2 first GET_BLOCK after reset succeeds", epoch2_first_ok);
+
+    // Epoch 2: second rapid request within same epoch is still suppressed (anti-flood preserved)
+    auto p4 = dedup.get_work();
+    bool epoch2_second_suppressed = (p4 == nullptr);
+    print_test_result("Epoch 2 anti-flood still active — rapid duplicate suppressed", epoch2_second_suppressed);
+
+    // Verify call count is as expected
+    bool correct_count = (dedup.get_call_count() == 4);
+    print_test_result("All 4 calls tracked regardless of suppression", correct_count);
+}
+
+// ============================================================================
+// Test 13: Anti-flood preserved — true duplicates in same epoch still suppressed
+//
+// Verifies that the dedup reset mechanism does not disable flood protection:
+// within a single recovery epoch, rapid duplicate requests are still suppressed.
+// ============================================================================
+void test_anti_flood_preserved_within_same_epoch() {
+    std::cout << "\nTest 13: Anti-flood preserved for true duplicates (same epoch/state)\n";
+
+    GetBlockDeduplicator dedup;
+
+    // Send first request — should succeed
+    auto p1 = dedup.get_work();
+    bool first_ok = (p1 != nullptr && !p1->empty());
+
+    // Fire 5 rapid duplicates — all must be suppressed
+    int suppressed = 0;
+    for (int i = 0; i < 5; i++) {
+        auto p = dedup.get_work();
+        if (!p || p->empty()) suppressed++;
+    }
+
+    bool flood_blocked = (suppressed == 5);
+    print_test_result("First request in epoch succeeds", first_ok);
+    print_test_result("5 rapid true duplicates are all suppressed", flood_blocked);
+
+    // After dedup window, one more request should succeed
+    std::this_thread::sleep_for(std::chrono::milliseconds(110));
+    auto p_after = dedup.get_work();
+    bool after_window_ok = (p_after != nullptr && !p_after->empty());
+    print_test_result("After dedup window, next request succeeds again", after_window_ok);
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 int main() {
@@ -430,6 +541,9 @@ int main() {
     test_degraded_forced_retry_sends_within_interval();
     test_dedup_still_allows_periodic_forced_retry();
     test_request_work_empty_delayed_retry_path();
+    test_tip_anchor_change_resets_dedup_allows_fresh_get_block();
+    test_new_recovery_epoch_does_not_inherit_stale_dedup();
+    test_anti_flood_preserved_within_same_epoch();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";

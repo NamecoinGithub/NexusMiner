@@ -460,8 +460,22 @@ void MiningTemplateInterface::mark_template_stale_unsafe(const std::string& reas
         m_current_template.state = TemplateState::STALE;
         m_templates_stale.fetch_add(1, std::memory_order_relaxed);
         
-        m_logger->info("[TemplateInterface] Template marked stale{}{}", 
-            reason.empty() ? "" : ": ", reason);
+        // Emit operator-facing terminology matching the actual invalidation cause.
+        const bool has_reason = !reason.empty();
+        const bool is_lag = has_reason && (reason == "multi_block_lag" || reason.find("behind") != std::string::npos);
+        const bool is_timeout = has_reason && (reason.find("timeout") != std::string::npos ||
+                                               reason.find("age")     != std::string::npos ||
+                                               reason.find("expired") != std::string::npos);
+        if (reason == "same_height_chain_reorg") {
+            m_logger->info("[TemplateInterface] ⚡ Unified Tip-Anchor Changed — template superseded by same-height chain reorg (channel height unchanged, canonical prev hash replaced)");
+        } else if (is_lag) {
+            m_logger->info("[TemplateInterface] 📉 Template behind canonical chain ({})", reason);
+        } else if (is_timeout) {
+            m_logger->info("[TemplateInterface] ⏱️ Template expired: {}", reason);
+        } else {
+            m_logger->info("[TemplateInterface] Template invalidated{}{}", 
+                has_reason ? ": " : "", reason);
+        }
         m_template_channel_height_snapshot = 0;
         m_has_snapshot = false;
     }
@@ -1039,7 +1053,7 @@ bool MiningTemplateInterface::update_height(uint32_t new_height)
             m_current_unified_height, new_height, old_height);
         
         if (old_height < new_height) {
-            m_logger->info("[TemplateInterface] ❌ Template is now stale - discarding");
+            m_logger->info("[TemplateInterface] ❌ Template behind canonical chain (height advanced: {} → {}) — discarding", old_height, new_height);
             discard_template_unsafe("Height changed");
             template_discarded = true;
             m_templates_expired_height.fetch_add(1, std::memory_order_relaxed);
@@ -1090,7 +1104,7 @@ bool MiningTemplateInterface::update_channel_height(uint32_t channel, uint32_t n
         m_logger->info("[TemplateInterface]   Actual node height:   {}", new_channel_height);
         m_logger->info("[TemplateInterface]   → Another {} block was mined",
             (channel == 1) ? "Prime" : (channel == 2) ? "Hash" : "Stake");
-        m_logger->info("[TemplateInterface] ✗ Discarding stale template (channel-specific staleness)");
+        m_logger->info("[TemplateInterface] 📉 Template behind canonical chain (channel-specific height advanced) — discarding");
         
         discard_template_unsafe("Channel height advanced");
         m_templates_expired_height.fetch_add(1, std::memory_order_relaxed);
@@ -1131,7 +1145,7 @@ bool MiningTemplateInterface::check_staleness_by_channel_delta(uint32_t current_
         current_channel_height, m_template_channel_height_snapshot);
 
     if (current_channel_height > m_template_channel_height_snapshot) {
-        m_logger->warn("[TemplateInterface] ⚠️  STALE: channel advanced {} → {}",
+        m_logger->warn("[TemplateInterface] 📉 Template behind canonical chain: channel advanced {} → {}",
             m_template_channel_height_snapshot, current_channel_height);
         discard_template_unsafe("Channel height advanced past snapshot");
         m_templates_expired_height.fetch_add(1, std::memory_order_relaxed);
