@@ -103,17 +103,23 @@ Log signature:
 ```
 On every push notification:
   1. Update HeightTracker (unified_height, channel_height, difficulty)
-  2. If extended push carries hashPrevBlock, store it as the latest push tip-anchor hint
+  2. If extended push carries hashPrevBlock, store it as the authoritative node-side
+     new-tip hash hint for this push event
   3. Take snapshot: snap = height_tracker.GetSnapshot()
   4. if snap.is_template_stale()  → request_work()   [reason: channel_advanced]
-  5. elif snap.is_tip_moved()     → request_work()   [reason: tip_moved]
-  6. else                         → continue mining current template
+  5. elif same-height push hashPrevBlock changed
+       → discard current template
+       → request replacement immediately
+       → keep miner on soft template-swap path (withheld submissions, no hard degraded-mode entry yet)
+  6. elif snap.is_tip_moved()     → request_work()   [reason: tip_moved]
+  7. else                         → continue mining current template
 
 Before any freshly validated template is fed live:
   A. finalize channel target metadata
   B. if snap.has_same_height_push_tip_replacement(template.hashPrevBlock, template.nChannelHeight)
        → discard template as same_height_chain_reorg
        → request fresh work
+       → stay on the soft template-swap path until a replacement template is cross-checked
   C. otherwise feed workers
 ```
 
@@ -121,8 +127,12 @@ Before any freshly validated template is fed live:
 
 ## 3. Push Payload Semantics
 
-Every `PRIME_BLOCK_AVAILABLE` / `HASH_BLOCK_AVAILABLE` (legacy or stateless) carries
-exactly **12 bytes, big-endian**:
+Every `PRIME_BLOCK_AVAILABLE` / `HASH_BLOCK_AVAILABLE` carries either:
+
+- **12 bytes** on the compact/legacy form, or
+- **140 bytes** on the extended/stateless form (`12-byte metadata + 128-byte hashPrevBlock (1024-bit hash)`)
+
+Common metadata fields are big-endian:
 
 ```
 Byte offset  Field               Type
@@ -130,14 +140,18 @@ Byte offset  Field               Type
 [0 – 3]      unified_height      uint32 BE
 [4 – 7]      channel_height      uint32 BE   (Prime or Hash — miner's channel only)
 [8 – 11]     nBits (difficulty)  uint32 BE   (compact target format)
+[12 – 139]   hashPrevBlock       uint1024 LE (extended/stateless only)
 ```
 
 The node sends this payload:
 - **Immediately** after the miner subscribes (`MINER_READY`)
 - **On every block accepted on any channel** (universal PoW tip push — see § 4)
 
-> No hashes are included in the push payload.  The miner infers tip movement
-> purely from height comparisons.
+The extended `hashPrevBlock` is authoritative for the node's newly announced tip
+anchor, but it is still only a push-side hint inside the miner until a
+replacement template is received and cross-checked. The miner must not use that
+push hash alone as the final trigger for hard degraded-mode decisions; it first
+enters the lighter template-swap path and escalates only if replacement stalls.
 
 ---
 

@@ -184,6 +184,9 @@ public:
     using Recovery_handler = std::function<void()>;
     void set_recovery_initiated_handler(Recovery_handler h) { m_recovery_handler = std::move(h); }
 
+    using Soft_refresh_handler = std::function<void()>;
+    void set_soft_refresh_requested_handler(Soft_refresh_handler h) { m_soft_refresh_handler = std::move(h); }
+
     // Session-expired callback: called when a KEEPALIVE ACK session_id mismatch is detected.
     // Worker_manager registers this to trigger recovery on stale session (same pattern as
     // Recovery_handler above).
@@ -315,6 +318,9 @@ private:
     void update_connection_metadata(const std::shared_ptr<network::Connection>& connection);
     bool validate_authoritative_session(const char* log_scope, bool require_reward_binding) const;
     void log_session_container_summary(const char* log_scope) const;
+    void mark_authoritative_soft_refresh(const std::string& reason);
+    void mark_authoritative_recovery_required(const std::string& reason);
+    void mark_authoritative_recovery_healthy(const std::string& reason = "");
     struct PacketIngressPreflightOptions {
         const SessionOwnershipStamp* owner{nullptr};
         uint32_t packet_session_id{0};
@@ -503,6 +509,7 @@ private:
     // Recovery callback — invoked when a push handler fires GET_BLOCK for a stale template
     // (channel_advanced staleness), signalling Worker_manager to enter recovery_pending state.
     Recovery_handler m_recovery_handler;
+    Soft_refresh_handler m_soft_refresh_handler;
 
     // Session-expired callback — invoked when a keepalive ACK carries a mismatched session_id,
     // signalling Worker_manager to trigger recovery for the stale session.

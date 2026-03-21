@@ -103,6 +103,8 @@ public:
 
     void mark_recovery_required(const std::string& reason);
 
+    void mark_recovery_healthy(const std::string& reason = "");
+
     void mark_session_expired(const std::string& reason);
 
     void clear_for_disconnect(const std::string& reward_address = {},

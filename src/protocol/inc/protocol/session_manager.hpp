@@ -97,6 +97,7 @@ public:
         STALE_PACKET_DROPPED,
         EPOCH_MISMATCH,
         RECOVERY_REQUESTED,
+        RECOVERY_HEALTHY,
         FORCED_REAUTH,
         SESSION_RESET,
         SUBMIT_SENT,
@@ -222,6 +223,8 @@ public:
     void mark_soft_refresh_requested(const std::string& reason = "");
 
     void mark_recovery_required(const std::string& reason);
+
+    void mark_recovery_healthy(const std::string& reason = "");
 
     void mark_session_expired(const std::string& reason);
 

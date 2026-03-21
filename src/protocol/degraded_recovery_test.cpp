@@ -300,6 +300,118 @@ void test_successful_reauth_restarts_recovery_epoch() {
 }
 
 // ============================================================================
+// Test 4c: Soft refresh timeout escalates only after the hot-swap window stalls
+// ============================================================================
+void test_same_height_soft_refresh_escalates_only_after_timeout() {
+    std::cout << "\nTest 4c: Same-height replacement stays hot-swappable until timeout\n";
+    constexpr int64_t RECOVERY_WINDOW_SECONDS = 60;
+    constexpr int64_t TIMEOUT_TEST_SECONDS = RECOVERY_WINDOW_SECONDS + 1;
+
+    struct RecoveryTracker {
+        bool m_degraded_mode{false};
+        bool m_template_withheld{false};
+        bool m_recovery_pending{false};
+        uint64_t m_recovery_epoch{0};
+        std::chrono::steady_clock::time_point m_recovery_started_at{};
+
+        void start_soft_refresh() {
+            ++m_recovery_epoch;
+            m_recovery_pending = true;
+            m_template_withheld = true;
+            m_recovery_started_at = std::chrono::steady_clock::now();
+        }
+
+        bool should_escalate(int64_t recovery_window_seconds) const {
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - m_recovery_started_at).count();
+            return elapsed >= recovery_window_seconds;
+        }
+
+        void escalate() {
+            m_template_withheld = false;
+            m_degraded_mode = true;
+        }
+    };
+
+    RecoveryTracker rt;
+    rt.start_soft_refresh();
+    print_test_result("Soft refresh starts recovery tracking", rt.m_recovery_pending && rt.m_recovery_epoch == 1);
+    print_test_result("Soft refresh withholds submissions without degraded mode",
+                      rt.m_template_withheld && !rt.m_degraded_mode);
+    print_test_result("Soft refresh does not escalate immediately", !rt.should_escalate(RECOVERY_WINDOW_SECONDS));
+
+    rt.m_recovery_started_at = std::chrono::steady_clock::now() - std::chrono::seconds(TIMEOUT_TEST_SECONDS);
+    print_test_result("Soft refresh escalates after timeout", rt.should_escalate(RECOVERY_WINDOW_SECONDS));
+    rt.escalate();
+    print_test_result("Timeout escalation enters degraded mode", rt.m_degraded_mode);
+    print_test_result("Timeout escalation clears soft-pause guard", !rt.m_template_withheld);
+}
+
+// ============================================================================
+// Test 4d: clear_recovery_state-style normalization restores healthy baseline
+// ============================================================================
+void test_degraded_exit_normalizes_recovery_state() {
+    std::cout << "\nTest 4d: Degraded exit normalization clears recovery bookkeeping\n";
+
+    struct RecoveryTracker {
+        bool m_degraded_mode{true};
+        bool m_recovery_pending{true};
+        bool m_template_withheld{true};
+        uint64_t m_recovery_epoch{7};
+        std::chrono::steady_clock::time_point m_recovery_started_at{std::chrono::steady_clock::now()};
+        std::chrono::steady_clock::time_point m_recovery_last_get_block_attempted_at{std::chrono::steady_clock::now()};
+        std::chrono::steady_clock::time_point m_recovery_last_get_block_transmitted_at{std::chrono::steady_clock::now()};
+        bool m_recovery_get_block_transmitted{true};
+        std::chrono::steady_clock::time_point m_next_forced_retry_due{std::chrono::steady_clock::now()};
+        std::deque<std::chrono::steady_clock::time_point> m_forced_retry_send_timestamps{
+            std::chrono::steady_clock::now()};
+        bool m_forced_retry_timer_pending{true};
+        uint64_t m_forced_retry_timer_token{2};
+        std::chrono::steady_clock::time_point m_degraded_since{std::chrono::steady_clock::now()};
+        std::chrono::steady_clock::time_point m_last_escalation_at{std::chrono::steady_clock::now()};
+
+        void clear() {
+            m_degraded_mode = false;
+            m_recovery_pending = false;
+            m_template_withheld = false;
+            m_recovery_epoch = 0;
+            m_recovery_started_at = {};
+            m_recovery_last_get_block_attempted_at = {};
+            m_recovery_last_get_block_transmitted_at = {};
+            m_recovery_get_block_transmitted = false;
+            m_next_forced_retry_due = {};
+            m_forced_retry_send_timestamps.clear();
+            m_forced_retry_timer_pending = false;
+            ++m_forced_retry_timer_token;
+            m_degraded_since = {};
+            m_last_escalation_at = {};
+        }
+    };
+
+    RecoveryTracker rt;
+    const auto old_token = rt.m_forced_retry_timer_token;
+    rt.clear();
+
+    print_test_result("Degraded flag cleared", !rt.m_degraded_mode);
+    print_test_result("Recovery pending cleared", !rt.m_recovery_pending);
+    print_test_result("Soft-pause guard cleared", !rt.m_template_withheld);
+    print_test_result("Recovery epoch reset", rt.m_recovery_epoch == 0);
+    print_test_result("GET_BLOCK bookkeeping cleared",
+                      rt.m_recovery_started_at == std::chrono::steady_clock::time_point{} &&
+                      rt.m_recovery_last_get_block_attempted_at == std::chrono::steady_clock::time_point{} &&
+                      rt.m_recovery_last_get_block_transmitted_at == std::chrono::steady_clock::time_point{} &&
+                      !rt.m_recovery_get_block_transmitted);
+    print_test_result("Forced retry state cleared",
+                      rt.m_next_forced_retry_due == std::chrono::steady_clock::time_point{} &&
+                      rt.m_forced_retry_send_timestamps.empty() &&
+                      !rt.m_forced_retry_timer_pending &&
+                      rt.m_forced_retry_timer_token == old_token + 1);
+    print_test_result("Escalation timers cleared",
+                      rt.m_degraded_since == std::chrono::steady_clock::time_point{} &&
+                      rt.m_last_escalation_at == std::chrono::steady_clock::time_point{});
+}
+
+// ============================================================================
 // Test 5: Keepalive epoch isolation — new epoch starts with clean ack timestamp
 // ============================================================================
 void test_keepalive_epoch_isolation_clean_start() {
@@ -660,6 +772,8 @@ int main() {
     test_recovery_pending_debounce_idempotent();
     test_recovery_get_block_no_permanent_starvation();
     test_successful_reauth_restarts_recovery_epoch();
+    test_same_height_soft_refresh_escalates_only_after_timeout();
+    test_degraded_exit_normalizes_recovery_state();
     test_keepalive_epoch_isolation_clean_start();
     test_stale_template_after_channel_advance();
     test_epoch_advance_suppresses_old_keepalive_signal();

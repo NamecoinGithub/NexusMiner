@@ -392,6 +392,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 if (workers_fed > 0) {
                     m_logger->info("[Worker_manager] ✓ Template distributed to {} workers - MINING STARTED", 
                                   workers_fed);
+                    if (solo_protocol) {
+                        solo_protocol->mark_authoritative_recovery_healthy("fresh_template_distributed_to_workers");
+                    }
                     // ✅ Clear degraded mode and all recovery state now that a valid template
                     // has been successfully delivered to workers.  This is intentionally done
                     // AFTER distribution so we only exit degraded mode when workers actually
@@ -455,17 +458,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
     }
 
         /* ========== REGISTER RECOVERY INITIATED HANDLER ========== */
-        /* CRITICAL FIX: Workers must STOP immediately when template becomes stale.  */
-        /* The old "soft-pause" approach was BACKWARDS — it allowed workers to keep  */
-        /* mining on stale templates while blocking submissions. This wasted cycles. */
-        /*                                                                            */
-        /* CORRECT ARCHITECTURE:                                                     */
-        /*   1. Template becomes stale → STOP workers immediately                    */
-        /*   2. Request fresh template via GET_BLOCK                                 */
-        /*   3. When fresh template arrives → START workers with new template        */
-        /*                                                                            */
-        /* Workers will be recreated when the fresh template arrives (handled by the */
-        /* template distribution handler's degraded-mode guard at line ~385).        */
+        /* Multi-block/channel-stale recovery remains a hard stop path. Same-height  */
+        /* canonical replacement now takes the dedicated soft-refresh handler below, */
+        /* which withholds submissions while the replacement template is fetched.    */
         m_primary_node_session->set_recovery_initiated_handler(
             [this]() {
                 bool was_pending = m_recovery_pending;
@@ -483,6 +478,21 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             }
         );
         m_logger->info("[Worker_manager] Recovery handler registered");
+
+        m_primary_node_session->set_soft_refresh_requested_handler(
+            [this]() {
+                bool had_pending = m_recovery_pending;
+                mark_recovery_initiated("same_height_push_tip_replacement");
+                m_template_withheld = true;
+
+                if (!had_pending) {
+                    m_logger->warn("[Worker_manager] Soft refresh: withholding submissions while same-height replacement template is fetched");
+                } else {
+                    m_logger->info("[Worker_manager] Soft refresh already pending — keeping template withheld until replacement arrives");
+                }
+            }
+        );
+        m_logger->info("[Worker_manager] Soft-refresh handler registered");
 
         /* ========== REGISTER SESSION EXPIRED HANDLER ========== */
         /* Called by Solo when SESSION_EXPIRED opcode is received from the node.     */
@@ -1575,6 +1585,9 @@ void Worker_manager::stop_all_workers()
     bool first_entry = !m_degraded_mode;
     m_degraded_mode = true;
     m_template_withheld = false;  // Full stop supersedes soft-pause
+    if (auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr) {
+        solo_protocol->mark_authoritative_recovery_required("workers_stopped_waiting_for_valid_template");
+    }
 
     // Record when degraded mode was first entered (only on first entry — not overwritten
     // by subsequent stop_all_workers() calls within the same outage, so the escape ladder
@@ -1754,6 +1767,47 @@ void Worker_manager::check_template_health()
     }
 
     if (!template_interface->has_valid_template()) {
+        if (m_recovery_pending && !m_degraded_mode) {
+            auto now = std::chrono::steady_clock::now();
+            uint8_t channel = template_interface->get_channel();
+            std::string channel_name = (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
+            const int64_t effective_recovery_window =
+                (channel == mining::CHANNEL_PRIME) ? RECOVERY_WINDOW_SECONDS_PRIME
+                                                   : RECOVERY_WINDOW_SECONDS_HASH;
+            if (m_recovery_started_at == std::chrono::steady_clock::time_point{}) {
+                m_recovery_started_at = now;
+            }
+            auto recovery_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
+                now - m_recovery_started_at).count();
+
+            if (recovery_elapsed_s < effective_recovery_window) {
+                bool first_send = (m_recovery_last_get_block_transmitted_at == std::chrono::steady_clock::time_point{});
+                auto since_last_s = first_send ? recovery_elapsed_s
+                    : std::chrono::duration_cast<std::chrono::seconds>(
+                          now - m_recovery_last_get_block_transmitted_at).count();
+
+                if (first_send || since_last_s >= RECOVERY_RESEND_INTERVAL_SECONDS) {
+                    m_logger->info("[Worker_manager] ⟳ Template swap pending on {} channel (epoch {}, {}s elapsed) — requesting replacement template",
+                                   channel_name, m_recovery_epoch, recovery_elapsed_s);
+                    retry_template_request(true);
+                } else {
+                    m_logger->info("[Worker_manager] ⧖ Template swap pending on {} channel (epoch {}, {}s elapsed) — submissions withheld, next retry in {}s",
+                                   channel_name,
+                                   m_recovery_epoch,
+                                   recovery_elapsed_s,
+                                   RECOVERY_RESEND_INTERVAL_SECONDS - since_last_s);
+                }
+                return;
+            }
+
+            m_logger->warn("[Worker_manager] ⚡ Template swap timeout on {} channel (epoch {}, {}s elapsed) — escalating soft refresh into degraded mode",
+                           channel_name, m_recovery_epoch, recovery_elapsed_s);
+            m_template_withheld = false;
+            stop_all_workers();
+            retry_template_request(true);
+            return;
+        }
+
         // In degraded mode with no valid template — apply escape ladder to prevent permanent lockout.
         if (m_degraded_mode) {
             auto now = std::chrono::steady_clock::now();
