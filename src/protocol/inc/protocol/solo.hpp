@@ -324,6 +324,10 @@ private:
                               const std::string& detail) const;
     void finalize_keepalive_ack(const char* detail);
     void clear_generation_bound_state(const char* reason);
+    bool finalize_and_feed_current_template(uint32_t unified_height,
+                                            uint32_t effective_channel_height,
+                                            const char* log_scope,
+                                            bool snapshot_round_channel_height);
     static const PacketIngressPreflightOptions kDefaultPacketIngressPreflightOptions;
     bool run_packet_ingress_preflight(
         const char* log_scope,

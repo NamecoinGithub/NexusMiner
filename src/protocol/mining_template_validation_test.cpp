@@ -998,6 +998,36 @@ int main()
     }
 
     // ====================================================================
+    // Test 27: Recovery install defers worker feed until canonical metadata is finalized
+    // ====================================================================
+    std::cout << "\nTest 27: Recovery template feed waits for finalization before workers resume" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+        int feed_count = 0;
+        uint32_t fed_channel_height = 0;
+        tmpl_interface.set_template_feed_handler(
+            [&](const MiningTemplateInterface::MiningTemplate& tmpl, uint32_t) {
+                ++feed_count;
+                fed_channel_height = tmpl.nChannelHeight;
+            });
+
+        auto recovery_data = create_mock_template(6594322, 0x1d00ffff, 2);
+        auto res = tmpl_interface.read_template(recovery_data, "test_node", false);
+
+        print_test_result("Recovery template still validates when auto-feed is deferred", res.is_valid);
+        print_test_result("Deferred recovery install does not feed workers before finalization",
+            feed_count == 0);
+
+        tmpl_interface.set_channel_height(4165003);
+        const bool fed = tmpl_interface.feed_current_template();
+
+        print_test_result("Manual feed succeeds after channel metadata finalization", fed);
+        print_test_result("Workers are fed exactly once after finalization", feed_count == 1);
+        print_test_result("Worker feed observes finalized channel height",
+            fed_channel_height == 4165003);
+    }
+
+    // ====================================================================
     // Summary
     // ====================================================================
     std::cout << "\n========================================" << std::endl;

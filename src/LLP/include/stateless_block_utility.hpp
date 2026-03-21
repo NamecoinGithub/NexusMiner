@@ -157,7 +157,8 @@ public:
     static DecodedTemplate decode_template(MiningTemplateInterface& tmpl_iface,
                                            const network::Payload& raw_payload,
                                            uint32_t mining_channel,
-                                           std::shared_ptr<spdlog::logger> logger);
+                                           std::shared_ptr<spdlog::logger> logger,
+                                           bool auto_feed = true);
 
     // =========================================================================
     // Submit encode  (Miner -> Node)  with pre-checks
