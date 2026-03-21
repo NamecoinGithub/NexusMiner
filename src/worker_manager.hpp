@@ -104,12 +104,17 @@ private:
     void retry_template_request(bool bForce = false);
     void restart_recovery_window(const char* reason);
 
-    /// Mark that a GET_BLOCK recovery is now in progress.
+    /// Mark that a hard GET_BLOCK recovery is now in progress.
     /// Sets m_recovery_pending, increments m_recovery_epoch, records start time.
     /// Called from:
     ///  - the recovery_handler callback (push handler detected channel-stale staleness),
     ///  - retry_template_request(true) (health monitor or validation failure path).
     void mark_recovery_initiated(const char* reason);
+
+    /// Mark that a soft refresh is now in progress.
+    /// Sets m_recovery_pending, increments m_recovery_epoch, records start time,
+    /// and withholds submissions without stopping workers or entering degraded mode.
+    void mark_soft_refresh_requested(const char* reason);
 
     /// Clear degraded mode and all recovery state after a valid template is delivered to workers.
     /// Called from the template feed handler when workers_fed > 0, and as a belt-and-suspenders
@@ -137,9 +142,9 @@ private:
     // Degraded mode flag - set when mining is stopped due to invalid template
     bool m_degraded_mode;
 
-    // Soft-pause flag (Priority 1 — "Pause not Destroy" for Prime recovery):
+    // Soft-pause flag (Priority 1 — "Pause not Destroy" for same-height tip replacement):
     // When true, workers keep running their sieve but block submissions are
-    // suppressed.  Set on push_staleness instead of calling stop_all_workers().
+    // suppressed. Set on soft refresh instead of calling stop_all_workers().
     // Cleared when a fresh template arrives.  Only escalated to full worker stop
     // if the recovery window expires without a fresh template.
     bool m_template_withheld{false};

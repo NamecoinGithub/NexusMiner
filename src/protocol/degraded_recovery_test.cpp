@@ -312,15 +312,18 @@ void test_same_height_soft_refresh_escalates_only_after_timeout() {
     struct RecoveryTracker {
         bool m_degraded_mode{false};
         bool m_template_withheld{false};
+        bool m_workers_running{true};
         bool m_recovery_pending{false};
         uint64_t m_recovery_epoch{0};
         std::chrono::steady_clock::time_point m_recovery_started_at{};
+        std::vector<std::string> m_log;
 
         void start_soft_refresh() {
             ++m_recovery_epoch;
             m_recovery_pending = true;
             m_template_withheld = true;
             m_recovery_started_at = std::chrono::steady_clock::now();
+            m_log.emplace_back("soft refresh requested");
         }
 
         bool should_escalate(int64_t recovery_window_seconds) const {
@@ -332,14 +335,18 @@ void test_same_height_soft_refresh_escalates_only_after_timeout() {
         void escalate() {
             m_template_withheld = false;
             m_degraded_mode = true;
+            m_workers_running = false;
         }
     };
 
     RecoveryTracker rt;
     rt.start_soft_refresh();
     print_test_result("Soft refresh starts recovery tracking", rt.m_recovery_pending && rt.m_recovery_epoch == 1);
+    print_test_result("Soft refresh logs soft refresh requested",
+                      !rt.m_log.empty() && rt.m_log.back() == "soft refresh requested");
     print_test_result("Soft refresh withholds submissions without degraded mode",
                       rt.m_template_withheld && !rt.m_degraded_mode);
+    print_test_result("Soft refresh keeps workers running", rt.m_workers_running);
     print_test_result("Soft refresh does not escalate immediately", !rt.should_escalate(RECOVERY_WINDOW_SECONDS));
 
     rt.m_recovery_started_at = std::chrono::steady_clock::now() - std::chrono::seconds(TIMEOUT_TEST_SECONDS);
@@ -347,6 +354,7 @@ void test_same_height_soft_refresh_escalates_only_after_timeout() {
     rt.escalate();
     print_test_result("Timeout escalation enters degraded mode", rt.m_degraded_mode);
     print_test_result("Timeout escalation clears soft-pause guard", !rt.m_template_withheld);
+    print_test_result("Timeout escalation is what stops workers", !rt.m_workers_running);
 }
 
 // ============================================================================
