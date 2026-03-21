@@ -483,11 +483,10 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         m_primary_node_session->set_soft_refresh_requested_handler(
             [this]() {
                 bool had_pending = m_recovery_pending;
-                mark_recovery_initiated("same_height_push_tip_replacement");
-                m_template_withheld = true;
+                mark_soft_refresh_requested("same_height_push_tip_replacement");
 
                 if (!had_pending) {
-                    m_logger->warn("[Worker_manager] Soft refresh: withholding submissions while same-height replacement template is fetched");
+                    m_logger->warn("[Worker_manager] Soft refresh requested — withholding submissions while same-height replacement template is fetched");
                 } else {
                     m_logger->info("[Worker_manager] Soft refresh already pending — keeping template withheld until replacement arrives");
                 }
@@ -1483,6 +1482,37 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
     m_logger->warn("[Worker_manager] ⚑ RECOVERY INITIATED — epoch {} (reason: {})",
                    m_recovery_epoch, reason ? reason : "unknown");
     m_logger->warn("[Worker_manager]   Health monitor will NOT stop workers during channel recovery window");
+}
+
+void Worker_manager::mark_soft_refresh_requested(const char* reason)
+{
+    auto now = std::chrono::steady_clock::now();
+    m_template_withheld = true;
+    if (m_recovery_pending) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            now - m_recovery_started_at).count();
+        m_logger->info("[Worker_manager] Soft refresh already pending (epoch {}, {}s elapsed, reason: {})",
+                       m_recovery_epoch, elapsed, reason ? reason : "soft refresh requested");
+        return;
+    }
+
+    ++m_recovery_epoch;
+    m_recovery_pending = true;
+    m_recovery_started_at = now;
+    m_recovery_last_get_block_sent_at = {};
+    m_recovery_last_get_block_transmitted_at = {};
+    m_recovery_get_block_transmitted = false;
+    m_next_forced_retry_due = {};
+    m_forced_retry_send_timestamps.clear();
+    m_forced_retry_timer_pending = false;
+    ++m_forced_retry_timer_token;
+    if (m_forced_retry_timer) {
+        m_forced_retry_timer->cancel();
+    }
+    m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
+    m_logger->warn("[Worker_manager] ⚑ SOFT REFRESH REQUESTED — epoch {} (reason: {})",
+                   m_recovery_epoch, reason ? reason : "soft refresh requested");
+    m_logger->warn("[Worker_manager]   Workers keep running; only submissions are withheld during the replacement-template window");
 }
 
 void Worker_manager::restart_recovery_window(const char* reason)

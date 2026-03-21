@@ -516,9 +516,9 @@ int main()
     }
 
     // ====================================================================
-    // Test 11: Actual handler enters recovery on same-height canonical replacement
+    // Test 11: Actual handler requests soft refresh on same-height canonical replacement
     // ====================================================================
-    std::cout << "\nTest 11: Same-height canonical replacement stays on hot-swap path" << std::endl;
+    std::cout << "\nTest 11: Same-height canonical replacement stays on soft-refresh hot-swap path" << std::endl;
     {
         protocol::HeightTracker tracker;
         protocol::MiningTemplateInterface tmpl_interface(2, 0);
