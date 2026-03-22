@@ -287,10 +287,14 @@ enum MinerOpcodes : std::uint8_t
     /**
      * PRIME_BLOCK_AVAILABLE: Node notifies Prime miners of new block
      * Direction: Node -> Miner (Prime channel only)
-     * Payload: 12 bytes (big-endian)
-     *   [0-3]   unified_height (uint32)
-     *   [4-7]   prime_height (uint32)
-     *   [8-11]  difficulty (uint32)
+     * Payload: 148 bytes (big-endian) — new full-picture format:
+     *   [0-3]    unified_height (uint32)
+     *   [4-7]    prime_height (uint32)     — miner's channel
+     *   [8-11]   difficulty (uint32)
+     *   [12-15]  hash_height (uint32)      — other PoW channel (NEW)
+     *   [16-19]  stake_height (uint32)     — Stake channel (NEW)
+     *   [20-147] hashBestChain (uint1024, 128 bytes LE)
+     * Backward-compat: 12-byte compact and 140-byte v1 extended still accepted.
      * Triggered:
      *   - Immediately after MINER_READY
      *   - On every Prime block validation
@@ -300,10 +304,14 @@ enum MinerOpcodes : std::uint8_t
     /**
      * HASH_BLOCK_AVAILABLE: Node notifies Hash miners of new block
      * Direction: Node -> Miner (Hash channel only)
-     * Payload: 12 bytes (big-endian)
-     *   [0-3]   unified_height (uint32)
-     *   [4-7]   hash_height (uint32)
-     *   [8-11]  difficulty (uint32)
+     * Payload: 148 bytes (big-endian) — new full-picture format:
+     *   [0-3]    unified_height (uint32)
+     *   [4-7]    hash_height (uint32)      — miner's channel
+     *   [8-11]   difficulty (uint32)
+     *   [12-15]  prime_height (uint32)     — other PoW channel (NEW)
+     *   [16-19]  stake_height (uint32)     — Stake channel (NEW)
+     *   [20-147] hashBestChain (uint1024, 128 bytes LE)
+     * Backward-compat: 12-byte compact and 140-byte v1 extended still accepted.
      * Triggered:
      *   - Immediately after MINER_READY
      *   - On every Hash block validation
@@ -524,10 +532,14 @@ namespace StatelessMining {
     /**
      * PRIME_BLOCK_AVAILABLE: Node notifies Prime miners of new block
      * Direction: Node → Miner (Prime channel only)
-     * Payload: 12 bytes (big-endian)
-     *   [0-3]   unified_height (uint32)
-     *   [4-7]   prime_height (uint32)
-     *   [8-11]  difficulty (uint32)
+     * Payload: 148 bytes (big-endian) — new full-picture format:
+     *   [0-3]    unified_height (uint32)
+     *   [4-7]    prime_height (uint32)     — miner's channel
+     *   [8-11]   difficulty (uint32)
+     *   [12-15]  hash_height (uint32)      — other PoW channel (NEW)
+     *   [16-19]  stake_height (uint32)     — Stake channel (NEW)
+     *   [20-147] hashBestChain (uint1024, 128 bytes LE)
+     * Backward-compat: 12-byte compact and 140-byte v1 extended still accepted.
      * Mirror-mapped from legacy PRIME_BLOCK_AVAILABLE (217) → 0xD0D9
      */
     constexpr uint16_t PRIME_BLOCK_AVAILABLE = MirrorOpcode(LLP::PRIME_BLOCK_AVAILABLE);  // 0xD0D9
@@ -535,10 +547,14 @@ namespace StatelessMining {
     /**
      * HASH_BLOCK_AVAILABLE: Node notifies Hash miners of new block
      * Direction: Node → Miner (Hash channel only)
-     * Payload: 12 bytes (big-endian)
-     *   [0-3]   unified_height (uint32)
-     *   [4-7]   hash_height (uint32)
-     *   [8-11]  difficulty (uint32)
+     * Payload: 148 bytes (big-endian) — new full-picture format:
+     *   [0-3]    unified_height (uint32)
+     *   [4-7]    hash_height (uint32)      — miner's channel
+     *   [8-11]   difficulty (uint32)
+     *   [12-15]  prime_height (uint32)     — other PoW channel (NEW)
+     *   [16-19]  stake_height (uint32)     — Stake channel (NEW)
+     *   [20-147] hashBestChain (uint1024, 128 bytes LE)
+     * Backward-compat: 12-byte compact and 140-byte v1 extended still accepted.
      * Mirror-mapped from legacy HASH_BLOCK_AVAILABLE (218) → 0xD0DA
      */
     constexpr uint16_t HASH_BLOCK_AVAILABLE = MirrorOpcode(LLP::HASH_BLOCK_AVAILABLE);  // 0xD0DA

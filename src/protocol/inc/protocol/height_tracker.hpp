@@ -146,6 +146,11 @@ public:
         uint1024_t push_hash_prev_block{};     ///< hashPrevBlock from latest extended push payload
         std::chrono::steady_clock::time_point last_push_at{};
 
+        // Push-derived cross-channel heights (only populated from 148-byte push payload)
+        uint32_t push_prime_height{0};
+        uint32_t push_hash_height{0};
+        uint32_t push_stake_height{0};
+
         // ── Heights from GET_ROUND / NEW_ROUND responses ────────────────────────
         // Full 16-byte picture: unified + prime + hash + stake (no difficulty).
         uint32_t round_unified_height{0};
@@ -239,10 +244,15 @@ public:
         // ── All three channel heights, kept independently ──────────────────────
         uint32_t prime_height{0};   ///< Prime channel height (max of canonical and push/GET_ROUND/keepalive)
         uint32_t hash_height{0};    ///< Hash channel height  (max of canonical and push/GET_ROUND/keepalive)
-        uint32_t stake_height{0};   ///< Stake channel height (max of GET_ROUND and keepalive)
+        uint32_t stake_height{0};   ///< Stake channel height (max of GET_ROUND/keepalive/push full-picture)
         ChannelHeight prime_channel_height{}; ///< Typed alias of prime_height
         ChannelHeight hash_channel_height{};  ///< Typed alias of hash_height
         ChannelHeight stake_channel_height{}; ///< Typed alias of stake_height
+
+        // ── Push-derived cross-channel heights (from 148-byte full-picture push) ─
+        uint32_t push_prime_height{0};  ///< Prime height from latest 148-byte push payload
+        uint32_t push_hash_height{0};   ///< Hash height from latest 148-byte push payload
+        uint32_t push_stake_height{0};  ///< Stake height from latest 148-byte push payload
 
         // ── Fork detection (diagnostic only — from keepalive ACKs) ─────────────
         uint32_t hash_tip_lo32{0};   ///< Lo32 of node's hashBestChain from last keepalive response
@@ -458,6 +468,20 @@ public:
      */
     void OnPushNotification(uint32_t unified_height, uint32_t channel_height,
                             uint32_t nbits);
+
+    /**
+     * @brief Update all-channel heights from a 148-byte full-picture push notification
+     *
+     * Writes to DiagnosticObserverState push_prime/hash/stake_height fields.
+     * Does NOT write to CanonicalChainState.
+     *
+     * @param unified_height  Unified blockchain height
+     * @param prime_height    Prime channel height
+     * @param hash_height     Hash channel height
+     * @param stake_height    Stake channel height
+     */
+    void OnPushFullPicture(uint32_t unified_height, uint32_t prime_height,
+                           uint32_t hash_height, uint32_t stake_height);
 
     /**
      * @brief Record the tip anchor advertised by the latest extended push payload

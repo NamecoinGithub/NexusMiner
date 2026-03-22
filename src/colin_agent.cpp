@@ -388,6 +388,10 @@ void ColinAgent::emit_report(
             ht_snap.unified_height, ht_snap.prime_height,
             ht_snap.hash_height,    ht_snap.stake_height,
             ht_snap.channel_height);
+        if (ht_snap.push_prime_height > 0 || ht_snap.push_hash_height > 0) {
+            m_logger->info("[Colin]  📡 Push Heights │ prime={} hash={} stake={}  (from 148-byte BLOCK_AVAILABLE)",
+                ht_snap.push_prime_height, ht_snap.push_hash_height, ht_snap.push_stake_height);
+        }
         if (ht_snap.peak_fork_score > 0)
             m_logger->warn("[Colin]  🔱 FORK CANARY active: peak_fork_score={} current_fork_score={}",
                 ht_snap.peak_fork_score, ht_snap.fork_score);

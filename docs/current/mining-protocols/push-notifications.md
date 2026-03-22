@@ -39,11 +39,31 @@ This document describes the implementation of the push notification protocol (LL
 
 ### PRIME_BLOCK_AVAILABLE (217 / 0xD9)
 **Direction:** Node → Miner (Prime channel only)  
-**Payload:** 12 bytes (big-endian)
+**Payload:** Three sizes accepted:
+
+**148-byte (v2, full-picture — preferred):**
 ```
-[0-3]   unified_height (uint32)
-[4-7]   prime_height (uint32)
-[8-11]  difficulty (uint32)
+[0-3]    unified_height (uint32)
+[4-7]    prime_height (uint32)     — miner's channel
+[8-11]   difficulty (uint32)
+[12-15]  hash_height (uint32)      — other PoW channel (NEW)
+[16-19]  stake_height (uint32)     — Stake channel (NEW)
+[20-147] hashBestChain (uint1024, 128 bytes LE)
+```
+
+**140-byte (v1 extended, backward-compat):**
+```
+[0-3]    unified_height (uint32)
+[4-7]    prime_height (uint32)
+[8-11]   difficulty (uint32)
+[12-139] hashPrevBlock (uint1024, 128 bytes LE)
+```
+
+**12-byte (compact, legacy):**
+```
+[0-3]  unified_height (uint32)
+[4-7]  prime_height (uint32)
+[8-11] difficulty (uint32)
 ```
 
 **Triggered:**
@@ -52,16 +72,41 @@ This document describes the implementation of the push notification protocol (LL
 
 ### HASH_BLOCK_AVAILABLE (218 / 0xDA)
 **Direction:** Node → Miner (Hash channel only)  
-**Payload:** 12 bytes (big-endian)
+**Payload:** Three sizes accepted:
+
+**148-byte (v2, full-picture — preferred):**
 ```
-[0-3]   unified_height (uint32)
-[4-7]   hash_height (uint32)
-[8-11]  difficulty (uint32)
+[0-3]    unified_height (uint32)
+[4-7]    hash_height (uint32)      — miner's channel
+[8-11]   difficulty (uint32)
+[12-15]  prime_height (uint32)     — other PoW channel (NEW)
+[16-19]  stake_height (uint32)     — Stake channel (NEW)
+[20-147] hashBestChain (uint1024, 128 bytes LE)
+```
+
+**140-byte (v1 extended, backward-compat):**
+```
+[0-3]    unified_height (uint32)
+[4-7]    hash_height (uint32)
+[8-11]   difficulty (uint32)
+[12-139] hashPrevBlock (uint1024, 128 bytes LE)
+```
+
+**12-byte (compact, legacy):**
+```
+[0-3]  unified_height (uint32)
+[4-7]  hash_height (uint32)
+[8-11] difficulty (uint32)
 ```
 
 **Triggered:**
 - Immediately after MINER_READY
 - On every block accepted on **any** channel (universal PoW tip push)
+
+> **Backward compatibility:** All three payload sizes (12, 140, 148 bytes) are accepted.
+> 12-byte compact and 140-byte v1 extended payloads are still processed without error.
+> Only 148-byte payloads populate `OnPushFullPicture()` in `HeightTracker` with the
+> full cross-channel height picture.
 
 ## Protocol Flow
 

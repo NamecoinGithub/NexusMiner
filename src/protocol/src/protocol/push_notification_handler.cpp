@@ -39,14 +39,15 @@ void PushNotificationHandler::handle_push_notification(
         m_logger->info("[Solo Push] ✉️  {}_BLOCK_AVAILABLE received", ch_name);
     }
 
-    /* Validate payload (must be 12 or 140 bytes) */
-    const bool is_compact  = (packet.m_length == PAYLOAD_SIZE_COMPACT);
-    const bool is_extended = (packet.m_length == PAYLOAD_SIZE_EXTENDED);
+    /* Validate payload (must be 12, 140, or 148 bytes) */
+    const bool is_compact      = (packet.m_length == PAYLOAD_SIZE_COMPACT);
+    const bool is_extended     = (packet.m_length == PAYLOAD_SIZE_EXTENDED);      // 148-byte full-picture (new)
+    const bool is_extended_v1  = (packet.m_length == PAYLOAD_SIZE_EXTENDED_V1);   // 140-byte (old, backward-compat)
 
-    if (!packet.m_data || (!is_compact && !is_extended))
+    if (!packet.m_data || (!is_compact && !is_extended && !is_extended_v1))
     {
-        m_logger->error("[Solo Push] Invalid payload: {} bytes (expected {} or {})",
-                       packet.m_length, PAYLOAD_SIZE_COMPACT, PAYLOAD_SIZE_EXTENDED);
+        m_logger->error("[Solo Push] Invalid payload: {} bytes (expected {}, {}, or {})",
+                       packet.m_length, PAYLOAD_SIZE_COMPACT, PAYLOAD_SIZE_EXTENDED_V1, PAYLOAD_SIZE_EXTENDED);
         return;
     }
 
@@ -68,7 +69,7 @@ void PushNotificationHandler::handle_push_notification(
     }
 
     m_logger->info("[Solo Push] {} payload received ({} bytes)",
-                   is_extended ? "Extended stateless" : "Compact legacy",
+                   is_extended ? "Extended v2 full-picture" : (is_extended_v1 ? "Extended v1 stateless" : "Compact legacy"),
                    packet.m_length);
 
     /* Parse notification (big-endian) */
@@ -85,28 +86,67 @@ void PushNotificationHandler::handle_push_notification(
         m_logger->info("[Solo Push]   Difficulty: 0x{:08x}", difficulty);
     }
 
-    // Parse hashPrevBlock from extended payload for hash validation
+    // Parse cross-channel heights and hashBestChain for 148-byte full-picture payload
     uint1024_t notification_hash_prev_block{0};
     bool has_hash_prev_block = false;
 
     if (is_extended)
     {
+        // bytes [12-15]: other PoW channel height
+        // bytes [16-19]: stake channel height
+        uint32_t other_channel_height = bytes2uint(*packet.m_data, OTHER_CHANNEL_HEIGHT_OFFSET);
+        uint32_t stake_height         = bytes2uint(*packet.m_data, STAKE_HEIGHT_OFFSET);
+
+        // Derive prime/hash from own channel + other channel
+        uint32_t prime_h = (expected_channel == mining::CHANNEL_PRIME) ? channel_height : other_channel_height;
+        uint32_t hash_h  = (expected_channel == mining::CHANNEL_HASH)  ? channel_height : other_channel_height;
+
+        m_logger->info("[Solo Push]   Full height picture: prime={} hash={} stake={}",
+                       prime_h, hash_h, stake_height);
+
+        if (height_tracker)
+        {
+            height_tracker->OnPushFullPicture(unified_height, prime_h, hash_h, stake_height);
+        }
+
+        // bytes [20-147]: hashBestChain (128 bytes, little-endian uint1024_t)
+        std::size_t hash_end = HASH_PREV_BLOCK_OFFSET + HASH_BEST_CHAIN_SIZE_BYTES;
+        if (packet.m_data->size() >= hash_end)
+        {
+            std::vector<uint8_t> hash_bytes(packet.m_data->begin() + HASH_PREV_BLOCK_OFFSET,
+                                            packet.m_data->begin() + hash_end);
+            notification_hash_prev_block.SetBytes(hash_bytes);
+            has_hash_prev_block = true;
+
+            // Log first HASH_LOG_PREVIEW_BYTES bytes as hex for cross-reference with node Guard 2 logs
+            std::string prev_hash_hex;
+            for (std::size_t i = HASH_PREV_BLOCK_OFFSET; i < std::min(packet.m_data->size(), HASH_PREV_BLOCK_OFFSET + HASH_LOG_PREVIEW_BYTES); ++i) {
+                char buf[3];
+                snprintf(buf, sizeof(buf), "%02x", (*packet.m_data)[i]);
+                prev_hash_hex += buf;
+            }
+            m_logger->info("[Solo Push]   hashBestChain (first {} bytes): {}... (128 bytes, can pre-validate staleness)",
+                           HASH_LOG_PREVIEW_BYTES, prev_hash_hex);
+        }
+    }
+    else if (is_extended_v1)
+    {
         // bytes [12-139]: hashPrevBlock (128 bytes, little-endian uint1024_t)
         // Extract the 128-byte hash for comparison with current template
-        std::vector<uint8_t> hash_bytes(packet.m_data->begin() + 12,
-                                        packet.m_data->begin() + 140);
+        std::vector<uint8_t> hash_bytes(packet.m_data->begin() + HASH_PREV_BLOCK_OFFSET_V1,
+                                        packet.m_data->begin() + HASH_PREV_BLOCK_OFFSET_V1 + HASH_BEST_CHAIN_SIZE_BYTES);
         notification_hash_prev_block.SetBytes(hash_bytes);
         has_hash_prev_block = true;
 
-        // Log first 8 bytes as hex for cross-reference with node Guard 2 logs
+        // Log first HASH_LOG_PREVIEW_BYTES bytes as hex for cross-reference with node Guard 2 logs
         std::string prev_hash_hex;
-        for (std::size_t i = 12; i < std::min(packet.m_data->size(), std::size_t(20)); ++i) {
+        for (std::size_t i = HASH_PREV_BLOCK_OFFSET_V1; i < std::min(packet.m_data->size(), HASH_PREV_BLOCK_OFFSET_V1 + HASH_LOG_PREVIEW_BYTES); ++i) {
             char buf[3];
             snprintf(buf, sizeof(buf), "%02x", (*packet.m_data)[i]);
             prev_hash_hex += buf;
         }
-        m_logger->info("[Solo Push]   hashPrevBlock (first 8 bytes): {}... (128 bytes, can pre-validate staleness)",
-                       prev_hash_hex);
+        m_logger->info("[Solo Push]   hashPrevBlock (first {} bytes): {}... (128 bytes, can pre-validate staleness)",
+                       HASH_LOG_PREVIEW_BYTES, prev_hash_hex);
     }
 
     /* Update heights via unified callback (updates HeightTracker + ClientChannelManager) */

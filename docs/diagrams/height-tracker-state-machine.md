@@ -13,7 +13,7 @@ Every input to `HeightTracker` is now routed to exactly one lane:
 flowchart TD
     subgraph INPUTS["Input Sources"]
         BD["BLOCK_DATA / STATELESS_GET_BLOCK\n(node's authoritative template response)"]
-        PUSH["PRIME/HASH_BLOCK_AVAILABLE\n(12-byte push payload)"]
+        PUSH["PRIME/HASH_BLOCK_AVAILABLE\n(12/140/148-byte push payload)"]
         GR["GET_ROUND / NEW_ROUND\n(polling response)"]
         KA["SESSION_KEEPALIVE ACK\n(32-byte: heights + fork_score + hash_tip_lo32)"]
     end
@@ -30,7 +30,7 @@ flowchart TD
 
     subgraph DIAGNOSTIC["DiagnosticObserverState  (m_diagnostic)"]
         direction TB
-        PU["push_unified_height\npush_channel_height\npush_difficulty_nbits"]
+        PU["push_unified_height\npush_channel_height\npush_difficulty_nbits\npush_prime_height\npush_hash_height\npush_stake_height"]
         RU["round_unified_height\nround_channel_height\nround_difficulty_nbits"]
         KU["keepalive_unified_height\nkeepalive_prime/hash/stake_height\nkeepalive_hash_tip_lo32\nkeepalive_fork_score\nkeepalive_peak_fork_score"]
     end

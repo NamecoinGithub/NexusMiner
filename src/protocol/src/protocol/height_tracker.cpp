@@ -57,6 +57,22 @@ void HeightTracker::OnPushLiveness()
     m_diagnostic.last_push_at = std::chrono::steady_clock::now();
 }
 
+// ── OnPushFullPicture: updates DiagnosticObserverState push cross-channel heights ──
+// Called from 148-byte BLOCK_AVAILABLE payloads to record the full height picture.
+// Does NOT touch canonical state or push_channel_height/push_unified_height.
+void HeightTracker::OnPushFullPicture(uint32_t unified_height,
+                                       uint32_t prime_height,
+                                       uint32_t hash_height,
+                                       uint32_t stake_height)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_diagnostic.push_unified_height = std::max(m_diagnostic.push_unified_height, unified_height);
+    m_diagnostic.push_prime_height   = std::max(m_diagnostic.push_prime_height,   prime_height);
+    m_diagnostic.push_hash_height    = std::max(m_diagnostic.push_hash_height,    hash_height);
+    m_diagnostic.push_stake_height   = std::max(m_diagnostic.push_stake_height,   stake_height);
+    m_diagnostic.last_push_at        = std::chrono::steady_clock::now();
+}
+
 // ── OnGetRound: updates DiagnosticObserverState round fields ONLY ─────────────
 // 16-byte full-height-picture format: unified + prime + hash + stake (no difficulty).
 void HeightTracker::OnGetRound(uint32_t unified_height,
@@ -235,14 +251,25 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     s.push_hash_prev_block = m_diagnostic.push_hash_prev_block;
     s.last_update_source = m_last_update_source;
 
-    // Per-channel heights: max of keepalive and GET_ROUND diagnostic sources.
-    // Both are diagnostic-only and must never regress canonical mining decisions.
-    s.prime_height = std::max(m_diagnostic.keepalive_prime_height, m_diagnostic.round_prime_height);
-    s.hash_height  = std::max(m_diagnostic.keepalive_hash_height,  m_diagnostic.round_hash_height);
-    s.stake_height = std::max(m_diagnostic.keepalive_stake_height, m_diagnostic.round_stake_height);
+    // Per-channel heights: max of keepalive, GET_ROUND, and push full-picture diagnostic sources.
+    // All are diagnostic-only and must never regress canonical mining decisions.
+    s.prime_height = std::max({m_diagnostic.keepalive_prime_height,
+                                m_diagnostic.round_prime_height,
+                                m_diagnostic.push_prime_height});
+    s.hash_height  = std::max({m_diagnostic.keepalive_hash_height,
+                                m_diagnostic.round_hash_height,
+                                m_diagnostic.push_hash_height});
+    s.stake_height = std::max({m_diagnostic.keepalive_stake_height,
+                                m_diagnostic.round_stake_height,
+                                m_diagnostic.push_stake_height});
     s.prime_channel_height = ChannelHeight{s.prime_height};
     s.hash_channel_height = ChannelHeight{s.hash_height};
     s.stake_channel_height = ChannelHeight{s.stake_height};
+
+    // Raw push-derived cross-channel heights (from 148-byte full-picture payload)
+    s.push_prime_height = m_diagnostic.push_prime_height;
+    s.push_hash_height  = m_diagnostic.push_hash_height;
+    s.push_stake_height = m_diagnostic.push_stake_height;
 
     // Fork detection fields — diagnostic only
     s.hash_tip_lo32 = m_diagnostic.keepalive_hash_tip_lo32;

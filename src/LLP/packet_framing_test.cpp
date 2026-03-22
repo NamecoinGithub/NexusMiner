@@ -444,7 +444,7 @@ void test_zero_length_payload() {
 // These carry 12-byte payloads on the legacy lane and must be parsed correctly
 // ============================================================================
 void test_push_notification_legacy_lane() {
-    std::cout << "\nTest 11: Push notification packets on legacy lane (12-byte payload)" << std::endl;
+    std::cout << "\nTest 11: Push notification packets on legacy lane (12-byte and 148-byte payloads)" << std::endl;
     
     TestAccumulator acc;
     Packet packet;
@@ -500,6 +500,68 @@ void test_push_notification_legacy_lane() {
     Packet hash_pkt(static_cast<uint8_t>(218));
     bool test2b = hash_pkt.is_auth_packet();
     print_test_result("is_auth_packet() returns true for HASH_BLOCK_AVAILABLE (218)", test2b);
+
+    // PRIME_BLOCK_AVAILABLE (217 = 0xD9) with 148-byte full-picture payload
+    // Layout: unified(4) + prime(4) + difficulty(4) + hash_height(4) + stake_height(4) + hashBestChain(128)
+    std::vector<uint8_t> prime_notification_148(5 + 148, 0x00);  // 1-byte header + 4-byte length + 148-byte payload
+    prime_notification_148[0] = 217;                              // header = PRIME_BLOCK_AVAILABLE
+    prime_notification_148[1] = 0x00;
+    prime_notification_148[2] = 0x00;
+    prime_notification_148[3] = 0x00;
+    prime_notification_148[4] = 148;                             // length = 148
+    // [0-3]  unified_height = 6500000
+    prime_notification_148[5]  = 0x00; prime_notification_148[6]  = 0x63;
+    prime_notification_148[7]  = 0x4E; prime_notification_148[8]  = 0xA0;
+    // [4-7]  prime_height = 2300000
+    prime_notification_148[9]  = 0x00; prime_notification_148[10] = 0x23;
+    prime_notification_148[11] = 0x12; prime_notification_148[12] = 0x60;
+    // [8-11] difficulty = 0x0422E6FC
+    prime_notification_148[13] = 0x04; prime_notification_148[14] = 0x22;
+    prime_notification_148[15] = 0xE6; prime_notification_148[16] = 0xFC;
+    // [12-15] hash_height = 900000
+    prime_notification_148[17] = 0x00; prime_notification_148[18] = 0x0D;
+    prime_notification_148[19] = 0xBB; prime_notification_148[20] = 0xA0;
+    // [16-19] stake_height = 400000
+    prime_notification_148[21] = 0x00; prime_notification_148[22] = 0x06;
+    prime_notification_148[23] = 0x1A; prime_notification_148[24] = 0x80;
+    // [20-147] hashBestChain: fill with 0xAB pattern for recognizability
+    for (int i = 25; i < 5 + 148; ++i) {
+        prime_notification_148[i] = 0xAB;
+    }
+
+    acc.feed(prime_notification_148);
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+
+    bool test3 = parsed3 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 217) &&
+                 (packet.m_length == 148) &&
+                 (packet.m_data && packet.m_data->size() == 148) &&
+                 acc.empty();
+    print_test_result("PRIME_BLOCK_AVAILABLE (217) with 148-byte full-picture payload", test3);
+
+    // HASH_BLOCK_AVAILABLE (218 = 0xDA) with 148-byte full-picture payload
+    std::vector<uint8_t> hash_notification_148(5 + 148, 0x00);
+    hash_notification_148[0] = 218;                              // header = HASH_BLOCK_AVAILABLE
+    hash_notification_148[1] = 0x00;
+    hash_notification_148[2] = 0x00;
+    hash_notification_148[3] = 0x00;
+    hash_notification_148[4] = 148;                             // length = 148
+    // fill payload bytes with distinct sentinel values
+    for (int i = 5; i < 5 + 148; ++i) {
+        hash_notification_148[i] = static_cast<uint8_t>((i - 5) & 0xFF);
+    }
+
+    acc.feed(hash_notification_148);
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+
+    bool test4 = parsed4 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 218) &&
+                 (packet.m_length == 148) &&
+                 (packet.m_data && packet.m_data->size() == 148) &&
+                 acc.empty();
+    print_test_result("HASH_BLOCK_AVAILABLE (218) with 148-byte full-picture payload", test4);
 }
 
 // ============================================================================
