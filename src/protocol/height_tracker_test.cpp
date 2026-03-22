@@ -859,10 +859,10 @@ void test_on_template_metadata_monotonic() {
 
 // ============================================================================
 // Test 26: OnTemplateMetadata per-channel heights — canonical is monotonic;
-//          prime_height/hash_height are keepalive-only (diagnostic)
+//          prime_height/hash_height are keepalive/round/push-full-picture-only (diagnostic)
 // ============================================================================
 void test_on_template_metadata_per_channel_no_regression() {
-    std::cout << "\nTest 26: OnTemplateMetadata canonical is monotonic; prime/hash from keepalive only\n";
+    std::cout << "\nTest 26: OnTemplateMetadata canonical is monotonic; prime/hash from keepalive/round/push-full-picture only\n";
     HeightTracker tracker;
 
     // Prime channel: push sets channel_height=500
@@ -871,8 +871,9 @@ void test_on_template_metadata_per_channel_no_regression() {
     auto snap = tracker.GetSnapshot();
     print_test_result("channel_height == 500 after push",
                       snap.channel_height == 500);
-    // prime_height is diagnostic-only — push does NOT update it; no keepalive called
-    print_test_result("prime_height == 0 (keepalive-only; none received yet)",
+    // prime_height is diagnostic-only — 12-byte OnPushNotification does NOT update it;
+    // only OnPushFullPicture (148-byte), OnGetRound, or OnKeepaliveResponse set it.
+    print_test_result("prime_height == 0 (no keepalive/round/push-full-picture received yet)",
                       snap.prime_height == 0);
 
     // Stale template metadata with channel_height=400 must not regress channel_height
@@ -881,8 +882,8 @@ void test_on_template_metadata_per_channel_no_regression() {
     snap = tracker.GetSnapshot();
     print_test_result("channel_height still 500 after stale OnTemplateMetadata(400)",
                       snap.channel_height == 500);
-    // prime_height remains 0 (keepalive still not called)
-    print_test_result("prime_height still 0 after OnTemplateMetadata (keepalive-only)",
+    // prime_height remains 0 (no keepalive/round/push-full-picture called)
+    print_test_result("prime_height still 0 after OnTemplateMetadata (no push-full-picture)",
                       snap.prime_height == 0);
 
     // Hash channel test
@@ -892,15 +893,15 @@ void test_on_template_metadata_per_channel_no_regression() {
     snap = hash_tracker.GetSnapshot();
     print_test_result("channel_height == 300 after push (Hash channel)",
                       snap.channel_height == 300);
-    // hash_height is diagnostic-only — push does NOT update it
-    print_test_result("hash_height == 0 (keepalive-only; none received yet)",
+    // hash_height is diagnostic-only — 12-byte push does NOT update it
+    print_test_result("hash_height == 0 (no keepalive/round/push-full-picture received yet)",
                       snap.hash_height == 0);
 
     hash_tracker.OnTemplateMetadata(10001, 250, 0x1d00ffff);
     snap = hash_tracker.GetSnapshot();
     print_test_result("channel_height still 300 after stale OnTemplateMetadata(250)",
                       snap.channel_height == 300);
-    print_test_result("hash_height still 0 after OnTemplateMetadata (keepalive-only)",
+    print_test_result("hash_height still 0 after OnTemplateMetadata (no push-full-picture)",
                       snap.hash_height == 0);
 }
 
@@ -1620,6 +1621,70 @@ void test_session_epoch_in_snapshot() {
 }
 
 // ============================================================================
+// Test: OnPushFullPicture() — updates push cross-channel heights in snapshot
+// ============================================================================
+void test_on_push_full_picture() {
+    std::cout << "\nTest (NEW): OnPushFullPicture() updates push_prime/hash/stake_height\n";
+    HeightTracker tracker;
+
+    // Before any update, push cross-channel heights should be zero
+    auto snap0 = tracker.GetSnapshot();
+    print_test_result("push_prime_height == 0 before OnPushFullPicture",
+                      snap0.push_prime_height == 0);
+    print_test_result("push_hash_height == 0 before OnPushFullPicture",
+                      snap0.push_hash_height == 0);
+    print_test_result("push_stake_height == 0 before OnPushFullPicture",
+                      snap0.push_stake_height == 0);
+
+    // After OnPushFullPicture(), snapshot should reflect the values
+    tracker.OnPushFullPicture(6500000, 2300000, 900000, 400000);
+    auto snap1 = tracker.GetSnapshot();
+    print_test_result("push_prime_height == 2300000 after OnPushFullPicture",
+                      snap1.push_prime_height == 2300000);
+    print_test_result("push_hash_height == 900000 after OnPushFullPicture",
+                      snap1.push_hash_height == 900000);
+    print_test_result("push_stake_height == 400000 after OnPushFullPicture",
+                      snap1.push_stake_height == 400000);
+
+    // prime_height and hash_height in snapshot should include push values
+    print_test_result("prime_height includes push_prime_height",
+                      snap1.prime_height >= 2300000);
+    print_test_result("hash_height includes push_hash_height",
+                      snap1.hash_height >= 900000);
+    print_test_result("stake_height includes push_stake_height",
+                      snap1.stake_height >= 400000);
+
+    // OnPushFullPicture is monotonic — lower values must not regress
+    tracker.OnPushFullPicture(6400000, 2200000, 800000, 300000);
+    auto snap2 = tracker.GetSnapshot();
+    print_test_result("push_prime_height not regressed by lower value",
+                      snap2.push_prime_height == 2300000);
+    print_test_result("push_hash_height not regressed by lower value",
+                      snap2.push_hash_height == 900000);
+    print_test_result("push_stake_height not regressed by lower value",
+                      snap2.push_stake_height == 400000);
+
+    // Higher values should advance
+    tracker.OnPushFullPicture(6600000, 2400000, 1000000, 500000);
+    auto snap3 = tracker.GetSnapshot();
+    print_test_result("push_prime_height advances on higher value",
+                      snap3.push_prime_height == 2400000);
+    print_test_result("push_hash_height advances on higher value",
+                      snap3.push_hash_height == 1000000);
+    print_test_result("push_stake_height advances on higher value",
+                      snap3.push_stake_height == 500000);
+
+    // DiagnosticObserverState should also reflect values
+    auto diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("DiagnosticObserverState.push_prime_height == 2400000",
+                      diag.push_prime_height == 2400000);
+    print_test_result("DiagnosticObserverState.push_hash_height == 1000000",
+                      diag.push_hash_height == 1000000);
+    print_test_result("DiagnosticObserverState.push_stake_height == 500000",
+                      diag.push_stake_height == 500000);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -1674,6 +1739,7 @@ int main() {
     test_old_epoch_keepalive_does_not_signal_new_epoch_liveness();
     test_set_session_epoch_zero_no_clear();
     test_session_epoch_in_snapshot();
+    test_on_push_full_picture();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
