@@ -96,6 +96,8 @@ namespace {
     // push notification and new BLOCK_DATA template is normal during the propagation
     // window. Set threshold to 5 to avoid false-positive template discards.
     constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
+    constexpr uint32_t GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS = 2;
+    constexpr int64_t PROACTIVE_GET_HEIGHT_MIN_INTERVAL_SECONDS = 30;
     constexpr int64_t FORCED_RETRY_INTERVAL_MS = 1000;
     constexpr int64_t FORCED_RETRY_JITTER_MIN_MS = 100;
     constexpr int64_t FORCED_RETRY_JITTER_MAX_MS = 250;
@@ -1051,6 +1053,40 @@ const char* Worker_manager::suppression_reason_name(GetBlockSuppressionReason re
         case GetBlockSuppressionReason::COUNT: return "COUNT";
     }
     return "UNKNOWN";
+}
+
+bool Worker_manager::request_get_height_probe(const std::shared_ptr<protocol::Solo>& solo_protocol,
+                                              const char* reason)
+{
+    if (!m_primary_node_session || !m_primary_node_session->is_authenticated() || !solo_protocol) {
+        return false;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    if (m_last_proactive_get_height_at != std::chrono::steady_clock::time_point{}) {
+        const auto since_last_probe_s = std::chrono::duration_cast<std::chrono::seconds>(
+            now - m_last_proactive_get_height_at).count();
+        if (since_last_probe_s < PROACTIVE_GET_HEIGHT_MIN_INTERVAL_SECONDS) {
+            m_logger->info("[Worker_manager] GET_HEIGHT probe suppressed for {} — {}s since last probe (min={}s)",
+                           reason ? reason : "unknown",
+                           since_last_probe_s,
+                           PROACTIVE_GET_HEIGHT_MIN_INTERVAL_SECONDS);
+            return false;
+        }
+    }
+
+    auto pkt = solo_protocol->send_get_height();
+    if (!pkt || pkt->empty()) {
+        m_logger->info("[Worker_manager] GET_HEIGHT probe unavailable for {} — auth/dedup guard still active",
+                       reason ? reason : "unknown");
+        return false;
+    }
+
+    m_primary_node_session->transmit(pkt);
+    m_last_proactive_get_height_at = now;
+    m_logger->info("[Worker_manager] GET_HEIGHT probe sent for {} — awaiting BLOCK_HEIGHT cross-check",
+                   reason ? reason : "unknown");
+    return true;
 }
 
 void Worker_manager::prune_forced_retry_window(std::chrono::steady_clock::time_point now)
@@ -2377,12 +2413,40 @@ void Worker_manager::check_template_health()
         {
             int32_t drift = static_cast<int32_t>(ht_snap.unified_height) -
                             static_cast<int32_t>(tmpl_height);
-            m_logger->warn("[Worker_manager] ⚠️  HEIGHT_DRIFT: unified={} vs template.nHeight={} (drift={}) — template on stale tip",
-                ht_snap.unified_height, tmpl_height, drift);
-            template_interface->discard_template("Unified height drift: " +
-                std::to_string(drift) + " blocks behind");
-            stop_all_workers();
-            retry_template_request(true);
+            const auto shadow_snap = solo_protocol->get_channel_shadow_snapshot();
+            const auto& cross_check = shadow_snap.cross_check;
+            const uint32_t get_height_divergence =
+                (cross_check.get_height_delta >= 0)
+                    ? static_cast<uint32_t>(cross_check.get_height_delta)
+                    : static_cast<uint32_t>(-cross_check.get_height_delta);
+            const bool get_height_confirms_divergence =
+                cross_check.canonical_initialized &&
+                cross_check.get_height_initialized &&
+                !cross_check.get_height_is_stale &&
+                get_height_divergence > GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS;
+
+            if (get_height_confirms_divergence) {
+                bool had_pending = m_recovery_pending;
+                mark_soft_refresh_requested("height_drift_get_height_cross_check");
+                m_logger->warn("[Worker_manager] ⚠️  HEIGHT_DRIFT cross-check confirmed: unified={} template.nHeight={} "
+                               "canonical={} get_height={} (drift={} get_height_delta={}) — requesting non-blocking GET_BLOCK",
+                               ht_snap.unified_height,
+                               tmpl_height,
+                               shadow_snap.canonical.unified_height,
+                               shadow_snap.get_height.unified_height,
+                               drift,
+                               cross_check.get_height_delta);
+                if (!had_pending) {
+                    retry_template_request(false);
+                }
+            } else {
+                m_logger->warn("[Worker_manager] ⚠️  HEIGHT_DRIFT preflight: unified={} vs template.nHeight={} (drift={}) — "
+                               "probing GET_HEIGHT before any degraded-mode escalation",
+                               ht_snap.unified_height,
+                               tmpl_height,
+                               drift);
+                request_get_height_probe(solo_protocol, "height_drift_preflight");
+            }
             return;
         }
     }

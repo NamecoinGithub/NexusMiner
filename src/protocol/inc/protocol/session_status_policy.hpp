@@ -74,7 +74,6 @@ public:
         if (decision.mismatch_count >= input.mismatch_expire_threshold) {
             decision.expire_session = true;
             decision.force_reauth = true;
-            decision.mark_degraded = true;
             decision.reason = "ack session id mismatch reached expiry threshold";
         }
 
@@ -88,7 +87,6 @@ public:
 
         if (input.uptime_seconds == 0 || !input.lane_authenticated) {
             decision.force_reauth = true;
-            decision.mark_degraded = true;
             decision.reason = "ack reported expired or unauthenticated session";
         } else {
             decision.reason = "ack reported healthy authenticated session";

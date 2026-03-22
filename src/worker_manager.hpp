@@ -87,6 +87,7 @@ private:
     void schedule_forced_recovery_retry(const char* trigger_reason);
     int64_t next_forced_retry_jitter_ms();
     bool has_valid_template_available(const std::shared_ptr<protocol::Solo>& solo_protocol) const;
+    bool request_get_height_probe(const std::shared_ptr<protocol::Solo>& solo_protocol, const char* reason);
     bool can_send_forced_retry(std::chrono::steady_clock::time_point now);
     void prune_forced_retry_window(std::chrono::steady_clock::time_point now);
 
@@ -169,6 +170,7 @@ private:
     // Recovery window = 60 s; if no template arrives within that window the
     // health monitor escalates (stop workers → hard recovery).
     std::chrono::steady_clock::time_point m_recovery_started_at{};
+    std::chrono::steady_clock::time_point m_last_proactive_get_height_at{};
 
     // Time when degraded mode was first entered in the current outage.
     // Set once by stop_all_workers() (first entry only); cleared by clear_recovery_state().
