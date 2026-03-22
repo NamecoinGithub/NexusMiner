@@ -558,6 +558,28 @@ void test_get_height_state_values() {
 }
 
 // ============================================================================
+// Test 27b: 16-byte GET_HEIGHT carries full tracked-channel verifier state
+// ============================================================================
+void test_get_height_state_multichannel_values() {
+    std::cout << "\nTest 27b: GetHeightState stores prime/hash/stake when provided\n";
+    ChannelHeightShadowTracker t;
+    t.IngestKeepaliveAck(5900, 190, 290, 390, 0); // fallback source
+    t.IngestGetHeightResponse(6000, 200, 300, 400);
+    auto snap = t.GetSnapshot();
+    print_test_result("get_height.has_tracked_channels == true", snap.get_height.has_tracked_channels);
+    print_test_result("get_height prime/hash/stake stored",
+        snap.get_height.prime_height == 200 &&
+        snap.get_height.hash_height == 300 &&
+        snap.get_height.stake_height == 400);
+    print_test_result("active_prime_height() uses GET_HEIGHT primary",
+        snap.active_prime_height() == 200);
+    print_test_result("active_hash_height() uses GET_HEIGHT primary",
+        snap.active_hash_height() == 300);
+    print_test_result("active_stake_height() uses GET_HEIGHT primary",
+        snap.active_stake_height() == 400);
+}
+
+// ============================================================================
 // Test 28: IsGetHeightStale() true before any GET_HEIGHT response
 // ============================================================================
 void test_is_get_height_stale_before_ingest() {
@@ -674,6 +696,7 @@ int main() {
     // New GET_HEIGHT tests
     test_ingest_get_height_response_layer_isolation();
     test_get_height_state_values();
+    test_get_height_state_multichannel_values();
     test_is_get_height_stale_before_ingest();
     test_cross_check_get_height_primary_path();
     test_cross_check_get_height_overrides_keepalive();

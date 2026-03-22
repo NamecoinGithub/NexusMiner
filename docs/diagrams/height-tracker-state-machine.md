@@ -51,8 +51,9 @@ flowchart TD
 ## 2. `GetSnapshot()` Composition
 
 `GetSnapshot()` composes the backward-compatible `Snapshot` struct from both state
-objects.  The `max(canonical, push)` rule for heights is critical: it preserves push-driven
-staleness detection while preventing keepalive regressions.
+objects. `unified_height` now remains canonical `BLOCK_DATA` truth, while
+`channel_height` still uses `max(canonical, push)` to preserve push-driven
+channel staleness detection without allowing keepalive regressions.
 
 ```mermaid
 flowchart LR
@@ -78,7 +79,7 @@ flowchart LR
     end
 
     subgraph SNAP["Snapshot (backward-compat)"]
-        S1["unified_height"]
+        S1["unified_height\n(canonical BLOCK_DATA only)"]
         S2["channel_height"]
         S3["difficulty_nbits"]
         S4["channel_target"]
@@ -91,8 +92,7 @@ flowchart LR
         S11["last_height_update"]
     end
 
-    C1 --> |"max(canonical, push)"| S1
-    D1 --> |"max(canonical, push)"| S1
+    C1 --> |"canonical only"| S1
     C2 --> |"max(canonical, push)"| S2
     D2 --> |"max(canonical, push)"| S2
     C4 --> |"if initialized"| S3

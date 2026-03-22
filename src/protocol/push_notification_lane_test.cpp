@@ -154,6 +154,26 @@ network::Payload create_template_delivery_payload(uint32_t unified_height,
     return payload;
 }
 
+network::Payload create_block_height_payload(uint32_t unified_height,
+                                             uint32_t prime_height,
+                                             uint32_t hash_height,
+                                             uint32_t stake_height)
+{
+    network::Payload payload(16, 0);
+    auto write_u32_be = [&](size_t offset, uint32_t value) {
+        payload[offset + 0] = static_cast<uint8_t>((value >> 24) & 0xFF);
+        payload[offset + 1] = static_cast<uint8_t>((value >> 16) & 0xFF);
+        payload[offset + 2] = static_cast<uint8_t>((value >> 8) & 0xFF);
+        payload[offset + 3] = static_cast<uint8_t>(value & 0xFF);
+    };
+
+    write_u32_be(0, unified_height);
+    write_u32_be(4, prime_height);
+    write_u32_be(8, hash_height);
+    write_u32_be(12, stake_height);
+    return payload;
+}
+
 int main()
 {
     auto null_sink = std::make_shared<spdlog::sinks::null_sink_mt>();
@@ -758,12 +778,13 @@ int main()
         protocol::HeightTracker tracker;
         protocol::MiningTemplateInterface tmpl_interface(2, 0);
         tmpl_interface.set_height_tracker(&tracker);
-        tracker.OnPushNotification(8000, 100, 0x1d00ffff);
+        tracker.OnTemplateMetadata(8000, 100, 0x1d00ffff);
 
         auto template_data = create_mock_template(8001, 0x1d00ffff, 2);
         auto res = tmpl_interface.read_template(template_data, "test_node");
         print_test_result("Tip-move setup: initial template valid", res.is_valid);
         tmpl_interface.set_channel_height(101);
+        tracker.OnTemplateReceived(mining::CHANNEL_HASH, 101);
 
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
@@ -882,10 +903,55 @@ int main()
 
         print_test_result("Disconnected-session push triggers soft refresh handler", soft_refresh_called);
         print_test_result("Disconnected-session push does not trigger hard recovery handler", !recovery_called);
-        print_test_result("Disconnected-session push updates unified height", push_snapshot.unified_height == 9200);
+        print_test_result("Disconnected-session push keeps canonical unified height unset without BLOCK_DATA",
+            push_snapshot.unified_height == 0);
+        print_test_result("Disconnected-session push records observer unified height",
+            push_snapshot.push_unified_height == 9200);
         print_test_result("Disconnected-session push updates channel height", push_snapshot.channel_height == 100);
         print_test_result("Disconnected-session push still discards obsolete template",
             !solo.get_template_interface()->has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 17b: Solo parses 16-byte BLOCK_HEIGHT multi-channel verifier state
+    // ====================================================================
+    std::cout << "\nTest 17b: Solo parses 16-byte BLOCK_HEIGHT multi-channel verifier payload" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::LEGACY);
+
+        network::Payload payload = create_block_height_payload(9400, 5400, 6400, 4400);
+        Packet packet(static_cast<uint8_t>(Packet::BLOCK_HEIGHT), payload);
+        solo.process_messages(packet, nullptr);
+
+        auto ht_snap = solo.get_height_tracker_snapshot();
+        auto shadow_snap = solo.get_channel_shadow_snapshot();
+
+        print_test_result("BLOCK_HEIGHT stores unified verifier height",
+            ht_snap.get_height_unified_height == 9400);
+        print_test_result("BLOCK_HEIGHT stores tracked-channel verifier heights",
+            ht_snap.get_height_prime_height == 5400 &&
+            ht_snap.get_height_hash_height == 6400 &&
+            ht_snap.get_height_stake_height == 4400 &&
+            ht_snap.get_height_has_tracked_channels);
+        print_test_result("HeightTracker prime/hash/stake prefer fresh BLOCK_HEIGHT",
+            ht_snap.prime_height == 5400 &&
+            ht_snap.hash_height == 6400 &&
+            ht_snap.stake_height == 4400);
+        print_test_result("BLOCK_HEIGHT does not mutate canonical unified/channel state",
+            ht_snap.unified_height == 0 && ht_snap.channel_height == 0);
+        print_test_result("Shadow tracker stores multi-channel GET_HEIGHT payload",
+            shadow_snap.get_height.unified_height == 9400 &&
+            shadow_snap.get_height.prime_height == 5400 &&
+            shadow_snap.get_height.hash_height == 6400 &&
+            shadow_snap.get_height.stake_height == 4400 &&
+            shadow_snap.get_height.has_tracked_channels);
+        print_test_result("Shadow tracker active per-channel helpers prefer GET_HEIGHT",
+            shadow_snap.active_prime_height() == 5400 &&
+            shadow_snap.active_hash_height() == 6400 &&
+            shadow_snap.active_stake_height() == 4400);
     }
 
     // ====================================================================

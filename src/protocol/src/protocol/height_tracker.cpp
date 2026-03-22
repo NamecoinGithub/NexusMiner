@@ -8,6 +8,7 @@ namespace protocol {
 const char* HeightTracker::source_name(UpdateSource src) {
     switch (src) {
         case UpdateSource::PUSH:      return "PUSH";
+        case UpdateSource::GET_HEIGHT:return "GET_HEIGHT";
         case UpdateSource::GET_ROUND: return "GET_ROUND";
         case UpdateSource::TEMPLATE:  return "TEMPLATE";
         case UpdateSource::KEEPALIVE: return "KEEPALIVE";
@@ -17,7 +18,8 @@ const char* HeightTracker::source_name(UpdateSource src) {
 
 // ── OnPushNotification: updates DiagnosticObserverState push fields ONLY ──────
 // Does NOT touch canonical state. Push-derived channel_height is reflected in
-// GetSnapshot() via the max(canonical, push) composition in build_snapshot_locked().
+// GetSnapshot() via the max(canonical, push) channel-height composition in
+// build_snapshot_locked().
 void HeightTracker::OnPushNotification(uint32_t unified_height,
                                         uint32_t channel_height,
                                         uint32_t nbits)
@@ -71,6 +73,33 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
     m_last_update_source = UpdateSource::GET_ROUND;
     auto now = std::chrono::steady_clock::now();
     m_diagnostic.last_round_at = now;
+}
+
+void HeightTracker::OnGetHeightResponse(uint32_t unified_height)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_diagnostic.get_height_unified_height = unified_height;
+    m_diagnostic.get_height_prime_height = 0;
+    m_diagnostic.get_height_hash_height = 0;
+    m_diagnostic.get_height_stake_height = 0;
+    m_diagnostic.get_height_has_tracked_channels = false;
+    m_diagnostic.last_get_height_at = std::chrono::steady_clock::now();
+    m_last_update_source = UpdateSource::GET_HEIGHT;
+}
+
+void HeightTracker::OnGetHeightResponse(uint32_t unified_height,
+                                        uint32_t prime_height,
+                                        uint32_t hash_height,
+                                        uint32_t stake_height)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_diagnostic.get_height_unified_height = unified_height;
+    m_diagnostic.get_height_prime_height = prime_height;
+    m_diagnostic.get_height_hash_height = hash_height;
+    m_diagnostic.get_height_stake_height = stake_height;
+    m_diagnostic.get_height_has_tracked_channels = true;
+    m_diagnostic.last_get_height_at = std::chrono::steady_clock::now();
+    m_last_update_source = UpdateSource::GET_HEIGHT;
 }
 
 // ── OnTemplateMetadata: backward-compat wrapper → delegates to OnBlockDataReceived ──
@@ -203,11 +232,12 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
 
     s.session_epoch = m_session_epoch;
 
-    // Compose unified/channel heights: max(canonical, push)
-    // GET_ROUND and keepalive heights are excluded — they are diagnostic-only
-    // and must never regress mining decisions.
-    s.unified_height = std::max(m_canonical.canonical_unified_height,
-                                m_diagnostic.push_unified_height);
+    // unified_height is canonical BLOCK_DATA truth only.
+    // Push, GET_HEIGHT, GET_ROUND, and keepalive remain separate observer /
+    // verifier signals and must not overwrite the miner's canonical template
+    // height view.
+    s.unified_height = m_canonical.canonical_unified_height;
+    s.push_unified_height = m_diagnostic.push_unified_height;
     s.channel_height = std::max(m_canonical.canonical_channel_height,
                                 m_diagnostic.push_channel_height);
     s.push_channel_height = m_diagnostic.push_channel_height;
@@ -226,13 +256,25 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     s.template_block_height = UnifiedHeight{s.template_unified_height};
     s.hash_prev_block = m_canonical.canonical_hash_prev_block;
     s.push_hash_prev_block = m_diagnostic.push_hash_prev_block;
+    s.get_height_unified_height = m_diagnostic.get_height_unified_height;
+    s.get_height_prime_height = m_diagnostic.get_height_prime_height;
+    s.get_height_hash_height = m_diagnostic.get_height_hash_height;
+    s.get_height_stake_height = m_diagnostic.get_height_stake_height;
+    s.get_height_has_tracked_channels = m_diagnostic.get_height_has_tracked_channels;
+    s.last_get_height_at = m_diagnostic.last_get_height_at;
     s.last_update_source = m_last_update_source;
 
-    // Per-channel heights: sourced from keepalive ACKs (canonical per-channel fields are
-    // never populated by OnBlockDataReceived — keepalive is the only writer for these).
-    s.prime_height = m_diagnostic.keepalive_prime_height;
-    s.hash_height  = m_diagnostic.keepalive_hash_height;
-    s.stake_height = m_diagnostic.keepalive_stake_height;
+    // Per-channel heights: prefer fresh GET_HEIGHT / BLOCK_HEIGHT multi-channel data
+    // when the 16-byte form is available; otherwise fall back to keepalive ACKs.
+    if (s.has_fresh_get_height() && s.get_height_has_tracked_channels) {
+        s.prime_height = s.get_height_prime_height;
+        s.hash_height  = s.get_height_hash_height;
+        s.stake_height = s.get_height_stake_height;
+    } else {
+        s.prime_height = m_diagnostic.keepalive_prime_height;
+        s.hash_height  = m_diagnostic.keepalive_hash_height;
+        s.stake_height = m_diagnostic.keepalive_stake_height;
+    }
     s.prime_channel_height = ChannelHeight{s.prime_height};
     s.hash_channel_height = ChannelHeight{s.hash_height};
     s.stake_channel_height = ChannelHeight{s.stake_height};

@@ -2383,15 +2383,16 @@ void Worker_manager::check_template_health()
     // Unified tip movement without channel staleness is the normal cross-channel
     // refresh path: withhold submissions and fetch a replacement template first.
     // Do not let the HEIGHT_DRIFT hard-stop path bypass this softer recovery mode.
+    const uint32_t verified_unified_height = ht_snap.verified_unified_height();
     if (ht_snap.is_tip_moved()) {
         bool had_pending = m_recovery_pending;
         mark_soft_refresh_requested("health_monitor_tip_moved");
         if (!had_pending) {
             m_logger->info("[Worker_manager] ⚡ Unified tip moved (template_unified_height {} -> unified_height {}) — requesting refresh without degraded-mode escalation",
-                           ht_snap.template_unified_height, ht_snap.unified_height);
+                           ht_snap.template_unified_height, verified_unified_height);
         } else {
             m_logger->debug("[Worker_manager] Unified tip still ahead during soft refresh (template_unified_height {} -> unified_height {}, epoch {})",
-                            ht_snap.template_unified_height, ht_snap.unified_height, m_recovery_epoch);
+                            ht_snap.template_unified_height, verified_unified_height, m_recovery_epoch);
         }
         retry_template_request(false);
         return;
@@ -2407,10 +2408,11 @@ void Worker_manager::check_template_health()
         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
         uint32_t tmpl_height = template_interface->get_template_height();
 
-        if (ht_snap.unified_height > 0 && tmpl_height > 0 &&
-            ht_snap.unified_height > tmpl_height + protocol::ProtocolConstants::UNIFIED_DRIFT_THRESHOLD)
+        const uint32_t observed_unified_height = ht_snap.verified_unified_height();
+        if (observed_unified_height > 0 && tmpl_height > 0 &&
+            observed_unified_height > tmpl_height + protocol::ProtocolConstants::UNIFIED_DRIFT_THRESHOLD)
         {
-            int32_t drift = static_cast<int32_t>(ht_snap.unified_height) -
+            int32_t drift = static_cast<int32_t>(observed_unified_height) -
                             static_cast<int32_t>(tmpl_height);
             const auto shadow_snap = solo_protocol->get_channel_shadow_snapshot();
             const auto& cross_check = shadow_snap.cross_check;
@@ -2425,7 +2427,7 @@ void Worker_manager::check_template_health()
                 mark_soft_refresh_requested("height_drift_shadow_tracker_cross_check");
                 m_logger->warn("[Worker_manager] ⚠️  HEIGHT_DRIFT cross-check confirmed: unified={} template.nHeight={} "
                                "canonical={} source={} shadow_unified={} (drift={} shadow_delta={} abs_divergence={}) — requesting non-blocking GET_BLOCK",
-                               ht_snap.unified_height,
+                               observed_unified_height,
                                tmpl_height,
                                shadow_snap.canonical.unified_height,
                                protocol::ChannelHeightShadowTracker::source_name(active_shadow_source),
@@ -2439,7 +2441,7 @@ void Worker_manager::check_template_health()
             } else {
                 m_logger->warn("[Worker_manager] ⚠️  HEIGHT_DRIFT preflight: unified={} vs template.nHeight={} (drift={}) — "
                                "probing GET_HEIGHT before any degraded-mode escalation",
-                               ht_snap.unified_height,
+                               observed_unified_height,
                                tmpl_height,
                                drift);
                 request_get_height_probe(solo_protocol, "height_drift_preflight");

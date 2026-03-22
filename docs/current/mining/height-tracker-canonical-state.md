@@ -91,7 +91,8 @@ keepalive polluted `check_template_health()`, producing:
 | `OnTemplateReceived()` | `m_canonical.canonical_channel_target` | channel_target advance |
 | `AdvanceChannelTarget()` | `m_canonical.canonical_channel_target` | Push staleness prevention |
 | `UpdateWithHashPrevBlock()` | `m_canonical.canonical_hash_prev_block` | hashPrevBlock anchor |
-| `OnPushNotification()` | `m_diagnostic.push_*` | Colin height display |
+| `OnPushNotification()` | `m_diagnostic.push_*` | Colin height display + raw unified/channel observer |
+| `OnGetHeightResponse()` | `m_diagnostic.get_height_*` | Primary unified-height verifier for soft refresh / drift |
 | `OnGetRound()` | `m_diagnostic.round_*` | Colin round display |
 | `OnKeepaliveResponse()` | `m_diagnostic.keepalive_*` | Colin telemetry display |
 
@@ -104,14 +105,20 @@ The key rule: **canonical wins for mining-critical fields; diagnostic provides t
 
 | `Snapshot` field | Source | Rationale |
 |-----------------|--------|-----------|
-| `unified_height` | `max(canonical, push)` | Push-driven staleness + canonical protection |
+| `unified_height` | `canonical_unified_height` | Canonical BLOCK_DATA unified height used by the miner |
+| `push_unified_height` | `push_unified_height` | Fast observer-only unified tip from push notifications |
+| `verified_unified_height()` | `max(unified_height, fresh GET_HEIGHT)` | Primary verifier-aware unified tip for recovery/drift decisions |
 | `channel_height` | `max(canonical, push)` | Push-driven staleness + canonical protection |
 | `difficulty_nbits` | canonical if initialized, else push | Template difficulty is authoritative |
 | `channel_target` | canonical only | Never corrupted by keepalive |
 | `hash_prev_block` | canonical only | Fork detection anchor |
-| `prime_height` | `keepalive_prime_height` | Diagnostic display |
-| `hash_height` | `keepalive_hash_height` | Diagnostic display |
-| `stake_height` | `keepalive_stake_height` | Diagnostic display |
+| `prime_height` | fresh `get_height_prime_height` else `keepalive_prime_height` | Diagnostic display |
+| `hash_height` | fresh `get_height_hash_height` else `keepalive_hash_height` | Diagnostic display |
+| `stake_height` | fresh `get_height_stake_height` else `keepalive_stake_height` | Diagnostic display |
+
+Here “fresh” means the latest `BLOCK_HEIGHT` arrived within the normal
+GET_HEIGHT freshness window and explicitly carried the 16-byte
+unified/prime/hash/stake payload form (`get_height_has_tracked_channels == true`).
 | `hash_tip_lo32` | `keepalive_hash_tip_lo32` | Diagnostic canary |
 | `fork_score` | `keepalive_fork_score` | Diagnostic canary |
 | `peak_fork_score` | `keepalive_peak_fork_score` | Diagnostic canary |
@@ -119,9 +126,10 @@ The key rule: **canonical wins for mining-critical fields; diagnostic provides t
 | `last_template_update` | `canonical_received_at` | Post-push guard |
 | `last_height_update` | `max(canonical_received_at, last_push_at)` | Post-push guard |
 
-The `max(canonical, push)` composition for `channel_height` preserves all push-driven
-staleness detection (`is_template_stale()`, `is_tip_moved()`) while ensuring the keepalive
-ACK can never regress the value below what a push or BLOCK_DATA has already established.
+The `max(canonical, push)` composition for `channel_height` preserves push-driven
+channel staleness detection (`is_template_stale()`), while push unified height is
+carried separately for `is_tip_moved()`. Keepalive can never regress the values
+below what a push or BLOCK_DATA has already established.
 
 ---
 
@@ -205,11 +213,11 @@ bool is_fork_canary_active() const { return keepalive_peak_fork_score > 0; }
 /// (informational — fires for 0-4 s after every new block; NOT a hard-stop trigger)
 bool is_tip_sync_mismatch(uint32_t canonical_hash_prev_lo32) const;
 
-/// True when at least one diagnostic source (push, GET_ROUND, or keepalive) has provided data.
+/// True when at least one diagnostic source (push, GET_HEIGHT, GET_ROUND, or keepalive) has provided data.
 /// Diagnostic equivalent of CanonicalChainState::is_initialized().
 bool is_initialized() const;
 
-/// Most recent update time across push, GET_ROUND, and keepalive sources.
+/// Most recent update time across push, GET_HEIGHT, GET_ROUND, and keepalive sources.
 /// Diagnostic equivalent of CanonicalChainState::canonical_received_at.
 /// Returns epoch time_point when no source has been received yet.
 std::chrono::steady_clock::time_point latest_received_at() const;
