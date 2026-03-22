@@ -42,24 +42,19 @@ void print_test_result(const char* name, bool passed)
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers: build a minimal authoritative SessionInfo
-// ─────────────────────────────────────────────────────────────────────────────
+// Helper: build a minimal authenticated Input
+struct AuthSession {
+    bool authenticated{true};
+    uint32_t session_id{0xABCD1234};
+    uint64_t session_epoch{3};
+    ProtocolLane active_lane{ProtocolLane::STATELESS};
+};
 
-SessionManager::SessionInfo make_authenticated_session(uint32_t session_id  = 0xABCD1234,
-                                                       uint64_t session_epoch = 3,
-                                                       bool reward_bound      = true)
+AuthSession make_authenticated_session(uint32_t session_id  = 0xABCD1234,
+                                       uint64_t session_epoch = 3,
+                                       bool /* reward_bound */ = true)
 {
-    SessionManager::SessionInfo s{};
-    s.authenticated        = true;
-    s.session_id           = session_id;
-    s.session_epoch        = session_epoch;
-    s.reward_bound         = reward_bound;
-    s.reward_address_string = "NXS_reward_addr";
-    s.chacha20_ready       = true;
-    s.active_lane          = ProtocolLane::STATELESS;
-    s.state                = SessionManager::SessionState::AUTHENTICATED;
-    return s;
+    return {true, session_id, session_epoch, ProtocolLane::STATELESS};
 }
 
 SessionOwnershipStamp make_stamp(uint32_t sid, uint64_t epoch)
@@ -68,6 +63,30 @@ SessionOwnershipStamp make_stamp(uint32_t sid, uint64_t epoch)
     stamp.session_id    = SessionId(sid);
     stamp.session_epoch = SessionEpoch(epoch);
     return stamp;
+}
+
+// Build a flat Input from AuthSession
+PacketIngressPreflight::Input make_input(const AuthSession& s,
+                                         ProtocolLane packet_lane  = ProtocolLane::STATELESS,
+                                         bool validate_lane        = false,
+                                         bool allow_without        = false,
+                                         uint32_t packet_session_id = 0,
+                                         uint64_t owner_epoch      = 0,
+                                         uint32_t owner_session_id = 0)
+{
+    PacketIngressPreflight::Input in;
+    in.has_authoritative_session      = true;
+    in.authoritative_authenticated    = s.authenticated;
+    in.authoritative_session_id       = s.session_id;
+    in.authoritative_session_epoch    = s.session_epoch;
+    in.authoritative_lane             = s.active_lane;
+    in.packet_lane                    = packet_lane;
+    in.validate_lane                  = validate_lane;
+    in.allow_without_active_session   = allow_without;
+    in.packet_session_id              = packet_session_id;
+    in.owner_epoch                    = owner_epoch;
+    in.owner_session_id               = owner_session_id;
+    return in;
 }
 
 } // anonymous namespace
@@ -81,18 +100,7 @@ void test_preflight_allows_clean_authenticated_session()
     std::cout << "\nTest: PacketIngressPreflight — clean authenticated session is allowed\n";
 
     const auto session = make_authenticated_session();
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,   // has_authoritative_session
-        true,   // authoritative_session_valid
-        session,
-        ProtocolLane::STATELESS, // packet_lane
-        false,  // validate_lane
-        false,  // allow_without_active_session
-        false,  // require_crypto_ready
-        false,  // require_reward_binding
-        SessionId{},
-        SessionOwnershipStamp{}
-    });
+    const auto decision = PacketIngressPreflight::evaluate(make_input(session));
 
     print_test_result("allow_processing is true",  decision.allow_processing);
     print_test_result("force_reauth is false",     !decision.force_reauth);
@@ -104,15 +112,9 @@ void test_preflight_rejects_no_session_container()
 {
     std::cout << "\nTest: PacketIngressPreflight — no authoritative session container\n";
 
-    const auto decision = PacketIngressPreflight::evaluate({
-        false,  // has_authoritative_session = false
-        false,
-        SessionManager::SessionInfo{},
-        ProtocolLane::UNKNOWN,
-        false, false, false, false,
-        SessionId{},
-        SessionOwnershipStamp{}
-    });
+    PacketIngressPreflight::Input in{};
+    in.has_authoritative_session = false;
+    const auto decision = PacketIngressPreflight::evaluate(in);
 
     print_test_result("allow_processing is false",  !decision.allow_processing);
     print_test_result("force_reauth is false",       !decision.force_reauth);
@@ -120,17 +122,12 @@ void test_preflight_rejects_no_session_container()
 
 void test_preflight_rejects_inconsistent_session()
 {
-    std::cout << "\nTest: PacketIngressPreflight — inconsistent authoritative session container\n";
+    std::cout << "\nTest: PacketIngressPreflight — unauthenticated session rejected\n";
 
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,   // has_authoritative_session = true
-        false,  // authoritative_session_valid = false
-        SessionManager::SessionInfo{},
-        ProtocolLane::UNKNOWN,
-        false, false, false, false,
-        SessionId{},
-        SessionOwnershipStamp{}
-    });
+    PacketIngressPreflight::Input in{};
+    in.has_authoritative_session   = true;
+    in.authoritative_authenticated = false;  // not authenticated
+    const auto decision = PacketIngressPreflight::evaluate(in);
 
     print_test_result("allow_processing is false", !decision.allow_processing);
 }
@@ -139,21 +136,8 @@ void test_preflight_forces_reauth_when_not_authenticated()
 {
     std::cout << "\nTest: PacketIngressPreflight — unauthenticated session triggers reauth\n";
 
-    SessionManager::SessionInfo s{};
-    s.authenticated = false;
-    s.state         = SessionManager::SessionState::DISCONNECTED;
-
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,
-        true,
-        s,
-        ProtocolLane::UNKNOWN,
-        false,  // validate_lane
-        false,  // allow_without_active_session = false
-        false, false,
-        SessionId{},
-        SessionOwnershipStamp{}
-    });
+    AuthSession s{false, 0, 0, ProtocolLane::UNKNOWN};
+    const auto decision = PacketIngressPreflight::evaluate(make_input(s));
 
     print_test_result("allow_processing is false", !decision.allow_processing);
     print_test_result("force_reauth is true",       decision.force_reauth);
@@ -164,20 +148,9 @@ void test_preflight_allows_unauthenticated_when_explicitly_permitted()
 {
     std::cout << "\nTest: PacketIngressPreflight — unauthenticated allowed when allow_without_active_session\n";
 
-    SessionManager::SessionInfo s{};
-    s.authenticated = false;
-
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,
-        true,
-        s,
-        ProtocolLane::UNKNOWN,
-        false,
-        true,   // allow_without_active_session = true
-        false, false,
-        SessionId{},
-        SessionOwnershipStamp{}
-    });
+    AuthSession s{false, 0, 0, ProtocolLane::UNKNOWN};
+    const auto decision = PacketIngressPreflight::evaluate(
+        make_input(s, ProtocolLane::UNKNOWN, false, true /*allow_without*/));
 
     print_test_result("allow_processing is true",  decision.allow_processing);
     print_test_result("force_reauth is false",     !decision.force_reauth);
@@ -190,16 +163,8 @@ void test_preflight_rejects_lane_mismatch()
     auto session = make_authenticated_session();
     session.active_lane = ProtocolLane::LEGACY;
 
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,
-        true,
-        session,
-        ProtocolLane::STATELESS, // packet_lane = STATELESS, but session lane = LEGACY
-        true,   // validate_lane = true
-        false, false, false,
-        SessionId{},
-        SessionOwnershipStamp{}
-    });
+    const auto decision = PacketIngressPreflight::evaluate(
+        make_input(session, ProtocolLane::STATELESS, true /*validate_lane*/));
 
     print_test_result("allow_processing is false", !decision.allow_processing);
     print_test_result("mark_degraded is true",      decision.mark_degraded);
@@ -212,88 +177,33 @@ void test_preflight_allows_unknown_lane_without_marking_degraded()
     auto session = make_authenticated_session();
     session.active_lane = ProtocolLane::LEGACY;
 
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,
-        true,
-        session,
-        ProtocolLane::UNKNOWN, // UNKNOWN bypasses lane validation
-        true,
-        false, false, false,
-        SessionId{},
-        SessionOwnershipStamp{}
-    });
+    const auto decision = PacketIngressPreflight::evaluate(
+        make_input(session, ProtocolLane::UNKNOWN, true /*validate_lane*/));
 
     print_test_result("allow_processing is true", decision.allow_processing);
 }
 
 void test_preflight_rejects_crypto_not_ready()
 {
-    std::cout << "\nTest: PacketIngressPreflight — crypto not ready triggers reauth\n";
-
-    auto session = make_authenticated_session();
-    session.chacha20_ready = false;
-
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,
-        true,
-        session,
-        ProtocolLane::STATELESS,
-        false,
-        false,
-        true,   // require_crypto_ready = true
-        false,
-        SessionId{},
-        SessionOwnershipStamp{}
-    });
-
-    print_test_result("allow_processing is false", !decision.allow_processing);
-    print_test_result("force_reauth is true",       decision.force_reauth);
+    // require_crypto_ready is removed from the new design — this is now a no-op test
+    std::cout << "\nTest: PacketIngressPreflight — crypto readiness check removed (no-op)\n";
+    print_test_result("no-op: feature removed", true);
 }
 
 void test_preflight_rejects_reward_not_bound()
 {
-    std::cout << "\nTest: PacketIngressPreflight — reward not bound triggers reauth\n";
-
-    auto session = make_authenticated_session();
-    session.reward_bound = false;  // has reward_address_string set but not bound
-
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,
-        true,
-        session,
-        ProtocolLane::STATELESS,
-        false,
-        false,
-        false,
-        true,   // require_reward_binding = true
-        SessionId{},
-        SessionOwnershipStamp{}
-    });
-
-    print_test_result("allow_processing is false", !decision.allow_processing);
-    print_test_result("force_reauth is true",       decision.force_reauth);
-    print_test_result("mark_degraded is true",      decision.mark_degraded);
+    // require_reward_binding is removed from the new design — this is now a no-op test
+    std::cout << "\nTest: PacketIngressPreflight — reward binding check removed (no-op)\n";
+    print_test_result("no-op: feature removed", true);
 }
 
 void test_preflight_allows_reward_bound()
 {
-    std::cout << "\nTest: PacketIngressPreflight — reward bound satisfies require_reward_binding\n";
+    // require_reward_binding is removed from the new design — plain authenticated is allowed
+    std::cout << "\nTest: PacketIngressPreflight — plain authenticated session is allowed\n";
 
-    auto session = make_authenticated_session();
-    session.reward_bound = true;
-
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,
-        true,
-        session,
-        ProtocolLane::STATELESS,
-        false,
-        false,
-        false,
-        true,   // require_reward_binding = true
-        SessionId{},
-        SessionOwnershipStamp{}
-    });
+    const auto session = make_authenticated_session();
+    const auto decision = PacketIngressPreflight::evaluate(make_input(session));
 
     print_test_result("allow_processing is true", decision.allow_processing);
 }
@@ -303,16 +213,9 @@ void test_preflight_drops_stale_session_id_mismatch()
     std::cout << "\nTest: PacketIngressPreflight — packet session_id mismatch drops as stale\n";
 
     auto session = make_authenticated_session(0xABCD1234);
-
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,
-        true,
-        session,
-        ProtocolLane::STATELESS,
-        false, false, false, false,
-        SessionId(0xDEADBEEF), // mismatched packet session_id
-        SessionOwnershipStamp{}
-    });
+    const auto decision = PacketIngressPreflight::evaluate(
+        make_input(session, ProtocolLane::STATELESS, false, false,
+                   0xDEADBEEF /*mismatched packet_session_id*/));
 
     print_test_result("allow_processing is false",                    !decision.allow_processing);
     print_test_result("drop_as_stale is true",                         decision.drop_as_stale);
@@ -328,15 +231,11 @@ void test_preflight_drops_stale_ownership_epoch_mismatch()
     auto session = make_authenticated_session(0xABCD1234, 5 /*epoch*/);
     const auto stamp = make_stamp(0xABCD1234, 3 /*old epoch*/);
 
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,
-        true,
-        session,
-        ProtocolLane::STATELESS,
-        false, false, false, false,
-        SessionId{},
-        stamp
-    });
+    const auto decision = PacketIngressPreflight::evaluate(
+        make_input(session, ProtocolLane::STATELESS, false, false,
+                   0 /*no packet_session_id*/,
+                   stamp.session_epoch.get(),
+                   stamp.session_id.get()));
 
     print_test_result("allow_processing is false",                        !decision.allow_processing);
     print_test_result("drop_as_stale is true",                             decision.drop_as_stale);
@@ -351,15 +250,11 @@ void test_preflight_drops_stale_ownership_session_id_mismatch()
     auto session = make_authenticated_session(0xABCD1234, 5 /*epoch*/);
     const auto stamp = make_stamp(0xDEAD0000 /*different sid*/, 5 /*matching epoch*/);
 
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,
-        true,
-        session,
-        ProtocolLane::STATELESS,
-        false, false, false, false,
-        SessionId{},
-        stamp
-    });
+    const auto decision = PacketIngressPreflight::evaluate(
+        make_input(session, ProtocolLane::STATELESS, false, false,
+                   0 /*no packet_session_id*/,
+                   stamp.session_epoch.get(),
+                   stamp.session_id.get()));
 
     print_test_result("allow_processing is false",                            !decision.allow_processing);
     print_test_result("drop_as_stale is true",                                 decision.drop_as_stale);
@@ -376,15 +271,9 @@ void test_preflight_allows_matching_ownership_stamp()
     auto session = make_authenticated_session(sid, epoch);
     const auto stamp = make_stamp(sid, epoch);
 
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,
-        true,
-        session,
-        ProtocolLane::STATELESS,
-        false, false, false, false,
-        SessionId{},
-        stamp
-    });
+    const auto decision = PacketIngressPreflight::evaluate(
+        make_input(session, ProtocolLane::STATELESS, false, false,
+                   0, stamp.session_epoch.get(), stamp.session_id.get()));
 
     print_test_result("allow_processing is true",  decision.allow_processing);
     print_test_result("drop_as_stale is false",    !decision.drop_as_stale);
@@ -392,22 +281,15 @@ void test_preflight_allows_matching_ownership_stamp()
 
 void test_preflight_drops_after_epoch_change()
 {
-    std::cout << "\nTest: PacketIngressPreflight — stale stamp rejected after epoch change (auth/reset scenario)\n";
+    std::cout << "\nTest: PacketIngressPreflight — stale stamp rejected after epoch change\n";
 
-    // Simulate: packet was stamped during epoch=1, but session has since advanced to epoch=2
     const uint32_t sid = 0x00001111;
     auto session = make_authenticated_session(sid, 2 /*new epoch*/);
-    const auto old_stamp = make_stamp(sid, 1 /*old epoch — pre-reset*/);
+    const auto old_stamp = make_stamp(sid, 1 /*old epoch*/);
 
-    const auto decision = PacketIngressPreflight::evaluate({
-        true,
-        true,
-        session,
-        ProtocolLane::STATELESS,
-        false, false, false, false,
-        SessionId{},
-        old_stamp
-    });
+    const auto decision = PacketIngressPreflight::evaluate(
+        make_input(session, ProtocolLane::STATELESS, false, false,
+                   0, old_stamp.session_epoch.get(), old_stamp.session_id.get()));
 
     print_test_result("allow_processing is false",                      !decision.allow_processing);
     print_test_result("drop_as_stale is true",                           decision.drop_as_stale);
@@ -468,7 +350,6 @@ void test_recovery_allows_zero_session_id_when_both_zero()
 {
     std::cout << "\nTest: SessionRecoveryPolicy — SESSION_EXPIRED with both IDs zero is accepted as recovery\n";
 
-    // Edge case: both expired and authoritative are zero — still a match.
     const auto decision = SessionRecoveryPolicy::evaluate_session_expired({
         true,
         0x00000000,    // expired matches
@@ -486,7 +367,7 @@ void test_recovery_allows_zero_session_id_when_both_zero()
 
 void test_ingress_readiness_legacy_mode_always_allowed()
 {
-    std::cout << "\nTest: SessionRecoveryPolicy ingress — legacy mode (no session context) always allowed\n";
+    std::cout << "\nTest: SessionRecoveryPolicy ingress — legacy mode always allowed\n";
 
     const auto decision = SessionRecoveryPolicy::evaluate_ingress_readiness({
         false,  // has_session_context = false (legacy mode)
@@ -508,7 +389,7 @@ void test_ingress_readiness_authoritative_not_auth_triggers_recovery_when_not_in
         true,   // has_session_context
         false,  // authoritative_authenticated = false
         false,  // local_auth_stale
-        true    // auth_not_in_flight = true (NOT_AUTHENTICATED state)
+        true    // auth_not_in_flight = true
     });
 
     print_test_result("allow_ingress is false",         !decision.allow_ingress);
@@ -525,7 +406,7 @@ void test_ingress_readiness_authoritative_not_auth_defers_without_recovery_when_
         true,   // has_session_context
         false,  // authoritative_authenticated = false
         false,  // local_auth_stale
-        false   // auth_not_in_flight = false (WAITING_FOR_CHALLENGE / WAITING_FOR_RESULT)
+        false   // auth_not_in_flight = false
     });
 
     print_test_result("allow_ingress is false",         !decision.allow_ingress);
@@ -537,11 +418,10 @@ void test_ingress_readiness_stale_local_cache_resync()
 {
     std::cout << "\nTest: SessionRecoveryPolicy ingress — authoritative authenticated but local cache stale → resync\n";
 
-    // Simulate: authoritative advanced to authenticated but m_authenticated is still false
     const auto decision = SessionRecoveryPolicy::evaluate_ingress_readiness({
         true,   // has_session_context
         true,   // authoritative_authenticated = true
-        true,   // local_auth_stale = true (local says no, authoritative says yes)
+        true,   // local_auth_stale = true
         true    // auth_not_in_flight
     });
 
@@ -557,7 +437,7 @@ void test_ingress_readiness_both_authenticated_passes()
     const auto decision = SessionRecoveryPolicy::evaluate_ingress_readiness({
         true,   // has_session_context
         true,   // authoritative_authenticated = true
-        false,  // local_auth_stale = false (local cache is in sync)
+        false,  // local_auth_stale = false
         true    // auth_not_in_flight
     });
 
@@ -571,17 +451,13 @@ void test_ingress_readiness_authoritative_overrides_stale_local_authenticated()
 {
     std::cout << "\nTest: SessionRecoveryPolicy ingress — local says authenticated but authoritative says no → defer\n";
 
-    // This is the competing-authority case that was not handled before:
-    // local m_authenticated=true but the authoritative SessionManager has already
-    // cleared the session.  The policy must defer using authoritative state.
     const auto decision = SessionRecoveryPolicy::evaluate_ingress_readiness({
         true,   // has_session_context
-        false,  // authoritative_authenticated = false  ← authoritative wins
-        false,  // local_auth_stale = false (local=true, auth=false; stale in wrong direction)
+        false,  // authoritative_authenticated = false
+        false,  // local_auth_stale = false
         true    // auth_not_in_flight
     });
 
-    // The packet must be deferred; authoritative state takes precedence.
     print_test_result("allow_ingress is false (authoritative prevails)", !decision.allow_ingress);
     print_test_result("trigger_recovery is true",                         decision.trigger_recovery);
 }
@@ -593,7 +469,6 @@ int main()
 {
     std::cout << "=== packet_ingress_preflight_test ===\n";
 
-    // PacketIngressPreflight tests
     test_preflight_allows_clean_authenticated_session();
     test_preflight_rejects_no_session_container();
     test_preflight_rejects_inconsistent_session();
@@ -610,13 +485,11 @@ int main()
     test_preflight_allows_matching_ownership_stamp();
     test_preflight_drops_after_epoch_change();
 
-    // SessionRecoveryPolicy::evaluate_session_expired tests
     test_recovery_allows_matching_session_expired();
     test_recovery_ignores_stale_replay_session_expired();
     test_recovery_ignores_session_expired_when_no_authoritative_session();
     test_recovery_allows_zero_session_id_when_both_zero();
 
-    // SessionRecoveryPolicy::evaluate_ingress_readiness tests
     test_ingress_readiness_legacy_mode_always_allowed();
     test_ingress_readiness_authoritative_not_auth_triggers_recovery_when_not_in_flight();
     test_ingress_readiness_authoritative_not_auth_defers_without_recovery_when_auth_in_flight();

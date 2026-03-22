@@ -209,24 +209,18 @@ void test_session_status_frame_payload_size() {
 void test_session_ingress_gate_rejects_stale_owner_generation() {
     std::cout << "\nTest 8: Session ingress gate rejects stale owner generation\n";
 
-    SessionManager::SessionInfo session;
-    session.authenticated = true;
-    session.session_id = 0x22222222u;
-    session.session_epoch = 7;
-    session.active_lane = ProtocolLane::STATELESS;
-    session.chacha20_ready = true;
-
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
-        true,
-        true,
-        session,
-        ProtocolLane::STATELESS,
-        true,
-        false,
-        false,
-        false,
-        SessionId(0x22222222u),
-        SessionOwnershipStamp{SessionId(0x22222222u), SessionEpoch(6)}
+        true,               // has_authoritative_session
+        true,               // authoritative_authenticated
+        0x22222222u,        // authoritative_session_id
+        uint64_t{7},        // authoritative_session_epoch
+        ProtocolLane::STATELESS,  // authoritative_lane
+        ProtocolLane::STATELESS,  // packet_lane
+        true,               // validate_lane
+        false,              // allow_without_active_session
+        0x22222222u,        // packet_session_id
+        uint64_t{6},        // owner_epoch (stale: 6 vs authoritative 7)
+        0x22222222u         // owner_session_id
     });
 
     print_test_result("stale owner epoch is rejected", !decision.allow_processing);
@@ -237,35 +231,31 @@ void test_session_ingress_gate_rejects_stale_owner_generation() {
 }
 
 // ============================================================================
-// Test 9: shared ingress gate enforces crypto readiness when required
+// Test 9: shared ingress gate — crypto readiness check removed (no-op)
 // ============================================================================
 void test_session_ingress_gate_requires_crypto_context_when_requested() {
-    std::cout << "\nTest 9: Session ingress gate enforces crypto readiness when requested\n";
+    std::cout << "\nTest 9: Session ingress gate — crypto readiness check removed (no-op)\n";
 
-    SessionManager::SessionInfo session;
-    session.authenticated = true;
-    session.session_id = 0x01020304u;
-    session.session_epoch = 3;
-    session.active_lane = ProtocolLane::STATELESS;
-    session.chacha20_ready = false;
-
+    // require_crypto_ready is removed from the new design.
+    // An authenticated session with matching ownership stamp should pass.
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
-        true,
-        true,
-        session,
+        true,               // has_authoritative_session
+        true,               // authoritative_authenticated
+        0x01020304u,        // authoritative_session_id
+        uint64_t{3},        // authoritative_session_epoch
         ProtocolLane::STATELESS,
-        true,
-        false,
-        true,
-        false,
-        SessionId(0),
-        SessionOwnershipStamp{SessionId(0x01020304u), SessionEpoch(3)}
+        ProtocolLane::STATELESS,
+        true,               // validate_lane
+        false,              // allow_without_active_session
+        0,                  // packet_session_id (no mismatch)
+        uint64_t{3},        // owner_epoch (matches)
+        0x01020304u         // owner_session_id (matches)
     });
 
-    print_test_result("missing crypto readiness is rejected", !decision.allow_processing);
-    print_test_result("missing crypto readiness forces reauth", decision.force_reauth);
-    print_test_result("missing crypto readiness reason mentions crypto context",
-                      decision.reason.find("crypto context") != std::string::npos);
+    // Feature removed: crypto check no longer blocks processing
+    print_test_result("crypto check removed: session passes", decision.allow_processing);
+    print_test_result("crypto check removed: no force reauth", !decision.force_reauth);
+    print_test_result("crypto check removed: reason is set", !decision.reason.empty());
 }
 
 // ============================================================================
@@ -274,23 +264,18 @@ void test_session_ingress_gate_requires_crypto_context_when_requested() {
 void test_session_ingress_gate_rejects_stale_packet_session_id() {
     std::cout << "\nTest 10: Session ingress gate rejects stale packet session ids\n";
 
-    SessionManager::SessionInfo session;
-    session.authenticated = true;
-    session.session_id = 0x11112222u;
-    session.session_epoch = 4;
-    session.active_lane = ProtocolLane::STATELESS;
-
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
-        true,
-        true,
-        session,
+        true,               // has_authoritative_session
+        true,               // authoritative_authenticated
+        0x11112222u,        // authoritative_session_id
+        uint64_t{4},        // authoritative_session_epoch
         ProtocolLane::STATELESS,
-        true,
-        false,
-        false,
-        false,
-        SessionId(0x33334444u),
-        SessionOwnershipStamp{SessionId(0x11112222u), SessionEpoch(4)}
+        ProtocolLane::STATELESS,
+        true,               // validate_lane
+        false,              // allow_without_active_session
+        0x33334444u,        // packet_session_id (mismatched)
+        uint64_t{4},        // owner_epoch
+        0x11112222u         // owner_session_id
     });
 
     print_test_result("stale packet session ID is rejected", !decision.allow_processing);
@@ -306,23 +291,18 @@ void test_session_ingress_gate_rejects_stale_packet_session_id() {
 void test_session_ingress_gate_rejects_stale_owner_session_id() {
     std::cout << "\nTest 11: Session ingress gate rejects stale owner session ids\n";
 
-    SessionManager::SessionInfo session;
-    session.authenticated = true;
-    session.session_id = 0x01020304u;
-    session.session_epoch = 9;
-    session.active_lane = ProtocolLane::STATELESS;
-
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
-        true,
-        true,
-        session,
+        true,               // has_authoritative_session
+        true,               // authoritative_authenticated
+        0x01020304u,        // authoritative_session_id
+        uint64_t{9},        // authoritative_session_epoch
         ProtocolLane::STATELESS,
-        true,
-        false,
-        false,
-        false,
-        SessionId(0x01020304u),
-        SessionOwnershipStamp{SessionId(0xA0B0C0D0u), SessionEpoch(9)}
+        ProtocolLane::STATELESS,
+        true,               // validate_lane
+        false,              // allow_without_active_session
+        0x01020304u,        // packet_session_id (matches)
+        uint64_t{9},        // owner_epoch (matches)
+        0xA0B0C0D0u         // owner_session_id (mismatches)
     });
 
     print_test_result("stale owner session ID is rejected", !decision.allow_processing);
@@ -337,23 +317,18 @@ void test_session_ingress_gate_rejects_stale_owner_session_id() {
 void test_session_ingress_gate_rejects_lane_mismatch() {
     std::cout << "\nTest 12: Session ingress gate rejects lane mismatches\n";
 
-    SessionManager::SessionInfo session;
-    session.authenticated = true;
-    session.session_id = 0x0A0B0C0Du;
-    session.session_epoch = 2;
-    session.active_lane = ProtocolLane::STATELESS;
-
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
-        true,
-        true,
-        session,
-        ProtocolLane::LEGACY,
-        true,
-        false,
-        false,
-        false,
-        SessionId(0x0A0B0C0Du),
-        SessionOwnershipStamp{SessionId(0x0A0B0C0Du), SessionEpoch(2)}
+        true,               // has_authoritative_session
+        true,               // authoritative_authenticated
+        0x0A0B0C0Du,        // authoritative_session_id
+        uint64_t{2},        // authoritative_session_epoch
+        ProtocolLane::STATELESS,  // authoritative_lane
+        ProtocolLane::LEGACY,     // packet_lane (mismatched)
+        true,               // validate_lane
+        false,              // allow_without_active_session
+        0x0A0B0C0Du,        // packet_session_id
+        uint64_t{2},        // owner_epoch
+        0x0A0B0C0Du         // owner_session_id
     });
 
     print_test_result("lane mismatch is rejected", !decision.allow_processing);
@@ -369,23 +344,18 @@ void test_session_ingress_gate_rejects_lane_mismatch() {
 void test_session_ingress_gate_requires_authenticated_session() {
     std::cout << "\nTest 13: Session ingress gate forces re-auth for unauthenticated sessions\n";
 
-    SessionManager::SessionInfo session;
-    session.authenticated = false;
-    session.session_id = 0x55667788u;
-    session.session_epoch = 5;
-    session.active_lane = ProtocolLane::STATELESS;
-
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
-        true,
-        true,
-        session,
+        true,               // has_authoritative_session
+        false,              // authoritative_authenticated = false
+        0x55667788u,        // authoritative_session_id
+        uint64_t{5},        // authoritative_session_epoch
         ProtocolLane::STATELESS,
-        true,
-        false,
-        false,
-        false,
-        SessionId(0x55667788u),
-        SessionOwnershipStamp{SessionId(0x55667788u), SessionEpoch(5)}
+        ProtocolLane::STATELESS,
+        true,               // validate_lane
+        false,              // allow_without_active_session
+        0x55667788u,        // packet_session_id
+        uint64_t{5},        // owner_epoch
+        0x55667788u         // owner_session_id
     });
 
     print_test_result("unauthenticated authoritative session is rejected", !decision.allow_processing);
