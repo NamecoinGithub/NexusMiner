@@ -596,7 +596,31 @@ bool Solo::should_accept_authoritative_template(uint32_t unified_height,
         return true;
     }
 
-    m_logger->info("[{}] Suppressing {} template feed: unified height {} is not newer than current {}",
+    // ── Canonical BLOCK_DATA invariant: same-height replacement when no valid template ──
+    // Allow a same-height canonical BLOCK_DATA when no valid template is currently
+    // installed.  This is the critical recovery path for same-height tip replacement:
+    //   1. Push handler discards old template ("same_height_tip_update").
+    //   2. Soft refresh is requested; GET_BLOCK is sent.
+    //   3. BLOCK_DATA response arrives at the same unified height (node has not yet
+    //      advanced past this height).
+    //   4. Without this guard, should_accept_authoritative_template would suppress
+    //      the response because unified_height == m_current_height, leaving the miner
+    //      permanently stranded with valid_template=no.
+    //
+    // The template validity gates (validate_current_template, feed debounce) remain
+    // the authoritative acceptance/rejection path — this only bypasses the early
+    // unified-height gate when we have no active template to protect.
+    if (unified_height == m_current_height &&
+        m_template_interface &&
+        !m_template_interface->has_valid_template())
+    {
+        m_logger->info("[{}] ℹ️  Allowing same-height {} template (height={}) — "
+                       "no valid template present, recovery/soft-refresh in progress",
+                       log_scope, source_name, unified_height);
+        return true;
+    }
+
+    m_logger->info("[{}] Suppressing {} template: unified height {} is not newer than current {}",
                    log_scope,
                    source_name,
                    unified_height,
@@ -613,6 +637,7 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
         return false;
     }
 
+    // ── Pipeline step 1/5: channel height finalization ──────────────────────────
     if (effective_channel_height > 0) {
         m_template_interface->set_channel_height(effective_channel_height + 1);
     }
@@ -623,6 +648,7 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
         return false;
     }
 
+    // ── Pipeline step 2/5: clear push tip anchor (must precede validate) ────────
     // Clear the push tip anchor now that a fresh BLOCK_DATA template is in hand.
     // This must happen BEFORE validate_current_template() so that any residual
     // push_hash_prev_block from a prior same-height push does not cause
@@ -631,11 +657,16 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     // at this point BLOCK_DATA is authoritative and the anchor is stale.
     m_height_tracker.ClearPushTipAnchor();
 
+    // ── Pipeline step 3/5: validate (staleness gate) ────────────────────────────
     if (!validate_current_template()) {
-        m_logger->warn("[{}] Template invalidated by final adoption gate before worker feed", log_scope);
+        m_logger->warn("[{}] ⚠️  Template invalidated by staleness gate before worker feed "
+                       "(unified={} channel_target={})",
+                       log_scope, unified_height,
+                       tmpl ? tmpl->nChannelHeight : 0);
         return false;
     }
 
+    // ── Pipeline step 4/5: record tip anchor ────────────────────────────────────
     m_current_height = unified_height;
 
     auto format_hex8 = [](const uint1024_t& h) -> std::string {
@@ -698,8 +729,16 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
         return false;
     }
 
-    if (!m_template_interface->feed_current_template()) {
-        m_logger->warn("[{}] Authoritative template delivery did not reach workers", log_scope);
+    // ── Pipeline step 5/5: feed to workers ──────────────────────────────────────
+    bool fed = m_template_interface->feed_current_template();
+    if (fed) {
+        m_logger->info("[{}] ✅ Canonical BLOCK_DATA installed and fed to workers "
+                       "(unified={} channel_target={})",
+                       log_scope, unified_height, tmpl->nChannelHeight);
+    } else {
+        m_logger->warn("[{}] ℹ️  Template installed but not re-fed to workers "
+                       "(debounced or channel height pending — workers may already have this template)",
+                       log_scope);
     }
 
     auto stats = m_template_interface->get_stats();
@@ -2133,7 +2172,20 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                                                     effectiveChannelHeight,
                                                     "Solo FEED",
                                                     true)) {
-                m_logger->error("[Solo FEED] Recovery: Block will be discarded, requesting new work");
+                m_logger->error("[Solo FEED] ⚠️  Failed to finalize BLOCK_DATA template "
+                                "(unified={} channel={})",
+                                nUnifiedHeight, effectiveChannelHeight);
+                // ── Canonical BLOCK_DATA invariant: trigger recovery when finalization fails ──
+                // If the template was discarded during the adoption gate (validate_current_template
+                // found the channel target already stale), and no valid template remains, notify
+                // Worker_manager so it can re-initiate recovery and send another GET_BLOCK.
+                if (m_template_interface && !m_template_interface->has_valid_template()) {
+                    m_logger->warn("[Solo FEED] ⚠️  No valid template after finalization failure — "
+                                   "triggering recovery to re-request canonical BLOCK_DATA");
+                    if (m_recovery_handler) {
+                        m_recovery_handler();
+                    }
+                }
                 if (connection) {
                     auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
@@ -3681,7 +3733,28 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
                                                 effectiveChannelHeight,
                                                 "Solo Stateless",
                                                 false)) {
-            m_logger->error("[Solo Stateless] Failed to finalize decoded template");
+            m_logger->error("[Solo Stateless] ⚠️  Failed to finalize decoded template "
+                            "(unified={} channel={})",
+                            unified_height, effectiveChannelHeight);
+            // ── Canonical BLOCK_DATA invariant: trigger recovery when finalization fails ──
+            // If the template was discarded during the adoption gate (validate_current_template
+            // found the channel target already stale), and no valid template remains, notify
+            // Worker_manager so it can re-initiate recovery and send another GET_BLOCK.
+            // Without this, the miner silently drops the incoming template with no retry,
+            // leaving it stranded with valid_template=no until the health monitor fires.
+            if (m_template_interface && !m_template_interface->has_valid_template()) {
+                m_logger->warn("[Solo Stateless] ⚠️  No valid template after finalization failure — "
+                               "triggering recovery to re-request canonical BLOCK_DATA");
+                if (m_recovery_handler) {
+                    m_recovery_handler();
+                }
+                if (connection) {
+                    auto work_payload = get_work();
+                    if (work_payload && !work_payload->empty()) {
+                        connection->transmit(work_payload);
+                    }
+                }
+            }
             return;
         }
 
@@ -4547,13 +4620,40 @@ bool Solo::validate_current_template()
     auto snap = m_height_tracker.GetSnapshot();
     uint32_t expectedChannel = snap.expected_template_target();
     
-    // Validation: Channel height only (unified height may advance due to other channels)
-    if (expectedChannel != 0 && tmpl->nChannelHeight != 0 && tmpl->nChannelHeight != expectedChannel) {
-        m_logger->warn("[Solo Validate] Channel height mismatch: template={}, expected={}",
-            tmpl->nChannelHeight, expectedChannel);
-        m_logger->warn("[Solo Validate] Unified height mismatch is expected when other channels advance");
+    // ── Canonical BLOCK_DATA invariant: use staleness gate, not exact-match gate ──
+    //
+    // Validation: Channel height only (unified height may advance due to other channels).
+    //
+    // Previous behaviour: discard when tmpl->nChannelHeight != expectedChannel.
+    // Problem: a push notification arriving between the effectiveChannelHeight read
+    // and validate_current_template() advances snap.channel_height, making
+    // expectedChannel one higher than the freshly-set tmpl->nChannelHeight.  This
+    // caused a race-condition discard of a perfectly valid BLOCK_DATA response,
+    // leaving the miner stranded with valid_template=no indefinitely.
+    //
+    // Correct gate: only discard when the template's channel target has already been
+    // reached or exceeded (the block we were trying to mine has already been found).
+    // If the template targets a height that is still in the future (even if not the
+    // next expected height), the template is still minable.
+    if (snap.channel_height > 0 && tmpl->nChannelHeight > 0 &&
+        snap.channel_height >= tmpl->nChannelHeight)
+    {
+        m_logger->warn("[Solo Validate] ⚠️  Channel height stale: template targets {} "
+                       "but channel already at {} — discarding",
+                       tmpl->nChannelHeight, snap.channel_height);
         m_template_interface->discard_template("Channel height stale");
         return false;
+    }
+
+    // Informational: log when channel height diverges from expected but is still valid.
+    // This commonly happens when a push races with the effectiveChannelHeight read.
+    if (expectedChannel != 0 && tmpl->nChannelHeight != 0 &&
+        tmpl->nChannelHeight != expectedChannel)
+    {
+        m_logger->info("[Solo Validate] ℹ️  Channel height {} != expected {} "
+                       "(push may have advanced channel_height since effectiveChannelHeight was read — "
+                       "template target is still valid, accepting canonical BLOCK_DATA)",
+                       tmpl->nChannelHeight, expectedChannel);
     }
 
     // NOTE: The has_same_height_push_tip_replacement() check was intentionally removed
