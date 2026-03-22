@@ -74,7 +74,8 @@ bool simulated_matches_stateless_opcode(uint16_t packet_header, bool is_uint16_o
 }
 
 std::vector<uint8_t> create_mock_template(uint32_t height, uint32_t nBits = 0x1d00ffff,
-                                          uint8_t channel = 2) {
+                                          uint8_t channel = 2,
+                                          uint8_t prev_hash_fill = 0x00) {
     std::vector<uint8_t> data(216, 0);
 
     size_t offset = 0;
@@ -97,7 +98,9 @@ std::vector<uint8_t> create_mock_template(uint32_t height, uint32_t nBits = 0x1d
     };
 
     write_u32_be(7);
-    offset += 128;
+    for (size_t i = 0; i < 128; ++i) {
+        data[offset++] = prev_hash_fill;
+    }
     for (int i = 0; i < 64; ++i) {
         data[offset++] = static_cast<uint8_t>(i + 1);
     }
@@ -135,7 +138,8 @@ network::Payload create_template_delivery_payload(uint32_t unified_height,
                                                   uint32_t channel_height,
                                                   uint32_t difficulty,
                                                   uint32_t block_height,
-                                                  uint8_t channel = 2)
+                                                  uint8_t channel = 2,
+                                                  uint8_t prev_hash_fill = 0x00)
 {
     network::Payload payload(12, 0);
     auto write_u32_be = [&](size_t offset, uint32_t value) {
@@ -149,7 +153,7 @@ network::Payload create_template_delivery_payload(uint32_t unified_height,
     write_u32_be(4, channel_height);
     write_u32_be(8, difficulty);
 
-    auto block = create_mock_template(block_height, difficulty, channel);
+    auto block = create_mock_template(block_height, difficulty, channel, prev_hash_fill);
     payload.insert(payload.end(), block.begin(), block.end());
     return payload;
 }
@@ -1033,6 +1037,55 @@ int main()
             solo.get_template_interface()->has_valid_template());
         print_test_result("No further soft-refresh triggered during stable state",
             !soft_refresh_triggered);
+    }
+
+    // ====================================================================
+    // Test 21: Same-height replacement BLOCK_DATA with a different
+    //          hashPrevBlock bypasses the feed debounce and becomes active
+    // ====================================================================
+    std::cout << "\nTest 21: Same-height replacement BLOCK_DATA installs a new active template when hashPrevBlock changes" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::LEGACY);
+
+        int block_handler_calls = 0;
+        solo.set_block_handler([&block_handler_calls](const ::LLP::CBlock&, uint32_t) {
+            ++block_handler_calls;
+        });
+
+        {
+            network::Payload payload = create_template_delivery_payload(9600, 100, 0x1d00ffff, 9601, 2, 0x11);
+            Packet packet(static_cast<uint8_t>(Packet::BLOCK_DATA), payload);
+            solo.process_messages(packet, nullptr);
+        }
+        print_test_result("Initial template fed to workers", block_handler_calls == 1);
+
+        {
+            network::Payload push_payload = create_extended_push_payload(9600, 100, 0x1d00ffff, 0x42);
+            Packet push_packet(static_cast<uint8_t>(MinerLLP::HASH_BLOCK_AVAILABLE), push_payload);
+            solo.process_messages(push_packet, nullptr);
+        }
+        print_test_result("Same-height push replacement invalidates the prior template",
+            !solo.get_template_interface()->has_valid_template());
+
+        {
+            network::Payload replacement_payload =
+                create_template_delivery_payload(9600, 100, 0x1d00ffff, 9601, 2, 0x24);
+            Packet replacement_packet(static_cast<uint8_t>(Packet::BLOCK_DATA), replacement_payload);
+            solo.process_messages(replacement_packet, nullptr);
+        }
+
+        auto const* replacement_template = solo.get_template_interface()->get_current_template();
+        print_test_result("Replacement BLOCK_DATA becomes valid",
+            solo.get_template_interface()->has_valid_template());
+        print_test_result("Different hashPrevBlock bypasses debounce and re-feeds workers",
+            block_handler_calls == 2);
+        print_test_result("Replacement template installs the new canonical prev hash",
+            replacement_template &&
+            !replacement_template->block.hashPrevBlock.GetBytes().empty() &&
+            replacement_template->block.hashPrevBlock.GetBytes().front() == 0x24);
     }
 
     std::cout << "\n========================================" << std::endl;
