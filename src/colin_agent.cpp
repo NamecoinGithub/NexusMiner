@@ -360,9 +360,40 @@ void ColinAgent::emit_report(
         }
     }
 
-    /* SESSION_STATUS_ACK section — node lane-health report */
+    /* GET_HEIGHT primary shadow — freshness and cross-check status */
+    if (m_shadow_source)
+    {
+        auto shadow_snap = m_shadow_source();
+        constexpr uint32_t GET_HEIGHT_STALE_S =
+            nexusminer::protocol::ChannelHeightShadowTracker::GET_HEIGHT_STALE_THRESHOLD_SECONDS;
+        if (shadow_snap.get_height.is_initialized())
+        {
+            auto gh_age_s = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - shadow_snap.get_height.received_at).count();
+            if (static_cast<uint32_t>(gh_age_s) < GET_HEIGHT_STALE_S)
+            {
+                m_logger->info("[Colin]  🗼 GET_HEIGHT   │ unified={} ({}s ago) ✅ [primary verifier]",
+                    shadow_snap.get_height.unified_height, gh_age_s);
+            }
+            else
+            {
+                m_logger->warn("[Colin]  🗼 GET_HEIGHT   │ unified={} ({}s ago) ⚠️  (>{}s — primary verifier is stale)",
+                    shadow_snap.get_height.unified_height, gh_age_s, GET_HEIGHT_STALE_S);
+                warnings.push_back("GET_HEIGHT primary verifier is stale (" + std::to_string(gh_age_s) +
+                                   "s since last BLOCK_HEIGHT response — node may be unreachable)");
+            }
+        }
+        else
+        {
+            m_logger->info("[Colin]  🗼 GET_HEIGHT   │ no response yet (30s timer not yet fired or session just started)");
+        }
+    }
+
+    /* SESSION_STATUS_ACK section — node lane-health report (slow health/auth poll, 300s cadence) */
     if (m_status_source)
     {
+        // SESSION_STATUS polls every 300s; alert only when clearly overdue (300s cadence + 60s grace).
+        constexpr int64_t SESSION_STATUS_ACK_STALE_THRESHOLD_SECONDS = 360;
         auto [ack, ack_time] = m_status_source();
         if (ack.session_id != 0)
         {
@@ -374,9 +405,9 @@ void ColinAgent::emit_report(
             m_logger->info("[Colin]    SIM Link active: {}", ack.IsSimLinkActive()  ? "✅" : "❌");
             m_logger->info("[Colin]    Authenticated:   {}", ack.IsAuthenticated()  ? "✅" : "❌");
             m_logger->info("[Colin]    Node uptime:     {}s", ack.uptime_seconds);
-            if (age_s > 120)
+            if (age_s > SESSION_STATUS_ACK_STALE_THRESHOLD_SECONDS)
                 warnings.push_back("No SESSION_STATUS_ACK for >" + std::to_string(age_s) +
-                                   "s — node may have dropped session or lane is silent");
+                                   "s — session health poll is overdue (normal cadence is 300s)");
         }
     }
 
