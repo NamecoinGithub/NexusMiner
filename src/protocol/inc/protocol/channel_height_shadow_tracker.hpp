@@ -117,20 +117,41 @@ public:
     };
 
     /**
-     * @brief Shadow health-only observation from SESSION_STATUS_ACK.
+     * @brief Shadow full-height observation from SESSION_STATUS_ACK.
      *
-     * SESSION_STATUS_ACK carries auth/uptime data, not chain heights.
-     * Tracked here for completeness and freshness diagnostics.
+     * SESSION_STATUS_ACK is the **primary** full-height shadow source.
+     * When the node includes chain heights in the ACK, they provide the
+     * authoritative multi-channel shadow picture (unified + prime + hash + stake).
+     *
+     * Note: The current 16-byte `SessionStatusAckFrame` wire format carries
+     * auth/uptime data only.  Height fields are populated here when the node
+     * sends an extended SESSION_STATUS_ACK that includes chain heights.
+     * Until then, all height fields remain 0 and the tracker falls back to
+     * the keepalive source for full-height observability.
      */
     struct SessionStatusObservation
     {
+        // ── Chain heights (populated when node sends extended ACK) ───────────
+        uint32_t unified_height{0};  ///< Node's unified blockchain height
+        uint32_t prime_height{0};    ///< Node's Prime channel height
+        uint32_t hash_height{0};     ///< Node's Hash channel height
+        uint32_t stake_height{0};    ///< Node's Stake channel height
+
+        // ── Health / auth ────────────────────────────────────────────────────
         bool is_authenticated{false};
         uint32_t uptime_seconds{0};
         std::chrono::steady_clock::time_point observed_at{};
 
+        /// True when this ACK has been received at least once.
         bool is_initialized() const noexcept
         {
             return observed_at != std::chrono::steady_clock::time_point{};
+        }
+
+        /// True when height data is present in this observation.
+        bool has_heights() const noexcept
+        {
+            return unified_height > 0 || prime_height > 0;
         }
 
         /// Age of this observation; returns max() when not yet set.
@@ -240,8 +261,9 @@ public:
     /**
      * @brief Ingest heights from a keepalive ACK (KEEPALIVE_V2 / SESSION_KEEPALIVE).
      *
-     * Updates shadow state only.  Provides the full prime / hash / stake / unified
-     * picture that is absent from BLOCK_DATA.
+     * Updates shadow state only.  Keepalive is the **secondary** full-height
+     * corroboration / freshness source.  It provides the prime / hash / stake /
+     * unified picture as a fallback when SESSION_STATUS_ACK heights are absent.
      *
      * @param unified_height  Node's unified blockchain height
      * @param prime_height    Node's Prime channel height
@@ -254,15 +276,27 @@ public:
                             uint32_t stake_height);
 
     /**
-     * @brief Ingest health state from SESSION_STATUS_ACK.
+     * @brief Ingest a SESSION_STATUS_ACK into the shadow tracker.
      *
-     * SESSION_STATUS_ACK carries auth/uptime data, not chain heights.
-     * Updates shadow health state for freshness diagnostics.
+     * SESSION_STATUS_ACK is the **primary** full-height shadow source.
+     * Provide non-zero height values when the node sends an extended ACK that
+     * includes chain heights (unified, prime, hash, stake).  Pass zeroes for
+     * the height parameters when the current wire format does not include them;
+     * the tracker then falls back to the keepalive source for height data while
+     * still recording the auth/uptime health state.
      *
      * @param is_authenticated  Whether the node reports the session as authenticated
      * @param uptime_seconds    Session uptime reported by the node
+     * @param unified_height    Node's unified height (0 = not available in this ACK)
+     * @param prime_height      Node's Prime channel height (0 = not available)
+     * @param hash_height       Node's Hash channel height (0 = not available)
+     * @param stake_height      Node's Stake channel height (0 = not available)
      */
-    void IngestSessionStatusAck(bool is_authenticated, uint32_t uptime_seconds);
+    void IngestSessionStatusAck(bool is_authenticated, uint32_t uptime_seconds,
+                                uint32_t unified_height = 0,
+                                uint32_t prime_height   = 0,
+                                uint32_t hash_height    = 0,
+                                uint32_t stake_height   = 0);
 
     /**
      * @brief Ingest heights from a BLOCK_AVAILABLE push notification.
@@ -304,23 +338,35 @@ public:
     /**
      * @brief Derive the best available full-height estimate (thread-safe).
      *
-     * Precedence for each channel:
-     *   - Prime height:   keepalive > canonical (if mined channel == Prime) > 0
-     *   - Hash height:    keepalive > canonical (if mined channel == Hash) > 0
-     *   - Stake height:   keepalive only (no other source)
-     *   - Unified height: max(canonical, keepalive, push)
+     * Source precedence:
      *
-     * The canonical observation is used as a lower-bound for the mined
-     * channel height only — shadow sources supply the rest.
+     *   SESSION_STATUS_ACK is the **primary** full-height shadow source when it
+     *   carries heights (non-zero).  Keepalive ACK is the **secondary** source
+     *   (corroboration / fallback when SESSION_STATUS heights are absent).
+     *
+     *   Per-channel precedence:
+     *   - Prime height:   SESSION_STATUS > KEEPALIVE > BLOCK_DATA (if mining Prime)
+     *   - Hash height:    SESSION_STATUS > KEEPALIVE > BLOCK_DATA (if mining Hash)
+     *   - Stake height:   SESSION_STATUS > KEEPALIVE (no other source)
+     *   - Unified height: max(SESSION_STATUS, KEEPALIVE, PUSH, BLOCK_DATA)
+     *
+     * MUST NOT be used for hard mining decisions.  Diagnostics and soft heuristics only.
      */
     FullHeightEstimate GetFullHeightEstimate() const;
 
     /**
-     * @brief True when the keepalive observation is fresh.
+     * @brief True when the keepalive observation is stale (older than max_age).
      *
      * @param max_age  Maximum acceptable age for the keepalive observation.
      */
     bool IsKeepaliveStale(std::chrono::seconds max_age) const;
+
+    /**
+     * @brief True when the SESSION_STATUS_ACK observation is stale (older than max_age).
+     *
+     * @param max_age  Maximum acceptable age for the session status observation.
+     */
+    bool IsSessionStatusStale(std::chrono::seconds max_age) const;
 
     /**
      * @brief Produce a human-readable multi-source diagnostic summary.
