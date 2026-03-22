@@ -533,6 +533,10 @@ void ColinAgent::emit_report(
             m_logger->info("[Colin]    ✅ Diagnostic │ initialized  push_unified={} round_unified={} keepalive_unified={} (latest {}s ago)",
                 diag.push_unified_height, diag.round_unified_height,
                 diag.keepalive_unified_height, diag_age_s);
+            if (diag.round_unified_height > 0) {
+                m_logger->info("[Colin]    📡 GET_ROUND heights │ prime={} hash={} stake={}",
+                    diag.round_prime_height, diag.round_hash_height, diag.round_stake_height);
+            }
         } else {
             m_logger->info("[Colin]  📡 ── Diagnostic Observer State ─────────────────────");
             m_logger->warn("[Colin]    ⚠️  Diagnostic │ NOT initialized (no push/round/keepalive data yet)");

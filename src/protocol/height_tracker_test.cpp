@@ -161,7 +161,8 @@ void test_snapshot_consistency() {
 void test_get_round_source() {
     std::cout << "\nTest 4: GET_ROUND update source (diagnostic only)\n";
     HeightTracker tracker;
-    tracker.OnGetRound(5100, 120, 0x1d012345);
+    // 16-byte full height picture: unified=5100, prime=120, hash=200, stake=300
+    tracker.OnGetRound(5100, 120, 200, 300);
 
     auto snap = tracker.GetSnapshot();
     print_test_result("Source is GET_ROUND",
@@ -172,12 +173,19 @@ void test_get_round_source() {
                       snap.unified_height == 0);
     print_test_result("channel_height == 0 (GET_ROUND is diagnostic-only)",
                       snap.channel_height == 0);
-    // Verify diagnostic snapshot captured the GET_ROUND values
+    // Verify diagnostic snapshot captured the GET_ROUND per-channel heights
     auto diag = tracker.GetDiagnosticSnapshot();
     print_test_result("diagnostic round_unified_height == 5100",
                       diag.round_unified_height == 5100);
-    print_test_result("diagnostic round_channel_height == 120",
-                      diag.round_channel_height == 120);
+    print_test_result("diagnostic round_prime_height == 120",
+                      diag.round_prime_height == 120);
+    print_test_result("diagnostic round_hash_height == 200",
+                      diag.round_hash_height == 200);
+    print_test_result("diagnostic round_stake_height == 300",
+                      diag.round_stake_height == 300);
+    // 16-byte format carries no difficulty — round_difficulty_nbits is always 0
+    print_test_result("diagnostic round_difficulty_nbits == 0 (no difficulty in 16-byte format)",
+                      diag.round_difficulty_nbits == 0);
 }
 
 // ============================================================================
@@ -385,16 +393,17 @@ void test_difficulty_from_push_reflected_in_snapshot() {
                       snap.channel_height == 101);
 
     // GET_ROUND is diagnostic-only; snapshot difficulty stays at push value (0x1c0e9f34)
-    tracker.OnGetRound(5002, 102, 0x1b0afe34);
+    // 16-byte format: unified=5002, prime=102, hash=203, stake=0
+    tracker.OnGetRound(5002, 102, 203, 0);
     snap = tracker.GetSnapshot();
     print_test_result("difficulty_nbits still from push after GET_ROUND (0x1c0e9f34)",
                       snap.difficulty_nbits == 0x1c0e9f34);
     print_test_result("Source is GET_ROUND after OnGetRound",
                       snap.last_update_source == HeightTracker::UpdateSource::GET_ROUND);
-    // Diagnostic snapshot carries the GET_ROUND difficulty
+    // 16-byte GET_ROUND carries no difficulty — round_difficulty_nbits is always 0
     auto diag = tracker.GetDiagnosticSnapshot();
-    print_test_result("diagnostic round_difficulty_nbits == 0x1b0afe34",
-                      diag.round_difficulty_nbits == 0x1b0afe34);
+    print_test_result("diagnostic round_difficulty_nbits == 0 (no difficulty in 16-byte format)",
+                      diag.round_difficulty_nbits == 0);
 
     // OnTemplateReceived must NOT overwrite difficulty (it doesn't carry nbits)
     tracker.OnTemplateReceived(1, 103);
@@ -794,7 +803,8 @@ void test_stale_get_block_no_regression() {
     tracker.AdvanceChannelTarget(106);
 
     // Stale GET_BLOCK response has channel_height=99 (3 blocks behind)
-    tracker.OnGetRound(5007, 99, 0x1d00ffff);
+    // 16-byte: prime=99, hash=99, stake=0 (stale picture for channel 1/prime)
+    tracker.OnGetRound(5007, 99, 99, 0);
     tracker.OnTemplateReceived(1, 100);  // stale template target
 
     auto snap = tracker.GetSnapshot();
@@ -919,7 +929,7 @@ void test_canonical_state_only_from_block_data() {
                       !canonical.is_initialized());
 
     // GET_ROUND arrives
-    tracker.OnGetRound(6611227, 2332106, 0x1d00ffff);
+    tracker.OnGetRound(6611227, 2332106, 2332106, 0);
     canonical = tracker.GetCanonicalSnapshot();
     print_test_result("canonical still not initialized after GET_ROUND",
                       !canonical.is_initialized());
@@ -1256,7 +1266,7 @@ void test_diagnostic_observer_helpers() {
     // After GET_ROUND, latest_received_at advances
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     auto before_round = std::chrono::steady_clock::now();
-    tracker.OnGetRound(101, 51, 0x1D00FFFF);
+    tracker.OnGetRound(101, 51, 52, 0);
     auto after_round = std::chrono::steady_clock::now();
     diag = tracker.GetDiagnosticSnapshot();
     print_test_result("last_round_at set after GET_ROUND",
@@ -1307,7 +1317,7 @@ void test_diagnostic_is_initialized() {
 
     // Fresh tracker: GET_ROUND alone initializes diagnostic
     HeightTracker tracker3;
-    tracker3.OnGetRound(6200, 2332200, 0x1d00ffff);
+    tracker3.OnGetRound(6200, 2332200, 2332200, 0);
     diag = tracker3.GetDiagnosticSnapshot();
     print_test_result("is_initialized() == true after GET_ROUND",   diag.is_initialized());
 
@@ -1342,7 +1352,7 @@ void test_diagnostic_latest_received_at() {
 
     // GET_ROUND at a later time should become the latest
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    tracker.OnGetRound(6200, 2332200, 0x1d00ffff);
+    tracker.OnGetRound(6200, 2332200, 2332200, 0);
     diag = tracker.GetDiagnosticSnapshot();
     print_test_result("latest_received_at() advances after GET_ROUND",
                       diag.latest_received_at() >= after_push);
@@ -1436,7 +1446,7 @@ void test_push_notification_at_isolated_from_keepalive_and_getround() {
                       snap.last_height_update == std::chrono::steady_clock::time_point{});
 
     // After GET_ROUND only, last_push_notification_at must remain epoch.
-    tracker.OnGetRound(6001, 451, 0x1d00ffff);
+    tracker.OnGetRound(6001, 451, 452, 0);
     snap = tracker.GetSnapshot();
     print_test_result("last_push_notification_at == epoch after GET_ROUND only",
                       snap.last_push_notification_at == std::chrono::steady_clock::time_point{});
@@ -1467,7 +1477,7 @@ void test_push_notification_at_isolated_from_keepalive_and_getround() {
                       snap.last_height_update == push_time);
 
     // A subsequent GET_ROUND must NOT advance last_push_notification_at or last_height_update.
-    tracker.OnGetRound(6006, 456, 0x1d00ffff);
+    tracker.OnGetRound(6006, 456, 457, 0);
     snap = tracker.GetSnapshot();
     print_test_result("last_push_notification_at unchanged after subsequent GET_ROUND",
                       snap.last_push_notification_at == push_time);

@@ -147,9 +147,13 @@ public:
         std::chrono::steady_clock::time_point last_push_at{};
 
         // ── Heights from GET_ROUND / NEW_ROUND responses ────────────────────────
+        // Full 16-byte picture: unified + prime + hash + stake (no difficulty).
         uint32_t round_unified_height{0};
-        uint32_t round_channel_height{0};
-        uint32_t round_difficulty_nbits{0};
+        uint32_t round_prime_height{0};
+        uint32_t round_hash_height{0};
+        uint32_t round_stake_height{0};
+        uint32_t round_channel_height{0};  ///< Derived active-channel height (from prime/hash/stake per m_channel)
+        uint32_t round_difficulty_nbits{0}; ///< Always 0 — 16-byte format carries no difficulty
         std::chrono::steady_clock::time_point last_round_at{};
 
         // ── Keepalive telemetry (SESSION_KEEPALIVE ACK) ─────────────────────────
@@ -233,9 +237,9 @@ public:
         UpdateSource last_update_source{UpdateSource::NONE};
 
         // ── All three channel heights, kept independently ──────────────────────
-        uint32_t prime_height{0};   ///< Prime channel height (max of canonical and push/GET_ROUND)
-        uint32_t hash_height{0};    ///< Hash channel height  (max of canonical and push/GET_ROUND)
-        uint32_t stake_height{0};   ///< Stake channel height (diagnostic/keepalive only)
+        uint32_t prime_height{0};   ///< Prime channel height (max of canonical and push/GET_ROUND/keepalive)
+        uint32_t hash_height{0};    ///< Hash channel height  (max of canonical and push/GET_ROUND/keepalive)
+        uint32_t stake_height{0};   ///< Stake channel height (max of GET_ROUND and keepalive)
         ChannelHeight prime_channel_height{}; ///< Typed alias of prime_height
         ChannelHeight hash_channel_height{};  ///< Typed alias of hash_height
         ChannelHeight stake_channel_height{}; ///< Typed alias of stake_height
@@ -487,13 +491,15 @@ public:
      * @brief Update heights from a GET_ROUND / NEW_ROUND response
      *
      * Writes to DiagnosticObserverState only (round_* fields).
+     * The 16-byte packet carries the full height picture (no difficulty).
      *
      * @param unified_height  Unified blockchain height
-     * @param channel_height  Channel-specific height for the active channel
-     * @param nbits           Difficulty in compact nBits
+     * @param prime_height    Prime channel height
+     * @param hash_height     Hash channel height
+     * @param stake_height    Stake channel height
      */
-    void OnGetRound(uint32_t unified_height, uint32_t channel_height,
-                    uint32_t nbits);
+    void OnGetRound(uint32_t unified_height, uint32_t prime_height,
+                    uint32_t hash_height, uint32_t stake_height);
 
     /**
      * @brief Monotonic height update from BLOCK_DATA / STATELESS_GET_BLOCK metadata
