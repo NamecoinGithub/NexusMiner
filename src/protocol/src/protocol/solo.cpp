@@ -1753,7 +1753,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
 
-        const bool has_tracked_channels = true;
         const auto height = bytes2uint(*packet.m_data);
         uint32_t prime_height = 0;
         uint32_t hash_height = 0;
