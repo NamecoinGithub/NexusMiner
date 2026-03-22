@@ -1356,10 +1356,29 @@ void test_diagnostic_latest_received_at() {
 }
 
 // ============================================================================
-// Test 34: AdvanceChannelTarget() also updates canonical_channel_target
+// Test 34: NoteKeepaliveAckLiveness() refreshes ACK timestamp without heights
+// ============================================================================
+void test_ack_liveness_refresh_without_keepalive_heights() {
+    std::cout << "\nTest 34: ACK-only liveness refreshes timestamp without keepalive heights\n";
+
+    HeightTracker tracker;
+    auto before_ack = std::chrono::steady_clock::now();
+    tracker.NoteKeepaliveAckLiveness();
+    auto diag = tracker.GetDiagnosticSnapshot();
+
+    print_test_result("ACK-only liveness sets last_keepalive_ack_at",
+                      diag.last_keepalive_ack_at >= before_ack);
+    print_test_result("ACK-only liveness does not fabricate keepalive_unified_height",
+                      diag.keepalive_unified_height == 0);
+    print_test_result("ACK-only liveness is visible via latest_received_at()",
+                      diag.latest_received_at() == diag.last_keepalive_ack_at);
+}
+
+// ============================================================================
+// Test 35: AdvanceChannelTarget() also updates canonical_channel_target
 // ============================================================================
 void test_advance_channel_target_updates_canonical() {
-    std::cout << "\nTest 34: AdvanceChannelTarget updates canonical_channel_target\n";
+    std::cout << "\nTest 35: AdvanceChannelTarget updates canonical_channel_target\n";
     HeightTracker tracker;
 
     // Give it a canonical base via OnBlockDataReceived
@@ -1656,6 +1675,7 @@ int main() {
     test_diagnostic_fork_score_isolated();
     test_diagnostic_is_initialized();
     test_diagnostic_latest_received_at();
+    test_ack_liveness_refresh_without_keepalive_heights();
     test_advance_channel_target_updates_canonical();
     test_on_template_received_sets_template_unified_height();
     test_push_notification_at_isolated_from_keepalive_and_getround();
