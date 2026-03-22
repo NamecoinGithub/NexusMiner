@@ -653,23 +653,28 @@ void test_worker_respawn_guard_is_single_shot_per_degraded_exit() {
 void test_authoritative_template_guard_requires_newer_unified_height() {
     std::cout << "\nTest 4ga: Authoritative template guard accepts only newer unified heights\n";
 
-    struct AuthoritativeTemplateGuard {
-        uint32_t current_unified_height{0};
+    struct AuthoritativeTemplateAdoption {
+        uint32_t adopted_unified_height{0};
 
-        bool should_feed(uint32_t incoming_unified_height) {
-            if (current_unified_height == 0 || incoming_unified_height > current_unified_height) {
-                current_unified_height = incoming_unified_height;
+        bool should_adopt(uint32_t incoming_unified_height) {
+            // Mirrors the production sequence:
+            //   1. Solo::should_accept_authoritative_template() checks the incoming
+            //      unified height against the currently adopted one.
+            //   2. finalize_and_feed_current_template() updates m_current_height
+            //      only after the newer template is accepted for adoption.
+            if (adopted_unified_height == 0 || incoming_unified_height > adopted_unified_height) {
+                adopted_unified_height = incoming_unified_height;
                 return true;
             }
             return false;
         }
     };
 
-    AuthoritativeTemplateGuard guard;
-    print_test_result("First authoritative template is accepted", guard.should_feed(6594322));
-    print_test_result("Same unified height template is suppressed", !guard.should_feed(6594322));
-    print_test_result("Older unified height template is suppressed", !guard.should_feed(6594321));
-    print_test_result("Newer unified height template is accepted", guard.should_feed(6594323));
+    AuthoritativeTemplateAdoption adoption;
+    print_test_result("First authoritative template is accepted", adoption.should_adopt(6594322));
+    print_test_result("Same unified height template is suppressed", !adoption.should_adopt(6594322));
+    print_test_result("Older unified height template is suppressed", !adoption.should_adopt(6594321));
+    print_test_result("Newer unified height template is accepted", adoption.should_adopt(6594323));
 }
 
 // ============================================================================
