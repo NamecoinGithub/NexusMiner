@@ -429,12 +429,12 @@ public:
         /**
          * @brief True when a recent GET_HEIGHT / BLOCK_HEIGHT verifier response is available.
          *
-     * GET_HEIGHT is the primary verifier feed, but it must remain
-     * separate from canonical/template state. Consumers that need the
-     * freshest node-confirmed unified height should prefer
-     * verified_unified_height() rather than raw unified_height.
-     * When the 16-byte BLOCK_HEIGHT payload is available, the same freshness
-     * window also applies to the verifier's prime/hash/stake channel heights.
+         * GET_HEIGHT is the primary verifier feed, but it must remain
+         * separate from canonical/template state. Consumers that need the
+         * freshest node-confirmed unified height should prefer
+         * verified_unified_height() rather than raw unified_height.
+         * When the 16-byte BLOCK_HEIGHT payload is available, the same freshness
+         * window also applies to the verifier's prime/hash/stake channel heights.
          */
         bool has_fresh_get_height() const {
             if (get_height_unified_height == 0 ||

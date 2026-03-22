@@ -1746,6 +1746,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         uint32_t stake_height = 0;
 
         if (has_tracked_channels) {
+            if (packet.m_data->size() < 16) {
+                m_logger->warn("Solo::process_messages: BLOCK_HEIGHT length indicates 16-byte payload but data buffer is too short");
+                return;
+            }
             prime_height = bytes2uint(*packet.m_data, 4);
             hash_height = bytes2uint(*packet.m_data, 8);
             stake_height = bytes2uint(*packet.m_data, 12);
