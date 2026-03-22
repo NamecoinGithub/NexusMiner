@@ -25,6 +25,7 @@
  */
 
 #include "protocol/height_tracker.hpp"
+#include "protocol/protocol_constants.hpp"
 #include "protocol/packet_builder.hpp"
 #include "miner_opcodes.hpp"
 #include <iostream>
@@ -556,7 +557,6 @@ void test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout() {
 void test_unified_drift_requires_get_height_probe_before_soft_refresh() {
     std::cout << "\nTest 4h: critical unified drift probes GET_HEIGHT before soft refresh\n";
     constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
-    constexpr uint32_t GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS = 2;
 
     struct DriftDecision {
         bool send_get_height{false};
@@ -583,7 +583,8 @@ void test_unified_drift_requires_get_height_probe_before_soft_refresh() {
                     ? static_cast<uint32_t>(get_height_delta)
                     : static_cast<uint32_t>(-get_height_delta);
 
-            if (get_height_ready && get_height_divergence > GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS) {
+            if (get_height_ready &&
+                get_height_divergence > ProtocolConstants::GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS) {
                 recovery_pending = true;
                 template_withheld = true;
                 request_refresh = true;

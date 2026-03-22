@@ -195,6 +195,15 @@ namespace ProtocolConstants {
      */
     constexpr uint32_t SESSION_MISMATCH_EXPIRE_THRESHOLD = 3;
 
+    /**
+     * Unified-height divergence threshold (blocks) for GET_HEIGHT vs canonical BLOCK_DATA.
+     *
+     * Divergence up to 2 blocks is tolerated during normal multi-channel burst activity.
+     * Larger divergences trigger a non-blocking GET_BLOCK refresh instead of immediate
+     * degraded-mode escalation.
+     */
+    constexpr uint32_t GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS = 2;
+
 } // namespace ProtocolConstants
 
 } // namespace protocol

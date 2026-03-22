@@ -1740,8 +1740,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         
         auto const height = bytes2uint(*packet.m_data);
-        constexpr uint32_t GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS = 2;
-        
         // Log the received height information
         m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
 
@@ -1759,7 +1757,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         if (cross_check.canonical_initialized &&
             cross_check.get_height_initialized &&
             !cross_check.get_height_is_stale &&
-            get_height_divergence > GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS)
+            get_height_divergence > ProtocolConstants::GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS)
         {
             m_logger->warn("[Solo] GET_HEIGHT/BLOCK_DATA cross-check diverged by {} blocks "
                            "(canonical={} get_height={} delta={}) — requesting non-blocking GET_BLOCK",

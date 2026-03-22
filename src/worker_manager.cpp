@@ -96,7 +96,6 @@ namespace {
     // push notification and new BLOCK_DATA template is normal during the propagation
     // window. Set threshold to 5 to avoid false-positive template discards.
     constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
-    constexpr uint32_t GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS = 2;
     constexpr int64_t PROACTIVE_GET_HEIGHT_MIN_INTERVAL_SECONDS = 30;
     constexpr int64_t FORCED_RETRY_INTERVAL_MS = 1000;
     constexpr int64_t FORCED_RETRY_JITTER_MIN_MS = 100;
@@ -2423,7 +2422,7 @@ void Worker_manager::check_template_health()
                 cross_check.canonical_initialized &&
                 cross_check.get_height_initialized &&
                 !cross_check.get_height_is_stale &&
-                get_height_divergence > GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS;
+                get_height_divergence > protocol::ProtocolConstants::GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS;
 
             if (get_height_confirms_divergence) {
                 bool had_pending = m_recovery_pending;
