@@ -17,6 +17,7 @@ namespace protocol {
 const char* ChannelHeightShadowTracker::source_name(SourceKind s) noexcept {
     switch (s) {
         case SourceKind::BLOCK_DATA:     return "BLOCK_DATA";
+        case SourceKind::GET_HEIGHT:     return "GET_HEIGHT";
         case SourceKind::KEEPALIVE:      return "KEEPALIVE";
         case SourceKind::SESSION_STATUS: return "SESSION_STATUS";
         case SourceKind::PUSH:           return "PUSH";
@@ -40,6 +41,18 @@ void ChannelHeightShadowTracker::IngestBlockData(uint32_t unified_height,
     m_canonical.received_at   = std::chrono::steady_clock::now();
     m_canonical.initialized   = true;
     m_last_source             = SourceKind::BLOCK_DATA;
+}
+
+// ─── IngestGetHeightResponse ──────────────────────────────────────────────────
+void ChannelHeightShadowTracker::IngestGetHeightResponse(uint32_t unified_height)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    // GET_HEIGHT is a fresh observation — store what the node reported directly.
+    m_get_height.unified_height = unified_height;
+    m_get_height.received_at    = std::chrono::steady_clock::now();
+    m_get_height.initialized    = true;
+    m_last_source               = SourceKind::GET_HEIGHT;
 }
 
 // ─── IngestKeepaliveAck ───────────────────────────────────────────────────────
@@ -107,6 +120,7 @@ void ChannelHeightShadowTracker::Reset()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_canonical      = CanonicalState{};
+    m_get_height     = GetHeightState{};
     m_shadow         = ShadowState{};
     m_session_health = SessionHealthState{};
     m_push_trend     = PushTrendState{};
@@ -128,11 +142,19 @@ ChannelHeightShadowTracker::GetSnapshot() const
     std::lock_guard<std::mutex> lock(m_mutex);
     Snapshot s;
     s.canonical      = m_canonical;
+    s.get_height     = m_get_height;
     s.shadow         = m_shadow;
     s.session_health = m_session_health;
     s.push_trend     = m_push_trend;
     s.cross_check    = build_cross_check_locked();
     return s;
+}
+
+// ─── IsGetHeightStale ─────────────────────────────────────────────────────────
+bool ChannelHeightShadowTracker::IsGetHeightStale() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return is_get_height_stale_locked();
 }
 
 // ─── IsShadowStale ────────────────────────────────────────────────────────────
@@ -150,6 +172,15 @@ bool ChannelHeightShadowTracker::IsSessionHealthStale() const
 }
 
 // ─── private helpers ──────────────────────────────────────────────────────────
+
+bool ChannelHeightShadowTracker::is_get_height_stale_locked() const
+{
+    if (!m_get_height.initialized)
+        return true;  // never received = always stale
+    auto age_s = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - m_get_height.received_at).count();
+    return age_s > static_cast<int64_t>(GET_HEIGHT_STALE_THRESHOLD_SECONDS);
+}
 
 bool ChannelHeightShadowTracker::is_shadow_stale_locked() const
 {
@@ -175,12 +206,25 @@ ChannelHeightShadowTracker::build_cross_check_locked() const
     CrossCheckResult r;
 
     r.canonical_initialized  = m_canonical.initialized;
+    r.most_recent_source     = m_last_source;
+
+    // ── Primary: GET_HEIGHT vs canonical ─────────────────────────────────────
+    r.get_height_initialized = m_get_height.initialized;
+    r.get_height_is_stale    = is_get_height_stale_locked();
+    if (m_canonical.initialized && m_get_height.initialized) {
+        int32_t c = static_cast<int32_t>(m_canonical.unified_height);
+        int32_t g = static_cast<int32_t>(m_get_height.unified_height);
+        r.get_height_delta           = c - g;
+        r.get_height_agrees          = (r.get_height_delta == 0);
+        r.get_height_leads_canonical = (g > c);
+        r.canonical_leads_get_height = (c > g);
+    }
+
+    // ── Secondary: keepalive shadow vs canonical ──────────────────────────────
     r.shadow_initialized     = m_shadow.initialized;
     r.shadow_is_stale        = is_shadow_stale_locked();
     r.fork_detected          = m_shadow.is_fork_detected();
     r.fork_canary_set        = m_shadow.is_fork_canary_set();
-    r.most_recent_source     = m_last_source;
-
     if (m_canonical.initialized && m_shadow.initialized) {
         int32_t c = static_cast<int32_t>(m_canonical.unified_height);
         int32_t s = static_cast<int32_t>(m_shadow.unified_height);
@@ -199,6 +243,9 @@ std::string ChannelHeightShadowTracker::CrossCheckResult::describe() const
     std::ostringstream os;
     os << "CrossCheck["
        << "canonical=" << (canonical_initialized ? "ok" : "uninit")
+       << " get_height=" << (get_height_initialized ? (get_height_is_stale ? "STALE" : "ok") : "uninit")
+       << " gh_delta=" << get_height_delta
+       << " gh_agree=" << (get_height_agrees ? "yes" : "no")
        << " shadow="   << (shadow_initialized    ? (shadow_is_stale ? "STALE" : "ok") : "uninit")
        << " unified_delta=" << unified_delta
        << " agree="    << (unified_heights_agree ? "yes" : "no")

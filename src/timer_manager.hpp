@@ -47,6 +47,10 @@ public:
     // Template Staleness Prevention (LLL-TAO PR #131 Client-Side Integration)
     void start_get_round_timer(std::uint16_t timer_interval, std::weak_ptr<network::Connection> connection,
         std::weak_ptr<protocol::Solo> solo_protocol);
+
+    // GET_HEIGHT polling: periodic unified-height probe (primary shadow source, 30s cadence)
+    void start_get_height_timer(std::uint16_t timer_interval,
+        std::weak_ptr<Worker_manager> worker_manager);
     
     // Template Health Monitoring (Template Validation & Worker Protection)
     void start_template_health_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager);
@@ -71,6 +75,8 @@ private:
     chrono::Timer::Handler stats_printer_handler(std::uint16_t stats_printer_interval, std::vector<std::shared_ptr<stats::Printer>> stats_printers);
     chrono::Timer::Handler get_round_handler(std::uint16_t get_round_interval, std::weak_ptr<network::Connection> connection,
         std::weak_ptr<protocol::Solo> solo_protocol);
+    chrono::Timer::Handler get_height_handler(std::uint16_t get_height_interval,
+        std::weak_ptr<Worker_manager> worker_manager);
     chrono::Timer::Handler template_health_handler(std::uint16_t health_check_interval, 
         std::weak_ptr<Worker_manager> worker_manager);
 
@@ -86,6 +92,7 @@ private:
     chrono::Timer::Uptr m_stats_collector_timer;
     chrono::Timer::Uptr m_stats_printer_timer;
     chrono::Timer::Uptr m_get_round_timer;  // Template Staleness Prevention
+    chrono::Timer::Uptr m_get_height_timer; // GET_HEIGHT primary shadow polling (30s)
     chrono::Timer::Uptr m_template_health_timer;  // Template Health Monitoring
     chrono::Timer::Uptr m_secondary_connection_retry_timer;  // SIM Link: secondary lane retry
     chrono::Timer::Uptr m_lane_health_check_timer;  // SIM Link: periodic lane health log

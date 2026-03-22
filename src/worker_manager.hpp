@@ -52,8 +52,11 @@ public:
     // SIM Link: log the current state of both lanes (called by lane health-check timer)
     void log_lane_health();
 
-    // SIM Link: send SESSION_STATUS on each live lane if 60-second interval has elapsed
+    // SIM Link: send SESSION_STATUS on each live lane if 5-minute interval has elapsed
     void send_session_status_if_due();
+
+    // GET_HEIGHT: send GET_HEIGHT on the live lane (primary unified-height shadow, 30s cadence)
+    void send_get_height_if_due();
 
     // ── Failover state accessor ────────────────────────────────────────────────
     struct FailoverStatus {
@@ -231,6 +234,7 @@ private:
     bool m_stats_timers_started{false};
     bool m_template_health_timer_started{false};
     bool m_get_round_timer_started{false};
+    bool m_get_height_timer_started{false};
     bool m_lane_health_timer_started{false};
 
     // ── Failover state ────────────────────────────────────────────────────────

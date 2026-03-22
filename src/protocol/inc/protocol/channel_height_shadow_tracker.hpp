@@ -15,10 +15,16 @@
  *     Does NOT carry a full multi-channel picture.
  *     Drives all hard mining decisions.
  *
- *   KeepAliveV2AckFrame (SESSION_KEEPALIVE / KEEPALIVE_V2_ACK)  — full-height shadow
+ *   GET_HEIGHT response (BLOCK_HEIGHT)  — primary shadow (unified height, 30s cadence)
+ *     Contains: unified height only (4-byte uint32 response to GET_HEIGHT request)
+ *     Sent proactively every 30 seconds on both Legacy and Stateless lanes.
+ *     Preferred cross-check source for unified height divergence detection.
+ *
+ *   KeepAliveV2AckFrame (SESSION_KEEPALIVE / KEEPALIVE_V2_ACK)  — secondary shadow
  *     Contains: unified + prime + hash + stake heights + fork score
- *     Primary source for full multi-channel observability.
- *     Diagnostic/observability only — never overwrites canonical state.
+ *     Arrives roughly every 45 seconds.  Provides the full per-channel picture
+ *     that GET_HEIGHT and BLOCK_DATA cannot offer.  Secondary to GET_HEIGHT for
+ *     unified-height cross-check but the only source for per-channel heights.
  *
  *   SESSION_STATUS_ACK  — health/auth observation, NO height data
  *     Wire format: 16 bytes = session_id(4 LE) + lane_health(4 BE) + uptime(4 BE) + echo_flags(4 BE)
@@ -31,19 +37,22 @@
  *
  * Cross-check philosophy
  * ======================
- *   - Compare canonical_unified_height (BLOCK_DATA) against shadow_unified_height (keepalive).
- *   - Optionally compare canonical mined-channel against shadow equivalent.
+ *   - Primary: compare canonical_unified_height (BLOCK_DATA) against get_height_unified_height
+ *     (GET_HEIGHT response, 30s cadence).
+ *   - Secondary: compare canonical against shadow_unified_height (keepalive, ~45s cadence).
+ *     The keepalive shadow provides full per-channel heights not available from GET_HEIGHT.
  *   - Report disagreement if heights diverge beyond tolerance.
- *   - Track freshness per source; stale shadow degrades confidence but does NOT
+ *   - Track freshness per source; stale sources degrade confidence but do NOT
  *     force canonical regression.
  *   - Never flatten all sources into one authority bucket.
  *
  * Robustness guarantees
  * =====================
- *   - IngestBlockData()          → ONLY writes canonical state
- *   - IngestKeepaliveAck()       → ONLY writes shadow/full-height state
- *   - IngestSessionStatusAck()   → ONLY writes health state (no height update)
- *   - IngestPushNotification()   → ONLY writes push trend state
+ *   - IngestBlockData()            → ONLY writes canonical state
+ *   - IngestGetHeightResponse()    → ONLY writes get_height state (primary shadow)
+ *   - IngestKeepaliveAck()         → ONLY writes shadow/full-height state (secondary)
+ *   - IngestSessionStatusAck()     → ONLY writes health state (no height update)
+ *   - IngestPushNotification()     → ONLY writes push trend state
  *   - GetSnapshot() returns a lockless-readable plain struct copy
  *
  * Thread-safe: all public methods are guarded by an internal mutex.
@@ -73,7 +82,8 @@ public:
     enum class SourceKind {
         NONE,           ///< No source ingested yet
         BLOCK_DATA,     ///< BLOCK_DATA / STATELESS_GET_BLOCK (canonical)
-        KEEPALIVE,      ///< KeepAliveV2AckFrame — full shadow source
+        GET_HEIGHT,     ///< BLOCK_HEIGHT response to GET_HEIGHT request (primary shadow, unified only)
+        KEEPALIVE,      ///< KeepAliveV2AckFrame — full shadow source (secondary)
         SESSION_STATUS, ///< SESSION_STATUS_ACK — health/auth only, no heights
         PUSH,           ///< Push notifications — fast tip-movement hint
     };
@@ -97,12 +107,35 @@ public:
         bool is_initialized() const noexcept { return initialized; }
     };
 
-    // ─── Full-height shadow state (keepalive ACKs) ────────────────────────
+    // ─── GET_HEIGHT state (primary shadow: BLOCK_HEIGHT response) ────────
+    /**
+     * @brief Unified height from periodic GET_HEIGHT requests.
+     *
+     * GET_HEIGHT (opcode 130 / stateless 0xD082) is sent every 30 seconds on both
+     * Legacy and Stateless lanes.  The node responds with BLOCK_HEIGHT (opcode 2)
+     * carrying a single uint32 unified height.  This is the PRIMARY shadow source
+     * for unified-height cross-check because of its predictable 30s cadence.
+     *
+     * Updated by IngestGetHeightResponse().  Does NOT write canonical or keepalive state.
+     * NOTE: GET_HEIGHT only carries unified height — it does NOT provide per-channel heights.
+     * Per-channel heights remain exclusively in the keepalive shadow layer.
+     */
+    struct GetHeightState {
+        uint32_t unified_height{0};         ///< Node's unified height from GET_HEIGHT response
+        std::chrono::steady_clock::time_point received_at{}; ///< Time of last GET_HEIGHT response
+        bool initialized{false};            ///< True once any BLOCK_HEIGHT response has been ingested
+
+        bool is_initialized() const noexcept { return initialized; }
+    };
+
+    // ─── Full-height shadow state (keepalive ACKs — secondary) ───────────
     /**
      * @brief Full multi-channel height picture from keepalive ACKs.
      *
      * Updated by IngestKeepaliveAck().  Never drives mining decisions.
-     * Provides the complete per-channel height model that BLOCK_DATA cannot offer.
+     * Arrives roughly every 45 seconds.  SECONDARY to GET_HEIGHT for unified-height
+     * cross-check.  The ONLY source for per-channel (prime/hash/stake) heights and
+     * fork score — keepalive shadow remains essential even as secondary.
      */
     struct ShadowState {
         uint32_t unified_height{0};     ///< Node's unified height from keepalive
@@ -164,27 +197,44 @@ public:
      *
      * Produced by CrossCheck().  Never triggers mining decisions directly —
      * consumers should use this for diagnostics, soft alarms, and logs only.
+     *
+     * GET_HEIGHT (primary shadow, 30s cadence) is compared first.
+     * KeepAlive (secondary shadow, ~45s cadence) is compared as fallback and
+     * always provides per-channel height detail via its own fields.
      */
     struct CrossCheckResult {
         bool canonical_initialized{false};   ///< Canonical state has at least one BLOCK_DATA
-        bool shadow_initialized{false};      ///< Shadow state has at least one keepalive ACK
 
+        // ── Primary shadow (GET_HEIGHT) ──────────────────────────────────
+        bool get_height_initialized{false};       ///< GET_HEIGHT layer has data
+        bool get_height_is_stale{false};           ///< GET_HEIGHT response not received recently
+        bool get_height_agrees{false};             ///< canonical == get_height (within tolerance)
+        int32_t get_height_delta{0};               ///< canonical - get_height unified
+        bool get_height_leads_canonical{false};    ///< get_height > canonical
+        bool canonical_leads_get_height{false};    ///< canonical > get_height
+
+        // ── Secondary shadow (KeepAlive) ─────────────────────────────────
+        bool shadow_initialized{false};      ///< Shadow state has at least one keepalive ACK
         bool unified_heights_agree{false};   ///< canonical == shadow unified (within tolerance)
         int32_t unified_delta{0};            ///< canonical - shadow unified height
         bool shadow_is_stale{false};         ///< Shadow source not refreshed recently
         bool shadow_leads_canonical{false};  ///< Shadow unified > canonical (shadow ahead)
         bool canonical_leads_shadow{false};  ///< Canonical unified > shadow (node may lag)
-
         bool fork_detected{false};           ///< Shadow reports non-zero fork score
         bool fork_canary_set{false};         ///< Shadow fork high-water mark is non-zero
 
         SourceKind most_recent_source{SourceKind::NONE}; ///< Which source was ingested last
 
         /**
-         * @brief True if shadow is available and agrees with canonical within |tolerance|.
-         * Returns false (not disagreeing) when shadow is uninitialized / stale.
+         * @brief True if the primary (GET_HEIGHT) shadow is available and disagrees.
+         * Falls back to keepalive shadow when GET_HEIGHT is uninitialized or stale.
+         * Returns false when no shadow source is available or fresh.
          */
         bool is_disagreement(uint32_t tolerance = 1) const noexcept {
+            // Prefer GET_HEIGHT (primary) if available and fresh
+            if (canonical_initialized && get_height_initialized && !get_height_is_stale)
+                return static_cast<uint32_t>(std::abs(get_height_delta)) > tolerance;
+            // Fall back to keepalive shadow
             if (!canonical_initialized || !shadow_initialized || shadow_is_stale)
                 return false;
             return static_cast<uint32_t>(std::abs(unified_delta)) > tolerance;
@@ -204,7 +254,8 @@ public:
      */
     struct Snapshot {
         CanonicalState    canonical;
-        ShadowState       shadow;
+        GetHeightState    get_height;   ///< Primary shadow (unified height, 30s cadence)
+        ShadowState       shadow;       ///< Secondary shadow (full channels, ~45s cadence)
         SessionHealthState session_health;
         PushTrendState    push_trend;
         CrossCheckResult  cross_check;
@@ -212,6 +263,7 @@ public:
         // Convenience accessors
         bool any_source_initialized() const noexcept {
             return canonical.is_initialized()
+                || get_height.is_initialized()
                 || shadow.is_initialized()
                 || session_health.is_initialized()
                 || push_trend.is_initialized();
@@ -220,14 +272,16 @@ public:
 
     // ─── Staleness thresholds ─────────────────────────────────────────────
     /**
-     * @brief Seconds after which a shadow source is considered stale.
-     *
-     * Keepalive ACKs arrive roughly every N seconds where N is negotiated
-     * with the node (typically 30s).  120s = 4 missed keepalives before stale.
-     * SESSION_STATUS_ACK arrives every 5 minutes (health/auth only — not a height source).
-     * Shadow considered stale after 120s of silence.
+     * @brief Seconds after which GET_HEIGHT shadow is considered stale.
+     * Sent every 30s; 3 missed polls = 90s.
      */
-    static constexpr uint32_t SHADOW_STALE_THRESHOLD_SECONDS = 120;
+    static constexpr uint32_t GET_HEIGHT_STALE_THRESHOLD_SECONDS = 90;
+
+    /**
+     * @brief Seconds after which keepalive shadow is considered stale.
+     * Keepalive arrives roughly every 45s; 3 missed = 135s.
+     */
+    static constexpr uint32_t SHADOW_STALE_THRESHOLD_SECONDS = 135;
 
     /**
      * @brief Seconds after which SESSION_STATUS_ACK health is considered stale.
@@ -259,13 +313,28 @@ public:
     void IngestBlockData(uint32_t unified_height, uint32_t mined_channel_height);
 
     /**
-     * @brief Ingest KeepAliveV2AckFrame heights — full-height shadow update.
+     * @brief Ingest BLOCK_HEIGHT response to a GET_HEIGHT request — PRIMARY shadow update.
      *
-     * KeepAliveV2AckFrame is the primary full-height shadow source.  It carries
-     * unified + prime + hash + stake heights plus a fork divergence score.
+     * GET_HEIGHT (opcode 130 / stateless 0xD082) is sent every 30 seconds on both
+     * Legacy and Stateless lanes.  The node responds with BLOCK_HEIGHT (opcode 2)
+     * containing the current unified chain height as a uint32.
+     *
+     * This is the PRIMARY shadow source for unified-height cross-check.
+     * Does NOT write canonical, keepalive, push, or health state.
+     *
+     * @param unified_height  Node's unified blockchain height from BLOCK_HEIGHT response.
+     */
+    void IngestGetHeightResponse(uint32_t unified_height);
+
+    /**
+     * @brief Ingest KeepAliveV2AckFrame heights — secondary full-height shadow update.
+     *
+     * KeepAliveV2AckFrame is the SECONDARY full-height shadow source (arrives ~45s).
+     * It carries unified + prime + hash + stake heights plus a fork divergence score.
+     * It is the ONLY source for per-channel (prime/hash/stake) heights and fork score.
      *
      * Used on both SESSION_KEEPALIVE (legacy) and KEEPALIVE_V2_ACK (stateless)
-     * paths.  Does NOT write canonical state.
+     * paths.  Does NOT write canonical or get_height state.
      *
      * @param unified_height  Node's unified blockchain height.
      * @param prime_height    Node's Prime channel height (0 = not reported).
@@ -335,7 +404,12 @@ public:
     Snapshot GetSnapshot() const;
 
     /**
-     * @brief True if shadow unified height is stale (no recent keepalive ACK).
+     * @brief True if GET_HEIGHT primary shadow is stale (no recent BLOCK_HEIGHT response).
+     */
+    bool IsGetHeightStale() const;
+
+    /**
+     * @brief True if keepalive shadow is stale (no recent keepalive ACK).
      */
     bool IsShadowStale() const;
 
@@ -348,6 +422,7 @@ private:
     mutable std::mutex m_mutex;
 
     CanonicalState     m_canonical;
+    GetHeightState     m_get_height;
     ShadowState        m_shadow;
     SessionHealthState m_session_health;
     PushTrendState     m_push_trend;
@@ -355,6 +430,7 @@ private:
     SourceKind         m_last_source{SourceKind::NONE};
 
     CrossCheckResult build_cross_check_locked() const;
+    bool is_get_height_stale_locked() const;
     bool is_shadow_stale_locked() const;
     bool is_session_health_stale_locked() const;
 };

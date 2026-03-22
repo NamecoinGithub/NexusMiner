@@ -1294,6 +1294,33 @@ void Solo::reset_get_block_dedup_state()
     m_logger->info("[Solo] ⚡ GET_BLOCK dedup state reset — tip-anchor or recovery epoch changed; next request will not be suppressed");
 }
 
+network::Shared_payload Solo::send_get_height()
+{
+    // GET_HEIGHT — periodic unified-height poll.
+    //
+    // Sends GET_HEIGHT (legacy: opcode 0x82; stateless: mirror-mapped 0xD082) on
+    // all lanes.  The node responds with BLOCK_HEIGHT (opcode 2) containing the
+    // current unified chain height as a uint32.
+    //
+    // This is the PRIMARY shadow source for height cross-check (30s cadence).
+    // KeepAlive ACK remains secondary and provides full per-channel height detail.
+
+    if (!m_authenticated) {
+        m_logger->warn("[Solo GET_HEIGHT] Cannot send GET_HEIGHT - not authenticated yet");
+        return nullptr;
+    }
+
+    m_logger->debug("[Solo GET_HEIGHT] Sending GET_HEIGHT ({} lane)",
+        m_protocol_lane == ProtocolLane::STATELESS ? "stateless 0xD082" : "legacy 0x82");
+    auto payload = PacketBuilder::build(m_protocol_lane, LLP::GET_HEIGHT);
+    if (payload && !payload->empty()) {
+        m_logger->debug("[Solo GET_HEIGHT] Encoded payload size: {} bytes (header-only)", payload->size());
+    } else {
+        m_logger->error("[Solo GET_HEIGHT] PacketBuilder::build returned null or empty payload!");
+    }
+    return payload;
+}
+
 network::Shared_payload Solo::send_get_round()
 {
     // GET_ROUND — pure informational/sanity probe.
@@ -1715,6 +1742,9 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         
         // Log the received height information
         m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
+
+        // Feed into primary shadow layer (GET_HEIGHT is primary height cross-check source)
+        m_channel_shadow_tracker.IngestGetHeightResponse(height);
         
         // Use HeightTracker snapshot for comparison (single source of truth).
         // Fall back to m_current_height only during startup before any GET_ROUND/push

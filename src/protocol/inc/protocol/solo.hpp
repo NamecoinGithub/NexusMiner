@@ -102,6 +102,12 @@ public:
     /// It does NOT request a block template.  Use send_recovery_work_request()
     /// when the intent is to force a fresh template retrieval.
     network::Shared_payload send_get_round();
+    /// Send GET_HEIGHT on all lanes (legacy: 0x82; stateless: 0xD082).
+    /// Periodic unified-height poll (30s cadence).  The node responds with
+    /// BLOCK_HEIGHT carrying the current unified chain height as a uint32.
+    /// This is the PRIMARY shadow source for height cross-check.
+    /// Authentication-guarded; returns null if not authenticated.
+    network::Shared_payload send_get_height();
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work().
     /// Returns null/empty if not yet authenticated — callers must guard for this.
