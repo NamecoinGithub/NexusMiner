@@ -79,7 +79,7 @@ flowchart LR
     end
 
     subgraph SNAP["Snapshot (backward-compat)"]
-        S1["unified_height"]
+        S1["unified_height\n(canonical BLOCK_DATA only)"]
         S2["channel_height"]
         S3["difficulty_nbits"]
         S4["channel_target"]
