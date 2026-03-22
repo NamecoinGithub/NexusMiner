@@ -241,6 +241,44 @@ public:
         }
 
         /**
+         * @brief Which unified-height shadow source currently drives disagreement checks.
+         *
+         * Returns GET_HEIGHT when the primary source is fresh, otherwise falls back to
+         * KEEPALIVE when the secondary shadow is fresh.
+         */
+        SourceKind active_unified_source() const noexcept {
+            if (canonical_initialized && get_height_initialized && !get_height_is_stale)
+                return SourceKind::GET_HEIGHT;
+            if (canonical_initialized && shadow_initialized && !shadow_is_stale)
+                return SourceKind::KEEPALIVE;
+            return SourceKind::NONE;
+        }
+
+        /**
+         * @brief Signed canonical-versus-shadow delta for the active unified-height source.
+         */
+        int32_t active_unified_delta() const noexcept {
+            switch (active_unified_source()) {
+                case SourceKind::GET_HEIGHT:
+                    return get_height_delta;
+                case SourceKind::KEEPALIVE:
+                    return unified_delta;
+                default:
+                    return 0;
+            }
+        }
+
+        /**
+         * @brief Absolute block divergence for the active unified-height source.
+         */
+        uint32_t active_unified_divergence() const noexcept {
+            const auto delta = active_unified_delta();
+            return delta >= 0
+                ? static_cast<uint32_t>(delta)
+                : static_cast<uint32_t>(-delta);
+        }
+
+        /**
          * @brief Human-readable diagnostic summary.
          */
         std::string describe() const;
@@ -267,6 +305,17 @@ public:
                 || shadow.is_initialized()
                 || session_health.is_initialized()
                 || push_trend.is_initialized();
+        }
+
+        uint32_t active_unified_height() const noexcept {
+            switch (cross_check.active_unified_source()) {
+                case SourceKind::GET_HEIGHT:
+                    return get_height.unified_height;
+                case SourceKind::KEEPALIVE:
+                    return shadow.unified_height;
+                default:
+                    return 0;
+            }
         }
     };
 

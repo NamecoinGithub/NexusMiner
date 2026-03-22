@@ -2408,27 +2408,25 @@ void Worker_manager::check_template_health()
                             static_cast<int32_t>(tmpl_height);
             const auto shadow_snap = solo_protocol->get_channel_shadow_snapshot();
             const auto& cross_check = shadow_snap.cross_check;
-            const uint32_t get_height_divergence =
-                (cross_check.get_height_delta >= 0)
-                    ? static_cast<uint32_t>(cross_check.get_height_delta)
-                    : static_cast<uint32_t>(-cross_check.get_height_delta);
-            const bool get_height_confirms_divergence =
-                cross_check.canonical_initialized &&
-                cross_check.get_height_initialized &&
-                !cross_check.get_height_is_stale &&
-                get_height_divergence > protocol::ProtocolConstants::GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS;
+            const auto active_shadow_source = cross_check.active_unified_source();
+            const auto active_shadow_delta = cross_check.active_unified_delta();
+            const uint32_t active_shadow_divergence = cross_check.active_unified_divergence();
+            const bool shadow_tracker_confirms_divergence =
+                cross_check.is_disagreement(protocol::ProtocolConstants::GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS);
 
-            if (get_height_confirms_divergence) {
+            if (shadow_tracker_confirms_divergence) {
                 bool had_pending = m_recovery_pending;
-                mark_soft_refresh_requested("height_drift_get_height_cross_check");
+                mark_soft_refresh_requested("height_drift_shadow_tracker_cross_check");
                 m_logger->warn("[Worker_manager] ⚠️  HEIGHT_DRIFT cross-check confirmed: unified={} template.nHeight={} "
-                               "canonical={} get_height={} (drift={} get_height_delta={}) — requesting non-blocking GET_BLOCK",
+                               "canonical={} source={} shadow_unified={} (drift={} shadow_delta={} abs_divergence={}) — requesting non-blocking GET_BLOCK",
                                ht_snap.unified_height,
                                tmpl_height,
                                shadow_snap.canonical.unified_height,
-                               shadow_snap.get_height.unified_height,
+                               protocol::ChannelHeightShadowTracker::source_name(active_shadow_source),
+                               shadow_snap.active_unified_height(),
                                drift,
-                               cross_check.get_height_delta);
+                               active_shadow_delta,
+                               active_shadow_divergence);
                 if (!had_pending) {
                     retry_template_request(false);
                 }

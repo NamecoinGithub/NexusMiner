@@ -1748,23 +1748,20 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
 
         const auto shadow_snap = m_channel_shadow_tracker.GetSnapshot();
         const auto& cross_check = shadow_snap.cross_check;
-        const uint32_t get_height_divergence =
-            (cross_check.get_height_delta >= 0)
-                ? static_cast<uint32_t>(cross_check.get_height_delta)
-                : static_cast<uint32_t>(-cross_check.get_height_delta);
+        const auto active_shadow_source = cross_check.active_unified_source();
+        const auto active_shadow_delta = cross_check.active_unified_delta();
+        const uint32_t active_shadow_divergence = cross_check.active_unified_divergence();
         bool requested_fresh_block = false;
 
-        if (cross_check.canonical_initialized &&
-            cross_check.get_height_initialized &&
-            !cross_check.get_height_is_stale &&
-            get_height_divergence > ProtocolConstants::GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS)
+        if (cross_check.is_disagreement(ProtocolConstants::GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS))
         {
-            m_logger->warn("[Solo] GET_HEIGHT/BLOCK_DATA cross-check diverged by {} blocks "
-                           "(canonical={} get_height={} delta={}) — requesting non-blocking GET_BLOCK",
-                           get_height_divergence,
+            m_logger->warn("[Solo] ShadowTracker/BLOCK_DATA cross-check diverged by {} blocks "
+                           "(canonical={} source={} shadow_unified={} delta={}) — requesting non-blocking GET_BLOCK",
+                           active_shadow_divergence,
                            shadow_snap.canonical.unified_height,
-                           shadow_snap.get_height.unified_height,
-                           cross_check.get_height_delta);
+                           ChannelHeightShadowTracker::source_name(active_shadow_source),
+                           shadow_snap.active_unified_height(),
+                           active_shadow_delta);
             auto work_payload = get_work();
             if (work_payload && !work_payload->empty()) {
                 connection->transmit(work_payload);
