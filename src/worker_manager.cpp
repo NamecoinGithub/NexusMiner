@@ -2213,7 +2213,7 @@ void Worker_manager::check_template_health()
             clear_recovery_state();
         } else if (should_refeed_template) {
             // Re-feed the template so the newly created workers receive it.
-            bool fed = template_interface->feed_current_template(true);
+            bool fed = template_interface->feed_current_template();
             if (fed) {
                 m_logger->info("[Worker_manager] ✅ Belt-and-suspenders recovery: template fed to workers — clearing degraded mode");
                 clear_recovery_state();

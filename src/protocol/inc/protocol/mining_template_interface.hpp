@@ -269,7 +269,7 @@ public:
      * 
      * @return true if template was fed to handlers
      */
-    bool feed_current_template(bool bypass_debounce = false);
+    bool feed_current_template();
     
     /**
      * @brief Mark current template as stale
