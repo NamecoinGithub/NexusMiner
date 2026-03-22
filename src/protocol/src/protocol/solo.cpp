@@ -1743,8 +1743,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         // Log the received height information
         m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
 
+        auto prior_snap = m_height_tracker.GetSnapshot();
+        uint32_t known_height = prior_snap.verified_unified_height() > 0
+            ? prior_snap.verified_unified_height()
+            : m_current_height;
+
         // Feed into primary shadow layer (GET_HEIGHT is primary height cross-check source)
         m_channel_shadow_tracker.IngestGetHeightResponse(height);
+        m_height_tracker.OnGetHeightResponse(height);
 
         const auto shadow_snap = m_channel_shadow_tracker.GetSnapshot();
         const auto& cross_check = shadow_snap.cross_check;
@@ -1772,13 +1778,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             }
         }
 
-        // Use HeightTracker snapshot for comparison (single source of truth).
-        // Fall back to m_current_height only during startup before any GET_ROUND/push
-        // notification has been received (unified_height == 0 in that case).
-        // m_current_height is kept as a diagnostic-only reference.
-        auto snap = m_height_tracker.GetSnapshot();
-        uint32_t known_height = snap.unified_height > 0 ? snap.unified_height : m_current_height;
-        
         if (!requested_fresh_block && height > known_height)
         {
             m_logger->info("Nexus Network: New height {} (old height: {})", height, known_height);

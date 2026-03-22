@@ -16,6 +16,10 @@
  *  7. Stateless lane BLOCK_DATA fields drive HeightTracker identically to the
  *     legacy lane — both lanes call update_height_state() → OnPushNotification()
  *     → OnTemplateReceived() and produce identical HeightTracker snapshots.
+ *  8. GET_HEIGHT / BLOCK_HEIGHT feeds HeightTracker verifier state without
+ *     rewriting canonical channel state.
+ *  9. Fresh GET_HEIGHT can drive tip-moved detection through HeightTracker's
+ *     verifier-aware unified-height view.
  */
 
 #include "protocol/push_notification_handler.hpp"
@@ -248,6 +252,70 @@ static void test_channel_manager_same_data_as_height_tracker()
 }
 
 // ============================================================================
+// Test 3b: GET_HEIGHT / BLOCK_HEIGHT updates HeightTracker verifier state
+// ============================================================================
+static void test_get_height_updates_height_tracker_verifier_state()
+{
+    std::cout << "\nTest 3b: GET_HEIGHT updates HeightTracker verifier state without canonical spillover\n";
+
+    HeightTracker tracker;
+    tracker.OnGetHeightResponse(7001);
+
+    auto snap = tracker.GetSnapshot();
+    auto diag = tracker.GetDiagnosticSnapshot();
+
+    print_test_result("raw unified_height remains 0 without push/BLOCK_DATA",
+        snap.unified_height == 0);
+    print_test_result("verified_unified_height reflects GET_HEIGHT",
+        snap.verified_unified_height() == 7001);
+    print_test_result("fresh GET_HEIGHT is present",
+        snap.has_fresh_get_height());
+    print_test_result("snapshot stores GET_HEIGHT verifier height",
+        snap.get_height_unified_height == 7001);
+    print_test_result("diagnostic get_height_unified_height == 7001",
+        diag.get_height_unified_height == 7001);
+    print_test_result("source == GET_HEIGHT",
+        snap.last_update_source == HeightTracker::UpdateSource::GET_HEIGHT);
+    print_test_result("GET_HEIGHT does not fabricate channel_height",
+        snap.channel_height == 0);
+    print_test_result("GET_HEIGHT does not fabricate last_height_update",
+        snap.last_height_update == std::chrono::steady_clock::time_point{});
+}
+
+// ============================================================================
+// Test 3c: Fresh GET_HEIGHT drives verifier-aware tip movement without changing
+//          channel staleness or template-unified capture semantics
+// ============================================================================
+static void test_get_height_drives_verifier_tip_moved()
+{
+    std::cout << "\nTest 3c: fresh GET_HEIGHT drives verifier-aware tip_moved\n";
+
+    HeightTracker tracker;
+    tracker.OnBlockDataReceived(7000, 400, 0x1d00ffff, uint1024_t{});
+    tracker.OnTemplateReceived(2, 401);
+
+    auto before = tracker.GetSnapshot();
+    print_test_result("template_unified_height captured from canonical before GET_HEIGHT",
+        before.template_unified_height == 7000);
+    print_test_result("tip_moved false before GET_HEIGHT advance",
+        !before.is_tip_moved());
+
+    tracker.OnGetHeightResponse(7003);
+    auto after = tracker.GetSnapshot();
+
+    print_test_result("raw unified_height remains canonical before fresh BLOCK_DATA",
+        after.unified_height == 7000);
+    print_test_result("verified_unified_height uses fresher GET_HEIGHT",
+        after.verified_unified_height() == 7003);
+    print_test_result("tip_moved becomes true from verifier-aware unified height",
+        after.is_tip_moved());
+    print_test_result("channel staleness still false (GET_HEIGHT has no channel height)",
+        !after.is_template_stale());
+    print_test_result("template_unified_height remains the template's canonical tip",
+        after.template_unified_height == 7000);
+}
+
+// ============================================================================
 // Test 4: Fork detection works when heights regress via update callback
 // ============================================================================
 static void test_fork_detection_via_update_callback()
@@ -399,6 +467,8 @@ int main()
     test_height_tracker_updated_via_callback();
     test_channel_mismatch_refreshes_push_liveness_only();
     test_channel_manager_same_data_as_height_tracker();
+    test_get_height_updates_height_tracker_verifier_state();
+    test_get_height_drives_verifier_tip_moved();
     test_fork_detection_via_update_callback();
     test_height_tracker_staleness_matches_expected();
     test_node_block_data_fields_drive_height_tracker();

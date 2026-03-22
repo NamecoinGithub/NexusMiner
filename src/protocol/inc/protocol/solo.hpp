@@ -179,7 +179,7 @@ public:
     // Canonical-only snapshot (authoritative block-data state)
     HeightTracker::CanonicalChainState get_canonical_snapshot() const { return m_height_tracker.GetCanonicalSnapshot(); }
 
-    // Diagnostic-only snapshot (push/keepalive/GET_ROUND telemetry)
+    // Diagnostic-only snapshot (push/GET_HEIGHT/keepalive/GET_ROUND telemetry)
     HeightTracker::DiagnosticObserverState get_diagnostic_snapshot() const { return m_height_tracker.GetDiagnosticSnapshot(); }
 
     // HeightTracker reference (for direct read access by ColinAgent)

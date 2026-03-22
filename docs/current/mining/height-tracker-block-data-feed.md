@@ -16,8 +16,8 @@ forwarding the block to `MiningTemplateInterface`:
 ```
 Step 1/2 — Height + difficulty feed
 ────────────────────────────────────
-update_height_state(unified_height, channel_height, nBits, PUSH)
-  └─ calls HeightTracker::OnPushNotification(unified_height, channel_height, nBits)
+update_height_state(unified_height, channel_height, nBits, TEMPLATE)
+  └─ calls HeightTracker::OnTemplateMetadata(unified_height, channel_height, nBits)
   └─ calls ClientChannelManager::UpdateFromGetRound(unified_height, channel_height)
 
 Step 2/2 — Channel target registration
@@ -34,7 +34,7 @@ tip hash once the block header has been parsed from the payload.
 
 | Call | What it writes | Used by |
 |------|----------------|---------|
-| `OnPushNotification` | `unified_height`, `channel_height`, `difficulty_nbits`, `last_update_source=PUSH` | `is_template_stale()`, `is_tip_moved()`, worker difficulty |
+| `OnTemplateMetadata` | canonical `unified_height`, canonical `channel_height`, `difficulty_nbits`, `last_update_source=TEMPLATE` | canonical template state |
 | `OnTemplateReceived` | `channel_target`, `template_unified_height` | `is_template_stale()` single source of truth |
 | `UpdateWithHashPrevBlock` | `hash_prev_block` | Fork-canary cross-check |
 
@@ -71,6 +71,7 @@ by purpose:
 | Source | Writes To | Purpose |
 |--------|-----------|---------|
 | Node BLOCK_DATA metadata prefix | `CanonicalChainState` | All mining decisions (the only canonical update path) |
+| GET_HEIGHT / BLOCK_HEIGHT | `DiagnosticObserverState.get_height_*` + `Snapshot::verified_unified_height()` | Primary unified-height verifier for soft-refresh / drift checks |
 | Push notification (BLOCK_AVAILABLE) | `DiagnosticObserverState.push_*` | Push-driven staleness via `max(canonical, push)` composition |
 | GET_ROUND / NEW_ROUND response | `DiagnosticObserverState.round_*` | Colin diagnostic display only |
 | Keepalive ACK | `DiagnosticObserverState.keepalive_*` | Colin telemetry display only |
@@ -149,6 +150,7 @@ If `channel_height == 0` (genesis guard), the `channel_target={}` part is omitte
 ## 8. Related Documents
 
 - [canonical-height-architecture.md](../../diagrams/mining-loops/canonical-height-architecture.md) — Canonical vs Diagnostic state isolation architecture and diagrams
+- [get-height-integration.md](get-height-integration.md) — how BLOCK_HEIGHT feeds HeightTracker verifier state and recovery logic
 - [unified-tip-vs-channel-height.md](unified-tip-vs-channel-height.md) — `is_template_stale()` and `is_tip_moved()` semantics
 - [height-tracking.md](../mining-protocols/height-tracking.md) — GET_ROUND / 12-byte format
 - [stateless-mining.md](../mining-protocols/stateless-mining.md) — stateless lane overview

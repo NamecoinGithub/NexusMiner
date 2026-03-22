@@ -430,6 +430,8 @@ void ColinAgent::emit_report(
             switch (ht_snap.last_update_source) {
                 case nexusminer::protocol::HeightTracker::UpdateSource::PUSH:
                     src = "PUSH"; label = " (BLOCK_DATA metadata)"; break;
+                case nexusminer::protocol::HeightTracker::UpdateSource::GET_HEIGHT:
+                    src = "GET_HEIGHT"; label = " (BLOCK_HEIGHT verifier)"; break;
                 case nexusminer::protocol::HeightTracker::UpdateSource::GET_ROUND:
                     src = "GET_ROUND"; label = " (fallback)"; break;
                 case nexusminer::protocol::HeightTracker::UpdateSource::TEMPLATE:
@@ -561,12 +563,12 @@ void ColinAgent::emit_report(
             auto diag_age_s = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - diag_latest).count();
             m_logger->info("[Colin]  📡 ── Diagnostic Observer State ─────────────────────");
-            m_logger->info("[Colin]    ✅ Diagnostic │ initialized  push_unified={} round_unified={} keepalive_unified={} (latest {}s ago)",
-                diag.push_unified_height, diag.round_unified_height,
+            m_logger->info("[Colin]    ✅ Diagnostic │ initialized  push_unified={} get_height_unified={} round_unified={} keepalive_unified={} (latest {}s ago)",
+                diag.push_unified_height, diag.get_height_unified_height, diag.round_unified_height,
                 diag.keepalive_unified_height, diag_age_s);
         } else {
             m_logger->info("[Colin]  📡 ── Diagnostic Observer State ─────────────────────");
-            m_logger->warn("[Colin]    ⚠️  Diagnostic │ NOT initialized (no push/round/keepalive data yet)");
+            m_logger->warn("[Colin]    ⚠️  Diagnostic │ NOT initialized (no push/GET_HEIGHT/round/keepalive data yet)");
         }
 
         // Height drift: how far composed snapshot heights have drifted from canonical

@@ -49,17 +49,19 @@ constexpr bool is_channel_height(uint32_t raw_height) noexcept {
  *   CanonicalChainState   — updated exclusively by OnBlockDataReceived()
  *                           (BLOCK_DATA / STATELESS_GET_BLOCK).  Monotonically
  *                           advancing.  Drives all mining decisions.
- *   DiagnosticObserverState — updated by push notifications, keepalive ACKs,
- *                           and GET_ROUND responses.  Read-only for Colin
+ *   DiagnosticObserverState — updated by push notifications, GET_HEIGHT
+ *                           responses, keepalive ACKs, and GET_ROUND
+ *                           responses.  Read-only for Colin
  *                           diagnostics.  Never drives mining decisions.
  *
  * Invariant: only OnBlockDataReceived() may update canonical chain state.
- * Push notifications, GET_ROUND, and keepalive ACKs update
+ * Push notifications, GET_HEIGHT responses, GET_ROUND, and keepalive ACKs update
  * DiagnosticObserverState only.
  *
  * GetSnapshot() backward-compat composition:
- *   channel_height = max(canonical, push, round)
- *   unified_height = max(canonical, push, round)
+ *   channel_height = max(canonical, push)
+ *   unified_height = max(canonical, push)
+ *   verified_unified_height() = max(unified_height, fresh GET_HEIGHT)
  * This preserves push-driven staleness detection while keepalive can never
  * regress the heights used for mining decisions.
  *
@@ -74,6 +76,7 @@ public:
     enum class UpdateSource {
         NONE,             ///< No update received yet
         PUSH,             ///< Updated by a push notification (BLOCK_AVAILABLE opcode)
+        GET_HEIGHT,       ///< Updated by a BLOCK_HEIGHT response to GET_HEIGHT
         GET_ROUND,        ///< Updated by a GET_ROUND / NEW_ROUND response
         TEMPLATE,         ///< Updated by a received mining template
         KEEPALIVE,        ///< Updated by a unified keepalive response (both legacy and stateless paths)
@@ -134,7 +137,8 @@ public:
     /**
      * @brief Diagnostic and telemetry state — for Colin agent observation ONLY
      *
-     * Updated by push notifications, keepalive ACKs, and GET_ROUND responses.
+     * Updated by push notifications, GET_HEIGHT responses, keepalive ACKs, and
+     * GET_ROUND responses.
      * MUST NOT be used to make any mining decisions (template validation,
      * staleness detection, worker dispatch, fork detection for hard stops).
      */
@@ -151,6 +155,10 @@ public:
         uint32_t round_channel_height{0};
         uint32_t round_difficulty_nbits{0};
         std::chrono::steady_clock::time_point last_round_at{};
+
+        // ── Unified height from GET_HEIGHT / BLOCK_HEIGHT ──────────────────────
+        uint32_t get_height_unified_height{0};
+        std::chrono::steady_clock::time_point last_get_height_at{};
 
         // ── Keepalive telemetry (SESSION_KEEPALIVE ACK) ─────────────────────────
         uint32_t keepalive_unified_height{0};
@@ -181,11 +189,13 @@ public:
          * @brief True when at least one diagnostic source has provided data.
          *
          * Diagnostic equivalent of CanonicalChainState::is_initialized().
-         * Returns true as soon as any of push notifications, GET_ROUND responses,
-         * or keepalive ACKs have been received.
+         * Returns true as soon as any of push notifications, GET_HEIGHT
+         * responses, GET_ROUND responses, or keepalive ACKs have been
+         * received.
          */
         bool is_initialized() const {
             return push_unified_height > 0 ||
+                   get_height_unified_height > 0 ||
                    round_unified_height > 0 ||
                    keepalive_unified_height > 0;
         }
@@ -194,13 +204,14 @@ public:
          * @brief Time of the most recent diagnostic update from any source.
          *
          * Diagnostic equivalent of CanonicalChainState::canonical_received_at.
-         * Returns the latest timestamp across push, GET_ROUND, and keepalive
+         * Returns the latest timestamp across push, GET_HEIGHT, GET_ROUND, and keepalive
          * sources. Returns a default-constructed (epoch) time_point when no
          * source has been received yet.
          */
         std::chrono::steady_clock::time_point latest_received_at() const {
             auto t = std::chrono::steady_clock::time_point{};
             if (last_push_at > t)          t = last_push_at;
+            if (last_get_height_at > t)    t = last_get_height_at;
             if (last_round_at > t)         t = last_round_at;
             if (last_keepalive_ack_at > t) t = last_keepalive_ack_at;
             return t;
@@ -249,13 +260,14 @@ public:
         std::chrono::steady_clock::time_point last_keepalive_ack_at{}; ///< Time of last OnKeepaliveResponse() call
 
         /// Time of last actual push notification (PRIME/HASH_BLOCK_AVAILABLE opcode ONLY).
-        /// NOT updated by keepalive ACKs or GET_ROUND responses.
+        /// NOT updated by GET_HEIGHT, keepalive ACKs, or GET_ROUND responses.
         /// Use this field — not last_height_update — for session liveness decisions
         /// (escape ladder push_recent, retry_connect guard). This is the canonical
         /// "is the node pushing to us?" signal.
         std::chrono::steady_clock::time_point last_push_notification_at{};
 
-        /// Time of last push update (set ONLY by OnPushNotification — NOT by keepalive or GET_ROUND).
+        /// Time of last push update (set ONLY by OnPushNotification — NOT by
+        /// GET_HEIGHT, keepalive, or GET_ROUND).
         /// Serves the temporal post-push guard in check_template_health(): comparing
         /// last_template_update >= last_height_update answers "was the template received
         /// after the last push?" (doom-loop prevention). Use last_push_notification_at —
@@ -332,13 +344,15 @@ public:
          * @brief True when the unified tip has moved beyond the height at which
          *        the current template was issued (hashPrevBlock is stale).
          *
-         * Returns true when unified_height has advanced past template_unified_height,
-         * i.e. another channel found a block after this template was received.
+         * Returns true when the verifier-aware unified height has advanced past
+         * template_unified_height, i.e. another channel found a block after this
+         * template was received.
          * This does NOT imply channel staleness — the channel may still be valid.
          * Both values must be non-zero to avoid false positives at startup.
          */
         bool is_tip_moved() const {
-            return (template_unified_height > 0 && unified_height > template_unified_height);
+            return (template_unified_height > 0 &&
+                    verified_unified_height() > template_unified_height);
         }
 
         /**
@@ -397,7 +411,7 @@ public:
          *        canonical heights.
          *
          * Returns the signed difference (unified_height − canonical_unified_height),
-         * where unified_height is max(canonical, push, round).
+         * where unified_height is max(canonical, push).
          * Callers can use this to assess push/round freshness relative to the
          * canonical block-data path.  A large positive value means push/round
          * data is ahead (normal during slow BLOCK_DATA); zero means canonical
@@ -408,11 +422,49 @@ public:
                    static_cast<int32_t>(canonical_unified_height);
         }
 
+        /**
+         * @brief True when a recent GET_HEIGHT / BLOCK_HEIGHT verifier response is available.
+         *
+         * GET_HEIGHT is the primary unified-height verifier, but it must remain
+         * separate from canonical/template state. Consumers that need the
+         * freshest node-confirmed unified height should prefer
+         * verified_unified_height() rather than raw unified_height.
+         */
+        bool has_fresh_get_height() const {
+            if (get_height_unified_height == 0 ||
+                last_get_height_at == std::chrono::steady_clock::time_point{}) {
+                return false;
+            }
+
+            constexpr int64_t GET_HEIGHT_STALE_THRESHOLD_SECONDS = 90;
+            auto age = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - last_get_height_at).count();
+            return age <= GET_HEIGHT_STALE_THRESHOLD_SECONDS;
+        }
+
+        /**
+         * @brief Unified height for verifier-aware comparisons.
+         *
+         * Returns raw unified_height (canonical/push composition) unless a fresh
+         * GET_HEIGHT verifier response is available, in which case the higher of
+         * the two is used. This lets recovery / drift logic see the freshest
+         * node-confirmed unified tip without letting GET_HEIGHT rewrite
+         * channel-specific canonical state.
+         */
+        uint32_t verified_unified_height() const {
+            if (!has_fresh_get_height()) {
+                return unified_height;
+            }
+            return std::max(unified_height, get_height_unified_height);
+        }
+
         // ── Canonical reference (for drift computation and fork detection) ───
         uint32_t canonical_unified_height{0};
         uint32_t canonical_channel_height{0};
         uint1024_t canonical_hash_prev_block{}; ///< From canonical state (BLOCK_DATA decoded Tritium block)
         std::chrono::steady_clock::time_point canonical_received_at{}; ///< When canonical template was received (for age calculation)
+        uint32_t get_height_unified_height{0}; ///< Raw GET_HEIGHT / BLOCK_HEIGHT unified verifier height
+        std::chrono::steady_clock::time_point last_get_height_at{}; ///< Timestamp of last GET_HEIGHT / BLOCK_HEIGHT response
     };
 
     HeightTracker() = default;
@@ -494,6 +546,14 @@ public:
      */
     void OnGetRound(uint32_t unified_height, uint32_t channel_height,
                     uint32_t nbits);
+
+    /**
+     * @brief Update diagnostic verifier state from a BLOCK_HEIGHT response.
+     *
+     * Stores the node-reported unified height from GET_HEIGHT / BLOCK_HEIGHT as
+     * a primary verifier signal without altering canonical/template state.
+     */
+    void OnGetHeightResponse(uint32_t unified_height);
 
     /**
      * @brief Monotonic height update from BLOCK_DATA / STATELESS_GET_BLOCK metadata
@@ -588,6 +648,7 @@ public:
      * Backward-compatible composition:
      *   unified_height = max(canonical, push)
      *   channel_height = max(canonical, push)
+     *   verified_unified_height() = max(unified_height, fresh GET_HEIGHT)
      *
      * The copy is taken under the internal lock; the returned struct can be
      * used freely without holding any lock.
@@ -615,7 +676,7 @@ public:
     /**
      * @brief Return a snapshot of diagnostic observer state only
      *
-     * Contains push, GET_ROUND, and keepalive telemetry data.
+     * Contains push, GET_HEIGHT, GET_ROUND, and keepalive telemetry data.
      */
     DiagnosticObserverState GetDiagnosticSnapshot() const;
 
@@ -633,7 +694,7 @@ private:
     // ── Canonical state (BLOCK_DATA only) ──────────────────────────────────
     CanonicalChainState m_canonical;
 
-    // ── Diagnostic state (push / keepalive / GET_ROUND) ────────────────────
+    // ── Diagnostic state (push / GET_HEIGHT / keepalive / GET_ROUND) ───────
     DiagnosticObserverState m_diagnostic;
 
     // ── Template / shared state ────────────────────────────────────────────

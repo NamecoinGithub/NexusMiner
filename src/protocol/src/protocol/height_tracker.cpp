@@ -8,6 +8,7 @@ namespace protocol {
 const char* HeightTracker::source_name(UpdateSource src) {
     switch (src) {
         case UpdateSource::PUSH:      return "PUSH";
+        case UpdateSource::GET_HEIGHT:return "GET_HEIGHT";
         case UpdateSource::GET_ROUND: return "GET_ROUND";
         case UpdateSource::TEMPLATE:  return "TEMPLATE";
         case UpdateSource::KEEPALIVE: return "KEEPALIVE";
@@ -71,6 +72,14 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
     m_last_update_source = UpdateSource::GET_ROUND;
     auto now = std::chrono::steady_clock::now();
     m_diagnostic.last_round_at = now;
+}
+
+void HeightTracker::OnGetHeightResponse(uint32_t unified_height)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_diagnostic.get_height_unified_height = unified_height;
+    m_diagnostic.last_get_height_at = std::chrono::steady_clock::now();
+    m_last_update_source = UpdateSource::GET_HEIGHT;
 }
 
 // ── OnTemplateMetadata: backward-compat wrapper → delegates to OnBlockDataReceived ──
@@ -226,6 +235,8 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     s.template_block_height = UnifiedHeight{s.template_unified_height};
     s.hash_prev_block = m_canonical.canonical_hash_prev_block;
     s.push_hash_prev_block = m_diagnostic.push_hash_prev_block;
+    s.get_height_unified_height = m_diagnostic.get_height_unified_height;
+    s.last_get_height_at = m_diagnostic.last_get_height_at;
     s.last_update_source = m_last_update_source;
 
     // Per-channel heights: sourced from keepalive ACKs (canonical per-channel fields are
