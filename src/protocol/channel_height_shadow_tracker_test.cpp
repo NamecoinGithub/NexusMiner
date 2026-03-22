@@ -614,6 +614,33 @@ void test_cross_check_get_height_overrides_keepalive() {
 }
 
 // ============================================================================
+// Test 31: active_unified_source()/delta() prefer GET_HEIGHT then fall back
+// ============================================================================
+void test_cross_check_active_unified_source_helpers() {
+    std::cout << "\nTest 31: CrossCheck active unified source helpers\n";
+    using SK = ChannelHeightShadowTracker::SourceKind;
+
+    ChannelHeightShadowTracker primary;
+    primary.IngestBlockData(5005, 200);
+    primary.IngestKeepaliveAck(5000, 200, 300, 50, 0);
+    primary.IngestGetHeightResponse(5003);
+    auto primary_r = primary.CrossCheck();
+    print_test_result("active_unified_source == GET_HEIGHT when fresh",
+                      primary_r.active_unified_source() == SK::GET_HEIGHT);
+    print_test_result("active_unified_delta == get_height_delta",
+                      primary_r.active_unified_delta() == primary_r.get_height_delta);
+
+    ChannelHeightShadowTracker fallback;
+    fallback.IngestBlockData(5005, 200);
+    fallback.IngestKeepaliveAck(5001, 200, 300, 50, 0);
+    auto fallback_r = fallback.CrossCheck();
+    print_test_result("active_unified_source == KEEPALIVE without GET_HEIGHT",
+                      fallback_r.active_unified_source() == SK::KEEPALIVE);
+    print_test_result("active_unified_delta == unified_delta",
+                      fallback_r.active_unified_delta() == fallback_r.unified_delta);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -650,6 +677,7 @@ int main() {
     test_is_get_height_stale_before_ingest();
     test_cross_check_get_height_primary_path();
     test_cross_check_get_height_overrides_keepalive();
+    test_cross_check_active_unified_source_helpers();
 
     std::cout << "\n=== Results: " << tests_passed << "/" << tests_run
               << " passed, " << tests_failed << " failed ===\n";

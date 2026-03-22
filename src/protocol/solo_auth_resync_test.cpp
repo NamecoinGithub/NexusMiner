@@ -895,7 +895,7 @@ void test_session_status_ack_expires_after_threshold_mismatches()
     print_test_result("Threshold mismatch SESSION_STATUS_ACK is rejected", !accepted);
     print_test_result("Threshold mismatch marks session expired", handler.expired_session);
     print_test_result("Threshold mismatch forces re-auth", handler.force_reauth);
-    print_test_result("Threshold mismatch marks degraded", handler.mark_degraded);
+    print_test_result("Threshold mismatch does not mark degraded", !handler.mark_degraded);
 }
 
 void test_session_status_ack_force_reauth_when_node_reports_expired()
@@ -909,7 +909,7 @@ void test_session_status_ack_force_reauth_when_node_reports_expired()
 
     print_test_result("Unhealthy SESSION_STATUS_ACK is still accepted for caching", accepted);
     print_test_result("Expired/unauthenticated ACK forces re-auth", handler.force_reauth);
-    print_test_result("Expired/unauthenticated ACK marks degraded", handler.mark_degraded);
+    print_test_result("Expired/unauthenticated ACK does not mark degraded", !handler.mark_degraded);
 }
 
 void test_degraded_live_session_policy_prefers_reauth_over_reconnect()

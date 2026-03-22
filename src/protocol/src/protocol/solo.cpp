@@ -519,10 +519,11 @@ void Solo::handle_normalized_keepalive_ack(const char* source,
                                          ack.hash_tip_lo32,
                                          ack.fork_score);
 
-    // Feed full-height shadow tracker — keepalive is the primary shadow source
+    // Feed full-height shadow tracker — keepalive is the secondary shadow source.
+    // It remains diagnostic-only for unified-height disagreement; GET_HEIGHT is primary.
     m_channel_shadow_tracker.IngestKeepaliveAck(ack.unified_height,
-                                                 ack.prime_height,
-                                                 ack.hash_height,
+                                                  ack.prime_height,
+                                                  ack.hash_height,
                                                  ack.stake_height,
                                                  ack.fork_score);
 
@@ -1739,13 +1740,38 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         }
         
         auto const height = bytes2uint(*packet.m_data);
-        
         // Log the received height information
         m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
 
         // Feed into primary shadow layer (GET_HEIGHT is primary height cross-check source)
         m_channel_shadow_tracker.IngestGetHeightResponse(height);
-        
+
+        const auto shadow_snap = m_channel_shadow_tracker.GetSnapshot();
+        const auto& cross_check = shadow_snap.cross_check;
+        const auto active_shadow_source = cross_check.active_unified_source();
+        const auto active_shadow_delta = cross_check.active_unified_delta();
+        const uint32_t active_shadow_divergence = cross_check.active_unified_divergence();
+        bool requested_fresh_block = false;
+
+        if (cross_check.is_disagreement(ProtocolConstants::GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS))
+        {
+            m_logger->warn("[Solo] ShadowTracker/BLOCK_DATA cross-check diverged by {} blocks "
+                           "(canonical={} source={} shadow_unified={} delta={}) — requesting non-blocking GET_BLOCK",
+                           active_shadow_divergence,
+                           shadow_snap.canonical.unified_height,
+                           ChannelHeightShadowTracker::source_name(active_shadow_source),
+                           shadow_snap.active_unified_height(),
+                           active_shadow_delta);
+            auto work_payload = get_work();
+            if (work_payload && !work_payload->empty()) {
+                connection->transmit(work_payload);
+                requested_fresh_block = true;
+            } else {
+                m_logger->info("[Solo] Divergence-triggered GET_BLOCK was suppressed locally "
+                               "(dedup/rate-limit/auth guard) — waiting for next template path");
+            }
+        }
+
         // Use HeightTracker snapshot for comparison (single source of truth).
         // Fall back to m_current_height only during startup before any GET_ROUND/push
         // notification has been received (unified_height == 0 in that case).
@@ -1753,7 +1779,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         auto snap = m_height_tracker.GetSnapshot();
         uint32_t known_height = snap.unified_height > 0 ? snap.unified_height : m_current_height;
         
-        if (height > known_height)
+        if (!requested_fresh_block && height > known_height)
         {
             m_logger->info("Nexus Network: New height {} (old height: {})", height, known_height);
             m_current_height = height;  // diagnostic only
@@ -1767,7 +1793,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
                 m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
             }
         }
-        else
+        else if (!requested_fresh_block)
         {
             // Height is unchanged or older than current
             if (height == known_height) {

@@ -195,6 +195,24 @@ namespace ProtocolConstants {
      */
     constexpr uint32_t SESSION_MISMATCH_EXPIRE_THRESHOLD = 3;
 
+    /**
+     * Unified-height divergence threshold (blocks) for GET_HEIGHT vs canonical BLOCK_DATA.
+     *
+     * Divergence up to and including 2 blocks is tolerated during normal multichannel
+     * burst activity; divergence greater than 2 blocks triggers a non-blocking
+     * GET_BLOCK refresh instead of immediate degraded-mode escalation.
+     */
+    constexpr uint32_t GET_HEIGHT_DIVERGENCE_TRIGGER_BLOCKS = 2;
+
+    /**
+     * Unified height drift threshold (blocks) before the miner probes GET_HEIGHT.
+     *
+     * Small unified-height gaps are normal in a multichannel blockchain while a new
+     * BLOCK_DATA template is still propagating. Larger gaps trigger a GET_HEIGHT
+     * cross-check instead of an immediate degraded-mode stop.
+     */
+    constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
+
 } // namespace ProtocolConstants
 
 } // namespace protocol
