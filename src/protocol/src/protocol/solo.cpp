@@ -401,6 +401,9 @@ void Solo::refresh_cached_session_state(const char* log_scope)
         m_session_epoch = session.session_epoch;
         m_has_seen_session_epoch = true;
         m_height_tracker.set_session_epoch(m_session_epoch);
+        // Invalidate all shadow observations from the previous epoch so stale
+        // heights do not leak into diagnostics for the new session.
+        m_shadow_tracker.OnSessionEpochChanged();
     }
 
     if (m_authenticated != session.authenticated) {
@@ -3617,6 +3620,14 @@ void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Conne
                                                   ack.hash_tip_lo32,
                                                   ack.fork_score);
 
+            // Update Channel Height Shadow Tracker with the full multi-channel picture.
+            // This is the primary source for prime/hash/stake/unified heights outside
+            // the mined channel.  Shadow tracker never touches canonical mining state.
+            m_shadow_tracker.IngestKeepaliveAck(ack.unified_height,
+                                                 ack.prime_height,
+                                                 ack.hash_height,
+                                                 ack.stake_height);
+
             // Fork detection: compare node's chain tip against the miner's own locally
             // stored prevHash lo32 (NOT the echoed value from the ACK, which could be
             // tampered to mask a real fork).
@@ -3671,6 +3682,12 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
 
             m_last_session_status_ack      = ack;
             m_last_session_status_ack_time = std::chrono::steady_clock::now();
+
+            // Update Channel Height Shadow Tracker with health state.
+            // SESSION_STATUS_ACK carries auth/uptime data only — no chain heights.
+            // This enriches the shadow tracker's freshness picture without touching
+            // canonical mining state.
+            m_shadow_tracker.IngestSessionStatusAck(ack.IsAuthenticated(), ack.uptime_seconds);
 
             const auto decision = SessionStatusPolicy::evaluate_ack_health(
                 { ack.uptime_seconds, ack.IsAuthenticated() });
@@ -4515,6 +4532,8 @@ void Solo::update_height_state(uint32_t unified_height, uint32_t channel_height,
     // Update HeightTracker (single source of truth for staleness decisions)
     if (source == HeightTracker::UpdateSource::PUSH) {
         m_height_tracker.OnPushNotification(unified_height, channel_height, difficulty_nbits);
+        // Shadow tracker: record the push observation for full-height diagnostics.
+        m_shadow_tracker.IngestPush(unified_height, channel_height, m_channel);
     } else if (source == HeightTracker::UpdateSource::GET_ROUND) {
         m_height_tracker.OnGetRound(unified_height, channel_height, difficulty_nbits);
     } else if (source == HeightTracker::UpdateSource::TEMPLATE) {
@@ -4527,6 +4546,9 @@ void Solo::update_height_state(uint32_t unified_height, uint32_t channel_height,
         // succeeds) to set channel_target — see the STATELESS_GET_BLOCK handler in
         // process_messages() and the legacy BLOCK_DATA handler.
         m_height_tracker.OnTemplateMetadata(unified_height, channel_height, difficulty_nbits);
+        // Shadow tracker: canonical view updated from BLOCK_DATA.  Monotonically
+        // advancing; never regresses.
+        m_shadow_tracker.UpdateCanonical(unified_height, channel_height, m_channel);
     } else {
         m_logger->warn("[Solo] update_height_state: unexpected source {}, defaulting to GET_ROUND",
                        static_cast<int>(source));

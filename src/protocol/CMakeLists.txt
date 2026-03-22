@@ -7,6 +7,7 @@ add_library(protocol STATIC src/protocol/solo.cpp
                             src/protocol/mining_template_interface.cpp
                             src/protocol/push_notification_handler.cpp
                             src/protocol/height_tracker.cpp
+                            src/protocol/channel_height_shadow_tracker.cpp
                             src/protocol/packet_builder.cpp
                             ${CMAKE_SOURCE_DIR}/src/LLP/colin_ping_handler.cpp
                             ${CMAKE_SOURCE_DIR}/src/LLP/stateless_block_utility.cpp)
@@ -58,6 +59,14 @@ target_include_directories(genesis_serialization_utils_test PRIVATE
 add_executable(height_tracker_test height_tracker_test.cpp)
 target_link_libraries(height_tracker_test PRIVATE protocol)
 target_include_directories(height_tracker_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLC/inc
+)
+
+# ChannelHeightShadowTracker Unit Test
+add_executable(channel_height_shadow_tracker_test channel_height_shadow_tracker_test.cpp)
+target_link_libraries(channel_height_shadow_tracker_test PRIVATE protocol)
+target_include_directories(channel_height_shadow_tracker_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
     ${CMAKE_SOURCE_DIR}/src/LLC/inc
 )
@@ -220,6 +229,7 @@ add_test(NAME chacha20_test COMMAND $<TARGET_FILE:chacha20_test>)
 add_test(NAME falcon_qtv_parity_test COMMAND $<TARGET_FILE:falcon_qtv_parity_test>)
 add_test(NAME genesis_serialization_utils_test COMMAND $<TARGET_FILE:genesis_serialization_utils_test>)
 add_test(NAME height_tracker_test COMMAND $<TARGET_FILE:height_tracker_test>)
+add_test(NAME channel_height_shadow_tracker_test COMMAND $<TARGET_FILE:channel_height_shadow_tracker_test>)
 add_test(NAME packet_builder_test COMMAND $<TARGET_FILE:packet_builder_test>)
 add_test(NAME phase2b_update_height_test COMMAND $<TARGET_FILE:phase2b_update_height_test>)
 add_test(NAME keepalive_v2_test COMMAND $<TARGET_FILE:keepalive_v2_test>)

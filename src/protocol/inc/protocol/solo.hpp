@@ -9,6 +9,7 @@
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/height_tracker.hpp"
+#include "protocol/channel_height_shadow_tracker.hpp"
 #include "protocol/session_ingress_gate.hpp"
 #include "protocol/session_recovery_policy.hpp"
 #include "protocol/submit_context.hpp"
@@ -502,6 +503,11 @@ private:
     
     // Centralized height tracker (single source of truth for heights)
     HeightTracker m_height_tracker;
+
+    // Channel Height Shadow Tracker — multi-source full-height observability
+    // (keepalive + SESSION_STATUS_ACK + push).  Shadow observations never
+    // overwrite canonical mining state held by m_height_tracker.
+    ChannelHeightShadowTracker m_shadow_tracker;
     
     // Connection for multi-packet authentication flow
     std::shared_ptr<network::Connection> m_connection;
