@@ -261,7 +261,7 @@ private:
     std::shared_ptr<ColinAgent> m_colin_agent;  // Diagnostic agent (started after first connect)
 
     // Time of the most recent SESSION_STATUS sent on any lane.
-    // Used to gate send_session_status_if_due() to at most once per 30 seconds.
+    // Used to gate send_session_status_if_due() to at most once per 5 minutes.
     std::chrono::steady_clock::time_point m_last_session_status_sent{};
 
     // ── Mutex-based recovery gate (defense-in-depth) ─────────────────────────

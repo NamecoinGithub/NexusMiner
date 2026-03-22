@@ -1436,7 +1436,7 @@ void Worker_manager::log_lane_health()
 void Worker_manager::send_session_status_if_due()
 {
     auto now = std::chrono::steady_clock::now();
-    constexpr int64_t SESSION_STATUS_INTERVAL_SECONDS = 30;
+    constexpr int64_t SESSION_STATUS_INTERVAL_SECONDS = 300;
     if (std::chrono::duration_cast<std::chrono::seconds>(
             now - m_last_session_status_sent).count() < SESSION_STATUS_INTERVAL_SECONDS)
         return;

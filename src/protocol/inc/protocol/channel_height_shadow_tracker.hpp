@@ -224,16 +224,16 @@ public:
      *
      * Keepalive ACKs arrive roughly every N seconds where N is negotiated
      * with the node (typically 30s).  120s = 4 missed keepalives before stale.
-     * SESSION_STATUS_ACK arrives every 30s (after interval reduction from 60s).
+     * SESSION_STATUS_ACK arrives every 5 minutes (health/auth only — not a height source).
      * Shadow considered stale after 120s of silence.
      */
     static constexpr uint32_t SHADOW_STALE_THRESHOLD_SECONDS = 120;
 
     /**
      * @brief Seconds after which SESSION_STATUS_ACK health is considered stale.
-     * Two missed 30s polls = 90s.
+     * Two missed 5-minute polls = 720s.
      */
-    static constexpr uint32_t SESSION_HEALTH_STALE_THRESHOLD_SECONDS = 90;
+    static constexpr uint32_t SESSION_HEALTH_STALE_THRESHOLD_SECONDS = 720;
 
     // ─── Construction ─────────────────────────────────────────────────────
     ChannelHeightShadowTracker() = default;
