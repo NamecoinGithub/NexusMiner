@@ -1733,23 +1733,35 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         !is_block_accepted_compat &&
         !is_block_rejected_compat)
     {
-        // Validate packet data before processing
-        if (!packet.m_data || packet.m_length < 4) {
-            m_logger->warn("Solo::process_messages: BLOCK_HEIGHT packet has invalid data or length < 4");
+        // Validate packet data before processing.
+        // During rollout BLOCK_HEIGHT may legally arrive in:
+        //   * legacy unified-only form: 4 bytes
+        //   * expanded verifier snapshot: 16 bytes (unified, prime, hash, stake)
+        if (!packet.m_data) {
+            m_logger->warn("Solo::process_messages: BLOCK_HEIGHT packet has null payload");
             return;
         }
-        
+        const size_t payload_size = packet.m_data->size();
+        if (payload_size != packet.m_length) {
+            m_logger->warn("Solo::process_messages: BLOCK_HEIGHT packet length mismatch (header={} data={})",
+                           packet.m_length, payload_size);
+            return;
+        }
+
+        const bool is_legacy_payload = (payload_size == 4);
+        const bool has_tracked_channels = (payload_size == 16);
+        if (!is_legacy_payload && !has_tracked_channels) {
+            m_logger->warn("Solo::process_messages: BLOCK_HEIGHT payload size mismatch: expected 4 or 16 bytes, got {}",
+                           payload_size);
+            return;
+        }
+
         const auto height = bytes2uint(*packet.m_data);
-        const bool has_tracked_channels = packet.m_length >= 16;
         uint32_t prime_height = 0;
         uint32_t hash_height = 0;
         uint32_t stake_height = 0;
 
         if (has_tracked_channels) {
-            if (packet.m_data->size() < 16) {
-                m_logger->warn("Solo::process_messages: BLOCK_HEIGHT length indicates 16-byte payload but data buffer is too short");
-                return;
-            }
             prime_height = bytes2uint(*packet.m_data, 4);
             hash_height = bytes2uint(*packet.m_data, 8);
             stake_height = bytes2uint(*packet.m_data, 12);
