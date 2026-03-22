@@ -156,7 +156,10 @@ static void test_height_tracker_updated_via_callback()
     );
 
     auto snap = tracker.GetSnapshot();
-    print_test_result("HeightTracker unified_height == UNIFIED", snap.unified_height == UNIFIED);
+    print_test_result("HeightTracker canonical unified_height remains 0 without BLOCK_DATA",
+        snap.unified_height == 0);
+    print_test_result("HeightTracker push_unified_height == UNIFIED",
+        snap.push_unified_height == UNIFIED);
     print_test_result("HeightTracker channel_height == CHANNEL", snap.channel_height == CHANNEL);
     print_test_result("HeightTracker difficulty_nbits == DIFF",  snap.difficulty_nbits == DIFF);
     print_test_result("HeightTracker source == PUSH",
@@ -244,10 +247,13 @@ static void test_channel_manager_same_data_as_height_tracker()
     auto snap = tracker.GetSnapshot();
     auto [node_u, node_c] = mgr.GetNodeHeights();
 
-    print_test_result("HeightTracker unified_height == UNIFIED", snap.unified_height == UNIFIED);
+    print_test_result("HeightTracker canonical unified_height remains 0 without BLOCK_DATA",
+        snap.unified_height == 0);
+    print_test_result("HeightTracker push_unified_height == UNIFIED",
+        snap.push_unified_height == UNIFIED);
     print_test_result("ClientChannelManager unified_height == UNIFIED", node_u == UNIFIED);
     print_test_result("ClientChannelManager channel_height == CHANNEL", node_c == CHANNEL);
-    print_test_result("Both sources match (unified)",  snap.unified_height == node_u);
+    print_test_result("Push observer matches ClientChannelManager unified",  snap.push_unified_height == node_u);
     print_test_result("Both sources match (channel)",  snap.channel_height == node_c);
 }
 
@@ -395,18 +401,20 @@ static void test_node_block_data_fields_drive_height_tracker()
     HeightTracker tracker;
     HashClientManager mgr;
 
-    // Mirrors Solo::update_height_state(...) for BLOCK_DATA metadata feed.
-    tracker.OnPushNotification(UNIFIED, CHANNEL, DIFF);
+    // Mirrors Solo::update_height_state(..., TEMPLATE) for BLOCK_DATA metadata feed.
+    tracker.OnTemplateMetadata(UNIFIED, CHANNEL, DIFF);
     mgr.UpdateFromGetRound(UNIFIED, CHANNEL);
 
     // Mirrors Solo::OnTemplateReceived(channel_height + 1) for template target.
     tracker.OnTemplateReceived(CHANNEL_HASH, CHANNEL + 1);
 
     auto snap = tracker.GetSnapshot();
+    auto canon = tracker.GetCanonicalSnapshot();
     auto [node_u, node_c] = mgr.GetNodeHeights();
 
     print_test_result("HeightTracker unified_height from BLOCK_DATA metadata", snap.unified_height == UNIFIED);
-    print_test_result("HeightTracker difficulty_nbits from BLOCK_DATA metadata", snap.difficulty_nbits == DIFF);
+    print_test_result("HeightTracker canonical difficulty from BLOCK_DATA metadata",
+        canon.canonical_difficulty_nbits == DIFF);
     print_test_result("HeightTracker channel_target == channel_height + 1", snap.channel_target == CHANNEL + 1);
     print_test_result("template_unified_height captured from metadata unified_height", snap.template_unified_height == UNIFIED);
     print_test_result("ClientChannelManager unified_height matches metadata", node_u == UNIFIED);
@@ -415,7 +423,7 @@ static void test_node_block_data_fields_drive_height_tracker()
 
 // ============================================================================
 // Test 7: Stateless lane BLOCK_DATA metadata also drives HeightTracker identically to legacy lane.
-//         Both lanes call update_height_state() → OnPushNotification() → OnTemplateReceived().
+//         Both lanes call update_height_state() → OnTemplateMetadata() → OnTemplateReceived().
 //         The only difference is the packet parser; the HeightTracker update is identical.
 // ============================================================================
 static void test_stateless_lane_mirrors_legacy_for_height_tracker()
@@ -430,11 +438,11 @@ static void test_stateless_lane_mirrors_legacy_for_height_tracker()
     HeightTracker tracker_stateless;
 
     // Legacy lane sequence
-    tracker_legacy.OnPushNotification(UNIFIED, CHANNEL, DIFF);
+    tracker_legacy.OnTemplateMetadata(UNIFIED, CHANNEL, DIFF);
     tracker_legacy.OnTemplateReceived(CHANNEL_HASH, CHANNEL + 1);
 
     // Stateless lane sequence (identical calls — same update path)
-    tracker_stateless.OnPushNotification(UNIFIED, CHANNEL, DIFF);
+    tracker_stateless.OnTemplateMetadata(UNIFIED, CHANNEL, DIFF);
     tracker_stateless.OnTemplateReceived(CHANNEL_HASH, CHANNEL + 1);
 
     auto snap_l = tracker_legacy.GetSnapshot();

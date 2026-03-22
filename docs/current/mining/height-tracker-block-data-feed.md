@@ -72,7 +72,7 @@ by purpose:
 |--------|-----------|---------|
 | Node BLOCK_DATA metadata prefix | `CanonicalChainState` | All mining decisions (the only canonical update path) |
 | GET_HEIGHT / BLOCK_HEIGHT | `DiagnosticObserverState.get_height_*` + `Snapshot::verified_unified_height()` | Primary unified-height verifier for soft-refresh / drift checks |
-| Push notification (BLOCK_AVAILABLE) | `DiagnosticObserverState.push_*` | Push-driven staleness via `max(canonical, push)` composition |
+| Push notification (BLOCK_AVAILABLE) | `DiagnosticObserverState.push_*` | Push-driven observer state (`push_unified_height`, `channel_height`) without rewriting canonical unified height |
 | GET_ROUND / NEW_ROUND response | `DiagnosticObserverState.round_*` | Colin diagnostic display only |
 | Keepalive ACK | `DiagnosticObserverState.keepalive_*` | Colin telemetry display only |
 
@@ -94,7 +94,7 @@ whether the current template is stale.  It never reads from
 // In validate_current_template():
 auto snap = m_height_tracker.GetSnapshot();
 if (snap.is_template_stale()) { ... }   // channel_height >= channel_target
-if (snap.is_tip_moved())      { ... }   // unified_height > template_unified_height
+if (snap.is_tip_moved())      { ... }   // observer / verifier unified tip > template_unified_height
 ```
 
 `ClientChannelManager` holds a copy of the same data for legacy display/stats

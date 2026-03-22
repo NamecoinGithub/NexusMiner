@@ -59,8 +59,8 @@ constexpr bool is_channel_height(uint32_t raw_height) noexcept {
  * DiagnosticObserverState only.
  *
  * GetSnapshot() backward-compat composition:
+ *   unified_height = canonical
  *   channel_height = max(canonical, push)
- *   unified_height = max(canonical, push)
  *   verified_unified_height() = max(unified_height, fresh GET_HEIGHT)
  * This preserves push-driven staleness detection while keepalive can never
  * regress the heights used for mining decisions.
@@ -222,14 +222,15 @@ public:
      * @brief Immutable snapshot of tracker state (thread-safe to copy)
      *
      * Composed from CanonicalChainState and DiagnosticObserverState:
-     *   unified_height = max(canonical, push)
+     *   unified_height = canonical
      *   channel_height = max(canonical, push)
      * Fork detection fields come from DiagnosticObserverState only.
      */
     struct Snapshot {
         uint64_t session_epoch{0};           ///< Authoritative session epoch captured with this snapshot
-        uint32_t unified_height{0};           ///< Unified blockchain height (max of canonical and push)
+        uint32_t unified_height{0};           ///< Unified blockchain height from canonical BLOCK_DATA only
         uint32_t channel_height{0};           ///< Channel-specific height (max of canonical and push)
+        uint32_t push_unified_height{0};      ///< Raw unified height from latest push notification
         uint32_t push_channel_height{0};      ///< Raw channel height from latest push notification
         uint32_t difficulty_nbits{0};         ///< Compact nBits difficulty
         uint32_t channel_target{0};           ///< Template channel target (0 = unset)
@@ -352,7 +353,7 @@ public:
          */
         bool is_tip_moved() const {
             return (template_unified_height > 0 &&
-                    verified_unified_height() > template_unified_height);
+                    std::max(verified_unified_height(), push_unified_height) > template_unified_height);
         }
 
         /**
@@ -411,11 +412,11 @@ public:
          *        canonical heights.
          *
          * Returns the signed difference (unified_height − canonical_unified_height),
-         * where unified_height is max(canonical, push).
-         * Callers can use this to assess push/round freshness relative to the
-         * canonical block-data path.  A large positive value means push/round
-         * data is ahead (normal during slow BLOCK_DATA); zero means canonical
-         * is caught up.
+         * where unified_height is the canonical BLOCK_DATA view.
+         * With Snapshot::unified_height pinned to canonical BLOCK_DATA, this
+         * reports only canonical-versus-canonical drift and therefore remains
+         * zero for healthy snapshot paths. Use push/verifier fields directly
+         * for observer-versus-canonical comparisons.
          */
         int32_t height_drift_from_canonical() const {
             return static_cast<int32_t>(unified_height) -
@@ -445,11 +446,11 @@ public:
         /**
          * @brief Unified height for verifier-aware comparisons.
          *
-         * Returns raw unified_height (canonical/push composition) unless a fresh
-         * GET_HEIGHT verifier response is available, in which case the higher of
-         * the two is used. This lets recovery / drift logic see the freshest
-         * node-confirmed unified tip without letting GET_HEIGHT rewrite
-         * channel-specific canonical state.
+         * Returns canonical unified_height unless a fresh GET_HEIGHT verifier
+         * response is available, in which case the higher of the two is used.
+         * This lets recovery / drift logic see the freshest node-confirmed
+         * unified tip without letting observer inputs rewrite channel-specific
+         * canonical state.
          */
         uint32_t verified_unified_height() const {
             if (!has_fresh_get_height()) {
@@ -646,7 +647,7 @@ public:
      * @brief Return an immutable snapshot of the current state
      *
      * Backward-compatible composition:
-     *   unified_height = max(canonical, push)
+     *   unified_height = canonical
      *   channel_height = max(canonical, push)
      *   verified_unified_height() = max(unified_height, fresh GET_HEIGHT)
      *

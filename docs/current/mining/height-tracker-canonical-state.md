@@ -105,7 +105,8 @@ The key rule: **canonical wins for mining-critical fields; diagnostic provides t
 
 | `Snapshot` field | Source | Rationale |
 |-----------------|--------|-----------|
-| `unified_height` | `max(canonical, push)` | Raw canonical/push composition used for template capture |
+| `unified_height` | `canonical_unified_height` | Canonical BLOCK_DATA unified height used by the miner |
+| `push_unified_height` | `push_unified_height` | Fast observer-only unified tip from push notifications |
 | `verified_unified_height()` | `max(unified_height, fresh GET_HEIGHT)` | Primary verifier-aware unified tip for recovery/drift decisions |
 | `channel_height` | `max(canonical, push)` | Push-driven staleness + canonical protection |
 | `difficulty_nbits` | canonical if initialized, else push | Template difficulty is authoritative |
@@ -121,9 +122,10 @@ The key rule: **canonical wins for mining-critical fields; diagnostic provides t
 | `last_template_update` | `canonical_received_at` | Post-push guard |
 | `last_height_update` | `max(canonical_received_at, last_push_at)` | Post-push guard |
 
-The `max(canonical, push)` composition for `channel_height` preserves all push-driven
-staleness detection (`is_template_stale()`, `is_tip_moved()`) while ensuring the keepalive
-ACK can never regress the value below what a push or BLOCK_DATA has already established.
+The `max(canonical, push)` composition for `channel_height` preserves push-driven
+channel staleness detection (`is_template_stale()`), while push unified height is
+carried separately for `is_tip_moved()`. Keepalive can never regress the values
+below what a push or BLOCK_DATA has already established.
 
 ---
 

@@ -198,7 +198,7 @@ Use these terms consistently across all documentation:
 | `channel_height` | Last accepted block on the miner's channel | "height" (ambiguous) |
 | `channel_target` | Block height the template is mining toward | "template height" |
 | `[reason: channel_advanced]` | channel_height reached channel_target | "stale" (unqualified) |
-| `[reason: tip_moved]` | unified_height passed template_unified_height | "stale" (unqualified) |
+| `[reason: tip_moved]` | observer / verifier unified tip passed template_unified_height | "stale" (unqualified) |
 
 ---
 
@@ -208,14 +208,15 @@ Use these terms consistently across all documentation:
 
 | Field | Set by | Used for |
 |-------|--------|---------|
-| `unified_height` | Push / GET_ROUND | `is_tip_moved()` comparison |
-| `channel_height` | Push / GET_ROUND | `is_template_stale()` comparison |
-| `difficulty_nbits` | Push / GET_ROUND | Worker difficulty target |
+| `unified_height` | `BLOCK_DATA` | Canonical mined-template unified height |
+| `push_unified_height` | Push notification | Fast unified-tip observer used by `is_tip_moved()` |
+| `channel_height` | Push / `BLOCK_DATA` | `is_template_stale()` comparison |
+| `difficulty_nbits` | Push / `BLOCK_DATA` | Worker difficulty target |
 | `channel_target` | Template received | `is_template_stale()` comparison |
 | `template_unified_height` | Template received | `is_tip_moved()` comparison |
 
 `is_template_stale()` → `channel_height >= channel_target` (both non-zero)  
-`is_tip_moved()`      → `unified_height > template_unified_height` (both non-zero)
+`is_tip_moved()`      → `max(push_unified_height, verified_unified_height()) > template_unified_height` (both non-zero)
 
 ---
 

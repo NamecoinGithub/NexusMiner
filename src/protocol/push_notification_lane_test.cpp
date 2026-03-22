@@ -758,12 +758,13 @@ int main()
         protocol::HeightTracker tracker;
         protocol::MiningTemplateInterface tmpl_interface(2, 0);
         tmpl_interface.set_height_tracker(&tracker);
-        tracker.OnPushNotification(8000, 100, 0x1d00ffff);
+        tracker.OnTemplateMetadata(8000, 100, 0x1d00ffff);
 
         auto template_data = create_mock_template(8001, 0x1d00ffff, 2);
         auto res = tmpl_interface.read_template(template_data, "test_node");
         print_test_result("Tip-move setup: initial template valid", res.is_valid);
         tmpl_interface.set_channel_height(101);
+        tracker.OnTemplateReceived(mining::CHANNEL_HASH, 101);
 
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
@@ -882,7 +883,10 @@ int main()
 
         print_test_result("Disconnected-session push triggers soft refresh handler", soft_refresh_called);
         print_test_result("Disconnected-session push does not trigger hard recovery handler", !recovery_called);
-        print_test_result("Disconnected-session push updates unified height", push_snapshot.unified_height == 9200);
+        print_test_result("Disconnected-session push keeps canonical unified height unset without BLOCK_DATA",
+            push_snapshot.unified_height == 0);
+        print_test_result("Disconnected-session push records observer unified height",
+            push_snapshot.push_unified_height == 9200);
         print_test_result("Disconnected-session push updates channel height", push_snapshot.channel_height == 100);
         print_test_result("Disconnected-session push still discards obsolete template",
             !solo.get_template_interface()->has_valid_template());

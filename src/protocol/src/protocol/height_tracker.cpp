@@ -18,7 +18,8 @@ const char* HeightTracker::source_name(UpdateSource src) {
 
 // ── OnPushNotification: updates DiagnosticObserverState push fields ONLY ──────
 // Does NOT touch canonical state. Push-derived channel_height is reflected in
-// GetSnapshot() via the max(canonical, push) composition in build_snapshot_locked().
+// GetSnapshot() via the max(canonical, push) channel-height composition in
+// build_snapshot_locked().
 void HeightTracker::OnPushNotification(uint32_t unified_height,
                                         uint32_t channel_height,
                                         uint32_t nbits)
@@ -212,11 +213,12 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
 
     s.session_epoch = m_session_epoch;
 
-    // Compose unified/channel heights: max(canonical, push)
-    // GET_ROUND and keepalive heights are excluded — they are diagnostic-only
-    // and must never regress mining decisions.
-    s.unified_height = std::max(m_canonical.canonical_unified_height,
-                                m_diagnostic.push_unified_height);
+    // unified_height is canonical BLOCK_DATA truth only.
+    // Push, GET_HEIGHT, GET_ROUND, and keepalive remain separate observer /
+    // verifier signals and must not overwrite the miner's canonical template
+    // height view.
+    s.unified_height = m_canonical.canonical_unified_height;
+    s.push_unified_height = m_diagnostic.push_unified_height;
     s.channel_height = std::max(m_canonical.canonical_channel_height,
                                 m_diagnostic.push_channel_height);
     s.push_channel_height = m_diagnostic.push_channel_height;

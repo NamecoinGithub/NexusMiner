@@ -54,19 +54,23 @@ source.
 
 | Field / helper | Meaning |
 |----------------|---------|
-| `unified_height` | Raw `max(canonical, push)` composition used for template capture semantics |
+| `unified_height` | Canonical `BLOCK_DATA` unified height only |
+| `push_unified_height` | Latest push-observer unified tip (non-canonical) |
 | `verified_unified_height()` | `max(unified_height, fresh GET_HEIGHT)` — used when recovery wants the freshest node-confirmed unified tip |
 
-Why keep both?
+Why keep them separate?
 
-- `unified_height` must stay tied to canonical/push state so a stale template
-  cannot be made to look fresh merely because a newer `GET_HEIGHT` arrived.
+- `unified_height` must stay tied to canonical `BLOCK_DATA`, because that is the
+  miner's current template truth.
+- `push_unified_height` preserves the fast push observer signal for tip-moved
+  checks and diagnostics.
 - `verified_unified_height()` lets recovery/drift logic react to the node's
   latest confirmed unified tip even before a replacement `BLOCK_DATA` arrives.
 
-`Snapshot::is_tip_moved()` now uses `verified_unified_height()`, so a fresh
-`GET_HEIGHT` can trigger the soft-refresh path without inventing channel
-staleness.
+`Snapshot::is_tip_moved()` uses the higher of the fresh GET_HEIGHT verifier and
+the latest push-observer unified height, compared against the template's
+canonical unified anchor. That allows fast refresh on push/GET_HEIGHT without
+changing what `Snapshot::unified_height` means.
 
 ---
 
