@@ -214,10 +214,21 @@ public:
                                             bool auto_feed = true);
     
     /**
-     * @brief Check if a valid template is available for mining
-     * @return true if template is validated and ready
+     * @brief Check if a validated template is currently loaded
+     * @return true if template state is VALIDATED or ACTIVE
      */
     bool has_valid_template() const;
+
+    /**
+     * @brief Check if a template is finalized and ready to be fed to miners
+     *
+     * A template may validate successfully before its channel-height metadata
+     * is finalized.  Recovery and worker-feed code must only treat the
+     * template as usable once that finalization step has completed.
+     *
+     * @return true if the template is validated/active and fully finalized
+     */
+    bool has_ready_template() const;
     
     /**
      * @brief Get the current template (if valid)
@@ -252,8 +263,9 @@ public:
     /**
      * @brief Feed the current template to registered handlers
      * 
-     * Called automatically after successful template validation, but can also
-     * be called manually to re-feed the current template.
+     * Called automatically after successful template validation when the
+     * template is already finalized, but can also be called manually after
+     * set_channel_height() completes finalization.
      * 
      * @return true if template was fed to handlers
      */
@@ -549,6 +561,7 @@ private:
     
     // Thread-unsafe helper methods (must be called with m_template_mutex locked)
     bool has_valid_template_unsafe() const;
+    bool has_ready_template_unsafe() const;
     uint64_t get_template_age_unsafe() const;
     void mark_template_stale_unsafe(const std::string& reason);
     void discard_template_unsafe(const std::string& reason);

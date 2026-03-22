@@ -1015,12 +1015,16 @@ int main()
         auto res = tmpl_interface.read_template(recovery_data, "test_node", false);
 
         print_test_result("Recovery template still validates when auto-feed is deferred", res.is_valid);
+        print_test_result("Deferred recovery template is not mining-ready before finalization",
+            !tmpl_interface.has_ready_template());
         print_test_result("Deferred recovery install does not feed workers before finalization",
             feed_count == 0);
 
         tmpl_interface.set_channel_height(4165003);
         const bool fed = tmpl_interface.feed_current_template();
 
+        print_test_result("Recovery template becomes mining-ready after finalization",
+            tmpl_interface.has_ready_template());
         print_test_result("Manual feed succeeds after channel metadata finalization", fed);
         print_test_result("Workers are fed exactly once after finalization", feed_count == 1);
         print_test_result("Worker feed observes finalized channel height",

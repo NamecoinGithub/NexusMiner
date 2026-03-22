@@ -332,11 +332,23 @@ bool MiningTemplateInterface::has_valid_template() const
     return has_valid_template_unsafe();
 }
 
+bool MiningTemplateInterface::has_ready_template() const
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    return has_ready_template_unsafe();
+}
+
 bool MiningTemplateInterface::has_valid_template_unsafe() const
 {
     // ASSUMES: m_template_mutex is already locked by caller
     return m_current_template.state == TemplateState::VALIDATED ||
            m_current_template.state == TemplateState::ACTIVE;
+}
+
+bool MiningTemplateInterface::has_ready_template_unsafe() const
+{
+    // ASSUMES: m_template_mutex is already locked by caller
+    return has_valid_template_unsafe() && m_current_template.nChannelHeight != 0;
 }
 
 uint32_t MiningTemplateInterface::get_node_channel_height() const
@@ -379,6 +391,12 @@ bool MiningTemplateInterface::feed_current_template()
 
     if (!has_valid_template_unsafe()) {
         m_logger->warn("[TemplateInterface] FEED: No valid template to feed");
+        return false;
+    }
+
+    if (!has_ready_template_unsafe()) {
+        m_logger->info("[TemplateInterface] FEED: Template validated but not finalized yet "
+                       "(channel height pending) — deferring worker feed");
         return false;
     }
 
