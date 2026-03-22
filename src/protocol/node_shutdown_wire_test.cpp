@@ -174,6 +174,38 @@ void test_logging_names() {
 }
 
 // ============================================================================
+// Test 8b: Logging name resolution for GET_HEIGHT (0xD082) and BLOCK_HEIGHT (0xD002)
+// These opcodes must not appear as STATELESS_UNKNOWN — they are the primary
+// full-height verifier pair (request / response).
+// ============================================================================
+void test_get_height_block_height_logging_names() {
+    std::cout << "\nTest 8b: Logging name resolution for GET_HEIGHT/BLOCK_HEIGHT\n";
+
+    // GET_HEIGHT request: legacy opcode 130 (0x82) → stateless mirror 0xD082
+    const char* gh_stateless = nexusminer::get_llp_header_name(static_cast<uint16_t>(0xD082));
+    std::string gh_name(gh_stateless);
+    print_test_result("Stateless 0xD082 → contains \"GET_HEIGHT\" (not STATELESS_UNKNOWN)",
+        gh_name.find("GET_HEIGHT") != std::string::npos &&
+        gh_name.find("UNKNOWN")    == std::string::npos);
+
+    // BLOCK_HEIGHT response: legacy opcode 2 (0x02) → stateless mirror 0xD002
+    const char* bh_stateless = nexusminer::get_llp_header_name(static_cast<uint16_t>(0xD002));
+    std::string bh_name(bh_stateless);
+    print_test_result("Stateless 0xD002 → contains \"BLOCK_HEIGHT\" (not STATELESS_UNKNOWN)",
+        bh_name.find("BLOCK_HEIGHT") != std::string::npos &&
+        bh_name.find("UNKNOWN")      == std::string::npos);
+
+    // Legacy names still work
+    const char* gh_legacy = nexusminer::get_llp_header_name(static_cast<uint8_t>(130));
+    print_test_result("Legacy 0x82 (130) → \"GET_HEIGHT\"",
+        std::strcmp(gh_legacy, "GET_HEIGHT") == 0);
+
+    const char* bh_legacy = nexusminer::get_llp_header_name(static_cast<uint8_t>(2));
+    print_test_result("Legacy 0x02 (2) → \"BLOCK_HEIGHT\"",
+        std::strcmp(bh_legacy, "BLOCK_HEIGHT") == 0);
+}
+
+// ============================================================================
 // Test 9: ShutdownReason enum values match NodeShutdownFrame constants
 // ============================================================================
 void test_shutdown_reason_enum() {
@@ -201,6 +233,7 @@ int main() {
     test_backoff_constant();
     test_stateless_range();
     test_logging_names();
+    test_get_height_block_height_logging_names();
     test_shutdown_reason_enum();
 
     std::cout << "\n═══════════════════════════════════════════════\n";

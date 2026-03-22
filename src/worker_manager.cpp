@@ -401,11 +401,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     if (m_recovery_pending) {
                         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                             std::chrono::steady_clock::now() - m_recovery_started_at).count();
-                        m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
-                        m_logger->warn("[Worker_manager] ✅ RECOVERY COMPLETE — epoch {} ({}s elapsed)", m_recovery_epoch, elapsed);
-                        m_logger->warn("[Worker_manager]    Fresh template distributed to workers successfully");
-                        m_logger->warn("[Worker_manager]    Workers resumed mining on valid template");
-                        m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
+                        m_logger->info("[Worker_manager] Recovery complete — epoch {} ({}s elapsed): "
+                                       "fresh template distributed, workers resumed mining",
+                                       m_recovery_epoch, elapsed);
                     }
                     clear_recovery_state();
                 } else {
@@ -1329,6 +1327,14 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                         if (!proto) return {};
                         return { proto->last_session_status_ack(),
                                  proto->last_session_status_ack_time() };
+                    });
+
+                // Wire up ChannelHeightShadowTracker (GET_HEIGHT primary + keepalive secondary freshness)
+                self->m_colin_agent->set_shadow_source(
+                    [weak_proto]() -> nexusminer::protocol::ChannelHeightShadowTracker::Snapshot {
+                        auto proto = weak_proto.lock();
+                        if (!proto) return {};
+                        return proto->get_channel_shadow_snapshot();
                     });
 
                 // Wire up HeightTracker

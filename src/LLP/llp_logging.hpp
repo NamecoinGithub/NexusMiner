@@ -172,10 +172,12 @@ namespace nexusminer
 			// Map common stateless opcodes
 			switch(legacy_opcode)
 			{
-				case LLP::BLOCK_DATA: return "STATELESS_BLOCK_DATA (0xD000)";
+				case LLP::BLOCK_DATA:   return "STATELESS_BLOCK_DATA (0xD000)";
 				case LLP::SUBMIT_BLOCK: return "STATELESS_SUBMIT_BLOCK (0xD001)";
-				case LLP::SET_CHANNEL: return "STATELESS_SET_CHANNEL (0xD003)";
-				case LLP::GET_BLOCK: return "STATELESS_GET_BLOCK (0xD081)";
+				case LLP::BLOCK_HEIGHT: return "STATELESS_BLOCK_HEIGHT (0xD002)";
+				case LLP::SET_CHANNEL:  return "STATELESS_SET_CHANNEL (0xD003)";
+				case LLP::GET_BLOCK:    return "STATELESS_GET_BLOCK (0xD081)";
+				case LLP::GET_HEIGHT:   return "STATELESS_GET_HEIGHT (0xD082)";
 				case LLP::BLOCK_ACCEPTED: return "STATELESS_BLOCK_ACCEPTED (0xD0C8)";
 				case LLP::BLOCK_REJECTED: return "STATELESS_BLOCK_REJECTED (0xD0C9)";
 				case LLP::NEW_ROUND: return "STATELESS_NEW_ROUND (0xD0CC)";

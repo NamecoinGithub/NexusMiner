@@ -16,6 +16,7 @@
 #include "stats/stats_collector.hpp"
 #include "LLP/include/colin_ping_protocol.h"
 #include "protocol/height_tracker.hpp"
+#include "protocol/channel_height_shadow_tracker.hpp"
 
 #include <asio/steady_timer.hpp>
 #include <spdlog/spdlog.h>
@@ -66,6 +67,14 @@ public:
     using StatusSource = std::function<std::pair<::LLP::SessionStatusAckFrame,
                                                  std::chrono::steady_clock::time_point>()>;
     void set_status_source(StatusSource fn) { m_status_source = std::move(fn); }
+
+    // ── ChannelHeightShadowTracker Source ─────────────────────────────────
+    // Optional callback returning a snapshot of the ChannelHeightShadowTracker.
+    // Set by Worker_manager after the Solo protocol is established so that
+    // emit_report() can display GET_HEIGHT primary shadow freshness and the
+    // keepalive secondary shadow state alongside the diagnostic hierarchy.
+    using ShadowSource = std::function<nexusminer::protocol::ChannelHeightShadowTracker::Snapshot()>;
+    void set_shadow_source(ShadowSource fn) { m_shadow_source = std::move(fn); }
 
     // ── HeightTracker ─────────────────────────────────────────────────────
     // Optional pointer to the HeightTracker owned by Solo.  Set by
@@ -209,6 +218,7 @@ private:
 
     PingSource m_ping_source;  // Optional: supplies last ReceivedPingFrame for the report
     StatusSource m_status_source;  // Optional: supplies last SessionStatusAckFrame for the report
+    ShadowSource m_shadow_source;  // Optional: supplies ChannelHeightShadowTracker::Snapshot for GET_HEIGHT/shadow freshness
     const nexusminer::protocol::HeightTracker* m_height_tracker{nullptr};  // Optional: HeightTracker owned by Solo
     TemplateSource      m_template_source;       // Optional: supplies TemplateSnapshot from MiningTemplateInterface
     PongTelemetrySource m_pong_telemetry_source; // Optional: supplies PongTelemetrySnapshot from ColinPingHandler
