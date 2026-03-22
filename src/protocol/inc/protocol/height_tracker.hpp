@@ -352,8 +352,10 @@ public:
          * Both values must be non-zero to avoid false positives at startup.
          */
         bool is_tip_moved() const {
+            const uint32_t effective_unified_height =
+                std::max(verified_unified_height(), push_unified_height);
             return (template_unified_height > 0 &&
-                    std::max(verified_unified_height(), push_unified_height) > template_unified_height);
+                    effective_unified_height > template_unified_height);
         }
 
         /**
