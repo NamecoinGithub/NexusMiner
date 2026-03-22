@@ -9,6 +9,7 @@
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/height_tracker.hpp"
+#include "protocol/channel_height_shadow_tracker.hpp"
 #include "protocol/session_ingress_gate.hpp"
 #include "protocol/session_recovery_policy.hpp"
 #include "protocol/submit_context.hpp"
@@ -177,6 +178,9 @@ public:
 
     // HeightTracker reference (for direct read access by ColinAgent)
     const HeightTracker& get_height_tracker() const { return m_height_tracker; }
+
+    // Full-height shadow tracker snapshot (canonical vs shadow cross-check, all channels)
+    ChannelHeightShadowTracker::Snapshot get_channel_shadow_snapshot() const { return m_channel_shadow_tracker.GetSnapshot(); }
 
     // Helper to access SessionManager through NodeSessionContext
     SessionManager* get_session_manager() const {
@@ -505,6 +509,9 @@ private:
     
     // Centralized height tracker (single source of truth for heights)
     HeightTracker m_height_tracker;
+
+    // Full-height shadow tracker (canonical vs shadow cross-check, all channels)
+    ChannelHeightShadowTracker m_channel_shadow_tracker;
     
     // Connection for multi-packet authentication flow
     std::shared_ptr<network::Connection> m_connection;

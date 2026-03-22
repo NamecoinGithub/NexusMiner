@@ -184,6 +184,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     // which is the explicit "no active session ownership" baseline.
     m_template_interface->set_session_epoch(m_session_epoch);
     m_height_tracker.set_session_epoch(m_session_epoch);
+    m_channel_shadow_tracker.Reset();
     m_logger->info("[Solo] HeightTracker wired into MiningTemplateInterface");
     
     // Setup template feed handler - called automatically when templates are validated
@@ -401,6 +402,7 @@ void Solo::refresh_cached_session_state(const char* log_scope)
         m_session_epoch = session.session_epoch;
         m_has_seen_session_epoch = true;
         m_height_tracker.set_session_epoch(m_session_epoch);
+        m_channel_shadow_tracker.Reset();
     }
 
     if (m_authenticated != session.authenticated) {
@@ -516,6 +518,25 @@ void Solo::handle_normalized_keepalive_ack(const char* source,
                                          ack.stake_height,
                                          ack.hash_tip_lo32,
                                          ack.fork_score);
+
+    // Feed full-height shadow tracker — keepalive is the primary shadow source
+    m_channel_shadow_tracker.IngestKeepaliveAck(ack.unified_height,
+                                                 ack.prime_height,
+                                                 ack.hash_height,
+                                                 ack.stake_height,
+                                                 ack.fork_score);
+
+    // Cross-check canonical vs shadow unified height and log if they disagree
+    {
+        auto shadow_snap = m_channel_shadow_tracker.GetSnapshot();
+        if (shadow_snap.cross_check.is_disagreement(2)) {
+            m_logger->warn("[Solo Shadow] Canonical/shadow unified-height disagreement: "
+                           "canonical={} shadow={} delta={} ({})",
+                           shadow_snap.canonical.unified_height,
+                           ack.unified_height, shadow_snap.cross_check.unified_delta,
+                           shadow_snap.cross_check.describe());
+        }
+    }
 
     // Fork detection: compare node's chain tip against the miner's own locally
     // stored prevHash lo32 (NOT the echoed value from the ACK, which could be
@@ -3645,6 +3666,16 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
             record_session_event(SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED,
                                  "session status ack accepted");
 
+            // Feed shadow tracker with health/auth state.
+            // SESSION_STATUS_ACK carries NO height data (16-byte wire format).
+            // This call intentionally passes only health flags and uptime — no heights.
+            m_channel_shadow_tracker.IngestSessionStatusAck(
+                ack.IsAuthenticated(),
+                ack.IsPrimaryAlive(),
+                ack.IsSecondaryAlive(),
+                ack.IsSimLinkActive(),
+                ack.uptime_seconds);
+
             m_last_session_status_ack      = ack;
             m_last_session_status_ack_time = std::chrono::steady_clock::now();
 
@@ -4491,6 +4522,8 @@ void Solo::update_height_state(uint32_t unified_height, uint32_t channel_height,
     // Update HeightTracker (single source of truth for staleness decisions)
     if (source == HeightTracker::UpdateSource::PUSH) {
         m_height_tracker.OnPushNotification(unified_height, channel_height, difficulty_nbits);
+        // Feed shadow tracker push trend (fast hint — not canonical, not shadow authority)
+        m_channel_shadow_tracker.IngestPushNotification(unified_height, channel_height);
     } else if (source == HeightTracker::UpdateSource::GET_ROUND) {
         m_height_tracker.OnGetRound(unified_height, channel_height, difficulty_nbits);
     } else if (source == HeightTracker::UpdateSource::TEMPLATE) {
@@ -4503,6 +4536,8 @@ void Solo::update_height_state(uint32_t unified_height, uint32_t channel_height,
         // succeeds) to set channel_target — see the STATELESS_GET_BLOCK handler in
         // process_messages() and the legacy BLOCK_DATA handler.
         m_height_tracker.OnTemplateMetadata(unified_height, channel_height, difficulty_nbits);
+        // Feed shadow tracker canonical update — BLOCK_DATA is the canonical mining truth
+        m_channel_shadow_tracker.IngestBlockData(unified_height, channel_height);
     } else {
         m_logger->warn("[Solo] update_height_state: unexpected source {}, defaulting to GET_ROUND",
                        static_cast<int>(source));
