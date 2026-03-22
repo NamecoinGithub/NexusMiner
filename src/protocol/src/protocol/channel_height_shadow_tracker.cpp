@@ -96,6 +96,9 @@ void ChannelHeightShadowTracker::OnSessionEpochChanged()
     m_keepalive      = {};
     m_session_status = {};
     m_push           = {};
+    // Reset cross-check cooldown so the first shadow update in the new epoch
+    // can fire immediately if divergence warrants it.
+    m_cross_check_last_fired_at = {};
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -223,6 +226,59 @@ bool ChannelHeightShadowTracker::IsSessionStatusStale(std::chrono::seconds max_a
 {
     std::lock_guard<std::mutex> lk(m_mutex);
     return !m_session_status.is_fresh(max_age);
+}
+
+ChannelHeightShadowTracker::CrossCheckResult
+ChannelHeightShadowTracker::CheckUnifiedHeightDivergence(uint32_t divergence_threshold)
+{
+    std::lock_guard<std::mutex> lk(m_mutex);
+
+    CrossCheckResult result;
+    result.canonical_unified = m_canonical.unified_height;
+
+    // No cross-check without an established canonical baseline.
+    if (m_canonical.unified_height == 0)
+        return result;
+
+    // Derive the best shadow unified height (SESSION_STATUS primary, then KEEPALIVE,
+    // then PUSH — same precedence as GetFullHeightEstimate unified, excluding canonical
+    // since we are measuring the gap between shadow and canonical).
+    uint32_t shadow_unified = 0;
+    HeightSource shadow_src = HeightSource::NONE;
+
+    auto consider_shadow = [&](uint32_t h, HeightSource src) {
+        if (h > shadow_unified) {
+            shadow_unified = h;
+            shadow_src     = src;
+        }
+    };
+    consider_shadow(m_session_status.unified_height, HeightSource::SESSION_STATUS);
+    consider_shadow(m_keepalive.unified_height,       HeightSource::KEEPALIVE_ACK);
+    consider_shadow(m_push.unified_height,            HeightSource::PUSH);
+
+    result.shadow_unified = shadow_unified;
+    result.shadow_source  = shadow_src;
+    result.divergence     = static_cast<int64_t>(shadow_unified)
+                          - static_cast<int64_t>(m_canonical.unified_height);
+
+    // If shadow does not exceed the threshold, no action is warranted.
+    if (result.divergence <= static_cast<int64_t>(divergence_threshold))
+        return result;
+
+    // Rate-limit: at most one recommendation per CROSS_CHECK_COOLDOWN_SECONDS.
+    const auto now = std::chrono::steady_clock::now();
+    const auto cooldown = std::chrono::seconds(CROSS_CHECK_COOLDOWN_SECONDS);
+    if (m_cross_check_last_fired_at != std::chrono::steady_clock::time_point{} &&
+        (now - m_cross_check_last_fired_at) < cooldown)
+    {
+        result.rate_limited = true;
+        return result;
+    }
+
+    // Threshold exceeded and not rate-limited — recommend GET_BLOCK.
+    m_cross_check_last_fired_at = now;
+    result.should_request_block = true;
+    return result;
 }
 
 std::string ChannelHeightShadowTracker::FullHeightEstimate::freshness_summary() const

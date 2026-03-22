@@ -538,6 +538,169 @@ static void test_session_status_with_heights_takes_full_precedence()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Cross-check tests (CheckUnifiedHeightDivergence)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Test 24: No canonical → no recommendation
+static void test_cross_check_no_canonical()
+{
+    ChannelHeightShadowTracker t;
+    t.IngestKeepaliveAck(1050, 505, 600, 200);  // shadow only, no canonical
+
+    auto cc = t.CheckUnifiedHeightDivergence();
+    print_test_result("cross-check: should_request_block=false when no canonical",
+                      !cc.should_request_block);
+    print_test_result("cross-check: canonical_unified=0 when no canonical",
+                      cc.canonical_unified == 0);
+}
+
+// Test 25: Divergence within threshold (≤2) → no recommendation
+static void test_cross_check_within_threshold()
+{
+    ChannelHeightShadowTracker t;
+    t.UpdateCanonical(1000, 500, 1);
+
+    // shadow exactly 2 ahead — at threshold, NOT above
+    t.IngestKeepaliveAck(1002, 505, 600, 200);
+    auto cc = t.CheckUnifiedHeightDivergence(2);
+    print_test_result("cross-check: should_request_block=false when divergence==2 (at threshold)",
+                      !cc.should_request_block);
+    print_test_result("cross-check: divergence reported correctly",
+                      cc.divergence == 2);
+
+    // shadow exactly equal — no action
+    ChannelHeightShadowTracker t2;
+    t2.UpdateCanonical(1000, 500, 1);
+    t2.IngestKeepaliveAck(1000, 505, 600, 200);
+    auto cc2 = t2.CheckUnifiedHeightDivergence(2);
+    print_test_result("cross-check: should_request_block=false when divergence==0",
+                      !cc2.should_request_block);
+
+    // shadow behind canonical — no action
+    ChannelHeightShadowTracker t3;
+    t3.UpdateCanonical(1010, 500, 1);
+    t3.IngestKeepaliveAck(1000, 505, 600, 200);
+    auto cc3 = t3.CheckUnifiedHeightDivergence(2);
+    print_test_result("cross-check: should_request_block=false when shadow behind canonical",
+                      !cc3.should_request_block);
+    print_test_result("cross-check: negative divergence reported correctly",
+                      cc3.divergence == -10);
+}
+
+// Test 26: Divergence exceeds threshold (>2) → should_request_block == true
+static void test_cross_check_exceeds_threshold()
+{
+    ChannelHeightShadowTracker t;
+    t.UpdateCanonical(1000, 500, 1);
+    t.IngestKeepaliveAck(1003, 505, 600, 200);  // 3 ahead — exceeds threshold of 2
+
+    auto cc = t.CheckUnifiedHeightDivergence(2);
+    print_test_result("cross-check: should_request_block=true when divergence==3 > threshold 2",
+                      cc.should_request_block);
+    print_test_result("cross-check: canonical_unified correct",
+                      cc.canonical_unified == 1000);
+    print_test_result("cross-check: shadow_unified correct",
+                      cc.shadow_unified == 1003);
+    print_test_result("cross-check: divergence == 3",
+                      cc.divergence == 3);
+    print_test_result("cross-check: shadow_source == KEEPALIVE_ACK",
+                      cc.shadow_source == ChannelHeightShadowTracker::HeightSource::KEEPALIVE_ACK);
+    print_test_result("cross-check: not rate_limited on first fire",
+                      !cc.rate_limited);
+}
+
+// Test 27: SESSION_STATUS shadow beats keepalive for cross-check source
+// This tests the extended-ACK code path: IngestSessionStatusAck() accepts
+// optional height parameters (defaulting to 0 for the current 16-byte wire
+// format). When non-zero heights are supplied (future extended ACK), they
+// become the primary shadow source and the cross-check uses them.
+static void test_cross_check_session_status_source()
+{
+    ChannelHeightShadowTracker t;
+    t.UpdateCanonical(1000, 500, 1);
+    t.IngestKeepaliveAck(1002, 505, 600, 200);      // only 2 ahead
+    t.IngestSessionStatusAck(true, 3600, /*unified=*/1004, 510, 605, 210);  // 4 ahead
+
+    auto cc = t.CheckUnifiedHeightDivergence(2);
+    print_test_result("cross-check: fires when SESSION_STATUS provides highest shadow unified",
+                      cc.should_request_block);
+    print_test_result("cross-check: shadow_unified == 1004 (from SESSION_STATUS)",
+                      cc.shadow_unified == 1004);
+    print_test_result("cross-check: shadow_source == SESSION_STATUS",
+                      cc.shadow_source == ChannelHeightShadowTracker::HeightSource::SESSION_STATUS);
+}
+
+// Test 28: Rate limiting — second immediate call is suppressed
+static void test_cross_check_rate_limited()
+{
+    ChannelHeightShadowTracker t;
+    t.UpdateCanonical(1000, 500, 1);
+    t.IngestKeepaliveAck(1005, 505, 600, 200);  // 5 ahead — fires
+
+    auto cc1 = t.CheckUnifiedHeightDivergence(2);
+    print_test_result("cross-check: first call fires",
+                      cc1.should_request_block);
+
+    // Immediate second call: same conditions, but rate-limited
+    auto cc2 = t.CheckUnifiedHeightDivergence(2);
+    print_test_result("cross-check: second immediate call is rate-limited",
+                      !cc2.should_request_block);
+    print_test_result("cross-check: rate_limited flag set on suppressed call",
+                      cc2.rate_limited);
+}
+
+// Test 29: Session epoch change resets the cross-check cooldown
+static void test_cross_check_epoch_change_resets_cooldown()
+{
+    ChannelHeightShadowTracker t;
+    t.UpdateCanonical(1000, 500, 1);
+    t.IngestKeepaliveAck(1005, 505, 600, 200);
+
+    // First call fires, setting the cooldown
+    auto cc1 = t.CheckUnifiedHeightDivergence(2);
+    print_test_result("cross-check epoch-reset: first call fires",
+                      cc1.should_request_block);
+
+    // Epoch change should reset cooldown
+    t.OnSessionEpochChanged();
+
+    // Re-ingest heights (epoch cleared shadow)
+    t.IngestKeepaliveAck(1005, 505, 600, 200);
+
+    // Should fire again immediately because cooldown was reset
+    auto cc2 = t.CheckUnifiedHeightDivergence(2);
+    print_test_result("cross-check epoch-reset: fires again after OnSessionEpochChanged",
+                      cc2.should_request_block);
+    print_test_result("cross-check epoch-reset: not rate_limited after epoch change",
+                      !cc2.rate_limited);
+}
+
+// Test 30: Push observation as shadow source for cross-check
+static void test_cross_check_push_source()
+{
+    ChannelHeightShadowTracker t;
+    t.UpdateCanonical(1000, 500, 1);
+    t.IngestPush(1004, 505, 1);  // push unified 4 ahead
+
+    auto cc = t.CheckUnifiedHeightDivergence(2);
+    print_test_result("cross-check: fires when PUSH provides highest shadow unified",
+                      cc.should_request_block);
+    print_test_result("cross-check: shadow_source == PUSH",
+                      cc.shadow_source == ChannelHeightShadowTracker::HeightSource::PUSH);
+    print_test_result("cross-check: divergence == 4",
+                      cc.divergence == 4);
+}
+
+// Test 31: CROSS_CHECK_COOLDOWN_SECONDS constant is accessible
+static void test_cross_check_constant()
+{
+    print_test_result("CROSS_CHECK_COOLDOWN_SECONDS >= 30",
+                      ChannelHeightShadowTracker::CROSS_CHECK_COOLDOWN_SECONDS >= 30u);
+    print_test_result("CROSS_CHECK_COOLDOWN_SECONDS <= 300",
+                      ChannelHeightShadowTracker::CROSS_CHECK_COOLDOWN_SECONDS <= 300u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -571,6 +734,16 @@ int main()
     test_session_status_has_heights();
     test_session_status_health_only_fallback_to_keepalive();
     test_session_status_with_heights_takes_full_precedence();
+
+    // Cross-check tests
+    test_cross_check_no_canonical();
+    test_cross_check_within_threshold();
+    test_cross_check_exceeds_threshold();
+    test_cross_check_session_status_source();
+    test_cross_check_rate_limited();
+    test_cross_check_epoch_change_resets_cooldown();
+    test_cross_check_push_source();
+    test_cross_check_constant();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

@@ -232,6 +232,35 @@ public:
     };
 
     // ─────────────────────────────────────────────────────────────────────
+    // Cross-check: shadow-vs-canonical divergence
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * @brief Result of a unified-height divergence cross-check.
+     *
+     * Returned by CheckUnifiedHeightDivergence().  When should_request_block
+     * is true the caller SHOULD proactively send a GET_BLOCK to re-sync the
+     * mining template, without entering Degraded Mode.
+     */
+    struct CrossCheckResult
+    {
+        /// true  → caller should send a proactive GET_BLOCK to catch up.
+        /// false → divergence is within the acceptable burst buffer (≤ threshold)
+        ///         or no canonical observation exists yet, or rate-limited.
+        bool should_request_block{false};
+
+        uint32_t shadow_unified{0};    ///< best shadow unified height used for the check
+        uint32_t canonical_unified{0}; ///< canonical (BLOCK_DATA) unified height at check time
+        int64_t  divergence{0};        ///< shadow_unified − canonical_unified (may be negative)
+
+        /// Source family that supplied shadow_unified.
+        HeightSource shadow_source{HeightSource::NONE};
+
+        /// When true the result was suppressed by the per-tracker rate limiter.
+        bool rate_limited{false};
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
     // Construction
     // ─────────────────────────────────────────────────────────────────────
 
@@ -375,6 +404,42 @@ public:
      */
     std::string DiagnosticSummary() const;
 
+    /**
+     * @brief Evaluate whether shadow unified height has diverged far enough above
+     *        canonical unified height to warrant a proactive GET_BLOCK call.
+     *
+     * Design intent
+     * ─────────────
+     * BLOCK_DATA (canonical) is the only packet that triggers GET_BLOCK normally.
+     * However, when shadow sources (SESSION_STATUS_ACK / KEEPALIVE) report a unified
+     * height that is significantly higher than the most-recent BLOCK_DATA canonical
+     * height, the miner may be mining on a stale template.  This cross-check fires
+     * a soft proactive GET_BLOCK when that gap exceeds @p divergence_threshold.
+     *
+     * Burst-block buffer
+     * ──────────────────
+     * A 1-block difference is normal on multi-channel nodes (burst blocks arrive on
+     * non-mined channels).  The default threshold of 2 therefore ignores a difference
+     * of ≤ 2 (i.e. only fires when shadow_unified > canonical_unified + 2), giving
+     * the canonical path a natural 1-block burst buffer before this system intervenes.
+     *
+     * Rate limiting
+     * ─────────────
+     * The tracker internally rate-limits the cross-check to at most one
+     * GET_BLOCK recommendation per CROSS_CHECK_COOLDOWN_SECONDS.  This prevents
+     * repeated GET_BLOCKs when canonical is persistently behind (e.g. during node
+     * sync).  When the result is rate-limited, CrossCheckResult::rate_limited is
+     * set and should_request_block remains false.
+     *
+     * @param divergence_threshold  Minimum gap (exclusive) above which the check
+     *                              fires.  Default 2 gives the 1-block burst buffer.
+     * @returns CrossCheckResult describing the outcome.
+     */
+    CrossCheckResult CheckUnifiedHeightDivergence(uint32_t divergence_threshold = 2);
+
+    /// Cooldown between successive cross-check-triggered GET_BLOCK recommendations (seconds).
+    static constexpr uint32_t CROSS_CHECK_COOLDOWN_SECONDS = 60;
+
 private:
     mutable std::mutex m_mutex;
 
@@ -382,6 +447,10 @@ private:
     KeepaliveObservation      m_keepalive;
     SessionStatusObservation  m_session_status;
     PushObservation           m_push;
+
+    /// Timestamp of the last cross-check that returned should_request_block == true.
+    /// Protected by m_mutex.
+    std::chrono::steady_clock::time_point m_cross_check_last_fired_at{};
 };
 
 } // namespace protocol

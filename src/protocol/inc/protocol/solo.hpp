@@ -341,6 +341,19 @@ private:
     void handle_normalized_keepalive_ack(const char* source,
                                          const ::LLP::KeepAliveV2AckFrame& ack,
                                          std::shared_ptr<network::Connection> connection);
+    /**
+     * @brief Run the unified-height shadow-vs-canonical cross-check.
+     *
+     * Calls CheckUnifiedHeightDivergence() on the shadow tracker and, if the
+     * divergence exceeds the threshold, sends a proactive GET_BLOCK (without
+     * entering Degraded Mode).  Rate-limited internally by the shadow tracker
+     * to at most one GET_BLOCK per CROSS_CHECK_COOLDOWN_SECONDS.
+     *
+     * @param context     Source label for log messages.
+     * @param connection  Connection to transmit on; falls back to m_connection.
+     */
+    void maybe_cross_check_unified_height(const char* context,
+                                          std::shared_ptr<network::Connection> connection);
     void clear_generation_bound_state(const char* reason);
     bool finalize_and_feed_current_template(uint32_t unified_height,
                                             uint32_t effective_channel_height,

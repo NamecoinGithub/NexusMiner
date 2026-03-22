@@ -520,6 +520,12 @@ void Solo::handle_normalized_keepalive_ack(const char* source,
                                          ack.hash_tip_lo32,
                                          ack.fork_score);
 
+    // Shadow tracker: record keepalive heights as secondary corroboration source.
+    m_shadow_tracker.IngestKeepaliveAck(ack.unified_height,
+                                        ack.prime_height,
+                                        ack.hash_height,
+                                        ack.stake_height);
+
     // Fork detection: compare node's chain tip against the miner's own locally
     // stored prevHash lo32 (NOT the echoed value from the ACK, which could be
     // tampered to mask a real fork).
@@ -541,6 +547,44 @@ void Solo::handle_normalized_keepalive_ack(const char* source,
                 m_logger->info("[{}] Fresh template requested for fork recovery",
                                source ? source : "Solo Keepalive");
             }
+        }
+    }
+    else
+    {
+        // No fork — run the unified-height cross-check.
+        // Fires a proactive GET_BLOCK (without entering Degraded Mode) when shadow
+        // unified is more than CROSS_CHECK_THRESHOLD blocks ahead of canonical unified,
+        // indicating the miner may be working on a stale template.
+        maybe_cross_check_unified_height(source ? source : "Solo Keepalive", connection);
+    }
+}
+
+void Solo::maybe_cross_check_unified_height(const char* context,
+                                             std::shared_ptr<network::Connection> connection)
+{
+    auto cc = m_shadow_tracker.CheckUnifiedHeightDivergence();
+    if (!cc.should_request_block)
+        return;
+
+    m_logger->warn("[{}] Shadow-vs-canonical height divergence detected: "
+                   "shadow_unified={} [{}] canonical_unified={} divergence={} "
+                   "— sending proactive GET_BLOCK (no Degraded Mode)",
+        context ? context : "Solo CrossCheck",
+        cc.shadow_unified,
+        ChannelHeightShadowTracker::source_name(cc.shadow_source),
+        cc.canonical_unified,
+        cc.divergence);
+
+    auto work_payload = get_work();
+    if (work_payload && !work_payload->empty())
+    {
+        // Prefer the supplied connection; fall back to the stored primary connection.
+        auto conn = connection ? connection : m_connection;
+        if (conn)
+        {
+            conn->transmit(work_payload);
+            m_logger->info("[{}] Proactive GET_BLOCK transmitted for height cross-check recovery",
+                           context ? context : "Solo CrossCheck");
         }
     }
 }
@@ -3652,10 +3696,16 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
             m_last_session_status_ack_time = std::chrono::steady_clock::now();
 
             // Update Channel Height Shadow Tracker with health state.
-            // SESSION_STATUS_ACK carries auth/uptime data only — no chain heights.
-            // This enriches the shadow tracker's freshness picture without touching
-            // canonical mining state.
+            // SESSION_STATUS_ACK carries auth/uptime data only in the current wire
+            // format — no chain heights.  When an extended ACK with heights is added
+            // in the future, pass those heights here; for now they default to 0.
             m_shadow_tracker.IngestSessionStatusAck(ack.IsAuthenticated(), ack.uptime_seconds);
+
+            // Unified-height cross-check: if the shadow picture (keepalive / push) is
+            // already more than CROSS_CHECK_THRESHOLD blocks ahead of canonical, this
+            // SESSION_STATUS_ACK arrival is a good time to emit a proactive GET_BLOCK.
+            // No Degraded Mode transition — soft template refresh only.
+            maybe_cross_check_unified_height("Solo SessionStatusAck", connection);
 
             const auto decision = SessionStatusPolicy::evaluate_ack_health(
                 { ack.uptime_seconds, ack.IsAuthenticated() });
@@ -4502,6 +4552,11 @@ void Solo::update_height_state(uint32_t unified_height, uint32_t channel_height,
         m_height_tracker.OnPushNotification(unified_height, channel_height, difficulty_nbits);
         // Shadow tracker: record the push observation for full-height diagnostics.
         m_shadow_tracker.IngestPush(unified_height, channel_height, m_channel);
+        // Cross-check: a push arriving while canonical is significantly behind may
+        // indicate burst blocks on another channel.  Run the soft height divergence
+        // check here, but with NO connection context — the push path does not hold
+        // a connection reference and any GET_BLOCK will be transmitted via m_connection.
+        maybe_cross_check_unified_height("Solo PushHeight", nullptr);
     } else if (source == HeightTracker::UpdateSource::GET_ROUND) {
         m_height_tracker.OnGetRound(unified_height, channel_height, difficulty_nbits);
     } else if (source == HeightTracker::UpdateSource::TEMPLATE) {
