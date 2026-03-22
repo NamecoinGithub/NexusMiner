@@ -413,15 +413,16 @@ public:
          * @brief Compute how far the composed snapshot heights have drifted from
          *        canonical heights.
          *
-         * Returns the signed difference (unified_height − canonical_unified_height),
-         * where unified_height is the canonical BLOCK_DATA view.
-         * With Snapshot::unified_height pinned to canonical BLOCK_DATA, this
-         * reports only canonical-versus-canonical drift and therefore remains
-         * zero for healthy snapshot paths. Use push/verifier fields directly
-         * for observer-versus-canonical comparisons.
+         * Returns the signed difference between the best observer/verifier
+         * unified tip and the canonical BLOCK_DATA unified height.
+         * Positive values mean push or GET_HEIGHT is ahead of canonical, which
+         * is normal while waiting for refreshed BLOCK_DATA. Zero means canonical
+         * is caught up.
          */
         int32_t height_drift_from_canonical() const {
-            return static_cast<int32_t>(unified_height) -
+            const uint32_t effective_observed_unified_height =
+                std::max(verified_unified_height(), push_unified_height);
+            return static_cast<int32_t>(effective_observed_unified_height) -
                    static_cast<int32_t>(canonical_unified_height);
         }
 
