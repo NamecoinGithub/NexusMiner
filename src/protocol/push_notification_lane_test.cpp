@@ -1043,7 +1043,7 @@ int main()
     // Test 21: Same-height replacement BLOCK_DATA with a different
     //          hashPrevBlock bypasses the feed debounce and becomes active
     // ====================================================================
-    std::cout << "\nTest 21: Same-height replacement BLOCK_DATA installs a new active template when hashPrevBlock changes" << std::endl;
+    std::cout << "\nTest 21: Same-height replacement BLOCK_DATA re-feeds on prevhash change" << std::endl;
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
