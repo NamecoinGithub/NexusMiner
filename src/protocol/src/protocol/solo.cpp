@@ -494,8 +494,54 @@ void Solo::finalize_keepalive_ack(const char* detail)
     if (m_session_context) {
         m_session_context->note_keepalive_ack(true, detail ? detail : "keepalive ack accepted");
     }
-    if (auto* session_manager = get_session_manager()) {
-        session_manager->record_keepalive();
+}
+
+void Solo::handle_normalized_keepalive_ack(const char* source,
+                                           const ::LLP::KeepAliveV2AckFrame& ack,
+                                           std::shared_ptr<network::Connection> connection)
+{
+    m_logger->debug("[{}] Normalized liveness ACK: session_id=0x{:08x}"
+                    " unified_height={} prime_height={} hash_height={} stake_height={}"
+                    " hashPrevBlock_lo32=0x{:08x} hash_tip_lo32=0x{:08x} fork_score={}",
+        source ? source : "Solo Keepalive",
+        ack.session_id,
+        ack.unified_height, ack.prime_height, ack.hash_height, ack.stake_height,
+        ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
+
+    if (handle_session_id_mismatch(ack.session_id))
+        return;
+
+    finalize_keepalive_ack("keepalive ack accepted");
+
+    m_height_tracker.OnKeepaliveResponse(ack.unified_height,
+                                         ack.prime_height,
+                                         ack.hash_height,
+                                         ack.stake_height,
+                                         ack.hash_tip_lo32,
+                                         ack.fork_score);
+
+    // Fork detection: compare node's chain tip against the miner's own locally
+    // stored prevHash lo32 (NOT the echoed value from the ACK, which could be
+    // tampered to mask a real fork).
+    if (ack.IsForkDetected(m_last_keepalive_prevhash_lo32))
+    {
+        m_logger->warn("[{}] Fork detected!"
+                       " miner_prevHash_lo32=0x{:08x} node_tip_lo32=0x{:08x} fork_score={}",
+            source ? source : "Solo Keepalive",
+            m_last_keepalive_prevhash_lo32, ack.hash_tip_lo32, ack.fork_score);
+
+        // Request a fresh template immediately to resolve the fork.
+        // Node's 2-second AutoCoolDown is the sole rate limiter.
+        if (connection)
+        {
+            auto work_payload = get_work();
+            if (work_payload && !work_payload->empty())
+            {
+                connection->transmit(work_payload);
+                m_logger->info("[{}] Fresh template requested for fork recovery",
+                               source ? source : "Solo Keepalive");
+            }
+        }
     }
 }
 
@@ -3288,34 +3334,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 if (!run_packet_ingress_preflight("Solo SessionKeepalive", preflight)) {
                     return;
                 }
-
-                m_height_tracker.OnKeepaliveResponse(unified.unified_height,
-                                                      unified.prime_height,
-                                                      unified.hash_height,
-                                                      unified.stake_height,
-                                                      unified.hash_tip_lo32,
-                                                      unified.fork_score);
-
-                m_logger->debug("[Solo Keepalive] Unified reply received:"
-                               " session=0x{:08x}"
-                               " unified={} prime={} hash={} stake={}"
-                               " hash_tip_lo32=0x{:08x} fork_score={}",
-                    unified.session_id,
-                    unified.unified_height, unified.prime_height,
-                    unified.hash_height, unified.stake_height,
-                    unified.hash_tip_lo32, unified.fork_score);
-
-                finalize_keepalive_ack("keepalive ack accepted");
-
-                // Fork canary cross-check (legacy path: hash_tip_lo32 and fork_score will be 0)
-                // Diagnostic-only: PUSH notification system handles real chain tip advances.
-                if (unified.IsForkDetected(m_last_keepalive_prevhash_lo32))
-                {
-                    m_logger->warn("[SESSION_KEEPALIVE] Fork canary triggered:"
-                                   " miner_prevHash_lo32=0x{:08x} node_tip_lo32=0x{:08x} fork_score={}",
-                        m_last_keepalive_prevhash_lo32, unified.hash_tip_lo32, unified.fork_score);
-                }
-
+                handle_normalized_keepalive_ack("SESSION_KEEPALIVE", unified, connection);
             }
         } else if (packet.m_data && packet.m_length == 4) {
             // ── KEEPALIVE v1: remaining timeout (4 bytes LE) ─────────────────────
@@ -3323,6 +3342,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
 
             finalize_keepalive_ack("keepalive ack accepted");
+            m_height_tracker.NoteKeepaliveAckLiveness();
         } else if (packet.m_length != 0) {
             // Unexpected payload length — ignore gracefully
             m_logger->debug("[Solo Session] Unexpected KEEPALIVE payload length {} — ignored", packet.m_length);
@@ -3597,58 +3617,7 @@ void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Conne
             if (!run_packet_ingress_preflight("Solo KeepaliveAck", preflight)) {
                 return;
             }
-
-            m_logger->debug("[KEEPALIVE_V2] ACK received: session_id=0x{:08x}"
-                            " unified_height={} prime_height={} hash_height={} stake_height={}"
-                            " hashPrevBlock_lo32=0x{:08x} hash_tip_lo32=0x{:08x} fork_score={}",
-                ack.session_id,
-                ack.unified_height, ack.prime_height, ack.hash_height, ack.stake_height,
-                ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
-
-            // Session ID validation (Gap 1): detect stale ACKs from a previous session.
-            // session_id == 0 means legacy / unset — skip check.
-            if (handle_session_id_mismatch(ack.session_id))
-                return;
-
-            finalize_keepalive_ack("keepalive ack accepted");
-
-            // Update HeightTracker with ACK chain-state heights.
-            m_height_tracker.OnKeepaliveResponse(ack.unified_height,
-                                                   ack.prime_height,
-                                                  ack.hash_height,
-                                                  ack.stake_height,
-                                                  ack.hash_tip_lo32,
-                                                  ack.fork_score);
-
-            // Update Channel Height Shadow Tracker with the full multi-channel picture.
-            // This is the primary source for prime/hash/stake/unified heights outside
-            // the mined channel.  Shadow tracker never touches canonical mining state.
-            m_shadow_tracker.IngestKeepaliveAck(ack.unified_height,
-                                                 ack.prime_height,
-                                                 ack.hash_height,
-                                                 ack.stake_height);
-
-            // Fork detection: compare node's chain tip against the miner's own locally
-            // stored prevHash lo32 (NOT the echoed value from the ACK, which could be
-            // tampered to mask a real fork).
-            if(ack.IsForkDetected(m_last_keepalive_prevhash_lo32))
-            {
-                m_logger->warn("[KEEPALIVE_V2] Fork detected!"
-                               " miner_prevHash_lo32=0x{:08x} node_tip_lo32=0x{:08x} fork_score={}",
-                    m_last_keepalive_prevhash_lo32, ack.hash_tip_lo32, ack.fork_score);
-
-                // Request a fresh template immediately to resolve the fork.
-                // Node's 2-second AutoCoolDown is the sole rate limiter.
-                if(connection)
-                {
-                    auto work_payload = get_work();
-                    if(work_payload && !work_payload->empty())
-                    {
-                        connection->transmit(work_payload);
-                        m_logger->info("[KEEPALIVE_V2] Fresh template requested for fork recovery");
-                    }
-                }
-            }
+            handle_normalized_keepalive_ack("KEEPALIVE_V2", ack, connection);
         }
 }
 
@@ -3674,9 +3643,8 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
             if (handle_session_id_mismatch(ack.session_id))
                 return;
 
-            if (m_session_context) {
-                m_session_context->note_keepalive_ack(true, "session status ack accepted");
-            }
+            finalize_keepalive_ack("session status ack accepted");
+            m_height_tracker.NoteKeepaliveAckLiveness();
             record_session_event(SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED,
                                  "session status ack accepted");
 

@@ -577,6 +577,7 @@ void SessionManager::send_keepalive(const char* cadence)
     }
 
     connection->transmit(payload);
+    record_keepalive();
     m_logger->info("[SessionManager] Keepalive sent ({}) for session 0x{:08X}",
                   cadence, session_id);
 }

@@ -338,6 +338,9 @@ private:
     void record_session_event(SessionManager::SessionEventKind kind,
                               const std::string& detail) const;
     void finalize_keepalive_ack(const char* detail);
+    void handle_normalized_keepalive_ack(const char* source,
+                                         const ::LLP::KeepAliveV2AckFrame& ack,
+                                         std::shared_ptr<network::Connection> connection);
     void clear_generation_bound_state(const char* reason);
     bool finalize_and_feed_current_template(uint32_t unified_height,
                                             uint32_t effective_channel_height,

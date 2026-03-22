@@ -1941,16 +1941,26 @@ void Worker_manager::check_template_health()
                 ? std::chrono::duration_cast<std::chrono::seconds>(now - ht_snap.last_push_notification_at).count()
                 : INT64_MAX;
             bool push_recent = push_received && (since_push_s <= PUSH_ALIVE_THRESHOLD_SECONDS);
+            const bool auth_in_progress = solo_protocol->is_auth_in_progress();
+            const bool auth_ready = solo_protocol->is_authenticated();
+            const double auth_in_flight_s = auth_in_progress
+                ? solo_protocol->auth_in_flight_seconds()
+                : 0.0;
+            const char* auth_state = auth_in_progress
+                ? "IN_FLIGHT"
+                : (auth_ready ? "AUTHENTICATED" : "NOT_AUTHENTICATED");
 
             // Diagnostic: log keepalive epoch alongside timestamps so future incidents can
             // identify split between session epoch and last-ack epoch without log scraping.
             m_logger->info("[Worker_manager] Degraded-mode liveness: epoch={} keepalive_ack={}s ago (recent={}) "
-                           "push={}s ago (recent={})",
+                           "push={}s ago (recent={}) auth_state={} auth_in_flight_s={:.1f}",
                            ht_snap.session_epoch,
                            keepalive_ack_received ? since_ack_s : static_cast<int64_t>(-1),
                            ack_recent ? "YES" : "NO",
                            push_received ? since_push_s : static_cast<int64_t>(-1),
-                           push_recent ? "YES" : "NO");
+                           push_recent ? "YES" : "NO",
+                           auth_state,
+                           auth_in_flight_s);
 
             // ── Hard limit: reconnect after DEGRADED_MODE_HARD_LIMIT_SECONDS ─────────────────
             // But only if push notifications are also stale — a recent push proves the TCP
