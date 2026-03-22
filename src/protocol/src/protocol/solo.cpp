@@ -661,6 +661,8 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
     std::string validation_reason;
     const bool session_valid = m_session_context->validate_miner_session(&validation_reason);
     const auto session = m_session_context->get_runtime_snapshot();
+    const uint64_t owner_epoch     = options.owner ? options.owner->session_epoch.get() : uint64_t{0};
+    const uint32_t owner_session_id = options.owner ? options.owner->session_id.get() : uint32_t{0};
     const auto decision = PacketIngressPreflight::evaluate({
         true,
         session.authenticated,
@@ -671,8 +673,8 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
         options.validate_lane,
         options.allow_without_active_session,
         options.packet_session_id,
-        options.owner ? options.owner->session_epoch.get() : uint64_t{0},
-        options.owner ? options.owner->session_id.get() : uint32_t{0}
+        owner_epoch,
+        owner_session_id
     });
 
     if (decision.allow_processing) {

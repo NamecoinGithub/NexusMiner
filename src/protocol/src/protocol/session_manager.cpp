@@ -203,12 +203,9 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
     update_replay_allowances_locked();
 
     record_session_event_locked(SessionEventKind::AUTH_SUCCESS, "authenticated");
-    record_session_event_locked(SessionEventKind::SESSION_START,
-                                "session_id=0x" + [session_id](){
-                                    std::ostringstream o;
-                                    o << std::hex << std::setw(8) << std::setfill('0') << session_id;
-                                    return o.str();
-                                }());
+    std::ostringstream sid_oss;
+    sid_oss << "session_id=0x" << std::hex << std::setw(8) << std::setfill('0') << session_id;
+    record_session_event_locked(SessionEventKind::SESSION_START, sid_oss.str());
 }
 
 void SessionManager::update_replay_allowances_locked()
