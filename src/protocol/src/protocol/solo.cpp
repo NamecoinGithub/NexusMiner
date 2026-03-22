@@ -682,8 +682,8 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
         return false;
     }
 
-    if (!m_template_interface->feed_current_template()) {
-        m_logger->debug("[{}] Template feed suppressed by unified debounce gate", log_scope);
+    if (!m_template_interface->feed_current_template(true)) {
+        m_logger->warn("[{}] Authoritative template delivery did not reach workers", log_scope);
     }
 
     auto stats = m_template_interface->get_stats();

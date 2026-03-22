@@ -385,7 +385,7 @@ void MiningTemplateInterface::set_validation_failure_handler(ValidationFailureHa
     m_logger->debug("[TemplateInterface] Validation failure handler registered");
 }
 
-bool MiningTemplateInterface::feed_current_template()
+bool MiningTemplateInterface::feed_current_template(bool bypass_debounce)
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
 
@@ -413,7 +413,7 @@ bool MiningTemplateInterface::feed_current_template()
     // This is the SINGLE AUTHORITATIVE debounce gate for the entire system.
     // Both Solo's BLOCK_DATA handler and Worker_manager's set_block flow rely on
     // this check to suppress duplicates at the source.
-    {
+    if (!bypass_debounce) {
         auto now = std::chrono::steady_clock::now();
         auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - m_last_feed_tp).count();
@@ -447,6 +447,13 @@ bool MiningTemplateInterface::feed_current_template()
         m_last_feed_tp = now;
         m_last_feed_height = m_current_template.block.nHeight;
         m_last_feed_prev_hash = m_current_template.block.hashPrevBlock;
+    } else {
+        m_last_feed_tp = std::chrono::steady_clock::now();
+        m_last_feed_height = m_current_template.block.nHeight;
+        m_last_feed_prev_hash = m_current_template.block.hashPrevBlock;
+        m_logger->info("[TemplateInterface] Authoritative template delivery bypassing debounce "
+                       "(height {}, tip refresh or recovery re-feed)",
+                       m_current_template.block.nHeight);
     }
 
     m_logger->info("[TemplateInterface] FEED: Feeding template at height {} to workers",

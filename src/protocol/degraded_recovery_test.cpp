@@ -25,6 +25,7 @@
  */
 
 #include "protocol/height_tracker.hpp"
+#include "protocol/mining_template_interface.hpp"
 #include "protocol/protocol_constants.hpp"
 #include "protocol/packet_builder.hpp"
 #include "miner_opcodes.hpp"
@@ -54,6 +55,32 @@ void print_test_result(const char* name, bool passed) {
         tests_failed++;
         std::cout << "  [FAIL] " << name << "\n";
     }
+}
+
+std::vector<uint8_t> create_mock_template(uint32_t height,
+                                          uint32_t nBits = 0x1d00ffff,
+                                          uint8_t channel = 2) {
+    std::vector<uint8_t> data(216, 0);
+    size_t offset = 0;
+
+    auto write_u32_be = [&](uint32_t value) {
+        data[offset++] = (value >> 24) & 0xFF;
+        data[offset++] = (value >> 16) & 0xFF;
+        data[offset++] = (value >> 8) & 0xFF;
+        data[offset++] = value & 0xFF;
+    };
+
+    write_u32_be(7);
+    offset += 128;
+    for (int i = 0; i < 64; ++i) {
+        data[offset++] = static_cast<uint8_t>(i + 1);
+    }
+    write_u32_be(static_cast<uint32_t>(channel));
+    write_u32_be(height);
+    write_u32_be(nBits);
+    offset += 8;
+
+    return data;
 }
 
 // ============================================================================
@@ -648,6 +675,35 @@ void test_worker_respawn_guard_is_single_shot_per_degraded_exit() {
 }
 
 // ============================================================================
+// Test 4ga: Authoritative BLOCK_DATA/GET_BLOCK re-feed bypasses debounce
+// ============================================================================
+void test_authoritative_template_refeed_bypasses_debounce() {
+    std::cout << "\nTest 4ga: Authoritative template re-feed bypasses debounce suppression\n";
+
+    MiningTemplateInterface tmpl_interface(2, 0);
+    int feed_count = 0;
+
+    tmpl_interface.set_template_feed_handler(
+        [&](const MiningTemplateInterface::MiningTemplate&, uint32_t) {
+            ++feed_count;
+        });
+
+    auto template_data = create_mock_template(6594322, 0x1d00ffff, 2);
+    auto result = tmpl_interface.read_template(template_data, "test_node", false);
+    tmpl_interface.set_channel_height(4165003);
+
+    const bool first_feed = tmpl_interface.feed_current_template();
+    const bool duplicate_feed_suppressed = !tmpl_interface.feed_current_template();
+    const bool authoritative_refeed = tmpl_interface.feed_current_template(true);
+
+    print_test_result("Template validates before re-feed test", result.is_valid);
+    print_test_result("Initial finalized feed succeeds", first_feed);
+    print_test_result("Non-authoritative duplicate feed stays suppressed", duplicate_feed_suppressed);
+    print_test_result("Authoritative re-feed bypass succeeds", authoritative_refeed);
+    print_test_result("Authoritative re-feed reaches handlers twice total", feed_count == 2);
+}
+
+// ============================================================================
 // Test 4h: Workers only respawn after the prior generation is fully stopped
 // ============================================================================
 void test_worker_respawn_waits_for_authoritative_empty_generation() {
@@ -1102,6 +1158,7 @@ int main() {
     test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout();
     test_unified_drift_requires_get_height_probe_before_soft_refresh();
     test_worker_respawn_guard_is_single_shot_per_degraded_exit();
+    test_authoritative_template_refeed_bypasses_debounce();
     test_worker_respawn_waits_for_authoritative_empty_generation();
     test_keepalive_epoch_isolation_clean_start();
     test_stale_template_after_channel_advance();
