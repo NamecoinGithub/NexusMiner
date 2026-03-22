@@ -210,9 +210,13 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
 
 void SessionManager::update_replay_allowances_locked()
 {
+    // Derivation rules:
+    //   ready_for_get_block: requires authentication only
+    //   ready_for_submit:    requires authentication AND reward binding
+    //   replay allowances mirror the same logic
     const bool authenticated = (m_session.state == SessionState::AUTHENTICATED);
     m_session.deferred_push_replay_allowed = authenticated;
-    m_session.get_block_replay_allowed = authenticated && m_session.reward_bound;
+    m_session.get_block_replay_allowed = authenticated;
     m_session.ready_for_get_block = authenticated;
     m_session.ready_for_submit = authenticated && m_session.reward_bound;
 }
@@ -812,6 +816,7 @@ std::string SessionManager::build_miner_session_diagnostics() const
                                      ? "<unset>" : m_session.reward_address_string) << '\n'
         << "- reward_bound: "  << (m_session.reward_bound ? "YES" : "NO") << '\n'
         << "- reward_state: "  << reward_state_name(m_session.reward_state) << '\n'
+        << "- prevblock_suffix: " << format_hex_prefix(m_session.prevblock_suffix, 4) << '\n'
         << "- recovery_state: "<< recovery_state_name(m_session.recovery_state) << '\n'
         << "- expiry_state: "  << expiry_state_name(m_session.expiry_state) << '\n'
         << "- consistency: "   << (consistency ? "PASS" : "FAIL")

@@ -110,7 +110,7 @@ public:
         uint64_t session_epoch{0};
         SessionState state{SessionState::DISCONNECTED};
         ProtocolLane active_lane{ProtocolLane::UNKNOWN};
-        std::string reward_address;   // primary name
+        std::string reward_address;   // canonical name (new design)
         bool reward_bound{false};
         std::array<uint8_t, 4> prevblock_suffix{};
         uint64_t session_start{0};
@@ -131,7 +131,7 @@ public:
         std::vector<uint8_t> chacha20_session_key;
         std::string chacha20_key_fingerprint;
         bool chacha20_ready{false};
-        std::string reward_address_string;  // alias for reward_address
+        std::string reward_address_string;  // backward-compat alias; prefer reward_address in new code
         std::vector<uint8_t> reward_hash;
         RewardState reward_state{RewardState::NONE};
         std::string reward_binding_source;
