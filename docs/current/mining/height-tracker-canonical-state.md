@@ -115,6 +115,10 @@ The key rule: **canonical wins for mining-critical fields; diagnostic provides t
 | `prime_height` | fresh `get_height_prime_height` else `keepalive_prime_height` | Diagnostic display |
 | `hash_height` | fresh `get_height_hash_height` else `keepalive_hash_height` | Diagnostic display |
 | `stake_height` | fresh `get_height_stake_height` else `keepalive_stake_height` | Diagnostic display |
+
+Here “fresh” means the latest `BLOCK_HEIGHT` arrived within the normal
+GET_HEIGHT freshness window and explicitly carried the 16-byte
+unified/prime/hash/stake payload form (`get_height_has_tracked_channels == true`).
 | `hash_tip_lo32` | `keepalive_hash_tip_lo32` | Diagnostic canary |
 | `fork_score` | `keepalive_fork_score` | Diagnostic canary |
 | `peak_fork_score` | `keepalive_peak_fork_score` | Diagnostic canary |
