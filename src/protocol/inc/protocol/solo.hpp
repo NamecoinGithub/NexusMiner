@@ -104,7 +104,8 @@ public:
     network::Shared_payload send_get_round();
     /// Send GET_HEIGHT on all lanes (legacy: 0x82; stateless: 0xD082).
     /// Periodic unified-height poll (30s cadence).  The node responds with
-    /// BLOCK_HEIGHT carrying the current unified chain height as a uint32.
+    /// BLOCK_HEIGHT carrying the current unified chain height and, on newer
+    /// nodes, may also include prime/hash/stake heights in a 16-byte payload.
     /// This is the PRIMARY shadow source for height cross-check.
     /// Authentication-guarded; returns null if not authenticated.
     network::Shared_payload send_get_height();

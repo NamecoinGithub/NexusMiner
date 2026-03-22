@@ -372,13 +372,31 @@ void ColinAgent::emit_report(
                 std::chrono::steady_clock::now() - shadow_snap.get_height.received_at).count();
             if (static_cast<uint32_t>(gh_age_s) < GET_HEIGHT_STALE_S)
             {
-                m_logger->info("[Colin]  🗼 GET_HEIGHT   │ unified={} ({}s ago) ✅ [primary verifier]",
-                    shadow_snap.get_height.unified_height, gh_age_s);
+                if (shadow_snap.get_height.has_tracked_channels) {
+                    m_logger->info("[Colin]  🗼 GET_HEIGHT   │ unified={} prime={} hash={} stake={} ({}s ago) ✅ [primary verifier]",
+                        shadow_snap.get_height.unified_height,
+                        shadow_snap.get_height.prime_height,
+                        shadow_snap.get_height.hash_height,
+                        shadow_snap.get_height.stake_height,
+                        gh_age_s);
+                } else {
+                    m_logger->info("[Colin]  🗼 GET_HEIGHT   │ unified={} ({}s ago) ✅ [primary verifier]",
+                        shadow_snap.get_height.unified_height, gh_age_s);
+                }
             }
             else
             {
-                m_logger->warn("[Colin]  🗼 GET_HEIGHT   │ unified={} ({}s ago) ⚠️  (>{}s — primary verifier is stale)",
-                    shadow_snap.get_height.unified_height, gh_age_s, GET_HEIGHT_STALE_S);
+                if (shadow_snap.get_height.has_tracked_channels) {
+                    m_logger->warn("[Colin]  🗼 GET_HEIGHT   │ unified={} prime={} hash={} stake={} ({}s ago) ⚠️  (>{}s — primary verifier is stale)",
+                        shadow_snap.get_height.unified_height,
+                        shadow_snap.get_height.prime_height,
+                        shadow_snap.get_height.hash_height,
+                        shadow_snap.get_height.stake_height,
+                        gh_age_s, GET_HEIGHT_STALE_S);
+                } else {
+                    m_logger->warn("[Colin]  🗼 GET_HEIGHT   │ unified={} ({}s ago) ⚠️  (>{}s — primary verifier is stale)",
+                        shadow_snap.get_height.unified_height, gh_age_s, GET_HEIGHT_STALE_S);
+                }
                 warnings.push_back("GET_HEIGHT primary verifier is stale (" + std::to_string(gh_age_s) +
                                    "s since last BLOCK_HEIGHT response — node may be unreachable)");
             }
@@ -566,6 +584,10 @@ void ColinAgent::emit_report(
             m_logger->info("[Colin]    ✅ Diagnostic │ initialized  push_unified={} get_height_unified={} round_unified={} keepalive_unified={} (latest {}s ago)",
                 diag.push_unified_height, diag.get_height_unified_height, diag.round_unified_height,
                 diag.keepalive_unified_height, diag_age_s);
+            if (diag.get_height_has_tracked_channels) {
+                m_logger->info("[Colin]    ✅ GET_HEIGHT  │ prime={} hash={} stake={} [primary per-channel verifier]",
+                    diag.get_height_prime_height, diag.get_height_hash_height, diag.get_height_stake_height);
+            }
         } else {
             m_logger->info("[Colin]  📡 ── Diagnostic Observer State ─────────────────────");
             m_logger->warn("[Colin]    ⚠️  Diagnostic │ NOT initialized (no push/GET_HEIGHT/round/keepalive data yet)");

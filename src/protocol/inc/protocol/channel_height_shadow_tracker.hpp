@@ -15,8 +15,9 @@
  *     Does NOT carry a full multi-channel picture.
  *     Drives all hard mining decisions.
  *
- *   GET_HEIGHT response (BLOCK_HEIGHT)  — primary shadow (unified height, 30s cadence)
- *     Contains: unified height only (4-byte uint32 response to GET_HEIGHT request)
+ *   GET_HEIGHT response (BLOCK_HEIGHT)  — primary shadow (30s cadence)
+ *     Contains: unified height always, and on newer nodes may also include
+ *     prime/hash/stake heights in a 16-byte response.
  *     Sent proactively every 30 seconds on both Legacy and Stateless lanes.
  *     Preferred cross-check source for unified height divergence detection.
  *
@@ -113,15 +114,18 @@ public:
      *
      * GET_HEIGHT (opcode 130 / stateless 0xD082) is sent every 30 seconds on both
      * Legacy and Stateless lanes.  The node responds with BLOCK_HEIGHT (opcode 2)
-     * carrying a single uint32 unified height.  This is the PRIMARY shadow source
-     * for unified-height cross-check because of its predictable 30s cadence.
+     * carrying unified height, and on newer nodes may also include prime/hash/stake
+     * heights in a 16-byte payload. This is the PRIMARY shadow source for
+     * unified-height cross-check because of its predictable 30s cadence.
      *
      * Updated by IngestGetHeightResponse().  Does NOT write canonical or keepalive state.
-     * NOTE: GET_HEIGHT only carries unified height — it does NOT provide per-channel heights.
-     * Per-channel heights remain exclusively in the keepalive shadow layer.
      */
     struct GetHeightState {
         uint32_t unified_height{0};         ///< Node's unified height from GET_HEIGHT response
+        uint32_t prime_height{0};           ///< Node's Prime channel height when 16-byte form is received
+        uint32_t hash_height{0};            ///< Node's Hash channel height when 16-byte form is received
+        uint32_t stake_height{0};           ///< Node's Stake channel height when 16-byte form is received
+        bool has_tracked_channels{false};   ///< True when the last GET_HEIGHT carried prime/hash/stake heights
         std::chrono::steady_clock::time_point received_at{}; ///< Time of last GET_HEIGHT response
         bool initialized{false};            ///< True once any BLOCK_HEIGHT response has been ingested
 
@@ -317,6 +321,39 @@ public:
                     return 0;
             }
         }
+
+        uint32_t active_prime_height() const noexcept {
+            if (cross_check.get_height_initialized && !cross_check.get_height_is_stale &&
+                get_height.has_tracked_channels) {
+                return get_height.prime_height;
+            }
+            if (cross_check.shadow_initialized && !cross_check.shadow_is_stale) {
+                return shadow.prime_height;
+            }
+            return 0;
+        }
+
+        uint32_t active_hash_height() const noexcept {
+            if (cross_check.get_height_initialized && !cross_check.get_height_is_stale &&
+                get_height.has_tracked_channels) {
+                return get_height.hash_height;
+            }
+            if (cross_check.shadow_initialized && !cross_check.shadow_is_stale) {
+                return shadow.hash_height;
+            }
+            return 0;
+        }
+
+        uint32_t active_stake_height() const noexcept {
+            if (cross_check.get_height_initialized && !cross_check.get_height_is_stale &&
+                get_height.has_tracked_channels) {
+                return get_height.stake_height;
+            }
+            if (cross_check.shadow_initialized && !cross_check.shadow_is_stale) {
+                return shadow.stake_height;
+            }
+            return 0;
+        }
     };
 
     // ─── Staleness thresholds ─────────────────────────────────────────────
@@ -366,7 +403,8 @@ public:
      *
      * GET_HEIGHT (opcode 130 / stateless 0xD082) is sent every 30 seconds on both
      * Legacy and Stateless lanes.  The node responds with BLOCK_HEIGHT (opcode 2)
-     * containing the current unified chain height as a uint32.
+     * containing the current unified chain height, and on newer nodes may also
+     * include prime/hash/stake heights in a 16-byte payload.
      *
      * This is the PRIMARY shadow source for unified-height cross-check.
      * Does NOT write canonical, keepalive, push, or health state.
@@ -374,6 +412,10 @@ public:
      * @param unified_height  Node's unified blockchain height from BLOCK_HEIGHT response.
      */
     void IngestGetHeightResponse(uint32_t unified_height);
+    void IngestGetHeightResponse(uint32_t unified_height,
+                                 uint32_t prime_height,
+                                 uint32_t hash_height,
+                                 uint32_t stake_height);
 
     /**
      * @brief Ingest KeepAliveV2AckFrame heights — secondary full-height shadow update.

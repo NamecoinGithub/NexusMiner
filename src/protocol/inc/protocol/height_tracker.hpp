@@ -156,8 +156,12 @@ public:
         uint32_t round_difficulty_nbits{0};
         std::chrono::steady_clock::time_point last_round_at{};
 
-        // ── Unified height from GET_HEIGHT / BLOCK_HEIGHT ──────────────────────
+        // ── Heights from GET_HEIGHT / BLOCK_HEIGHT ─────────────────────────────
         uint32_t get_height_unified_height{0};
+        uint32_t get_height_prime_height{0};
+        uint32_t get_height_hash_height{0};
+        uint32_t get_height_stake_height{0};
+        bool get_height_has_tracked_channels{false};
         std::chrono::steady_clock::time_point last_get_height_at{};
 
         // ── Keepalive telemetry (SESSION_KEEPALIVE ACK) ─────────────────────────
@@ -245,9 +249,9 @@ public:
         UpdateSource last_update_source{UpdateSource::NONE};
 
         // ── All three channel heights, kept independently ──────────────────────
-        uint32_t prime_height{0};   ///< Prime channel height (max of canonical and push/GET_ROUND)
-        uint32_t hash_height{0};    ///< Hash channel height  (max of canonical and push/GET_ROUND)
-        uint32_t stake_height{0};   ///< Stake channel height (diagnostic/keepalive only)
+        uint32_t prime_height{0};   ///< Prime channel height (fresh GET_HEIGHT primary, keepalive fallback)
+        uint32_t hash_height{0};    ///< Hash channel height  (fresh GET_HEIGHT primary, keepalive fallback)
+        uint32_t stake_height{0};   ///< Stake channel height (fresh GET_HEIGHT primary, keepalive fallback)
         ChannelHeight prime_channel_height{}; ///< Typed alias of prime_height
         ChannelHeight hash_channel_height{};  ///< Typed alias of hash_height
         ChannelHeight stake_channel_height{}; ///< Typed alias of stake_height
@@ -425,10 +429,12 @@ public:
         /**
          * @brief True when a recent GET_HEIGHT / BLOCK_HEIGHT verifier response is available.
          *
-         * GET_HEIGHT is the primary unified-height verifier, but it must remain
-         * separate from canonical/template state. Consumers that need the
-         * freshest node-confirmed unified height should prefer
-         * verified_unified_height() rather than raw unified_height.
+     * GET_HEIGHT is the primary verifier feed, but it must remain
+     * separate from canonical/template state. Consumers that need the
+     * freshest node-confirmed unified height should prefer
+     * verified_unified_height() rather than raw unified_height.
+     * When the 16-byte BLOCK_HEIGHT payload is available, the same freshness
+     * window also applies to the verifier's prime/hash/stake channel heights.
          */
         bool has_fresh_get_height() const {
             if (get_height_unified_height == 0 ||
@@ -475,6 +481,10 @@ public:
         uint1024_t canonical_hash_prev_block{}; ///< From canonical state (BLOCK_DATA decoded Tritium block)
         std::chrono::steady_clock::time_point canonical_received_at{}; ///< When canonical template was received (for age calculation)
         uint32_t get_height_unified_height{0}; ///< Raw GET_HEIGHT / BLOCK_HEIGHT unified verifier height
+        uint32_t get_height_prime_height{0};   ///< Raw GET_HEIGHT / BLOCK_HEIGHT Prime height when 16-byte form is received
+        uint32_t get_height_hash_height{0};    ///< Raw GET_HEIGHT / BLOCK_HEIGHT Hash height when 16-byte form is received
+        uint32_t get_height_stake_height{0};   ///< Raw GET_HEIGHT / BLOCK_HEIGHT Stake height when 16-byte form is received
+        bool get_height_has_tracked_channels{false}; ///< True when the latest GET_HEIGHT response carried prime/hash/stake heights
         std::chrono::steady_clock::time_point last_get_height_at{}; ///< Timestamp of last GET_HEIGHT / BLOCK_HEIGHT response
     };
 
@@ -565,6 +575,10 @@ public:
      * a primary verifier signal without altering canonical/template state.
      */
     void OnGetHeightResponse(uint32_t unified_height);
+    void OnGetHeightResponse(uint32_t unified_height,
+                             uint32_t prime_height,
+                             uint32_t hash_height,
+                             uint32_t stake_height);
 
     /**
      * @brief Monotonic height update from BLOCK_DATA / STATELESS_GET_BLOCK metadata

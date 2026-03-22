@@ -50,6 +50,27 @@ void ChannelHeightShadowTracker::IngestGetHeightResponse(uint32_t unified_height
 
     // GET_HEIGHT is a fresh observation — store what the node reported directly.
     m_get_height.unified_height = unified_height;
+    m_get_height.prime_height   = 0;
+    m_get_height.hash_height    = 0;
+    m_get_height.stake_height   = 0;
+    m_get_height.has_tracked_channels = false;
+    m_get_height.received_at    = std::chrono::steady_clock::now();
+    m_get_height.initialized    = true;
+    m_last_source               = SourceKind::GET_HEIGHT;
+}
+
+void ChannelHeightShadowTracker::IngestGetHeightResponse(uint32_t unified_height,
+                                                         uint32_t prime_height,
+                                                         uint32_t hash_height,
+                                                         uint32_t stake_height)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    m_get_height.unified_height = unified_height;
+    m_get_height.prime_height   = prime_height;
+    m_get_height.hash_height    = hash_height;
+    m_get_height.stake_height   = stake_height;
+    m_get_height.has_tracked_channels = true;
     m_get_height.received_at    = std::chrono::steady_clock::now();
     m_get_height.initialized    = true;
     m_last_source               = SourceKind::GET_HEIGHT;

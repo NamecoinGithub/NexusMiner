@@ -112,9 +112,9 @@ The key rule: **canonical wins for mining-critical fields; diagnostic provides t
 | `difficulty_nbits` | canonical if initialized, else push | Template difficulty is authoritative |
 | `channel_target` | canonical only | Never corrupted by keepalive |
 | `hash_prev_block` | canonical only | Fork detection anchor |
-| `prime_height` | `keepalive_prime_height` | Diagnostic display |
-| `hash_height` | `keepalive_hash_height` | Diagnostic display |
-| `stake_height` | `keepalive_stake_height` | Diagnostic display |
+| `prime_height` | fresh `get_height_prime_height` else `keepalive_prime_height` | Diagnostic display |
+| `hash_height` | fresh `get_height_hash_height` else `keepalive_hash_height` | Diagnostic display |
+| `stake_height` | fresh `get_height_stake_height` else `keepalive_stake_height` | Diagnostic display |
 | `hash_tip_lo32` | `keepalive_hash_tip_lo32` | Diagnostic canary |
 | `fork_score` | `keepalive_fork_score` | Diagnostic canary |
 | `peak_fork_score` | `keepalive_peak_fork_score` | Diagnostic canary |

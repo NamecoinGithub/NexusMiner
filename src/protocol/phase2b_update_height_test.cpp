@@ -32,7 +32,6 @@
 #include <cassert>
 #include <chrono>
 #include <functional>
-#include <optional>
 
 using namespace nexusminer;
 using namespace nexusminer::protocol;
@@ -265,7 +264,7 @@ static void test_get_height_updates_height_tracker_verifier_state()
     std::cout << "\nTest 3b: GET_HEIGHT updates HeightTracker verifier state without canonical spillover\n";
 
     HeightTracker tracker;
-    tracker.OnGetHeightResponse(7001);
+    tracker.OnGetHeightResponse(7001, 3200, 3300, 3400);
 
     auto snap = tracker.GetSnapshot();
     auto diag = tracker.GetDiagnosticSnapshot();
@@ -280,6 +279,16 @@ static void test_get_height_updates_height_tracker_verifier_state()
         snap.get_height_unified_height == 7001);
     print_test_result("diagnostic get_height_unified_height == 7001",
         diag.get_height_unified_height == 7001);
+    print_test_result("GET_HEIGHT tracked-channel flag is set",
+        snap.get_height_has_tracked_channels && diag.get_height_has_tracked_channels);
+    print_test_result("snapshot stores GET_HEIGHT prime/hash/stake heights",
+        snap.get_height_prime_height == 3200 &&
+        snap.get_height_hash_height == 3300 &&
+        snap.get_height_stake_height == 3400);
+    print_test_result("fresh GET_HEIGHT drives prime/hash/stake snapshot view",
+        snap.prime_height == 3200 &&
+        snap.hash_height == 3300 &&
+        snap.stake_height == 3400);
     print_test_result("source == GET_HEIGHT",
         snap.last_update_source == HeightTracker::UpdateSource::GET_HEIGHT);
     print_test_result("GET_HEIGHT does not fabricate channel_height",

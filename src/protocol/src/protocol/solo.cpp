@@ -1739,9 +1739,22 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
         
-        auto const height = bytes2uint(*packet.m_data);
-        // Log the received height information
-        m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
+        const auto height = bytes2uint(*packet.m_data);
+        const bool has_tracked_channels = packet.m_length >= 16;
+        uint32_t prime_height = 0;
+        uint32_t hash_height = 0;
+        uint32_t stake_height = 0;
+
+        if (has_tracked_channels) {
+            prime_height = bytes2uint(*packet.m_data, 4);
+            hash_height = bytes2uint(*packet.m_data, 8);
+            stake_height = bytes2uint(*packet.m_data, 12);
+            m_logger->info("[Solo] Received BLOCK_HEIGHT: unified={} prime={} hash={} stake={}",
+                           height, prime_height, hash_height, stake_height);
+        } else {
+            // Backward-compatible unified-only BLOCK_HEIGHT.
+            m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
+        }
 
         auto prior_snap = m_height_tracker.GetSnapshot();
         uint32_t known_height = prior_snap.verified_unified_height() > 0
@@ -1749,8 +1762,13 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             : m_current_height;
 
         // Feed into primary shadow layer (GET_HEIGHT is primary height cross-check source)
-        m_channel_shadow_tracker.IngestGetHeightResponse(height);
-        m_height_tracker.OnGetHeightResponse(height);
+        if (has_tracked_channels) {
+            m_channel_shadow_tracker.IngestGetHeightResponse(height, prime_height, hash_height, stake_height);
+            m_height_tracker.OnGetHeightResponse(height, prime_height, hash_height, stake_height);
+        } else {
+            m_channel_shadow_tracker.IngestGetHeightResponse(height);
+            m_height_tracker.OnGetHeightResponse(height);
+        }
 
         const auto shadow_snap = m_channel_shadow_tracker.GetSnapshot();
         const auto& cross_check = shadow_snap.cross_check;

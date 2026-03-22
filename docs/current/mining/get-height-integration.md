@@ -11,11 +11,11 @@
 | Source | Carries | Authority |
 |--------|---------|-----------|
 | `BLOCK_DATA` / `STATELESS_GET_BLOCK` | unified height + mined-channel height + block bytes | Canonical mining truth |
-| `GET_HEIGHT` / `BLOCK_HEIGHT` | unified height only | Primary unified-height verifier |
+| `GET_HEIGHT` / `BLOCK_HEIGHT` | unified height always; prime/hash/stake too when the 16-byte form is present | Primary height verifier |
 | Keepalive ACK | unified + all channel heights + fork score | Secondary verifier / telemetry |
 
 `GET_HEIGHT` must **not** replace canonical template state, because it has no
-channel-specific height and no block bytes. But it also must not remain isolated
+canonical mined-channel target or block bytes. But it also must not remain isolated
 inside the shadow tracker only, because recovery and stale-template soft-refresh
 logic compares unified heights through `HeightTracker`.
 
@@ -33,6 +33,9 @@ m_height_tracker.OnGetHeightResponse(height);             // verifier-aware Heig
 `HeightTracker::OnGetHeightResponse()` writes only diagnostic/verifier state:
 
 - `DiagnosticObserverState.get_height_unified_height`
+- `DiagnosticObserverState.get_height_prime_height`
+- `DiagnosticObserverState.get_height_hash_height`
+- `DiagnosticObserverState.get_height_stake_height`
 - `DiagnosticObserverState.last_get_height_at`
 - `last_update_source = GET_HEIGHT`
 
@@ -57,6 +60,7 @@ source.
 | `unified_height` | Canonical `BLOCK_DATA` unified height only |
 | `push_unified_height` | Latest push-observer unified tip (non-canonical) |
 | `verified_unified_height()` | `max(unified_height, fresh GET_HEIGHT)` — used when recovery wants the freshest node-confirmed unified tip |
+| `prime_height` / `hash_height` / `stake_height` | Fresh GET_HEIGHT tracked channels when available, otherwise keepalive fallback |
 
 Why keep them separate?
 
@@ -116,6 +120,10 @@ without turning GET_HEIGHT into canonical block/template truth.
 - mark a template channel-stale on its own
 - replace `hashPrevBlock`
 - override `BLOCK_DATA` acceptance
+
+It **can** now refresh the diagnostic/verifier `prime_height`, `hash_height`,
+and `stake_height` view when the node returns the 16-byte `BLOCK_HEIGHT`
+payload, but those remain observer data — not canonical mining state.
 
 Those remain the responsibility of canonical template receipt (`BLOCK_DATA`).
 

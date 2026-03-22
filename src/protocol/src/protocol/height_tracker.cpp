@@ -79,6 +79,25 @@ void HeightTracker::OnGetHeightResponse(uint32_t unified_height)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_diagnostic.get_height_unified_height = unified_height;
+    m_diagnostic.get_height_prime_height = 0;
+    m_diagnostic.get_height_hash_height = 0;
+    m_diagnostic.get_height_stake_height = 0;
+    m_diagnostic.get_height_has_tracked_channels = false;
+    m_diagnostic.last_get_height_at = std::chrono::steady_clock::now();
+    m_last_update_source = UpdateSource::GET_HEIGHT;
+}
+
+void HeightTracker::OnGetHeightResponse(uint32_t unified_height,
+                                        uint32_t prime_height,
+                                        uint32_t hash_height,
+                                        uint32_t stake_height)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_diagnostic.get_height_unified_height = unified_height;
+    m_diagnostic.get_height_prime_height = prime_height;
+    m_diagnostic.get_height_hash_height = hash_height;
+    m_diagnostic.get_height_stake_height = stake_height;
+    m_diagnostic.get_height_has_tracked_channels = true;
     m_diagnostic.last_get_height_at = std::chrono::steady_clock::now();
     m_last_update_source = UpdateSource::GET_HEIGHT;
 }
@@ -238,14 +257,24 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     s.hash_prev_block = m_canonical.canonical_hash_prev_block;
     s.push_hash_prev_block = m_diagnostic.push_hash_prev_block;
     s.get_height_unified_height = m_diagnostic.get_height_unified_height;
+    s.get_height_prime_height = m_diagnostic.get_height_prime_height;
+    s.get_height_hash_height = m_diagnostic.get_height_hash_height;
+    s.get_height_stake_height = m_diagnostic.get_height_stake_height;
+    s.get_height_has_tracked_channels = m_diagnostic.get_height_has_tracked_channels;
     s.last_get_height_at = m_diagnostic.last_get_height_at;
     s.last_update_source = m_last_update_source;
 
-    // Per-channel heights: sourced from keepalive ACKs (canonical per-channel fields are
-    // never populated by OnBlockDataReceived — keepalive is the only writer for these).
-    s.prime_height = m_diagnostic.keepalive_prime_height;
-    s.hash_height  = m_diagnostic.keepalive_hash_height;
-    s.stake_height = m_diagnostic.keepalive_stake_height;
+    // Per-channel heights: prefer fresh GET_HEIGHT / BLOCK_HEIGHT multi-channel data
+    // when the 16-byte form is available; otherwise fall back to keepalive ACKs.
+    if (s.has_fresh_get_height() && s.get_height_has_tracked_channels) {
+        s.prime_height = s.get_height_prime_height;
+        s.hash_height  = s.get_height_hash_height;
+        s.stake_height = s.get_height_stake_height;
+    } else {
+        s.prime_height = m_diagnostic.keepalive_prime_height;
+        s.hash_height  = m_diagnostic.keepalive_hash_height;
+        s.stake_height = m_diagnostic.keepalive_stake_height;
+    }
     s.prime_channel_height = ChannelHeight{s.prime_height};
     s.hash_channel_height = ChannelHeight{s.hash_height};
     s.stake_channel_height = ChannelHeight{s.stake_height};
