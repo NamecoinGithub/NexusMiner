@@ -955,6 +955,98 @@ int main()
     }
 
     // ====================================================================
+    // Test 17c: BLOCK_HEIGHT updates verifier state without overwriting an
+    //          installed canonical/template snapshot
+    // ====================================================================
+    std::cout << "\nTest 17c: BLOCK_HEIGHT does not overwrite canonical/template state" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::LEGACY);
+
+        network::Payload block_payload = create_template_delivery_payload(9600, 100, 0x1d00ffff, 9601, 2);
+        Packet block_packet(static_cast<uint8_t>(Packet::BLOCK_DATA), block_payload);
+        solo.process_messages(block_packet, nullptr);
+
+        network::Payload height_payload = create_block_height_payload(9601, 5600, 6600, 4600);
+        Packet height_packet(static_cast<uint8_t>(Packet::BLOCK_HEIGHT), height_payload);
+        solo.process_messages(height_packet, nullptr);
+
+        auto ht_snap = solo.get_height_tracker_snapshot();
+        auto const* installed_template = solo.get_template_interface()->get_current_template();
+
+        print_test_result("BLOCK_DATA canonical unified height remains authoritative after BLOCK_HEIGHT",
+            ht_snap.unified_height == 9600);
+        print_test_result("BLOCK_HEIGHT advances verified_unified_height without rewriting canonical",
+            ht_snap.verified_unified_height() == 9601);
+        print_test_result("Installed template remains valid after BLOCK_HEIGHT verifier update",
+            solo.get_template_interface()->has_valid_template());
+        print_test_result("Installed template height remains unchanged after BLOCK_HEIGHT",
+            installed_template && installed_template->block.nHeight == 9601);
+        print_test_result("Template-unified snapshot remains canonical BLOCK_DATA value",
+            ht_snap.template_unified_height == 9600);
+        print_test_result("BLOCK_HEIGHT still updates tracked-channel verifier fields",
+            ht_snap.get_height_prime_height == 5600 &&
+            ht_snap.get_height_hash_height == 6600 &&
+            ht_snap.get_height_stake_height == 4600 &&
+            ht_snap.get_height_has_tracked_channels);
+    }
+
+    // ====================================================================
+    // Test 17d: Solo rejects malformed BLOCK_HEIGHT payload sizes and keeps
+    //          prior verifier/template state intact
+    // ====================================================================
+    std::cout << "\nTest 17d: Solo rejects malformed BLOCK_HEIGHT payload sizes" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::LEGACY);
+
+        network::Payload block_payload = create_template_delivery_payload(9700, 100, 0x1d00ffff, 9701, 2);
+        Packet block_packet(static_cast<uint8_t>(Packet::BLOCK_DATA), block_payload);
+        solo.process_messages(block_packet, nullptr);
+
+        network::Payload good_height_payload = create_block_height_payload(9701, 5700, 6700, 4700);
+        Packet good_height_packet(static_cast<uint8_t>(Packet::BLOCK_HEIGHT), good_height_payload);
+        solo.process_messages(good_height_packet, nullptr);
+
+        const auto before = solo.get_height_tracker_snapshot();
+        auto const* before_template = solo.get_template_interface()->get_current_template();
+
+        network::Payload malformed_payload(8, 0);
+        malformed_payload[0] = 0x00;
+        malformed_payload[1] = 0x00;
+        malformed_payload[2] = 0x25;
+        malformed_payload[3] = 0xEE;
+        malformed_payload[4] = 0x00;
+        malformed_payload[5] = 0x00;
+        malformed_payload[6] = 0x00;
+        malformed_payload[7] = 0x01;
+        Packet malformed_packet(static_cast<uint8_t>(Packet::BLOCK_HEIGHT), malformed_payload);
+        solo.process_messages(malformed_packet, nullptr);
+
+        const auto after = solo.get_height_tracker_snapshot();
+        auto const* after_template = solo.get_template_interface()->get_current_template();
+
+        print_test_result("Malformed BLOCK_HEIGHT does not overwrite verifier snapshot",
+            after.get_height_unified_height == before.get_height_unified_height &&
+            after.get_height_prime_height == before.get_height_prime_height &&
+            after.get_height_hash_height == before.get_height_hash_height &&
+            after.get_height_stake_height == before.get_height_stake_height &&
+            after.get_height_has_tracked_channels == before.get_height_has_tracked_channels);
+        print_test_result("Malformed BLOCK_HEIGHT does not rewrite canonical/template heights",
+            after.unified_height == before.unified_height &&
+            after.template_unified_height == before.template_unified_height &&
+            after.channel_target == before.channel_target);
+        print_test_result("Malformed BLOCK_HEIGHT leaves installed template intact",
+            solo.get_template_interface()->has_valid_template() &&
+            before_template && after_template &&
+            after_template->block.nHeight == before_template->block.nHeight);
+    }
+
+    // ====================================================================
     // Test 18: Legacy BLOCK_DATA still processes without active session
     // ====================================================================
     std::cout << "\nTest 18: Legacy BLOCK_DATA still processes without active session" << std::endl;
