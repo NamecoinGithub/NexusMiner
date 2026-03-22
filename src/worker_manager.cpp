@@ -1112,7 +1112,7 @@ int64_t Worker_manager::next_forced_retry_jitter_ms()
 bool Worker_manager::has_valid_template_available(const std::shared_ptr<protocol::Solo>& solo_protocol) const
 {
     auto* template_interface = solo_protocol ? solo_protocol->get_template_interface() : nullptr;
-    return (template_interface && template_interface->has_valid_template());
+    return (template_interface && template_interface->has_ready_template());
 }
 
 bool Worker_manager::can_send_forced_retry(std::chrono::steady_clock::time_point now)
@@ -1901,7 +1901,7 @@ void Worker_manager::check_template_health()
     const int64_t effective_recovery_window =
         (channel == mining::CHANNEL_PRIME) ? RECOVERY_WINDOW_SECONDS_PRIME
                                            : RECOVERY_WINDOW_SECONDS_HASH;
-    const bool has_valid_template = template_interface->has_valid_template();
+    const bool has_valid_template = template_interface->has_ready_template();
 
     if (m_template_withheld && m_recovery_pending && !m_degraded_mode) {
         // Belt-and-suspenders: if a valid template was installed during the pending
