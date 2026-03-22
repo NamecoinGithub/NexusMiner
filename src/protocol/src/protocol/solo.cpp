@@ -1734,9 +1734,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         !is_block_rejected_compat)
     {
         // Validate packet data before processing.
-        // During rollout BLOCK_HEIGHT may legally arrive in:
-        //   * legacy unified-only form: 4 bytes
-        //   * expanded verifier snapshot: 16 bytes (unified, prime, hash, stake)
+        // BLOCK_HEIGHT now carries the expanded 16-byte verifier snapshot:
+        //   unified, prime, hash, stake
         if (!packet.m_data) {
             m_logger->warn("Solo::process_messages: BLOCK_HEIGHT packet has null payload");
             return;
@@ -1748,29 +1747,23 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             return;
         }
 
-        const bool is_legacy_payload = (payload_size == 4);
-        const bool has_tracked_channels = (payload_size == 16);
-        if (!is_legacy_payload && !has_tracked_channels) {
-            m_logger->warn("Solo::process_messages: BLOCK_HEIGHT payload size mismatch: expected 4 or 16 bytes, got {}",
+        if (payload_size != 16) {
+            m_logger->warn("Solo::process_messages: BLOCK_HEIGHT payload size mismatch: expected 16 bytes, got {}",
                            payload_size);
             return;
         }
 
+        const bool has_tracked_channels = true;
         const auto height = bytes2uint(*packet.m_data);
         uint32_t prime_height = 0;
         uint32_t hash_height = 0;
         uint32_t stake_height = 0;
 
-        if (has_tracked_channels) {
-            prime_height = bytes2uint(*packet.m_data, 4);
-            hash_height = bytes2uint(*packet.m_data, 8);
-            stake_height = bytes2uint(*packet.m_data, 12);
-            m_logger->info("[Solo] Received BLOCK_HEIGHT: unified={} prime={} hash={} stake={}",
-                           height, prime_height, hash_height, stake_height);
-        } else {
-            // Backward-compatible unified-only BLOCK_HEIGHT.
-            m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
-        }
+        prime_height = bytes2uint(*packet.m_data, 4);
+        hash_height = bytes2uint(*packet.m_data, 8);
+        stake_height = bytes2uint(*packet.m_data, 12);
+        m_logger->info("[Solo] Received BLOCK_HEIGHT: unified={} prime={} hash={} stake={}",
+                       height, prime_height, hash_height, stake_height);
 
         auto prior_snap = m_height_tracker.GetSnapshot();
         uint32_t known_height = prior_snap.verified_unified_height() > 0
@@ -1778,13 +1771,8 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             : m_current_height;
 
         // Feed into primary shadow layer (GET_HEIGHT is primary height cross-check source)
-        if (has_tracked_channels) {
-            m_channel_shadow_tracker.IngestGetHeightResponse(height, prime_height, hash_height, stake_height);
-            m_height_tracker.OnGetHeightResponse(height, prime_height, hash_height, stake_height);
-        } else {
-            m_channel_shadow_tracker.IngestGetHeightResponse(height);
-            m_height_tracker.OnGetHeightResponse(height);
-        }
+        m_channel_shadow_tracker.IngestGetHeightResponse(height, prime_height, hash_height, stake_height);
+        m_height_tracker.OnGetHeightResponse(height, prime_height, hash_height, stake_height);
 
         const auto shadow_snap = m_channel_shadow_tracker.GetSnapshot();
         const auto& cross_check = shadow_snap.cross_check;

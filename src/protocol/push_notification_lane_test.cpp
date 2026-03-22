@@ -174,16 +174,6 @@ network::Payload create_block_height_payload(uint32_t unified_height,
     return payload;
 }
 
-network::Payload create_legacy_block_height_payload(uint32_t unified_height)
-{
-    network::Payload payload(4, 0);
-    payload[0] = static_cast<uint8_t>((unified_height >> 24) & 0xFF);
-    payload[1] = static_cast<uint8_t>((unified_height >> 16) & 0xFF);
-    payload[2] = static_cast<uint8_t>((unified_height >> 8) & 0xFF);
-    payload[3] = static_cast<uint8_t>(unified_height & 0xFF);
-    return payload;
-}
-
 int main()
 {
     auto null_sink = std::make_shared<spdlog::sinks::null_sink_mt>();
@@ -965,46 +955,10 @@ int main()
     }
 
     // ====================================================================
-    // Test 17c: Solo preserves legacy 4-byte BLOCK_HEIGHT compatibility
-    // ====================================================================
-    std::cout << "\nTest 17c: Solo preserves legacy 4-byte BLOCK_HEIGHT compatibility" << std::endl;
-    {
-        auto session_manager = std::make_shared<protocol::SessionManager>();
-        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
-        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
-        solo.set_protocol_lane(ProtocolLane::LEGACY);
-
-        network::Payload payload = create_legacy_block_height_payload(9500);
-        Packet packet(static_cast<uint8_t>(Packet::BLOCK_HEIGHT), payload);
-        solo.process_messages(packet, nullptr);
-
-        auto ht_snap = solo.get_height_tracker_snapshot();
-        auto shadow_snap = solo.get_channel_shadow_snapshot();
-
-        print_test_result("Legacy BLOCK_HEIGHT stores unified verifier height",
-            ht_snap.get_height_unified_height == 9500);
-        print_test_result("Legacy BLOCK_HEIGHT leaves tracked-channel verifier state unset",
-            ht_snap.get_height_prime_height == 0 &&
-            ht_snap.get_height_hash_height == 0 &&
-            ht_snap.get_height_stake_height == 0 &&
-            !ht_snap.get_height_has_tracked_channels);
-        print_test_result("Legacy BLOCK_HEIGHT still feeds verified_unified_height",
-            ht_snap.verified_unified_height() == 9500);
-        print_test_result("Legacy BLOCK_HEIGHT does not mutate canonical unified/channel state",
-            ht_snap.unified_height == 0 && ht_snap.channel_height == 0);
-        print_test_result("Shadow tracker stores legacy GET_HEIGHT payload without tracked channels",
-            shadow_snap.get_height.unified_height == 9500 &&
-            shadow_snap.get_height.prime_height == 0 &&
-            shadow_snap.get_height.hash_height == 0 &&
-            shadow_snap.get_height.stake_height == 0 &&
-            !shadow_snap.get_height.has_tracked_channels);
-    }
-
-    // ====================================================================
-    // Test 17d: BLOCK_HEIGHT updates verifier state without overwriting an
+    // Test 17c: BLOCK_HEIGHT updates verifier state without overwriting an
     //          installed canonical/template snapshot
     // ====================================================================
-    std::cout << "\nTest 17d: BLOCK_HEIGHT does not overwrite canonical/template state" << std::endl;
+    std::cout << "\nTest 17c: BLOCK_HEIGHT does not overwrite canonical/template state" << std::endl;
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
@@ -1040,10 +994,10 @@ int main()
     }
 
     // ====================================================================
-    // Test 17e: Solo rejects malformed BLOCK_HEIGHT payload sizes and keeps
+    // Test 17d: Solo rejects malformed BLOCK_HEIGHT payload sizes and keeps
     //          prior verifier/template state intact
     // ====================================================================
-    std::cout << "\nTest 17e: Solo rejects malformed BLOCK_HEIGHT payload sizes" << std::endl;
+    std::cout << "\nTest 17d: Solo rejects malformed BLOCK_HEIGHT payload sizes" << std::endl;
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
