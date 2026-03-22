@@ -1251,6 +1251,16 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
             }
         }
 
+        // Start GET_HEIGHT timer: sends GET_HEIGHT every 30s as primary height shadow source
+        constexpr uint16_t GET_HEIGHT_TIMER_INTERVAL = 30;
+        if (!self->m_get_height_timer_started)
+        {
+            self->m_get_height_timer_started = true;
+            self->m_timer_manager.start_get_height_timer(GET_HEIGHT_TIMER_INTERVAL, self);
+            self->m_logger->info("[Worker_manager] GET_HEIGHT timer started ({}s interval, primary height shadow)",
+                GET_HEIGHT_TIMER_INTERVAL);
+        }
+
         // Start lane health check timer
         constexpr uint16_t LANE_HEALTH_INTERVAL = 30;
         if (!self->m_lane_health_timer_started)
@@ -1436,7 +1446,7 @@ void Worker_manager::log_lane_health()
 void Worker_manager::send_session_status_if_due()
 {
     auto now = std::chrono::steady_clock::now();
-    constexpr int64_t SESSION_STATUS_INTERVAL_SECONDS = 60;
+    constexpr int64_t SESSION_STATUS_INTERVAL_SECONDS = 300;
     if (std::chrono::duration_cast<std::chrono::seconds>(
             now - m_last_session_status_sent).count() < SESSION_STATUS_INTERVAL_SECONDS)
         return;
@@ -1456,6 +1466,26 @@ void Worker_manager::send_session_status_if_due()
             if (pkt && !pkt->empty())
                 m_primary_node_session->transmit(pkt);
         }
+    }
+}
+
+void Worker_manager::send_get_height_if_due()
+{
+    // Called by the 30-second GET_HEIGHT timer.  Sends GET_HEIGHT on the live
+    // authenticated lane.  The node responds with BLOCK_HEIGHT which is ingested
+    // by Solo as the primary unified-height shadow source for cross-check.
+    if (!m_primary_node_session || !m_primary_node_session->is_authenticated())
+        return;
+
+    auto solo_protocol = m_primary_node_session->get_primary_protocol();
+    if (!solo_protocol)
+        return;
+
+    auto pkt = solo_protocol->send_get_height();
+    if (pkt && !pkt->empty())
+    {
+        m_primary_node_session->transmit(pkt);
+        m_logger->debug("[Worker_manager] GET_HEIGHT sent (primary shadow poll)");
     }
 }
 

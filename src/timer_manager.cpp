@@ -16,6 +16,7 @@ Timer_manager::Timer_manager(chrono::Timer_factory::Sptr timer_factory)
     m_stats_collector_timer = m_timer_factory->create_timer();
     m_stats_printer_timer = m_timer_factory->create_timer();
     m_get_round_timer = m_timer_factory->create_timer();  // Template Staleness Prevention
+    m_get_height_timer = m_timer_factory->create_timer(); // GET_HEIGHT primary shadow polling
     m_template_health_timer = m_timer_factory->create_timer();  // Template Health Monitoring
     m_secondary_connection_retry_timer = m_timer_factory->create_timer();  // SIM Link secondary
     m_lane_health_check_timer = m_timer_factory->create_timer();  // SIM Link lane health log
@@ -52,6 +53,7 @@ void Timer_manager::stop()
     m_stats_collector_timer->cancel();
     m_stats_printer_timer->cancel();
     m_get_round_timer->cancel();  // Template Staleness Prevention
+    m_get_height_timer->cancel(); // GET_HEIGHT primary shadow polling
     m_template_health_timer->cancel();  // Template Health Monitoring
     m_secondary_connection_retry_timer->cancel();  // SIM Link secondary lane
     m_lane_health_check_timer->cancel();  // SIM Link lane health log
@@ -158,6 +160,13 @@ void Timer_manager::start_template_health_timer(std::uint16_t timer_interval, st
         template_health_handler(timer_interval, std::move(worker_manager)));
 }
 
+void Timer_manager::start_get_height_timer(std::uint16_t timer_interval,
+    std::weak_ptr<Worker_manager> worker_manager)
+{
+    m_get_height_timer->start(chrono::Seconds(timer_interval),
+        get_height_handler(timer_interval, std::move(worker_manager)));
+}
+
 chrono::Timer::Handler Timer_manager::template_health_handler(std::uint16_t health_check_interval, 
     std::weak_ptr<Worker_manager> worker_manager)
 {
@@ -180,6 +189,27 @@ chrono::Timer::Handler Timer_manager::template_health_handler(std::uint16_t heal
                 template_health_handler(health_check_interval, worker_manager));
         }
     }; 
+}
+
+chrono::Timer::Handler Timer_manager::get_height_handler(std::uint16_t get_height_interval,
+    std::weak_ptr<Worker_manager> worker_manager)
+{
+    return [this, get_height_interval, worker_manager](bool canceled)
+    {
+        if (canceled)
+        {
+            return;
+        }
+
+        auto wm = worker_manager.lock();
+        if (wm)
+        {
+            wm->send_get_height_if_due();
+
+            m_get_height_timer->start(chrono::Seconds(get_height_interval),
+                get_height_handler(get_height_interval, worker_manager));
+        }
+    };
 }
 
 void Timer_manager::start_lane_health_check_timer(std::uint16_t timer_interval,

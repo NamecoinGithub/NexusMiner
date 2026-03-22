@@ -9,6 +9,7 @@
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/push_notification_handler.hpp"
 #include "protocol/height_tracker.hpp"
+#include "protocol/channel_height_shadow_tracker.hpp"
 #include "protocol/session_ingress_gate.hpp"
 #include "protocol/session_recovery_policy.hpp"
 #include "protocol/submit_context.hpp"
@@ -101,6 +102,12 @@ public:
     /// It does NOT request a block template.  Use send_recovery_work_request()
     /// when the intent is to force a fresh template retrieval.
     network::Shared_payload send_get_round();
+    /// Send GET_HEIGHT on all lanes (legacy: 0x82; stateless: 0xD082).
+    /// Periodic unified-height poll (30s cadence).  The node responds with
+    /// BLOCK_HEIGHT carrying the current unified chain height as a uint32.
+    /// This is the PRIMARY shadow source for height cross-check.
+    /// Authentication-guarded; returns null if not authenticated.
+    network::Shared_payload send_get_height();
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work().
     /// Returns null/empty if not yet authenticated — callers must guard for this.
@@ -177,6 +184,9 @@ public:
 
     // HeightTracker reference (for direct read access by ColinAgent)
     const HeightTracker& get_height_tracker() const { return m_height_tracker; }
+
+    // Full-height shadow tracker snapshot (canonical vs shadow cross-check, all channels)
+    ChannelHeightShadowTracker::Snapshot get_channel_shadow_snapshot() const { return m_channel_shadow_tracker.GetSnapshot(); }
 
     // Helper to access SessionManager through NodeSessionContext
     SessionManager* get_session_manager() const {
@@ -505,6 +515,9 @@ private:
     
     // Centralized height tracker (single source of truth for heights)
     HeightTracker m_height_tracker;
+
+    // Full-height shadow tracker (canonical vs shadow cross-check, all channels)
+    ChannelHeightShadowTracker m_channel_shadow_tracker;
     
     // Connection for multi-packet authentication flow
     std::shared_ptr<network::Connection> m_connection;

@@ -7,6 +7,7 @@ add_library(protocol STATIC src/protocol/solo.cpp
                             src/protocol/mining_template_interface.cpp
                             src/protocol/push_notification_handler.cpp
                             src/protocol/height_tracker.cpp
+                            src/protocol/channel_height_shadow_tracker.cpp
                             src/protocol/packet_builder.cpp
                             ${CMAKE_SOURCE_DIR}/src/LLP/colin_ping_handler.cpp
                             ${CMAKE_SOURCE_DIR}/src/LLP/stateless_block_utility.cpp)
@@ -250,3 +251,13 @@ target_include_directories(node_session_context_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 add_test(NAME node_session_context_test COMMAND $<TARGET_FILE:node_session_context_test>)
+
+# ChannelHeightShadowTracker unit tests
+add_executable(channel_height_shadow_tracker_test channel_height_shadow_tracker_test.cpp)
+target_link_libraries(channel_height_shadow_tracker_test PRIVATE protocol)
+target_include_directories(channel_height_shadow_tracker_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLC/inc
+    ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME channel_height_shadow_tracker_test COMMAND $<TARGET_FILE:channel_height_shadow_tracker_test>)
