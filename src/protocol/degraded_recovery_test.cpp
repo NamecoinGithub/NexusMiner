@@ -493,8 +493,6 @@ void test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout() {
     // the state-machine ordering (soft refresh first, degraded only after timeout),
     // not the exact per-channel production timeout constant.
     constexpr int64_t RECOVERY_WINDOW_SECONDS = 60;
-    constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
-
     struct HealthState {
         bool m_degraded_mode{false};
         bool m_recovery_pending{false};
@@ -528,7 +526,7 @@ void test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout() {
                 return;
             }
 
-            if (unified_drift > UNIFIED_DRIFT_THRESHOLD) {
+            if (unified_drift > ProtocolConstants::UNIFIED_DRIFT_THRESHOLD) {
                 m_degraded_mode = true;
                 stop_workers = true;
             }
@@ -556,8 +554,6 @@ void test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout() {
 // ============================================================================
 void test_unified_drift_requires_get_height_probe_before_soft_refresh() {
     std::cout << "\nTest 4h: critical unified drift probes GET_HEIGHT before soft refresh\n";
-    constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
-
     struct DriftDecision {
         bool send_get_height{false};
         bool request_refresh{false};
@@ -574,7 +570,7 @@ void test_unified_drift_requires_get_height_probe_before_soft_refresh() {
             request_refresh = false;
             stop_workers = false;
 
-            if (unified_height <= template_height + UNIFIED_DRIFT_THRESHOLD) {
+            if (unified_height <= template_height + ProtocolConstants::UNIFIED_DRIFT_THRESHOLD) {
                 return;
             }
 
@@ -603,10 +599,19 @@ void test_unified_drift_requires_get_height_probe_before_soft_refresh() {
     print_test_result("Unified drift probe does not request template yet", !state.request_refresh);
 
     state.tick(/*unified_height=*/5008, /*template_height=*/5000,
+               /*get_height_ready=*/true, /*get_height_delta=*/2);
+    print_test_result("GET_HEIGHT divergence of exactly 2 stays below trigger", !state.request_refresh);
+    print_test_result("Exact-threshold divergence still keeps degraded mode off", !state.stop_workers && !state.degraded_mode);
+
+    state.tick(/*unified_height=*/5008, /*template_height=*/5000,
                /*get_height_ready=*/true, /*get_height_delta=*/3);
     print_test_result("GET_HEIGHT divergence >2 requests soft refresh", state.request_refresh);
     print_test_result("GET_HEIGHT-confirmed drift keeps degraded mode off", !state.stop_workers && !state.degraded_mode);
     print_test_result("GET_HEIGHT-confirmed drift withholds submissions", state.recovery_pending && state.template_withheld);
+
+    state.tick(/*unified_height=*/5008, /*template_height=*/5000,
+               /*get_height_ready=*/true, /*get_height_delta=*/-3);
+    print_test_result("Negative GET_HEIGHT divergence uses absolute value", state.request_refresh);
 }
 
 // ============================================================================

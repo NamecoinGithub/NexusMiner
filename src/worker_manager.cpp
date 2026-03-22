@@ -88,14 +88,6 @@ namespace {
     constexpr int64_t RETRY_CONNECT_PUSH_LIVE_SECONDS = 30;
 
     // Aggressive secondary reconnect delay during degraded mode.
-    // Unified height drift threshold: if HeightTracker.unified_height exceeds
-    // template.block.nHeight by more than this many blocks, the template is
-    // presumed stale (hashPrevBlock is wrong) and must be discarded.
-    // On a 3-channel Nexus blockchain, the unified height advances whenever any
-    // channel (Prime, Hash, Stake) finds a block. A drift of 1-3 blocks between
-    // push notification and new BLOCK_DATA template is normal during the propagation
-    // window. Set threshold to 5 to avoid false-positive template discards.
-    constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
     constexpr int64_t PROACTIVE_GET_HEIGHT_MIN_INTERVAL_SECONDS = 30;
     constexpr int64_t FORCED_RETRY_INTERVAL_MS = 1000;
     constexpr int64_t FORCED_RETRY_JITTER_MIN_MS = 100;
@@ -1057,6 +1049,8 @@ const char* Worker_manager::suppression_reason_name(GetBlockSuppressionReason re
 bool Worker_manager::request_get_height_probe(const std::shared_ptr<protocol::Solo>& solo_protocol,
                                               const char* reason)
 {
+    const char* probe_reason = reason ? reason : "unknown";
+
     if (!m_primary_node_session || !m_primary_node_session->is_authenticated() || !solo_protocol) {
         return false;
     }
@@ -1067,7 +1061,7 @@ bool Worker_manager::request_get_height_probe(const std::shared_ptr<protocol::So
             now - m_last_proactive_get_height_at).count();
         if (since_last_probe_s < PROACTIVE_GET_HEIGHT_MIN_INTERVAL_SECONDS) {
             m_logger->info("[Worker_manager] GET_HEIGHT probe suppressed for {} — {}s since last probe (min={}s)",
-                           reason ? reason : "unknown",
+                           probe_reason,
                            since_last_probe_s,
                            PROACTIVE_GET_HEIGHT_MIN_INTERVAL_SECONDS);
             return false;
@@ -1077,14 +1071,14 @@ bool Worker_manager::request_get_height_probe(const std::shared_ptr<protocol::So
     auto pkt = solo_protocol->send_get_height();
     if (!pkt || pkt->empty()) {
         m_logger->info("[Worker_manager] GET_HEIGHT probe unavailable for {} — auth/dedup guard still active",
-                       reason ? reason : "unknown");
+                       probe_reason);
         return false;
     }
 
     m_primary_node_session->transmit(pkt);
     m_last_proactive_get_height_at = now;
     m_logger->info("[Worker_manager] GET_HEIGHT probe sent for {} — awaiting BLOCK_HEIGHT cross-check",
-                   reason ? reason : "unknown");
+                   probe_reason);
     return true;
 }
 
@@ -2408,7 +2402,7 @@ void Worker_manager::check_template_health()
         uint32_t tmpl_height = template_interface->get_template_height();
 
         if (ht_snap.unified_height > 0 && tmpl_height > 0 &&
-            ht_snap.unified_height > tmpl_height + UNIFIED_DRIFT_THRESHOLD)
+            ht_snap.unified_height > tmpl_height + protocol::ProtocolConstants::UNIFIED_DRIFT_THRESHOLD)
         {
             int32_t drift = static_cast<int32_t>(ht_snap.unified_height) -
                             static_cast<int32_t>(tmpl_height);
