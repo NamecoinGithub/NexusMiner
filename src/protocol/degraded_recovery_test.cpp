@@ -648,6 +648,36 @@ void test_worker_respawn_guard_is_single_shot_per_degraded_exit() {
 }
 
 // ============================================================================
+// Test 4ga: Authoritative BLOCK_DATA/GET_BLOCK feed accepts only newer heights
+// ============================================================================
+void test_authoritative_template_guard_requires_newer_unified_height() {
+    std::cout << "\nTest 4ga: Authoritative template guard accepts only newer unified heights\n";
+
+    struct AuthoritativeTemplateAdoption {
+        uint32_t adopted_unified_height{0};
+
+        bool should_adopt(uint32_t incoming_unified_height) {
+            // Mirrors the production sequence:
+            //   1. Solo::should_accept_authoritative_template() checks the incoming
+            //      unified height against the currently adopted one.
+            //   2. finalize_and_feed_current_template() updates m_current_height
+            //      only after the newer template is accepted for adoption.
+            if (adopted_unified_height == 0 || incoming_unified_height > adopted_unified_height) {
+                adopted_unified_height = incoming_unified_height;
+                return true;
+            }
+            return false;
+        }
+    };
+
+    AuthoritativeTemplateAdoption adoption;
+    print_test_result("First authoritative template is accepted", adoption.should_adopt(6594322));
+    print_test_result("Same unified height template is suppressed", !adoption.should_adopt(6594322));
+    print_test_result("Older unified height template is suppressed", !adoption.should_adopt(6594321));
+    print_test_result("Newer unified height template is accepted", adoption.should_adopt(6594323));
+}
+
+// ============================================================================
 // Test 4h: Workers only respawn after the prior generation is fully stopped
 // ============================================================================
 void test_worker_respawn_waits_for_authoritative_empty_generation() {
@@ -1102,6 +1132,7 @@ int main() {
     test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout();
     test_unified_drift_requires_get_height_probe_before_soft_refresh();
     test_worker_respawn_guard_is_single_shot_per_degraded_exit();
+    test_authoritative_template_guard_requires_newer_unified_height();
     test_worker_respawn_waits_for_authoritative_empty_generation();
     test_keepalive_epoch_isolation_clean_start();
     test_stale_template_after_channel_advance();

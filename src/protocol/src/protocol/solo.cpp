@@ -588,6 +588,22 @@ void Solo::clear_generation_bound_state(const char* reason)
     }
 }
 
+bool Solo::should_accept_authoritative_template(uint32_t unified_height,
+                                                const char* log_scope,
+                                                const char* source_name) const
+{
+    if (m_current_height == 0 || unified_height > m_current_height) {
+        return true;
+    }
+
+    m_logger->info("[{}] Suppressing {} template feed: unified height {} is not newer than current {}",
+                   log_scope,
+                   source_name,
+                   unified_height,
+                   m_current_height);
+    return false;
+}
+
 bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
                                               uint32_t effective_channel_height,
                                               const char* log_scope,
@@ -683,7 +699,7 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     }
 
     if (!m_template_interface->feed_current_template()) {
-        m_logger->debug("[{}] Template feed suppressed by unified debounce gate", log_scope);
+        m_logger->warn("[{}] Authoritative template delivery did not reach workers", log_scope);
     }
 
     auto stats = m_template_interface->get_stats();
@@ -2049,6 +2065,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                            | (uint32_t(d[6]) <<  8) |  uint32_t(d[7]);
             nBitsMeta      = (uint32_t(d[8]) << 24) | (uint32_t(d[9]) << 16)
                            | (uint32_t(d[10]) << 8) |  uint32_t(d[11]);
+        }
+        if (!should_accept_authoritative_template(nUnifiedHeight, "Solo BLOCK_DATA", "BLOCK_DATA")) {
+            return;
         }
         // ── HeightTracker BLOCK_DATA feed (Step 1/2) ───────────────────────────────
         // Feed unified_height, channel_height, nBits from the authoritative node
@@ -3579,6 +3598,17 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
                 }
             }
             return;
+        }
+        if (packet.m_data->size() >= StatelessBlockUtility::METADATA_PREFIX_SIZE) {
+            const auto& raw = *packet.m_data;
+            const uint32_t unified_height =
+                (uint32_t(raw[0]) << 24) | (uint32_t(raw[1]) << 16) |
+                (uint32_t(raw[2]) << 8) | uint32_t(raw[3]);
+            if (!should_accept_authoritative_template(unified_height,
+                                                      "Solo Stateless",
+                                                      "STATELESS_GET_BLOCK")) {
+                return;
+            }
         }
         auto decoded = StatelessBlockUtility::decode_template(
             *m_template_interface, *packet.m_data, m_channel, m_logger, false);

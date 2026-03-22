@@ -352,6 +352,9 @@ private:
                                          const ::LLP::KeepAliveV2AckFrame& ack,
                                          std::shared_ptr<network::Connection> connection);
     void clear_generation_bound_state(const char* reason);
+    bool should_accept_authoritative_template(uint32_t unified_height,
+                                              const char* log_scope,
+                                              const char* source_name) const;
     bool finalize_and_feed_current_template(uint32_t unified_height,
                                             uint32_t effective_channel_height,
                                             const char* log_scope,
