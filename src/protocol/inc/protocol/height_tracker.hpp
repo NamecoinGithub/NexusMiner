@@ -352,10 +352,8 @@ public:
          * Both values must be non-zero to avoid false positives at startup.
          */
         bool is_tip_moved() const {
-            const uint32_t effective_unified_height =
-                std::max(verified_unified_height(), push_unified_height);
             return (template_unified_height > 0 &&
-                    effective_unified_height > template_unified_height);
+                    effective_observed_unified_height() > template_unified_height);
         }
 
         /**
@@ -420,9 +418,7 @@ public:
          * is caught up.
          */
         int32_t height_drift_from_canonical() const {
-            const uint32_t effective_observed_unified_height =
-                std::max(verified_unified_height(), push_unified_height);
-            return static_cast<int32_t>(effective_observed_unified_height) -
+            return static_cast<int32_t>(effective_observed_unified_height()) -
                    static_cast<int32_t>(canonical_unified_height);
         }
 
@@ -460,6 +456,17 @@ public:
                 return unified_height;
             }
             return std::max(unified_height, get_height_unified_height);
+        }
+
+        /**
+         * @brief Highest unified tip currently observed by fast verifier/observer sources.
+         *
+         * Combines canonical BLOCK_DATA unified height, fresh GET_HEIGHT verifier
+         * height, and the latest push-observer unified height for tip-movement
+         * and drift diagnostics.
+         */
+        uint32_t effective_observed_unified_height() const {
+            return std::max(verified_unified_height(), push_unified_height);
         }
 
         // ── Canonical reference (for drift computation and fork detection) ───
