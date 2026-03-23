@@ -4357,13 +4357,28 @@ bool Solo::validate_current_template()
     auto snap = m_height_tracker.GetSnapshot();
     uint32_t expectedChannel = snap.expected_template_target();
     
-    // Validation: Channel height only (unified height may advance due to other channels)
-    if (expectedChannel != 0 && tmpl->nChannelHeight != 0 && tmpl->nChannelHeight != expectedChannel) {
-        m_logger->warn("[Solo Validate] Channel height mismatch: template={}, expected={}",
-            tmpl->nChannelHeight, expectedChannel);
-        m_logger->warn("[Solo Validate] Unified height mismatch is expected when other channels advance");
-        m_template_interface->discard_template("Channel height stale");
-        return false;
+    // Validation: template must target a block still in the future.
+    // During bursts, push lag can cause channel_height to trail nChannelHeight by
+    // multiple blocks. nChannelHeight > channel_height means we are still valid.
+    // Only discard when the chain tip has ALREADY MET OR PASSED our target.
+    // The node is the authoritative source of nChannelHeight; if it gave us
+    // nChannelHeight=N, that IS the right target regardless of our local tracker state.
+    if (expectedChannel != 0 && tmpl->nChannelHeight != 0) {
+        if (tmpl->nChannelHeight <= snap.channel_height) {
+            m_logger->warn("[Solo Validate] Template target {} already surpassed by chain tip {} — discarding",
+                tmpl->nChannelHeight, snap.channel_height);
+            m_template_interface->discard_template("Channel height stale");
+            return false;
+        }
+        // Note: nChannelHeight > expectedChannel (more than 1 ahead) is VALID during burst
+        // recovery — log informationally so operators can observe burst lag without alarming.
+        if (tmpl->nChannelHeight != expectedChannel) {
+            m_logger->info("[Solo Validate] ℹ️  nChannelHeight={} is {} blocks ahead of local tracker tip={} "
+                           "(normal during burst recovery — template is valid)",
+                           tmpl->nChannelHeight,
+                           tmpl->nChannelHeight - snap.channel_height,
+                           snap.channel_height);
+        }
     }
 
     // NOTE: The has_same_height_push_tip_replacement() check was intentionally removed

@@ -1096,30 +1096,32 @@ bool MiningTemplateInterface::update_channel_height(uint32_t channel, uint32_t n
         return false;
     }
     
-    // Check if template is stale based on channel height
-    // Template builds NEXT block, so template channel height = node height + 1
-    // Template is stale if: node_channel_height != (template_channel_height - 1)
+    // Check if template is stale based on channel height.
+    // Template builds the NEXT block, so nChannelHeight is our mining target.
+    // Stale only when the chain tip has REACHED or PASSED our target.
+    // new_channel_height < nChannelHeight means the chain is still behind our
+    // target — template is valid (normal during burst push lag and async round lag).
     if (m_current_template.nChannelHeight == 0) {
         m_logger->debug("[TemplateInterface] Template channel height not yet set (pending finalization)");
         return false;
     }
-    
-    uint32_t expected_node_height = m_current_template.nChannelHeight - 1;
-    
-    if (new_channel_height != expected_node_height) {
-        m_logger->info("[TemplateInterface] ⚠ Channel {} height mismatch detected!", channel);
-        m_logger->info("[TemplateInterface]   Expected node height: {}", expected_node_height);
-        m_logger->info("[TemplateInterface]   Actual node height:   {}", new_channel_height);
-        m_logger->info("[TemplateInterface]   → Another {} block was mined",
-            (channel == 1) ? "Prime" : (channel == 2) ? "Hash" : "Stake");
-        m_logger->info("[TemplateInterface] 📉 Template behind canonical chain (channel-specific height advanced) — discarding");
-        
-        discard_template_unsafe("Channel height advanced");
+
+    // FIXED: only discard when chain tip has reached or passed our mining target.
+    // new_channel_height == nChannelHeight → block we are mining was just found → stale.
+    // new_channel_height >  nChannelHeight → chain is multiple blocks ahead       → stale.
+    // new_channel_height <  nChannelHeight → chain is still behind our target     → valid.
+    if (new_channel_height >= m_current_template.nChannelHeight) {
+        m_logger->info("[TemplateInterface] ⚠ Channel {} height {}/{} reached/passed target {} — template stale",
+            channel, new_channel_height,
+            (channel == 1) ? "Prime" : (channel == 2) ? "Hash" : "Stake",
+            m_current_template.nChannelHeight);
+        discard_template_unsafe("Channel height reached or passed target");
         m_templates_expired_height.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
-    
-    m_logger->debug("[TemplateInterface] ✓ Template is FRESH - channel height matches");
+
+    m_logger->debug("[TemplateInterface] ✓ Template FRESH — channel={} still below target={}",
+        new_channel_height, m_current_template.nChannelHeight);
     return false;
 }
 

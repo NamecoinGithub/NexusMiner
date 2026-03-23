@@ -130,11 +130,14 @@ public:
      * 
      * Checks:
      * 1. Unified height match (template.nHeight == nodeUnifiedHeight + 1)
-     * 2. Channel height match (template.nChannelHeight == nodeChannelHeight + 1)
+     * 2. Channel height directional guard (template.nChannelHeight > nodeChannelHeight)
      * 3. Age timeout (< MAX_TEMPLATE_AGE_SECONDS)
      * 
      * Note: template.nHeight is the UNIFIED blockchain height (tStateBest.nHeight + 1).
      * Channel-specific height is tracked in template.nChannelHeight (metadata only, defensive guard).
+     * The channel height check uses a directional guard (not exact equality) so that templates
+     * targeting a block more than 1 ahead of the local tracker (normal during burst recovery) are
+     * not incorrectly rejected.
      * 
      * @param pTemplate Template to validate
      * @return true if template is valid for mining
@@ -148,16 +151,16 @@ public:
         uint32_t nNodeChannel = m_nNodeChannelHeight.load();
         
         // Validate unified height (Block::Accept logic)
-
         // Template builds NEXT block; nHeight = unified tip + 1 (nHeight is unified height)
-
         if (pTemplate->nHeight != nNodeUnified + 1)
             return false;  // Stale template or fork
         
-        // Validate channel height (secondary staleness guard — defensive layer)
-        // Template's channel height should be nodeChannelHeight + 1
-        if (pTemplate->nChannelHeight != nNodeChannel + 1)
-            return false;  // Channel advanced since template was issued
+        // Validate channel height (secondary staleness guard — directional check).
+        // Stale only when the chain tip has REACHED or PASSED the template's target height.
+        // Exact equality (nChannelHeight == nNodeChannel + 1) is not required: during burst
+        // recovery the node may hand us a template targeting nNodeChannel + 3 and that is valid.
+        if (pTemplate->nChannelHeight <= nNodeChannel)
+            return false;  // Chain has already reached or passed our target — stale
         
         // Age timeout (MAX_TEMPLATE_AGE_SECONDS safety net)
         if (pTemplate->GetAge() > MAX_TEMPLATE_AGE_SECONDS)
