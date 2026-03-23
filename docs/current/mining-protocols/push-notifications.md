@@ -301,16 +301,27 @@ If MINER_READY fails, the miner falls back to:
 [Solo] ✓ Template valid (Prime height 2302710)
 [Solo] Mining...
 
-# A Prime block is found — channel advanced:
+# A Prime block is found — channel advanced (blocks_behind=1):
 [Solo Push] ✉️  PRIME_BLOCK_AVAILABLE received
 [Solo Push]   Unified: 6541701, Prime: 2302710, Diff: 0x0422e6fc
-[Solo Push] ✗ Stale (channel_height 2302710 >= channel_target 2302710) [reason: channel_advanced]
-[Solo Push] Requesting fresh Prime template...
+[Solo Push] ℹ️  Normal anchor update (blocks_behind=1) — requesting fresh Prime template
+[Solo] GET_BLOCK sent
+
+# Two rapid Prime blocks arrive in burst (blocks_behind=2, within grace window):
+[Solo Push] ✉️  PRIME_BLOCK_AVAILABLE received
+[Solo Push]   Unified: 6541702, Prime: 2302711, Diff: 0x0422e6fc
+[Solo Push] ℹ️  Burst: 2 blocks behind (template 1s old) — discarding stale template and requesting fresh Prime template (soft refresh)
+[Worker_manager] Template refresh requested — epoch 1 (reason: soft refresh requested)
+[Worker_manager]   Workers keep running; only submissions are withheld during the replacement-template window
+[Solo] GET_BLOCK sent
+[Solo] BLOCK_DATA received (216 bytes)
+[Solo] ✓ Template valid (Prime height 2302712)
+[Worker_manager] ✅ RECOVERY COMPLETE — workers_fed=N
 
 # A Hash block is found — unified tip moved, Prime channel unchanged:
 [Solo Push] ✉️  PRIME_BLOCK_AVAILABLE received
-[Solo Push]   Unified: 6541702, Prime: 2302710, Diff: 0x0422e6fc
-[Solo Push] ↑ Tip moved (unified 6541701 → 6541702) — requesting fresh Prime template [reason: tip_moved]
+[Solo Push]   Unified: 6541703, Prime: 2302712, Diff: 0x0422e6fc
+[Solo Push] ↑ Tip moved (unified 6541702 → 6541703) — requesting fresh Prime template [reason: tip_moved]
 [Solo Push] Requesting fresh Prime template...
 ```
 

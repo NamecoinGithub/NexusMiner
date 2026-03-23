@@ -394,7 +394,9 @@ int main()
                     return d;
                 }
                 if (blocks_behind == 2 && burst_grace_active) {
+                    d.discard_template_called = true;
                     d.request_work_called = true;
+                    d.soft_refresh_triggered = true;
                     return d;
                 }
                 // blocks_behind >= 2: height alone is sufficient — discard and recover.
@@ -449,7 +451,7 @@ int main()
         }
 
         // Scenario C: 2-block burst within grace window
-        // Expected: request fresh work, but do NOT discard or enter recovery yet
+        // Expected: discard template, request fresh work, soft refresh — NOT hard recovery
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
                                        /*has_hash=*/true, /*hash_matches=*/true,
@@ -457,10 +459,12 @@ int main()
                                        /*tip_moved=*/false);
             print_test_result("Scenario C1: 2-block burst within grace → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario C2: 2-block burst within grace → discard_template NOT called",
-                !d.discard_template_called);
+            print_test_result("Scenario C2: 2-block burst within grace → discard_template called",
+                d.discard_template_called);
             print_test_result("Scenario C3: 2-block burst within grace → recovery NOT triggered",
                 !d.recovery_triggered);
+            print_test_result("Scenario C4: 2-block burst within grace → soft refresh triggered",
+                d.soft_refresh_triggered);
         }
 
         // Scenario D: 2-block lag after grace expires
@@ -745,9 +749,9 @@ int main()
             [&soft_refresh_called]() { soft_refresh_called = true; });
 
         print_test_result("2-block burst within grace requests fresh work", request_work_called);
-        print_test_result("2-block burst within grace keeps template valid", tmpl_interface.has_valid_template());
+        print_test_result("2-block burst within grace discards stale template", !tmpl_interface.has_valid_template());
         print_test_result("2-block burst within grace does not enter recovery", !recovery_called);
-        print_test_result("2-block burst within grace does not enter soft refresh", !soft_refresh_called);
+        print_test_result("2-block burst within grace triggers soft refresh", soft_refresh_called);
     }
 
     // ====================================================================
