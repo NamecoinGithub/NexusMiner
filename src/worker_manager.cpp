@@ -671,8 +671,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // For the TCP reconnect path, the connection callback already cleared it.
                 if (is_reconnecting()) {
                     // Transition back to HARD_RECOVERY — still need a fresh template.
-                    m_recovery.phase = RecoveryPhase::HARD_RECOVERY;
-                    m_recovery.reconnect_started_at = {};
+                    transition_to(RecoveryPhase::HARD_RECOVERY, "in_band_reauth_complete");
                     m_logger->info("[Worker_manager] In-band re-auth complete — back in HARD_RECOVERY");
                 }
 
@@ -1249,13 +1248,9 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         self->m_primary_fail_count = 0;
 
         // Clear reconnect guard now that connection is fully authenticated.
-        // Transition back from RECONNECTING: if workers were stopped (degraded),
-        // go to HARD_RECOVERY to request a fresh template; otherwise HEALTHY.
+        // Transition back from RECONNECTING to HARD_RECOVERY to request a fresh template.
         if (self->is_reconnecting()) {
-            // Keep degraded_since and epoch from before the reconnect — just exit RECONNECTING.
-            // Direct phase assignment avoids resetting epoch/entered_at unnecessarily.
-            self->m_recovery.phase = RecoveryPhase::HARD_RECOVERY;
-            self->m_recovery.reconnect_started_at = {};
+            self->transition_to(RecoveryPhase::HARD_RECOVERY, "reconnect_complete");
             self->m_logger->info("[Worker_manager] Reconnect complete — entering HARD_RECOVERY to obtain fresh template");
         }
 
@@ -1604,7 +1599,11 @@ void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) 
         m_logger->error("[Worker_manager] ⚡ ILLEGAL TRANSITION: {} → {} (reason: {})",
                         phase_name(old_phase), phase_name(new_phase),
                         reason ? reason : "unknown");
-        // Log and proceed in release builds — do not silently ignore the transition
+        // In debug builds, assert to catch illegal transitions early during development.
+        // In release builds, log and proceed to avoid hard crashes in production.
+#ifndef NDEBUG
+        assert(false && "Illegal RecoveryPhase transition — see error log above");
+#endif
     }
 
     // Pre-transition accounting: if exiting an active degraded outage to HEALTHY,
@@ -1932,10 +1931,8 @@ void Worker_manager::check_template_health()
         if (reconnect_age_s > MAX_RECONNECT_WAIT_SECONDS) {
             m_logger->warn("[Worker_manager] Reconnect stalled for {}s > {}s — clearing RECONNECTING phase",
                            reconnect_age_s, MAX_RECONNECT_WAIT_SECONDS);
-            // Direct phase change: stay in degraded territory (HARD_RECOVERY) rather than
-            // calling transition_to() which would reset epoch/entered_at unnecessarily.
-            m_recovery.phase = RecoveryPhase::HARD_RECOVERY;
-            m_recovery.reconnect_started_at = {};
+            // Use transition_to() to ensure full lifecycle hooks fire (logging, stats, reconnect_started_at clear).
+            transition_to(RecoveryPhase::HARD_RECOVERY, "reconnect_timeout");
         }
     }
 
