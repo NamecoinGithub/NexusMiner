@@ -2417,41 +2417,50 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             }
         }
         
-        // Pass channel height to template interface for staleness validation
+        // Pass channel height to template interface for staleness validation.
+        // update_channel_height() is the primary staleness gate (uses nChannelHeight).
+        // check_staleness_by_channel_delta() is a secondary snapshot-based check used ONLY
+        // when the template is still pending finalization (nChannelHeight == 0); once the
+        // template is finalized, sync_template_state() + update_channel_height() are
+        // the sole arbiters and the snapshot check must be skipped to prevent false stales.
         if (m_template_interface) {
             m_template_interface->update_channel_height(m_channel, channel_height);
-            
-            // Check staleness using delta-based detection
-            bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
-            
-            if (is_stale) {
-                m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE: {} channel advanced", 
-                    get_channel_name(m_channel));
 
-                m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
-                if (connection) {
-                    auto work_payload = get_work();
-                    if (work_payload && !work_payload->empty()) {
-                        connection->transmit(work_payload);
-                        get_block_sent_in_handler = true;
-                        m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
+            // Only use snapshot-based delta check while template awaits finalization.
+            if (m_template_interface->needs_channel_height_finalization()) {
+                bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
+                if (is_stale) {
+                    m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE (pending-finalization): {} channel advanced",
+                        get_channel_name(m_channel));
+                    m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
+                    if (connection) {
+                        auto work_payload = get_work();
+                        if (work_payload && !work_payload->empty()) {
+                            connection->transmit(work_payload);
+                            get_block_sent_in_handler = true;
+                            m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
+                        } else {
+                            m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
+                        }
                     } else {
-                        m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
+                        m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
                     }
-                } else {
-                    m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
+                    // No early return (previous early return removed): fall through to
+                    // sync_template_state() so any pending template channel-height metadata
+                    // is finalized regardless of whether GET_BLOCK was also requested.
                 }
-                return;
             }
-            
+
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
                 channel_height, get_channel_name(m_channel));
         }
-        
-        // Use sync_template_state to handle: channel manager updates, fork detection, 
-        // template finalization, and template validation
+
+        // Use sync_template_state to handle: channel manager updates, fork detection,
+        // template finalization, and template validation.
+        // This must always run — even when a GET_BLOCK was already requested above —
+        // so that any pending template channel-height metadata is finalized.
         bool template_valid = sync_template_state(unified_height, channel_height);
-        
+
         // CRITICAL FIX: After NEW_ROUND, check if we have a valid template
         // If not, request one via GET_BLOCK (legacy fallback behavior)
         bool needs_template = !template_valid || 
@@ -2558,33 +2567,34 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             }
         }
         
-        // Pass channel height to template interface for staleness validation
+        // Pass channel height to template interface for staleness validation.
+        // Same invariant as NEW_ROUND: snapshot-based delta check only while pending finalization.
         if (m_template_interface) {
             m_template_interface->update_channel_height(m_channel, channel_height);
-            
-            // Check staleness using delta-based detection
-            bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
-            
-            if (is_stale) {
-                m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE: {} channel advanced", 
-                    get_channel_name(m_channel));
 
-                m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
-                if (connection) {
-                    auto work_payload = get_work();
-                    if (work_payload && !work_payload->empty()) {
-                        connection->transmit(work_payload);
-                        get_block_sent_in_handler = true;
-                        m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
+            // Only use snapshot-based delta check while template awaits finalization.
+            if (m_template_interface->needs_channel_height_finalization()) {
+                bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
+                if (is_stale) {
+                    m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE (pending-finalization): {} channel advanced",
+                        get_channel_name(m_channel));
+                    m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
+                    if (connection) {
+                        auto work_payload = get_work();
+                        if (work_payload && !work_payload->empty()) {
+                            connection->transmit(work_payload);
+                            get_block_sent_in_handler = true;
+                            m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
+                        } else {
+                            m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
+                        }
                     } else {
-                        m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
+                        m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
                     }
-                } else {
-                    m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
+                    // No early return (previous early return removed): fall through to sync_template_state().
                 }
-                return;
             }
-            
+
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
                 channel_height, get_channel_name(m_channel));
         }
