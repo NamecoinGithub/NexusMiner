@@ -1509,6 +1509,7 @@ void Worker_manager::check_template_health()
                            ht_snap.template_unified_height, ht_snap.unified_height);
             transition_to(MiningState::REFRESHING, "tip_moved");
             send_get_block(false);
+            break;
         }
 
         // Fork canary (diagnostic only)

@@ -37,7 +37,7 @@ public:
     /// 3-state mining state machine (replaces m_degraded_mode + m_recovery_pending + m_template_withheld).
     enum class MiningState : uint8_t {
         MINING,      ///< Workers running, template valid, submissions allowed
-        REFRESHING,  ///< GET_BLOCK sent, workers KEEP mining current template, submissions allowed
+        REFRESHING,  ///< GET_BLOCK sent (e.g. tip moved), workers KEEP mining current template, submissions allowed
         STOPPED      ///< No valid template, workers halted, periodic retry every 30s
     };
 
