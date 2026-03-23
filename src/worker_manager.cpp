@@ -100,7 +100,6 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 , m_logger{spdlog::get("logger")}
 , m_stats_collector{std::make_shared<stats::Collector>(m_config)}
 , m_timer_manager{std::move(timer_factory)}
-, m_degraded_mode{false}
 {
     // Falcon miner authentication is mandatory for solo mining
     if (!m_config.has_miner_falcon_keys())
@@ -199,15 +198,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // Update mined-block cache confirmations based on new chain height.
                 m_mined_block_cache.update_confirmations(block.nHeight);
 
-                // Clear soft-pause: a fresh template has arrived, so
-                // submissions are safe again.  Cleared unconditionally
-                // (cheap no-op when already false).
-                m_template_withheld = false;
-                
                 // ═══════════════════════════════════════════════════════════════
-                // Recovery state is cleared AFTER successful template distribution
-                // (see workers_fed > 0 branch below). Do not clear here — we must
-                // confirm workers actually received the template first.
+                // Soft-pause (SOFT_REFRESH) state is cleared by the phase transition
+                // in clear_recovery_state() below (workers_fed > 0 branch).
+                // Do not clear here — we must confirm workers actually received the
+                // template first before exiting recovery state.
                 // ═══════════════════════════════════════════════════════════════
 
                 // Bug 1 fix: In degraded mode, workers may have been stopped and reset
@@ -217,7 +212,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 size_t workers_fed = 0;
                 {
                     std::lock_guard<std::mutex> lock(m_worker_mutex);
-                    if (m_degraded_mode && !m_recovery_workers_spawned && m_workers.empty()) {
+                    if (is_degraded() && !m_recovery_workers_spawned && m_workers.empty()) {
                         m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
                         create_workers_locked();
                         m_recovery_workers_spawned = !m_workers.empty();  // set AFTER success for exception safety
@@ -391,13 +386,13 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     }
                     // ✅ Clear degraded mode and all recovery state now that a valid template
                     // has been successfully delivered to workers.  This is intentionally done
-                    // AFTER distribution so we only exit degraded mode when workers actually
+                    // AFTER distribution so we only exit recovery state when workers actually
                     // received the template (not merely on template arrival).
-                    if (m_recovery_pending) {
+                    if (is_recovery_active()) {
                         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                            std::chrono::steady_clock::now() - m_recovery_started_at).count();
+                            std::chrono::steady_clock::now() - m_recovery.entered_at).count();
                         m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
-                        m_logger->warn("[Worker_manager] ✅ RECOVERY COMPLETE — epoch {} ({}s elapsed)", m_recovery_epoch, elapsed);
+                        m_logger->warn("[Worker_manager] ✅ RECOVERY COMPLETE — epoch {} ({}s elapsed)", m_recovery.epoch, elapsed);
                         m_logger->warn("[Worker_manager]    Fresh template distributed to workers successfully");
                         m_logger->warn("[Worker_manager]    Workers resumed mining on valid template");
                         m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
@@ -428,9 +423,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             // flow before we declare push silence.
                             constexpr int64_t POST_RECOVERY_HOLDOFF_SECONDS = 60;
                             int64_t since_recovery_s =
-                                (m_last_recovery_completed_at != std::chrono::steady_clock::time_point{})
+                                (m_recovery.last_completed_at != std::chrono::steady_clock::time_point{})
                                 ? std::chrono::duration_cast<std::chrono::seconds>(
-                                      now_resub - m_last_recovery_completed_at).count()
+                                      now_resub - m_recovery.last_completed_at).count()
                                 : INT64_MAX;  // No recovery ever completed — hold-off does not apply
 
                             // Fix 3: Raised from 120 → 400 to exceed the longest observed Prime
@@ -450,8 +445,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 } else {
                     m_logger->error("[Worker_manager] FAILED: No workers received template!");
                     // Immediately request a new template — don't wait 30s for health monitor.
-                    // stop_all_workers() sets m_degraded_mode=true so check_template_health()
-                    // correctly retries at its 30s rate-cap if this request is also unanswered.
+                    // transition_to(HARD_RECOVERY) is triggered by mark_recovery_initiated()
+                    // inside retry_template_request(true), after stop_all_workers() here.
                     stop_all_workers();
                     retry_template_request(true);
                 }
@@ -501,7 +496,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* which withholds submissions while the replacement template is fetched.    */
         m_primary_node_session->set_recovery_initiated_handler(
             [this]() {
-                bool was_pending = m_recovery_pending;
+                bool was_pending = is_recovery_active();
                 mark_recovery_initiated("push_staleness");
 
                 if (!was_pending) {
@@ -519,7 +514,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
         m_primary_node_session->set_soft_refresh_requested_handler(
             [this]() {
-                bool had_pending = m_recovery_pending;
+                bool had_pending = is_recovery_active();
                 mark_soft_refresh_requested("same_height_push_tip_replacement");
 
                 if (!had_pending) {
@@ -538,12 +533,12 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* the TCP connection. Uses existing session auth backoff infrastructure.    */
         m_primary_node_session->set_session_expired_handler(
             [this]() {
-                if (m_reconnect_in_progress || (m_recovery_pending && m_recovery_epoch > 0)) {
+                if (is_reconnecting() || (is_recovery_active() && m_recovery.epoch > 0)) {
                     m_logger->warn("[Worker_manager] Session EXPIRED ignored: reconnect/recovery already in progress "
-                                   "(reconnect_in_progress={}, recovery_pending={}, recovery_epoch={})",
-                                   m_reconnect_in_progress,
-                                   m_recovery_pending,
-                                   m_recovery_epoch);
+                                   "(phase={}, recovery_active={}, recovery_epoch={})",
+                                   phase_name(m_recovery.phase),
+                                   is_recovery_active(),
+                                   m_recovery.epoch);
                     return;
                 }
 
@@ -672,9 +667,14 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                 // Successful authentication: reset session auth failure counter
                 m_session_auth_fail_count = 0;
-                // Clear reconnect guard now that connection is fully authenticated
-                m_reconnect_in_progress = false;
-                m_reconnect_started_at = {};
+                // Clear reconnect guard if we're in RECONNECTING phase (in-band re-auth path).
+                // For the TCP reconnect path, the connection callback already cleared it.
+                if (is_reconnecting()) {
+                    // Transition back to HARD_RECOVERY — still need a fresh template.
+                    m_recovery.phase = RecoveryPhase::HARD_RECOVERY;
+                    m_recovery.reconnect_started_at = {};
+                    m_logger->info("[Worker_manager] In-band re-auth complete — back in HARD_RECOVERY");
+                }
 
                 if (m_using_failover)
                 {
@@ -692,12 +692,12 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // to acquire a fresh template and exit degraded mode.  Without this call
                 // the miner has no way to escape degraded mode because workers can't be
                 // fed without a template and a template won't arrive without GET_BLOCK.
-                if (m_degraded_mode || m_recovery_pending) {
+                if (is_degraded() || is_recovery_active()) {
                     m_logger->info("[Worker_manager] Re-authentication SUCCESS — "
                                    "requesting fresh template to exit degraded mode");
-                    // Reset m_degraded_since so the escape ladder timer restarts cleanly
+                    // Reset m_recovery.degraded_since so the escape ladder timer restarts cleanly
                     // for this new authenticated session (avoids Stage 3 immediately firing).
-                    m_degraded_since = {};
+                    m_recovery.degraded_since = {};
                     restart_recovery_window("session_reauthenticated");
                     retry_template_request(true);
                 }
@@ -974,9 +974,9 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
         }
     }
 
-    // Set reconnect guard to prevent stale RX callbacks from processing during reconnect
-    m_reconnect_in_progress = true;
-    m_reconnect_started_at = std::chrono::steady_clock::now();
+    // Transition to RECONNECTING phase — guards against stale callbacks and
+    // prevents session_expired from re-entering during TCP reconnect window.
+    transition_to(RecoveryPhase::RECONNECTING, "tcp_reconnect");
 
     // Reset NodeSession for reconnection
     if (m_primary_node_session) {
@@ -1087,12 +1087,12 @@ const char* Worker_manager::suppression_reason_name(GetBlockSuppressionReason re
 
 void Worker_manager::prune_forced_retry_window(std::chrono::steady_clock::time_point now)
 {
-    while (!m_forced_retry_send_timestamps.empty()) {
-        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - m_forced_retry_send_timestamps.front()).count();
+    while (!m_recovery.forced_retry_timestamps.empty()) {
+        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - m_recovery.forced_retry_timestamps.front()).count();
         if (age <= FORCED_RETRY_WINDOW_SECONDS) {
             break;
         }
-        m_forced_retry_send_timestamps.pop_front();
+        m_recovery.forced_retry_timestamps.pop_front();
     }
 }
 
@@ -1121,10 +1121,10 @@ bool Worker_manager::has_valid_template_available(const std::shared_ptr<protocol
 bool Worker_manager::can_send_forced_retry(std::chrono::steady_clock::time_point now)
 {
     prune_forced_retry_window(now);
-    if (m_forced_retry_send_timestamps.size() >= MAX_FORCED_BURST_PER_60S) {
+    if (m_recovery.forced_retry_timestamps.size() >= MAX_FORCED_BURST_PER_60S) {
         return false;
     }
-    if (m_next_forced_retry_due != std::chrono::steady_clock::time_point{} && now < m_next_forced_retry_due) {
+    if (m_recovery.next_forced_retry_due != std::chrono::steady_clock::time_point{} && now < m_recovery.next_forced_retry_due) {
         return false;
     }
     return true;
@@ -1165,7 +1165,7 @@ void Worker_manager::log_get_block_decision(bool sent,
 
 void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
 {
-    if (!m_io_context || !m_degraded_mode || !m_recovery_pending) {
+    if (!m_io_context || !is_degraded() || !is_recovery_active()) {
         return;
     }
     if (m_forced_retry_timer_pending) {
@@ -1175,14 +1175,14 @@ void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
     auto now = std::chrono::steady_clock::now();
     auto delay_ms = FORCED_RETRY_INTERVAL_MS + next_forced_retry_jitter_ms();
     auto due = now + std::chrono::milliseconds(delay_ms);
-    if (m_next_forced_retry_due != std::chrono::steady_clock::time_point{} && due < m_next_forced_retry_due) {
-        due = m_next_forced_retry_due;
+    if (m_recovery.next_forced_retry_due != std::chrono::steady_clock::time_point{} && due < m_recovery.next_forced_retry_due) {
+        due = m_recovery.next_forced_retry_due;
     }
 
     auto wait_ms = std::max<int64_t>(
         1,
         std::chrono::duration_cast<std::chrono::milliseconds>(due - now).count());
-    m_next_forced_retry_due = due;
+    m_recovery.next_forced_retry_due = due;
     m_forced_retry_timer_pending = true;
     ++m_forced_retry_timer_token;
     const auto token = m_forced_retry_timer_token;
@@ -1193,7 +1193,7 @@ void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
         if (ec) {
             return;
         }
-        if (!self->m_degraded_mode || !self->m_recovery_pending || token != self->m_forced_retry_timer_token) {
+        if (!self->is_degraded() || !self->is_recovery_active() || token != self->m_forced_retry_timer_token) {
             self->m_forced_retry_timer_pending = false;
             return;
         }
@@ -1248,9 +1248,16 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         self->m_connection_backoff.reset();
         self->m_primary_fail_count = 0;
 
-        // Clear reconnect guard now that connection is fully authenticated
-        self->m_reconnect_in_progress = false;
-        self->m_reconnect_started_at = {};
+        // Clear reconnect guard now that connection is fully authenticated.
+        // Transition back from RECONNECTING: if workers were stopped (degraded),
+        // go to HARD_RECOVERY to request a fresh template; otherwise HEALTHY.
+        if (self->is_reconnecting()) {
+            // Keep degraded_since and epoch from before the reconnect — just exit RECONNECTING.
+            // Direct phase assignment avoids resetting epoch/entered_at unnecessarily.
+            self->m_recovery.phase = RecoveryPhase::HARD_RECOVERY;
+            self->m_recovery.reconnect_started_at = {};
+            self->m_logger->info("[Worker_manager] Reconnect complete — entering HARD_RECOVERY to obtain fresh template");
+        }
 
         // Start timers once only (guarded by flags)
         auto const print_statistics_interval = self->m_config.get_print_statistics_interval();
@@ -1440,11 +1447,11 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 
 void Worker_manager::submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce)
 {
-    // Soft-pause guard: suppress submissions while the template is withheld
+    // Soft-pause guard: suppress submissions while in SOFT_REFRESH phase
     // (push_staleness recovery in progress — workers keep running but solutions
     // found on the stale template must not be sent to the node).
-    if (m_template_withheld) {
-        m_logger->info("[Worker_manager] Submission suppressed — template withheld (soft-pause)");
+    if (is_submissions_withheld()) {
+        m_logger->info("[Worker_manager] Submission suppressed — SOFT_REFRESH phase (template withheld)");
         return;
     }
 
@@ -1480,8 +1487,8 @@ void Worker_manager::send_session_status_if_due()
         return;
     m_last_session_status_sent = now;
 
-    bool degraded    = m_degraded_mode;
-    bool workers_run = !m_degraded_mode && !m_workers.empty();
+    bool degraded    = is_degraded();
+    bool workers_run = !is_degraded() && !m_workers.empty();
 
     // Send session status via NodeSession (handles both lanes internally)
     if (m_primary_node_session && m_primary_node_session->is_authenticated())
@@ -1501,114 +1508,232 @@ void Worker_manager::send_session_status_if_due()
 // Worker Control Methods (Degraded Mode Support)
 // ═══════════════════════════════════════════════════════════════════════
 
+// ── State machine helpers ────────────────────────────────────────────────
+
+const char* Worker_manager::phase_name(RecoveryPhase phase) {
+    switch (phase) {
+        case RecoveryPhase::HEALTHY:       return "HEALTHY";
+        case RecoveryPhase::SOFT_REFRESH:  return "SOFT_REFRESH";
+        case RecoveryPhase::HARD_RECOVERY: return "HARD_RECOVERY";
+        case RecoveryPhase::RECONNECTING:  return "RECONNECTING";
+        case RecoveryPhase::ESCALATED:     return "ESCALATED";
+    }
+    return "UNKNOWN";
+}
+
+bool Worker_manager::is_valid_transition(RecoveryPhase from, RecoveryPhase to) {
+    if (from == to) return true;
+    switch (from) {
+        case RecoveryPhase::HEALTHY:
+            return to == RecoveryPhase::SOFT_REFRESH ||
+                   to == RecoveryPhase::HARD_RECOVERY;
+        case RecoveryPhase::SOFT_REFRESH:
+            return to == RecoveryPhase::HEALTHY ||
+                   to == RecoveryPhase::HARD_RECOVERY;
+        case RecoveryPhase::HARD_RECOVERY:
+            return to == RecoveryPhase::HEALTHY ||
+                   to == RecoveryPhase::RECONNECTING ||
+                   to == RecoveryPhase::ESCALATED;
+        case RecoveryPhase::RECONNECTING:
+            return to == RecoveryPhase::HEALTHY ||
+                   to == RecoveryPhase::HARD_RECOVERY ||
+                   to == RecoveryPhase::ESCALATED;
+        case RecoveryPhase::ESCALATED:
+            return to == RecoveryPhase::HEALTHY ||
+                   to == RecoveryPhase::HARD_RECOVERY ||
+                   to == RecoveryPhase::RECONNECTING;
+    }
+    return false;
+}
+
+void Worker_manager::on_phase_exit(RecoveryPhase old_phase) {
+    // Note: phase-exit that ends an outage (to HEALTHY) has its accounting in transition_to().
+    switch (old_phase) {
+        case RecoveryPhase::RECONNECTING:
+            m_recovery.reconnect_started_at = {};
+            break;
+        default:
+            break;
+    }
+}
+
+void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
+    switch (new_phase) {
+        case RecoveryPhase::HEALTHY: {
+            auto now = std::chrono::steady_clock::now();
+            m_recovery.degraded_since = {};
+            m_recovery.last_completed_at = now;
+            m_recovery.last_escalation_at = {};
+            m_recovery.epoch = 0;
+            m_recovery.entered_at = {};
+            auto global_stats = m_stats_collector->get_global_stats();
+            global_stats.m_degraded_mode = false;
+            m_stats_collector->update_global_stats(global_stats);
+            m_stats_collector->reset_start_time();
+            break;
+        }
+        case RecoveryPhase::HARD_RECOVERY:
+        case RecoveryPhase::ESCALATED: {
+            auto now = std::chrono::steady_clock::now();
+            bool is_new_outage = (m_recovery.degraded_since == std::chrono::steady_clock::time_point{});
+            if (is_new_outage) {
+                m_recovery.degraded_since = now;
+                ++m_degraded_enter_total;
+            }
+            auto global_stats = m_stats_collector->get_global_stats();
+            global_stats.m_degraded_mode = true;
+            m_stats_collector->update_global_stats(global_stats);
+            break;
+        }
+        case RecoveryPhase::RECONNECTING: {
+            m_recovery.reconnect_started_at = std::chrono::steady_clock::now();
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) {
+    RecoveryPhase old_phase = m_recovery.phase;
+    if (old_phase == new_phase) {
+        return;  // Already in this phase — no-op
+    }
+
+    if (!is_valid_transition(old_phase, new_phase)) {
+        m_logger->error("[Worker_manager] ⚡ ILLEGAL TRANSITION: {} → {} (reason: {})",
+                        phase_name(old_phase), phase_name(new_phase),
+                        reason ? reason : "unknown");
+        // Log and proceed in release builds — do not silently ignore the transition
+    }
+
+    // Pre-transition accounting: if exiting an active degraded outage to HEALTHY,
+    // accumulate total time spent in degraded mode.
+    if (new_phase == RecoveryPhase::HEALTHY &&
+        (old_phase == RecoveryPhase::HARD_RECOVERY || old_phase == RecoveryPhase::ESCALATED)) {
+        auto now = std::chrono::steady_clock::now();
+        if (m_recovery.degraded_since != std::chrono::steady_clock::time_point{}) {
+            auto elapsed_ms = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - m_recovery.degraded_since).count());
+            m_time_in_degraded_ms += elapsed_ms;
+        }
+        ++m_degraded_exit_total;
+    }
+
+    on_phase_exit(old_phase);
+
+    m_recovery.phase = new_phase;
+    m_recovery.reason = reason;
+
+    // Reset per-epoch state for all non-HEALTHY phases
+    if (new_phase != RecoveryPhase::HEALTHY) {
+        ++m_recovery.epoch;
+        m_recovery.entered_at = std::chrono::steady_clock::now();
+        m_recovery.get_block_confirmed = false;
+        m_recovery.last_get_block_at = {};
+        m_recovery.next_forced_retry_due = {};
+        m_recovery.forced_retry_timestamps.clear();
+        m_forced_retry_timer_pending = false;
+        ++m_forced_retry_timer_token;
+        if (m_forced_retry_timer) {
+            m_forced_retry_timer->cancel();
+        }
+        m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
+    }
+
+    on_phase_enter(new_phase);
+
+    m_logger->info("[Worker_manager] ⚡ TRANSITION: {} → {} (epoch={}, reason={})",
+                   phase_name(old_phase), phase_name(new_phase),
+                   m_recovery.epoch, reason ? reason : "unknown");
+}
+
+
 void Worker_manager::mark_recovery_initiated(const char* reason)
 {
-    auto now = std::chrono::steady_clock::now();
-    if (m_recovery_pending) {
-        // Already in a recovery epoch — do NOT reset the start time or increment the
-        // epoch counter.  Multiple sources (push handler, health monitor) may both
-        // call mark_recovery_initiated() for the same staleness event; only the first
-        // call anchors the 60 s recovery window.  The reason parameter is logged here
-        // for observability (operators can see all sources that noticed the staleness)
-        // but the epoch is intentionally unchanged to avoid resetting the window clock.
+    // Idempotent: if already in HARD_RECOVERY, ESCALATED, or RECONNECTING,
+    // a new epoch is already running — do NOT reset it.  Multiple sources
+    // (push handler, health monitor) may fire for the same staleness event;
+    // only the first call anchors the recovery window.
+    if (m_recovery.phase == RecoveryPhase::HARD_RECOVERY ||
+        m_recovery.phase == RecoveryPhase::ESCALATED    ||
+        m_recovery.phase == RecoveryPhase::RECONNECTING) {
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-            now - m_recovery_started_at).count();
+            std::chrono::steady_clock::now() - m_recovery.entered_at).count();
         m_logger->info("[Worker_manager] Recovery already pending (epoch {}, {}s elapsed, reason: {})",
-                       m_recovery_epoch, elapsed, reason ? reason : "unknown");
+                       m_recovery.epoch, elapsed, reason ? reason : "unknown");
         return;
     }
-    ++m_recovery_epoch;
-    m_recovery_pending = true;
-    m_recovery_started_at = now;
-    m_recovery_last_get_block_sent_at = {};         // cleared so first health-monitor check can resend
-    m_recovery_last_get_block_transmitted_at = {};  // no confirmed transmission in new epoch yet
-    m_recovery_get_block_transmitted = false;  // no confirmed transmission in new epoch yet
-    m_next_forced_retry_due = {};
-    m_forced_retry_send_timestamps.clear();
-    m_forced_retry_timer_pending = false;
-    ++m_forced_retry_timer_token;
-    if (m_forced_retry_timer) {
-        m_forced_retry_timer->cancel();
-    }
-    m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
+    // From HEALTHY or SOFT_REFRESH → HARD_RECOVERY (new epoch)
+    transition_to(RecoveryPhase::HARD_RECOVERY, reason);
     m_logger->warn("[Worker_manager] ⚑ RECOVERY INITIATED — epoch {} (reason: {})",
-                   m_recovery_epoch, reason ? reason : "unknown");
+                   m_recovery.epoch, reason ? reason : "unknown");
     m_logger->warn("[Worker_manager]   Health monitor will NOT stop workers during channel recovery window");
 }
 
 void Worker_manager::mark_soft_refresh_requested(const char* reason)
 {
-    auto now = std::chrono::steady_clock::now();
-    m_template_withheld = true;
-    if (m_recovery_pending) {
+    // If any recovery is already active (SOFT_REFRESH, HARD_RECOVERY, etc.),
+    // a soft-refresh is already pending or a harder stop is in effect — no-op.
+    if (is_recovery_active()) {
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-            now - m_recovery_started_at).count();
+            std::chrono::steady_clock::now() - m_recovery.entered_at).count();
         m_logger->info("[Worker_manager] Soft refresh already pending (epoch {}, {}s elapsed, reason: {})",
-                       m_recovery_epoch, elapsed, reason ? reason : "soft refresh requested");
+                       m_recovery.epoch, elapsed, reason ? reason : "soft refresh requested");
         return;
     }
-
-    ++m_recovery_epoch;
-    m_recovery_pending = true;
-    m_recovery_started_at = now;
-    m_recovery_last_get_block_sent_at = {};
-    m_recovery_last_get_block_transmitted_at = {};
-    m_recovery_get_block_transmitted = false;
-    m_next_forced_retry_due = {};
-    m_forced_retry_send_timestamps.clear();
-    m_forced_retry_timer_pending = false;
-    ++m_forced_retry_timer_token;
-    if (m_forced_retry_timer) {
-        m_forced_retry_timer->cancel();
-    }
-    m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
+    // From HEALTHY → SOFT_REFRESH (new epoch; workers keep running, submissions withheld)
+    transition_to(RecoveryPhase::SOFT_REFRESH, reason);
     m_logger->info("[Worker_manager] Template refresh requested — epoch {} (reason: {})",
-                   m_recovery_epoch, reason ? reason : "soft refresh requested");
+                   m_recovery.epoch, reason ? reason : "soft refresh requested");
     m_logger->info("[Worker_manager]   Workers keep running; only submissions are withheld during the replacement-template window");
 }
 
 void Worker_manager::restart_recovery_window(const char* reason)
 {
-    const bool had_pending_recovery = m_recovery_pending;
+    // Reset the current-epoch timing state while staying in the current recovery phase.
+    // Used after successful re-authentication to give the new session a clean recovery
+    // window clock without exiting degraded mode (workers are still stopped, no template yet).
+    const bool had_pending_recovery = is_recovery_active();
     const bool had_forced_retry_timer = m_forced_retry_timer_pending;
     int64_t elapsed_s = 0;
-    if (had_pending_recovery && m_recovery_started_at != std::chrono::steady_clock::time_point{}) {
+    if (had_pending_recovery && m_recovery.entered_at != std::chrono::steady_clock::time_point{}) {
         elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::steady_clock::now() - m_recovery_started_at).count();
+            std::chrono::steady_clock::now() - m_recovery.entered_at).count();
     }
 
-    m_recovery_pending = false;
-    m_recovery_started_at = {};
-    m_recovery_last_get_block_sent_at = {};
-    m_recovery_last_get_block_transmitted_at = {};
-    m_recovery_get_block_transmitted = false;
-    m_next_forced_retry_due = {};
-    m_forced_retry_send_timestamps.clear();
+    // Reset per-epoch state in-place (no phase change)
+    m_recovery.entered_at = std::chrono::steady_clock::now();  // fresh epoch clock
+    m_recovery.last_get_block_at = {};
+    m_recovery.get_block_confirmed = false;
+    m_recovery.next_forced_retry_due = {};
+    m_recovery.forced_retry_timestamps.clear();
     m_forced_retry_timer_pending = false;
     ++m_forced_retry_timer_token;
     if (m_forced_retry_timer) {
         m_forced_retry_timer->cancel();
     }
     m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
-    m_last_escalation_at = {};
+    m_recovery.last_escalation_at = {};
 
     if (had_pending_recovery || had_forced_retry_timer) {
         m_logger->info("[Worker_manager] Restarting recovery window after {} "
-                       "(prior_epoch={} prior_elapsed={}s degraded_mode={})",
+                       "(prior_epoch={} prior_elapsed={}s phase={})",
                        reason ? reason : "unknown",
-                       m_recovery_epoch,
+                       m_recovery.epoch,
                        elapsed_s,
-                       m_degraded_mode ? "true" : "false");
+                       phase_name(m_recovery.phase));
     }
 }
 
 void Worker_manager::clear_recovery_state()
 {
-    if (!m_degraded_mode && !m_recovery_pending)
-        return;  // Nothing to clear
+    if (!is_degraded() && !is_recovery_active())
+        return;  // Already HEALTHY — nothing to clear
 
     auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
-    if (m_degraded_mode && !has_valid_template_available(solo_protocol)) {
+    if (is_degraded() && !has_valid_template_available(solo_protocol)) {
         m_logger->warn("[Worker_manager] clear_recovery_state() deferred: no valid template accepted yet");
         return;
     }
@@ -1624,49 +1749,20 @@ void Worker_manager::clear_recovery_state()
         }
     }
 
-    m_logger->info("[Worker_manager] Clearing recovery state — exiting degraded mode");
-    auto now = std::chrono::steady_clock::now();
-    if (m_degraded_since != std::chrono::steady_clock::time_point{}) {
-        auto elapsed_ms = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - m_degraded_since).count());
-        m_time_in_degraded_ms += elapsed_ms;
-    }
-    if (m_degraded_mode) {
-        ++m_degraded_exit_total;
-    }
-    m_degraded_mode = false;
-    m_recovery_pending = false;
-    m_template_withheld = false;  // Clear any residual soft-pause flag (defensive)
-    m_recovery_epoch = 0;
-    m_recovery_started_at = {};
-    m_recovery_last_get_block_sent_at = {};
-    m_recovery_last_get_block_transmitted_at = {};
-    m_recovery_get_block_transmitted = false;
-    m_next_forced_retry_due = {};
-    m_forced_retry_send_timestamps.clear();
-    m_forced_retry_timer_pending = false;
-    ++m_forced_retry_timer_token;
-    if (m_forced_retry_timer) {
-        m_forced_retry_timer->cancel();
-    }
-    m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
-    m_degraded_since = {};  // Clear escape-ladder timer; next outage will re-anchor it
-    m_last_recovery_completed_at = now;  // Hold-off anchor for push-resubscription guard
+    m_logger->info("[Worker_manager] Clearing recovery state — exiting {} phase",
+                   phase_name(m_recovery.phase));
+
     // Note: m_recovery_workers_spawned is intentionally NOT reset here.
     // It is only reset in stop_all_workers() which actually destroys workers,
     // preventing a mid-recovery clear_recovery_state() call (e.g. from a
     // different epoch's template feed) from allowing duplicate worker creation.
 
-    auto global_stats = m_stats_collector->get_global_stats();
-    global_stats.m_degraded_mode = false;
-    m_stats_collector->update_global_stats(global_stats);
-    m_last_escalation_at = {};
+    // transition_to(HEALTHY) handles: degraded time accounting, global stats,
+    // stats reset, last_completed_at, clearing of all recovery fields.
+    transition_to(RecoveryPhase::HEALTHY, "template_distributed");
 
     m_logger->info("[Worker_manager] Recovery state cleared — degraded_exit_count={} cumulative_degraded_time_ms={}",
                    m_degraded_exit_total, m_time_in_degraded_ms);
-
-    // Reset start time so GISPS/hashrate calculation excludes the degraded-mode idle period
-    m_stats_collector->reset_start_time();
 }
 
 void Worker_manager::stop_all_workers()
@@ -1676,30 +1772,14 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
     m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
-    
-    // Set degraded mode flag
-    bool first_entry = !m_degraded_mode;
-    m_degraded_mode = true;
-    m_template_withheld = false;  // Full stop supersedes soft-pause
+
+    // Notify protocol layer that recovery is required.
+    // Phase transition is handled by the caller (mark_recovery_initiated / transition_to)
+    // before or after stop_all_workers() — this function is a pure physical stop.
     if (auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr) {
         solo_protocol->mark_authoritative_recovery_required("workers_stopped_waiting_for_valid_template");
     }
 
-    // Record when degraded mode was first entered (only on first entry — not overwritten
-    // by subsequent stop_all_workers() calls within the same outage, so the escape ladder
-    // measures wall-clock time from the true start of the outage).
-    if (m_degraded_since == std::chrono::steady_clock::time_point{}) {
-        m_degraded_since = std::chrono::steady_clock::now();
-    }
-    if (first_entry) {
-        ++m_degraded_enter_total;
-    }
-    
-    // Update stats to reflect degraded mode
-    auto global_stats = m_stats_collector->get_global_stats();
-    global_stats.m_degraded_mode = true;
-    m_stats_collector->update_global_stats(global_stats);
-    
     // Reset all worker instances so that the next create_workers() call starts fresh
     // without duplicating existing workers.  The shared_ptr reset() destroys the Worker
     // object (and joins its mining thread in the destructor), effectively stopping it.
@@ -1716,6 +1796,7 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK (0xD081)");
     m_logger->warn("[Worker_manager] degraded_enter_total={}", m_degraded_enter_total);
 }
+
 
 void Worker_manager::retry_template_request(bool bForce)
 {
@@ -1772,7 +1853,7 @@ void Worker_manager::retry_template_request(bool bForce)
         return;
     }
 
-    bool forced_lane = bForce && m_degraded_mode && solo_protocol->is_authenticated() && no_valid_template;
+    bool forced_lane = bForce && is_degraded() && solo_protocol->is_authenticated() && no_valid_template;
     if (forced_lane && !can_send_forced_retry(now)) {
         log_get_block_decision(false, true, GetBlockSuppressionReason::RATE_LIMIT_LOCAL, "forced_lane_rate_limit");
         schedule_forced_recovery_retry("forced_lane_rate_limit");
@@ -1785,17 +1866,16 @@ void Worker_manager::retry_template_request(bool bForce)
     auto work_payload = m_primary_node_session->request_work(forced_lane);
     if (work_payload && !work_payload->empty()) {
         m_primary_node_session->transmit(work_payload);
-        m_recovery_last_get_block_sent_at = std::chrono::steady_clock::now();
-        m_recovery_last_get_block_transmitted_at = m_recovery_last_get_block_sent_at;
-        m_recovery_get_block_transmitted = true;
+        m_recovery.last_get_block_at = std::chrono::steady_clock::now();
+        m_recovery.get_block_confirmed = true;
         if (forced_lane) {
-            m_forced_retry_send_timestamps.push_back(m_recovery_last_get_block_sent_at);
-            m_next_forced_retry_due = m_recovery_last_get_block_sent_at +
+            m_recovery.forced_retry_timestamps.push_back(m_recovery.last_get_block_at);
+            m_recovery.next_forced_retry_due = m_recovery.last_get_block_at +
                 std::chrono::milliseconds(FORCED_RETRY_INTERVAL_MS + next_forced_retry_jitter_ms());
-            prune_forced_retry_window(m_recovery_last_get_block_sent_at);
+            prune_forced_retry_window(m_recovery.last_get_block_at);
         }
         log_get_block_decision(true, forced_lane, GetBlockSuppressionReason::NONE, "request_work_sent");
-        m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery_epoch);
+        m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery.epoch);
     } else {
         GetBlockSuppressionReason reason = GetBlockSuppressionReason::REQUEST_WORK_EMPTY;
         auto last_status = solo_protocol->get_last_get_block_request_status();
@@ -1822,7 +1902,7 @@ void Worker_manager::retry_template_request(bool bForce)
                        "(authenticated={}, primary_connected={}, see Solo logs for specific suppression reason)",
                        solo_protocol->is_authenticated(),
                        m_primary_node_session->is_primary_connected());
-        if (m_degraded_mode && solo_protocol->is_authenticated() && no_valid_template) {
+        if (is_degraded() && solo_protocol->is_authenticated() && no_valid_template) {
             schedule_forced_recovery_retry("request_work_empty");
         }
     }
@@ -1835,25 +1915,27 @@ void Worker_manager::check_template_health()
         return;
     }
 
-    // Fix B: Guard against a stalled reconnect. If m_reconnect_in_progress has been true
-    // for more than 60 seconds, the TCP connect attempt itself has likely failed silently.
-    // Clear the flag so the escape ladder is not indefinitely suppressed.
-    if (m_reconnect_in_progress) {
-        if (m_reconnect_started_at == std::chrono::steady_clock::time_point{}) {
-            // m_reconnect_started_at should always be set alongside m_reconnect_in_progress.
-            // If it is unset here, that indicates a logic error — log and recover defensively.
-            m_logger->warn("[Worker_manager] m_reconnect_in_progress=true but m_reconnect_started_at unset — "
-                           "logic error detected; stamping now to allow timeout guard to function");
-            m_reconnect_started_at = std::chrono::steady_clock::now();
+    // Guard against a stalled reconnect. If RECONNECTING phase has been active for
+    // more than 60 seconds, the TCP connect attempt itself has likely failed silently.
+    // Transition back to HARD_RECOVERY so the escape ladder is not indefinitely suppressed.
+    if (is_reconnecting()) {
+        if (m_recovery.reconnect_started_at == std::chrono::steady_clock::time_point{}) {
+            // reconnect_started_at should always be set by on_phase_enter(RECONNECTING).
+            // If unset here, that indicates a logic error — stamp now to allow timeout.
+            m_logger->warn("[Worker_manager] RECONNECTING but reconnect_started_at unset — "
+                           "logic error detected; stamping now to allow timeout guard");
+            m_recovery.reconnect_started_at = std::chrono::steady_clock::now();
         }
         auto reconnect_age_s = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::steady_clock::now() - m_reconnect_started_at).count();
+            std::chrono::steady_clock::now() - m_recovery.reconnect_started_at).count();
         constexpr int64_t MAX_RECONNECT_WAIT_SECONDS = 60;
         if (reconnect_age_s > MAX_RECONNECT_WAIT_SECONDS) {
-            m_logger->warn("[Worker_manager] Reconnect in-progress for {}s > {}s — clearing stale flag",
+            m_logger->warn("[Worker_manager] Reconnect stalled for {}s > {}s — clearing RECONNECTING phase",
                            reconnect_age_s, MAX_RECONNECT_WAIT_SECONDS);
-            m_reconnect_in_progress = false;
-            m_reconnect_started_at = {};
+            // Direct phase change: stay in degraded territory (HARD_RECOVERY) rather than
+            // calling transition_to() which would reset epoch/entered_at unnecessarily.
+            m_recovery.phase = RecoveryPhase::HARD_RECOVERY;
+            m_recovery.reconnect_started_at = {};
         }
     }
 
@@ -1862,17 +1944,17 @@ void Worker_manager::check_template_health()
         return;
     }
 
+    // Sync SOFT_REFRESH state from authoritative session-manager soft-refresh signal.
+    // The session manager is the source of truth; if it sees a soft-refresh request
+    // that the local state hasn't captured yet (e.g. race during a tick boundary),
+    // enter SOFT_REFRESH phase to ensure submissions are withheld.
     if (auto* session_manager = solo_protocol->get_session_manager()) {
         const auto session_snapshot = session_manager->get_runtime_snapshot();
         if (session_snapshot.recovery_state == protocol::SessionManager::RecoveryState::SOFT_REFRESH_REQUESTED) {
-            if (!m_recovery_pending) {
+            if (!is_recovery_active()) {
                 m_logger->info("[Worker_manager] Syncing local recovery state from authoritative soft-refresh state");
-                m_recovery_pending = true;
+                transition_to(RecoveryPhase::SOFT_REFRESH, "session_manager_sync");
             }
-            if (m_recovery_started_at == std::chrono::steady_clock::time_point{}) {
-                m_recovery_started_at = std::chrono::steady_clock::now();
-            }
-            m_template_withheld = true;
         }
     }
 
@@ -1883,7 +1965,7 @@ void Worker_manager::check_template_health()
                                            : RECOVERY_WINDOW_SECONDS_HASH;
     const bool has_valid_template = template_interface->has_valid_template();
 
-    if (m_template_withheld && m_recovery_pending && !m_degraded_mode) {
+    if (is_submissions_withheld()) {
         // Belt-and-suspenders: if a valid template was installed during the pending
         // window (e.g. via a BLOCK_DATA path that raced with the health monitor tick),
         // close out the recovery state immediately so we stop sending spurious GET_BLOCKs.
@@ -1893,35 +1975,35 @@ void Worker_manager::check_template_health()
         if (has_valid_template) {
             m_logger->info("[Worker_manager] ✓ Valid template present during soft-refresh pending window "
                            "(epoch {}) — closing out recovery state",
-                           m_recovery_epoch);
+                           m_recovery.epoch);
             clear_recovery_state();
             return;
         }
 
         auto now = std::chrono::steady_clock::now();
-        if (m_recovery_started_at == std::chrono::steady_clock::time_point{}) {
-            m_recovery_started_at = now;
+        if (m_recovery.entered_at == std::chrono::steady_clock::time_point{}) {
+            m_recovery.entered_at = now;
         }
         auto recovery_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
-            now - m_recovery_started_at).count();
+            now - m_recovery.entered_at).count();
 
         if (recovery_elapsed_s < effective_recovery_window) {
-            bool first_send = (m_recovery_last_get_block_transmitted_at == std::chrono::steady_clock::time_point{});
+            bool first_send = (m_recovery.last_get_block_at == std::chrono::steady_clock::time_point{});
             auto since_last_s = first_send ? recovery_elapsed_s
                 : std::chrono::duration_cast<std::chrono::seconds>(
-                      now - m_recovery_last_get_block_transmitted_at).count();
+                      now - m_recovery.last_get_block_at).count();
 
             if (first_send || since_last_s >= RECOVERY_RESEND_INTERVAL_SECONDS) {
                 m_logger->info("[Worker_manager] ⟳ Template swap pending on {} channel (epoch {}, {}s elapsed, valid_template={}) — requesting replacement template",
                                channel_name,
-                               m_recovery_epoch,
+                               m_recovery.epoch,
                                recovery_elapsed_s,
                                has_valid_template ? "yes" : "no");
                 retry_template_request(true);
             } else {
                 m_logger->info("[Worker_manager] ⧖ Template swap pending on {} channel (epoch {}, {}s elapsed, valid_template={}) — submissions withheld, next retry in {}s",
                                channel_name,
-                               m_recovery_epoch,
+                               m_recovery.epoch,
                                recovery_elapsed_s,
                                has_valid_template ? "yes" : "no",
                                RECOVERY_RESEND_INTERVAL_SECONDS - since_last_s);
@@ -1931,19 +2013,16 @@ void Worker_manager::check_template_health()
 
         m_logger->warn("[Worker_manager] ⚡ Template swap timeout on {} channel (epoch {}, {}s elapsed, valid_template={}) — escalating soft refresh into degraded mode",
                        channel_name,
-                       m_recovery_epoch,
+                       m_recovery.epoch,
                        recovery_elapsed_s,
                        has_valid_template ? "yes" : "no");
-        m_recovery_pending = false;
-        // Compatibility note: retain the legacy reason label because existing
-        // monitoring/log parsing may key off it, even though this timeout path
-        // now covers broader soft-refresh stalls (including tip_moved refreshes).
-        mark_recovery_initiated("same_height_soft_refresh_timeout");
-        m_template_withheld = false;
+        // SOFT_REFRESH → HARD_RECOVERY transition (new epoch via transition_to)
         if (has_valid_template) {
             template_interface->discard_template("Soft refresh timeout: " + std::to_string(recovery_elapsed_s) +
                                                  "s > " + std::to_string(effective_recovery_window) + "s window");
         }
+        // transition_to(HARD_RECOVERY) exits SOFT_REFRESH, increments epoch, resets all timing
+        transition_to(RecoveryPhase::HARD_RECOVERY, "same_height_soft_refresh_timeout");
         stop_all_workers();
         retry_template_request(true);
         return;
@@ -1952,17 +2031,18 @@ void Worker_manager::check_template_health()
     if (!has_valid_template) {
 
         // In degraded mode with no valid template — apply escape ladder to prevent permanent lockout.
-        if (m_degraded_mode) {
+        if (is_degraded()) {
             auto now = std::chrono::steady_clock::now();
             auto ht_snap = solo_protocol->get_height_tracker_snapshot();
 
-            // Belt-and-suspenders: ensure m_degraded_since is stamped even if stop_all_workers()
-            // was somehow bypassed (e.g. direct m_degraded_mode = true assignment in tests).
-            if (m_degraded_since == std::chrono::steady_clock::time_point{}) {
-                m_degraded_since = now;
+            // Belt-and-suspenders: ensure m_recovery.degraded_since is stamped.
+            // on_phase_enter(HARD_RECOVERY/ESCALATED) sets it on first entry; this guard
+            // catches the rare case where the phase was set directly without transition_to().
+            if (m_recovery.degraded_since == std::chrono::steady_clock::time_point{}) {
+                m_recovery.degraded_since = now;
             }
             auto degraded_duration = std::chrono::duration_cast<std::chrono::seconds>(
-                now - m_degraded_since).count();
+                now - m_recovery.degraded_since).count();
 
             // PUSH notification liveness is the sole authoritative signal for session
             // health.  KEEPALIVE_V2_ACK is diagnostic only — it is not used in any
@@ -2029,7 +2109,7 @@ void Worker_manager::check_template_health()
             if (!push_recent &&
                 since_push_s > protocol::ProtocolConstants::FAST_RECONNECT_SIGNAL_DEAD_SECONDS &&
                 degraded_duration > protocol::ProtocolConstants::FAST_RECONNECT_DEGRADED_SECONDS &&
-                !m_reconnect_in_progress)
+                !is_reconnecting())
             {
                 m_logger->error("[Worker_manager] Stage 0 FAST RECONNECT: push signal dead "
                                 "(push {}s ago, {}s degraded) — skipping ladder",
@@ -2080,16 +2160,16 @@ void Worker_manager::check_template_health()
     uint64_t template_age = ht_snap.get_template_age_seconds();
 
     // ── Belt-and-suspenders guard ────────────────────────────────────────────
-    // If a valid template exists but m_degraded_mode is still set (e.g. because
-    // clear_recovery_state() was somehow bypassed), clear it now so the stats
-    // printer stops showing "MINING STOPPED" and the health monitor doesn't
-    // keep triggering spurious recoveries on every 30 s tick.
+    // If a valid template exists but is_degraded() (e.g. because clear_recovery_state()
+    // was somehow bypassed), clear it now so the stats printer stops showing
+    // "MINING STOPPED" and the health monitor doesn't trigger spurious recoveries.
     //
     // IMPORTANT: only call clear_recovery_state() AFTER verifying workers actually
-    // received the template. Clearing before confirmation resets m_degraded_since
+    // received the template. Clearing before confirmation resets m_recovery.degraded_since
     // and the escape ladder timer, preventing Stage 2/3/Hard-Limit from ever firing.
-    if (m_degraded_mode) {
-        m_logger->warn("[Worker_manager] ⚠️  Valid template exists but m_degraded_mode=true — clearing outdated degraded flag");
+    if (is_degraded()) {
+        m_logger->warn("[Worker_manager] ⚠️  Valid template exists but phase={} — clearing outdated degraded flag",
+                       phase_name(m_recovery.phase));
         bool has_alive_workers = false;
         bool should_refeed_template = false;
         {
@@ -2188,28 +2268,28 @@ void Worker_manager::check_template_health()
                 blocks_behind);
 
             // ── Recovery state gate (doom-loop prevention) ───────────────────────────
-            // mark_recovery_initiated is idempotent: if the push handler already set
-            // m_recovery_pending (via m_recovery_handler callback), this is a no-op.
+            // mark_recovery_initiated is idempotent: if the push handler already called
+            // transition_to(HARD_RECOVERY) (via m_recovery_handler callback), this is a no-op.
             // Otherwise it starts a new recovery epoch now.
             mark_recovery_initiated("health_monitor_channel_stale");
 
             auto now_ts = std::chrono::steady_clock::now();
             auto recovery_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
-                now_ts - m_recovery_started_at).count();
+                now_ts - m_recovery.entered_at).count();
 
             if (recovery_elapsed_s < effective_recovery_window) {
                 // Within recovery window: workers keep mining; only resend GET_BLOCK if
                 // RECOVERY_RESEND_INTERVAL has elapsed since the last confirmed transmission.
-                // Use m_recovery_last_get_block_transmitted_at (only set when a GET_BLOCK was
+                // Use m_recovery.last_get_block_at (only set when a GET_BLOCK was
                 // actually transmitted) so that rate-limited attempts don't suppress retries.
-                bool first_send = (m_recovery_last_get_block_transmitted_at == std::chrono::steady_clock::time_point{});
+                bool first_send = (m_recovery.last_get_block_at == std::chrono::steady_clock::time_point{});
                 auto since_last_s = first_send ? recovery_elapsed_s
                     : std::chrono::duration_cast<std::chrono::seconds>(
-                          now_ts - m_recovery_last_get_block_transmitted_at).count();
+                          now_ts - m_recovery.last_get_block_at).count();
 
                 // Change C: doom-loop stall detection — warn if recovery has been running
                 // for > 30 s without a single confirmed GET_BLOCK transmission.
-                if (recovery_elapsed_s > 30 && !m_recovery_get_block_transmitted) {
+                if (recovery_elapsed_s > 30 && !m_recovery.get_block_confirmed) {
                     m_logger->warn("[Worker_manager] ⚠️ RECOVERY STALL: {}s elapsed, NO GET_BLOCK has been transmitted yet "
                         "(not authenticated?). Retrying...", recovery_elapsed_s);
                     retry_template_request(true);
@@ -2218,12 +2298,12 @@ void Worker_manager::check_template_health()
 
                 if (first_send || since_last_s >= RECOVERY_RESEND_INTERVAL_SECONDS) {
                     m_logger->info("[Worker_manager] ⟳ Recovery resend GET_BLOCK (epoch {}, {}s elapsed, last transmitted: {})",
-                        m_recovery_epoch, recovery_elapsed_s, first_send ? "never" : std::to_string(since_last_s) + "s ago");
+                        m_recovery.epoch, recovery_elapsed_s, first_send ? "never" : std::to_string(since_last_s) + "s ago");
                     retry_template_request(true);  // Force GET_BLOCK + MINER_READY
                 } else {
                     m_logger->info("[Worker_manager] ⧖ Recovery pending (epoch {}, {}s elapsed) — health monitor skip-stop; "
                         "last GET_BLOCK transmitted {}s ago (resend in {}s)",
-                        m_recovery_epoch, recovery_elapsed_s, since_last_s,
+                        m_recovery.epoch, recovery_elapsed_s, since_last_s,
                         RECOVERY_RESEND_INTERVAL_SECONDS - since_last_s);
                 }
                 return;
@@ -2233,9 +2313,9 @@ void Worker_manager::check_template_health()
 
             // Change B: Only escalate if sufficient time has passed since the last escalation.
             // Prevents re-escalation before the new epoch's GET_BLOCK has had time to be answered.
-            if (m_last_escalation_at != std::chrono::steady_clock::time_point{}) {
+            if (m_recovery.last_escalation_at != std::chrono::steady_clock::time_point{}) {
                 auto since_last_escalation = std::chrono::duration_cast<std::chrono::seconds>(
-                    now_ts - m_last_escalation_at).count();
+                    now_ts - m_recovery.last_escalation_at).count();
                 if (since_last_escalation < MIN_ESCALATION_INTERVAL_SECONDS) {
                     m_logger->info("[Worker_manager] Escalation suppressed — only {}s since last escalation (min={}s), resending GET_BLOCK instead",
                         since_last_escalation, MIN_ESCALATION_INTERVAL_SECONDS);
@@ -2246,34 +2326,31 @@ void Worker_manager::check_template_health()
 
             // Change A: Do not re-escalate immediately after the previous escalation — give the
             // new GET_BLOCK at least RECOVERY_RESEND_INTERVAL_SECONDS * 3 seconds to be answered.
-            if (m_recovery_epoch > 1) {
+            if (m_recovery.epoch > 1) {
                 auto since_epoch_start = std::chrono::duration_cast<std::chrono::seconds>(
-                    now_ts - m_recovery_started_at).count();
+                    now_ts - m_recovery.entered_at).count();
                 if (since_epoch_start < (RECOVERY_RESEND_INTERVAL_SECONDS * EPOCH_NO_ESCALATE_MULTIPLIER)) {
                     // Still within the no-re-escalate window — only resend GET_BLOCK, do not stop workers again.
                     return;
                 }
             }
 
-            // Escalate to hard recovery.
+            // Escalate to ESCALATED phase (workers stopped, aggressive retry).
             m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
             m_logger->warn("[Worker_manager] ⚡ RECOVERY TIMEOUT: {} epoch {} exceeded {}s window",
-                channel_name, m_recovery_epoch, effective_recovery_window);
+                channel_name, m_recovery.epoch, effective_recovery_window);
             m_logger->warn("[Worker_manager]    Elapsed: {}s (exceeded {}s recovery window)",
                 recovery_elapsed_s, effective_recovery_window);
             m_logger->warn("[Worker_manager]    Escalating: discard stale template + stop workers + request fresh GET_BLOCK");
             m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
-            m_recovery_pending = false;  // Reset so next staleness detection starts a fresh epoch
-            m_template_withheld = false;  // Clear soft-pause — full escalation takes over
             template_interface->discard_template("Recovery timeout: " + std::to_string(recovery_elapsed_s) +
                                                  "s > " + std::to_string(effective_recovery_window) + "s window");
             stop_all_workers();
             // Workers are recreated just-in-time by the set_block_handler degraded-mode guard
             // when the recovery template arrives. Avoid eager restart and I/O-thread blocking.
-            m_last_escalation_at = std::chrono::steady_clock::now();  // Change B: record escalation time
-            // Recovery Tuning 3: Start a fresh epoch immediately so the next health-monitor tick
-            // sees a clean recovery window clock — preventing immediate re-escalation.
-            mark_recovery_initiated("escalation_hard_recovery");
+            m_recovery.last_escalation_at = std::chrono::steady_clock::now();  // record before transition clears it
+            // Transition HARD_RECOVERY → ESCALATED: new epoch, aggressive retry mode
+            transition_to(RecoveryPhase::ESCALATED, "escalation_hard_recovery");
             retry_template_request(true);
             return;
         }
@@ -2282,14 +2359,14 @@ void Worker_manager::check_template_health()
     // Unified tip moved on another channel (cross-channel advance) but the current
     // channel template is still valid (is_template_stale() returned false above).
     // Request a fresh template opportunistically so hashPrevBlock stays current,
-    // but do NOT set m_template_withheld or m_recovery_pending — the current
-    // template is still mineable and workers should keep submitting.
+    // but do NOT enter SOFT_REFRESH or HARD_RECOVERY — the current template is still
+    // mineable and workers should keep submitting.
     //
-    // Calling mark_soft_refresh_requested() here (the old behaviour) was wrong
-    // because it set m_template_withheld=true and m_recovery_pending=true for a
-    // template that is still channel-valid, creating a recovery cycle that could
-    // never resolve if the chain advanced >100 unified blocks (height sanity check
-    // in validate_template() would then reject every incoming BLOCK_DATA response).
+    // Using mark_soft_refresh_requested() here (old behaviour) was wrong because it
+    // set is_submissions_withheld()=true and is_recovery_active()=true for a template
+    // that is still channel-valid, creating a recovery cycle that could never resolve
+    // if the chain advanced >100 unified blocks (height sanity check in validate_template()
+    // would then reject every incoming BLOCK_DATA response).
     if (ht_snap.is_tip_moved()) {
         m_logger->debug("[Worker_manager] Unified tip moved (template_unified_height {} → unified_height {}) — requesting fresh template; workers continue on valid channel template",
                        ht_snap.template_unified_height, ht_snap.unified_height);
@@ -2370,9 +2447,9 @@ void Worker_manager::check_template_health()
         // we'd have no template AND no recovery in progress simultaneously (doom-loop).
         // Suppress the hard emergency discard while recovery is pending; the recovery window
         // escalation logic (above) handles escalation if the window expires without a template.
-        if (m_recovery_pending) {
+        if (is_recovery_active()) {
             m_logger->debug("[Worker_manager] Emergency aging ({}s) suppressed during active recovery (epoch {})",
-                            template_age, m_recovery_epoch);
+                            template_age, m_recovery.epoch);
             // Resend GET_BLOCK (non-force: respects RECOVERY_RESEND_INTERVAL_SECONDS rate-limit)
             // so recovery keeps making progress without escalating to hard stop/restart.
             retry_template_request(false);

@@ -21,6 +21,7 @@
 #include <deque>
 #include <mutex>
 #include <atomic>
+#include <chrono>
 
 namespace asio { class io_context; }
 
@@ -31,6 +32,40 @@ namespace stats { class Collector; }
 namespace protocol { class Protocol; class Solo; }
 class Worker;
 class ColinAgent;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ⚡ Explicit Recovery State Machine
+// ─────────────────────────────────────────────────────────────────────────────
+// Replaces 15 independent boolean/timestamp fields that could combine into 32+
+// undefined configurations.  Exactly one phase is active at any moment.
+// ─────────────────────────────────────────────────────────────────────────────
+enum class RecoveryPhase : uint8_t {
+    HEALTHY,        // ⚡ Mining normally
+    SOFT_REFRESH,   // ⚡ Workers running, submissions withheld, GET_BLOCK pending
+    HARD_RECOVERY,  // ⚡ Workers stopped, GET_BLOCK pending, waiting for template
+    RECONNECTING,   // ⚡ TCP reconnect in progress, everything paused
+    ESCALATED,      // ⚡ Recovery window expired, aggressive retry + escape ladder active
+};
+
+struct RecoveryContext {
+    RecoveryPhase phase{RecoveryPhase::HEALTHY};
+
+    uint64_t epoch{0};                                              // Monotonic recovery counter
+    std::chrono::steady_clock::time_point entered_at{};            // When current epoch (recovery start) began
+    std::chrono::steady_clock::time_point degraded_since{};        // When current outage started (set once per outage)
+    std::chrono::steady_clock::time_point last_get_block_at{};     // Last confirmed GET_BLOCK transmit
+    std::chrono::steady_clock::time_point last_completed_at{};     // When last recovery finished (hold-off)
+    std::chrono::steady_clock::time_point last_escalation_at{};    // Prevents immediate re-escalation
+    bool get_block_confirmed{false};                               // At least one GET_BLOCK confirmed this epoch
+    const char* reason{nullptr};                                   // Why this phase was entered (for logging)
+
+    // ── Reconnect sub-state (only valid when phase == RECONNECTING) ──────────
+    std::chrono::steady_clock::time_point reconnect_started_at{};
+
+    // ── Forced retry tracking (carried across phases) ─────────────────────────
+    std::deque<std::chrono::steady_clock::time_point> forced_retry_timestamps{};
+    std::chrono::steady_clock::time_point next_forced_retry_due{};
+};
 
 class Worker_manager : public std::enable_shared_from_this<Worker_manager>
 {
@@ -106,23 +141,40 @@ private:
     void restart_recovery_window(const char* reason);
 
     /// Mark that a hard GET_BLOCK recovery is now in progress.
-    /// Sets m_recovery_pending, increments m_recovery_epoch, records start time.
+    /// Sets m_recovery.phase=HARD_RECOVERY, increments epoch, records start time.
     /// Called from:
     ///  - the recovery_handler callback (push handler detected channel-stale staleness),
     ///  - retry_template_request(true) (health monitor or validation failure path).
     void mark_recovery_initiated(const char* reason);
 
     /// Mark that a soft refresh is now in progress.
-    /// Sets m_recovery_pending, increments m_recovery_epoch, records start time,
+    /// Sets m_recovery.phase=SOFT_REFRESH, increments epoch, records start time,
     /// and withholds submissions without stopping workers or entering degraded mode.
     void mark_soft_refresh_requested(const char* reason);
 
     /// Clear degraded mode and all recovery state after a valid template is delivered to workers.
     /// Called from the template feed handler when workers_fed > 0, and as a belt-and-suspenders
-    /// guard from check_template_health() when a valid template exists but m_degraded_mode is set.
+    /// guard from check_template_health() when a valid template exists but is_degraded() is set.
     void clear_recovery_state();
 
     void retry_connect(network::Endpoint const& wallet_endpoint);
+
+    // ── State machine transition API ───────────────────────────────────────────
+    /// Transition to a new RecoveryPhase.  Logs the transition, validates legality
+    /// (in debug builds: asserts; in release: logs error and returns without change),
+    /// runs on_phase_exit() for the old phase and on_phase_enter() for the new one.
+    void transition_to(RecoveryPhase new_phase, const char* reason = nullptr);
+    static bool is_valid_transition(RecoveryPhase from, RecoveryPhase to);
+    void on_phase_enter(RecoveryPhase phase);
+    void on_phase_exit(RecoveryPhase phase);
+    static const char* phase_name(RecoveryPhase phase);
+
+    // ── State query helpers (backward-compat convenience) ─────────────────────
+    bool is_degraded()              const { return m_recovery.phase == RecoveryPhase::HARD_RECOVERY ||
+                                                   m_recovery.phase == RecoveryPhase::ESCALATED; }
+    bool is_submissions_withheld()  const { return m_recovery.phase == RecoveryPhase::SOFT_REFRESH; }
+    bool is_recovery_active()       const { return m_recovery.phase != RecoveryPhase::HEALTHY; }
+    bool is_reconnecting()          const { return m_recovery.phase == RecoveryPhase::RECONNECTING; }
 
     /// Submit a found block: try primary lane first, fallback to secondary within 100 ms.
     void submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce);
@@ -139,64 +191,13 @@ private:
 
     // Failover NodeSession (optional secondary node)
     std::shared_ptr<NodeSession> m_failover_node_session;
-    
-    // Degraded mode flag - set when mining is stopped due to invalid template
-    bool m_degraded_mode;
 
-    // Soft-pause flag (Priority 1 — "Pause not Destroy" for same-height tip replacement):
-    // When true, workers keep running their sieve but block submissions are
-    // suppressed. Set on soft refresh instead of calling stop_all_workers().
-    // Cleared when a fresh template arrives.  Only escalated to full worker stop
-    // if the recovery window expires without a fresh template.
-    bool m_template_withheld{false};
+    // ── Recovery state machine ────────────────────────────────────────────────
+    // Single authoritative RecoveryContext replaces 15 independent boolean/timestamp
+    // fields that could combine into 32+ undefined configurations.
+    RecoveryContext m_recovery;
 
-    // ── Recovery state (doom-loop prevention) ────────────────────────────────
-    // Set when a channel-stale GET_BLOCK recovery has been initiated (from push
-    // handler or health monitor) and no fresh template has arrived yet.
-    // Prevents check_template_health() from calling stop_all_workers()
-    // redundantly during the recovery window while awaiting the GET_BLOCK reply.
-    bool m_recovery_pending{false};
-
-    // Monotonically increasing counter: incremented each time a new recovery is
-    // initiated.  Allows per-epoch bypass tracking (one GET_BLOCK forced send per
-    // recovery epoch without triggering node-side rate-limit bans).
-    uint64_t m_recovery_epoch{0};
-
-    // Wall-clock time when the current recovery epoch started.
-    // Recovery window = 60 s; if no template arrives within that window the
-    // health monitor escalates (stop workers → hard recovery).
-    std::chrono::steady_clock::time_point m_recovery_started_at{};
-
-    // Time when the most recent recovery completed (clear_recovery_state() was called).
-    // Used as a hold-off: push-resubscription is suppressed within the first 60 s
-    // after recovery to avoid an immediate MINER_READY that triggers a duplicate
-    // template pipeline restart.
-    std::chrono::steady_clock::time_point m_last_recovery_completed_at{};
-
-    // Time when degraded mode was first entered in the current outage.
-    // Set once by stop_all_workers() (first entry only); cleared by clear_recovery_state().
-    // Used by the escape ladder in check_template_health() to enforce hard time-based
-    // stage escalation (Stage 1 / Stage 2 / Stage 3 / hard limit).
-    std::chrono::steady_clock::time_point m_degraded_since{};
-
-    // Time of the most recent GET_BLOCK sent by the health monitor during this
-    // recovery epoch.  Used to rate-limit health-monitor resends to one per
-    // RECOVERY_RESEND_INTERVAL (10 s) without stopping workers each time.
-    std::chrono::steady_clock::time_point m_recovery_last_get_block_sent_at{};
-
-    // Time of the most recent GET_BLOCK that was CONFIRMED transmitted (payload was
-    // non-null and non-empty, and transmit() was called).  Unlike the legacy
-    // m_recovery_last_get_block_sent_at, this is never updated for rate-limited attempts.
-    // Used as the authoritative rate-cap reference in check_template_health().
-    std::chrono::steady_clock::time_point m_recovery_last_get_block_transmitted_at{};
-
-    // True once at least one GET_BLOCK has been CONFIRMED transmitted in the current
-    // recovery epoch.  Reset to false at the start of each new recovery epoch.
-    // Used by check_template_health() to detect the doom-loop symptom where every
-    // GET_BLOCK attempt is rate-limited and the node never receives the request.
-    bool m_recovery_get_block_transmitted{false};
-    std::chrono::steady_clock::time_point m_next_forced_retry_due{};
-    std::deque<std::chrono::steady_clock::time_point> m_forced_retry_send_timestamps{};
+    // Forced-retry timer state (not part of RecoveryContext — timer handle is not copyable)
     std::shared_ptr<asio::steady_timer> m_forced_retry_timer{};
     bool m_forced_retry_timer_pending{false};
     uint64_t m_forced_retry_timer_token{0};
@@ -214,15 +215,6 @@ private:
         0,  // Base delay is set dynamically from config in retry_connect()
         protocol::ProtocolConstants::MAX_RETRY_DELAY_SECONDS
     };
-
-    // ── Reconnect guard (belt-and-suspenders race prevention) ────────────────
-    // Set to true at the start of retry_connect(), cleared when new connection is authenticated.
-    // Guards against processing stale callbacks during reconnect window.
-    bool m_reconnect_in_progress{false};
-
-    // Track when retry_connect() set m_reconnect_in_progress = true.
-    // Used by check_template_health() to timeout a stalled reconnect attempt.
-    std::chrono::steady_clock::time_point m_reconnect_started_at{};
 
     // ── Session authentication retry state (infinite loop prevention) ─────────
     uint32_t m_session_auth_fail_count{0};          // consecutive session_id=0 failures on primary
@@ -255,10 +247,6 @@ private:
     uint16_t get_effective_keepalive_interval() const;
 
     // Time of the most recent escalation (epoch N → epoch N+1: stop workers + hard recovery).
-    // Used to prevent re-escalation within MIN_ESCALATION_INTERVAL_SECONDS of the previous
-    // escalation, giving the new GET_BLOCK time to be answered before workers are stopped again.
-    std::chrono::steady_clock::time_point m_last_escalation_at{};
-
     std::vector<std::shared_ptr<stats::Printer>> m_stats_printers;
     std::vector<std::shared_ptr<Worker>> m_workers;
 
