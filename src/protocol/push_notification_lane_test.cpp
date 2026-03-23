@@ -375,7 +375,6 @@ int main()
             bool request_work_called{false};
             bool discard_template_called{false};
             bool recovery_triggered{false};
-            bool soft_refresh_triggered{false};
         };
 
         // Simulate the corrected handler decision tree.
@@ -396,7 +395,6 @@ int main()
                 if (blocks_behind == 2 && burst_grace_active) {
                     d.discard_template_called = true;
                     d.request_work_called = true;
-                    d.soft_refresh_triggered = true;
                     return d;
                 }
                 // blocks_behind >= 2: height alone is sufficient — discard and recover.
@@ -410,14 +408,12 @@ int main()
             if (has_hash && !hash_matches) {
                 d.discard_template_called = true;
                 d.request_work_called = true;
-                d.soft_refresh_triggered = true;
                 return d;
             }
             if (tip_moved) {
                 d.request_work_called = true;
-                // Soft refresh is NOT triggered for cross-channel tip advances.
+                // Recovery is NOT triggered for cross-channel tip advances.
                 // The current channel template is still valid; workers keep submitting.
-                // (d.soft_refresh_triggered stays false)
             }
             return d;
         };
@@ -465,8 +461,6 @@ int main()
                 d.discard_template_called);
             print_test_result("Scenario C3: 2-block burst within grace → recovery NOT triggered",
                 !d.recovery_triggered);
-            print_test_result("Scenario C4: 2-block burst within grace → soft refresh triggered",
-                d.soft_refresh_triggered);
         }
 
         // Scenario D: 2-block lag after grace expires
@@ -508,9 +502,7 @@ int main()
                 d.discard_template_called);
             print_test_result("Scenario F2: Same-height tip replacement → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario F3: Same-height tip replacement → soft refresh triggered",
-                d.soft_refresh_triggered);
-            print_test_result("Scenario F4: Same-height tip replacement → hard recovery NOT triggered",
+            print_test_result("Scenario F3: Same-height tip replacement → hard recovery NOT triggered",
                 !d.recovery_triggered);
         }
 
@@ -538,9 +530,7 @@ int main()
                 d.request_work_called);
             print_test_result("Scenario H2: Tip moved → discard_template NOT called",
                 !d.discard_template_called);
-            print_test_result("Scenario H3: Tip moved → soft refresh NOT triggered (informational only)",
-                !d.soft_refresh_triggered);
-            print_test_result("Scenario H4: Tip moved → hard recovery NOT triggered",
+            print_test_result("Scenario H3: Tip moved → hard recovery NOT triggered",
                 !d.recovery_triggered);
         }
     }
@@ -597,7 +587,6 @@ int main()
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
         bool recovery_called = false;
-        bool soft_refresh_called = false;
 
         network::Payload payload = create_extended_push_payload(5000, 100, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -610,12 +599,10 @@ int main()
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
             [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; },
-            [&soft_refresh_called]() { soft_refresh_called = true; });
+            [&recovery_called]() { recovery_called = true; });
 
         print_test_result("Same-height tip replacement requests fresh work", request_work_called);
         print_test_result("Same-height tip replacement discards active template", !tmpl_interface.has_valid_template());
-        print_test_result("Same-height tip replacement notifies soft-refresh path", soft_refresh_called);
         print_test_result("Same-height tip replacement does not notify hard recovery path", !recovery_called);
     }
 
@@ -638,7 +625,6 @@ int main()
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
         bool recovery_called = false;
-        bool soft_refresh_called = false;
 
         network::Payload payload = create_extended_push_payload(5049, 99, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -651,12 +637,10 @@ int main()
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
             [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; },
-            [&soft_refresh_called]() { soft_refresh_called = true; });
+            [&recovery_called]() { recovery_called = true; });
 
         print_test_result("Stale push does not request fresh work", !request_work_called);
         print_test_result("Stale push keeps active template valid", tmpl_interface.has_valid_template());
-        print_test_result("Stale push does not notify soft-refresh path", !soft_refresh_called);
         print_test_result("Stale push does not notify hard recovery path", !recovery_called);
     }
 
@@ -734,7 +718,6 @@ int main()
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
         bool recovery_called = false;
-        bool soft_refresh_called = false;
 
         network::Payload payload = create_extended_push_payload(6002, 102, 0x1d00ffff, 0x00);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -747,19 +730,17 @@ int main()
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
             [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; },
-            [&soft_refresh_called]() { soft_refresh_called = true; });
+            [&recovery_called]() { recovery_called = true; });
 
         print_test_result("2-block burst within grace requests fresh work", request_work_called);
         print_test_result("2-block burst within grace discards stale template", !tmpl_interface.has_valid_template());
         print_test_result("2-block burst within grace does not enter recovery", !recovery_called);
-        print_test_result("2-block burst within grace triggers soft refresh", soft_refresh_called);
     }
 
     // ====================================================================
     // Summary
     // ====================================================================
-    std::cout << "\nTest 14: Tip movement on another channel stays on soft-refresh path" << std::endl;
+    std::cout << "\nTest 14: Tip movement on another channel is informational only" << std::endl;
     {
         protocol::HeightTracker tracker;
         protocol::MiningTemplateInterface tmpl_interface(2, 0);
@@ -775,7 +756,6 @@ int main()
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
         bool recovery_called = false;
-        bool soft_refresh_called = false;
 
         network::Payload payload = create_extended_push_payload(8002, 100, 0x1d00ffff, 0x00);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -788,19 +768,17 @@ int main()
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
             [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; },
-            [&soft_refresh_called]() { soft_refresh_called = true; });
+            [&recovery_called]() { recovery_called = true; });
 
         print_test_result("Tip moved requests fresh work", request_work_called);
         print_test_result("Tip moved keeps active template valid", tmpl_interface.has_valid_template());
-        print_test_result("Tip moved does NOT notify soft-refresh (informational only)", !soft_refresh_called);
         print_test_result("Tip moved does not notify hard recovery path", !recovery_called);
     }
 
     // ====================================================================
-    // Test 15: Solo wires same-height push replacement to soft refresh
+    // Test 15: Solo same-height push replacement discards template and requests work
     // ====================================================================
-    std::cout << "\nTest 15: Solo routes same-height push replacement to soft refresh" << std::endl;
+    std::cout << "\nTest 15: Solo same-height push replacement discards template and requests work" << std::endl;
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
@@ -810,9 +788,7 @@ int main()
         solo.set_protocol_lane(ProtocolLane::STATELESS);
 
         bool recovery_called = false;
-        bool soft_refresh_called = false;
         solo.set_recovery_initiated_handler([&recovery_called]() { recovery_called = true; });
-        solo.set_soft_refresh_requested_handler([&soft_refresh_called]() { soft_refresh_called = true; });
 
         auto template_data = create_mock_template(9001, 0x1d00ffff, 2);
         auto res = solo.get_template_interface()->read_template(template_data, "test_node", false);
@@ -823,7 +799,6 @@ int main()
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
         solo.process_messages(packet, nullptr);
 
-        print_test_result("Solo same-height push triggers soft refresh handler", soft_refresh_called);
         print_test_result("Solo same-height push does not trigger recovery handler", !recovery_called);
         print_test_result("Solo same-height push discards obsolete template",
             !solo.get_template_interface()->has_valid_template());
@@ -842,9 +817,7 @@ int main()
         solo.set_protocol_lane(ProtocolLane::STATELESS);
 
         bool recovery_called = false;
-        bool soft_refresh_called = false;
         solo.set_recovery_initiated_handler([&recovery_called]() { recovery_called = true; });
-        solo.set_soft_refresh_requested_handler([&soft_refresh_called]() { soft_refresh_called = true; });
 
         auto template_data = create_mock_template(9101, 0x1d00ffff, 2);
         auto res = solo.get_template_interface()->read_template(template_data, "test_node", false);
@@ -856,7 +829,6 @@ int main()
         solo.process_messages(packet, nullptr);
 
         print_test_result("Solo stale push triggers recovery handler", recovery_called);
-        print_test_result("Solo stale push does not trigger soft refresh handler", !soft_refresh_called);
         print_test_result("Solo stale push discards stale template",
             !solo.get_template_interface()->has_valid_template());
     }
@@ -872,9 +844,7 @@ int main()
         solo.set_protocol_lane(ProtocolLane::STATELESS);
 
         bool recovery_called = false;
-        bool soft_refresh_called = false;
         solo.set_recovery_initiated_handler([&recovery_called]() { recovery_called = true; });
-        solo.set_soft_refresh_requested_handler([&soft_refresh_called]() { soft_refresh_called = true; });
 
         auto template_data = create_mock_template(9201, 0x1d00ffff, 2);
         auto res = solo.get_template_interface()->read_template(template_data, "test_node", false);
@@ -886,7 +856,6 @@ int main()
         solo.process_messages(packet, nullptr);
         auto push_snapshot = solo.get_height_tracker_snapshot();
 
-        print_test_result("Disconnected-session push triggers soft refresh handler", soft_refresh_called);
         print_test_result("Disconnected-session push does not trigger hard recovery handler", !recovery_called);
         print_test_result("Disconnected-session push updates unified height", push_snapshot.unified_height == 9200);
         print_test_result("Disconnected-session push updates channel height", push_snapshot.channel_height == 100);
@@ -1028,17 +997,9 @@ int main()
         print_test_result("Template in valid state after recovery BLOCK_DATA (debounce may suppress re-feed)",
             solo.get_template_interface()->has_valid_template());
 
-        // Step 4: Verify no spurious soft-refresh was re-triggered by the BLOCK_DATA.
-        // The miner should now be in a stable mining state.
-        bool soft_refresh_triggered = false;
-        solo.set_soft_refresh_requested_handler([&soft_refresh_triggered]() {
-            soft_refresh_triggered = true;
-        });
-        // Confirm that the installed template is still valid (no further discards).
-        print_test_result("Template remains valid after soft-refresh handler registered",
+        // Step 4: Confirm that the installed template is still valid (no further discards).
+        print_test_result("Template remains valid after recovery",
             solo.get_template_interface()->has_valid_template());
-        print_test_result("No further soft-refresh triggered during stable state",
-            !soft_refresh_triggered);
     }
 
     std::cout << "\n========================================" << std::endl;

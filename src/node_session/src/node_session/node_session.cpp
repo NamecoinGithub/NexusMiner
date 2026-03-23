@@ -612,19 +612,6 @@ void NodeSession::set_recovery_initiated_handler(Recovery_handler handler)
     }
 }
 
-void NodeSession::set_soft_refresh_requested_handler(Soft_refresh_handler handler)
-{
-    m_soft_refresh_handler = std::move(handler);
-
-    if (m_primary_protocol) {
-        m_primary_protocol->set_soft_refresh_requested_handler([this]() {
-            if (m_soft_refresh_handler) {
-                m_soft_refresh_handler();
-            }
-        });
-    }
-}
-
 void NodeSession::set_session_expired_handler(Session_expired_handler handler)
 {
     m_session_expired_handler = std::move(handler);

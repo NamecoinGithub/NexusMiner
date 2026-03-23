@@ -197,7 +197,6 @@ public:
         return m_session_context ? m_session_context->get_session_manager().get() : nullptr;
     }
 
-    void mark_authoritative_soft_refresh(const std::string& reason);
     void mark_authoritative_recovery_required(const std::string& reason);
     void mark_authoritative_recovery_healthy(const std::string& reason = "");
 
@@ -206,9 +205,6 @@ public:
     // Worker_manager registers this to set its recovery_pending flag for doom-loop prevention.
     using Recovery_handler = std::function<void()>;
     void set_recovery_initiated_handler(Recovery_handler h) { m_recovery_handler = std::move(h); }
-
-    using Soft_refresh_handler = std::function<void()>;
-    void set_soft_refresh_requested_handler(Soft_refresh_handler h) { m_soft_refresh_handler = std::move(h); }
 
     // Session-expired callback: called when a KEEPALIVE ACK session_id mismatch is detected.
     // Worker_manager registers this to trigger recovery on stale session (same pattern as
@@ -538,7 +534,6 @@ private:
     // Recovery callback — invoked when a push handler fires GET_BLOCK for a stale template
     // (channel_advanced staleness), signalling Worker_manager to enter recovery_pending state.
     Recovery_handler m_recovery_handler;
-    Soft_refresh_handler m_soft_refresh_handler;
 
     // Session-expired callback — invoked when a keepalive ACK carries a mismatched session_id,
     // signalling Worker_manager to trigger recovery for the stale session.

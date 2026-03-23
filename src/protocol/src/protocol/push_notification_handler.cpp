@@ -26,8 +26,7 @@ void PushNotificationHandler::handle_push_notification(
     HeightTracker* height_tracker,
     std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
     std::function<void()> request_work_fn,
-    std::function<void()> recovery_initiated_fn,
-    std::function<void()> soft_refresh_requested_fn)
+    std::function<void()> recovery_initiated_fn)
 {
     const char* ch_name = channel_name(expected_channel);
 
@@ -216,11 +215,6 @@ void PushNotificationHandler::handle_push_notification(
                     // and so has_valid_template=false is correctly reported to Worker_manager.
                     template_interface->discard_template("burst_2_block_lag");
                     request_work_fn();
-                    // Notify Worker_manager to start the soft-refresh (template-swap) path,
-                    // not the full degraded-mode path, since this is a transient burst condition.
-                    if (soft_refresh_requested_fn) {
-                        soft_refresh_requested_fn();
-                    }
                     return;
                 }
             }
@@ -262,9 +256,6 @@ void PushNotificationHandler::handle_push_notification(
                 // for this height — refresh the template to mine on the current tip.
                 m_logger->info("[Solo Push] Same-height tip update — refreshing template for current target");
                 template_interface->discard_template("same_height_tip_update");
-                if (soft_refresh_requested_fn) {
-                    soft_refresh_requested_fn();
-                }
                 request_work_fn();
                 return;
             }
@@ -285,9 +276,8 @@ void PushNotificationHandler::handle_push_notification(
         // advancing the unified height leave the Prime channel_target unchanged;
         // the Prime template is still valid and workers should keep mining it.
         //
-        // We do NOT call soft_refresh_requested_fn() here — doing so would set
-        // m_template_withheld=true, suppress all block submissions, and create a
-        // recovery cycle that never resolves because:
+        // We do NOT trigger recovery here — doing so would suppress all block submissions
+        // and create a recovery cycle that never resolves because:
         //   1. The current template is perfectly valid (channel not stale)
         //   2. The node responds to GET_BLOCK with the same target height
         //   3. validate_template() rejects the response if >100 unified blocks
