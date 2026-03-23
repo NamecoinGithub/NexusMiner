@@ -89,7 +89,8 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
         m_diagnostic.round_prime_height = prime_height;
     if (hash_height > m_diagnostic.round_hash_height)
         m_diagnostic.round_hash_height = hash_height;
-    m_diagnostic.round_stake_height   = stake_height;
+    if (stake_height > m_diagnostic.round_stake_height)
+        m_diagnostic.round_stake_height = stake_height;
     // 16-byte GET_ROUND carries no difficulty — always zero.
     m_diagnostic.round_difficulty_nbits = 0;
     // Derive active-channel height with monotonic guard.
