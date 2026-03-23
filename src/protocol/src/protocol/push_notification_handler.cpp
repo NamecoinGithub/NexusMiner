@@ -275,22 +275,34 @@ void PushNotificationHandler::handle_push_notification(
         }
 
         // ═══════════════════════════════════════════════════════════════════════
-        // STEP 3: SOFT REFRESH — tip moved on another channel
+        // STEP 3: CROSS-CHANNEL TIP ADVANCE — informational only
         // ═══════════════════════════════════════════════════════════════════════
-        // Template is current and hash validates.  Check if the unified tip has
-        // advanced (another channel found a block).  Request a refresh
-        // opportunistically but do NOT stop workers.
+        // Template is current (channel not stale) and hash validates.  Check if
+        // the unified tip has advanced because another channel found a block.
+        //
+        // KEY DESIGN DECISION: a cross-channel tip advance does NOT invalidate
+        // the current mining template.  For a Prime miner, stake/hash blocks
+        // advancing the unified height leave the Prime channel_target unchanged;
+        // the Prime template is still valid and workers should keep mining it.
+        //
+        // We do NOT call soft_refresh_requested_fn() here — doing so would set
+        // m_template_withheld=true, suppress all block submissions, and create a
+        // recovery cycle that never resolves because:
+        //   1. The current template is perfectly valid (channel not stale)
+        //   2. The node responds to GET_BLOCK with the same target height
+        //   3. validate_template() rejects the response if >100 unified blocks
+        //      have advanced (height sanity check), looping indefinitely
+        //
+        // Workers keep mining and submitting on the current template.  A fresh
+        // template is requested opportunistically so that the hashPrevBlock can
+        // be updated for the next submission cycle.
         bool tip_moved = height_tracker && snap.is_tip_moved();
 
         if (tip_moved)
         {
-            m_logger->info("[Solo Push] ↑ Tip moved (unified {} → {}) — requesting fresh {} template [reason: tip_moved]",
+            m_logger->info("[Solo Push] ℹ️  Tip moved (unified {} → {}) on {} channel — informational; workers continue on current valid template",
                           snap.template_unified_height, snap.unified_height, ch_name);
-            if (soft_refresh_requested_fn) {
-                soft_refresh_requested_fn();
-            }
-            request_work_fn();  // rate-limited GET_BLOCK — OK if it doesn't fire
-            m_logger->info("[Solo Push] ✓ Workers continue mining current template (channel not stale); submissions withheld until replacement arrives");
+            request_work_fn();  // Opportunistic GET_BLOCK to refresh hashPrevBlock — no recovery state changes
         }
         else
         {
