@@ -110,11 +110,17 @@ namespace ProtocolConstants {
      * arriving within this window for the same height+hashPrevBlock are suppressed.
      *
      * Value chosen to be:
-     * - Wide enough to catch node SendChannelNotification() + GET_BLOCK response doubles
-     * - Narrow enough to not suppress legitimate new templates during fast block times
+     * - Wide enough to suppress true same-burst network duplicates (two paths
+     *   delivering the same template within the same OS scheduler tick)
+     * - Narrow enough to never block a legitimate push→discard→GET_BLOCK→re-feed
+     *   recovery cycle (which completes in 50–300 ms on a typical local/remote node)
      * - Bypassed when chain tip changes (hashPrevBlock differs)
+     *
+     * Reduced from 2000 ms to 200 ms: the wider window was a live risk even after
+     * discard_template_unsafe() was fixed (PR #499) because mark_template_stale_unsafe()
+     * paths and rapid burst-block discards could still interact with the gate.
      */
-    constexpr int64_t TEMPLATE_FEED_DEBOUNCE_MS = 2000;
+    constexpr int64_t TEMPLATE_FEED_DEBOUNCE_MS = 200;
 
     //==========================================================================
     // Degraded Mode Escape Ladder Constants

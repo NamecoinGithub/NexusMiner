@@ -195,6 +195,8 @@ namespace nexusminer
 				case LLP::HASH_BLOCK_AVAILABLE: return "STATELESS_HASH_BLOCK_AVAILABLE (0xD0DA)";
 				case ::LLP::SessionStatusOpcodes::SESSION_STATUS_LEGACY:     return "STATELESS_SESSION_STATUS (0xD0DB)";
 				case ::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY: return "STATELESS_SESSION_STATUS_ACK (0xD0DC)";
+				case LLP::UnmirrorOpcode(::LLP::ColinDiagOpcodes::PING_DIAG): return "STATELESS_PING_DIAG (0xD0E0)";
+				case LLP::UnmirrorOpcode(::LLP::ColinDiagOpcodes::PONG_DIAG): return "STATELESS_PONG_DIAG (0xD0E1)";
 				case LLP::NODE_SHUTDOWN: return "STATELESS_NODE_SHUTDOWN (0xD0FF)";
 				default:
 					{
