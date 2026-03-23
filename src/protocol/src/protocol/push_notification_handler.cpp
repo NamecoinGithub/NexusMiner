@@ -210,11 +210,18 @@ void PushNotificationHandler::handle_push_notification(
                 if (has_recent_template) {
                     const auto template_age_s = std::chrono::duration_cast<std::chrono::seconds>(
                         now - snap.last_template_update).count();
-                    m_logger->info("[Solo Push] ℹ️  Burst guard active (template {}s old, 2 blocks behind) — requesting fresh {} template before degraded recovery",
-                                   template_age_s,
-                                   ch_name);
+                    m_logger->info("[Solo Push] ℹ️  Burst: 2 blocks behind (template {}s old) — discarding stale template and requesting fresh {} template (soft refresh)",
+                                   template_age_s, ch_name);
+                    // Discard the stale template so workers stop hashing on an unsubmittable block
+                    // and so has_valid_template=false is correctly reported to Worker_manager.
+                    template_interface->discard_template("burst_2_block_lag");
                     request_work_fn();
-                    return;  // Keep current template briefly while burst GET_BLOCK catches up
+                    // Notify Worker_manager to start the soft-refresh (template-swap) path,
+                    // not the full degraded-mode path, since this is a transient burst condition.
+                    if (soft_refresh_requested_fn) {
+                        soft_refresh_requested_fn();
+                    }
+                    return;
                 }
             }
 
