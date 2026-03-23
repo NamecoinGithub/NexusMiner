@@ -53,8 +53,8 @@ retry_connect() called immediately
          │
          ▼
 TRUE TCP RECONNECT proceeds:
-  m_reconnect_in_progress = true
-  m_reconnect_started_at = now()
+  transition_to(RecoveryPhase::RECONNECTING, "tcp_reconnect")
+  on_phase_enter(RECONNECTING) records entered_at timestamp
   m_primary_node_session->reset()
   exponential backoff timer fires → connect()
          │
@@ -62,9 +62,9 @@ TRUE TCP RECONNECT proceeds:
 Falcon handshake → session_id received
          │
          ▼
-m_reconnect_in_progress = false
-m_reconnect_started_at = cleared
-m_degraded_since = cleared
+transition_to(RecoveryPhase::HARD_RECOVERY, "reconnect_complete")
+on_phase_exit(RECONNECTING) clears reconnect bookkeeping
+m_recovery.degraded_since cleared by transition_to()
 retry_template_request() → GET_BLOCK → template → mining resumes
 ```
 
@@ -99,13 +99,13 @@ AFTER:
 ## Reconnect Timeout Guard
 
 ```
-m_reconnect_in_progress = true  (set in retry_connect())
-m_reconnect_started_at  = now() (set in retry_connect())
+transition_to(RecoveryPhase::RECONNECTING, "tcp_reconnect")
+on_phase_enter(RECONNECTING) records m_recovery.entered_at = now()
 
 check_template_health() (30s later):
-  if m_reconnect_in_progress && age > 60s:
-    m_reconnect_in_progress = false  ← cleared
-    m_reconnect_started_at  = {}     ← cleared
+  if is_reconnecting() && age > 60s:
+    transition_to(RecoveryPhase::HARD_RECOVERY, "reconnect_timeout")
+    on_phase_exit(RECONNECTING) clears reconnect bookkeeping
     → escape ladder resumes normally
     → retry_connect() will be called again if still degraded
 ```

@@ -1926,20 +1926,6 @@ void Worker_manager::check_template_health()
         return;
     }
 
-    // Sync SOFT_REFRESH state from authoritative session-manager soft-refresh signal.
-    // The session manager is the source of truth; if it sees a soft-refresh request
-    // that the local state hasn't captured yet (e.g. race during a tick boundary),
-    // enter SOFT_REFRESH phase to ensure submissions are withheld.
-    if (auto* session_manager = solo_protocol->get_session_manager()) {
-        const auto session_snapshot = session_manager->get_runtime_snapshot();
-        if (session_snapshot.recovery_state == protocol::SessionManager::RecoveryState::SOFT_REFRESH_REQUESTED) {
-            if (!is_recovery_active()) {
-                m_logger->info("[Worker_manager] Syncing local recovery state from authoritative soft-refresh state");
-                transition_to(RecoveryPhase::SOFT_REFRESH, "session_manager_sync");
-            }
-        }
-    }
-
     uint8_t channel = template_interface->get_channel();
     std::string channel_name = (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
     const int64_t effective_recovery_window =

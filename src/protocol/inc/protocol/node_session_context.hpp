@@ -99,8 +99,6 @@ public:
 
     void note_keepalive_ack(bool accepted, const std::string& detail = "");
 
-    void mark_soft_refresh_requested(const std::string& reason = "");
-
     void mark_recovery_required(const std::string& reason);
 
     void mark_recovery_healthy(const std::string& reason = "");

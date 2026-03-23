@@ -51,7 +51,6 @@ public:
 
     enum class RecoveryState {
         HEALTHY,
-        SOFT_REFRESH_REQUESTED,
         RECOVERY_PENDING,
         RECOVERY_IN_PROGRESS,
         FORCED_REAUTH,
@@ -187,7 +186,6 @@ public:
     void mark_session_expired(const std::string& reason);
     void mark_recovery_required(const std::string& reason);
     void mark_recovery_healthy(const std::string& reason = "");
-    void mark_soft_refresh_requested(const std::string& reason = "");
     void clear_for_disconnect(const std::string& reward_address = {},
                               const std::string& reward_source = "",
                               const std::string& reason = "",

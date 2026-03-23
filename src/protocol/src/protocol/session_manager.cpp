@@ -94,7 +94,6 @@ const char* SessionManager::recovery_state_name(RecoveryState state)
 {
     switch (state) {
         case RecoveryState::HEALTHY:                  return "HEALTHY";
-        case RecoveryState::SOFT_REFRESH_REQUESTED:   return "SOFT_REFRESH_REQUESTED";
         case RecoveryState::RECOVERY_PENDING:         return "RECOVERY_PENDING";
         case RecoveryState::RECOVERY_IN_PROGRESS:     return "RECOVERY_IN_PROGRESS";
         case RecoveryState::FORCED_REAUTH:            return "FORCED_REAUTH";
@@ -398,16 +397,6 @@ void SessionManager::mark_recovery_healthy(const std::string& reason)
     m_session.last_activity = now_epoch_seconds();
     record_session_event_locked(SessionEventKind::RECOVERY_HEALTHY,
                                 reason.empty() ? "recovery healthy" : reason);
-}
-
-void SessionManager::mark_soft_refresh_requested(const std::string& reason)
-{
-    std::lock_guard<std::mutex> lock(m_session_mutex);
-    m_session.recovery_state = RecoveryState::SOFT_REFRESH_REQUESTED;
-    m_session.recovery_reason = reason;
-    m_session.last_activity = now_epoch_seconds();
-    record_session_event_locked(SessionEventKind::RECOVERY_REQUESTED,
-                                reason.empty() ? "soft refresh requested" : reason);
 }
 
 void SessionManager::clear_for_disconnect(const std::string& reward_address,

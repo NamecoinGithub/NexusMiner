@@ -96,13 +96,6 @@ void NodeSessionContext::note_keepalive_ack(bool accepted, const std::string& de
     }
 }
 
-void NodeSessionContext::mark_soft_refresh_requested(const std::string& reason)
-{
-    if (m_session_manager) {
-        m_session_manager->mark_soft_refresh_requested(reason);
-    }
-}
-
 void NodeSessionContext::mark_recovery_required(const std::string& reason)
 {
     if (m_session_manager) {
