@@ -1244,10 +1244,16 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         {
             self->m_get_round_timer_started = true;
             auto solo_protocol_ptr = self->m_primary_node_session->get_primary_protocol();
-            if (solo_protocol_ptr) {
-                // Note: timer_manager needs to be updated to work with NodeSession
-                // For now, we'll skip this timer - it's disabled by default anyway
-                self->m_logger->info("[Solo Poll] GET_ROUND timer disabled (push notifications are primary)");
+            auto connection_shared = self->m_primary_node_session->get_primary_connection();
+            if (solo_protocol_ptr && connection_shared) {
+                self->m_timer_manager.start_get_round_timer(
+                    GET_ROUND_TIMER_INTERVAL,
+                    connection_shared,
+                    solo_protocol_ptr);
+                self->m_logger->info("[Solo Poll] GET_ROUND polling timer started ({}s tick, {}--{}s adaptive interval, both lanes)",
+                    GET_ROUND_TIMER_INTERVAL,
+                    protocol::Solo::POLL_INTERVAL_MIN_MS / 1000,
+                    protocol::Solo::POLL_INTERVAL_MAX_MS / 1000);
             }
         }
 

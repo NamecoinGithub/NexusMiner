@@ -101,6 +101,11 @@ public:
     /// It does NOT request a block template.  Use send_recovery_work_request()
     /// when the intent is to force a fresh template retrieval.
     network::Shared_payload send_get_round();
+
+    // GET_ROUND polling configuration (public so callers can log the intervals)
+    static constexpr bool POLLING_ENABLED = true;              // Enabled: GET_ROUND sanity probe for both lanes
+    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 30000;    // 30 seconds minimum
+    static constexpr uint32_t POLL_INTERVAL_MAX_MS = 60000;    // 60 seconds maximum
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work().
     /// Returns null/empty if not yet authenticated — callers must guard for this.
@@ -589,10 +594,6 @@ private:
     std::chrono::steady_clock::time_point m_last_get_round_time;
     uint32_t m_current_poll_interval_ms;  // Current interval (adaptive)
     
-    // Configuration constants
-    static constexpr bool POLLING_ENABLED = false;             // Disabled: push notifications are primary
-    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 90000;    // 90 seconds (sanity-check interval if enabled)
-    static constexpr uint32_t POLL_INTERVAL_MAX_MS = 120000;   // 120 seconds maximum
     // Note: When POLLING_ENABLED is true, backoff multiplier is 1.5x via integer arithmetic: interval + (interval >> 1)
     
     // State flags

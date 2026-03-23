@@ -254,6 +254,12 @@ public:
     std::shared_ptr<protocol::Solo> get_primary_protocol() const { return m_primary_protocol; }
 
     /**
+     * @brief Get the primary TCP connection (for timer wiring)
+     * @return Shared pointer to primary network connection (may be null)
+     */
+    std::shared_ptr<network::Connection> get_primary_connection() const { return m_primary_connection; }
+
+    /**
      * @brief Get the secondary protocol instance (for direct access if needed)
      * @return Shared pointer to secondary Solo protocol (may be null)
      */
