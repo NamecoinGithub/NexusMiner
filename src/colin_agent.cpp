@@ -39,7 +39,7 @@ namespace nexusminer
 // Warning-catalog threshold constants
 static constexpr uint32_t WARN_CONNECTION_RETRIES = 100;
 static constexpr uint64_t WARN_TEMPLATE_AGE_SECONDS = 150;
-static constexpr int64_t WARN_KEEPALIVE_ACK_STALE_SECONDS = 300;  // 5 min without keepalive ACK
+static constexpr int64_t DIAG_KEEPALIVE_ACK_STALE_SECONDS = 300;  // 5 min without keepalive ACK (diagnostic only)
 static constexpr int32_t WARN_CANONICAL_DRIFT_THRESHOLD = 500;    // blocks ahead before warning
 static constexpr uint64_t WARN_DIAGNOSTIC_STALE_SECONDS = 180;    // 3 min without any diagnostic update
 static constexpr uint64_t WARN_DIAGNOSTIC_INIT_GRACE_SECONDS = 30; // grace period before warning about uninit diagnostic
@@ -265,9 +265,10 @@ void ColinAgent::run_diagnostics()
         if (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{}) {
             auto since_ack = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count();
-            if (since_ack > WARN_KEEPALIVE_ACK_STALE_SECONDS) {
-                warnings.push_back("No keepalive ACK for " + std::to_string(since_ack) +
-                                   "s — node may have dropped the session");
+            if (since_ack > DIAG_KEEPALIVE_ACK_STALE_SECONDS) {
+                // Diagnostic only — keepalive ACK is not authoritative for session liveness
+                recommendations.push_back("Keepalive ACK stale (" + std::to_string(since_ack) +
+                                          "s) — diagnostic only, PUSH is authoritative");
             }
         }
 

@@ -63,22 +63,10 @@ namespace {
     // before another escalation is permitted.
     constexpr int64_t EPOCH_NO_ESCALATE_MULTIPLIER = 3;
 
-    // Keepalive ACK guard: if an ACK was received within this many seconds of the
-    // emergency timeout, the TCP connection is demonstrably alive and we defer the
-    // hard recovery to avoid spurious stops during slow-block scenarios.
-    // Aligned with KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS so a recent ACK also
-    // covers the full stale window; prevents spurious reconnects on slow nodes.
-    constexpr int64_t KEEPALIVE_ACK_RECENT_THRESHOLD_SECONDS = 300;
-
-    // Colin agent: maximum acceptable seconds between keepalive ACK responses.
-    // If no ACK is received for this long, the node may have dropped the session.
-    constexpr int64_t KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS = 300;
-
-    // Two-signal liveness model: secondary push-notification recency threshold.
-    // Aligned with KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS: if a push notification
+    // Push-notification liveness threshold: if a push notification
     // (PRIME/HASH_BLOCK_AVAILABLE) was received within this window, the TCP session
-    // is demonstrably alive and authenticated regardless of keepalive ACK silence.
-    // Only force a hard TCP reconnect when BOTH signals are stale.
+    // is demonstrably alive and authenticated.  PUSH is the sole authoritative
+    // signal for session liveness — keepalive ACK is diagnostic only.
     constexpr int64_t PUSH_ALIVE_THRESHOLD_SECONDS = protocol::ProtocolConstants::PUSH_LIVENESS_THRESHOLD_SECONDS;
 
     // Fix A: push-alive guard in retry_connect() uses a much shorter window (30s).
@@ -1931,12 +1919,11 @@ void Worker_manager::check_template_health()
             auto degraded_duration = std::chrono::duration_cast<std::chrono::seconds>(
                 now - m_degraded_since).count();
 
-            // Compute liveness signals from HeightTracker snapshot.
-            bool keepalive_ack_received = (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
-            int64_t since_ack_s = keepalive_ack_received
-                ? std::chrono::duration_cast<std::chrono::seconds>(now - ht_snap.last_keepalive_ack_at).count()
-                : INT64_MAX;
-            bool ack_recent = keepalive_ack_received && (since_ack_s <= KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS);
+            // PUSH notification liveness is the sole authoritative signal for session
+            // health.  KEEPALIVE_V2_ACK is diagnostic only — it is not used in any
+            // reconnect or re-auth decision because the node-side ACK responder can
+            // lag or fail independently of the PUSH path (which lives in Server.cpp
+            // and auto-sends every new block).
 
             // Use last_push_notification_at — set ONLY by OnPushNotification() (actual BLOCK_AVAILABLE opcodes).
             // last_height_update was formerly also updated by keepalive ACKs and GET_ROUND, making it
@@ -1948,13 +1935,10 @@ void Worker_manager::check_template_health()
                 : INT64_MAX;
             bool push_recent = push_received && (since_push_s <= PUSH_ALIVE_THRESHOLD_SECONDS);
 
-            // Diagnostic: log keepalive epoch alongside timestamps so future incidents can
-            // identify split between session epoch and last-ack epoch without log scraping.
-            m_logger->info("[Worker_manager] Degraded-mode liveness: epoch={} keepalive_ack={}s ago (recent={}) "
-                           "push={}s ago (recent={})",
+            // Diagnostic: log keepalive epoch alongside push timestamp so future incidents can
+            // identify split between session epoch and last-push epoch without log scraping.
+            m_logger->info("[Worker_manager] Degraded-mode liveness: epoch={} push={}s ago (recent={})",
                            ht_snap.session_epoch,
-                           keepalive_ack_received ? since_ack_s : static_cast<int64_t>(-1),
-                           ack_recent ? "YES" : "NO",
                            push_received ? since_push_s : static_cast<int64_t>(-1),
                            push_recent ? "YES" : "NO");
 
@@ -1973,61 +1957,46 @@ void Worker_manager::check_template_health()
             if (hard_limit_decision.force_reconnect) {
                 m_logger->error("[Worker_manager] ⛔ DEGRADED MODE HARD LIMIT ({}s > {}s) — "
                                "{}; forcing full TCP reconnect "
-                               "(last ACK {}s ago, last push {}s ago)",
+                               "(last push {}s ago)",
                                degraded_duration, protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS,
                                hard_limit_decision.reason,
-                               keepalive_ack_received ? since_ack_s : static_cast<int64_t>(-1),
                                push_received ? since_push_s : static_cast<int64_t>(-1));
                 retry_connect(m_primary_endpoint);
                 return;
             }
 
-            // ── Stage 3 (>180s AND both signals stale): true dead connection ────────────────
+            // ── Stage 3 (>180s AND push stale): true dead connection ────────────────
             if (degraded_duration > protocol::ProtocolConstants::DEGRADED_MODE_STAGE3_SECONDS &&
-                !ack_recent && !push_recent && m_primary_node_session)
+                !push_recent && m_primary_node_session)
             {
-                m_logger->error("[Worker_manager] Stage 3 ESCALATION ({}s in degraded, both signals dead) — "
-                               "forcing reconnect (last ACK {}s ago, last push {}s ago)",
+                m_logger->error("[Worker_manager] Stage 3 ESCALATION ({}s in degraded, push signal dead) — "
+                               "forcing reconnect (last push {}s ago)",
                                degraded_duration,
-                               keepalive_ack_received ? since_ack_s : static_cast<int64_t>(-1),
                                push_received ? since_push_s : static_cast<int64_t>(-1));
                 retry_connect(m_primary_endpoint);
                 return;
             }
 
-            // ── Bug 1 fix: stale keepalive ACK but push is still arriving ────────────────────
-            // The TCP session is demonstrably alive (push notifications proving authenticated
-            // connection).  Do NOT tear down — just retry GET_BLOCK on the live session.
-            if (keepalive_ack_received && since_ack_s > KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS && push_recent) {
-                m_logger->warn("[Worker_manager] ⚠️  KEEPALIVE ACK STALE ({}s) but push received {}s ago — "
-                               "TCP session alive, retrying template request (node-side responder silent)",
-                               since_ack_s, since_push_s);
-                retry_template_request(true);
-                return;
-            }
-
-            // ── Stage 0 (fast path): both signals dead for > 90s and degraded > 30s ──────────
-            // If neither ACK nor push has been received for 90+ seconds, the TCP connection
+            // ── Stage 0 (fast path): push dead for > 90s and degraded > 30s ──────────
+            // If push has not been received for 90+ seconds, the TCP connection
             // is almost certainly dead. Skip the Stage 1/2 ladder and reconnect immediately.
             // This cuts recovery time from up to 180s down to ~30s for clean disconnects.
-            if (!ack_recent && !push_recent &&
-                since_ack_s > protocol::ProtocolConstants::FAST_RECONNECT_SIGNAL_DEAD_SECONDS &&
+            if (!push_recent &&
                 since_push_s > protocol::ProtocolConstants::FAST_RECONNECT_SIGNAL_DEAD_SECONDS &&
                 degraded_duration > protocol::ProtocolConstants::FAST_RECONNECT_DEGRADED_SECONDS &&
                 !m_reconnect_in_progress)
             {
-                m_logger->error("[Worker_manager] Stage 0 FAST RECONNECT: both signals dead "
-                                "(ACK {}s ago, push {}s ago, {}s degraded) — skipping ladder",
-                                since_ack_s == INT64_MAX ? -1LL : since_ack_s,
+                m_logger->error("[Worker_manager] Stage 0 FAST RECONNECT: push signal dead "
+                                "(push {}s ago, {}s degraded) — skipping ladder",
                                 since_push_s == INT64_MAX ? -1LL : since_push_s,
                                 degraded_duration);
                 retry_connect(m_primary_endpoint);
                 return;
             }
 
-            // ── Stage 2 (60s–180s, both signals stale): attempt in-band re-auth ─────────────
+            // ── Stage 2 (60s–180s, push stale): attempt in-band re-auth ─────────────
             if (degraded_duration > protocol::ProtocolConstants::DEGRADED_MODE_STAGE2_SECONDS &&
-                !ack_recent && !push_recent && m_primary_node_session)
+                !push_recent && m_primary_node_session)
             {
                 auto primary_protocol = m_primary_node_session->get_primary_protocol();
                 if (primary_protocol) {
@@ -2307,16 +2276,6 @@ void Worker_manager::check_template_health()
         }
     }
 
-    // ── Fork / tip mismatch detection (DIAGNOSTIC ONLY) ──────────────────
-    // If the keepalive ACK reports a non-zero fork_score AND the node's
-    // hash_tip_lo32 differs from the template's hashPrevBlock lo32, log a
-    // diagnostic warning.  Keepalive-derived fork_score is NOT authoritative
-    // for mining decisions — only canonical hashPrevBlock changes (from
-    // OnBlockDataReceived) trigger real fork recovery.
-    //
-    // Guard: only log when the keepalive ACK is fresh (received within
-    // KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS).  A stale keepalive means
-    // hash_tip_lo32 is stale data — don't even warn on it.
     // ── Fork / tip mismatch detection (DIAGNOSTIC ONLY) ────────────────────────
     // Fork score and hash_tip_lo32 come from keepalive ACKs (DiagnosticObserverState).
     // They are INFORMATIONAL and must NOT be used to trigger hard stops, as keepalive
@@ -2377,18 +2336,19 @@ void Worker_manager::check_template_health()
         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
         bool chain_advanced = ht_snap.is_template_stale();
 
-        // Gap 3: If a keepalive ACK was received recently (within 2× keepalive interval = 90s),
-        // the TCP connection is demonstrably alive — defer the hard recovery to avoid
-        // spurious stops during slow-block scenarios (e.g. long Prime blocks).
-        bool recent_ack = (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{}) &&
+        // If a push notification was received recently, the TCP session is
+        // demonstrably alive — defer the hard recovery to avoid spurious stops
+        // during slow-block scenarios (e.g. long Prime blocks).
+        // PUSH is the sole authoritative signal; keepalive ACK is not used here.
+        bool recent_push = (ht_snap.last_push_notification_at != std::chrono::steady_clock::time_point{}) &&
             (std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count() < KEEPALIVE_ACK_RECENT_THRESHOLD_SECONDS);
-        if (recent_ack && !chain_advanced) {
-            auto since_ack_s = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count();
-            m_logger->warn("[Worker_manager] EMERGENCY deferred: keepalive ACK is recent ({}s ago) — "
-                           "connection alive, awaiting push for template refresh",
-                           since_ack_s);
+                std::chrono::steady_clock::now() - ht_snap.last_push_notification_at).count() < PUSH_ALIVE_THRESHOLD_SECONDS);
+        if (recent_push && !chain_advanced) {
+            auto since_push_s = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - ht_snap.last_push_notification_at).count();
+            m_logger->warn("[Worker_manager] EMERGENCY deferred: push notification is recent ({}s ago) — "
+                           "connection alive, awaiting fresh template",
+                           since_push_s);
             retry_template_request(false);
             return;
         }

@@ -881,9 +881,9 @@ void test_session_status_ack_ignores_stale_session_id()
     print_test_result("Cached echoed status is not overwritten", handler.last_status_echo_flags == 0x02);
 }
 
-void test_session_status_ack_expires_after_threshold_mismatches()
+void test_session_status_ack_mismatch_is_diagnostic_only()
 {
-    std::cout << "\nTest 17: repeated mismatched SESSION_STATUS_ACKs expire the session\n";
+    std::cout << "\nTest 17: repeated mismatched SESSION_STATUS_ACKs are diagnostic only (no session expiry)\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -893,17 +893,19 @@ void test_session_status_ack_expires_after_threshold_mismatches()
     const bool accepted = handler.on_session_status_ack(0x87654321, 0x0F, 999, 0x07);
 
     print_test_result("Threshold mismatch SESSION_STATUS_ACK is rejected", !accepted);
-    print_test_result("Threshold mismatch marks session expired", handler.expired_session);
-    print_test_result("Threshold mismatch forces re-auth", handler.force_reauth);
-    print_test_result("Threshold mismatch marks degraded", handler.mark_degraded);
+    // ACK mismatch is diagnostic only — PUSH is the sole authoritative signal.
+    // Session must NOT be expired or force-reauthed based on keepalive ACK mismatches.
+    print_test_result("Threshold mismatch does NOT expire session (PUSH is authoritative)", !handler.expired_session);
+    print_test_result("Threshold mismatch does NOT force re-auth (PUSH is authoritative)", !handler.force_reauth);
+    print_test_result("Threshold mismatch does NOT mark degraded (PUSH is authoritative)", !handler.mark_degraded);
 }
 
-void test_session_status_ack_force_reauth_when_node_reports_expired()
+void test_session_status_ack_unhealthy_is_diagnostic_only()
 {
-    // Test 18: The policy still DETECTS the anomaly (force_reauth=true in the decision),
-    // but on_session_status_ack() no longer ACTS on it — SESSION_STATUS is a telemetry
-    // probe and must not kill the session.  Verify the policy detection side here.
-    std::cout << "\nTest 18: unhealthy SESSION_STATUS_ACK — policy detects anomaly but session is preserved\n";
+    // Test 18: SessionStatusPolicy::evaluate_ack_health() intentionally keeps force_reauth
+    // and mark_degraded false — SESSION_STATUS is a telemetry probe and must not trigger
+    // session actions.  PUSH notification liveness is the sole authoritative signal.
+    std::cout << "\nTest 18: unhealthy SESSION_STATUS_ACK — diagnostic only, session preserved\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -911,10 +913,11 @@ void test_session_status_ack_force_reauth_when_node_reports_expired()
     const bool accepted = handler.on_session_status_ack(0x12345678, 0x01, 0, 0x02, false);
 
     print_test_result("Unhealthy SESSION_STATUS_ACK is still accepted for caching", accepted);
-    print_test_result("Policy detects expired/unauthenticated condition (force_reauth set by policy)", handler.force_reauth);
-    print_test_result("Policy marks degraded for monitoring", handler.mark_degraded);
-    // NOTE: In the real on_session_status_ack() handler, force_reauth is detected but
-    // m_session_expired_handler() is NOT called — PUSH is the authoritative liveness signal.
+    // SessionStatusPolicy::evaluate_ack_health() intentionally does NOT set force_reauth
+    // or mark_degraded — these are diagnostic observations only, PUSH is the sole
+    // authoritative signal.
+    print_test_result("Unhealthy ACK does NOT force re-auth (PUSH is authoritative)", !handler.force_reauth);
+    print_test_result("Unhealthy ACK does NOT mark degraded (PUSH is authoritative)", !handler.mark_degraded);
 }
 
 void test_degraded_live_session_policy_prefers_reauth_over_reconnect()
@@ -992,8 +995,8 @@ int main()
     test_block_accepted_consumes_snapshot_before_future_fallback();
     test_session_status_policy_resets_mismatch_counter_on_match();
     test_session_status_ack_ignores_stale_session_id();
-    test_session_status_ack_expires_after_threshold_mismatches();
-    test_session_status_ack_force_reauth_when_node_reports_expired();
+    test_session_status_ack_mismatch_is_diagnostic_only();
+    test_session_status_ack_unhealthy_is_diagnostic_only();
     test_degraded_live_session_policy_prefers_reauth_over_reconnect();
     test_degraded_dead_session_policy_forces_reconnect();
     test_session_expired_reauth_guard_skips_when_reconnect_or_recovery_active();

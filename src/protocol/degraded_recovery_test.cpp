@@ -690,10 +690,10 @@ void test_stale_template_after_channel_advance() {
 
 // ============================================================================
 // Test 7: set_session_epoch() suppresses old keepalive signal
-// Confirms ack_recent logic would be false after epoch change
+// Confirms keepalive ACK timestamp is cleared after epoch change (diagnostic field)
 // ============================================================================
 void test_epoch_advance_suppresses_old_keepalive_signal() {
-    std::cout << "\nTest 7: Epoch advance suppresses old keepalive signal for ack_recent\n";
+    std::cout << "\nTest 7: Epoch advance clears keepalive ACK timestamp (diagnostic field)\n";
     HeightTracker tracker;
 
     tracker.set_session_epoch(10);
@@ -708,13 +708,13 @@ void test_epoch_advance_suppresses_old_keepalive_signal() {
     tracker.set_session_epoch(11);
     auto snap_epoch11 = tracker.GetSnapshot();
 
-    // The ack_recent computation: keepalive_ack_received = (last_keepalive_ack_at != epoch)
-    // After epoch change, last_keepalive_ack_at is cleared → keepalive_ack_received = false
+    // The keepalive ACK timestamp is diagnostic only — PUSH is the sole authoritative
+    // signal for session liveness.  After epoch change, the diagnostic timestamp is cleared.
     bool keepalive_ack_received = (snap_epoch11.last_keepalive_ack_at !=
                                     std::chrono::steady_clock::time_point{});
     print_test_result("Epoch 11: keepalive_ack_received == false after epoch advance",
                       !keepalive_ack_received);
-    print_test_result("Epoch 11: ack_recent would be false (no stale liveness for escape ladder)",
+    print_test_result("Epoch 11: keepalive diagnostic timestamp cleared (epoch isolation)",
                       !keepalive_ack_received);
 }
 
