@@ -900,7 +900,10 @@ void test_session_status_ack_expires_after_threshold_mismatches()
 
 void test_session_status_ack_force_reauth_when_node_reports_expired()
 {
-    std::cout << "\nTest 18: unhealthy SESSION_STATUS_ACK forces re-auth\n";
+    // Test 18: The policy still DETECTS the anomaly (force_reauth=true in the decision),
+    // but on_session_status_ack() no longer ACTS on it — SESSION_STATUS is a telemetry
+    // probe and must not kill the session.  Verify the policy detection side here.
+    std::cout << "\nTest 18: unhealthy SESSION_STATUS_ACK — policy detects anomaly but session is preserved\n";
 
     SimulatedSessionStatusAckHandler handler;
     handler.local_session_id = 0x12345678;
@@ -908,13 +911,17 @@ void test_session_status_ack_force_reauth_when_node_reports_expired()
     const bool accepted = handler.on_session_status_ack(0x12345678, 0x01, 0, 0x02, false);
 
     print_test_result("Unhealthy SESSION_STATUS_ACK is still accepted for caching", accepted);
-    print_test_result("Expired/unauthenticated ACK forces re-auth", handler.force_reauth);
-    print_test_result("Expired/unauthenticated ACK marks degraded", handler.mark_degraded);
+    print_test_result("Policy detects expired/unauthenticated condition (force_reauth set by policy)", handler.force_reauth);
+    print_test_result("Policy marks degraded for monitoring", handler.mark_degraded);
+    // NOTE: In the real on_session_status_ack() handler, force_reauth is detected but
+    // m_session_expired_handler() is NOT called — PUSH is the authoritative liveness signal.
 }
 
 void test_degraded_live_session_policy_prefers_reauth_over_reconnect()
 {
-    std::cout << "\nTest 19: stalled live degraded session prefers in-band re-auth\n";
+    // Test 19: With fix 3 applied, a degraded session with live push traffic should
+    // NOT force reauth and NOT force reconnect — it should hold.
+    std::cout << "\nTest 19: degraded session with live push traffic is held (not reauthed, not reconnected)\n";
 
     const auto decision = nexusminer::protocol::SessionStatusPolicy::evaluate_degraded_session({
         nexusminer::protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS + 1,
@@ -922,9 +929,9 @@ void test_degraded_live_session_policy_prefers_reauth_over_reconnect()
         true
     });
 
-    print_test_result("Hard-limit degraded live session forces re-auth", decision.force_reauth);
-    print_test_result("Hard-limit degraded live session does not force reconnect", !decision.force_reconnect);
-    print_test_result("Hard-limit degraded live session is marked degraded", decision.mark_degraded);
+    print_test_result("Hard-limit degraded live session does NOT force re-auth (push is alive)", !decision.force_reauth);
+    print_test_result("Hard-limit degraded live session does NOT force reconnect (push is alive)", !decision.force_reconnect);
+    print_test_result("Hard-limit degraded live session is still marked degraded for monitoring", decision.mark_degraded);
 }
 
 void test_degraded_dead_session_policy_forces_reconnect()

@@ -2331,9 +2331,12 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
 
 void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
+    const bool is_stateless_lane = (m_protocol_lane == ProtocolLane::STATELESS);
+    const char* lane_label = is_stateless_lane ? "STATELESS" : "LEGACY";
+
     if (matches_opcode(packet, Packet::NEW_ROUND))
     {
-        m_logger->info("[Solo GET_ROUND] NEW_ROUND response received");
+        m_logger->info("[Solo GET_ROUND] NEW_ROUND response received (lane={})", lane_label);
 
         if (get_session_manager()) {
             if (!get_session_manager()->is_active()) {
@@ -2380,7 +2383,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         std::string channel_name = get_channel_name(m_channel);
         
         // Log response details
-        m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (16-byte full height picture):");
+        m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (16-byte full height picture, lane={}):", lane_label);
         m_logger->info("[Solo GET_ROUND]   Unified height:  {} (reference)", unified_height);
         m_logger->info("[Solo GET_ROUND]   Prime height:    {}", prime_height);
         m_logger->info("[Solo GET_ROUND]   Hash height:     {}", hash_height);
@@ -2489,7 +2492,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
     }
     else if (matches_opcode(packet, Packet::OLD_ROUND))
     {
-        m_logger->info("[Solo GET_ROUND] OLD_ROUND response received");
+        m_logger->info("[Solo GET_ROUND] OLD_ROUND response received (lane={})", lane_label);
         
         bool get_block_sent_in_handler = false;  // Track whether GET_BLOCK was already requested in this handler
 
@@ -2521,7 +2524,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         
         std::string channel_name = get_channel_name(m_channel);
         
-        m_logger->info("[Solo GET_ROUND] ✓ OLD_ROUND (16-byte full height picture):");
+        m_logger->info("[Solo GET_ROUND] ✓ OLD_ROUND (16-byte full height picture, lane={}):", lane_label);
         m_logger->info("[Solo GET_ROUND]   Unified:       {}", unified_height);
         m_logger->info("[Solo GET_ROUND]   Prime height:  {}", prime_height);
         m_logger->info("[Solo GET_ROUND]   Hash height:   {}", hash_height);
@@ -3563,21 +3566,17 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
         ::LLP::SessionStatusAckFrame ack;
         if(ack.Parse(data))
         {
-            PacketIngressPreflightOptions preflight;
-            preflight.owner = &m_last_session_status_request_owner;
-            preflight.packet_session_id = ack.session_id;
-            if (!run_packet_ingress_preflight("Solo SessionStatusAck", preflight)) {
-                return;
-            }
+            // SESSION_STATUS_ACK is a slow-cycle (60s) telemetry probe.  Do NOT run
+            // preflight ownership checks or session-id mismatch guards here — a slightly
+            // late ACK (ownership epoch rolled between send and receive) would silently
+            // drop the entire ACK and score a false mismatch against the session.
+            // PUSH notification liveness is the authoritative session-alive signal.
 
             m_logger->info("[Solo] SESSION_STATUS_ACK: lane_health=0x{:04x} uptime={}s "
                            "primary={} secondary={} simlink={} auth={}",
                            ack.lane_health_flags, ack.uptime_seconds,
                            ack.IsPrimaryAlive(), ack.IsSecondaryAlive(),
                            ack.IsSimLinkActive(), ack.IsAuthenticated());
-
-            if (handle_session_id_mismatch(ack.session_id))
-                return;
 
             if (m_session_context) {
                 m_session_context->note_keepalive_ack(true, "session status ack accepted");
@@ -3591,14 +3590,16 @@ void Solo::on_session_status_ack(Packet const& packet, std::shared_ptr<network::
             const auto decision = SessionStatusPolicy::evaluate_ack_health(
                 { ack.uptime_seconds, ack.IsAuthenticated() });
             if (decision.force_reauth) {
-                record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
-                                     "session status ack unhealthy: " + decision.reason);
-                m_logger->warn("[Solo] SESSION_STATUS_ACK {} "
-                               "(uptime={}s auth={}) — triggering in-band re-auth",
-                               decision.reason, ack.uptime_seconds, ack.IsAuthenticated());
-                if (m_session_expired_handler) {
-                    m_session_expired_handler();
-                }
+                // SESSION_STATUS is a telemetry probe.  A single bad payload (uptime==0 or
+                // auth==false from a transient node race) must NOT kill mining workers.
+                // PUSH notification liveness is the authoritative session-alive signal.
+                record_session_event(SessionManager::SessionEventKind::STATUS_ACK_REJECTED,
+                                     "session status ack unhealthy (logged only — push is authoritative): "
+                                     + decision.reason);
+                m_logger->warn("[Solo] SESSION_STATUS_ACK reports unhealthy session "
+                               "(uptime={}s auth={}) — noted, PUSH is authoritative, session preserved",
+                               ack.uptime_seconds, ack.IsAuthenticated());
+                // DO NOT call m_session_expired_handler() here
             }
         }
         else

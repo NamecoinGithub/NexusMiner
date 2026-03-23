@@ -193,7 +193,7 @@ namespace ProtocolConstants {
      * race condition during re-authentication.  Only expire the session after
      * this many consecutive mismatches with no intervening successful ACK.
      */
-    constexpr uint32_t SESSION_MISMATCH_EXPIRE_THRESHOLD = 3;
+    constexpr uint32_t SESSION_MISMATCH_EXPIRE_THRESHOLD = 5;
 
 } // namespace ProtocolConstants
 

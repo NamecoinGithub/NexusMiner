@@ -109,9 +109,12 @@ public:
         }
 
         if (input.push_recent) {
-            decision.force_reauth = true;
-            decision.reason = "stalled live session detected while degraded";
-            return decision;
+            // Push is flowing — the TCP session and auth are operationally alive.
+            // Do NOT force reauth; the miner should continue mining normally.
+            // The degraded timer continues running but no destructive action is taken
+            // while the node is actively pushing block notifications.
+            decision.reason = "degraded timer running but push traffic is live — holding session";
+            return decision;   // accept_ack=true, mark_degraded=true, nothing destructive
         }
 
         decision.force_reconnect = true;
