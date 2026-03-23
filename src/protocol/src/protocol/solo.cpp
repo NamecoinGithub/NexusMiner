@@ -3304,9 +3304,9 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
             [connection, this, push_opcode_name]() {
-                if (!ensure_session_ready_for_ingress("Solo Push", push_opcode_name, true)) {
-                    return;
-                }
+                // Push notifications are the authoritative liveness signal.
+                // ALWAYS request work when a push arrives — session gate only applies to SUBMIT.
+                // A transient !authoritative_authenticated state must never suppress GET_BLOCK.
                 if (connection) {
                     auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
@@ -4219,6 +4219,26 @@ network::Shared_payload Solo::send_miner_ready()
     }
     
     return payload;
+}
+
+void Solo::resubscribe_push_notifications()
+{
+    if (!m_connection) {
+        m_logger->warn("[Solo Push] resubscribe_push_notifications: no connection available — skipping");
+        return;
+    }
+    if (!is_authenticated()) {
+        m_logger->warn("[Solo Push] resubscribe_push_notifications: not authenticated — skipping");
+        return;
+    }
+    m_logger->warn("[Solo Push] Re-subscribing to push notifications (MINER_READY re-send)");
+    auto payload = send_miner_ready();
+    if (payload && !payload->empty()) {
+        m_connection->transmit(payload);
+        m_logger->warn("[Solo Push] ✓ MINER_READY re-subscription transmitted");
+    } else {
+        m_logger->error("[Solo Push] Failed to build MINER_READY for re-subscription");
+    }
 }
 
 bool Solo::finalize_template_with_channel_height(uint32_t node_channel_height, const std::string& context)

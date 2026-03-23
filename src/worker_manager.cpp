@@ -403,6 +403,25 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
                     }
                     clear_recovery_state();
+
+                    // Re-subscribe to push notifications if they have been silent too long.
+                    // After prolonged push silence the node's push subscription may have been
+                    // lost during TCP disruption or session cycling.  Sending MINER_READY
+                    // re-establishes the subscription and prevents the 600s timeout cycle.
+                    if (solo_protocol) {
+                        auto ht_snap = solo_protocol->get_height_tracker_snapshot();
+                        bool push_ever_received = (ht_snap.last_push_notification_at != std::chrono::steady_clock::time_point{});
+                        int64_t since_push_s = push_ever_received
+                            ? std::chrono::duration_cast<std::chrono::seconds>(
+                                std::chrono::steady_clock::now() - ht_snap.last_push_notification_at).count()
+                            : INT64_MAX;
+                        constexpr int64_t PUSH_RESUBSCRIBE_THRESHOLD_SECONDS = 120;
+                        if (since_push_s > PUSH_RESUBSCRIBE_THRESHOLD_SECONDS) {
+                            m_logger->warn("[Worker_manager] Push notifications silent for {}s after recovery — re-subscribing",
+                                          push_ever_received ? since_push_s : INT64_MAX);
+                            solo_protocol->resubscribe_push_notifications();
+                        }
+                    }
                 } else {
                     m_logger->error("[Worker_manager] FAILED: No workers received template!");
                     // Immediately request a new template — don't wait 30s for health monitor.
