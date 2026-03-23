@@ -592,14 +592,6 @@ private:
     // Template expiration tracking
     std::atomic<uint64_t> m_templates_expired_age{0};      // Templates expired due to age
     std::atomic<uint64_t> m_templates_expired_height{0};   // Templates expired due to height change
-
-    // Template feed debounce tracking (unified dedup gate)
-    // Prevents duplicate template distribution when the same block arrives via
-    // multiple paths (e.g., push notification + GET_BLOCK response, or automatic
-    // feed from read_template() + manual BLOCK_DATA handler re-push).
-    std::chrono::steady_clock::time_point m_last_feed_tp{};
-    uint32_t m_last_feed_height{0};
-    uint1024_t m_last_feed_prev_hash{0};
 };
 
 } // namespace protocol
