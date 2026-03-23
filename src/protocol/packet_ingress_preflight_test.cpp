@@ -462,6 +462,44 @@ void test_ingress_readiness_authoritative_overrides_stale_local_authenticated()
     print_test_result("trigger_recovery is true",                         decision.trigger_recovery);
 }
 
+void test_ingress_readiness_push_context_always_allows_even_when_not_authenticated()
+{
+    std::cout << "\nTest: SessionRecoveryPolicy ingress — push context always allows ingress, never triggers recovery\n";
+
+    // Worst case: authoritative says not authenticated, no auth in-flight
+    // But is_push_context=true must override and always allow.
+    const auto decision = SessionRecoveryPolicy::evaluate_ingress_readiness({
+        true,   // has_session_context
+        false,  // authoritative_authenticated = false
+        false,  // local_auth_stale
+        true,   // auth_not_in_flight = true (would normally trigger recovery)
+        true    // is_push_context = true
+    });
+
+    print_test_result("allow_ingress is true (push context overrides)",  decision.allow_ingress);
+    print_test_result("trigger_recovery is false (push never kills)",   !decision.trigger_recovery);
+    print_test_result("queue_deferred_push is false",                   !decision.queue_deferred_push);
+    print_test_result("resync_local_cache is false",                    !decision.resync_local_cache);
+}
+
+void test_ingress_readiness_push_context_resyncs_stale_local_cache()
+{
+    std::cout << "\nTest: SessionRecoveryPolicy ingress — push context with stale local cache → allow + resync, no recovery\n";
+
+    const auto decision = SessionRecoveryPolicy::evaluate_ingress_readiness({
+        true,   // has_session_context
+        true,   // authoritative_authenticated = true
+        true,   // local_auth_stale = true
+        true,   // auth_not_in_flight
+        true    // is_push_context = true
+    });
+
+    print_test_result("allow_ingress is true",          decision.allow_ingress);
+    print_test_result("resync_local_cache is true",      decision.resync_local_cache);
+    print_test_result("trigger_recovery is false",      !decision.trigger_recovery);
+    print_test_result("queue_deferred_push is false",   !decision.queue_deferred_push);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
@@ -496,6 +534,8 @@ int main()
     test_ingress_readiness_stale_local_cache_resync();
     test_ingress_readiness_both_authenticated_passes();
     test_ingress_readiness_authoritative_overrides_stale_local_authenticated();
+    test_ingress_readiness_push_context_always_allows_even_when_not_authenticated();
+    test_ingress_readiness_push_context_resyncs_stale_local_cache();
 
     std::cout << "\n=== Results: " << tests_passed << "/" << tests_run << " passed";
     if (tests_failed > 0) {

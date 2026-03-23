@@ -104,8 +104,8 @@ public:
 
     // GET_ROUND polling configuration (public so callers can log the intervals)
     static constexpr bool POLLING_ENABLED = true;              // Enabled: GET_ROUND sanity probe for both lanes
-    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 30000;    // 30 seconds minimum
-    static constexpr uint32_t POLL_INTERVAL_MAX_MS = 60000;    // 60 seconds maximum
+    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 15000;    // 15 seconds minimum
+    static constexpr uint32_t POLL_INTERVAL_MAX_MS = 45000;    // 45 seconds maximum
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work().
     /// Returns null/empty if not yet authenticated — callers must guard for this.
@@ -170,6 +170,11 @@ public:
     
     // Push notification subscription (LLL-TAO PR #156)
     network::Shared_payload send_miner_ready();
+    /// Re-subscribe to push notifications by sending MINER_READY on the stored connection.
+    /// Safe to call after prolonged push silence (e.g. after degraded recovery) to restore
+    /// push flow when the node's subscription state may have been lost during TCP disruption.
+    /// No-op when not yet authenticated or no connection is available.
+    void resubscribe_push_notifications();
     
     // HeightTracker snapshot (single source of truth for height/staleness decisions)
     HeightTracker::Snapshot get_height_tracker_snapshot() const { return m_height_tracker.GetSnapshot(); }

@@ -113,6 +113,7 @@ public:
         bool authoritative_authenticated{false};  ///< Authoritative SessionManager reports authenticated
         bool local_auth_stale{false};             ///< Local auth cache disagrees with authoritative (local=false, auth=true)
         bool auth_not_in_flight{false};           ///< True when no auth handshake is currently pending (NOT_AUTHENTICATED state)
+        bool is_push_context{false};              ///< True when called from a push notification handler — always allow ingress, never trigger recovery
     };
 
     /**
@@ -120,6 +121,10 @@ public:
      *
      * Consults authoritative session state (not local cache) as the primary authority:
      *
+     *   - Push context (is_push_context=true): always allow_ingress=true; never trigger
+     *     recovery.  Push notifications are the authoritative liveness signal — a transient
+     *     unauthenticated state must never suppress GET_BLOCK.  Cache resync is still applied
+     *     when the local cache is stale so the next ingress path sees up-to-date state.
      *   - No session context (legacy mode): allow_ingress=true unconditionally.
      *   - Authoritative says not authenticated: defer the packet; trigger recovery
      *     only when no auth is already in-flight (auth_not_in_flight=true).
@@ -133,6 +138,16 @@ public:
     static IngressReadinessDecision evaluate_ingress_readiness(const IngressReadinessInput& input)
     {
         IngressReadinessDecision decision;
+
+        if (input.is_push_context) {
+            // Push notifications are the authoritative liveness signal.  They must ALWAYS
+            // be allowed through regardless of transient session state — the session gate
+            // applies only to SUBMIT paths.  Recovery must never be triggered by a push.
+            decision.allow_ingress = true;
+            decision.resync_local_cache = input.local_auth_stale;
+            decision.reason = "push notification context — ingress always allowed, recovery suppressed";
+            return decision;
+        }
 
         if (!input.has_session_context) {
             // Legacy mode: session management is disabled; pass all packets through.
