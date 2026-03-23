@@ -1685,6 +1685,48 @@ void test_on_push_full_picture() {
 }
 
 // ============================================================================
+// Test 35 (RC7-D): Burst recovery — nChannelHeight 4 blocks ahead of tracker
+//   push_channel_height=2344737 (burst lag), template.nChannelHeight=2344741.
+//   expected_template_target() = 2344738, but is_template_stale() uses
+//   channel_height >= channel_target (2344737 >= 2344741 = false).
+//   The directional guard must accept this template as VALID.
+// ============================================================================
+void test_burst_recovery_template_ahead_of_tracker() {
+    std::cout << "\nTest 35 (RC7-D): Burst recovery — nChannelHeight 4 blocks ahead of local tracker, must NOT be stale\n";
+    HeightTracker tracker;
+
+    // Simulate burst: only 1 of 5 push notifications processed so far.
+    // push_channel_height = 2344737 (blocks 2344738–2344740 still in queue).
+    tracker.OnPushNotification(6644208, 2344737, 0x1d00ffff);
+
+    // GET_BLOCK arrives with the authoritative template from the node:
+    // nChannelHeight = 2344741 (tip after burst = 2344740, next block = 2344741).
+    tracker.OnTemplateReceived(1, 2344741);
+
+    auto snap = tracker.GetSnapshot();
+
+    // channel_height (from push) trails the template target by 4 blocks.
+    // expected_template_target() = channel_height + 1 = 2344738 (not 2344741).
+    print_test_result("RC7-D: expected_template_target() == 2344738 (lags template by 3)",
+                      snap.expected_template_target() == 2344738);
+
+    // channel_target was advanced by OnTemplateReceived to 2344741.
+    print_test_result("RC7-D: channel_target == 2344741 after OnTemplateReceived",
+                      snap.channel_target == 2344741);
+
+    // Directional guard: 2344737 >= 2344741 is false → template is VALID.
+    print_test_result("RC7-D: is_template_stale() == false when 4 blocks ahead of push tracker",
+                      !snap.is_template_stale());
+
+    // Drift is positive (template is 3 ahead of expected) but NOT stale.
+    auto delta = snap.drift_delta();
+    print_test_result("RC7-D: drift_delta() has value (channel_target > expected_template_target)",
+                      delta.has_value());
+    print_test_result("RC7-D: drift_delta() == 3 (2344741 - 2344738)",
+                      delta.has_value() && *delta == 3);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -1740,6 +1782,7 @@ int main() {
     test_set_session_epoch_zero_no_clear();
     test_session_epoch_in_snapshot();
     test_on_push_full_picture();
+    test_burst_recovery_template_ahead_of_tracker();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

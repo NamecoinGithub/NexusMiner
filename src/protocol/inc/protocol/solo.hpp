@@ -385,12 +385,15 @@ private:
     bool sync_template_state(uint32_t unified_height, uint32_t channel_height);
     
     /**
-     * @brief Check if current template is valid using channel manager state
+     * @brief Check if current template is valid using HeightTracker snapshot state
      * 
-     * Validates channel-specific staleness:
-     * - Channel height: template.nChannelHeight == node_channel + 1
+     * Validates channel-specific staleness using a directional guard:
+     * - Discards only when snap.channel_height >= template.nChannelHeight
+     *   (chain tip has already met or passed our mining target).
+     * - nChannelHeight > expectedChannel (multiple blocks ahead of local tracker) is
+     *   intentionally accepted — normal during burst recovery when push notifications
+     *   for intermediate blocks are still queued.
      * - Unified height differences are informational (other channels may advance)
-     * - Age timeout: template age < 60 seconds
      * 
      * @return true if template valid, false if stale/invalid
      */

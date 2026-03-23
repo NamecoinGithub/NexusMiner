@@ -1128,6 +1128,88 @@ int main()
     }
 
     // ====================================================================
+    // Test 32 (RC5-A): update_channel_height — node 3 blocks behind target
+    //   Template: nChannelHeight = 2344741
+    //   Node:     new_channel_height = 2344738 (3 blocks below target)
+    //   → must NOT discard (template still valid — chain has not yet reached target)
+    // ====================================================================
+    std::cout << "\nTest 32 (RC5-A): update_channel_height — node 3 blocks below target, must NOT discard" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(1, 0);  // Prime channel
+
+        auto data = create_mock_template(6644211, 0x1d00ffff, 1);
+        tmpl_interface.read_template(data, "test_node");
+        tmpl_interface.set_channel_height(2344741);  // nChannelHeight = 2344741
+
+        bool discarded = tmpl_interface.update_channel_height(1, 2344738);  // node 3 behind target
+        print_test_result("RC5-A: update_channel_height(2344738) with target=2344741 returns false", !discarded);
+        print_test_result("RC5-A: Template still valid when node is 3 blocks behind target",
+            tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 33 (RC5-B): update_channel_height — node AT exact target
+    //   Template: nChannelHeight = 2344741
+    //   Node:     new_channel_height = 2344741 (chain has reached our target)
+    //   → MUST discard (block we are mining was just found)
+    // ====================================================================
+    std::cout << "\nTest 33 (RC5-B): update_channel_height — node at exact target, MUST discard" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(1, 0);  // Prime channel
+
+        auto data = create_mock_template(6644211, 0x1d00ffff, 1);
+        tmpl_interface.read_template(data, "test_node");
+        tmpl_interface.set_channel_height(2344741);
+
+        bool discarded = tmpl_interface.update_channel_height(1, 2344741);  // chain reached target
+        print_test_result("RC5-B: update_channel_height(2344741) with target=2344741 discards template", discarded);
+        print_test_result("RC5-B: Template invalid after chain reached target",
+            !tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 34 (RC5-C): update_channel_height — node 5 blocks past target
+    //   Template: nChannelHeight = 2344741
+    //   Node:     new_channel_height = 2344746 (5 blocks past target)
+    //   → MUST discard (chain is far ahead of our mining target)
+    // ====================================================================
+    std::cout << "\nTest 34 (RC5-C): update_channel_height — node 5 blocks past target, MUST discard" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(1, 0);  // Prime channel
+
+        auto data = create_mock_template(6644211, 0x1d00ffff, 1);
+        tmpl_interface.read_template(data, "test_node");
+        tmpl_interface.set_channel_height(2344741);
+
+        bool discarded = tmpl_interface.update_channel_height(1, 2344746);  // chain way past target
+        print_test_result("RC5-C: update_channel_height(2344746) with target=2344741 discards template", discarded);
+        print_test_result("RC5-C: Template invalid after chain surpassed target",
+            !tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 35 (RC5-E): Block submission race — GET_ROUND returns the height
+    //   we just mined (nChannelHeight == prime_height → correctly stale)
+    //   Template: nChannelHeight = 2344738
+    //   GET_ROUND: prime_height = 2344738 (the block we just submitted)
+    //   → MUST discard (chain has met our target — correct behaviour)
+    // ====================================================================
+    std::cout << "\nTest 35 (RC5-E): Block submission race — GET_ROUND reflects just-submitted block, MUST discard" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(1, 0);  // Prime channel
+
+        auto data = create_mock_template(6644208, 0x1d00ffff, 1);
+        tmpl_interface.read_template(data, "test_node");
+        tmpl_interface.set_channel_height(2344738);  // template targets block 2344738
+
+        // GET_ROUND reflects our own submission: prime_height = 2344738
+        bool discarded = tmpl_interface.update_channel_height(1, 2344738);
+        print_test_result("RC5-E: Submission race — update_channel_height(=target) correctly discards", discarded);
+        print_test_result("RC5-E: Template invalid after submission race",
+            !tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
     // Summary
     // ====================================================================
     std::cout << "\n========================================" << std::endl;
