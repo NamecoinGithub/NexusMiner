@@ -165,3 +165,99 @@ Then disconnects immediately.
 ## Build Status
 ✅ Build succeeds with no compilation errors
 ✅ All existing functionality preserved (with strict enforcement added)
+
+---
+
+## Recovery Model — No Cross-Lane Recovery (Updated)
+
+### Key Principle
+
+**The miner's protocol lane is determined at initial connection time by port and NEVER
+changes.**  All recovery operations (template refresh, reconnection, failover) happen on
+the same protocol lane.  The only thing that changes during failover is the NODE endpoint.
+
+### Removed: SIM-Link Cross-Lane Bypass
+
+The former `on_lane_failed()` implementation in `DualConnectionManager` armed a bypass
+on the **opposite** lane when a lane failed (stateless failure → arm legacy bypass;
+legacy failure → arm stateless bypass).  This caused the miner to route recovery through
+the wrong protocol and was a holdover from the original SIM-Link design.
+
+**This cross-lane bypass has been removed.**
+
+### New Behavior
+
+`DualConnectionManager::on_lane_failed(dead_lane)` now arms the bypass on the **same**
+lane that failed.  This prepares the reconnect path on the correct protocol lane so that
+when the lane comes back up it can request a fresh template immediately without triggering
+the node's GET_BLOCK rate limiter.
+
+```cpp
+// Before (wrong — crossed lanes):
+void on_lane_failed(ProtocolLane dead_lane)
+{
+    if (dead_lane == ProtocolLane::STATELESS)
+    {
+        m_stateless_alive = false;
+        arm_bypass(ProtocolLane::LEGACY);    // ← WRONG
+    }
+    else
+    {
+        m_legacy_alive = false;
+        arm_bypass(ProtocolLane::STATELESS); // ← WRONG
+    }
+}
+
+// After (correct — same lane):
+void on_lane_failed(ProtocolLane dead_lane)
+{
+    if (dead_lane == ProtocolLane::STATELESS)
+    {
+        m_stateless_alive = false;
+        arm_bypass(ProtocolLane::STATELESS); // Same lane: ready for reconnect
+    }
+    else
+    {
+        m_legacy_alive = false;
+        arm_bypass(ProtocolLane::LEGACY);    // Same lane: ready for reconnect
+    }
+}
+```
+
+### Added: Mining Lane Tracking
+
+`DualConnectionManager` now tracks `m_mining_lane` — the protocol lane the miner was
+configured to mine on.  This is set once during initial connection
+(`determine_lane_from_port()`) and is **never changed** by any recovery or failover
+operation.
+
+```cpp
+// Set once at connection time:
+m_dual_conn_mgr.set_mining_lane(determine_lane_from_port(remote_port));
+
+// Inspect during recovery (must equal the initial lane):
+ProtocolLane lane = m_dual_conn_mgr.mining_lane();
+```
+
+### Recovery Sequence
+
+| Step | Operation | Lane | Node |
+|------|-----------|------|------|
+| 1 | Primary retry | Same as initial | Same node |
+| 2 | Failover (if primary retry exhausted) | Same as initial | **New node** |
+
+Failover to a new node always performs a full RE-AUTH sequence:
+1. **Unencrypted**: Tritium genesis exchange (`MINER_AUTH_INIT` → `MINER_AUTH_CHALLENGE`)
+2. **Falcon**: Challenge/response (`MINER_AUTH_RESPONSE` → `MINER_AUTH_RESULT`)
+3. **ChaCha20**: Session key derived from genesis; all subsequent traffic encrypted
+4. `STATELESS_MINER_READY` / `MINER_READY` to subscribe to push notifications
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/dual_connection_manager.hpp` | Fixed `on_lane_failed()` to arm same-lane bypass; added `m_mining_lane` field and accessors; updated doc comments |
+| `src/dual_connection_manager_test.cpp` | Updated Tests 2 & 3 to verify same-lane bypass; added Test 6 (cross-lane bypass never armed) and Test 7 (mining lane immutability) |
+| `docs/current/sim-link.md` | Updated `DualConnectionManager` section; added Recovery Model section; corrected Lane Semantics table |
+| `docs/PROTOCOL_LANES.md` | Added "Recovery and Failover Lane Invariant" section |
+| `IMPLEMENTATION_SUMMARY.md` | Added this Recovery Model section |
