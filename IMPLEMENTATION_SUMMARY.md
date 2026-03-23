@@ -227,16 +227,20 @@ void on_lane_failed(ProtocolLane dead_lane)
 ### Added: Mining Lane Tracking
 
 `DualConnectionManager` now tracks `m_mining_lane` — the protocol lane the miner was
-configured to mine on.  This is set once during initial connection
-(`determine_lane_from_port()`) and is **never changed** by any recovery or failover
-operation.
+configured to mine on.  This is stamped **exactly once** inside
+`NodeSession::connect_primary()`, after the primary connection is established and the
+protocol lane is derived from `m_primary_connection->get_protocol_lane()`.  The call
+is guarded by `m_dcm->mining_lane() == ProtocolLane::UNKNOWN` so that reconnection
+and failover can never re-stamp it.
 
 ```cpp
-// Set once at connection time:
-m_dual_conn_mgr.set_mining_lane(determine_lane_from_port(remote_port));
+// Called in NodeSession::connect_primary() on first connection only:
+if (m_dcm && m_dcm->mining_lane() == ProtocolLane::UNKNOWN) {
+    m_dcm->set_mining_lane(lane);
+}
 
 // Inspect during recovery (must equal the initial lane):
-ProtocolLane lane = m_dual_conn_mgr.mining_lane();
+ProtocolLane lane = m_dcm->mining_lane();
 ```
 
 ### Recovery Sequence
