@@ -397,7 +397,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* Multi-block/channel-stale recovery: transition to STOPPED. */
         m_primary_node_session->set_recovery_initiated_handler(
             [this]() {
-                m_logger->warn("[Worker_manager] Recovery: push detected channel-stale — transitioning to STOPPED");
+                m_logger->warn("[Worker_manager] ⚡ Recovery: push detected channel-stale — transitioning to STOPPED");
                 transition_to(MiningState::STOPPED, "push_staleness");
                 send_get_block(true);
             }
@@ -989,7 +989,7 @@ void Worker_manager::transition_to(MiningState new_state, const char* reason)
 {
     if (new_state == m_mining_state) return;
 
-    m_logger->info("[Worker_manager] State: {} → {} ({})",
+    m_logger->info("[Worker_manager] ⚡ State: {} → {} ({})",
                    state_name(m_mining_state), state_name(new_state), reason);
 
     auto now = std::chrono::steady_clock::now();
@@ -1592,7 +1592,7 @@ void Worker_manager::check_template_health()
             // Stage 3: >180s AND push stale → reconnect
             if (stopped_duration > protocol::ProtocolConstants::DEGRADED_MODE_STAGE3_SECONDS &&
                 !push_recent && m_primary_node_session) {
-                m_logger->error("[Worker_manager] Stage 3 ESCALATION ({}s stopped, push dead) — forcing reconnect", stopped_duration);
+                m_logger->error("[Worker_manager] ⚡ Stage 3 ESCALATION ({}s stopped, push dead) — forcing reconnect", stopped_duration);
                 retry_connect(m_primary_endpoint);
                 break;
             }
@@ -1602,7 +1602,7 @@ void Worker_manager::check_template_health()
                 since_push_s > protocol::ProtocolConstants::FAST_RECONNECT_SIGNAL_DEAD_SECONDS &&
                 stopped_duration > protocol::ProtocolConstants::FAST_RECONNECT_DEGRADED_SECONDS &&
                 !m_reconnect_in_progress) {
-                m_logger->error("[Worker_manager] Stage 0 FAST RECONNECT: push signal dead (push {}s ago, {}s stopped)",
+                m_logger->error("[Worker_manager] ⚡ Stage 0 FAST RECONNECT: push signal dead (push {}s ago, {}s stopped)",
                                 since_push_s == INT64_MAX ? -1LL : since_push_s, stopped_duration);
                 retry_connect(m_primary_endpoint);
                 break;
@@ -1613,7 +1613,7 @@ void Worker_manager::check_template_health()
                 !push_recent && m_primary_node_session) {
                 auto primary_protocol = m_primary_node_session->get_primary_protocol();
                 if (primary_protocol) {
-                    m_logger->warn("[Worker_manager] Stage 2 ({}s stopped, push stale) — attempting re-auth", stopped_duration);
+                    m_logger->warn("[Worker_manager] ⚡ Stage 2 ({}s stopped, push stale) — attempting re-auth", stopped_duration);
                     auto auth_payload = primary_protocol->login([weak_self = weak_from_this()](bool login_result) {
                         auto self = weak_self.lock();
                         if (!self) return;
