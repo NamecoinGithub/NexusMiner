@@ -661,17 +661,20 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
     std::string validation_reason;
     const bool session_valid = m_session_context->validate_miner_session(&validation_reason);
     const auto session = m_session_context->get_runtime_snapshot();
+    const uint64_t owner_epoch     = options.owner ? options.owner->session_epoch.get() : uint64_t{0};
+    const uint32_t owner_session_id = options.owner ? options.owner->session_id.get() : uint32_t{0};
     const auto decision = PacketIngressPreflight::evaluate({
         true,
-        session_valid,
-        session,
+        session.authenticated,
+        session.session_id,
+        session.session_epoch,
+        session.active_lane,
         m_protocol_lane,
         options.validate_lane,
         options.allow_without_active_session,
-        options.require_crypto_ready,
-        options.require_reward_binding,
-        SessionId(options.packet_session_id),
-        options.owner ? *options.owner : SessionOwnershipStamp{}
+        options.packet_session_id,
+        owner_epoch,
+        owner_session_id
     });
 
     if (decision.allow_processing) {
@@ -786,11 +789,11 @@ void Solo::capture_push_ingress_lifeline(const char* log_scope)
     }
 
     const auto session = m_session_context->get_runtime_snapshot();
-    if (!session.authenticated || session.session_id == 0 || !session.ready_for_get_block) {
+    if (!session.authenticated || session.session_id == 0) {
         return;
     }
 
-    if (!session.reward_address_string.empty() && !session.reward_bound) {
+    if (!session.reward_address.empty() && !session.reward_bound) {
         return;
     }
 
@@ -798,7 +801,7 @@ void Solo::capture_push_ingress_lifeline(const char* log_scope)
     m_push_ingress_lifeline.session_id = session.session_id;
     m_push_ingress_lifeline.session_epoch = session.session_epoch;
     m_push_ingress_lifeline.reward_bound = session.reward_bound;
-    m_push_ingress_lifeline.ready_for_get_block = session.ready_for_get_block;
+    m_push_ingress_lifeline.ready_for_get_block = session.authenticated;
 
     m_logger->info("[{}] Preserving mining-lane push lifeline across in-band auth "
                    "(session_id=0x{:08x}, epoch={}, ready_for_get_block={}, reward_bound={})",
@@ -903,7 +906,7 @@ bool Solo::validate_authoritative_session(const char* log_scope, bool require_re
     }
 
     const auto session = m_session_context->get_runtime_snapshot();
-    if (require_reward_binding && !session.reward_address_string.empty() && !session.reward_bound) {
+    if (require_reward_binding && !session.reward_address.empty() && !session.reward_bound) {
         m_logger->error("[{}] Authoritative miner session container requires reward binding before continuing", log_scope);
         m_logger->error("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
         return false;

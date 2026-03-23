@@ -22,12 +22,7 @@ uint64_t NodeSessionContext::get_session_epoch() const
 
 bool NodeSessionContext::is_authenticated() const
 {
-    if (!m_session_manager) {
-        return false;
-    }
-    auto state = m_session_manager->get_state();
-    return state == SessionManager::SessionState::AUTHENTICATED ||
-           state == SessionManager::SessionState::ACTIVE;
+    return m_session_manager ? m_session_manager->is_authenticated() : false;
 }
 
 bool NodeSessionContext::is_active() const

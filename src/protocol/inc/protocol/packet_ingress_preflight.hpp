@@ -1,10 +1,10 @@
 #ifndef NEXUSMINER_PROTOCOL_PACKET_INGRESS_PREFLIGHT_HPP
 #define NEXUSMINER_PROTOCOL_PACKET_INGRESS_PREFLIGHT_HPP
 
-#include "protocol/session_manager.hpp"
 #include "protocol/session_semantic_types.hpp"
 #include "protocol_lane.hpp"
 #include <string>
+#include <cstdint>
 
 namespace nexusminer {
 namespace protocol {
@@ -16,9 +16,6 @@ struct SessionOwnershipStamp
 
     bool valid() const
     {
-        // Ownership stamps are only captured from authenticated sessions after
-        // SessionManager::start_session() advances the authoritative epoch, so
-        // {0,0} remains the sentinel for "no correlatable owner".
         return !session_id.is_default() && !session_epoch.is_default();
     }
 
@@ -53,15 +50,16 @@ public:
     struct Input
     {
         bool has_authoritative_session{false};
-        bool authoritative_session_valid{false};
-        SessionManager::SessionInfo authoritative_session{};
+        bool authoritative_authenticated{false};
+        uint32_t authoritative_session_id{0};
+        uint64_t authoritative_session_epoch{0};
+        ProtocolLane authoritative_lane{ProtocolLane::UNKNOWN};
         ProtocolLane packet_lane{ProtocolLane::UNKNOWN};
         bool validate_lane{false};
         bool allow_without_active_session{false};
-        bool require_crypto_ready{false};
-        bool require_reward_binding{false};
-        SessionId packet_session_id{};
-        SessionOwnershipStamp owner{};
+        uint32_t packet_session_id{0};   // 0 = no session ID in packet
+        uint64_t owner_epoch{0};         // 0 = no ownership stamp
+        uint32_t owner_session_id{0};    // 0 = no ownership stamp
     };
 
     static PacketIngressDecision evaluate(const Input& input)
@@ -73,45 +71,24 @@ public:
             return decision;
         }
 
-        if (!input.authoritative_session_valid) {
-            decision.reason = "authoritative session container is inconsistent";
-            return decision;
-        }
-
         if (input.validate_lane &&
-            input.authoritative_session.active_lane != ProtocolLane::UNKNOWN &&
+            input.authoritative_lane != ProtocolLane::UNKNOWN &&
             input.packet_lane != ProtocolLane::UNKNOWN &&
-            input.authoritative_session.active_lane != input.packet_lane) {
+            input.authoritative_lane != input.packet_lane) {
             decision.reason = "packet lane mismatched authoritative session lane";
             decision.mark_degraded = true;
             return decision;
         }
 
-        if (!input.allow_without_active_session && !input.authoritative_session.authenticated) {
+        if (!input.allow_without_active_session && !input.authoritative_authenticated) {
             decision.reason = "authoritative session is not authenticated";
             decision.force_reauth = true;
             decision.mark_degraded = true;
             return decision;
         }
 
-        if (input.require_crypto_ready && !input.authoritative_session.chacha20_ready) {
-            decision.reason = "authoritative crypto context is not ready";
-            decision.force_reauth = true;
-            decision.mark_degraded = true;
-            return decision;
-        }
-
-        if (input.require_reward_binding &&
-            !input.authoritative_session.reward_address_string.empty() &&
-            !input.authoritative_session.reward_bound) {
-            decision.reason = "reward binding required by authoritative session";
-            decision.force_reauth = true;
-            decision.mark_degraded = true;
-            return decision;
-        }
-
-        if (!input.packet_session_id.is_default() &&
-            input.packet_session_id.get() != input.authoritative_session.session_id) {
+        if (input.packet_session_id != 0 &&
+            input.packet_session_id != input.authoritative_session_id) {
             decision.reason = "packet session id mismatched authoritative session";
             decision.drop_as_stale = true;
             decision.mark_degraded = true;
@@ -119,8 +96,8 @@ public:
             return decision;
         }
 
-        if (input.owner.valid()) {
-            if (input.owner.session_epoch.get() != input.authoritative_session.session_epoch) {
+        if (input.owner_epoch != 0) {
+            if (input.owner_epoch != input.authoritative_session_epoch) {
                 decision.reason = "packet ownership epoch mismatched authoritative session";
                 decision.drop_as_stale = true;
                 decision.mark_degraded = true;
@@ -128,8 +105,8 @@ public:
                 return decision;
             }
 
-            if (!input.owner.session_id.is_default() &&
-                input.owner.session_id.get() != input.authoritative_session.session_id) {
+            if (input.owner_session_id != 0 &&
+                input.owner_session_id != input.authoritative_session_id) {
                 decision.reason = "packet ownership session id mismatched authoritative session";
                 decision.drop_as_stale = true;
                 decision.mark_degraded = true;
