@@ -902,9 +902,9 @@ void test_session_status_ack_mismatch_is_diagnostic_only()
 
 void test_session_status_ack_unhealthy_is_diagnostic_only()
 {
-    // Test 18: evaluate_ack_health() intentionally keeps force_reauth and mark_degraded
-    // false — SESSION_STATUS is a telemetry probe and must not trigger session actions.
-    // PUSH notification liveness is the sole authoritative signal.
+    // Test 18: SessionStatusPolicy::evaluate_ack_health() intentionally keeps force_reauth
+    // and mark_degraded false — SESSION_STATUS is a telemetry probe and must not trigger
+    // session actions.  PUSH notification liveness is the sole authoritative signal.
     std::cout << "\nTest 18: unhealthy SESSION_STATUS_ACK — diagnostic only, session preserved\n";
 
     SimulatedSessionStatusAckHandler handler;
@@ -913,8 +913,9 @@ void test_session_status_ack_unhealthy_is_diagnostic_only()
     const bool accepted = handler.on_session_status_ack(0x12345678, 0x01, 0, 0x02, false);
 
     print_test_result("Unhealthy SESSION_STATUS_ACK is still accepted for caching", accepted);
-    // evaluate_ack_health() intentionally does NOT set force_reauth or mark_degraded —
-    // these are diagnostic observations only, PUSH is the sole authoritative signal.
+    // SessionStatusPolicy::evaluate_ack_health() intentionally does NOT set force_reauth
+    // or mark_degraded — these are diagnostic observations only, PUSH is the sole
+    // authoritative signal.
     print_test_result("Unhealthy ACK does NOT force re-auth (PUSH is authoritative)", !handler.force_reauth);
     print_test_result("Unhealthy ACK does NOT mark degraded (PUSH is authoritative)", !handler.mark_degraded);
 }
