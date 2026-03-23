@@ -2494,7 +2494,54 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         if (!get_block_sent_in_handler) {
             m_logger->debug("[Solo GET_ROUND] ✓ Template valid after NEW_ROUND, no GET_BLOCK needed");
         }
-        
+
+        // Height parity backup GET_BLOCK: fire when GET_ROUND confirms the node's channel tip
+        // has met or passed our template's target AND push has been silent — catching
+        // missed-push scenarios (especially on long Prime blocks of 300–330s).
+        if (!get_block_sent_in_handler &&
+            m_template_interface &&
+            m_template_interface->has_valid_template() &&
+            channel_height != 0)
+        {
+            auto tmpl = m_template_interface->get_current_template();
+            if (tmpl && tmpl->nChannelHeight != 0 &&
+                channel_height >= tmpl->nChannelHeight)
+            {
+                auto snap = m_height_tracker.GetSnapshot();
+                auto now  = std::chrono::steady_clock::now();
+                auto last_push = snap.last_push_notification_at;
+                bool push_silent = (last_push == std::chrono::steady_clock::time_point{}) ||
+                    (std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count()
+                         >= PUSH_ABSENT_FOR_PARITY_CHECK_SECONDS);
+                if (push_silent)
+                {
+                    int64_t elapsed = (last_push == std::chrono::steady_clock::time_point{})
+                        ? -1
+                        : std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count();
+                    m_logger->warn("[Solo GET_ROUND] ⚠️  Height parity: node tip {} >= template target {} "
+                        "(push silent {}s) — sending GET_BLOCK",
+                        channel_height, tmpl->nChannelHeight, elapsed);
+                    m_template_interface->discard_template(
+                        "GET_ROUND height parity: node tip met template target");
+                    if (connection) {
+                        auto work_payload = get_work();
+                        if (work_payload && !work_payload->empty()) {
+                            connection->transmit(work_payload);
+                            get_block_sent_in_handler = true;
+                            if (m_soft_refresh_handler) {
+                                mark_authoritative_recovery_required("get_round_height_parity");
+                            }
+                            m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent (height parity backup)");
+                        } else {
+                            m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request (height parity)");
+                        }
+                    } else {
+                        m_logger->error("[Solo GET_ROUND] Cannot send GET_BLOCK (height parity) — connection is null");
+                    }
+                }
+            }
+        }
+
         // Update intelligent polling state
         if (channel_height == 0 || channel_height == previous_channel_height) {
             m_logger->info("[Solo GET_ROUND] NEW_ROUND received but channel height unchanged; treating as OLD_ROUND/backoff");
@@ -2623,7 +2670,54 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         if (!get_block_sent_in_handler) {
             m_logger->debug("[Solo GET_ROUND] ✓ OLD_ROUND: no change, no GET_BLOCK needed");
         }
-        
+
+        // Height parity backup GET_BLOCK: fire when GET_ROUND confirms the node's channel tip
+        // has met or passed our template's target AND push has been silent — catching
+        // missed-push scenarios (especially on long Prime blocks of 300–330s).
+        if (!get_block_sent_in_handler &&
+            m_template_interface &&
+            m_template_interface->has_valid_template() &&
+            channel_height != 0)
+        {
+            auto tmpl = m_template_interface->get_current_template();
+            if (tmpl && tmpl->nChannelHeight != 0 &&
+                channel_height >= tmpl->nChannelHeight)
+            {
+                auto snap = m_height_tracker.GetSnapshot();
+                auto now  = std::chrono::steady_clock::now();
+                auto last_push = snap.last_push_notification_at;
+                bool push_silent = (last_push == std::chrono::steady_clock::time_point{}) ||
+                    (std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count()
+                         >= PUSH_ABSENT_FOR_PARITY_CHECK_SECONDS);
+                if (push_silent)
+                {
+                    int64_t elapsed = (last_push == std::chrono::steady_clock::time_point{})
+                        ? -1
+                        : std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count();
+                    m_logger->warn("[Solo GET_ROUND] ⚠️  Height parity: node tip {} >= template target {} "
+                        "(push silent {}s) — sending GET_BLOCK",
+                        channel_height, tmpl->nChannelHeight, elapsed);
+                    m_template_interface->discard_template(
+                        "GET_ROUND height parity: node tip met template target");
+                    if (connection) {
+                        auto work_payload = get_work();
+                        if (work_payload && !work_payload->empty()) {
+                            connection->transmit(work_payload);
+                            get_block_sent_in_handler = true;
+                            if (m_soft_refresh_handler) {
+                                mark_authoritative_recovery_required("get_round_height_parity");
+                            }
+                            m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent (height parity backup)");
+                        } else {
+                            m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request (height parity)");
+                        }
+                    } else {
+                        m_logger->error("[Solo GET_ROUND] Cannot send GET_BLOCK (height parity) — connection is null");
+                    }
+                }
+            }
+        }
+
         // Update intelligent polling state
         on_old_round_received();
     }
