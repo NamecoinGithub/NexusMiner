@@ -191,6 +191,23 @@ The dual-lane architecture provides:
 * **Mirror mapping**: Consistent opcode translation between lanes
 * **TX/RX enforcement**: Compile-time and runtime checks prevent lane violations
 
+## Recovery and Failover Lane Invariant
+
+**Protocol lanes are NEVER crossed during recovery or failover.**
+
+The mining lane is determined at connection time (from the remote port via
+`determine_lane_from_port()`) and is **immutable** for the session lifetime.
+
+- **Primary retry**: same node, same lane, same port.
+- **Failover**: different node, **same lane**, same port — with a full RE-AUTH sequence.
+
+`DualConnectionManager::on_lane_failed()` arms the bypass on the **same** lane that
+failed, not the opposite lane.  The `m_mining_lane` field is set once during initial
+connection and is never modified by any recovery or failover operation.
+
+This eliminates the former SIM-Link cross-lane bypass pattern where a stateless lane
+failure could route recovery through the legacy lane and vice versa.
+
 ## Related: Mining Tip Anchoring
 
 Push notifications (`PRIME_BLOCK_AVAILABLE` / `HASH_BLOCK_AVAILABLE`) are sent on

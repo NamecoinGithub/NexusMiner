@@ -45,12 +45,36 @@ GET_BLOCK rate limiter.
 `DualConnectionManager` is a lightweight value member of `Worker_manager` that tracks:
 
 - **Lane liveness** — whether the stateless and/or legacy lanes are currently up
+- **Mining lane** — the protocol lane the miner was configured to mine on; set once at
+  initial connection time and **never changed** for the session lifetime
 - **One-shot bypass flags** — armed when a lane fails, consumed on the first GET_BLOCK
-  sent on the surviving lane (allows immediate recovery without triggering the node's
-  rate limiter)
+  sent on that **same lane** when it reconnects (allows immediate recovery without
+  triggering the node's rate limiter)
 
-When a lane fails, `on_lane_failed()` marks it dead and arms a bypass on the surviving
-lane so it can request a fresh template immediately.
+When a lane fails, `on_lane_failed()` marks it dead and arms a bypass on the **same
+lane** — NOT the opposite lane.  Recovery always stays on the lane that failed.
+
+### Recovery Model
+
+The miner's protocol lane is determined at initial connection time by port and **never
+changes**.  All recovery operations (template refresh, reconnection, failover) happen on
+the same protocol lane.  The only thing that changes during failover is the NODE endpoint.
+
+1. **Primary retry** — Retry on the **same** protocol lane (same port, same node) up to
+   the configured retry limit.
+2. **Failover** — If primary retry exhausts, connect to the **failover node** on the
+   **same** protocol lane (same port type) and perform a **full RE-AUTH sequence**:
+   - TCP connect to failover node's matching port (primary was 9323 → failover is also
+     9323; primary was 8323 → failover is also 8323)
+   - Send `MINER_AUTH_INIT` with full Falcon public key (unencrypted Tritium genesis)
+   - Receive `MINER_AUTH_CHALLENGE`
+   - Send `MINER_AUTH_RESPONSE` (Falcon signature)
+   - Receive `MINER_AUTH_RESULT` with new session ID
+   - All subsequent communication is ChaCha20-encrypted
+   - Send `STATELESS_MINER_READY` / `MINER_READY` to subscribe to push notifications
+
+**The miner must NEVER cross from Stateless→Legacy or Legacy→Stateless during recovery
+or failover.**
 
 ### Worker_manager SIM Link wiring
 
@@ -230,7 +254,8 @@ report_interval_seconds = 60   # Diagnostic report cadence in seconds
 | Header | 16-bit | 8-bit |
 | Template delivery | Push-driven (low latency) | Polling (GET_ROUND) |
 | Block submission | Preferred (session context) | Fallback if primary down |
-| Recovery | Primary recovers via secondary bypass | Secondary recovers via primary bypass |
+| Recovery | Retry on same lane (9323); failover to new node on same lane | Retry on same lane (8323); failover to new node on same lane |
+| Cross-lane recovery | **NEVER** — lanes are never crossed | **NEVER** — lanes are never crossed |
 
 ---
 

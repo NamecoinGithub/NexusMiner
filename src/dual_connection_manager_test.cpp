@@ -39,28 +39,30 @@ int main()
     }
 
     {
-        std::cout << "Test 2: Stateless failure arms legacy one-shot bypass\n";
+        std::cout << "Test 2: Stateless failure arms stateless one-shot bypass (same-lane — NO cross-lane)\n";
         DualConnectionManager mgr;
         mgr.set_stateless_alive(true);
         mgr.set_legacy_alive(true);
         mgr.on_lane_failed(ProtocolLane::STATELESS);
         ok &= expect(!mgr.is_stateless_alive(), "Stateless marked dead on failure");
         ok &= expect(mgr.is_legacy_alive(), "Legacy remains alive");
-        ok &= expect(mgr.consume_bypass(ProtocolLane::LEGACY), "Legacy bypass consumed once");
-        ok &= expect(!mgr.consume_bypass(ProtocolLane::LEGACY), "Legacy bypass does not repeat");
+        ok &= expect(mgr.consume_bypass(ProtocolLane::STATELESS), "Stateless bypass consumed once (same lane)");
+        ok &= expect(!mgr.consume_bypass(ProtocolLane::STATELESS), "Stateless bypass does not repeat");
+        ok &= expect(!mgr.consume_bypass(ProtocolLane::LEGACY), "Legacy bypass NOT armed (no cross-lane)");
         std::cout << '\n';
     }
 
     {
-        std::cout << "Test 3: Legacy failure arms stateless one-shot bypass\n";
+        std::cout << "Test 3: Legacy failure arms legacy one-shot bypass (same-lane — NO cross-lane)\n";
         DualConnectionManager mgr;
         mgr.set_stateless_alive(true);
         mgr.set_legacy_alive(true);
         mgr.on_lane_failed(ProtocolLane::LEGACY);
         ok &= expect(!mgr.is_legacy_alive(), "Legacy marked dead on failure");
         ok &= expect(mgr.is_stateless_alive(), "Stateless remains alive");
-        ok &= expect(mgr.consume_bypass(ProtocolLane::STATELESS), "Stateless bypass consumed once");
-        ok &= expect(!mgr.consume_bypass(ProtocolLane::STATELESS), "Stateless bypass does not repeat");
+        ok &= expect(mgr.consume_bypass(ProtocolLane::LEGACY), "Legacy bypass consumed once (same lane)");
+        ok &= expect(!mgr.consume_bypass(ProtocolLane::LEGACY), "Legacy bypass does not repeat");
+        ok &= expect(!mgr.consume_bypass(ProtocolLane::STATELESS), "Stateless bypass NOT armed (no cross-lane)");
         std::cout << '\n';
     }
 
@@ -90,6 +92,43 @@ int main()
         mgr.set_stateless_alive(true);
         ok &= expect(mgr.is_stateless_alive(),
                      "DualConnectionManager liveness works without stale GET_BLOCK timing constants");
+        std::cout << '\n';
+    }
+
+    {
+        std::cout << "Test 6: Cross-lane bypass is never armed\n";
+        // On stateless failure the legacy bypass must remain unset, and vice versa.
+        {
+            DualConnectionManager mgr;
+            mgr.on_lane_failed(ProtocolLane::STATELESS);
+            ok &= expect(!mgr.consume_bypass(ProtocolLane::LEGACY),
+                         "Stateless failure does NOT arm legacy bypass");
+        }
+        {
+            DualConnectionManager mgr;
+            mgr.on_lane_failed(ProtocolLane::LEGACY);
+            ok &= expect(!mgr.consume_bypass(ProtocolLane::STATELESS),
+                         "Legacy failure does NOT arm stateless bypass");
+        }
+        std::cout << '\n';
+    }
+
+    {
+        std::cout << "Test 7: Mining lane is immutable once set\n";
+        DualConnectionManager mgr;
+        ok &= expect(mgr.mining_lane() == ProtocolLane::UNKNOWN,
+                     "Mining lane initially UNKNOWN");
+        mgr.set_mining_lane(ProtocolLane::STATELESS);
+        ok &= expect(mgr.mining_lane() == ProtocolLane::STATELESS,
+                     "Mining lane set to STATELESS");
+        // Simulate lane failure — mining lane must not change
+        mgr.on_lane_failed(ProtocolLane::STATELESS);
+        ok &= expect(mgr.mining_lane() == ProtocolLane::STATELESS,
+                     "Mining lane unchanged after stateless failure");
+        // Simulate failover — mining lane must still not change
+        mgr.set_failover_active(true, "192.168.1.99");
+        ok &= expect(mgr.mining_lane() == ProtocolLane::STATELESS,
+                     "Mining lane unchanged after failover activation");
         std::cout << '\n';
     }
 

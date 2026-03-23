@@ -16,6 +16,19 @@ namespace nexusminer
 /// This class does NOT own connections — Worker_manager owns the actual sockets
 /// and connections.  DualConnectionManager only provides bookkeeping so that
 /// Worker_manager can make the right forwarding/recovery decisions.
+///
+/// ## NO CROSS-LANE RULE
+///
+/// The miner's protocol lane is determined once at initial connection time (from the
+/// remote port via determine_lane_from_port()) and is **immutable** for the session
+/// lifetime.  All recovery and failover operations MUST use the same protocol lane.
+///
+/// - Primary retry:  same node, same lane, same port.
+/// - Failover:       different node, same lane, same port — with full RE-AUTH sequence.
+///
+/// When a lane fails its bypass is armed on the **SAME** lane (not the opposite).
+/// This prepares the reconnect path on the correct lane without ever crossing to the
+/// other protocol.
 class DualConnectionManager
 {
 public:
@@ -29,7 +42,16 @@ public:
     bool is_legacy_alive()    const { return m_legacy_alive;    }
     bool any_lane_alive()     const { return m_stateless_alive || m_legacy_alive; }
 
-    // ── One-shot bypass for GET_BLOCK rate limiter (SIM Link recovery) ───────
+    // ── Mining lane (immutable once set) ─────────────────────────────────────
+    /// Set the lane the miner is actively mining on.  Called once during initial
+    /// connection from determine_lane_from_port() and NEVER changed afterwards.
+    /// All recovery and failover operations must respect this lane.
+    void set_mining_lane(ProtocolLane lane) { m_mining_lane = lane; }
+
+    /// Returns the lane the miner is actively mining on.
+    ProtocolLane mining_lane() const { return m_mining_lane; }
+
+    // ── One-shot bypass for GET_BLOCK rate limiter (same-lane recovery) ──────
     /// Arm a one-shot bypass for the given lane.
     /// The first call to consume_bypass() for that lane after arming returns true
     /// and clears the flag (reset after each use, one bypass per lane-failure event).
@@ -57,18 +79,24 @@ public:
 
     // ── Lane failure event ───────────────────────────────────────────────────
     /// Called when a lane drops (MALFORMED, connection_closed, etc.).
-    /// Arms the bypass on the surviving lane so it can recover immediately.
+    ///
+    /// Arms the bypass on the **SAME** lane so that when it reconnects it can
+    /// request a fresh template immediately without triggering the node's rate
+    /// limiter.
+    ///
+    /// IMPORTANT — NO CROSS-LANE: the bypass is NEVER armed on the opposite lane.
+    /// Recovery always stays on the lane that failed.
     void on_lane_failed(ProtocolLane dead_lane)
     {
         if (dead_lane == ProtocolLane::STATELESS)
         {
             m_stateless_alive = false;
-            arm_bypass(ProtocolLane::LEGACY);
+            arm_bypass(ProtocolLane::STATELESS);  // Same lane: ready for reconnect
         }
         else
         {
             m_legacy_alive = false;
-            arm_bypass(ProtocolLane::STATELESS);
+            arm_bypass(ProtocolLane::LEGACY);     // Same lane: ready for reconnect
         }
     }
 
@@ -85,6 +113,10 @@ public:
     /// Update the current failover state and active node endpoint.
     /// @param active True if failover is active, false if primary is active
     /// @param endpoint The current active node IP address (e.g., "192.168.1.10")
+    ///
+    /// NOTE: Failover changes the NODE endpoint only — the protocol lane (m_mining_lane)
+    /// never changes.  The failover node must be contacted on the same port/lane as the
+    /// primary.
     void set_failover_active(bool active, std::string endpoint)
     {
         m_using_failover = active;
@@ -98,11 +130,14 @@ private:
     bool m_stateless_alive{false};
     bool m_legacy_alive{false};
 
-    // One-shot bypass flags
+    // The lane the miner is actively mining on — set once at connection time, never changed.
+    ProtocolLane m_mining_lane{ProtocolLane::UNKNOWN};
+
+    // One-shot bypass flags (per-lane; armed on failure of the SAME lane)
     bool m_stateless_bypass_armed{false};
     bool m_legacy_bypass_armed{false};
 
-    // Failover state
+    // Failover state (node endpoint changes; lane never changes)
     bool m_using_failover{false};
     std::string m_active_node_ip;
 };
