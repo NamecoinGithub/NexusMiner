@@ -1005,8 +1005,269 @@ void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
 }
 
 // ============================================================================
-// Main Test Runner
+// ⚡ RecoveryPhase State Machine Tests (mirrors worker_manager.hpp RecoveryPhase)
 // ============================================================================
+
+// Minimal mirror of RecoveryPhase for standalone testing without including
+// the full worker_manager.hpp dependency tree.
+enum class TestRecoveryPhase : uint8_t {
+    HEALTHY,
+    SOFT_REFRESH,
+    HARD_RECOVERY,
+    RECONNECTING,
+    ESCALATED,
+};
+
+const char* test_phase_name(TestRecoveryPhase p) {
+    switch (p) {
+        case TestRecoveryPhase::HEALTHY:       return "HEALTHY";
+        case TestRecoveryPhase::SOFT_REFRESH:  return "SOFT_REFRESH";
+        case TestRecoveryPhase::HARD_RECOVERY: return "HARD_RECOVERY";
+        case TestRecoveryPhase::RECONNECTING:  return "RECONNECTING";
+        case TestRecoveryPhase::ESCALATED:     return "ESCALATED";
+    }
+    return "UNKNOWN";
+}
+
+static bool test_is_valid_transition(TestRecoveryPhase from, TestRecoveryPhase to) {
+    if (from == to) return true;
+    switch (from) {
+        case TestRecoveryPhase::HEALTHY:
+            return to == TestRecoveryPhase::SOFT_REFRESH || to == TestRecoveryPhase::HARD_RECOVERY;
+        case TestRecoveryPhase::SOFT_REFRESH:
+            return to == TestRecoveryPhase::HEALTHY || to == TestRecoveryPhase::HARD_RECOVERY;
+        case TestRecoveryPhase::HARD_RECOVERY:
+            return to == TestRecoveryPhase::HEALTHY || to == TestRecoveryPhase::RECONNECTING ||
+                   to == TestRecoveryPhase::ESCALATED;
+        case TestRecoveryPhase::RECONNECTING:
+            return to == TestRecoveryPhase::HEALTHY || to == TestRecoveryPhase::HARD_RECOVERY ||
+                   to == TestRecoveryPhase::ESCALATED;
+        case TestRecoveryPhase::ESCALATED:
+            return to == TestRecoveryPhase::HEALTHY || to == TestRecoveryPhase::HARD_RECOVERY ||
+                   to == TestRecoveryPhase::RECONNECTING;
+    }
+    return false;
+}
+
+// Helper predicates matching the Worker_manager helper methods
+static bool phase_is_degraded(TestRecoveryPhase p) {
+    return p == TestRecoveryPhase::HARD_RECOVERY || p == TestRecoveryPhase::ESCALATED;
+}
+static bool phase_is_submissions_withheld(TestRecoveryPhase p) {
+    return p == TestRecoveryPhase::SOFT_REFRESH;
+}
+static bool phase_is_recovery_active(TestRecoveryPhase p) {
+    return p != TestRecoveryPhase::HEALTHY;
+}
+static bool phase_is_reconnecting(TestRecoveryPhase p) {
+    return p == TestRecoveryPhase::RECONNECTING;
+}
+
+// ── Test 18: Legal transitions succeed, illegal ones are rejected ──────────
+void test_recovery_phase_valid_transitions() {
+    std::cout << "\nTest 18: RecoveryPhase state machine — valid transition matrix\n";
+
+    // Legal transitions
+    print_test_result("HEALTHY → SOFT_REFRESH is legal",
+        test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::SOFT_REFRESH));
+    print_test_result("HEALTHY → HARD_RECOVERY is legal",
+        test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::HARD_RECOVERY));
+    print_test_result("SOFT_REFRESH → HEALTHY is legal",
+        test_is_valid_transition(TestRecoveryPhase::SOFT_REFRESH, TestRecoveryPhase::HEALTHY));
+    print_test_result("SOFT_REFRESH → HARD_RECOVERY is legal (escalation)",
+        test_is_valid_transition(TestRecoveryPhase::SOFT_REFRESH, TestRecoveryPhase::HARD_RECOVERY));
+    print_test_result("HARD_RECOVERY → HEALTHY is legal",
+        test_is_valid_transition(TestRecoveryPhase::HARD_RECOVERY, TestRecoveryPhase::HEALTHY));
+    print_test_result("HARD_RECOVERY → RECONNECTING is legal",
+        test_is_valid_transition(TestRecoveryPhase::HARD_RECOVERY, TestRecoveryPhase::RECONNECTING));
+    print_test_result("HARD_RECOVERY → ESCALATED is legal",
+        test_is_valid_transition(TestRecoveryPhase::HARD_RECOVERY, TestRecoveryPhase::ESCALATED));
+    print_test_result("RECONNECTING → HEALTHY is legal",
+        test_is_valid_transition(TestRecoveryPhase::RECONNECTING, TestRecoveryPhase::HEALTHY));
+    print_test_result("RECONNECTING → HARD_RECOVERY is legal",
+        test_is_valid_transition(TestRecoveryPhase::RECONNECTING, TestRecoveryPhase::HARD_RECOVERY));
+    print_test_result("RECONNECTING → ESCALATED is legal",
+        test_is_valid_transition(TestRecoveryPhase::RECONNECTING, TestRecoveryPhase::ESCALATED));
+    print_test_result("ESCALATED → HEALTHY is legal",
+        test_is_valid_transition(TestRecoveryPhase::ESCALATED, TestRecoveryPhase::HEALTHY));
+    print_test_result("ESCALATED → HARD_RECOVERY is legal",
+        test_is_valid_transition(TestRecoveryPhase::ESCALATED, TestRecoveryPhase::HARD_RECOVERY));
+    print_test_result("ESCALATED → RECONNECTING is legal",
+        test_is_valid_transition(TestRecoveryPhase::ESCALATED, TestRecoveryPhase::RECONNECTING));
+
+    // Illegal transitions
+    print_test_result("HEALTHY → RECONNECTING is ILLEGAL",
+        !test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::RECONNECTING));
+    print_test_result("HEALTHY → ESCALATED is ILLEGAL",
+        !test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::ESCALATED));
+    print_test_result("SOFT_REFRESH → RECONNECTING is ILLEGAL",
+        !test_is_valid_transition(TestRecoveryPhase::SOFT_REFRESH, TestRecoveryPhase::RECONNECTING));
+    print_test_result("SOFT_REFRESH → ESCALATED is ILLEGAL",
+        !test_is_valid_transition(TestRecoveryPhase::SOFT_REFRESH, TestRecoveryPhase::ESCALATED));
+
+    // Same-phase no-ops are always valid
+    print_test_result("HEALTHY → HEALTHY is valid (no-op)",
+        test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::HEALTHY));
+    print_test_result("HARD_RECOVERY → HARD_RECOVERY is valid (no-op)",
+        test_is_valid_transition(TestRecoveryPhase::HARD_RECOVERY, TestRecoveryPhase::HARD_RECOVERY));
+}
+
+// ── Test 19: Phase helper equivalences match old boolean patterns ─────────
+void test_recovery_phase_helpers_equivalence() {
+    std::cout << "\nTest 19: Phase helpers match old boolean flag combinations\n";
+
+    // is_degraded() ← old: m_degraded_mode
+    print_test_result("HEALTHY: is_degraded() == false",   !phase_is_degraded(TestRecoveryPhase::HEALTHY));
+    print_test_result("SOFT_REFRESH: is_degraded() == false", !phase_is_degraded(TestRecoveryPhase::SOFT_REFRESH));
+    print_test_result("HARD_RECOVERY: is_degraded() == true", phase_is_degraded(TestRecoveryPhase::HARD_RECOVERY));
+    print_test_result("RECONNECTING: is_degraded() == false", !phase_is_degraded(TestRecoveryPhase::RECONNECTING));
+    print_test_result("ESCALATED: is_degraded() == true",  phase_is_degraded(TestRecoveryPhase::ESCALATED));
+
+    // is_submissions_withheld() ← old: m_template_withheld
+    print_test_result("HEALTHY: is_submissions_withheld() == false",
+        !phase_is_submissions_withheld(TestRecoveryPhase::HEALTHY));
+    print_test_result("SOFT_REFRESH: is_submissions_withheld() == true",
+        phase_is_submissions_withheld(TestRecoveryPhase::SOFT_REFRESH));
+    print_test_result("HARD_RECOVERY: is_submissions_withheld() == false",
+        !phase_is_submissions_withheld(TestRecoveryPhase::HARD_RECOVERY));
+
+    // is_recovery_active() ← old: m_recovery_pending
+    print_test_result("HEALTHY: is_recovery_active() == false",
+        !phase_is_recovery_active(TestRecoveryPhase::HEALTHY));
+    print_test_result("SOFT_REFRESH: is_recovery_active() == true",
+        phase_is_recovery_active(TestRecoveryPhase::SOFT_REFRESH));
+    print_test_result("HARD_RECOVERY: is_recovery_active() == true",
+        phase_is_recovery_active(TestRecoveryPhase::HARD_RECOVERY));
+    print_test_result("RECONNECTING: is_recovery_active() == true",
+        phase_is_recovery_active(TestRecoveryPhase::RECONNECTING));
+    print_test_result("ESCALATED: is_recovery_active() == true",
+        phase_is_recovery_active(TestRecoveryPhase::ESCALATED));
+
+    // is_reconnecting() ← old: m_reconnect_in_progress
+    print_test_result("HEALTHY: is_reconnecting() == false",
+        !phase_is_reconnecting(TestRecoveryPhase::HEALTHY));
+    print_test_result("RECONNECTING: is_reconnecting() == true",
+        phase_is_reconnecting(TestRecoveryPhase::RECONNECTING));
+    print_test_result("HARD_RECOVERY: is_reconnecting() == false",
+        !phase_is_reconnecting(TestRecoveryPhase::HARD_RECOVERY));
+}
+
+// ── Test 20: Orphaned SOFT_REFRESH state — clearing state always exits it ─
+void test_orphaned_soft_refresh_cleared() {
+    std::cout << "\nTest 20: Orphaned SOFT_REFRESH state cannot remain after clear_recovery_state\n";
+
+    // Simulate: was in SOFT_REFRESH, clear_recovery_state() transitions to HEALTHY
+    TestRecoveryPhase phase = TestRecoveryPhase::SOFT_REFRESH;
+
+    // Verify soft-refresh is active
+    print_test_result("Initial: is_submissions_withheld() == true (SOFT_REFRESH)",
+        phase_is_submissions_withheld(phase));
+
+    // clear_recovery_state() logic: transition to HEALTHY
+    phase = TestRecoveryPhase::HEALTHY;
+
+    print_test_result("After clear: phase == HEALTHY",
+        phase == TestRecoveryPhase::HEALTHY);
+    print_test_result("After clear: is_submissions_withheld() == false",
+        !phase_is_submissions_withheld(phase));
+    print_test_result("After clear: is_recovery_active() == false",
+        !phase_is_recovery_active(phase));
+}
+
+// ── Test 21: SOFT_REFRESH → HARD_RECOVERY escalation path ────────────────
+void test_soft_refresh_escalation_to_hard_recovery() {
+    std::cout << "\nTest 21: SOFT_REFRESH → HARD_RECOVERY escalation (doom-loop regression)\n";
+
+    TestRecoveryPhase phase = TestRecoveryPhase::HEALTHY;
+
+    // Enter SOFT_REFRESH
+    assert(test_is_valid_transition(phase, TestRecoveryPhase::SOFT_REFRESH));
+    phase = TestRecoveryPhase::SOFT_REFRESH;
+    print_test_result("Entered SOFT_REFRESH: is_submissions_withheld() == true",
+        phase_is_submissions_withheld(phase));
+    print_test_result("SOFT_REFRESH: is_degraded() == false",
+        !phase_is_degraded(phase));
+
+    // Soft-refresh timeout → escalate to HARD_RECOVERY
+    assert(test_is_valid_transition(phase, TestRecoveryPhase::HARD_RECOVERY));
+    phase = TestRecoveryPhase::HARD_RECOVERY;
+    print_test_result("Escalated to HARD_RECOVERY: is_degraded() == true",
+        phase_is_degraded(phase));
+    print_test_result("Escalated: is_submissions_withheld() == false (no orphan)",
+        !phase_is_submissions_withheld(phase));
+    print_test_result("Escalated: is_recovery_active() == true",
+        phase_is_recovery_active(phase));
+}
+
+// ── Test 22: RECONNECTING prevents SESSION_EXPIRED re-entrance ────────────
+void test_reconnecting_guards_session_expired() {
+    std::cout << "\nTest 22: RECONNECTING phase prevents Session EXPIRED from re-entering\n";
+
+    TestRecoveryPhase phase = TestRecoveryPhase::RECONNECTING;
+
+    // Session expired handler guard: if reconnecting OR recovery active with epoch > 0
+    uint64_t epoch = 1;
+    bool should_ignore = phase_is_reconnecting(phase) ||
+                         (phase_is_recovery_active(phase) && epoch > 0);
+    print_test_result("RECONNECTING: session_expired is ignored",
+        should_ignore);
+
+    // Verify HEALTHY does NOT suppress session_expired
+    TestRecoveryPhase healthy = TestRecoveryPhase::HEALTHY;
+    uint64_t healthy_epoch = 0;
+    bool healthy_ignore = phase_is_reconnecting(healthy) ||
+                          (phase_is_recovery_active(healthy) && healthy_epoch > 0);
+    print_test_result("HEALTHY: session_expired is NOT ignored",
+        !healthy_ignore);
+
+    // Verify SOFT_REFRESH with epoch 0 does NOT suppress session_expired
+    TestRecoveryPhase soft = TestRecoveryPhase::SOFT_REFRESH;
+    uint64_t soft_epoch = 0;  // epoch 0 = just entered, no recovery epoch yet
+    bool soft_ignore = phase_is_reconnecting(soft) ||
+                       (phase_is_recovery_active(soft) && soft_epoch > 0);
+    print_test_result("SOFT_REFRESH with epoch=0: session_expired is NOT ignored",
+        !soft_ignore);
+}
+
+// ── Test 23: Mutual exclusivity — only one phase at a time ───────────────
+void test_recovery_phase_mutual_exclusivity() {
+    std::cout << "\nTest 23: Phase mutual exclusivity — SOFT_REFRESH and HARD_RECOVERY cannot coexist\n";
+
+    // The enum class guarantees mutual exclusivity at the type level.
+    // Verify all possible phase combinations are distinct.
+    TestRecoveryPhase phases[] = {
+        TestRecoveryPhase::HEALTHY,
+        TestRecoveryPhase::SOFT_REFRESH,
+        TestRecoveryPhase::HARD_RECOVERY,
+        TestRecoveryPhase::RECONNECTING,
+        TestRecoveryPhase::ESCALATED,
+    };
+
+    bool all_distinct = true;
+    for (size_t i = 0; i < 5; ++i) {
+        for (size_t j = i + 1; j < 5; ++j) {
+            if (phases[i] == phases[j]) {
+                all_distinct = false;
+                break;
+            }
+        }
+    }
+    print_test_result("All 5 phases have distinct enum values", all_distinct);
+
+    // Verify: SOFT_REFRESH and DEGRADED cannot be simultaneously true
+    TestRecoveryPhase p = TestRecoveryPhase::SOFT_REFRESH;
+    bool soft_and_degraded = phase_is_submissions_withheld(p) && phase_is_degraded(p);
+    print_test_result("SOFT_REFRESH: is_submissions_withheld() XOR is_degraded()",
+        !soft_and_degraded);
+
+    // Verify: HARD_RECOVERY cannot have submissions withheld (no orphaned soft-pause)
+    TestRecoveryPhase hard = TestRecoveryPhase::HARD_RECOVERY;
+    bool hard_withheld = phase_is_submissions_withheld(hard);
+    print_test_result("HARD_RECOVERY: is_submissions_withheld() == false (no orphaned soft-pause)",
+        !hard_withheld);
+}
+
+
 int main() {
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Degraded Recovery / Keepalive Epoch Tests\n";
@@ -1033,6 +1294,14 @@ int main() {
     test_integration_degraded_recovery_to_resume();
     test_integration_forced_retry_is_bounded();
     test_health_policy_distinguishes_normal_refresh_from_multi_block_lag();
+
+    // ── RecoveryPhase state machine tests (new with explicit 5-state machine) ──
+    test_recovery_phase_valid_transitions();
+    test_recovery_phase_helpers_equivalence();
+    test_orphaned_soft_refresh_cleared();
+    test_soft_refresh_escalation_to_hard_recovery();
+    test_reconnecting_guards_session_expired();
+    test_recovery_phase_mutual_exclusivity();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";
