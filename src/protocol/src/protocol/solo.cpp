@@ -594,7 +594,11 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
                    format_hex8(m_last_known_hash_prev_block));
     m_logger->info("[TEMPLATE ANCHOR] block.nHeight = {} (unified blockchain height)", tmpl->block.nHeight);
 
-    if (snapshot_round_channel_height && m_last_round_status.has_channel_heights) {
+    // The snapshot is only valid/useful while nChannelHeight == 0 (pending finalization).
+    // Once set_channel_height() has been called (effective_channel_height > 0), the snapshot
+    // must remain cleared — any subsequent call to set_template_channel_height_snapshot()
+    // re-poisons the guard and causes false staleness on the next GET_ROUND.
+    if (snapshot_round_channel_height && effective_channel_height == 0 && m_last_round_status.has_channel_heights) {
         uint32_t snapshot_height = m_last_round_status.get_channel_height(m_channel);
         if (snapshot_height > 0) {
             m_template_interface->set_template_channel_height_snapshot(snapshot_height);

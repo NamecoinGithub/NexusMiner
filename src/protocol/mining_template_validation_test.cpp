@@ -1028,6 +1028,38 @@ int main()
     }
 
     // ====================================================================
+    // Test 28: Regression — set_channel_height clears snapshot; subsequent
+    //          GET_ROUND with channel_height = N-1 must NOT fire staleness
+    // ====================================================================
+    std::cout << "\nTest 28: No false staleness after template finalized via set_channel_height" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+
+        // Load a template (nChannelHeight starts at 0 — pending finalization).
+        auto data = create_mock_template(6644208, 0x1d00ffff, 2);
+        tmpl_interface.read_template(data, "test_node");
+
+        // Simulate the stateless path: set_channel_height(N) finalizes the template
+        // and clears the snapshot (m_has_snapshot = false).
+        tmpl_interface.set_channel_height(2344739);
+
+        // Now simulate what finalize_and_feed_current_template() used to do wrong:
+        // attempt to set a snapshot AFTER the template is already finalized.
+        // The defensive guard must reject this call (nChannelHeight > 0).
+        tmpl_interface.set_template_channel_height_snapshot(2344737);
+
+        // The next GET_ROUND arrives with channel_height = 2344738 (tip advanced by 1
+        // but still below the template's target of 2344739).  Before the fix this would
+        // fire because 2344738 > stale-snapshot 2344737.  After the fix the snapshot
+        // was never re-set so check_staleness_by_channel_delta() must return false.
+        bool is_stale = tmpl_interface.check_staleness_by_channel_delta(2344738);
+        print_test_result("No false staleness: GET_ROUND with N-1 does not discard finalized template",
+            !is_stale);
+        print_test_result("Template still valid after check_staleness_by_channel_delta(N-1)",
+            tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
     // Summary
     // ====================================================================
     std::cout << "\n========================================" << std::endl;

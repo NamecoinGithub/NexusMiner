@@ -332,7 +332,13 @@ public:
      * @brief Store channel height snapshot when template is received
      *
      * Used for legacy GET_ROUND delta staleness checks when template
-     * channel height is still pending.
+     * channel height is still pending (nChannelHeight == 0).
+     *
+     * **Invariant:** Must NOT be called once the template has been finalized
+     * via set_channel_height() (i.e., when nChannelHeight > 0). Calling this
+     * after set_channel_height() re-poisons the guard with a stale value and
+     * causes false staleness detection on the very next GET_ROUND, even when
+     * the active template is 100% valid.
      *
      * @param channel_height Current channel height from last GET_ROUND
      */
