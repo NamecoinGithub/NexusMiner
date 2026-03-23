@@ -93,7 +93,7 @@ lane health state.
 | ACK opcode (legacy) | 220 (`0xDC`) |
 | ACK opcode (stateless) | `0xD0DC` |
 | ACK payload | 16 bytes: `session_id (4 LE)` + `lane_health_flags (4 BE)` + `uptime_seconds (4 BE)` + `status_echo_flags (4 BE)` |
-| Send interval | 60 seconds (piggybacked on lane-health-check timer) |
+| Send interval | 300 seconds (piggybacked on lane-health-check timer) |
 | Code location | `Worker_manager::send_session_status_if_due()` |
 
 **Lane health flags** (ACK bytes `[4-7]`):
@@ -108,10 +108,10 @@ lane health state.
 - bit 2 (`0x04`): workers running
 - bit 3 (`0x08`): secondary lane connected
 
-The send interval is hardcoded to 60 seconds, piggybacked on the existing lane-health-check timer (every 30 s) with an internal 60-second gate. Future releases may expose this as a config option:
+The send interval is hardcoded to 300 seconds, piggybacked on the existing lane-health-check timer (every 30 s) with an internal 300-second gate. Future releases may expose this as a config option:
 ```toml
 [network]
-session_status_interval_seconds = 60  # Planned: How often to send SESSION_STATUS queries
+session_status_interval_seconds = 300  # Planned: How often to send SESSION_STATUS queries
 ```
 
 ### GET_BLOCK Rate Limiter
