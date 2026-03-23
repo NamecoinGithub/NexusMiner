@@ -45,8 +45,10 @@ GET_BLOCK rate limiter.
 `DualConnectionManager` is a lightweight value member of `Worker_manager` that tracks:
 
 - **Lane liveness** — whether the stateless and/or legacy lanes are currently up
-- **Mining lane** — the protocol lane the miner was configured to mine on; set once at
-  initial connection time and **never changed** for the session lifetime
+- **Mining lane** — the protocol lane the miner was configured to mine on; stamped once
+  by `NodeSession::connect_primary()` on first connection (guarded by
+  `mining_lane() == ProtocolLane::UNKNOWN`) and **never changed** for the session
+  lifetime — not during reconnection, not during failover
 - **One-shot bypass flags** — armed when a lane fails, consumed on the first GET_BLOCK
   sent on that **same lane** when it reconnects (allows immediate recovery without
   triggering the node's rate limiter)

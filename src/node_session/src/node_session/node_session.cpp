@@ -88,6 +88,14 @@ void NodeSession::connect_primary(const network::Endpoint& node_endpoint, Connec
                         self->m_logger->info("[NodeSession:{}] Primary lane: {}",
                                            self->m_node_label,
                                            (lane == ProtocolLane::STATELESS ? "STATELESS" : "LEGACY"));
+
+                        // Stamp the immutable mining lane on first connection only
+                        if (self->m_dcm && self->m_dcm->mining_lane() == ProtocolLane::UNKNOWN) {
+                            self->m_dcm->set_mining_lane(lane);
+                            self->m_logger->info("[NodeSession:{}] Mining lane stamped: {} (immutable for session lifetime)",
+                                               self->m_node_label,
+                                               (lane == ProtocolLane::STATELESS ? "STATELESS" : "LEGACY"));
+                        }
                     }
 
                     // Start authentication
@@ -401,6 +409,14 @@ void NodeSession::handle_primary_connection_result(network::Result::Code result,
             m_logger->info("[NodeSession:{}] Primary lane: {}",
                           m_node_label,
                           (lane == ProtocolLane::STATELESS ? "STATELESS" : "LEGACY"));
+
+            // Stamp the immutable mining lane on first connection only
+            if (m_dcm && m_dcm->mining_lane() == ProtocolLane::UNKNOWN) {
+                m_dcm->set_mining_lane(lane);
+                m_logger->info("[NodeSession:{}] Mining lane stamped: {} (immutable for session lifetime)",
+                              m_node_label,
+                              (lane == ProtocolLane::STATELESS ? "STATELESS" : "LEGACY"));
+            }
         }
 
         // Start authentication
