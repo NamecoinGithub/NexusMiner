@@ -632,13 +632,6 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     return true;
 }
 
-void Solo::mark_authoritative_soft_refresh(const std::string& reason)
-{
-    if (m_session_context) {
-        m_session_context->mark_soft_refresh_requested(reason);
-    }
-}
-
 void Solo::mark_authoritative_recovery_required(const std::string& reason)
 {
     if (m_session_context) {
@@ -2561,9 +2554,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                             get_block_sent_in_handler = true;
-                            if (m_soft_refresh_handler) {
-                                mark_authoritative_recovery_required("get_round_height_parity");
-                            }
+                            mark_authoritative_recovery_required("get_round_height_parity");
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent (height parity backup)");
                         } else {
                             m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request (height parity)");
@@ -2737,9 +2728,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                             get_block_sent_in_handler = true;
-                            if (m_soft_refresh_handler) {
-                                mark_authoritative_recovery_required("get_round_height_parity");
-                            }
+                            mark_authoritative_recovery_required("get_round_height_parity");
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent (height parity backup)");
                         } else {
                             m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request (height parity)");
@@ -3455,14 +3444,6 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                     // timestamp from the prior request that targeted the old canonical tip.
                     reset_get_block_dedup_state();
                     m_recovery_handler();
-                }
-            },
-            [this]() {
-                mark_authoritative_soft_refresh("same_height_push_tip_replacement");
-                m_logger->info("[Solo] ⚡ Same-height PUSH hashPrevBlock replacement — soft refresh requested; awaiting fresh template cross-check before degraded-mode decisions");
-                reset_get_block_dedup_state();
-                if (m_soft_refresh_handler) {
-                    m_soft_refresh_handler();
                 }
             });
 }

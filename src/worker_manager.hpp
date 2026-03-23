@@ -14,11 +14,9 @@
 #include "Util/include/exponential_backoff.h"
 #include "protocol/inc/protocol/protocol_constants.hpp"
 #include "node_session/inc/node_session/node_session.hpp"
-#include <asio/steady_timer.hpp>
 
 #include <memory>
 #include <array>
-#include <deque>
 #include <mutex>
 #include <atomic>
 
@@ -35,6 +33,13 @@ class ColinAgent;
 class Worker_manager : public std::enable_shared_from_this<Worker_manager>
 {
 public:
+
+    /// 3-state mining state machine (replaces m_degraded_mode + m_recovery_pending + m_template_withheld).
+    enum class MiningState : uint8_t {
+        MINING,      ///< Workers running, template valid, submissions allowed
+        REFRESHING,  ///< GET_BLOCK sent, workers KEEP mining current template, submissions allowed
+        STOPPED      ///< No valid template, workers halted, periodic retry every 30s
+    };
 
     using Config = config::Config;
 
@@ -69,24 +74,6 @@ public:
 
 private:
 
-    enum class GetBlockSuppressionReason : uint8_t {
-        NONE = 0,
-        DUPLICATE_WINDOW,
-        REQUEST_WORK_EMPTY,
-        UNAUTHENTICATED,
-        BACKPRESSURE,
-        RATE_LIMIT_LOCAL,
-        COUNT
-    };
-
-    static const char* suppression_reason_name(GetBlockSuppressionReason reason);
-    void log_get_block_decision(bool sent, bool forced_retry, GetBlockSuppressionReason reason, const char* context);
-    void schedule_forced_recovery_retry(const char* trigger_reason);
-    int64_t next_forced_retry_jitter_ms();
-    bool has_valid_template_available(const std::shared_ptr<protocol::Solo>& solo_protocol) const;
-    bool can_send_forced_retry(std::chrono::steady_clock::time_point now);
-    void prune_forced_retry_window(std::chrono::steady_clock::time_point now);
-
     void create_stats_printers();
     void create_workers();
     void create_workers_locked();
@@ -96,31 +83,26 @@ private:
     
     // Worker control methods for degraded mode
     void stop_all_workers();
-    /**
-     * @param bForce When true, marks a new recovery epoch so check_template_health()
-     *               knows recovery is pending. Pass true from staleness recovery paths
-     *               where the template has already been discarded and workers stopped.
-     *               Pass false (default) from the periodic health-check timer.
-     */
     void retry_template_request(bool bForce = false);
-    void restart_recovery_window(const char* reason);
 
-    /// Mark that a hard GET_BLOCK recovery is now in progress.
-    /// Sets m_recovery_pending, increments m_recovery_epoch, records start time.
-    /// Called from:
-    ///  - the recovery_handler callback (push handler detected channel-stale staleness),
-    ///  - retry_template_request(true) (health monitor or validation failure path).
-    void mark_recovery_initiated(const char* reason);
+    /// Transition to a new MiningState with logging.
+    /// Only stops workers on transition TO STOPPED.
+    void transition_to(MiningState new_state, const char* reason);
 
-    /// Mark that a soft refresh is now in progress.
-    /// Sets m_recovery_pending, increments m_recovery_epoch, records start time,
-    /// and withholds submissions without stopping workers or entering degraded mode.
-    void mark_soft_refresh_requested(const char* reason);
+    /// Helper: seconds elapsed in current state.
+    int64_t seconds_in_state() const;
 
-    /// Clear degraded mode and all recovery state after a valid template is delivered to workers.
-    /// Called from the template feed handler when workers_fed > 0, and as a belt-and-suspenders
-    /// guard from check_template_health() when a valid template exists but m_degraded_mode is set.
-    void clear_recovery_state();
+    /// Helper: seconds since last GET_BLOCK was sent.
+    int64_t seconds_since_last_get_block() const;
+
+    /// Send GET_BLOCK via retry_template_request.
+    void send_get_block(bool force = false);
+
+    /// Create workers and feed them the current template (used on STOPPED → MINING).
+    void create_and_feed_workers();
+
+    /// Static helper to convert MiningState to string.
+    static const char* state_name(MiningState s);
 
     void retry_connect(network::Endpoint const& wallet_endpoint);
 
@@ -140,70 +122,13 @@ private:
     // Failover NodeSession (optional secondary node)
     std::shared_ptr<NodeSession> m_failover_node_session;
     
-    // Degraded mode flag - set when mining is stopped due to invalid template
-    bool m_degraded_mode;
+    // ── 3-state mining state machine ────────────────────────────────────────
+    MiningState m_mining_state{MiningState::STOPPED};
+    std::chrono::steady_clock::time_point m_state_entered_at{};
+    std::chrono::steady_clock::time_point m_last_get_block_at{};  // single resend throttle
+    uint64_t m_epoch{0};  // monotonic counter, incremented on every →STOPPED transition
 
-    // Soft-pause flag (Priority 1 — "Pause not Destroy" for same-height tip replacement):
-    // When true, workers keep running their sieve but block submissions are
-    // suppressed. Set on soft refresh instead of calling stop_all_workers().
-    // Cleared when a fresh template arrives.  Only escalated to full worker stop
-    // if the recovery window expires without a fresh template.
-    bool m_template_withheld{false};
-
-    // ── Recovery state (doom-loop prevention) ────────────────────────────────
-    // Set when a channel-stale GET_BLOCK recovery has been initiated (from push
-    // handler or health monitor) and no fresh template has arrived yet.
-    // Prevents check_template_health() from calling stop_all_workers()
-    // redundantly during the recovery window while awaiting the GET_BLOCK reply.
-    bool m_recovery_pending{false};
-
-    // Monotonically increasing counter: incremented each time a new recovery is
-    // initiated.  Allows per-epoch bypass tracking (one GET_BLOCK forced send per
-    // recovery epoch without triggering node-side rate-limit bans).
-    uint64_t m_recovery_epoch{0};
-
-    // Wall-clock time when the current recovery epoch started.
-    // Recovery window = 60 s; if no template arrives within that window the
-    // health monitor escalates (stop workers → hard recovery).
-    std::chrono::steady_clock::time_point m_recovery_started_at{};
-
-    // Time when the most recent recovery completed (clear_recovery_state() was called).
-    // Used as a hold-off: push-resubscription is suppressed within the first 60 s
-    // after recovery to avoid an immediate MINER_READY that triggers a duplicate
-    // template pipeline restart.
-    std::chrono::steady_clock::time_point m_last_recovery_completed_at{};
-
-    // Time when degraded mode was first entered in the current outage.
-    // Set once by stop_all_workers() (first entry only); cleared by clear_recovery_state().
-    // Used by the escape ladder in check_template_health() to enforce hard time-based
-    // stage escalation (Stage 1 / Stage 2 / Stage 3 / hard limit).
-    std::chrono::steady_clock::time_point m_degraded_since{};
-
-    // Time of the most recent GET_BLOCK sent by the health monitor during this
-    // recovery epoch.  Used to rate-limit health-monitor resends to one per
-    // RECOVERY_RESEND_INTERVAL (10 s) without stopping workers each time.
-    std::chrono::steady_clock::time_point m_recovery_last_get_block_sent_at{};
-
-    // Time of the most recent GET_BLOCK that was CONFIRMED transmitted (payload was
-    // non-null and non-empty, and transmit() was called).  Unlike the legacy
-    // m_recovery_last_get_block_sent_at, this is never updated for rate-limited attempts.
-    // Used as the authoritative rate-cap reference in check_template_health().
-    std::chrono::steady_clock::time_point m_recovery_last_get_block_transmitted_at{};
-
-    // True once at least one GET_BLOCK has been CONFIRMED transmitted in the current
-    // recovery epoch.  Reset to false at the start of each new recovery epoch.
-    // Used by check_template_health() to detect the doom-loop symptom where every
-    // GET_BLOCK attempt is rate-limited and the node never receives the request.
-    bool m_recovery_get_block_transmitted{false};
-    std::chrono::steady_clock::time_point m_next_forced_retry_due{};
-    std::deque<std::chrono::steady_clock::time_point> m_forced_retry_send_timestamps{};
-    std::shared_ptr<asio::steady_timer> m_forced_retry_timer{};
-    bool m_forced_retry_timer_pending{false};
-    uint64_t m_forced_retry_timer_token{0};
-    GetBlockSuppressionReason m_last_get_block_suppression_reason{GetBlockSuppressionReason::NONE};
-    uint64_t m_get_block_sent_total{0};
-    std::array<uint64_t, static_cast<size_t>(GetBlockSuppressionReason::COUNT)> m_get_block_suppressed_total{};
-    uint64_t m_get_block_forced_retry_total{0};
+    // Statistics (kept for observability)
     uint64_t m_degraded_enter_total{0};
     uint64_t m_degraded_exit_total{0};
     uint64_t m_time_in_degraded_ms{0};
@@ -254,11 +179,6 @@ private:
     // Returns the best known keepalive interval: node-advertised if received, else config default.
     uint16_t get_effective_keepalive_interval() const;
 
-    // Time of the most recent escalation (epoch N → epoch N+1: stop workers + hard recovery).
-    // Used to prevent re-escalation within MIN_ESCALATION_INTERVAL_SECONDS of the previous
-    // escalation, giving the new GET_BLOCK time to be answered before workers are stopped again.
-    std::chrono::steady_clock::time_point m_last_escalation_at{};
-
     std::vector<std::shared_ptr<stats::Printer>> m_stats_printers;
     std::vector<std::shared_ptr<Worker>> m_workers;
 
@@ -274,11 +194,6 @@ private:
     // Serialises the creation path in set_block_handler with the destruction
     // path in stop_all_workers() so they cannot interleave on m_workers.
     std::mutex m_worker_mutex;
-
-    // Per-epoch idempotency key: set after create_workers() succeeds in the
-    // degraded-mode guard; checked before every subsequent creation attempt.
-    // Reset in stop_all_workers() and clear_recovery_state().
-    bool m_recovery_workers_spawned{false};
 
     // ── Three-tier mined-block confirmation cache ────────────────────────────
     // Tier 1: last 5 mined blocks (confirmation tracking active)
