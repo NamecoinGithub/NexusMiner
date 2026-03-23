@@ -1953,63 +1953,17 @@ void Worker_manager::check_template_health()
                            push_recent ? "YES" : "NO");
 
             // ── Hard limit: reconnect after DEGRADED_MODE_HARD_LIMIT_SECONDS ─────────────────
-            // But only if push notifications are also stale — a recent push proves the TCP
-            // connection is alive and the node is actively communicating. In that case,
-            // escalate to a full in-band re-authentication instead of tearing down the live
-            // session. A miner that is still degraded after 300s despite recent push traffic is
-            // considered stalled; GET_BLOCK retries are no longer sufficient.
+            // When push is live the policy holds the session (force_reauth and force_reconnect
+            // are both false) — the miner is still actively receiving block notifications and
+            // should keep mining.  Only a genuine dead session (no push, hard limit exceeded)
+            // triggers a TCP reconnect.
             const auto hard_limit_decision = protocol::SessionStatusPolicy::evaluate_degraded_session({
                 degraded_duration,
                 protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS,
                 push_recent
             });
-            if (hard_limit_decision.force_reauth) {
-                m_logger->error("[Worker_manager] ⛔ DEGRADED MODE HARD LIMIT ({}s > {}s) — "
-                               "{}; push received {}s ago, forcing full in-band re-auth instead of reconnect",
-                               degraded_duration,
-                               protocol::ProtocolConstants::DEGRADED_MODE_HARD_LIMIT_SECONDS,
-                               hard_limit_decision.reason,
-                               since_push_s);
-                // Attempt full re-authentication on the existing TCP connection.
-                // Even if local auth still says "authenticated", being degraded for >300s
-                // while push traffic is alive means the session is stalled and must be
-                // restarted cleanly rather than retried with GET_BLOCK alone.
-                if (m_primary_node_session) {
-                    auto primary_protocol = m_primary_node_session->get_primary_protocol();
-                    if (primary_protocol) {
-                        double in_flight_s = primary_protocol->auth_in_flight_seconds();
-                        constexpr double AUTH_STALE_THRESHOLD_S = 10.0;
-                        if (in_flight_s > 0.0 && in_flight_s <= AUTH_STALE_THRESHOLD_S) {
-                            m_logger->info("[Worker_manager] Hard-limit full re-auth already in flight ({:.1f}s < {}s) — "
-                                           "skipping duplicate login()",
-                                           in_flight_s, AUTH_STALE_THRESHOLD_S);
-                            return;
-                        }
-                        if (in_flight_s > AUTH_STALE_THRESHOLD_S) {
-                            m_logger->warn("[Worker_manager] Hard-limit full re-auth in flight but stale ({:.1f}s > {}s) — "
-                                           "resetting auth state before retry",
-                                           in_flight_s, AUTH_STALE_THRESHOLD_S);
-                        }
-                        primary_protocol->reset_auth_state();
-                        auto auth_payload = primary_protocol->login([weak_self = weak_from_this()](bool login_result) {
-                            auto self = weak_self.lock();
-                            if (!self) return;
-                            if (!login_result) {
-                                self->m_logger->error("[Worker_manager] Hard-limit re-auth login() failed");
-                            } else {
-                                self->m_logger->info("[Worker_manager] Hard-limit re-auth login() sent, "
-                                                     "awaiting MINER_AUTH_RESULT");
-                            }
-                        });
-                        if (auth_payload && !auth_payload->empty()) {
-                            m_primary_node_session->transmit(auth_payload);
-                        } else {
-                            m_logger->error("[Worker_manager] Hard-limit re-auth: failed to generate payload");
-                        }
-                    }
-                }
-                return;
-            }
+            // hard_limit_decision.force_reauth when push_recent is no longer possible after
+            // evaluate_degraded_session fix — push-live sessions are held, not re-authed.
             if (hard_limit_decision.force_reconnect) {
                 m_logger->error("[Worker_manager] ⛔ DEGRADED MODE HARD LIMIT ({}s > {}s) — "
                                "{}; forcing full TCP reconnect "
