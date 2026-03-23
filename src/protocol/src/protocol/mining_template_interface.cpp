@@ -1271,6 +1271,14 @@ void MiningTemplateInterface::discard_template_unsafe(const std::string& reason)
     m_last_feed_height = 0;     // Reset last feed height to default
     m_last_feed_prev_hash = {}; // Reset last prev-hash used for duplicate detection
 
+    // Reset the unified-height baseline so the next template passes the height sanity check
+    // regardless of how many blocks the chain advanced while the miner was in degraded mode.
+    // Without this reset, validate_template() rejects every BLOCK_DATA response with
+    // "Corrupted Height Detected" (abs_height_delta > 100) when the chain has advanced more
+    // than 100 unified blocks during a degraded-mode recovery period, causing
+    // get_block_sent_total to increment indefinitely with zero successful template installations.
+    m_last_unified_height = 0;
+
     if (m_current_template.state == TemplateState::EMPTY) {
         m_logger->debug("[TemplateInterface] No template to discard");
         return;

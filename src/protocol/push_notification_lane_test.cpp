@@ -415,7 +415,9 @@ int main()
             }
             if (tip_moved) {
                 d.request_work_called = true;
-                d.soft_refresh_triggered = true;
+                // Soft refresh is NOT triggered for cross-channel tip advances.
+                // The current channel template is still valid; workers keep submitting.
+                // (d.soft_refresh_triggered stays false)
             }
             return d;
         };
@@ -526,7 +528,7 @@ int main()
         }
 
         // Scenario H: Unified tip moved on another channel
-        // Expected: keep template, request work, withhold submits via soft refresh
+        // Expected: keep template valid, request work opportunistically, do NOT withhold submissions
         {
             auto d = simulate_handler(/*stale=*/false, /*blocks_behind=*/0,
                                        /*has_hash=*/true, /*hash_matches=*/true,
@@ -536,8 +538,8 @@ int main()
                 d.request_work_called);
             print_test_result("Scenario H2: Tip moved → discard_template NOT called",
                 !d.discard_template_called);
-            print_test_result("Scenario H3: Tip moved → soft refresh triggered",
-                d.soft_refresh_triggered);
+            print_test_result("Scenario H3: Tip moved → soft refresh NOT triggered (informational only)",
+                !d.soft_refresh_triggered);
             print_test_result("Scenario H4: Tip moved → hard recovery NOT triggered",
                 !d.recovery_triggered);
         }
@@ -791,7 +793,7 @@ int main()
 
         print_test_result("Tip moved requests fresh work", request_work_called);
         print_test_result("Tip moved keeps active template valid", tmpl_interface.has_valid_template());
-        print_test_result("Tip moved notifies soft-refresh path", soft_refresh_called);
+        print_test_result("Tip moved does NOT notify soft-refresh (informational only)", !soft_refresh_called);
         print_test_result("Tip moved does not notify hard recovery path", !recovery_called);
     }
 

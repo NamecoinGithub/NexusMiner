@@ -486,11 +486,13 @@ void test_authoritative_soft_refresh_backfills_local_state() {
 //          escalation until the replacement-template window actually times out.
 // ============================================================================
 void test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout() {
-    std::cout << "\nTest 4f: tip_moved soft refresh defers HEIGHT_DRIFT stop until timeout\n";
-    // Use a representative 60-second soft-refresh window here: this test validates
-    // the state-machine ordering (soft refresh first, degraded only after timeout),
-    // not the exact per-channel production timeout constant.
-    constexpr int64_t RECOVERY_WINDOW_SECONDS = 60;
+    std::cout << "\nTest 4f: tip_moved requests fresh template without halting submissions\n";
+    // KEY CHANGE: is_tip_moved() no longer triggers soft refresh.
+    // Cross-channel tip advances are informational — the current channel template
+    // is still valid.  Workers keep mining AND submitting on the current template.
+    // A fresh GET_BLOCK is requested opportunistically so hashPrevBlock stays current.
+    // The HEIGHT_DRIFT guard still fires on the next tick if unified drift exceeds
+    // the threshold and no new template has arrived.
     constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
 
     struct HealthState {
@@ -501,31 +503,19 @@ void test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout() {
         bool stop_workers{false};
         uint64_t m_recovery_epoch{0};
 
-        void tick(bool tip_moved, uint32_t unified_drift, int64_t recovery_elapsed_s) {
+        void tick(bool tip_moved, uint32_t unified_drift, int64_t /*recovery_elapsed_s*/) {
             request_refresh = false;
             stop_workers = false;
 
-            if (m_template_withheld && m_recovery_pending && !m_degraded_mode) {
-                if (recovery_elapsed_s < RECOVERY_WINDOW_SECONDS) {
-                    request_refresh = true;
-                    return;
-                }
-                m_template_withheld = false;
-                m_degraded_mode = true;
-                stop_workers = true;
-                return;
-            }
-
+            // NEW: tip_moved no longer starts a soft refresh.
+            // It just requests a fresh template opportunistically and returns.
             if (tip_moved) {
-                if (!m_recovery_pending) {
-                    ++m_recovery_epoch;
-                    m_recovery_pending = true;
-                }
-                m_template_withheld = true;
                 request_refresh = true;
+                // m_template_withheld stays false — submissions are NOT withheld
                 return;
             }
 
+            // HEIGHT_DRIFT fires on subsequent ticks when no new template has arrived
             if (unified_drift > UNIFIED_DRIFT_THRESHOLD) {
                 m_degraded_mode = true;
                 stop_workers = true;
@@ -535,18 +525,14 @@ void test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout() {
 
     HealthState state;
     state.tick(/*tip_moved=*/true, /*unified_drift=*/7, /*recovery_elapsed_s=*/0);
-    print_test_result("tip_moved starts a soft refresh instead of stopping workers",
+    print_test_result("tip_moved requests fresh template without stopping workers",
                       state.request_refresh && !state.stop_workers && !state.m_degraded_mode);
-    print_test_result("tip_moved withholds submissions while replacement is fetched",
-                      state.m_template_withheld && state.m_recovery_pending && state.m_recovery_epoch == 1);
+    print_test_result("tip_moved does NOT withhold submissions (workers keep submitting)",
+                      !state.m_template_withheld && !state.m_recovery_pending);
 
     state.tick(/*tip_moved=*/false, /*unified_drift=*/7, /*recovery_elapsed_s=*/10);
-    print_test_result("Soft refresh keeps retrying while unified drift grows inside the window",
-                      state.request_refresh && !state.stop_workers && !state.m_degraded_mode);
-
-    state.tick(/*tip_moved=*/false, /*unified_drift=*/7, /*recovery_elapsed_s=*/RECOVERY_WINDOW_SECONDS + 1);
-    print_test_result("Only the soft-refresh timeout escalates into degraded mode",
-                      state.stop_workers && state.m_degraded_mode && !state.m_template_withheld);
+    print_test_result("HEIGHT_DRIFT fires on next tick when drift exceeds threshold and tip no longer moved",
+                      state.stop_workers && state.m_degraded_mode);
 }
 
 // ============================================================================

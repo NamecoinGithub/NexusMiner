@@ -2279,19 +2279,20 @@ void Worker_manager::check_template_health()
         }
     }
 
-    // Unified tip movement without channel staleness is the normal cross-channel
-    // refresh path: withhold submissions and fetch a replacement template first.
-    // Do not let the HEIGHT_DRIFT hard-stop path bypass this softer recovery mode.
+    // Unified tip moved on another channel (cross-channel advance) but the current
+    // channel template is still valid (is_template_stale() returned false above).
+    // Request a fresh template opportunistically so hashPrevBlock stays current,
+    // but do NOT set m_template_withheld or m_recovery_pending — the current
+    // template is still mineable and workers should keep submitting.
+    //
+    // Calling mark_soft_refresh_requested() here (the old behaviour) was wrong
+    // because it set m_template_withheld=true and m_recovery_pending=true for a
+    // template that is still channel-valid, creating a recovery cycle that could
+    // never resolve if the chain advanced >100 unified blocks (height sanity check
+    // in validate_template() would then reject every incoming BLOCK_DATA response).
     if (ht_snap.is_tip_moved()) {
-        bool had_pending = m_recovery_pending;
-        mark_soft_refresh_requested("health_monitor_tip_moved");
-        if (!had_pending) {
-            m_logger->info("[Worker_manager] ⚡ Unified tip moved (template_unified_height {} -> unified_height {}) — requesting refresh without degraded-mode escalation",
-                           ht_snap.template_unified_height, ht_snap.unified_height);
-        } else {
-            m_logger->debug("[Worker_manager] Unified tip still ahead during soft refresh (template_unified_height {} -> unified_height {}, epoch {})",
-                            ht_snap.template_unified_height, ht_snap.unified_height, m_recovery_epoch);
-        }
+        m_logger->debug("[Worker_manager] Unified tip moved (template_unified_height {} → unified_height {}) — requesting fresh template; workers continue on valid channel template",
+                       ht_snap.template_unified_height, ht_snap.unified_height);
         retry_template_request(false);
         return;
     }
