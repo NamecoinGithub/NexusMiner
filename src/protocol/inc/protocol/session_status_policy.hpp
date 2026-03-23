@@ -85,15 +85,14 @@ public:
     {
         SessionStatusDecision decision;
         decision.accept_ack = true;
-
+        // force_reauth and mark_degraded intentionally remain false:
+        // SESSION_STATUS is a telemetry probe — a single bad payload must never
+        // kill mining workers.  PUSH notification liveness is the authoritative signal.
         if (input.uptime_seconds == 0 || !input.lane_authenticated) {
-            decision.force_reauth = true;
-            decision.mark_degraded = true;
-            decision.reason = "ack reported expired or unauthenticated session";
+            decision.reason = "ack reported expired or unauthenticated session (diagnostic only -- PUSH is authoritative)";
         } else {
             decision.reason = "ack reported healthy authenticated session";
         }
-
         return decision;
     }
 
