@@ -55,6 +55,66 @@ void print_test_result(const char* name, bool passed) {
 }
 
 // ============================================================================
+// ⚡ TestRecoveryPhase — minimal mirror of worker_manager RecoveryPhase enum
+// Defined here so all tests can use it without including worker_manager.hpp.
+// ============================================================================
+
+// Minimal mirror of RecoveryPhase for standalone testing without including
+// the full worker_manager.hpp dependency tree.
+enum class TestRecoveryPhase : uint8_t {
+    HEALTHY,
+    SOFT_REFRESH,
+    HARD_RECOVERY,
+    RECONNECTING,
+    ESCALATED,
+};
+
+const char* test_phase_name(TestRecoveryPhase p) {
+    switch (p) {
+        case TestRecoveryPhase::HEALTHY:       return "HEALTHY";
+        case TestRecoveryPhase::SOFT_REFRESH:  return "SOFT_REFRESH";
+        case TestRecoveryPhase::HARD_RECOVERY: return "HARD_RECOVERY";
+        case TestRecoveryPhase::RECONNECTING:  return "RECONNECTING";
+        case TestRecoveryPhase::ESCALATED:     return "ESCALATED";
+    }
+    return "UNKNOWN";
+}
+
+static bool test_is_valid_transition(TestRecoveryPhase from, TestRecoveryPhase to) {
+    if (from == to) return true;
+    switch (from) {
+        case TestRecoveryPhase::HEALTHY:
+            return to == TestRecoveryPhase::SOFT_REFRESH || to == TestRecoveryPhase::HARD_RECOVERY;
+        case TestRecoveryPhase::SOFT_REFRESH:
+            return to == TestRecoveryPhase::HEALTHY || to == TestRecoveryPhase::HARD_RECOVERY;
+        case TestRecoveryPhase::HARD_RECOVERY:
+            return to == TestRecoveryPhase::HEALTHY || to == TestRecoveryPhase::RECONNECTING ||
+                   to == TestRecoveryPhase::ESCALATED;
+        case TestRecoveryPhase::RECONNECTING:
+            return to == TestRecoveryPhase::HEALTHY || to == TestRecoveryPhase::HARD_RECOVERY ||
+                   to == TestRecoveryPhase::ESCALATED;
+        case TestRecoveryPhase::ESCALATED:
+            return to == TestRecoveryPhase::HEALTHY || to == TestRecoveryPhase::HARD_RECOVERY ||
+                   to == TestRecoveryPhase::RECONNECTING;
+    }
+    return false;
+}
+
+// Helper predicates matching the Worker_manager helper methods
+static bool phase_is_degraded(TestRecoveryPhase p) {
+    return p == TestRecoveryPhase::HARD_RECOVERY || p == TestRecoveryPhase::ESCALATED;
+}
+static bool phase_is_submissions_withheld(TestRecoveryPhase p) {
+    return p == TestRecoveryPhase::SOFT_REFRESH;
+}
+static bool phase_is_recovery_active(TestRecoveryPhase p) {
+    return p != TestRecoveryPhase::HEALTHY;
+}
+static bool phase_is_reconnecting(TestRecoveryPhase p) {
+    return p == TestRecoveryPhase::RECONNECTING;
+}
+
+// ============================================================================
 // Test 1: Keepalive ACK update across epoch change — old-epoch ack invalidated
 // ============================================================================
 void test_keepalive_ack_invalidated_on_epoch_change() {
@@ -131,31 +191,31 @@ void test_channel_advance_stale_template_transition() {
 void test_recovery_pending_debounce_idempotent() {
     std::cout << "\nTest 3: Recovery-pending debounce — multiple mark_recovery calls are idempotent\n";
 
-    // Simulate the mark_recovery_initiated() logic directly
+    // Simulate the mark_recovery_initiated() logic using the 5-state RecoveryPhase machine
     struct RecoveryTracker {
-        bool m_recovery_pending{false};
-        int  m_recovery_epoch{0};
-        std::chrono::steady_clock::time_point m_recovery_started_at{};
+        TestRecoveryPhase phase{TestRecoveryPhase::HEALTHY};
+        uint64_t epoch{0};
+        std::chrono::steady_clock::time_point entered_at{};
         std::vector<std::string> m_log;
 
-        // Mirrors Worker_manager::mark_recovery_initiated()
+        // Mirrors Worker_manager::mark_recovery_initiated() / transition_to(HARD_RECOVERY)
         void initiate(const char* reason) {
-            if (m_recovery_pending) {
+            if (phase_is_recovery_active(phase)) {
                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::steady_clock::now() - m_recovery_started_at).count();
-                m_log.push_back("NOOP: already pending epoch=" + std::to_string(m_recovery_epoch)
+                    std::chrono::steady_clock::now() - entered_at).count();
+                m_log.push_back("NOOP: already pending epoch=" + std::to_string(epoch)
                                 + " elapsed=" + std::to_string(elapsed) + "s reason=" + reason);
                 return;
             }
-            ++m_recovery_epoch;
-            m_recovery_pending = true;
-            m_recovery_started_at = std::chrono::steady_clock::now();
-            m_log.push_back("STARTED: epoch=" + std::to_string(m_recovery_epoch) + " reason=" + reason);
+            ++epoch;
+            phase = TestRecoveryPhase::HARD_RECOVERY;
+            entered_at = std::chrono::steady_clock::now();
+            m_log.push_back("STARTED: epoch=" + std::to_string(epoch) + " reason=" + reason);
         }
 
         void clear() {
-            m_recovery_pending = false;
-            m_log.push_back("CLEARED: epoch=" + std::to_string(m_recovery_epoch));
+            phase = TestRecoveryPhase::HEALTHY;
+            m_log.push_back("CLEARED: epoch=" + std::to_string(epoch));
         }
     };
 
@@ -164,17 +224,17 @@ void test_recovery_pending_debounce_idempotent() {
     // First initiation from push handler
     rt.initiate("push_staleness");
     print_test_result("First initiation starts recovery (epoch=1)",
-                      rt.m_recovery_epoch == 1 && rt.m_recovery_pending);
+                      rt.epoch == 1 && phase_is_recovery_active(rt.phase));
 
     // Second initiation from health monitor (same staleness event)
     rt.initiate("health_monitor_channel_stale");
     print_test_result("Second initiation is a no-op (epoch still 1)",
-                      rt.m_recovery_epoch == 1 && rt.m_recovery_pending);
+                      rt.epoch == 1 && phase_is_recovery_active(rt.phase));
 
     // Third initiation from different source
     rt.initiate("health_monitor_or_validation");
     print_test_result("Third initiation is still a no-op (epoch still 1)",
-                      rt.m_recovery_epoch == 1 && rt.m_recovery_pending);
+                      rt.epoch == 1 && phase_is_recovery_active(rt.phase));
 
     print_test_result("All initiation calls produced at least one STARTED entry",
                       std::any_of(rt.m_log.begin(), rt.m_log.end(),
@@ -189,7 +249,7 @@ void test_recovery_pending_debounce_idempotent() {
     rt.clear();
     rt.initiate("escalation_hard_recovery");
     print_test_result("After clear, new initiation produces epoch=2",
-                      rt.m_recovery_epoch == 2 && rt.m_recovery_pending);
+                      rt.epoch == 2 && phase_is_recovery_active(rt.phase));
 }
 
 // ============================================================================
@@ -312,55 +372,50 @@ void test_same_height_soft_refresh_escalates_only_after_timeout() {
     constexpr int64_t TIMEOUT_TEST_SECONDS = RECOVERY_WINDOW_SECONDS + 1;
 
     struct RecoveryTracker {
-        bool m_degraded_mode{false};
-        bool m_template_withheld{false};
-        bool m_workers_running{true};
-        bool m_recovery_pending{false};
-        uint64_t m_recovery_epoch{0};
-        std::chrono::steady_clock::time_point m_recovery_started_at{};
+        TestRecoveryPhase phase{TestRecoveryPhase::HEALTHY};
+        uint64_t epoch{0};
+        std::chrono::steady_clock::time_point entered_at{};
         std::string authoritative_recovery_reason;
         std::vector<std::string> m_log;
 
         void start_soft_refresh(const std::string& reason) {
-            ++m_recovery_epoch;
-            m_recovery_pending = true;
-            m_template_withheld = true;
-            m_recovery_started_at = std::chrono::steady_clock::now();
+            ++epoch;
+            phase = TestRecoveryPhase::SOFT_REFRESH;
+            entered_at = std::chrono::steady_clock::now();
             authoritative_recovery_reason = reason;
             m_log.emplace_back("soft refresh requested");
         }
 
         bool should_escalate(int64_t recovery_window_seconds) const {
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - m_recovery_started_at).count();
+                std::chrono::steady_clock::now() - entered_at).count();
             return elapsed >= recovery_window_seconds;
         }
 
         void escalate() {
-            m_template_withheld = false;
-            m_degraded_mode = true;
-            m_workers_running = false;
+            phase = TestRecoveryPhase::HARD_RECOVERY;
         }
     };
 
     RecoveryTracker rt;
     rt.start_soft_refresh("same_height_push_tip_replacement_pre_adoption");
-    print_test_result("Soft refresh starts recovery tracking", rt.m_recovery_pending && rt.m_recovery_epoch == 1);
+    print_test_result("Soft refresh starts recovery tracking",
+                      phase_is_recovery_active(rt.phase) && rt.epoch == 1);
     print_test_result("Soft refresh logs soft refresh requested",
                       !rt.m_log.empty() && rt.m_log.back() == "soft refresh requested");
     print_test_result("Same-height pre-adoption replacement stays on soft-refresh reason",
                       rt.authoritative_recovery_reason == "same_height_push_tip_replacement_pre_adoption");
     print_test_result("Soft refresh withholds submissions without degraded mode",
-                      rt.m_template_withheld && !rt.m_degraded_mode);
-    print_test_result("Soft refresh keeps workers running", rt.m_workers_running);
+                      phase_is_submissions_withheld(rt.phase) && !phase_is_degraded(rt.phase));
+    print_test_result("Soft refresh keeps workers running (not degraded)", !phase_is_degraded(rt.phase));
     print_test_result("Soft refresh does not escalate immediately", !rt.should_escalate(RECOVERY_WINDOW_SECONDS));
 
-    rt.m_recovery_started_at = std::chrono::steady_clock::now() - std::chrono::seconds(TIMEOUT_TEST_SECONDS);
+    rt.entered_at = std::chrono::steady_clock::now() - std::chrono::seconds(TIMEOUT_TEST_SECONDS);
     print_test_result("Soft refresh escalates after timeout", rt.should_escalate(RECOVERY_WINDOW_SECONDS));
     rt.escalate();
-    print_test_result("Timeout escalation enters degraded mode", rt.m_degraded_mode);
-    print_test_result("Timeout escalation clears soft-pause guard", !rt.m_template_withheld);
-    print_test_result("Timeout escalation is what stops workers", !rt.m_workers_running);
+    print_test_result("Timeout escalation enters degraded mode", phase_is_degraded(rt.phase));
+    print_test_result("Timeout escalation clears soft-pause guard", !phase_is_submissions_withheld(rt.phase));
+    print_test_result("Timeout escalation is what stops workers", phase_is_degraded(rt.phase));
 }
 
 // ============================================================================
@@ -368,117 +423,88 @@ void test_same_height_soft_refresh_escalates_only_after_timeout() {
 // ============================================================================
 void test_degraded_exit_normalizes_recovery_state() {
     std::cout << "\nTest 4d: Degraded exit normalization clears recovery bookkeeping\n";
-    constexpr int kSuppressionReasonRateLimitLocal = 3;
 
     struct RecoveryTracker {
-        bool m_degraded_mode{true};
-        bool m_recovery_pending{true};
-        bool m_template_withheld{true};
-        uint64_t m_recovery_epoch{7};
-        std::chrono::steady_clock::time_point m_recovery_started_at{std::chrono::steady_clock::now()};
-        std::chrono::steady_clock::time_point m_recovery_last_get_block_attempted_at{std::chrono::steady_clock::now()};
-        std::chrono::steady_clock::time_point m_recovery_last_get_block_transmitted_at{std::chrono::steady_clock::now()};
-        bool m_recovery_get_block_transmitted{true};
-        std::chrono::steady_clock::time_point m_next_forced_retry_due{std::chrono::steady_clock::now()};
-        std::deque<std::chrono::steady_clock::time_point> m_forced_retry_send_timestamps{
-            std::chrono::steady_clock::now()};
-        bool m_forced_retry_timer_pending{true};
-        uint64_t m_forced_retry_timer_token{2};
-        int m_last_get_block_suppression_reason{kSuppressionReasonRateLimitLocal};
+        TestRecoveryPhase phase{TestRecoveryPhase::HARD_RECOVERY};
+        uint64_t epoch{7};
+        std::chrono::steady_clock::time_point entered_at{std::chrono::steady_clock::now()};
+        std::chrono::steady_clock::time_point last_get_block_at{std::chrono::steady_clock::now()};
+        bool get_block_confirmed{true};
+        std::chrono::steady_clock::time_point degraded_since{std::chrono::steady_clock::now()};
         bool authoritative_recovery_healthy_called{false};
         std::string authoritative_recovery_reason{"same_height_push_tip_replacement_pre_adoption"};
-        std::chrono::steady_clock::time_point m_degraded_since{std::chrono::steady_clock::now()};
-        std::chrono::steady_clock::time_point m_last_escalation_at{std::chrono::steady_clock::now()};
 
         void clear() {
             authoritative_recovery_healthy_called = true;
             authoritative_recovery_reason.clear();
-            m_degraded_mode = false;
-            m_recovery_pending = false;
-            m_template_withheld = false;
-            m_recovery_epoch = 0;
-            m_recovery_started_at = {};
-            m_recovery_last_get_block_attempted_at = {};
-            m_recovery_last_get_block_transmitted_at = {};
-            m_recovery_get_block_transmitted = false;
-            m_next_forced_retry_due = {};
-            m_forced_retry_send_timestamps.clear();
-            m_forced_retry_timer_pending = false;
-            ++m_forced_retry_timer_token;
-            m_last_get_block_suppression_reason = 0;
-            m_degraded_since = {};
-            m_last_escalation_at = {};
+            phase = TestRecoveryPhase::HEALTHY;
+            epoch = 0;
+            entered_at = {};
+            last_get_block_at = {};
+            get_block_confirmed = false;
+            degraded_since = {};
         }
     };
 
     RecoveryTracker rt;
-    const auto old_token = rt.m_forced_retry_timer_token;
     rt.clear();
 
-    print_test_result("Degraded flag cleared", !rt.m_degraded_mode);
-    print_test_result("Recovery pending cleared", !rt.m_recovery_pending);
-    print_test_result("Soft-pause guard cleared", !rt.m_template_withheld);
-    print_test_result("Recovery epoch reset", rt.m_recovery_epoch == 0);
+    print_test_result("Phase returned to HEALTHY", rt.phase == TestRecoveryPhase::HEALTHY);
+    print_test_result("Recovery active cleared", !phase_is_recovery_active(rt.phase));
+    print_test_result("Degraded mode cleared", !phase_is_degraded(rt.phase));
+    print_test_result("Soft-pause guard cleared", !phase_is_submissions_withheld(rt.phase));
+    print_test_result("Recovery epoch reset", rt.epoch == 0);
     print_test_result("GET_BLOCK bookkeeping cleared",
-                      rt.m_recovery_started_at == std::chrono::steady_clock::time_point{} &&
-                      rt.m_recovery_last_get_block_attempted_at == std::chrono::steady_clock::time_point{} &&
-                      rt.m_recovery_last_get_block_transmitted_at == std::chrono::steady_clock::time_point{} &&
-                      !rt.m_recovery_get_block_transmitted);
-    print_test_result("Forced retry state cleared",
-                      rt.m_next_forced_retry_due == std::chrono::steady_clock::time_point{} &&
-                      rt.m_forced_retry_send_timestamps.empty() &&
-                      !rt.m_forced_retry_timer_pending &&
-                      rt.m_forced_retry_timer_token == old_token + 1);
-    print_test_result("Suppression state cleared",
-                      rt.m_last_get_block_suppression_reason == 0);
+                      rt.entered_at == std::chrono::steady_clock::time_point{} &&
+                      rt.last_get_block_at == std::chrono::steady_clock::time_point{} &&
+                      !rt.get_block_confirmed);
+    print_test_result("Escalation timer cleared",
+                      rt.degraded_since == std::chrono::steady_clock::time_point{});
     print_test_result("Authoritative recovery state normalized",
                       rt.authoritative_recovery_healthy_called &&
                       rt.authoritative_recovery_reason.empty());
-    print_test_result("Escalation timers cleared",
-                      rt.m_degraded_since == std::chrono::steady_clock::time_point{} &&
-                      rt.m_last_escalation_at == std::chrono::steady_clock::time_point{});
 }
 
 // ============================================================================
-// Test 5: Keepalive epoch isolation — new epoch starts with clean ack timestamp
+// Test 4e: SOFT_REFRESH transition withholds submissions without degraded mode
+// Replaces the old test_authoritative_soft_refresh_backfills_local_state()
+// which referenced the removed RecoveryState::SOFT_REFRESH_REQUESTED enum value.
+// Now tests the surviving RecoveryPhase::SOFT_REFRESH transition path.
 // ============================================================================
 void test_authoritative_soft_refresh_backfills_local_state() {
-    std::cout << "\nTest 4e: Authoritative soft refresh backfills local Worker_manager state\n";
+    std::cout << "\nTest 4e: SOFT_REFRESH transition withholds submissions without entering degraded mode\n";
 
-    enum class RecoveryState {
-        HEALTHY,
-        SOFT_REFRESH_REQUESTED,
-        RECOVERY_PENDING
-    };
-
+    // Simulates Worker_manager::mark_soft_refresh_requested():
+    // HEALTHY → SOFT_REFRESH when push detects same-height tip replacement.
     struct RecoveryTracker {
-        bool m_degraded_mode{false};
-        bool m_recovery_pending{false};
-        bool m_template_withheld{false};
-        std::chrono::steady_clock::time_point m_recovery_started_at{};
+        TestRecoveryPhase phase{TestRecoveryPhase::HEALTHY};
+        uint64_t epoch{0};
+        std::chrono::steady_clock::time_point entered_at{};
 
-        void sync_from_authoritative(RecoveryState authoritative_state) {
-            if (authoritative_state != RecoveryState::SOFT_REFRESH_REQUESTED) {
-                return;
+        bool soft_refresh_requested(const char* /*reason*/) {
+            if (phase_is_recovery_active(phase)) {
+                return false;  // already in recovery — no-op
             }
-            if (!m_recovery_pending) {
-                m_recovery_pending = true;
-            }
-            if (m_recovery_started_at == std::chrono::steady_clock::time_point{}) {
-                m_recovery_started_at = std::chrono::steady_clock::now();
-            }
-            m_template_withheld = true;
+            ++epoch;
+            phase = TestRecoveryPhase::SOFT_REFRESH;
+            entered_at = std::chrono::steady_clock::now();
+            return true;
         }
     };
 
     RecoveryTracker rt;
-    rt.sync_from_authoritative(RecoveryState::SOFT_REFRESH_REQUESTED);
+    const bool transitioned = rt.soft_refresh_requested("same_height_push_tip_replacement");
+    print_test_result("SOFT_REFRESH transition succeeds from HEALTHY", transitioned);
+    print_test_result("SOFT_REFRESH withholds submissions", phase_is_submissions_withheld(rt.phase));
+    print_test_result("SOFT_REFRESH does not enter degraded mode", !phase_is_degraded(rt.phase));
+    print_test_result("SOFT_REFRESH anchors recovery epoch", rt.epoch == 1);
+    print_test_result("SOFT_REFRESH anchors the recovery timer",
+                      rt.entered_at != std::chrono::steady_clock::time_point{});
 
-    print_test_result("Authoritative soft refresh sets recovery pending", rt.m_recovery_pending);
-    print_test_result("Authoritative soft refresh withholds submissions locally", rt.m_template_withheld);
-    print_test_result("Authoritative soft refresh keeps degraded mode off", !rt.m_degraded_mode);
-    print_test_result("Authoritative soft refresh anchors the recovery timer",
-                      rt.m_recovery_started_at != std::chrono::steady_clock::time_point{});
+    // Second call when already in SOFT_REFRESH must be idempotent
+    const bool second = rt.soft_refresh_requested("duplicate_push");
+    print_test_result("Second SOFT_REFRESH call is a no-op (idempotent)", !second);
+    print_test_result("Epoch unchanged after idempotent call", rt.epoch == 1);
 }
 
 // ============================================================================
@@ -1007,61 +1033,6 @@ void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
 // ============================================================================
 // ⚡ RecoveryPhase State Machine Tests (mirrors worker_manager.hpp RecoveryPhase)
 // ============================================================================
-
-// Minimal mirror of RecoveryPhase for standalone testing without including
-// the full worker_manager.hpp dependency tree.
-enum class TestRecoveryPhase : uint8_t {
-    HEALTHY,
-    SOFT_REFRESH,
-    HARD_RECOVERY,
-    RECONNECTING,
-    ESCALATED,
-};
-
-const char* test_phase_name(TestRecoveryPhase p) {
-    switch (p) {
-        case TestRecoveryPhase::HEALTHY:       return "HEALTHY";
-        case TestRecoveryPhase::SOFT_REFRESH:  return "SOFT_REFRESH";
-        case TestRecoveryPhase::HARD_RECOVERY: return "HARD_RECOVERY";
-        case TestRecoveryPhase::RECONNECTING:  return "RECONNECTING";
-        case TestRecoveryPhase::ESCALATED:     return "ESCALATED";
-    }
-    return "UNKNOWN";
-}
-
-static bool test_is_valid_transition(TestRecoveryPhase from, TestRecoveryPhase to) {
-    if (from == to) return true;
-    switch (from) {
-        case TestRecoveryPhase::HEALTHY:
-            return to == TestRecoveryPhase::SOFT_REFRESH || to == TestRecoveryPhase::HARD_RECOVERY;
-        case TestRecoveryPhase::SOFT_REFRESH:
-            return to == TestRecoveryPhase::HEALTHY || to == TestRecoveryPhase::HARD_RECOVERY;
-        case TestRecoveryPhase::HARD_RECOVERY:
-            return to == TestRecoveryPhase::HEALTHY || to == TestRecoveryPhase::RECONNECTING ||
-                   to == TestRecoveryPhase::ESCALATED;
-        case TestRecoveryPhase::RECONNECTING:
-            return to == TestRecoveryPhase::HEALTHY || to == TestRecoveryPhase::HARD_RECOVERY ||
-                   to == TestRecoveryPhase::ESCALATED;
-        case TestRecoveryPhase::ESCALATED:
-            return to == TestRecoveryPhase::HEALTHY || to == TestRecoveryPhase::HARD_RECOVERY ||
-                   to == TestRecoveryPhase::RECONNECTING;
-    }
-    return false;
-}
-
-// Helper predicates matching the Worker_manager helper methods
-static bool phase_is_degraded(TestRecoveryPhase p) {
-    return p == TestRecoveryPhase::HARD_RECOVERY || p == TestRecoveryPhase::ESCALATED;
-}
-static bool phase_is_submissions_withheld(TestRecoveryPhase p) {
-    return p == TestRecoveryPhase::SOFT_REFRESH;
-}
-static bool phase_is_recovery_active(TestRecoveryPhase p) {
-    return p != TestRecoveryPhase::HEALTHY;
-}
-static bool phase_is_reconnecting(TestRecoveryPhase p) {
-    return p == TestRecoveryPhase::RECONNECTING;
-}
 
 // ── Test 18: Legal transitions succeed, illegal ones are rejected ──────────
 void test_recovery_phase_valid_transitions() {

@@ -638,11 +638,9 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     context.commit_reward_bound("reward-address", std::vector<uint8_t>(32, 0x45), "live bind");
     context.set_channel_state(2, true, true);
     context.note_keepalive_ack(true, "ack ok");
-    context.mark_soft_refresh_requested("template refresh");
     snapshot = context.get_runtime_snapshot();
     assert(snapshot.state == SessionManager::SessionState::ACTIVE);
     assert(snapshot.reward_state == SessionManager::RewardState::BOUND);
-    assert(snapshot.recovery_state == SessionManager::RecoveryState::SOFT_REFRESH_REQUESTED);
     assert(snapshot.expiry_state == SessionManager::ExpiryState::FRESH);
     assert(context.is_reward_bound());
     assert(context.can_request_get_block());
