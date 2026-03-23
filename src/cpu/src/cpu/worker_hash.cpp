@@ -6,6 +6,7 @@
 #include "block.hpp"
 #include "hash/nexus_hash_utils.hpp"
 #include <asio.hpp>
+#include <optional>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -385,14 +386,20 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 	
 	while (!m_stop)
 	{
-		// Check for new work at the top of the loop
+		// Copy skein state and advance shared nonce under brief lock.
+		// Advancing nonce here ensures each thread/iteration gets a unique nonce
+		// without holding the lock during the expensive hash computation.
+		// NexusSkein has a deleted copy assignment (const member), so we use
+		// std::optional to copy-construct inside the lock, then reference it outside.
+		std::optional<NexusSkein> local_skein_opt;
 		{
 			std::unique_lock<std::mutex> lck(m_mtx);
 			if (m_new_work)
-			{
 				break;
-			}
+			local_skein_opt.emplace(m_skein);  // copy-construct: nonce + midstate
+			m_skein.setNonce(m_skein.getNonce() + total_threads);  // advance shared nonce
 		}
+		NexusSkein& local_skein = *local_skein_opt;
 
 		uint64_t nonce;
 		bool hash_calculated = false;
@@ -403,32 +410,23 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 		{
 			try
 			{
-				std::scoped_lock<std::mutex> lck(m_mtx);
-				
-				// For multi-threading: partition nonce space
-				// Each thread increments by total_threads to avoid overlap
-				// Thread 0: 0, 4, 8, 12, ...
-				// Thread 1: 1, 5, 9, 13, ...
-				// Thread 2: 2, 6, 10, 14, ...
-				// etc.
-				
-				// Calculate the remainder of the skein hash starting from the midstate
-				m_skein.calculateHash();
+				// Calculate hash with NO lock held — operates on thread-local copy
+				local_skein.calculateHash();
 				
 				// Validate Skein output before passing to Keccak
-				NexusSkein::stateType skeinHash = m_skein.getHash();
+				NexusSkein::stateType skeinHash = local_skein.getHash();
 				if (!validate_skein_output(skeinHash))
 				{
 					++payload_validation_failures;
 					m_logger->warn(m_log_leader + "Thread {} Skein payload validation failed for nonce 0x{:016x}", 
-					              thread_id, m_skein.getNonce());
+					              thread_id, local_skein.getNonce());
 					throw std::runtime_error("Invalid Skein output payload");
 				}
 				
 				// Log Skein output for debugging (periodically)
 				if (thread_hash_count % (log_interval * 10) == 0)
 				{
-					log_skein_state(skeinHash, m_skein.getNonce());
+					log_skein_state(skeinHash, local_skein.getNonce());
 				}
 				
 				// Run keccak on the result from skein
@@ -441,7 +439,7 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 				{
 					++payload_validation_failures;
 					m_logger->warn(m_log_leader + "Thread {} Keccak payload validation failed for nonce 0x{:016x}", 
-					              thread_id, m_skein.getNonce());
+					              thread_id, local_skein.getNonce());
 					throw std::runtime_error("Invalid Keccak output payload");
 				}
 				
@@ -453,50 +451,49 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 				{
 					++hash_mismatches;
 					m_logger->error(m_log_leader + "Thread {} Hash cross-validation failed for nonce 0x{:016x} - skipping nonce", 
-					               thread_id, m_skein.getNonce());
+					               thread_id, local_skein.getNonce());
 					// Log detailed mismatch info for debugging
-					log_hash_mismatch(skeinHash, keccakHash, m_skein.getNonce());
+					log_hash_mismatch(skeinHash, keccakHash, local_skein.getNonce());
 					
 					// Skip this nonce due to validation failure and move to next
 					throw std::runtime_error("Hash cross-validation failed");
 				}
 				
-				nonce = m_skein.getNonce();
+				nonce = local_skein.getNonce();
 				
 				// Check the result for leading zeros
 				if ((keccakHash & leading_zero_mask()) == 0)
 				{
 					m_logger->info(m_log_leader + "Thread {} found a nonce candidate {}", thread_id, nonce);
-					m_skein.setNonce(nonce);
-					// Verify the difficulty
+					// Verify the difficulty — requires shared state; take lock briefly
+					std::unique_lock<std::mutex> lck(m_mtx);
+					m_skein.setNonce(nonce);  // restore candidate nonce for difficulty_check()
 					if (difficulty_check())
 					{
 						++m_met_difficulty_count;
 						// Update the block with the nonce and call the callback function
 						m_block.nNonce = nonce;
+						if (m_found_nonce_callback)
 						{
-							if (m_found_nonce_callback)
+							m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
+							::asio::post(*m_io_context, [self = shared_from_this()]()
 							{
-								m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
-								::asio::post(*m_io_context, [self = shared_from_this()]()
-								{
-									self->m_found_nonce_callback(self->m_config.m_internal_id, 
-										std::make_unique<Block_data>(self->m_block));
-								});
-							}
-							else
-							{
-								m_logger->debug(m_log_leader + "Miner callback function not set.");
-							}
+								self->m_found_nonce_callback(self->m_config.m_internal_id, 
+									std::make_unique<Block_data>(self->m_block));
+							});
+						}
+						else
+						{
+							m_logger->debug(m_log_leader + "Miner callback function not set.");
 						}
 					}
 				}
 				
-				// Increment nonce by total_threads for nonce partitioning
-				nonce += total_threads;
-				m_skein.setNonce(nonce);	
 				++thread_hash_count;
-				++m_hash_count;
+				{
+					std::unique_lock<std::mutex> lck(m_mtx);
+					++m_hash_count;
+				}
 				hash_calculated = true;
 				
 				// Log progress periodically with enhanced diagnostics
@@ -525,11 +522,7 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 				{
 					m_logger->error(m_log_leader + "Thread {} hash calculation failed after {} retries: {}. Skipping nonce.", 
 					               thread_id, max_retries, e.what());
-					// Skip this nonce and continue
-					std::scoped_lock<std::mutex> lck(m_mtx);
-					nonce = m_skein.getNonce();
-					nonce += total_threads;
-					m_skein.setNonce(nonce);
+					// Nonce was already advanced at the top of the outer loop; just continue.
 				}
 			}
 		}
