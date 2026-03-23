@@ -1126,6 +1126,15 @@ bool MiningTemplateInterface::update_channel_height(uint32_t channel, uint32_t n
 void MiningTemplateInterface::set_template_channel_height_snapshot(uint32_t channel_height)
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
+    // Invariant: must not be called when the template is already finalized (nChannelHeight > 0).
+    // Calling this after set_channel_height() re-poisons the guard and causes false staleness
+    // on the next GET_ROUND, even though the template is still 100% valid.
+    if (m_current_template.nChannelHeight > 0) {
+        m_logger->warn("[TemplateInterface] set_template_channel_height_snapshot({}) ignored: "
+                       "template already finalized with nChannelHeight={}",
+                       channel_height, m_current_template.nChannelHeight);
+        return;
+    }
     m_template_channel_height_snapshot = channel_height;
     m_has_snapshot = true;
     m_logger->debug("[TemplateInterface] Snapshot channel height set to {}", channel_height);
