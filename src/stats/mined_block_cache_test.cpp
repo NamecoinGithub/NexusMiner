@@ -1,6 +1,7 @@
 /**
  * @file mined_block_cache_test.cpp
- * @brief Unit tests for MinedBlockCache three-tier confirmation cache.
+ * @brief Unit tests for MinedBlockCache three-tier confirmation cache and
+ *        Worker-feed dedup guard.
  *
  * Tests:
  *   MinedBlockCache:
@@ -18,8 +19,13 @@
  *    8.  status_emoji() returns correct emoji below and at threshold
  *    9.  summary_line() is non-empty and contains the height
  *
+ *   Worker-feed dedup guard (standalone, no asio dependency):
+ *   10.  Same (height, hashPrevBlock) within 2 000 ms is suppressed
+ *   11.  Same height but different hashPrevBlock (fork) is NOT suppressed
+ *   12.  Same pair after > 2 000 ms is NOT suppressed (debounce expired)
+ *
  *   Concurrent recovery gate:
- *   10.  Two simultaneous recovery attempts: only one executes at a time
+ *   13.  Two simultaneous recovery attempts: only one executes at a time
  */
 
 #include "stats/mined_block_cache.hpp"
@@ -52,6 +58,32 @@ static void check(const char* name, bool ok)
         std::cout << "  [FAIL] " << name << "\n";
     }
 }
+
+// ── Minimal dedup-guard state (mirrors worker_manager.hpp fields) ─────────────
+
+struct DedupGuard
+{
+    std::chrono::steady_clock::time_point last_tp{};
+    uint32_t last_height{0};
+    uint1024_t last_prev_hash{0};
+    static constexpr int64_t DEBOUNCE_MS = 2000;
+
+    /// Returns true if the template should be passed through (not suppressed).
+    bool should_pass(uint32_t height, uint1024_t const& prev_hash,
+                     std::chrono::steady_clock::time_point now)
+    {
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      now - last_tp).count();
+        bool same = (height == last_height && prev_hash == last_prev_hash);
+        if (same && ms < DEBOUNCE_MS)
+            return false;  // suppress
+
+        last_tp        = now;
+        last_height    = height;
+        last_prev_hash = prev_hash;
+        return true;
+    }
+};
 
 // ── Test 1: record_accepted_block stores one record in Tier 1 ─────────────────
 static void test_record_one_block()
@@ -363,10 +395,66 @@ static void test_summary_line()
     check("summary_line() contains '12345'", s.find("12345") != std::string::npos);
 }
 
-// ── Test 10: concurrent recovery gate ─────────────────────────────────────────
+// ── Test 10: same (height, hashPrevBlock) within 2000 ms is suppressed ────────
+static void test_dedup_suppresses_same_pair_within_window()
+{
+    std::cout << "\nTest 10: Same (height, hashPrevBlock) within 2000 ms is suppressed\n";
+
+    DedupGuard guard;
+    uint1024_t prev{0};
+    auto t0 = std::chrono::steady_clock::now();
+
+    // First call: should pass through
+    bool first = guard.should_pass(100, prev, t0);
+    check("First call passes through", first);
+
+    // Second call 500 ms later with same pair: should be suppressed
+    auto t1 = t0 + std::chrono::milliseconds(500);
+    bool second = guard.should_pass(100, prev, t1);
+    check("Second call within 2000 ms is suppressed", !second);
+}
+
+// ── Test 11: same height, different hashPrevBlock (fork) is NOT suppressed ───
+static void test_dedup_fork_not_suppressed()
+{
+    std::cout << "\nTest 11: Same height, different hashPrevBlock (fork) is NOT suppressed\n";
+
+    DedupGuard guard;
+    uint1024_t prev_a{0};
+    uint1024_t prev_b{1};  // different
+
+    auto t0 = std::chrono::steady_clock::now();
+
+    bool first = guard.should_pass(100, prev_a, t0);
+    check("First (height=100, prev=A) passes", first);
+
+    // Same height but different prev hash — genuine fork must NOT be suppressed
+    auto t1 = t0 + std::chrono::milliseconds(200);
+    bool fork = guard.should_pass(100, prev_b, t1);
+    check("Fork (height=100, prev=B) is NOT suppressed", fork);
+}
+
+// ── Test 12: same pair after > 2000 ms is NOT suppressed ─────────────────────
+static void test_dedup_debounce_expired()
+{
+    std::cout << "\nTest 12: Same pair after > 2000 ms is NOT suppressed\n";
+
+    DedupGuard guard;
+    uint1024_t prev{0};
+    auto t0 = std::chrono::steady_clock::now();
+
+    guard.should_pass(100, prev, t0);  // record first feed
+
+    // 2001 ms later: debounce has expired
+    auto t1 = t0 + std::chrono::milliseconds(2001);
+    bool passed = guard.should_pass(100, prev, t1);
+    check("Same pair after > 2000 ms passes through", passed);
+}
+
+// ── Test 13: concurrent recovery gate ─────────────────────────────────────────
 static void test_concurrent_recovery_gate()
 {
-    std::cout << "\nTest 10: Concurrent recovery gate — only one executes at a time\n";
+    std::cout << "\nTest 13: Concurrent recovery gate — only one executes at a time\n";
 
     std::mutex m_recovery_mutex;
     int concurrent_count   = 0;  // how many threads are inside the critical section simultaneously
@@ -409,7 +497,7 @@ static void test_concurrent_recovery_gate()
 int main()
 {
     std::cout << "==============================================\n";
-    std::cout << "MinedBlockCache Unit Tests\n";
+    std::cout << "MinedBlockCache + Dedup Guard Unit Tests\n";
     std::cout << "==============================================\n";
 
     test_record_one_block();
@@ -425,6 +513,9 @@ int main()
     test_channel_name();
     test_status_emoji();
     test_summary_line();
+    test_dedup_suppresses_same_pair_within_window();
+    test_dedup_fork_not_suppressed();
+    test_dedup_debounce_expired();
     test_concurrent_recovery_gate();
 
     std::cout << "\n==============================================\n";

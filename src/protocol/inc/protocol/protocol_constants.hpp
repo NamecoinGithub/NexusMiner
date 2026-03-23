@@ -98,6 +98,24 @@ namespace ProtocolConstants {
     // Template Distribution Debounce Constants
     //==========================================================================
 
+    /**
+     * Template feed debounce interval (milliseconds)
+     *
+     * Prevents duplicate template distribution when the same block arrives via
+     * multiple paths (e.g., push notification + GET_BLOCK response, or automatic
+     * feed from read_template() + manual BLOCK_DATA handler re-push).
+     *
+     * This is the single authoritative debounce gate implemented in
+     * MiningTemplateInterface::feed_current_template(). Duplicate templates
+     * arriving within this window for the same height+hashPrevBlock are suppressed.
+     *
+     * Value chosen to be:
+     * - Wide enough to catch node SendChannelNotification() + GET_BLOCK response doubles
+     * - Narrow enough to not suppress legitimate new templates during fast block times
+     * - Bypassed when chain tip changes (hashPrevBlock differs)
+     */
+    constexpr int64_t TEMPLATE_FEED_DEBOUNCE_MS = 2000;
+
     //==========================================================================
     // Degraded Mode Escape Ladder Constants
     //==========================================================================
