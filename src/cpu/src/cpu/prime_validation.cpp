@@ -69,17 +69,35 @@ uint1024_t FermatTest(const uint1024_t& hashTest)
     }
 }
 
+/** Miller_Rabin
+ *  Wrapper for OpenSSL BN_is_prime_ex — matches LLL-TAO exactly.
+ *  Uses 1 round of Miller-Rabin as the node does.
+ *  Returns false on both composite (-1 error or 0) and OpenSSL errors,
+ *  treating errors conservatively as composite (safe for mining).
+ **/
+bool Miller_Rabin(const uint1024_t& hashTest)
+{
+    LLC::CBigNum bnPrime(hashTest);
+    // BN_is_prime_ex returns 1 (probably prime), 0 (composite), or -1 (error).
+    // Treating -1 as composite is correct: we conservatively reject the candidate.
+    return (BN_is_prime_ex(bnPrime.getBN(), 1, nullptr, nullptr) == 1);
+}
+
 bool PrimeCheck(const uint1024_t& hashTest)
 {
     // Step 1: Small divisor tests (fast rejection)
     if (!SmallDivisors(hashTest))
         return false;
-    
-    // Step 2: Fermat test - check if result equals 1
+
+    // Step 2: Miller-Rabin test (matches LLL-TAO Check B)
+    if (!Miller_Rabin(hashTest))
+        return false;
+
+    // Step 3: Fermat test - check if result equals 1
     uint1024_t result = FermatTest(hashTest);
     if (result != 1)
         return false;
-    
+
     return true;
 }
 
