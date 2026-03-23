@@ -69,14 +69,12 @@ public:
 
         decision.accept_ack = false;
         decision.mismatch_count = input.consecutive_mismatches + 1;
-        decision.reason = "ack session id mismatched active session";
-
-        if (decision.mismatch_count >= input.mismatch_expire_threshold) {
-            decision.expire_session = true;
-            decision.force_reauth = true;
-            decision.mark_degraded = true;
-            decision.reason = "ack session id mismatch reached expiry threshold";
-        }
+        // ACK mismatch is diagnostic only — PUSH notification liveness is the
+        // sole authoritative signal for session health.  Do NOT expire the
+        // session or force re-auth based on keepalive ACK mismatches; the node-
+        // side ACK responder can lag or fail independently of the PUSH path
+        // that lives in Server.cpp and auto-sends every new block.
+        decision.reason = "ack session id mismatched active session (diagnostic only — PUSH is authoritative)";
 
         return decision;
     }

@@ -3818,23 +3818,15 @@ bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
         m_session_context->note_keepalive_ack(false, decision.reason);
     }
 
+    // ACK mismatch is diagnostic only — PUSH notification liveness is the sole
+    // authoritative signal for session health.  Log for observability but do NOT
+    // expire the session or invoke session_expired_handler(); the node-side ACK
+    // responder can lag or fail independently of the PUSH path.
     m_logger->warn("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != authoritative=0x{:08x}"
-                   " — possible stale ACK or race condition (not self-expiring yet)",
+                   " — diagnostic only, PUSH is authoritative (not self-expiring)",
         decision.reason, m_session_id_mismatch_count, ack_session_id, authoritative_session_id);
 
-    if (decision.expire_session) {
-        record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
-                             "ack mismatch expiry threshold reached");
-        m_logger->error("[KEEPALIVE_V2] {} after {} consecutive mismatches — session presumed stale, expiring",
-                        decision.reason, m_session_id_mismatch_count);
-        m_session_id_mismatch_count = 0;
-        session_manager->mark_session_expired("ack mismatch expiry threshold reached");
-        if (m_session_expired_handler)
-            m_session_expired_handler();
-        return true;
-    }
-    return true;  // mismatch detected — caller must return to skip further ACK processing,
-                  // even though the session is not yet expired (threshold not reached)
+    return true;  // mismatch detected — caller must return to skip further ACK processing
 }
 
 void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection)

@@ -123,10 +123,10 @@ namespace ProtocolConstants {
     /**
      * Push-notification liveness threshold (seconds)
      *
-     * Aligns with KEEPALIVE_ACK_STALE_THRESHOLD_SECONDS in worker_manager.cpp.
+     * PUSH notifications are the sole authoritative signal for session liveness.
      * If a push notification (PRIME/HASH_BLOCK_AVAILABLE) was received within
-     * this window, the TCP session is considered alive regardless of keepalive ACK
-     * silence — only retry GET_BLOCK, do NOT force a full TCP reconnect.
+     * this window, the TCP session is considered alive.  Keepalive ACKs are
+     * diagnostic only and are not used in reconnect or re-auth decisions.
      */
     constexpr int64_t PUSH_LIVENESS_THRESHOLD_SECONDS = 300;
 
@@ -143,7 +143,7 @@ namespace ProtocolConstants {
      * Degraded mode Stage 3 threshold (seconds)
      *
      * After this many seconds in degraded mode without a valid template AND
-     * without recent push or keepalive ACK signals, the escape ladder escalates
+     * without recent push notifications, the escape ladder escalates
      * to a full TCP reconnect via retry_connect() (Stage 3).
      */
     constexpr int64_t DEGRADED_MODE_STAGE3_SECONDS = 180;
@@ -162,11 +162,11 @@ namespace ProtocolConstants {
     constexpr int64_t DEGRADED_MODE_HARD_LIMIT_SECONDS = 7200;  // 2 hours
 
     /**
-     * Stage 0 fast-reconnect: both-signals-dead threshold (seconds)
+     * Stage 0 fast-reconnect: push-dead threshold (seconds)
      *
-     * If neither keepalive ACK nor push notification has been received for this
-     * many seconds, the TCP connection is considered certainly dead and the
-     * miner skips the Stage 1/2 ladder, reconnecting immediately.
+     * If no push notification has been received for this many seconds, the TCP
+     * connection is considered certainly dead and the miner skips the Stage 1/2
+     * ladder, reconnecting immediately.
      * Cuts recovery time from up to 180 s down to ~30 s for clean disconnects.
      */
     constexpr int64_t FAST_RECONNECT_SIGNAL_DEAD_SECONDS = 90;
@@ -174,7 +174,7 @@ namespace ProtocolConstants {
     /**
      * Stage 0 fast-reconnect: minimum degraded-mode duration (seconds)
      *
-     * The fast-reconnect path is only taken when both signals have been dead
+     * The fast-reconnect path is only taken when push has been dead
      * for FAST_RECONNECT_SIGNAL_DEAD_SECONDS AND the miner has been in
      * degraded mode for at least this long — preventing spurious fast-reconnects
      * on momentary signal gaps at degraded-mode entry.
@@ -186,12 +186,14 @@ namespace ProtocolConstants {
     //==========================================================================
 
     /**
-     * Number of consecutive KEEPALIVE_V2_ACK session ID mismatches required
-     * before the miner self-expires its session.
+     * Number of consecutive KEEPALIVE_V2_ACK session ID mismatches tracked
+     * for diagnostic logging.
      *
-     * A single mismatch may be caused by a late/replayed ACK or a node-side
-     * race condition during re-authentication.  Only expire the session after
-     * this many consecutive mismatches with no intervening successful ACK.
+     * ACK mismatches are diagnostic only — they are logged for observability
+     * but do NOT trigger session expiry or re-auth.  PUSH notification
+     * liveness is the sole authoritative signal for session health.
+     *
+     * Retained as a counter ceiling for warning-level log escalation.
      */
     constexpr uint32_t SESSION_MISMATCH_EXPIRE_THRESHOLD = 5;
 
