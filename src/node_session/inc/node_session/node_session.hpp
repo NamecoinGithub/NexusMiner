@@ -82,12 +82,6 @@ public:
     using Recovery_handler = std::function<void()>;
 
     /**
-     * @brief Soft refresh handler (called when same-height tip replacement invalidates
-     *        the template but workers should stay in the lighter template-swap path)
-     */
-    using Soft_refresh_handler = std::function<void()>;
-
-    /**
      * @brief Session expired handler (called when session mismatch is detected)
      */
     using Session_expired_handler = std::function<void()>;
@@ -195,8 +189,6 @@ public:
      * @param handler Recovery callback
      */
     void set_recovery_initiated_handler(Recovery_handler handler);
-
-    void set_soft_refresh_requested_handler(Soft_refresh_handler handler);
 
     /**
      * @brief Set session expired handler
@@ -357,7 +349,6 @@ private:
     Template_handler m_template_handler;
     Block_accepted_handler m_block_accepted_handler;
     Recovery_handler m_recovery_handler;
-    Soft_refresh_handler m_soft_refresh_handler;
     Session_expired_handler m_session_expired_handler;
     Session_authenticated_handler m_session_authenticated_handler;
     Session_start_handler m_session_start_handler;

@@ -303,7 +303,6 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                                    template_age);
                                     m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
                                 }
-                                solo_protocol->mark_authoritative_soft_refresh(soft_refresh_reason);
                                 mark_soft_refresh_requested(soft_refresh_reason);
                                 template_interface->discard_template(channel_stale ? "Channel height advanced before submission"
                                                                                    : "Age exceeded 600s before submission");
@@ -511,20 +510,6 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             }
         );
         m_logger->info("[Worker_manager] Recovery handler registered");
-
-        m_primary_node_session->set_soft_refresh_requested_handler(
-            [this]() {
-                bool had_pending = is_recovery_active();
-                mark_soft_refresh_requested("same_height_push_tip_replacement");
-
-                if (!had_pending) {
-                    m_logger->info("[Worker_manager] Same-height tip replacement — withholding submissions while fresh template is fetched");
-                } else {
-                    m_logger->info("[Worker_manager] Soft refresh already pending — keeping template withheld until replacement arrives");
-                }
-            }
-        );
-        m_logger->info("[Worker_manager] Soft-refresh handler registered");
 
         /* ========== REGISTER SESSION EXPIRED HANDLER ========== */
         /* Called by Solo when SESSION_EXPIRED opcode is received from the node.     */
