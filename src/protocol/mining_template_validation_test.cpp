@@ -1060,6 +1060,74 @@ int main()
     }
 
     // ====================================================================
+    // Test 29: Root Cause 2 — check_staleness_by_channel_delta uses
+    //          nChannelHeight when finalized, not snapshot
+    // ====================================================================
+    std::cout << "\nTest 29: check_staleness_by_channel_delta uses nChannelHeight when finalized" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+
+        // Load template (nChannelHeight == 0 initially)
+        auto data = create_mock_template(6644208, 0x1d00ffff, 2);
+        tmpl_interface.read_template(data, "test_node");
+
+        // Finalize with nChannelHeight = 2344739 (clears snapshot)
+        tmpl_interface.set_channel_height(2344739);
+
+        // N-1: chain tip is one step behind the target → NOT stale
+        bool is_stale = tmpl_interface.check_staleness_by_channel_delta(2344738);
+        print_test_result("RC2: check_staleness(N-1) returns false when nChannelHeight=N", !is_stale);
+        print_test_result("RC2: Template still valid after check_staleness(N-1)", tmpl_interface.has_valid_template());
+
+        // N: chain tip exactly at target → stale (block already mined)
+        is_stale = tmpl_interface.check_staleness_by_channel_delta(2344739);
+        print_test_result("RC2: check_staleness(N) returns true when nChannelHeight=N", is_stale);
+        print_test_result("RC2: Template discarded when check_staleness(N) fires", !tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 30: Root Cause 2 — nChannelHeight-aware check: N+1 also stale
+    // ====================================================================
+    std::cout << "\nTest 30: check_staleness_by_channel_delta(N+1) stale when nChannelHeight=N" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+
+        auto data = create_mock_template(6644208, 0x1d00ffff, 2);
+        tmpl_interface.read_template(data, "test_node");
+        tmpl_interface.set_channel_height(2344739);
+
+        // N+1: chain tip has advanced past target → also stale
+        bool is_stale = tmpl_interface.check_staleness_by_channel_delta(2344740);
+        print_test_result("RC2: check_staleness(N+1) returns true when nChannelHeight=N", is_stale);
+    }
+
+    // ====================================================================
+    // Test 31: Root Cause 3 — dual-call scenario: update_channel_height +
+    //          check_staleness_by_channel_delta on same height must not
+    //          double-fire when template is already finalized (nChannelHeight > 0)
+    // ====================================================================
+    std::cout << "\nTest 31: Dual-call scenario does not double-fire on finalized template" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+
+        auto data = create_mock_template(6644208, 0x1d00ffff, 2);
+        tmpl_interface.read_template(data, "test_node");
+        tmpl_interface.set_channel_height(2344739);  // nChannelHeight finalized
+
+        // Simulate the NEW_ROUND handler: call 1
+        bool discarded_by_update = tmpl_interface.update_channel_height(2, 2344738);  // prime channel=2, tip=N-1
+        // Simulate the NEW_ROUND handler: call 2 (only valid when needs_channel_height_finalization())
+        // Since nChannelHeight is set, needs_channel_height_finalization() returns false and
+        // this call should not be made.  We verify it is safe to call (returns false) but
+        // also verify the template is still valid after the update.
+        bool discarded_by_delta = tmpl_interface.check_staleness_by_channel_delta(2344738);
+
+        print_test_result("RC3: update_channel_height(N-1) does not discard finalized template", !discarded_by_update);
+        print_test_result("RC3: check_staleness_by_channel_delta(N-1) does not discard finalized template", !discarded_by_delta);
+        print_test_result("RC3: Template still valid after dual-call with tip=N-1", tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
     // Summary
     // ====================================================================
     std::cout << "\n========================================" << std::endl;

@@ -350,10 +350,18 @@ public:
     void clear_template_channel_height_snapshot();
 
     /**
-     * @brief Check staleness by comparing current channel height to snapshot
+     * @brief Check staleness by comparing current channel height against the mining target
      *
-     * Template is stale only if the current channel height advanced past
-     * the height recorded when the template was received.
+     * When nChannelHeight is finalized (> 0), stale is defined as:
+     *   current_channel_height >= nChannelHeight  (chain met or passed our mining target)
+     *
+     * When nChannelHeight is still pending (== 0), falls back to a snapshot-based
+     * delta check: stale if current_channel_height > m_template_channel_height_snapshot.
+     *
+     * The snapshot fallback is only active before the first GET_ROUND response
+     * finalizes the template.  Once nChannelHeight is known the snapshot is
+     * bypassed entirely, preventing false-stale detection when the chain tip
+     * advances within the valid mining window (tip < target).
      *
      * @param current_channel_height Current channel height from GET_ROUND
      * @return true if template is stale due to channel advance

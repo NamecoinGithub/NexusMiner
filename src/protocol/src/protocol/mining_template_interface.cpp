@@ -1152,13 +1152,31 @@ bool MiningTemplateInterface::check_staleness_by_channel_delta(uint32_t current_
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
 
+    // When nChannelHeight is finalized, use it directly as the staleness threshold.
+    // The snapshot is irrelevant once the template target is known: stale only when
+    // the chain tip has met or passed the block we are mining toward.
+    if (m_current_template.nChannelHeight > 0) {
+        if (current_channel_height >= m_current_template.nChannelHeight) {
+            m_logger->warn("[TemplateInterface] 📉 Template stale: channel {} reached or exceeded target {}",
+                current_channel_height, m_current_template.nChannelHeight);
+            discard_template_unsafe("Channel height reached nChannelHeight target");
+            m_templates_expired_height.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+        m_logger->debug("[TemplateInterface] ✓ VALID: channel={} below target={}",
+            current_channel_height, m_current_template.nChannelHeight);
+        return false;
+    }
+
+    // Fallback: snapshot-based check for pending-finalization case only
+    // (nChannelHeight == 0 means template arrived but GET_ROUND not yet processed).
     if (!m_has_snapshot) {
-        m_logger->debug("[TemplateInterface] No snapshot, cannot check staleness");
+        m_logger->debug("[TemplateInterface] No snapshot and nChannelHeight not set; cannot check staleness");
         return false;
     }
 
     // Log the comparison for diagnostics
-    m_logger->debug("[TemplateInterface] Staleness check: current={} snapshot={}",
+    m_logger->debug("[TemplateInterface] Staleness check (snapshot fallback): current={} snapshot={}",
         current_channel_height, m_template_channel_height_snapshot);
 
     if (current_channel_height > m_template_channel_height_snapshot) {
