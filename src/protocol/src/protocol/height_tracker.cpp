@@ -82,19 +82,27 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_diagnostic.round_unified_height = unified_height;
-    m_diagnostic.round_prime_height   = prime_height;
-    m_diagnostic.round_hash_height    = hash_height;
-    m_diagnostic.round_stake_height   = stake_height;
+    // ✅ MONOTONIC GUARD: Only advance per-channel round heights — a stale or
+    // out-of-order GET_ROUND response must NOT regress diagnostic state, matching
+    // the pattern used by OnTemplateReceived() for channel_target.
+    if (prime_height > m_diagnostic.round_prime_height)
+        m_diagnostic.round_prime_height = prime_height;
+    if (hash_height > m_diagnostic.round_hash_height)
+        m_diagnostic.round_hash_height = hash_height;
+    if (stake_height > m_diagnostic.round_stake_height)
+        m_diagnostic.round_stake_height = stake_height;
     // 16-byte GET_ROUND carries no difficulty — always zero.
     m_diagnostic.round_difficulty_nbits = 0;
-    // Derive active-channel height for backward-compat diagnostics.
+    // Derive active-channel height with monotonic guard.
     // Channel 1 = Prime, 2 = Hash; anything else → 0.
+    uint32_t new_channel_height = 0;
     if (m_channel == 1)
-        m_diagnostic.round_channel_height = prime_height;
+        new_channel_height = prime_height;
     else if (m_channel == 2)
-        m_diagnostic.round_channel_height = hash_height;
-    else
-        m_diagnostic.round_channel_height = 0;
+        new_channel_height = hash_height;
+
+    if (new_channel_height > m_diagnostic.round_channel_height)
+        m_diagnostic.round_channel_height = new_channel_height;
 
     m_last_update_source = UpdateSource::GET_ROUND;
     auto now = std::chrono::steady_clock::now();

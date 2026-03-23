@@ -1727,6 +1727,50 @@ void test_burst_recovery_template_ahead_of_tracker() {
 }
 
 // ============================================================================
+// Test: OnGetRound monotonic guard — stale round does not regress prime/hash heights
+// ============================================================================
+void test_on_get_round_monotonic_guard() {
+    std::cout << "\nTest (Bug #1): OnGetRound monotonic guard for round heights\n";
+    HeightTracker tracker;
+
+    // Set channel to Prime (1) via OnTemplateReceived so m_channel is initialized
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnTemplateReceived(1, 101);
+
+    // First GET_ROUND with higher per-channel heights
+    tracker.OnGetRound(5100, 120, 200, 300);
+    auto diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("round_prime_height == 120 after first GET_ROUND",
+                      diag.round_prime_height == 120);
+    print_test_result("round_hash_height == 200 after first GET_ROUND",
+                      diag.round_hash_height == 200);
+    print_test_result("round_channel_height == 120 (Prime channel)",
+                      diag.round_channel_height == 120);
+
+    // Stale GET_ROUND with LOWER prime/hash — monotonic guard must prevent regression
+    tracker.OnGetRound(5101, 110, 190, 310);
+    diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("round_unified_height == 5101 (unified always updates)",
+                      diag.round_unified_height == 5101);
+    print_test_result("round_prime_height still 120 (monotonic: 110 < 120)",
+                      diag.round_prime_height == 120);
+    print_test_result("round_hash_height still 200 (monotonic: 190 < 200)",
+                      diag.round_hash_height == 200);
+    print_test_result("round_channel_height still 120 (derived from prime, monotonic)",
+                      diag.round_channel_height == 120);
+
+    // Fresh GET_ROUND with HIGHER prime/hash — must advance
+    tracker.OnGetRound(5102, 125, 210, 305);
+    diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("round_prime_height advanced to 125",
+                      diag.round_prime_height == 125);
+    print_test_result("round_hash_height advanced to 210",
+                      diag.round_hash_height == 210);
+    print_test_result("round_channel_height advanced to 125 (Prime channel)",
+                      diag.round_channel_height == 125);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -1783,6 +1827,7 @@ int main() {
     test_session_epoch_in_snapshot();
     test_on_push_full_picture();
     test_burst_recovery_template_ahead_of_tracker();
+    test_on_get_round_monotonic_guard();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";

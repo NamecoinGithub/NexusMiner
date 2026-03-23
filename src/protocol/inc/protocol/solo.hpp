@@ -571,6 +571,12 @@ private:
     
     // GET_ROUND status tracking (Template Staleness Prevention - LLL-TAO PR #131)
     RoundStatus m_last_round_status;  // Last received round status
+    // Dedicated dedup field: channel height from the last GET_ROUND response only.
+    // Unlike m_last_round_status (updated by both NEW_ROUND and OLD_ROUND branches),
+    // this field is updated at the END of on_get_round_response() after the dedup
+    // decision, ensuring the NEW_ROUND dedup comparison is isolated from interleaved
+    // OLD_ROUND/push-driven updates.
+    uint32_t m_last_round_channel_height{0};
     
     // Client-side fork-aware channel managers (mirrors NODE's PR #136)
     // INTEGRATION PATTERN:
