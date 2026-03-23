@@ -104,8 +104,12 @@ public:
 
     // GET_ROUND polling configuration (public so callers can log the intervals)
     static constexpr bool POLLING_ENABLED = true;              // Enabled: GET_ROUND sanity probe for both lanes
-    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 15000;    // 15 seconds minimum
-    static constexpr uint32_t POLL_INTERVAL_MAX_MS = 45000;    // 45 seconds maximum
+    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 20000;    // 20 seconds minimum
+    static constexpr uint32_t POLL_INTERVAL_MAX_MS = 60000;    // 60 seconds maximum
+    // Minimum push-silence duration before GET_ROUND height parity check may trigger GET_BLOCK.
+    // 45s is intentionally shorter than POLL_INTERVAL_MAX_MS/1000 (60s) to catch missed pushes
+    // on long Prime blocks (300-330s) without waiting for the 600s emergency timeout.
+    static constexpr int64_t PUSH_ABSENT_FOR_PARITY_CHECK_SECONDS = 45;
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work().
     /// Returns null/empty if not yet authenticated — callers must guard for this.
