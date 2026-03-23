@@ -167,6 +167,12 @@ private:
     // health monitor escalates (stop workers → hard recovery).
     std::chrono::steady_clock::time_point m_recovery_started_at{};
 
+    // Time when the most recent recovery completed (clear_recovery_state() was called).
+    // Used as a hold-off: push-resubscription is suppressed within the first 60 s
+    // after recovery to avoid an immediate MINER_READY that triggers a duplicate
+    // template pipeline restart.
+    std::chrono::steady_clock::time_point m_last_recovery_completed_at{};
+
     // Time when degraded mode was first entered in the current outage.
     // Set once by stop_all_workers() (first entry only); cleared by clear_recovery_state().
     // Used by the escape ladder in check_template_health() to enforce hard time-based

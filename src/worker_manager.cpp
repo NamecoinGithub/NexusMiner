@@ -411,15 +411,40 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     if (solo_protocol) {
                         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
                         bool push_ever_received = (ht_snap.last_push_notification_at != std::chrono::steady_clock::time_point{});
-                        int64_t since_push_s = push_ever_received
-                            ? std::chrono::duration_cast<std::chrono::seconds>(
-                                std::chrono::steady_clock::now() - ht_snap.last_push_notification_at).count()
-                            : INT64_MAX;
-                        constexpr int64_t PUSH_RESUBSCRIBE_THRESHOLD_SECONDS = 120;
-                        if (since_push_s > PUSH_RESUBSCRIBE_THRESHOLD_SECONDS) {
-                            m_logger->warn("[Worker_manager] Push notifications silent for {}s after recovery — re-subscribing",
-                                          push_ever_received ? since_push_s : INT64_MAX);
-                            solo_protocol->resubscribe_push_notifications();
+
+                        // Fix 1: If no push was ever received, skip entirely — MINER_READY was
+                        // already sent during the authentication handshake.  Resubscribing now
+                        // is redundant and triggers an immediate STATELESS_GET_BLOCK that causes
+                        // a duplicate-template loop.
+                        if (!push_ever_received) {
+                            m_logger->info("[Worker_manager] No push notification ever received — skipping resubscribe");
+                        } else {
+                            auto now_resub = std::chrono::steady_clock::now();
+                            int64_t since_push_s = std::chrono::duration_cast<std::chrono::seconds>(
+                                now_resub - ht_snap.last_push_notification_at).count();
+
+                            // Fix 2: Post-recovery hold-off — don't fire resubscribe within 60 s
+                            // of recovery completing.  The template just delivered needs time to
+                            // flow before we declare push silence.
+                            constexpr int64_t POST_RECOVERY_HOLDOFF_SECONDS = 60;
+                            int64_t since_recovery_s =
+                                (m_last_recovery_completed_at != std::chrono::steady_clock::time_point{})
+                                ? std::chrono::duration_cast<std::chrono::seconds>(
+                                      now_resub - m_last_recovery_completed_at).count()
+                                : INT64_MAX;  // No recovery ever completed — hold-off does not apply
+
+                            // Fix 3: Raised from 120 → 400 to exceed the longest observed Prime
+                            // block time (~330 s); prevents mid-mining resubscription on long blocks.
+                            constexpr int64_t PUSH_RESUBSCRIBE_THRESHOLD_SECONDS = 400;
+
+                            if (since_recovery_s < POST_RECOVERY_HOLDOFF_SECONDS) {
+                                m_logger->info("[Worker_manager] Recovery completed {}s ago — within hold-off, skipping resubscribe",
+                                               since_recovery_s);
+                            } else if (since_push_s > PUSH_RESUBSCRIBE_THRESHOLD_SECONDS) {
+                                m_logger->warn("[Worker_manager] Push notifications silent for {}s after recovery — re-subscribing",
+                                               since_push_s);
+                                solo_protocol->resubscribe_push_notifications();
+                            }
                         }
                     }
                 } else {
@@ -1626,6 +1651,7 @@ void Worker_manager::clear_recovery_state()
     }
     m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
     m_degraded_since = {};  // Clear escape-ladder timer; next outage will re-anchor it
+    m_last_recovery_completed_at = now;  // Hold-off anchor for push-resubscription guard
     // Note: m_recovery_workers_spawned is intentionally NOT reset here.
     // It is only reset in stop_all_workers() which actually destroys workers,
     // preventing a mid-recovery clear_recovery_state() call (e.g. from a
