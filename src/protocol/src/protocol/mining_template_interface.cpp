@@ -1239,6 +1239,16 @@ void MiningTemplateInterface::discard_template_unsafe(const std::string& reason)
     mark_template_stale_unsafe(reason);
     m_template_channel_height_snapshot = 0;
     m_has_snapshot = false;
+
+    // Reset debounce gate so the replacement template arriving via GET_BLOCK recovery
+    // is not suppressed by feed_current_template().
+    //
+    // Without this reset: after a push triggers discard, m_last_feed_tp retains the
+    // timestamp of the prior feed. The recovery GET_BLOCK response arrives within the
+    // 2000ms debounce window with the same height+hashPrevBlock → same_template=true →
+    // feed suppressed → workers_fed=0 → stop_all_workers → infinite recovery loop.
+    m_last_feed_tp = {};       // Reset timestamp — makes ms_since_last enormous, debounce never fires
+    m_last_feed_height = 0;    // Belt-and-suspenders: aids log clarity on next feed
 }
 
 bool MiningTemplateInterface::needs_channel_height_finalization() const
