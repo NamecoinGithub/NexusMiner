@@ -3294,6 +3294,12 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                     return;
                 }
                 if (connection) {
+                    // Push-triggered GET_BLOCK must bypass the normal dedup gate.
+                    // The push handler calls request_work_fn only when a fresh template is
+                    // genuinely needed (no template, tip moved, stale, burst lag), so a
+                    // forced request is always correct here.  The prior dedup timestamp was
+                    // set for the old canonical state and must not suppress this request.
+                    reset_get_block_dedup_state();
                     auto work_payload = get_work();
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);

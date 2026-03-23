@@ -1626,45 +1626,51 @@ void Worker_manager::clear_recovery_state()
 
 void Worker_manager::stop_all_workers()
 {
-    std::lock_guard<std::mutex> lock(m_worker_mutex);
-
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
     m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
-    
-    // Set degraded mode flag
-    bool first_entry = !m_degraded_mode;
-    m_degraded_mode = true;
-    m_template_withheld = false;  // Full stop supersedes soft-pause
+
+    bool first_entry = false;
+    {
+        std::lock_guard<std::mutex> lock(m_worker_mutex);
+
+        // Set degraded mode flag
+        first_entry = !m_degraded_mode;
+        m_degraded_mode = true;
+        m_template_withheld = false;  // Full stop supersedes soft-pause
+
+        // Record when degraded mode was first entered (only on first entry — not overwritten
+        // by subsequent stop_all_workers() calls within the same outage, so the escape ladder
+        // measures wall-clock time from the true start of the outage).
+        if (m_degraded_since == std::chrono::steady_clock::time_point{}) {
+            m_degraded_since = std::chrono::steady_clock::now();
+        }
+        if (first_entry) {
+            ++m_degraded_enter_total;
+        }
+
+        // Update stats to reflect degraded mode
+        auto global_stats = m_stats_collector->get_global_stats();
+        global_stats.m_degraded_mode = true;
+        m_stats_collector->update_global_stats(global_stats);
+
+        // Reset all worker instances so that the next create_workers() call starts fresh
+        // without duplicating existing workers.  The shared_ptr reset() destroys the Worker
+        // object (and joins its mining thread in the destructor), effectively stopping it.
+        for (auto& worker : m_workers) {
+            worker.reset();
+        }
+        m_workers.clear();
+
+        // Clear the recovery gate so the next epoch can re-create workers
+        m_recovery_workers_spawned = false;
+    }
+
+    // Notify the session manager OUTSIDE m_worker_mutex to avoid holding the worker
+    // lock while calling into protocol/session code that may acquire m_template_mutex.
     if (auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr) {
         solo_protocol->mark_authoritative_recovery_required("workers_stopped_waiting_for_valid_template");
     }
-
-    // Record when degraded mode was first entered (only on first entry — not overwritten
-    // by subsequent stop_all_workers() calls within the same outage, so the escape ladder
-    // measures wall-clock time from the true start of the outage).
-    if (m_degraded_since == std::chrono::steady_clock::time_point{}) {
-        m_degraded_since = std::chrono::steady_clock::now();
-    }
-    if (first_entry) {
-        ++m_degraded_enter_total;
-    }
-    
-    // Update stats to reflect degraded mode
-    auto global_stats = m_stats_collector->get_global_stats();
-    global_stats.m_degraded_mode = true;
-    m_stats_collector->update_global_stats(global_stats);
-    
-    // Reset all worker instances so that the next create_workers() call starts fresh
-    // without duplicating existing workers.  The shared_ptr reset() destroys the Worker
-    // object (and joins its mining thread in the destructor), effectively stopping it.
-    for (auto& worker : m_workers) {
-        worker.reset();
-    }
-    m_workers.clear();
-
-    // Clear the recovery gate so the next epoch can re-create workers
-    m_recovery_workers_spawned = false;
 
     m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
     m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
