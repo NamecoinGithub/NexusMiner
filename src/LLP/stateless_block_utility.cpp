@@ -197,8 +197,9 @@ SubmitResult StatelessBlockUtility::encode_submit(
     }
 
     // ── Pre-check 7: Delegate serialization to MiningTemplateInterface ────────
-    // prepare_block_submission(merkle_root, nonce, vOffsets) handles Tritium
-    // format, submit-audit logging, and Prime-channel vOffsets appending.
+    // prepare_block_submission() handles Tritium format and submit-audit logging.
+    // vOffsets are NOT appended to the wire payload — the node computes them from
+    // the nonce via GetOffsets(GetPrime(), vOffsets).
     auto merkle_bytes = solved_block.hashMerkleRoot.GetBytes();
     auto block_bytes = tmpl_iface.prepare_block_submission(
         merkle_bytes, solved_block.nNonce, vOffsets);
@@ -256,8 +257,9 @@ SubmitResult StatelessBlockUtility::encode_submit(
                           "signed: block({})+ts(8)+siglen(2)+sig({}) = {} bytes",
                           block_bytes.size(), sig_len, plaintext.size());
     } else {
-        // No signing -- payload is just the serialized block bytes (+ any vOffsets
-        // already appended by prepare_block_submission for Prime channel)
+        // No signing -- payload is the 216-byte serialized block bytes only.
+        // vOffsets are not included in the wire payload; the node computes them
+        // from the submitted nonce via GetOffsets(GetPrime(), vOffsets).
         plaintext = std::move(block_bytes);
         if (logger)
             logger->debug("[StatelessBlockUtility::encode_submit] "

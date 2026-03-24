@@ -661,14 +661,10 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     if (payload.empty())
         return payload;
 
-    // For Prime channel, append Cunningham-chain offsets so the node can verify
-    // the prime cluster via GetPrimeDifficulty() / GetOffsets().
-    // Hash channel vOffsets are always empty — no-op.
-    if (!vOffsets.empty() && m_channel == 1) {
-        payload.insert(payload.end(), vOffsets.begin(), vOffsets.end());
-        m_logger->debug("[TemplateInterface] Appended {} vOffset bytes for Prime channel",
-                        vOffsets.size());
-    }
+    // vOffsets are intentionally NOT appended to the wire payload.
+    // The upstream node (LLL-TAO sign_block) computes vOffsets itself via
+    // GetOffsets(GetPrime(), vOffsets) from the submitted nonce.
+    // vOffsets in Block_data are for local difficulty screening only.
 
     return payload;
 }

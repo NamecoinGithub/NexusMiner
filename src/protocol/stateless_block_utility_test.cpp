@@ -12,13 +12,13 @@
  *  7.  encode_submit() with STATELESS lane produces opcode 0xD001
  *  8.  encode_submit() with LEGACY lane produces opcode 0x01
  *  9.  encode_submit() with falcon=nullptr produces unsigned submit
- *      (payload = block bytes + any vOffsets, no Falcon signature suffix)
+ *      (payload = 216-byte block bytes only, no Falcon signature suffix)
  * 10.  decode_template() populates metadata fields from 12-byte prefix (BE)
  * 11.  decode_template() populates canonical block fields from 216-byte body
  * 12.  decode_template() sets channel_consistent correctly
  * 13.  encode_submit() informational staleness/tip-moved do not block submission
- * 14.  encode_submit() with Prime-channel vOffsets produces larger payload than
- *      Hash-channel (no vOffsets) submission
+ * 14.  encode_submit() Prime and Hash channels produce identical payload size (216 bytes)
+ *      (vOffsets are NOT appended to the wire payload)
  */
 
 #include "include/stateless_block_utility.hpp"
@@ -382,8 +382,9 @@ static void test_encode_rejects_submit_height_mismatch() {
                  result.rejection_reason.find("submit_height=6000002") != std::string::npos);
 }
 
-// Test 15 -- Prime channel vOffsets produce larger payload than Hash channel
-static void test_encode_prime_voffsets_appended() {
+// Test 15 -- Prime and Hash channels produce identical payload size (216 bytes)
+// vOffsets are NOT appended to the wire payload; the node computes them from the nonce.
+static void test_encode_prime_no_voffsets_appended() {
     // Load a Prime-channel template (nChannel=1)
     MiningTemplateInterface mti_prime(1, 0);
     auto payload_prime = make_template_payload(6000000, 2000000, DEFAULT_DIFFICULTY,
@@ -400,7 +401,7 @@ static void test_encode_prime_voffsets_appended() {
     auto blk_hash  = make_solved_block(2, 6000001, 0xDEADBEEFCAFEBABEULL);
     auto snap = make_snapshot();
 
-    // Canonical Prime vOffsets shape: 6 single-byte offsets + 4-byte LE fraction.
+    // vOffsets are accepted for API compatibility but must NOT inflate the payload.
     std::vector<uint8_t> vOffsets = {0x02, 0x04, 0x06, 0x02, 0x04, 0x06, 0x10, 0x20, 0x30, 0x40};
 
     auto prime_result = StatelessBlockUtility::encode_submit(
@@ -408,11 +409,11 @@ static void test_encode_prime_voffsets_appended() {
     auto hash_result  = StatelessBlockUtility::encode_submit(
         mti_hash, blk_hash, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
 
+    // Both channels must produce the same wire payload size (6 header + 216 block body)
     bool ok = prime_result.valid && hash_result.valid &&
-              prime_result.wire_bytes->size() ==
-                  hash_result.wire_bytes->size() + vOffsets.size();
-    print_result("encode_submit(): Prime vOffsets are appended to payload "
-                 "(Prime payload > Hash payload by vOffsets.size())", ok);
+              prime_result.wire_bytes->size() == hash_result.wire_bytes->size();
+    print_result("encode_submit(): Prime and Hash produce identical wire payload size "
+                 "(vOffsets NOT appended to wire)", ok);
 }
 
 // Test 15 -- read_stateless_payload() + set_channel_height() does not trigger
@@ -515,7 +516,7 @@ int main() {
     test_decode_channel_consistent();
     test_encode_stale_does_not_block();
     test_encode_rejects_submit_height_mismatch();
-    test_encode_prime_voffsets_appended();
+    test_encode_prime_no_voffsets_appended();
     test_set_channel_height_no_corruption_guard();
     test_worker_header_bytes_match_raw_block_with_nonce();
     test_worker_prime_header_bytes_match_raw_block_without_nonce();

@@ -346,9 +346,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                 }
                             }
 
-                            // Prepare full block submission (216 or 220 bytes depending on format)
-                            // This reconstructs the full block from the current template with the
-                            // mined merkle root and nonce
+                            // Prepare full block submission (always 216 bytes — vOffsets
+                            // are NOT transmitted to the node; it computes them from the nonce)
                             m_logger->info("[Worker_manager] Preparing full block submission");
                             m_logger->info("[Worker_manager]   Height: {}", block_data->nHeight);
                             m_logger->info("[Worker_manager]   Nonce:  0x{:016x}", block_data->nNonce);
