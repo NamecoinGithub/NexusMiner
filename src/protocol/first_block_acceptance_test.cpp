@@ -413,7 +413,6 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
     auto submit_result = StatelessBlockUtility::encode_submit(
         template_interface,
         solved_block,
-        {},
         nullptr,
         ProtocolLane::STATELESS,
         HeightTracker::Snapshot{},
@@ -431,7 +430,7 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
     result.artifacts.submitted_payload_height = extract_serialized_block_height(plaintext_submit);
 
     auto expected_block_submission = template_interface.prepare_block_submission(
-        current_template->block.hashMerkleRoot.GetBytes(), ACCEPTANCE_NONCE, {});
+        current_template->block.hashMerkleRoot.GetBytes(), ACCEPTANCE_NONCE);
     result.artifacts.submit_validation_matches_template =
         (plaintext_submit == expected_block_submission);
     if (!result.artifacts.submit_validation_matches_template) {

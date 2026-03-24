@@ -638,27 +638,6 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     return payload;
 }
 
-std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
-    const std::vector<uint8_t>& merkle_root,
-    uint64_t nonce,
-    const std::vector<uint8_t>& vOffsets)
-{
-    // Delegate the block serialization to the base overload
-    auto payload = prepare_block_submission(merkle_root, nonce);
-    if (payload.empty())
-        return payload;
-
-    // For Prime channel, append Cunningham-chain offsets so the node can verify
-    // the prime cluster via GetPrimeDifficulty() / GetOffsets().
-    // Hash channel vOffsets are always empty — no-op.
-    if (!vOffsets.empty() && m_channel == 1) {
-        payload.insert(payload.end(), vOffsets.begin(), vOffsets.end());
-        m_logger->debug("[TemplateInterface] Appended {} vOffset bytes for Prime channel",
-                        vOffsets.size());
-    }
-
-    return payload;
-}
 
 void MiningTemplateInterface::set_session_id(uint32_t session_id)
 {

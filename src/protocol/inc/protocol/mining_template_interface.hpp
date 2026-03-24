@@ -431,22 +431,7 @@ public:
     std::vector<uint8_t> prepare_block_submission(const std::vector<uint8_t>& merkle_root,
                                                    uint64_t nonce);
 
-    /**
-     * @brief Prepare block for submission, appending Prime channel vOffsets
-     *
-     * For the Prime channel (nChannel == 1), the Cunningham-chain offsets computed
-     * by ValidatePrimeCandidate() must be appended to the serialized block bytes so
-     * the node can verify the prime cluster. For the Hash channel, vOffsets is ignored.
-     *
-     * @param merkle_root Block's merkle root
-     * @param nonce Block's nonce value
-     * @param vOffsets Prime chain offsets (empty for Hash channel)
-     * @return Submission payload bytes (block bytes + vOffsets for Prime), empty if invalid
-     */
-    std::vector<uint8_t> prepare_block_submission(const std::vector<uint8_t>& merkle_root,
-                                                   uint64_t nonce,
-                                                   const std::vector<uint8_t>& vOffsets);
-    
+
     // =========================================================================
     // Session Management (FALCON Tunnel Integration)
     // =========================================================================
