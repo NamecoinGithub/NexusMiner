@@ -38,13 +38,9 @@ public:
      * @brief Template state for tracking lifecycle
      */
     enum class TemplateState {
-        EMPTY,          // No template loaded
-        PENDING,        // Template requested, waiting for response
-        RECEIVED,       // Template received from node
-        VALIDATED,      // Template validated and ready for mining
-        ACTIVE,         // Template is being mined
-        STALE,          // Template has expired (new height/block found)
-        SUBMITTED       // Block found and submitted to node
+        INVALID,    // No valid template: empty, stale, or submitted
+        PENDING,    // Template requested, data in transit
+        VALID,      // Template received and ready for mining
     };
     
     /**

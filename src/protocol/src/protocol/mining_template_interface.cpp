@@ -46,7 +46,7 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     }
     
     // Initialize template as empty
-    m_current_template.state = TemplateState::EMPTY;
+    m_current_template.state = TemplateState::INVALID;
     m_current_template.session_id = session_id;
     m_current_template.session_epoch = m_session_epoch;
     m_current_template.timestamp_received = 0;
@@ -177,7 +177,7 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     tmpl.nChannelHeight = 0;
     tmpl.height_guard.capture_unified_height(tmpl.block.nHeight);
      
-    tmpl.state = TemplateState::RECEIVED;
+    tmpl.state = TemplateState::VALID;
     tmpl.nBits = tmpl.block.nBits;
     
     // Validate the template
@@ -189,7 +189,7 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     m_total_read_time_us.fetch_add(read_time.count(), std::memory_order_relaxed);
     
     if (result.is_valid) {
-        tmpl.state = TemplateState::VALIDATED;
+        tmpl.state = TemplateState::VALID;
         
         // Protect template assignment with mutex
         {
@@ -335,8 +335,7 @@ bool MiningTemplateInterface::has_valid_template() const
 bool MiningTemplateInterface::has_valid_template_unsafe() const
 {
     // ASSUMES: m_template_mutex is already locked by caller
-    return m_current_template.state == TemplateState::VALIDATED ||
-           m_current_template.state == TemplateState::ACTIVE;
+    return m_current_template.state == TemplateState::VALID;
 }
 
 uint32_t MiningTemplateInterface::get_node_channel_height() const
@@ -435,7 +434,7 @@ bool MiningTemplateInterface::feed_current_template()
         m_current_template.block.nHeight);
 
     // Update state to active since it's being fed to workers
-    m_current_template.state = TemplateState::ACTIVE;
+    m_current_template.state = TemplateState::VALID;
 
     // Feed to handlers
     m_feed_handler(m_current_template, m_current_template.nBits);
@@ -454,10 +453,9 @@ void MiningTemplateInterface::mark_template_stale(const std::string& reason)
 void MiningTemplateInterface::mark_template_stale_unsafe(const std::string& reason)
 {
     // ASSUMES: m_template_mutex is already locked by caller
-    if (m_current_template.state != TemplateState::EMPTY &&
-        m_current_template.state != TemplateState::STALE) {
+    if (m_current_template.state != TemplateState::INVALID) {
         
-        m_current_template.state = TemplateState::STALE;
+        m_current_template.state = TemplateState::INVALID;
         m_templates_stale.fetch_add(1, std::memory_order_relaxed);
         
         // Emit operator-facing terminology matching the actual invalidation cause.
@@ -731,13 +729,9 @@ void MiningTemplateInterface::reset_stats()
 const char* MiningTemplateInterface::state_to_string(TemplateState state)
 {
     switch (state) {
-        case TemplateState::EMPTY:      return "EMPTY";
+        case TemplateState::INVALID:    return "INVALID";
         case TemplateState::PENDING:    return "PENDING";
-        case TemplateState::RECEIVED:   return "RECEIVED";
-        case TemplateState::VALIDATED:  return "VALIDATED";
-        case TemplateState::ACTIVE:     return "ACTIVE";
-        case TemplateState::STALE:      return "STALE";
-        case TemplateState::SUBMITTED:  return "SUBMITTED";
+        case TemplateState::VALID:      return "VALID";
         default:                        return "UNKNOWN";
     }
 }
@@ -1027,8 +1021,8 @@ bool MiningTemplateInterface::is_template_stale() const
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
     
-    if (m_current_template.state == TemplateState::EMPTY ||
-        m_current_template.state == TemplateState::STALE) {
+    if (m_current_template.state == TemplateState::INVALID ||
+        m_current_template.state == TemplateState::PENDING) {
         return true;
     }
     
@@ -1040,8 +1034,8 @@ bool MiningTemplateInterface::is_template_old() const
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
     
-    if (m_current_template.state == TemplateState::EMPTY ||
-        m_current_template.state == TemplateState::STALE) {
+    if (m_current_template.state == TemplateState::INVALID ||
+        m_current_template.state == TemplateState::PENDING) {
         return true;
     }
     
@@ -1058,7 +1052,7 @@ uint64_t MiningTemplateInterface::get_template_age() const
 uint64_t MiningTemplateInterface::get_template_age_unsafe() const
 {
     // ASSUMES: m_template_mutex is already locked by caller
-    if (m_current_template.state == TemplateState::EMPTY ||
+    if (m_current_template.state == TemplateState::INVALID ||
         m_current_template.timestamp_received == 0) {
         return 0;
     }
@@ -1232,7 +1226,7 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
     
-    if (m_current_template.state == TemplateState::EMPTY) {
+    if (m_current_template.state == TemplateState::INVALID) {
         m_logger->warn("[TemplateInterface] Cannot set channel height - no active template");
         return;
     }
@@ -1313,7 +1307,7 @@ void MiningTemplateInterface::discard_template_unsafe(const std::string& reason)
     // get_block_sent_total to increment indefinitely with zero successful template installations.
     m_last_unified_height = 0;
 
-    if (m_current_template.state == TemplateState::EMPTY) {
+    if (m_current_template.state == TemplateState::INVALID) {
         m_logger->debug("[TemplateInterface] No template to discard");
         return;
     }
@@ -1342,7 +1336,7 @@ uint32_t MiningTemplateInterface::get_template_height() const
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
     
-    if (m_current_template.state == TemplateState::EMPTY) {
+    if (m_current_template.state == TemplateState::INVALID) {
         return 0;
     }
     return m_current_template.block.nHeight;
