@@ -177,7 +177,6 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     tmpl.nChannelHeight = 0;
     tmpl.height_guard.capture_unified_height(tmpl.block.nHeight);
      
-    tmpl.state = TemplateState::VALID;
     tmpl.nBits = tmpl.block.nBits;
     
     // Validate the template
