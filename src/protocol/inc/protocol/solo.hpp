@@ -362,17 +362,6 @@ private:
     void queue_pending_push_after_auth(const char* log_scope);
     void flush_pending_push_after_auth(const std::shared_ptr<network::Connection>& connection,
                                        const char* log_scope);
-    struct PushIngressLifeline {
-        bool active{false};
-        uint32_t session_id{0};
-        uint64_t session_epoch{0};
-        bool reward_bound{false};
-        bool ready_for_get_block{false};
-    };
-    void capture_push_ingress_lifeline(const char* log_scope);
-    void clear_push_ingress_lifeline();
-    bool can_use_push_ingress_lifeline() const;
-
     // Integration helper functions (bridge MiningTemplateInterface and ClientChannelManager)
     /**
      * @brief Synchronize channel manager state with template interface
@@ -529,7 +518,6 @@ private:
     // Push notification subscription state (MINER_READY sent after auth)
     std::atomic<bool> m_subscribed_to_notifications{false};
     bool m_pending_push_after_auth{false};
-    PushIngressLifeline m_push_ingress_lifeline{};
 
     // Recovery callback — invoked when a push handler fires GET_BLOCK for a stale template
     // (channel_advanced staleness), signalling Worker_manager to enter recovery_pending state.
