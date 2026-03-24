@@ -8,14 +8,29 @@
 namespace nexusminer {
 namespace prime {
 
+/** Miller_Rabin
+ *
+ *  OpenSSL probabilistic primality test wrapper.
+ *  Matches LLL-TAO implementation (1 round).
+ *
+ *  @param[in] hashTest The 1024-bit number to test
+ *  @return True if passes Miller-Rabin, false otherwise
+ *
+ **/
+bool Miller_Rabin(const uint1024_t& hashTest);
+
 /** PrimeCheck
  *
- *  Determines if given number is Prime using Fermat test.
- *  This matches the LLL-TAO implementation.
+ *  Determines if given number is Prime using three sequential tests
+ *  that short-circuit on failure (each must pass before the next runs):
+ *  1. SmallDivisors  — fast rejection by small primes
+ *  2. Miller_Rabin   — probabilistic OpenSSL test
+ *  3. FermatTest     — final Fermat primality test
+ *  Matches the LLL-TAO implementation exactly.
  *
  *  @param[in] hashTest The 1024-bit number to test for primality
  *
- *  @return True if number is prime, false otherwise
+ *  @return True if number passes all three primality tests, false otherwise
  *
  **/
 bool PrimeCheck(const uint1024_t& hashTest);
