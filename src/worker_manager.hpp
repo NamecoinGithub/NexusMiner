@@ -17,8 +17,6 @@
 #include <asio/steady_timer.hpp>
 
 #include <memory>
-#include <array>
-#include <deque>
 #include <mutex>
 #include <atomic>
 #include <chrono>
@@ -40,11 +38,9 @@ class ColinAgent;
 // undefined configurations.  Exactly one phase is active at any moment.
 // ─────────────────────────────────────────────────────────────────────────────
 enum class RecoveryPhase : uint8_t {
-    HEALTHY,        // ⚡ Mining normally
-    SOFT_REFRESH,   // ⚡ Workers running, submissions withheld, GET_BLOCK pending
-    HARD_RECOVERY,  // ⚡ Workers stopped, GET_BLOCK pending, waiting for template
-    RECONNECTING,   // ⚡ TCP reconnect in progress, everything paused
-    ESCALATED,      // ⚡ Recovery window expired, aggressive retry + escape ladder active
+    HEALTHY,          // Mining normally
+    WAITING_TEMPLATE, // Waiting for new template; workers keep running
+    RECONNECTING,     // TCP reconnect in progress
 };
 
 struct RecoveryContext {
@@ -55,16 +51,12 @@ struct RecoveryContext {
     std::chrono::steady_clock::time_point degraded_since{};        // When current outage started (set once per outage)
     std::chrono::steady_clock::time_point last_get_block_at{};     // Last confirmed GET_BLOCK transmit
     std::chrono::steady_clock::time_point last_completed_at{};     // When last recovery finished (hold-off)
-    std::chrono::steady_clock::time_point last_escalation_at{};    // Prevents immediate re-escalation
     bool get_block_confirmed{false};                               // At least one GET_BLOCK confirmed this epoch
     const char* reason{nullptr};                                   // Why this phase was entered (for logging)
 
     // ── Reconnect sub-state (only valid when phase == RECONNECTING) ──────────
     std::chrono::steady_clock::time_point reconnect_started_at{};
 
-    // ── Forced retry tracking (carried across phases) ─────────────────────────
-    std::deque<std::chrono::steady_clock::time_point> forced_retry_timestamps{};
-    std::chrono::steady_clock::time_point next_forced_retry_due{};
 };
 
 class Worker_manager : public std::enable_shared_from_this<Worker_manager>
@@ -104,23 +96,9 @@ public:
 
 private:
 
-    enum class GetBlockSuppressionReason : uint8_t {
-        NONE = 0,
-        DUPLICATE_WINDOW,
-        REQUEST_WORK_EMPTY,
-        UNAUTHENTICATED,
-        BACKPRESSURE,
-        RATE_LIMIT_LOCAL,
-        COUNT
-    };
-
-    static const char* suppression_reason_name(GetBlockSuppressionReason reason);
-    void log_get_block_decision(bool sent, bool forced_retry, GetBlockSuppressionReason reason, const char* context);
     void schedule_forced_recovery_retry(const char* trigger_reason);
     int64_t next_forced_retry_jitter_ms();
     bool has_valid_template_available(const std::shared_ptr<protocol::Solo>& solo_protocol) const;
-    bool can_send_forced_retry(std::chrono::steady_clock::time_point now);
-    void prune_forced_retry_window(std::chrono::steady_clock::time_point now);
 
     void create_stats_printers();
     void create_workers();
@@ -170,9 +148,8 @@ private:
     static const char* phase_name(RecoveryPhase phase);
 
     // ── State query helpers (backward-compat convenience) ─────────────────────
-    bool is_degraded()              const { return m_recovery.phase == RecoveryPhase::HARD_RECOVERY ||
-                                                   m_recovery.phase == RecoveryPhase::ESCALATED; }
-    bool is_submissions_withheld()  const { return m_recovery.phase == RecoveryPhase::SOFT_REFRESH; }
+    bool is_degraded()              const { return m_recovery.phase == RecoveryPhase::WAITING_TEMPLATE; }
+    bool is_submissions_withheld()  const { return false; }
     bool is_recovery_active()       const { return m_recovery.phase != RecoveryPhase::HEALTHY; }
     bool is_reconnecting()          const { return m_recovery.phase == RecoveryPhase::RECONNECTING; }
 
@@ -201,9 +178,7 @@ private:
     std::shared_ptr<asio::steady_timer> m_forced_retry_timer{};
     bool m_forced_retry_timer_pending{false};
     uint64_t m_forced_retry_timer_token{0};
-    GetBlockSuppressionReason m_last_get_block_suppression_reason{GetBlockSuppressionReason::NONE};
     uint64_t m_get_block_sent_total{0};
-    std::array<uint64_t, static_cast<size_t>(GetBlockSuppressionReason::COUNT)> m_get_block_suppressed_total{};
     uint64_t m_get_block_forced_retry_total{0};
     uint64_t m_degraded_enter_total{0};
     uint64_t m_degraded_exit_total{0};

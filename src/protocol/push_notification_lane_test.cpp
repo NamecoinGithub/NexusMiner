@@ -834,9 +834,9 @@ int main()
     }
 
     // ====================================================================
-    // Test 17: Lifeline push bypasses active-session preflight
+    // Test 17: Push still processes without active session (no lifeline)
     // ====================================================================
-    std::cout << "\nTest 17: Lifeline push still processes without active session" << std::endl;
+    std::cout << "\nTest 17: Push still processes without active session" << std::endl;
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
@@ -848,7 +848,7 @@ int main()
 
         auto template_data = create_mock_template(9201, 0x1d00ffff, 2);
         auto res = solo.get_template_interface()->read_template(template_data, "test_node", false);
-        print_test_result("Lifeline push setup template valid", res.is_valid);
+        print_test_result("Disconnected push setup template valid", res.is_valid);
         solo.get_template_interface()->set_channel_height(101);
 
         network::Payload payload = create_extended_push_payload(9200, 100, 0x1d00ffff, 0x42);
