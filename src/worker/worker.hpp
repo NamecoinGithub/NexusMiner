@@ -62,10 +62,9 @@ public:
 	uint32_t nBits = 0x7b032ed8;
 	uint64_t nNonce = 21155560019;
 
-	// Prime channel offsets (Cunningham chain offsets from ValidatePrimeCandidate).
-	// Empty for Hash channel. CPU and GPU prime workers both populate these from
-	// the shared prime_validation.cpp pathway before firing the callback so that
-	// worker_manager can include them in prepare_block_submission().
+	// vOffsets: Used for LOCAL difficulty screening only via ValidatePrimeCandidate().
+	// NOT transmitted to the node — node derives via GetOffsets(GetPrime(), vOffsets).
+	// CPU and GPU prime workers populate these before firing the submit callback.
 	std::vector<uint8_t> vOffsets;
 
 private:

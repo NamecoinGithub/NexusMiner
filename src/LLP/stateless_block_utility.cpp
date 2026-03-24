@@ -124,7 +124,6 @@ DecodedTemplate StatelessBlockUtility::decode_template(
 SubmitResult StatelessBlockUtility::encode_submit(
     MiningTemplateInterface& tmpl_iface,
     const ::LLP::CBlock& solved_block,
-    const std::vector<uint8_t>& vOffsets,
     FalconSignatureWrapper* falcon,
     ProtocolLane lane,
     const HeightTracker::Snapshot& ht,
@@ -197,11 +196,13 @@ SubmitResult StatelessBlockUtility::encode_submit(
     }
 
     // ── Pre-check 7: Delegate serialization to MiningTemplateInterface ────────
-    // prepare_block_submission(merkle_root, nonce, vOffsets) handles Tritium
-    // format, submit-audit logging, and Prime-channel vOffsets appending.
+    // prepare_block_submission(merkle_root, nonce) handles Tritium format and
+    // submit-audit logging.  Wire payload is always exactly BLOCK_BODY_SIZE
+    // (216 bytes) for ALL channels — vOffsets are never transmitted on the wire;
+    // the node derives them from the nonce via GetOffsets(GetPrime(), vOffsets).
     auto merkle_bytes = solved_block.hashMerkleRoot.GetBytes();
     auto block_bytes = tmpl_iface.prepare_block_submission(
-        merkle_bytes, solved_block.nNonce, vOffsets);
+        merkle_bytes, solved_block.nNonce);
 
     if (block_bytes.empty()) {
         result.rejection_reason =
@@ -256,8 +257,8 @@ SubmitResult StatelessBlockUtility::encode_submit(
                           "signed: block({})+ts(8)+siglen(2)+sig({}) = {} bytes",
                           block_bytes.size(), sig_len, plaintext.size());
     } else {
-        // No signing -- payload is just the serialized block bytes (+ any vOffsets
-        // already appended by prepare_block_submission for Prime channel)
+        // No signing -- payload is just the serialized block bytes (216 bytes
+        // for ALL channels; vOffsets are never appended to the wire payload).
         plaintext = std::move(block_bytes);
         if (logger)
             logger->debug("[StatelessBlockUtility::encode_submit] "
@@ -289,11 +290,9 @@ ChaCha20Wrapper::SubmitBlockPayloadInfo StatelessBlockUtility::compute_submit_pa
     ChaCha20Wrapper::SubmitBlockPayloadInfo info;
     info.channel            = channel;
     info.base_block_size    = BLOCK_BODY_SIZE;  // 216 for Tritium
-    // For Prime, offset bytes = total block_data_size - base 216-byte block body.
-    // For Hash, block_data_size should equal 216, so offset_bytes_count = 0.
-    info.offset_bytes_count = (block_data_size > BLOCK_BODY_SIZE)
-                                ? (block_data_size - BLOCK_BODY_SIZE)
-                                : 0;
+    // vOffsets are never transmitted on the wire (node derives from nonce).
+    // offset_bytes_count is always 0 for both Prime and Hash channels.
+    info.offset_bytes_count = 0;
     info.timestamp_size     = 8;
     info.sig_len_field_size = 2;
     info.signature_size     = signature_size;

@@ -12,13 +12,12 @@
  *  7.  encode_submit() with STATELESS lane produces opcode 0xD001
  *  8.  encode_submit() with LEGACY lane produces opcode 0x01
  *  9.  encode_submit() with falcon=nullptr produces unsigned submit
- *      (payload = block bytes + any vOffsets, no Falcon signature suffix)
+ *      (payload = block bytes only, 216 bytes for ALL channels)
  * 10.  decode_template() populates metadata fields from 12-byte prefix (BE)
  * 11.  decode_template() populates canonical block fields from 216-byte body
  * 12.  decode_template() sets channel_consistent correctly
  * 13.  encode_submit() informational staleness/tip-moved do not block submission
- * 14.  encode_submit() with Prime-channel vOffsets produces larger payload than
- *      Hash-channel (no vOffsets) submission
+ * 14.  encode_submit() Prime and Hash produce identical wire payload size (216 bytes)
  */
 
 #include "include/stateless_block_utility.hpp"
@@ -227,7 +226,7 @@ static void test_encode_zero_nonce() {
     auto blk  = make_solved_block(2, 6000001, /*nNonce=*/0);
     auto snap = make_snapshot();
     auto result = StatelessBlockUtility::encode_submit(
-        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        *mti, blk, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     print_result("encode_submit(): rejects zero nonce",
                  !result.valid && !result.rejection_reason.empty());
 }
@@ -238,7 +237,7 @@ static void test_encode_invalid_channel() {
     auto blk  = make_solved_block(/*channel=*/0, 6000001, 0xDEADBEEFULL);
     auto snap = make_snapshot();
     auto result = StatelessBlockUtility::encode_submit(
-        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        *mti, blk, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     print_result("encode_submit(): rejects invalid channel (0)",
                  !result.valid && !result.rejection_reason.empty());
 }
@@ -249,7 +248,7 @@ static void test_encode_zero_height() {
     auto blk  = make_solved_block(2, /*height=*/0, 0xDEADBEEFULL);
     auto snap = make_snapshot();
     auto result = StatelessBlockUtility::encode_submit(
-        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        *mti, blk, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     print_result("encode_submit(): rejects zero height",
                  !result.valid && !result.rejection_reason.empty());
 }
@@ -260,7 +259,7 @@ static void test_encode_stateless_opcode() {
     auto blk  = make_solved_block();
     auto snap = make_snapshot();
     auto result = StatelessBlockUtility::encode_submit(
-        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        *mti, blk, nullptr, ProtocolLane::STATELESS, snap, nullptr);
 
     bool ok = false;
     if (result.valid && result.wire_bytes && result.wire_bytes->size() >= 2) {
@@ -276,7 +275,7 @@ static void test_encode_legacy_opcode() {
     auto blk  = make_solved_block();
     auto snap = make_snapshot();
     auto result = StatelessBlockUtility::encode_submit(
-        *mti, blk, {}, nullptr, ProtocolLane::LEGACY, snap, nullptr);
+        *mti, blk, nullptr, ProtocolLane::LEGACY, snap, nullptr);
 
     bool ok = false;
     if (result.valid && result.wire_bytes && !result.wire_bytes->empty()) {
@@ -295,7 +294,7 @@ static void test_encode_unsigned_submit() {
     auto snap = make_snapshot();
 
     auto result = StatelessBlockUtility::encode_submit(
-        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        *mti, blk, nullptr, ProtocolLane::STATELESS, snap, nullptr);
 
     bool ok = false;
     if (result.valid && result.wire_bytes) {
@@ -364,7 +363,7 @@ static void test_encode_stale_does_not_block() {
     auto snap = ht.GetSnapshot();
 
     auto result = StatelessBlockUtility::encode_submit(
-        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        *mti, blk, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     print_result("encode_submit(): stale template is a warning, not a hard "
                  "rejection", result.valid);
 }
@@ -374,7 +373,7 @@ static void test_encode_rejects_submit_height_mismatch() {
     auto mti = make_loaded_mti();
     auto blk = make_solved_block(2, /*nHeight=*/6000002, 0xDEADBEEFCAFEBABEULL);
     auto result = StatelessBlockUtility::encode_submit(
-        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, make_snapshot(), nullptr,
+        *mti, blk, nullptr, ProtocolLane::STATELESS, make_snapshot(), nullptr,
         make_submit_context(/*template_height=*/6000001, /*chain_height=*/6000000));
     print_result("encode_submit(): rejects authoritative submit-height mismatch",
                  !result.valid &&
@@ -382,7 +381,7 @@ static void test_encode_rejects_submit_height_mismatch() {
                  result.rejection_reason.find("submit_height=6000002") != std::string::npos);
 }
 
-// Test 15 -- Prime channel vOffsets produce larger payload than Hash channel
+// Test 15 -- Prime and Hash produce identical wire payload size (216 bytes, no vOffsets)
 static void test_encode_prime_voffsets_appended() {
     // Load a Prime-channel template (nChannel=1)
     MiningTemplateInterface mti_prime(1, 0);
@@ -400,19 +399,17 @@ static void test_encode_prime_voffsets_appended() {
     auto blk_hash  = make_solved_block(2, 6000001, 0xDEADBEEFCAFEBABEULL);
     auto snap = make_snapshot();
 
-    // Canonical Prime vOffsets shape: 6 single-byte offsets + 4-byte LE fraction.
-    std::vector<uint8_t> vOffsets = {0x02, 0x04, 0x06, 0x02, 0x04, 0x06, 0x10, 0x20, 0x30, 0x40};
-
+    // vOffsets are NOT transmitted on the wire; encode_submit takes no vOffsets parameter
     auto prime_result = StatelessBlockUtility::encode_submit(
-        mti_prime, blk_prime, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        mti_prime, blk_prime, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     auto hash_result  = StatelessBlockUtility::encode_submit(
-        mti_hash, blk_hash, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+        mti_hash, blk_hash, nullptr, ProtocolLane::STATELESS, snap, nullptr);
 
+    // Prime and Hash wire payload must be identical size (both 216 bytes)
     bool ok = prime_result.valid && hash_result.valid &&
-              prime_result.wire_bytes->size() ==
-                  hash_result.wire_bytes->size() + vOffsets.size();
-    print_result("encode_submit(): Prime vOffsets are appended to payload "
-                 "(Prime payload > Hash payload by vOffsets.size())", ok);
+              prime_result.wire_bytes->size() == hash_result.wire_bytes->size();
+    print_result("encode_submit(): Prime and Hash produce identical wire payload (216 bytes)",
+                 ok);
 }
 
 // Test 15 -- read_stateless_payload() + set_channel_height() does not trigger
