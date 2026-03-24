@@ -63,9 +63,10 @@ public:
 	uint64_t nNonce = 21155560019;
 
 	// Prime channel offsets (Cunningham chain offsets from ValidatePrimeCandidate).
-	// Empty for Hash channel. CPU and GPU prime workers both populate these from
-	// the shared prime_validation.cpp pathway before firing the callback so that
-	// worker_manager can include them in prepare_block_submission().
+	// Empty for Hash channel. CPU and GPU prime workers populate these for local
+	// difficulty screening and logging ONLY. vOffsets are NOT transmitted to the
+	// node — the upstream node (LLL-TAO) computes them itself from the nonce via
+	// GetOffsets(GetPrime(), vOffsets) in sign_block().
 	std::vector<uint8_t> vOffsets;
 
 private:

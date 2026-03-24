@@ -434,16 +434,19 @@ public:
                                                    uint64_t nonce);
 
     /**
-     * @brief Prepare block for submission, appending Prime channel vOffsets
+     * @brief Prepare block for submission (vOffsets overload — vOffsets ignored on wire)
      *
-     * For the Prime channel (nChannel == 1), the Cunningham-chain offsets computed
-     * by ValidatePrimeCandidate() must be appended to the serialized block bytes so
-     * the node can verify the prime cluster. For the Hash channel, vOffsets is ignored.
+     * Delegates to the two-argument overload. The vOffsets parameter is accepted for
+     * API compatibility but is NOT appended to the payload. The upstream node (LLL-TAO)
+     * computes vOffsets itself via GetOffsets(GetPrime(), vOffsets) from the submitted
+     * nonce, so the miner must not include them in the wire payload.
+     *
+     * vOffsets in Block_data are retained for local difficulty screening only.
      *
      * @param merkle_root Block's merkle root
      * @param nonce Block's nonce value
-     * @param vOffsets Prime chain offsets (empty for Hash channel)
-     * @return Submission payload bytes (block bytes + vOffsets for Prime), empty if invalid
+     * @param vOffsets Prime chain offsets (accepted but NOT transmitted — local use only)
+     * @return Submission payload bytes (216-byte block only), empty if invalid
      */
     std::vector<uint8_t> prepare_block_submission(const std::vector<uint8_t>& merkle_root,
                                                    uint64_t nonce,
