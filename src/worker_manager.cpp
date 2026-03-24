@@ -1055,19 +1055,6 @@ Worker_manager::FailoverStatus Worker_manager::get_failover_status() const
     return fs;
 }
 
-const char* Worker_manager::suppression_reason_name(GetBlockSuppressionReason reason)
-{
-    switch (reason) {
-        case GetBlockSuppressionReason::NONE: return "NONE";
-        case GetBlockSuppressionReason::DUPLICATE_WINDOW: return "DUPLICATE_WINDOW";
-        case GetBlockSuppressionReason::REQUEST_WORK_EMPTY: return "REQUEST_WORK_EMPTY";
-        case GetBlockSuppressionReason::UNAUTHENTICATED: return "UNAUTHENTICATED";
-        case GetBlockSuppressionReason::BACKPRESSURE: return "BACKPRESSURE";
-        case GetBlockSuppressionReason::RATE_LIMIT_LOCAL: return "RATE_LIMIT_LOCAL";
-        case GetBlockSuppressionReason::COUNT: return "COUNT";
-    }
-    return "UNKNOWN";
-}
 
 void Worker_manager::prune_forced_retry_window(std::chrono::steady_clock::time_point now)
 {
@@ -1114,38 +1101,6 @@ bool Worker_manager::can_send_forced_retry(std::chrono::steady_clock::time_point
     return true;
 }
 
-void Worker_manager::log_get_block_decision(bool sent,
-                                            bool forced_retry,
-                                            GetBlockSuppressionReason reason,
-                                            const char* context)
-{
-    m_last_get_block_suppression_reason = reason;
-    if (sent) {
-        ++m_get_block_sent_total;
-        if (forced_retry) {
-            ++m_get_block_forced_retry_total;
-        }
-        m_logger->info("[Worker_manager] GET_BLOCK decision: action=sent context={} forced_retry={} "
-                       "get_block_sent_total={} get_block_forced_retry_total={}",
-                       context ? context : "unknown",
-                       forced_retry ? "true" : "false",
-                       m_get_block_sent_total,
-                       m_get_block_forced_retry_total);
-        return;
-    }
-
-    const auto idx = static_cast<size_t>(reason);
-    if (idx < m_get_block_suppressed_total.size()) {
-        ++m_get_block_suppressed_total[idx];
-    }
-    m_logger->warn("[Worker_manager] GET_BLOCK decision: action=suppressed context={} forced_retry={} "
-                   "reason={} get_block_suppressed_total{{reason={}}}={}",
-                   context ? context : "unknown",
-                   forced_retry ? "true" : "false",
-                   suppression_reason_name(reason),
-                   suppression_reason_name(reason),
-                   (idx < m_get_block_suppressed_total.size()) ? m_get_block_suppressed_total[idx] : 0ULL);
-}
 
 void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
 {
@@ -1623,7 +1578,6 @@ void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) 
         if (m_forced_retry_timer) {
             m_forced_retry_timer->cancel();
         }
-        m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
     }
 
     on_phase_enter(new_phase);
@@ -1698,7 +1652,6 @@ void Worker_manager::restart_recovery_window(const char* reason)
     if (m_forced_retry_timer) {
         m_forced_retry_timer->cancel();
     }
-    m_last_get_block_suppression_reason = GetBlockSuppressionReason::NONE;
     m_recovery.last_escalation_at = {};
 
     if (had_pending_recovery || had_forced_retry_timer) {
@@ -1788,7 +1741,7 @@ void Worker_manager::retry_template_request(bool bForce)
     m_logger->info("[Worker_manager] Requesting fresh template... (force={})", bForce ? "true" : "false");
 
     if (!m_primary_node_session || !m_primary_node_session->is_authenticated()) {
-        log_get_block_decision(false, bForce, GetBlockSuppressionReason::BACKPRESSURE, "missing_authenticated_session");
+        m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=missing_authenticated_session");
         m_logger->error("[Worker_manager] No authenticated session available to request template");
         // Reconstruct wallet endpoint from config and retry connection
         auto const ip_address = m_config.get_wallet_ip();
@@ -1801,7 +1754,7 @@ void Worker_manager::retry_template_request(bool bForce)
 
     auto solo_protocol = m_primary_node_session->get_primary_protocol();
     if (!solo_protocol) {
-        log_get_block_decision(false, bForce, GetBlockSuppressionReason::BACKPRESSURE, "no_protocol");
+        m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=no_protocol");
         m_logger->error("[Worker_manager] Failed to get protocol from NodeSession");
         return;
     }
@@ -1819,7 +1772,7 @@ void Worker_manager::retry_template_request(bool bForce)
     // before MINER_AUTH_RESULT has set m_authenticated.  This is a normal transient
     // startup/reconnect condition; the health monitor will retry at the next tick.
     if (!solo_protocol->is_authenticated()) {
-        log_get_block_decision(false, bForce, GetBlockSuppressionReason::UNAUTHENTICATED, "solo_not_authenticated");
+        m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=solo_not_authenticated");
         m_logger->info("[Worker_manager] GET_BLOCK deferred — not yet authenticated (auth in progress); "
                        "health monitor will retry when session is established");
         return;
@@ -1830,7 +1783,7 @@ void Worker_manager::retry_template_request(bool bForce)
     // calling get_work).  Detect it here so we can log the real reason and trigger
     // reconnect immediately instead of burning a recovery tick.
     if (!m_primary_node_session->is_primary_connected()) {
-        log_get_block_decision(false, bForce, GetBlockSuppressionReason::BACKPRESSURE, "primary_disconnected");
+        m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=primary_disconnected");
         m_logger->warn("[Worker_manager] GET_BLOCK deferred — primary TCP connection is not established; "
                        "initiating reconnect");
         retry_connect(m_primary_endpoint);
@@ -1839,7 +1792,7 @@ void Worker_manager::retry_template_request(bool bForce)
 
     bool forced_lane = bForce && is_degraded() && solo_protocol->is_authenticated() && no_valid_template;
     if (forced_lane && !can_send_forced_retry(now)) {
-        log_get_block_decision(false, true, GetBlockSuppressionReason::RATE_LIMIT_LOCAL, "forced_lane_rate_limit");
+        m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=forced_lane_rate_limit");
         schedule_forced_recovery_retry("forced_lane_rate_limit");
         return;
     }
@@ -1858,27 +1811,26 @@ void Worker_manager::retry_template_request(bool bForce)
                 std::chrono::milliseconds(FORCED_RETRY_INTERVAL_MS + next_forced_retry_jitter_ms());
             prune_forced_retry_window(m_recovery.last_get_block_at);
         }
-        log_get_block_decision(true, forced_lane, GetBlockSuppressionReason::NONE, "request_work_sent");
+        ++m_get_block_sent_total;
+        if (forced_lane) {
+            ++m_get_block_forced_retry_total;
+        }
         m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery.epoch);
     } else {
-        GetBlockSuppressionReason reason = GetBlockSuppressionReason::REQUEST_WORK_EMPTY;
         auto last_status = solo_protocol->get_last_get_block_request_status();
+        const char* status_str = "request_work_empty";
         switch (last_status) {
             case protocol::Solo::GetBlockRequestStatus::DUPLICATE_WINDOW:
-                reason = GetBlockSuppressionReason::DUPLICATE_WINDOW;
+                status_str = "duplicate_window";
                 break;
             case protocol::Solo::GetBlockRequestStatus::UNAUTHENTICATED:
             case protocol::Solo::GetBlockRequestStatus::SESSION_INVALID:
-                reason = GetBlockSuppressionReason::UNAUTHENTICATED;
+                status_str = "unauthenticated";
                 break;
-            case protocol::Solo::GetBlockRequestStatus::REWARD_NOT_BOUND:
-            case protocol::Solo::GetBlockRequestStatus::BUILD_EMPTY:
-            case protocol::Solo::GetBlockRequestStatus::NONE:
-            case protocol::Solo::GetBlockRequestStatus::SENT:
-                reason = GetBlockSuppressionReason::REQUEST_WORK_EMPTY;
+            default:
                 break;
         }
-        log_get_block_decision(false, forced_lane, reason, "request_work_empty");
+        m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context={}", status_str);
         // request_work() returned empty despite passing all guards above.
         // Most likely cause: 100ms GET_BLOCK dedup guard in Solo::get_work() or
         // transient reward-binding gap.  The recovery timer will retry at the next tick.

@@ -17,7 +17,6 @@
 #include <asio/steady_timer.hpp>
 
 #include <memory>
-#include <array>
 #include <deque>
 #include <mutex>
 #include <atomic>
@@ -104,18 +103,6 @@ public:
 
 private:
 
-    enum class GetBlockSuppressionReason : uint8_t {
-        NONE = 0,
-        DUPLICATE_WINDOW,
-        REQUEST_WORK_EMPTY,
-        UNAUTHENTICATED,
-        BACKPRESSURE,
-        RATE_LIMIT_LOCAL,
-        COUNT
-    };
-
-    static const char* suppression_reason_name(GetBlockSuppressionReason reason);
-    void log_get_block_decision(bool sent, bool forced_retry, GetBlockSuppressionReason reason, const char* context);
     void schedule_forced_recovery_retry(const char* trigger_reason);
     int64_t next_forced_retry_jitter_ms();
     bool has_valid_template_available(const std::shared_ptr<protocol::Solo>& solo_protocol) const;
@@ -201,9 +188,7 @@ private:
     std::shared_ptr<asio::steady_timer> m_forced_retry_timer{};
     bool m_forced_retry_timer_pending{false};
     uint64_t m_forced_retry_timer_token{0};
-    GetBlockSuppressionReason m_last_get_block_suppression_reason{GetBlockSuppressionReason::NONE};
     uint64_t m_get_block_sent_total{0};
-    std::array<uint64_t, static_cast<size_t>(GetBlockSuppressionReason::COUNT)> m_get_block_suppressed_total{};
     uint64_t m_get_block_forced_retry_total{0};
     uint64_t m_degraded_enter_total{0};
     uint64_t m_degraded_exit_total{0};
