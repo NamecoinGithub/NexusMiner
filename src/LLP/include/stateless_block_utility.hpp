@@ -19,13 +19,9 @@
  *   encode/decode logic is duplicated here.
  *
  * Encode (Miner -> Node)
- *   encode_submit() delegates block serialization to
- *   MiningTemplateInterface::prepare_block_submission(), then optionally signs
- *   with Disposable Falcon and frames with PacketBuilder.
- *
- *   Wire payload for ALL channels (Prime and Hash) is exactly BLOCK_BODY_SIZE
- *   (216 bytes).  vOffsets are NEVER transmitted; the node derives them from
- *   the nonce via GetOffsets(GetPrime(), vOffsets).
+ *   encode_submit() delegates block serialization (including Prime-channel
+ *   vOffsets) to MiningTemplateInterface::prepare_block_submission(), then
+ *   optionally signs with Disposable Falcon and frames with PacketBuilder.
  *
  * Namespace separation (canonical vs diagnostic):
  *   Canonical inputs  -- block.nHeight, block.nBits, block.nChannel,
@@ -171,13 +167,9 @@ public:
     /**
      * @brief Pre-check and wire-encode a solved block for submission.
      *
-     * Block serialization is delegated to
+     * Block serialization (including Prime-channel vOffsets) is delegated to
      * tmpl_iface.prepare_block_submission() -- no serialization logic is
      * duplicated here.
-     *
-     * Wire payload for ALL channels (Prime and Hash) is exactly BLOCK_BODY_SIZE
-     * (216 bytes).  vOffsets are NEVER transmitted on the wire; the node derives
-     * them from the nonce via GetOffsets(GetPrime(), vOffsets).
      *
      * Pre-check sequence (canonical gates, in order):
      *  1. Nonce sanity:     solved_block.nNonce != 0
@@ -185,13 +177,15 @@ public:
      *  3. Height validity:  solved_block.nHeight > 0
      *  4. Staleness (warn, do not block -- node is authoritative)
      *  5. Tip-moved  (warn, do not block)
-     *  6. MiningTemplateInterface::prepare_block_submission(merkle_root, nNonce)
+     *  6. MiningTemplateInterface::prepare_block_submission(merkle_root, nNonce, vOffsets)
      *  7. Falcon sign: if falcon != nullptr, sign serialized block bytes and append.
      *  8. PacketBuilder::build(lane, SUBMIT_BLOCK, payload).
      *
      * @param tmpl_iface    MiningTemplateInterface that owns the active template.
      *                      Must have a valid template (has_valid_template() == true).
      * @param solved_block  Block header with nNonce filled by the worker.
+     * @param vOffsets      Prime chain offsets from ValidatePrimeCandidate()
+     *                      (empty for Hash channel).
      * @param falcon        Disposable Falcon wrapper; nullptr = skip signing.
      * @param lane          ProtocolLane::STATELESS -> opcode 0xD001,
      *                      ProtocolLane::LEGACY    -> opcode 0x01.
@@ -207,6 +201,7 @@ public:
      */
      static SubmitResult encode_submit(MiningTemplateInterface& tmpl_iface,
                                        const ::LLP::CBlock& solved_block,
+                                       const std::vector<uint8_t>& vOffsets,
                                        FalconSignatureWrapper* falcon,
                                        ProtocolLane lane,
                                        const HeightTracker::Snapshot& ht,
@@ -220,15 +215,15 @@ public:
     /**
      * @brief Build a SubmitBlockPayloadInfo from runtime submit data.
      *
-     * This helper computes expected sizes from real inputs.  Both Hash and
-     * Prime submissions are fixed-size: wire payload is always exactly
-     * BLOCK_BODY_SIZE (216 bytes).  offset_bytes_count is always 0 because
-     * vOffsets are never transmitted on the wire — the node derives them from
-     * the nonce via GetOffsets(GetPrime(), vOffsets).
+     * This helper computes expected sizes from real inputs rather than
+     * assuming a universal fixed Tritium payload size.  Hash submissions
+     * are fixed-size; Prime submissions are variable because
+     * prepare_block_submission() appends vOffsets.
      *
      * @param channel          1 = Prime, 2 = Hash
      * @param block_data_size  Total serialized block bytes returned by
-     *                         prepare_block_submission() (always 216).
+     *                         prepare_block_submission() (includes vOffsets
+     *                         for Prime).  For Hash this is always 216.
      * @param signature_size   Actual Falcon signature length (0 when unsigned).
      * @return Populated SubmitBlockPayloadInfo with all size fields.
      */

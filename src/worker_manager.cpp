@@ -333,15 +333,18 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                             // Prepare full block submission (216 or 220 bytes depending on format)
                             // This reconstructs the full block from the current template with the
-                            // mined merkle root and nonce. vOffsets are used locally for difficulty
-                            // screening only and are NOT transmitted on the wire.
+                            // mined merkle root and nonce
                             m_logger->info("[Worker_manager] Preparing full block submission");
                             m_logger->info("[Worker_manager]   Height: {}", block_data->nHeight);
                             m_logger->info("[Worker_manager]   Nonce:  0x{:016x}", block_data->nNonce);
+                            if (!block_data->vOffsets.empty())
+                                m_logger->info("[Worker_manager]   vOffsets: {} bytes (Prime channel)",
+                                               block_data->vOffsets.size());
 
                             auto full_block_bytes = template_interface->prepare_block_submission(
                                 block_data->merkle_root.GetBytes(),
-                                block_data->nNonce);
+                                block_data->nNonce,
+                                block_data->vOffsets);
 
                             if (full_block_bytes.empty())
                             {

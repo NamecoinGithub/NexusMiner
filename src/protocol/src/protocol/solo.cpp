@@ -1323,12 +1323,14 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     m_last_submitted_height    = tmpl->block.nHeight;
     m_last_submitted_channel   = tmpl->block.nChannel;
 
-    // block_data is always exactly BLOCK_BODY_SIZE (216 bytes) for all channels.
-    // vOffsets are never transmitted on the wire; the node derives them from the
-    // nonce via GetOffsets(GetPrime(), vOffsets).
+    // Extract Prime channel vOffsets from block_data (bytes after 216-byte Tritium body).
+    // For Hash channel block_data is exactly 216 bytes so this is always empty.
+    std::vector<uint8_t> vOffsets;
+    if (block_data.size() > StatelessBlockUtility::BLOCK_BODY_SIZE)
+        vOffsets.assign(block_data.begin() + StatelessBlockUtility::BLOCK_BODY_SIZE, block_data.end());
 
     auto submit_result = StatelessBlockUtility::encode_submit(
-        *m_template_interface, block_to_submit,
+        *m_template_interface, block_to_submit, vOffsets,
         m_falcon_wrapper.get(), m_protocol_lane,
         submit_snapshot, m_logger, submit_context);
 
@@ -1360,12 +1362,13 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
                          std::string(is_channel_height(submit_snapshot.channel_tip_height) ? "true" : "false"));
 
     // ── Channel-aware payload diagnostics ────────────────────────────────────
-    // Wire payload is always BLOCK_BODY_SIZE (216 bytes) for all channels.
-    // vOffsets are never transmitted; offset_bytes_count is always 0.
+    // Compute payload metadata from live data — offset_bytes_count is derived
+    // from real block_data, not defaulted to 0.
+    const size_t live_offset_bytes = vOffsets.size();
     // Signature size: in the signed path, plaintext includes
-    // block + timestamp(8) + sig_len(2) + signature.
-    // If unsigned (no Falcon), signature_size = 0 and plaintext = block only.
-    constexpr size_t block_plus_offsets = StatelessBlockUtility::BLOCK_BODY_SIZE;
+    // block + offsets + timestamp(8) + sig_len(2) + signature.
+    // If unsigned (no Falcon), signature_size = 0 and plaintext = block + offsets only.
+    const size_t block_plus_offsets = StatelessBlockUtility::BLOCK_BODY_SIZE + live_offset_bytes;
     // Minimum signed overhead = timestamp(8) + sig_len_field(2) = 10 bytes
     constexpr size_t MIN_SIGNED_OVERHEAD = 8 + 2;
     const size_t sig_size = (plaintextPayload.size() > block_plus_offsets + MIN_SIGNED_OVERHEAD)
@@ -1380,6 +1383,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
                    payload_info.channel,
                    payload_info.channel == 1 ? "Prime" : "Hash");
     m_logger->info("[Solo Submit]   base_block_size    = {} bytes", payload_info.base_block_size);
+    m_logger->info("[Solo Submit]   offset_bytes_count = {} bytes", payload_info.offset_bytes_count);
     m_logger->info("[Solo Submit]   timestamp_size     = {} bytes", payload_info.timestamp_size);
     m_logger->info("[Solo Submit]   sig_len_field_size = {} bytes", payload_info.sig_len_field_size);
     m_logger->info("[Solo Submit]   signature_size     = {} bytes", payload_info.signature_size);
