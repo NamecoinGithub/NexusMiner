@@ -17,7 +17,6 @@
 #include <asio/steady_timer.hpp>
 
 #include <memory>
-#include <deque>
 #include <mutex>
 #include <atomic>
 #include <chrono>
@@ -61,9 +60,6 @@ struct RecoveryContext {
     // ── Reconnect sub-state (only valid when phase == RECONNECTING) ──────────
     std::chrono::steady_clock::time_point reconnect_started_at{};
 
-    // ── Forced retry tracking (carried across phases) ─────────────────────────
-    std::deque<std::chrono::steady_clock::time_point> forced_retry_timestamps{};
-    std::chrono::steady_clock::time_point next_forced_retry_due{};
 };
 
 class Worker_manager : public std::enable_shared_from_this<Worker_manager>
@@ -106,8 +102,6 @@ private:
     void schedule_forced_recovery_retry(const char* trigger_reason);
     int64_t next_forced_retry_jitter_ms();
     bool has_valid_template_available(const std::shared_ptr<protocol::Solo>& solo_protocol) const;
-    bool can_send_forced_retry(std::chrono::steady_clock::time_point now);
-    void prune_forced_retry_window(std::chrono::steady_clock::time_point now);
 
     void create_stats_printers();
     void create_workers();

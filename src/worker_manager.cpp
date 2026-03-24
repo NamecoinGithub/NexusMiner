@@ -30,7 +30,6 @@
 #include <random>
 #include <iomanip>
 #include <sstream>
-#include <deque>
 
 namespace nexusminer
 {
@@ -84,11 +83,8 @@ namespace {
     // push notification and new BLOCK_DATA template is normal during the propagation
     // window. Set threshold to 5 to avoid false-positive template discards.
     constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
-    constexpr int64_t FORCED_RETRY_INTERVAL_MS = 1000;
     constexpr int64_t FORCED_RETRY_JITTER_MIN_MS = 100;
     constexpr int64_t FORCED_RETRY_JITTER_MAX_MS = 250;
-    constexpr int64_t FORCED_RETRY_WINDOW_SECONDS = 60;
-    constexpr size_t MAX_FORCED_BURST_PER_60S = 25;
 
 }
 
@@ -1056,16 +1052,6 @@ Worker_manager::FailoverStatus Worker_manager::get_failover_status() const
 }
 
 
-void Worker_manager::prune_forced_retry_window(std::chrono::steady_clock::time_point now)
-{
-    while (!m_recovery.forced_retry_timestamps.empty()) {
-        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - m_recovery.forced_retry_timestamps.front()).count();
-        if (age <= FORCED_RETRY_WINDOW_SECONDS) {
-            break;
-        }
-        m_recovery.forced_retry_timestamps.pop_front();
-    }
-}
 
 int64_t Worker_manager::next_forced_retry_jitter_ms()
 {
@@ -1089,18 +1075,6 @@ bool Worker_manager::has_valid_template_available(const std::shared_ptr<protocol
     return (template_interface && template_interface->has_valid_template());
 }
 
-bool Worker_manager::can_send_forced_retry(std::chrono::steady_clock::time_point now)
-{
-    prune_forced_retry_window(now);
-    if (m_recovery.forced_retry_timestamps.size() >= MAX_FORCED_BURST_PER_60S) {
-        return false;
-    }
-    if (m_recovery.next_forced_retry_due != std::chrono::steady_clock::time_point{} && now < m_recovery.next_forced_retry_due) {
-        return false;
-    }
-    return true;
-}
-
 
 void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
 {
@@ -1112,16 +1086,12 @@ void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
     }
 
     auto now = std::chrono::steady_clock::now();
-    auto delay_ms = FORCED_RETRY_INTERVAL_MS + next_forced_retry_jitter_ms();
+    auto delay_ms = next_forced_retry_jitter_ms();
     auto due = now + std::chrono::milliseconds(delay_ms);
-    if (m_recovery.next_forced_retry_due != std::chrono::steady_clock::time_point{} && due < m_recovery.next_forced_retry_due) {
-        due = m_recovery.next_forced_retry_due;
-    }
 
     auto wait_ms = std::max<int64_t>(
         1,
         std::chrono::duration_cast<std::chrono::milliseconds>(due - now).count());
-    m_recovery.next_forced_retry_due = due;
     m_forced_retry_timer_pending = true;
     ++m_forced_retry_timer_token;
     const auto token = m_forced_retry_timer_token;
@@ -1571,8 +1541,6 @@ void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) 
         m_recovery.entered_at = std::chrono::steady_clock::now();
         m_recovery.get_block_confirmed = false;
         m_recovery.last_get_block_at = {};
-        m_recovery.next_forced_retry_due = {};
-        m_recovery.forced_retry_timestamps.clear();
         m_forced_retry_timer_pending = false;
         ++m_forced_retry_timer_token;
         if (m_forced_retry_timer) {
@@ -1645,8 +1613,6 @@ void Worker_manager::restart_recovery_window(const char* reason)
     m_recovery.entered_at = std::chrono::steady_clock::now();  // fresh epoch clock
     m_recovery.last_get_block_at = {};
     m_recovery.get_block_confirmed = false;
-    m_recovery.next_forced_retry_due = {};
-    m_recovery.forced_retry_timestamps.clear();
     m_forced_retry_timer_pending = false;
     ++m_forced_retry_timer_token;
     if (m_forced_retry_timer) {
@@ -1791,11 +1757,6 @@ void Worker_manager::retry_template_request(bool bForce)
     }
 
     bool forced_lane = bForce && is_degraded() && solo_protocol->is_authenticated() && no_valid_template;
-    if (forced_lane && !can_send_forced_retry(now)) {
-        m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=forced_lane_rate_limit");
-        schedule_forced_recovery_retry("forced_lane_rate_limit");
-        return;
-    }
 
     // Request template via NodeSession
     m_logger->info("[Worker_manager] Requesting fresh template via NodeSession (forced_lane={})",
@@ -1805,12 +1766,6 @@ void Worker_manager::retry_template_request(bool bForce)
         m_primary_node_session->transmit(work_payload);
         m_recovery.last_get_block_at = std::chrono::steady_clock::now();
         m_recovery.get_block_confirmed = true;
-        if (forced_lane) {
-            m_recovery.forced_retry_timestamps.push_back(m_recovery.last_get_block_at);
-            m_recovery.next_forced_retry_due = m_recovery.last_get_block_at +
-                std::chrono::milliseconds(FORCED_RETRY_INTERVAL_MS + next_forced_retry_jitter_ms());
-            prune_forced_retry_window(m_recovery.last_get_block_at);
-        }
         ++m_get_block_sent_total;
         if (forced_lane) {
             ++m_get_block_forced_retry_total;
