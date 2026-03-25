@@ -26,7 +26,8 @@ void PushNotificationHandler::handle_push_notification(
     HeightTracker* height_tracker,
     std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
     std::function<void()> request_work_fn,
-    std::function<void()> recovery_initiated_fn)
+    std::function<void()> recovery_initiated_fn,
+    std::function<void()> reset_dedup_fn)
 {
     const char* ch_name = channel_name(expected_channel);
 
@@ -189,6 +190,13 @@ void PushNotificationHandler::handle_push_notification(
                 // Just request a fresh template; workers keep mining the current one.
                 m_logger->info("[Solo Push] ℹ️  Normal anchor update (blocks_behind=1) — requesting fresh {} template",
                                ch_name);
+                // Reset height-based dedup so the recovery GET_BLOCK is not suppressed.
+                // The current dedup state reflects the heights when the last GET_BLOCK was
+                // sent — but we need a new template because the current one is stale.
+                // The heights seen by the push notification are the same as the last
+                // GET_BLOCK, so without this reset the dedup would suppress the recovery
+                // request entirely.
+                if (reset_dedup_fn) { reset_dedup_fn(); }
                 request_work_fn();
 
                 // Advance channel_target so subsequent pushes at the same height
@@ -214,6 +222,7 @@ void PushNotificationHandler::handle_push_notification(
                     // Discard the stale template so workers stop hashing on an unsubmittable block
                     // and so has_valid_template=false is correctly reported to Worker_manager.
                     template_interface->discard_template("burst_2_block_lag");
+                    if (reset_dedup_fn) { reset_dedup_fn(); }
                     request_work_fn();
                     return;
                 }
@@ -227,6 +236,7 @@ void PushNotificationHandler::handle_push_notification(
             if (recovery_initiated_fn) {
                 recovery_initiated_fn();
             }
+            if (reset_dedup_fn) { reset_dedup_fn(); }
             request_work_fn();
 
             // Advance channel_target to prevent doom-loop.
