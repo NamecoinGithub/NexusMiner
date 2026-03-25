@@ -3375,6 +3375,11 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                     reset_get_block_dedup_state();
                     m_recovery_handler();
                 }
+            },
+            [this]() {
+                // Reset height-based dedup before recovery GET_BLOCK so the stale push
+                // path can always issue a fresh GET_BLOCK regardless of cached heights.
+                reset_get_block_dedup_state();
             });
 }
 
