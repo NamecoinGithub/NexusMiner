@@ -4105,44 +4105,43 @@ network::Shared_payload Solo::send_set_reward()
     }
     
     m_logger->info("[Solo Reward] Sending MINER_SET_REWARD (encrypted)");
-    m_logger->info("[Solo Reward]   Address: {}", m_reward_address);
-    
-    // Decode the base58 address to bytes
-    std::vector<uint8_t> vAddress = decode_base58(m_reward_address);
-    
-    if (vAddress.empty()) {
-        m_logger->error("[Solo Reward] Invalid reward address - base58 decode failed");
+    m_logger->info("[Solo Reward]   Genesis Hash: {}", m_reward_address);
+
+    // reward_address must be a 64-character hex Tritium genesis hash
+    if (m_reward_address.length() != 64) {
+        m_logger->error("[Solo Reward] reward_address must be a 64-char hex genesis hash (got {} chars)",
+                        m_reward_address.length());
+        if (genesis_utils::looks_like_base58_address(m_reward_address)) {
+            m_logger->error("[Solo Reward] This looks like a Base58 account address — use the 64-char"
+                            " genesis hash from 'system/get/info' instead");
+        }
         return nullptr;
     }
-    
-    m_logger->info("[Solo Reward] Original address (Base58): {}", m_reward_address);
-    m_logger->info("[Solo Reward] Decoded total bytes: {}", vAddress.size());
-    
-    // Build the payload - the address bytes (will be encrypted by ChaCha20)
+
+    // Hex-decode the 64-char genesis hash to 32 bytes
+    std::vector<uint8_t> vHash = genesis_utils::hex_decode_genesis_hash(m_reward_address);
+    if (vHash.size() != 32) {
+        m_logger->error("[Solo Reward] Failed to hex-decode genesis hash — ensure it contains only hex characters");
+        return nullptr;
+    }
+
+    // Validate mainnet genesis type byte (must be 0xa1 per Coinbase::Verify)
+    if (!genesis_utils::has_mainnet_genesis_type(vHash)) {
+        m_logger->warn("[Solo Reward] Genesis hash leading byte is 0x{:02x} — expected 0xa1 (mainnet)."
+                       " Block rewards will be rejected by Coinbase::Verify on mainnet.",
+                       static_cast<unsigned int>(vHash[0]));
+    }
+
+    // Build the payload - the hash bytes (will be encrypted by ChaCha20)
     std::vector<uint8_t> payload_data;
-    
-    // Extract ONLY the 32-byte hash (skip version and checksum)
-    if (vAddress.size() < 37) {
-        m_logger->error("[Solo Reward] Decoded address too short: {} bytes (expected 37)", vAddress.size());
-        return nullptr;
-    }
-    
-    // Extract bytes 1-32 (skip version byte at index 0, skip checksum at end)
-    std::vector<uint8_t> vHash(vAddress.begin() + 1, vAddress.begin() + 33);
+
     if (m_session_context) {
         m_session_context->begin_reward_binding(m_reward_address, vHash, "config");
         m_session_context->mark_activity();
     }
     
-    // Log the extracted hash for debugging
-    std::string hex_hash;
-    hex_hash.reserve(64);  // 32 bytes * 2 hex chars per byte
-    for(const auto& byte : vHash) {
-        char buf[3];
-        snprintf(buf, sizeof(buf), "%02x", byte);
-        hex_hash += buf;
-    }
-    m_logger->info("[Solo Reward] Extracted 32-byte hash (hex): {}", hex_hash);
+    // Log the decoded genesis hash for debugging
+    m_logger->info("[Solo Reward] Genesis hash (32 bytes): {}", m_reward_address);
     m_logger->info("[Solo Reward] Hash size: {} bytes", vHash.size());
     
     // If ChaCha20 encryption is enabled, encrypt the address
@@ -4631,9 +4630,11 @@ void Solo::handle_reward_result(const Packet& packet)
         
         m_reward_bound = true;
         std::vector<uint8_t> reward_hash;
-        const auto decoded = decode_base58(m_reward_address);
-        if (decoded.size() >= 33) {
-            reward_hash.assign(decoded.begin() + 1, decoded.begin() + 33);
+        // reward_address is a 64-char hex genesis hash — decode directly
+        reward_hash = genesis_utils::hex_decode_genesis_hash(m_reward_address);
+        if (reward_hash.size() != 32) {
+            m_logger->warn("[Solo Reward] Could not decode reward_address to 32 bytes for session commit");
+            reward_hash.clear();
         }
         if (m_session_context) {
             m_session_context->commit_reward_bound(m_reward_address, reward_hash, "live bind");

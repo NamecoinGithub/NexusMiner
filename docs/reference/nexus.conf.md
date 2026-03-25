@@ -226,26 +226,29 @@ channel = 2
 
 ### `reward_address` / `[mining] reward_address`
 **Type:** String  
-**Description:** NXS account address to receive mining rewards.
+**Description:** 64-character Tritium genesis hex hash to receive mining rewards.
 
 **How to get:**
 ```bash
-# In Nexus wallet:
-finance/list/accounts
+# In Nexus wallet or via API:
+system/get/info
 
-# Use any account address
+# Copy the "genesis" field (64-character hex string)
+# This is the same value as the `genesis` field in your miner config.
 ```
 
 **Example:**
 ```toml
 [mining]
-reward_address = "8BMeG7vqvRxPWNJ9fX77XEZZv3DxLTx9jXXpY2jPB4vJWdRABjU"
+reward_address = "a1000000000000000000000000000000000000000000000000000000000000ab"
+# 64-char hex genesis hash from system/get/info (same as genesis above; NOT a Base58 account address)
 ```
 
 **Notes:**
-- Must be a valid Tritium account address
-- Can be different from genesis account
-- Rewards sent here after successful block
+- Must be a valid Tritium Genesis Hash (leading byte `0xa1` on mainnet)
+- **NOT** a Base58 NXS account address — register addresses will fail `Coinbase::Verify`
+- Typically the same value as the `genesis` field unless routing rewards to a separate sigchain
+- Advanced: supply a different genesis hash to route rewards to a different Tritium sigchain
 
 ---
 
