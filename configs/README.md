@@ -25,10 +25,11 @@ Copy the config that matches your hardware and channel, fill in your `genesis` h
 ## Setup Steps
 
 1. Get your genesis hash: in your Nexus wallet run `system/get/info`, copy the `genesis` field (64 hex chars)
-2. Get your reward address: run `finance/list/accounts`, copy the `address` field
+2. For `reward_address`, use the same 64-char genesis hash from step 1.
+   (Advanced: supply a different genesis hash to route rewards to a separate Tritium sigchain.)
 3. Generate Falcon keys: `./NexusMiner --create-keys`
    - Copy the pubkey and privkey hex output into the `[falcon]` section of your config
-4. Replace `YOUR_GENESIS_HASH_HERE` and `YOUR_NXS_REWARD_ADDRESS_HERE` in your chosen config
+4. Replace `YOUR_GENESIS_HASH_HERE` in your chosen config for both `genesis` and `reward_address`
 5. Secure the file: `chmod 600 configs/your-config.config` (protects your private key)
 6. Run: `./NexusMiner configs/your-config.config`
 

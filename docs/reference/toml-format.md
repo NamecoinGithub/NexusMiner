@@ -75,7 +75,7 @@ Mining configuration:
 [mining]
 channel = 1                    # 1 = Prime (CPU), 2 = Hash (GPU/FPGA)
 genesis = "abc...xyz"          # 64-character genesis hash (from wallet)
-reward_address = "8BMeG..."    # NXS account address for rewards
+reward_address = "a1...64hex" # 64-char genesis hash (from system/get/info; NOT a Base58 address)
 ```
 
 #### [workers]
@@ -130,7 +130,7 @@ port = 8323
 [mining]
 channel = 1
 genesis = "YOUR_GENESIS_HASH_HERE"
-reward_address = "YOUR_NXS_ADDRESS_HERE"
+reward_address = "YOUR_GENESIS_HASH_HERE" # 64-char hex genesis hash from system/get/info (same as genesis above; NOT a Base58 account address)
 
 [workers]
 count = 8
@@ -160,7 +160,7 @@ port = 8323
 [mining]
 channel = 2
 genesis = "YOUR_GENESIS_HASH_HERE"
-reward_address = "YOUR_NXS_ADDRESS_HERE"
+reward_address = "YOUR_GENESIS_HASH_HERE" # 64-char hex genesis hash from system/get/info (same as genesis above; NOT a Base58 account address)
 
 [workers]
 count = 1
@@ -187,14 +187,14 @@ level = 2
    - Copy the `genesis` value (64 hex characters)
 
 3. **Get your reward address:**
-   - In your Nexus wallet, run: `finance/list/accounts`
-   - Copy the `address` value
+   - Use the same 64-char genesis hash from step 2.
+   - Advanced: run `system/get/info` on a different sigchain to route rewards there.
 
 4. **Edit the config:**
    ```toml
    [mining]
    genesis = "your_64_character_genesis_hash"
-   reward_address = "your_nxs_account_address"
+   reward_address = "your_64_character_genesis_hash" # same as genesis unless routing to separate sigchain
    ```
 
 5. **Run the miner:**

@@ -18,6 +18,7 @@ ________________________________________________________________________________
 
 #include "protocol/genesis_utils.hpp"
 #include "protocol/serialization_helpers.hpp"
+#include <cstdio>
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -74,10 +75,81 @@ void test_genesis_validation() {
         };
         test_assert(genesis_utils::is_valid_genesis(genesis), "Typical genesis hash is valid");
     }
+
+    std::cout << "\nTest 6: has_mainnet_genesis_type - correct mainnet byte 0xa1" << std::endl;
+    {
+        std::vector<uint8_t> genesis(32, 0);
+        genesis[0] = 0xa1;
+        test_assert(genesis_utils::has_mainnet_genesis_type(genesis),
+                    "Genesis with leading byte 0xa1 is mainnet type");
+    }
+
+    std::cout << "\nTest 7: has_mainnet_genesis_type - register address type byte 0x02 rejected" << std::endl;
+    {
+        std::vector<uint8_t> genesis(32, 0);
+        genesis[0] = 0x02;  // OBJECT register type — not a valid coinbase genesis
+        test_assert(!genesis_utils::has_mainnet_genesis_type(genesis),
+                    "Genesis with leading byte 0x02 (register) is NOT mainnet type");
+    }
+
+    std::cout << "\nTest 8: has_mainnet_genesis_type - wrong size rejected" << std::endl;
+    {
+        std::vector<uint8_t> too_short(16, 0xa1);
+        test_assert(!genesis_utils::has_mainnet_genesis_type(too_short),
+                    "16-byte vector is not a valid mainnet genesis");
+    }
+
+    std::cout << "\nTest 9: has_testnet_genesis_type - correct testnet byte 0xb1" << std::endl;
+    {
+        std::vector<uint8_t> genesis(32, 0);
+        genesis[0] = 0xb1;
+        test_assert(genesis_utils::has_testnet_genesis_type(genesis),
+                    "Genesis with leading byte 0xb1 is testnet type");
+    }
+
+    std::cout << "\nTest 10: Hex-decode of known 64-char genesis hex produces correct 32-byte vector" << std::endl;
+    {
+        // Known: mainnet genesis hash starting with 0xa1
+        const std::string hex = "a1000000000000000000000000000000"
+                                "00000000000000000000000000000001";
+        auto decoded = genesis_utils::hex_decode_genesis_hash(hex);
+        test_assert(decoded.size() == 32, "Hex decode produces 32 bytes");
+        test_assert(!decoded.empty() && decoded[0] == 0xa1, "First byte is 0xa1 (mainnet type)");
+        test_assert(!decoded.empty() && decoded[31] == 0x01, "Last byte is 0x01");
+        test_assert(genesis_utils::has_mainnet_genesis_type(decoded),
+                    "Decoded genesis passes has_mainnet_genesis_type");
+    }
+
+    std::cout << "\nTest 10b: hex_decode_genesis_hash rejects non-64-char strings" << std::endl;
+    {
+        test_assert(genesis_utils::hex_decode_genesis_hash("").empty(), "Empty string returns empty");
+        test_assert(genesis_utils::hex_decode_genesis_hash("a1b2c3").empty(), "Short string returns empty");
+        std::string too_long(66, 'a');
+        test_assert(genesis_utils::hex_decode_genesis_hash(too_long).empty(), "66-char string returns empty");
+    }
+
+    std::cout << "\nTest 10c: hex_decode_genesis_hash rejects non-hex characters" << std::endl;
+    {
+        // 64 chars but with 'g' and 'z' (not valid hex)
+        const std::string bad_hex = "g1000000000000000000000000000000"
+                                    "0000000000000000000000000000000z";
+        test_assert(genesis_utils::hex_decode_genesis_hash(bad_hex).empty(),
+                    "Non-hex characters return empty");
+    }
+
+    std::cout << "\nTest 10d: looks_like_base58_address helper" << std::endl;
+    {
+        test_assert(genesis_utils::looks_like_base58_address("8BMeGoCm4TysEn4MseoEwme9yVwkWRqGPYC4m1iHsFzb16udDRg"),
+                    "Typical Base58 NXS address is detected");
+        test_assert(!genesis_utils::looks_like_base58_address("a1000000000000000000000000000000"
+                                                               "00000000000000000000000000000001"),
+                    "64-char hex genesis hash is NOT flagged as Base58");
+        test_assert(!genesis_utils::looks_like_base58_address(""), "Empty string is not Base58");
+    }
 }
 
 void test_serialization_helpers() {
-    std::cout << "\nTest 6: append_uint32_le - basic serialization" << std::endl;
+    std::cout << "\nTest 11: append_uint32_le - basic serialization" << std::endl;
     {
         std::vector<uint8_t> data;
         serialization::append_uint32_le(data, 0x12345678);
@@ -88,7 +160,7 @@ void test_serialization_helpers() {
         test_assert(data[3] == 0x12, "Byte 3 is MSB (0x12)");
     }
 
-    std::cout << "\nTest 7: append_uint32_le - zero value" << std::endl;
+    std::cout << "\nTest 12: append_uint32_le - zero value" << std::endl;
     {
         std::vector<uint8_t> data;
         serialization::append_uint32_le(data, 0);
@@ -97,7 +169,7 @@ void test_serialization_helpers() {
                    "All bytes are zero");
     }
 
-    std::cout << "\nTest 8: append_uint32_le - max value" << std::endl;
+    std::cout << "\nTest 13: append_uint32_le - max value" << std::endl;
     {
         std::vector<uint8_t> data;
         serialization::append_uint32_le(data, 0xFFFFFFFF);
@@ -106,7 +178,7 @@ void test_serialization_helpers() {
                    "All bytes are 0xFF");
     }
 
-    std::cout << "\nTest 9: append_uint64_le - basic serialization" << std::endl;
+    std::cout << "\nTest 14: append_uint64_le - basic serialization" << std::endl;
     {
         std::vector<uint8_t> data;
         serialization::append_uint64_le(data, 0x0123456789ABCDEF);
@@ -115,28 +187,28 @@ void test_serialization_helpers() {
         test_assert(data[7] == 0x01, "Byte 7 is MSB (0x01)");
     }
 
-    std::cout << "\nTest 10: read_uint32_le - basic deserialization" << std::endl;
+    std::cout << "\nTest 15: read_uint32_le - basic deserialization" << std::endl;
     {
         std::vector<uint8_t> data = {0x78, 0x56, 0x34, 0x12};
         uint32_t value = serialization::read_uint32_le(data);
         test_assert(value == 0x12345678, "Reads correct uint32 value");
     }
 
-    std::cout << "\nTest 11: read_uint32_le - with offset" << std::endl;
+    std::cout << "\nTest 16: read_uint32_le - with offset" << std::endl;
     {
         std::vector<uint8_t> data = {0xFF, 0xFF, 0x78, 0x56, 0x34, 0x12};
         uint32_t value = serialization::read_uint32_le(data, 2);
         test_assert(value == 0x12345678, "Reads correct uint32 value with offset");
     }
 
-    std::cout << "\nTest 12: read_uint32_le - insufficient data" << std::endl;
+    std::cout << "\nTest 17: read_uint32_le - insufficient data" << std::endl;
     {
         std::vector<uint8_t> data = {0x78, 0x56};
         uint32_t value = serialization::read_uint32_le(data);
         test_assert(value == 0, "Returns 0 for insufficient data");
     }
 
-    std::cout << "\nTest 13: round-trip append/read uint32" << std::endl;
+    std::cout << "\nTest 18: round-trip append/read uint32" << std::endl;
     {
         std::vector<uint8_t> data;
         uint32_t original = 0xDEADBEEF;
@@ -145,7 +217,7 @@ void test_serialization_helpers() {
         test_assert(decoded == original, "Round-trip preserves value");
     }
 
-    std::cout << "\nTest 14: multiple appends" << std::endl;
+    std::cout << "\nTest 19: multiple appends" << std::endl;
     {
         std::vector<uint8_t> data;
         serialization::append_uint32_le(data, 0x11111111);

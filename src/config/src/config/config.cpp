@@ -12,10 +12,8 @@ namespace nexusminer
 {
 namespace config
 {
-	// NXS address validation constants
-	// Base58 encoded NXS addresses are typically 49-52 characters
-	constexpr size_t NXS_ADDRESS_MIN_LENGTH = 40;  // Minimum expected length
-	constexpr size_t NXS_ADDRESS_MAX_LENGTH = 60;  // Maximum expected length
+	// NXS reward_address validation — must be exactly 64 hex characters (32-byte genesis hash)
+	constexpr size_t GENESIS_HEX_LENGTH = 64;
 
 	Config::Config(std::shared_ptr<spdlog::logger> logger)
 		: m_logger{std::move(logger)}
@@ -305,14 +303,25 @@ namespace config
 				if (mining.contains("reward_address"))
 				{
 					m_mining.m_reward_address = mining["reward_address"].get<std::string>();
-					m_logger->info("Mining reward address configured: {}", m_mining.m_reward_address);
-					
-					// Validate address format (should be base58 encoded, ~50 chars for NXS addresses)
-					if (m_mining.m_reward_address.length() < NXS_ADDRESS_MIN_LENGTH || 
-					    m_mining.m_reward_address.length() > NXS_ADDRESS_MAX_LENGTH)
+					m_logger->info("Mining reward address (genesis hash) configured: {}", m_mining.m_reward_address);
+
+					// Validate: must be exactly 64 hex characters (32-byte Tritium genesis hash)
+					if (m_mining.m_reward_address.length() != GENESIS_HEX_LENGTH)
 					{
-						m_logger->warn("mining.reward_address appears unusual length ({}) - verify address format", 
-						              m_mining.m_reward_address.length());
+						const auto& addr = m_mining.m_reward_address;
+						if (addr.length() >= 40 && addr.length() <= 60)
+						{
+							m_logger->error("mining.reward_address looks like a Base58 account address (length {})."
+							                " reward_address must be the 64-char Tritium genesis hash"
+							                " from 'system/get/info' (NOT a finance/list/accounts address).",
+							                addr.length());
+						}
+						else
+						{
+							m_logger->error("mining.reward_address must be exactly 64 hex characters"
+							                " (32-byte Tritium genesis hash). Got {} chars.",
+							                m_mining.m_reward_address.length());
+						}
 					}
 				}
 				else
