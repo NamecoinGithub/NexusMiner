@@ -2080,6 +2080,10 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
             m_logger->info("[Solo] Block accepted on connection {}:{}", remote_addr, actual_port);
         }
         
+        // Reset dedup state so the follow-up GET_BLOCK is not suppressed by stale
+        // height values — the node has not sent a new push notification yet.
+        reset_get_block_dedup_state();
+
         // Request new work with recovery logic
         auto work_payload = get_work();
         if (!work_payload || work_payload->empty()) {
@@ -2135,6 +2139,7 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
                                      accepted_channel, m_last_submitted_nonce);
         }
 
+        reset_get_block_dedup_state();
         auto work_payload = get_work();
         if (work_payload && !work_payload->empty()) {
             connection->transmit(work_payload);
@@ -2238,7 +2243,11 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
             }
         }
 
-        // Request new work with recovery logic
+        // Reset dedup state so the follow-up GET_BLOCK is not suppressed by stale
+        // height values — the node has not sent a new push notification yet.
+        reset_get_block_dedup_state();
+
+        // Request new work with recovery logic (REJECT path)
         auto work_payload = get_work();
         if (!work_payload || work_payload->empty()) {
             m_logger->error("[Solo] CRITICAL: GET_BLOCK request after REJECT returned empty payload!");
@@ -2278,6 +2287,7 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
         m_logger->warn("❌ BLOCK REJECTED by node (Legacy Lane, ORPHAN_BLOCK) — height={} channel={}",
             rejected_height, rejected_channel);
 
+        reset_get_block_dedup_state();
         auto work_payload = get_work();
         if (work_payload && !work_payload->empty()) {
             connection->transmit(work_payload);
