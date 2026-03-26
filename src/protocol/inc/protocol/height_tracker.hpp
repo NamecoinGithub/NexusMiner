@@ -607,8 +607,8 @@ public:
      * @brief Return an immutable snapshot of the current state
      *
      * Backward-compatible composition:
-     *   unified_height = max(canonical, push)
-     *   channel_height = max(canonical, push)
+     *   unified_height = max(canonical, push, round)
+     *   channel_height = max(canonical, push, round)
      *
      * The copy is taken under the internal lock; the returned struct can be
      * used freely without holding any lock.

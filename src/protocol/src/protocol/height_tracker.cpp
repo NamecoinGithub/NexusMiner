@@ -234,13 +234,16 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
 
     s.session_epoch = m_session_epoch;
 
-    // Compose unified/channel heights: max(canonical, push)
-    // GET_ROUND and keepalive heights are excluded — they are diagnostic-only
-    // and must never regress mining decisions.
-    s.unified_height = std::max(m_canonical.canonical_unified_height,
-                                m_diagnostic.push_unified_height);
-    s.channel_height = std::max(m_canonical.canonical_channel_height,
-                                m_diagnostic.push_channel_height);
+    // Compose unified/channel heights: max(canonical, push, round)
+    // GET_ROUND heights are included so that fresh round data can break the
+    // height-based GET_BLOCK dedup key, preventing the miner from getting stuck
+    // with an aging template when only round data has advanced.
+    s.unified_height = std::max({m_canonical.canonical_unified_height,
+                                 m_diagnostic.push_unified_height,
+                                 m_diagnostic.round_unified_height});
+    s.channel_height = std::max({m_canonical.canonical_channel_height,
+                                 m_diagnostic.push_channel_height,
+                                 m_diagnostic.round_channel_height});
     s.push_channel_height = m_diagnostic.push_channel_height;
     s.unified_block_height = UnifiedHeight{s.unified_height};
     s.channel_tip_height = ChannelHeight{s.channel_height};
