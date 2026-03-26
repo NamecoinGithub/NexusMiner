@@ -6,7 +6,7 @@
  *  1. Push update + template received produces expected drift delta 0
  *  2. Channel height advanced makes IsTemplateStale true
  *  3. Snapshot is consistent after concurrent-style updates
- *  4. GET_ROUND update sets source correctly (heights go to diagnostic only)
+ *  4. GET_ROUND update sets source correctly (heights reflected in snapshot composition)
  *  5. ExplainMismatch reports drift when template target differs from expected
  *  6. ExplainMismatch reports staleness when channel height >= template target
  *  7. Unified height advancing alone does NOT make template stale
@@ -156,10 +156,10 @@ void test_snapshot_consistency() {
 }
 
 // ============================================================================
-// Test 4: GET_ROUND update sets source correctly; heights go to diagnostic only
+// Test 4: GET_ROUND update sets source correctly; heights reflected in snapshot composition
 // ============================================================================
 void test_get_round_source() {
-    std::cout << "\nTest 4: GET_ROUND update source (diagnostic only)\n";
+    std::cout << "\nTest 4: GET_ROUND update source (heights in snapshot composition)\n";
     HeightTracker tracker;
     // 16-byte full height picture: unified=5100, prime=120, hash=200, stake=300
     tracker.OnGetRound(5100, 120, 200, 300);
@@ -167,11 +167,13 @@ void test_get_round_source() {
     auto snap = tracker.GetSnapshot();
     print_test_result("Source is GET_ROUND",
                       snap.last_update_source == HeightTracker::UpdateSource::GET_ROUND);
-    // GET_ROUND now writes to DiagnosticObserverState only — snapshot unified/channel
-    // heights are 0 (no canonical or push data).
-    print_test_result("unified_height == 0 (GET_ROUND is diagnostic-only)",
-                      snap.unified_height == 0);
-    print_test_result("channel_height == 0 (GET_ROUND is diagnostic-only)",
+    // GET_ROUND round_unified_height IS now included in snapshot composition:
+    // unified_height = max(canonical=0, push=0, round=5100) = 5100
+    print_test_result("unified_height == 5100 (GET_ROUND round_unified in snapshot)",
+                      snap.unified_height == 5100);
+    // channel is not set (m_channel==0), so round_channel_height remains 0:
+    // channel_height = max(canonical=0, push=0, round=0) = 0
+    print_test_result("channel_height == 0 (no channel set, round_channel_height=0)",
                       snap.channel_height == 0);
     // Verify diagnostic snapshot captured the GET_ROUND per-channel heights
     auto diag = tracker.GetDiagnosticSnapshot();
@@ -812,8 +814,8 @@ void test_stale_get_block_no_regression() {
     print_test_result("channel_target still 106 after stale GET_BLOCK (not regressed to 100)",
                       snap.channel_target == 106);
 
-    // But channel_height was updated from OnGetRound (99) — that's the template's view
-    // Push re-arriving would set it back to current
+    // channel_height remains 105 because max(canonical=0, push=105, round=99) = 105;
+    // the push value still dominates the stale GET_ROUND response.
     tracker.OnPushNotification(5011, 105, 0x1d00ffff);
     snap = tracker.GetSnapshot();
     print_test_result("channel_height restored to 105 from push",

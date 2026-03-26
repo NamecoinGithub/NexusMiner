@@ -104,8 +104,8 @@ The key rule: **canonical wins for mining-critical fields; diagnostic provides t
 
 | `Snapshot` field | Source | Rationale |
 |-----------------|--------|-----------|
-| `unified_height` | `max(canonical, push)` | Push-driven staleness + canonical protection |
-| `channel_height` | `max(canonical, push)` | Push-driven staleness + canonical protection |
+| `unified_height` | `max(canonical, push, round)` | Push/round-driven staleness + canonical protection |
+| `channel_height` | `max(canonical, push, round)` | Push/round-driven staleness + canonical protection |
 | `difficulty_nbits` | canonical if initialized, else push | Template difficulty is authoritative |
 | `channel_target` | canonical only | Never corrupted by keepalive |
 | `hash_prev_block` | canonical only | Fork detection anchor |
@@ -119,9 +119,9 @@ The key rule: **canonical wins for mining-critical fields; diagnostic provides t
 | `last_template_update` | `canonical_received_at` | Post-push guard |
 | `last_height_update` | `max(canonical_received_at, last_push_at)` | Post-push guard |
 
-The `max(canonical, push)` composition for `channel_height` preserves all push-driven
-staleness detection (`is_template_stale()`, `is_tip_moved()`) while ensuring the keepalive
-ACK can never regress the value below what a push or BLOCK_DATA has already established.
+The `max(canonical, push, round)` composition for `channel_height` preserves all push- and
+round-driven staleness detection (`is_template_stale()`, `is_tip_moved()`) while ensuring the keepalive
+ACK can never regress the value below what a push, GET_ROUND, or BLOCK_DATA has already established.
 
 ---
 
