@@ -23,6 +23,9 @@
 | **Mining** | [current/mining-protocols/channel-management.md](current/mining-protocols/channel-management.md) | Prime/Hash channel handling |
 | **Mining** | [current/mining-protocols/height-tracking.md](current/mining-protocols/height-tracking.md) | Multi-channel height management |
 | **Mining** | [current/miner/README.md](current/miner/README.md) | Current miner architecture, roadmap, tests, and RISC-V notes |
+| **Architecture** | [current/miner/architecture/session-coordinator.md](current/miner/architecture/session-coordinator.md) | **SessionCoordinator** — unified monotonic epoch + session-identity authority |
+| **Architecture** | [current/miner/architecture/session-container-architecture.md](current/miner/architecture/session-container-architecture.md) | MinerSessionContainer ownership model (crypto, reward, lane) |
+| **Architecture** | [current/miner/architecture/reconnect-and-resync-model.md](current/miner/architecture/reconnect-and-resync-model.md) | Reconnect epoch preservation and `refresh_cached_session_state()` |
 | **Security** | [current/security/security-overview.md](current/security/security-overview.md) | Overall security architecture |
 | **Security** | [current/security/chacha20-encryption.md](current/security/chacha20-encryption.md) | ChaCha20-Poly1305 session encryption |
 | **Security** | [current/security/falcon-security.md](current/security/falcon-security.md) | Post-quantum cryptography |

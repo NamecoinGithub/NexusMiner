@@ -1,4 +1,5 @@
 #include "protocol/height_tracker.hpp"
+#include "protocol/session_coordinator.hpp"
 #include <algorithm>
 #include <sstream>
 
@@ -321,6 +322,15 @@ void HeightTracker::set_session_epoch(uint64_t session_epoch)
         m_diagnostic.push_hash_prev_block = uint1024_t{};
     }
     m_session_epoch = session_epoch;
+}
+
+void HeightTracker::set_coordinator(std::shared_ptr<SessionCoordinator> coordinator)
+{
+    if (!coordinator) {
+        return;
+    }
+    // Seed the local epoch from the coordinator's current authoritative value.
+    set_session_epoch(coordinator->session_epoch());
 }
 
 HeightTracker::CanonicalChainState HeightTracker::GetCanonicalSnapshot() const {

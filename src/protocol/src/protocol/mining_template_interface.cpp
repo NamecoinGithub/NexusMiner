@@ -1,5 +1,6 @@
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/protocol_constants.hpp"
+#include "protocol/session_coordinator.hpp"
 #include "LLP/block_utils.hpp"
 #include <cassert>
 #include <chrono>
@@ -676,6 +677,15 @@ void MiningTemplateInterface::set_session_epoch(uint64_t session_epoch)
     m_session_epoch = session_epoch;
     m_current_template.session_epoch = session_epoch;
     m_logger->info("[TemplateInterface] Session epoch set to {}", session_epoch);
+}
+
+void MiningTemplateInterface::set_coordinator(std::shared_ptr<SessionCoordinator> coordinator)
+{
+    if (!coordinator) {
+        return;
+    }
+    // Seed the local epoch from the coordinator's current authoritative value.
+    set_session_epoch(coordinator->session_epoch());
 }
 
 void MiningTemplateInterface::set_channel(uint8_t channel)

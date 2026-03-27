@@ -103,7 +103,8 @@ static std::string get_channel_name(uint32_t channel) {
 }
 
 Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
-           std::shared_ptr<NodeSessionContext> session_context)
+           std::shared_ptr<NodeSessionContext> session_context,
+           std::shared_ptr<SessionCoordinator> coordinator)
 : m_channel{channel}
 , m_logger{spdlog::get("logger")}
 , m_current_height{0}
@@ -121,6 +122,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_chacha20_wrapper{nullptr}  // Lazy initialization when needed
 , m_enable_chacha20{true}  // ALWAYS ON - Core implementation (localhost miners, SessionID protection, etc.)
 , m_session_context{std::move(session_context)}
+, m_coordinator{std::move(coordinator)}
 , m_template_interface{nullptr}
 , m_connection{nullptr}
 , m_reward_address{""}  // Empty until configured
@@ -178,6 +180,27 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     if (m_session_context) {
         m_session_epoch = m_session_context->get_session_epoch();
         m_has_seen_session_epoch = true;
+    }
+    // When a coordinator is provided, seed epoch from it (authoritative) and register
+    // an observer so that any future session_epoch changes propagate automatically to
+    // HeightTracker and MiningTemplateInterface without a manual resync call.
+    if (m_coordinator) {
+        const uint64_t coord_epoch = m_coordinator->session_epoch();
+        if (coord_epoch != 0) {
+            m_session_epoch = coord_epoch;
+            m_has_seen_session_epoch = true;
+        }
+        // Register observer: propagate session_epoch changes to HeightTracker + MTI
+        m_coordinator->add_observer(
+            [this](const char* domain, uint64_t /*old_val*/, uint64_t new_val) {
+                if (domain == SessionCoordinator::DOMAIN_SESSION_EPOCH) {
+                    m_height_tracker.set_session_epoch(new_val);
+                    if (m_template_interface) {
+                        m_template_interface->set_session_epoch(new_val);
+                    }
+                }
+            });
+        m_logger->info("[Solo] SessionCoordinator wired — epoch propagation via observer");
     }
     // Keep MTI/HeightTracker aligned with the authoritative session epoch even
     // before authentication. With no session context the epoch remains 0,
@@ -387,17 +410,23 @@ void Solo::refresh_cached_session_state(const char* log_scope)
 
     const auto session = m_session_context->get_runtime_snapshot();
 
-    if (!m_has_seen_session_epoch || m_session_epoch != session.session_epoch) {
+    // Prefer the coordinator's session_epoch when available — it is the single
+    // monotonic authority and is NEVER reset to 0 on disconnect/reauth.
+    const uint64_t authoritative_epoch = m_coordinator
+        ? m_coordinator->session_epoch()
+        : session.session_epoch;
+
+    if (!m_has_seen_session_epoch || m_session_epoch != authoritative_epoch) {
         if (!m_has_seen_session_epoch) {
             m_logger->info("[{}] Resyncing local session epoch from authoritative session container: local={} authoritative={}",
-                           log_scope, m_session_epoch, session.session_epoch);
+                           log_scope, m_session_epoch, authoritative_epoch);
         } else {
             m_logger->warn("[{}] Session epoch advanced: local={} authoritative={} — invalidating generation-bound cached state",
-                           log_scope, m_session_epoch, session.session_epoch);
+                           log_scope, m_session_epoch, authoritative_epoch);
             clear_generation_bound_state("authoritative session epoch advanced");
         }
 
-        m_session_epoch = session.session_epoch;
+        m_session_epoch = authoritative_epoch;
         m_has_seen_session_epoch = true;
         m_height_tracker.set_session_epoch(m_session_epoch);
     }
