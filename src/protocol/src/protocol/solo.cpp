@@ -1138,9 +1138,16 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
     // ── GET_BLOCK deduplication guard ────────────────────────────────────────
     // Height-based dedup: suppress GET_BLOCK when requesting the exact same
     // (unified_height, channel_height) pair we last transmitted AND a valid
-    // template is already in hand.  Prevents duplicate requests from
+    // template is already in hand AND the previous request was recent (within
+    // GET_BLOCK_HEIGHT_DEDUP_EXPIRY_SECONDS).  Prevents duplicate requests from
     // push_notification_handler and Worker_manager when both independently
     // respond to the same staleness event.
+    //
+    // The time-based expiry ensures that a lost GET_BLOCK response (no template
+    // refresh) does not permanently suppress same-height retries.  After the
+    // expiry window, the guard allows a fresh request even at unchanged heights,
+    // enabling the proactive 300s refresh and staleness paths to make progress
+    // during a same-height drought.
     //
     // The guard is intentionally skipped when no valid template exists: in that
     // state we must always attempt a fresh fetch regardless of whether the
@@ -1171,23 +1178,31 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
                 return nullptr;
             }
         }
-        // Height-based dedup: suppress when (unified, channel) heights unchanged
-        // and a valid template already exists (guard only suppresses redundant
-        // refreshes of an already-valid template).
+        // Height-based dedup: suppress when (unified, channel) heights unchanged,
+        // a valid template already exists, AND the previous GET_BLOCK was sent
+        // recently (within GET_BLOCK_HEIGHT_DEDUP_EXPIRY_SECONDS).  The time-based
+        // expiry ensures that a lost GET_BLOCK response does not permanently
+        // suppress same-height retries — after the expiry window, the guard
+        // allows a fresh request even at unchanged heights.
         auto snap = m_height_tracker.GetSnapshot();
         uint32_t cur_unified = snap.unified_height;
         uint32_t cur_channel = snap.channel_height;
         bool have_valid_template = m_template_interface &&
                                    m_template_interface->has_valid_template();
-        if (m_last_get_block_unified_height > 0 &&
+        auto since_last_get_block_s = (m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{})
+            ? std::chrono::duration_cast<std::chrono::seconds>(now_tp - m_last_get_block_transmitted_tp).count()
+            : INT64_MAX;
+        bool height_dedup_fresh = (since_last_get_block_s < GET_BLOCK_HEIGHT_DEDUP_EXPIRY_SECONDS);
+        if (height_dedup_fresh &&
+            m_last_get_block_unified_height > 0 &&
             cur_unified == m_last_get_block_unified_height &&
             cur_channel == m_last_get_block_channel_height &&
             have_valid_template)
         {
             m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
             m_logger->info("[Solo] GET_BLOCK height-based dedup: suppressing request "
-                          "(unified={} channel={} unchanged since last GET_BLOCK, template valid)",
-                          cur_unified, cur_channel);
+                          "(unified={} channel={} unchanged since last GET_BLOCK {}s ago, within {}s expiry)",
+                          cur_unified, cur_channel, since_last_get_block_s, GET_BLOCK_HEIGHT_DEDUP_EXPIRY_SECONDS);
             return nullptr;
         }
     }

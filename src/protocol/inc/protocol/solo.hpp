@@ -654,6 +654,7 @@ private:
     std::chrono::steady_clock::time_point m_last_get_block_transmitted_tp{};
     std::atomic<GetBlockRequestStatus> m_last_get_block_request_status{GetBlockRequestStatus::NONE};
     static constexpr int64_t GET_BLOCK_DEDUP_MS = 100;  // 100ms deduplication window (retained for rapid-burst guard)
+    static constexpr int64_t GET_BLOCK_HEIGHT_DEDUP_EXPIRY_SECONDS = 45;  // Height dedup expires after 45s — allows same-height retry when response was lost
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION
