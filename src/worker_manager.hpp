@@ -233,6 +233,12 @@ private:
     // Used to gate send_session_status_if_due() to at most once per 60 seconds.
     std::chrono::steady_clock::time_point m_last_session_status_sent{};
 
+    // ── Reorg Resubscription Guard ────────────────────────────────────────────
+    // Tracks the last time MINER_READY was re-sent during active recovery to
+    // restore push-notification subscription after a reorg-triggered disconnect.
+    // Prevents rapid-fire resubscription; see check_template_health().
+    std::chrono::steady_clock::time_point m_last_resubscribe_at{};  ///< Last MINER_READY resubscription sent (reorg guard)
+
     // ── Mutex-based recovery gate (defense-in-depth) ─────────────────────────
     // Serialises the creation path in set_block_handler with the destruction
     // path in stop_all_workers() so they cannot interleave on m_workers.
