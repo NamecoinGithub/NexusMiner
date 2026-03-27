@@ -16,6 +16,7 @@
  * 11. ⚡ Unified Tip-Anchor Changed — dedup reset allows fresh GET_BLOCK despite recent prior request
  * 12. New recovery epoch does not inherit stale GET_BLOCK suppression state; anti-flood preserved within epoch
  * 13. Anti-flood preserved — true duplicates in same epoch/state still suppressed
+ * 14. Height-based dedup bypassed when no valid template exists
  */
 
 #include "protocol/packet_builder.hpp"
@@ -524,6 +525,69 @@ void test_anti_flood_preserved_within_same_epoch() {
 }
 
 // ============================================================================
+// Test 14: Height-based dedup bypassed when no valid template exists
+//
+// Verifies that the height-based dedup guard does NOT suppress GET_BLOCK when
+// no valid template is held, even if (unified, channel) heights are unchanged
+// since the last transmission.  The guard must only suppress redundant
+// refreshes of an already-valid template.
+// ============================================================================
+
+// Minimal mock of the height-based dedup condition added in solo.cpp,
+// isolated from the time-based rapid-burst guard.
+struct HeightDeduplicator {
+    bool has_valid_template{false};
+    uint32_t last_unified{0};
+    uint32_t last_channel{0};
+    uint32_t cur_unified{100};
+    uint32_t cur_channel{50};
+
+    // Returns true when the GET_BLOCK would be transmitted (not suppressed).
+    // Mirrors the solo.cpp height-based dedup condition exactly:
+    //   suppress only when heights unchanged AND a valid template exists.
+    bool would_send() {
+        if (last_unified > 0 &&
+            cur_unified == last_unified &&
+            cur_channel == last_channel &&
+            has_valid_template)
+        {
+            return false;  // suppressed — redundant refresh of valid template
+        }
+        last_unified = cur_unified;
+        last_channel = cur_channel;
+        return true;
+    }
+};
+
+void test_height_dedup_bypassed_when_no_valid_template() {
+    std::cout << "\nTest 14: Height-based dedup bypassed when no valid template\n";
+
+    HeightDeduplicator dedup;
+
+    // First request: no prior heights recorded, always passes.
+    dedup.has_valid_template = false;
+    bool first_ok = dedup.would_send();
+    print_test_result("Initial GET_BLOCK succeeds (no prior heights)", first_ok);
+    // Heights are now recorded as (100, 50).
+
+    // Same heights, valid template present → guard fires, request suppressed.
+    dedup.has_valid_template = true;
+    bool suppressed_with_template = !dedup.would_send();
+    print_test_result("Same heights with valid template → suppressed", suppressed_with_template);
+
+    // Same heights, NO valid template → guard bypassed, request allowed.
+    dedup.has_valid_template = false;
+    bool allowed_no_template = dedup.would_send();
+    print_test_result("Same heights without valid template → allowed (bypass)", allowed_no_template);
+
+    // Heights advance, valid template present → height change unblocks guard.
+    dedup.has_valid_template = true;
+    dedup.cur_unified = 101;
+    bool allowed_new_height = dedup.would_send();
+    print_test_result("New height with valid template → allowed (height changed)", allowed_new_height);
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 int main() {
@@ -544,6 +608,7 @@ int main() {
     test_tip_anchor_change_resets_dedup_allows_fresh_get_block();
     test_new_recovery_epoch_does_not_inherit_stale_dedup();
     test_anti_flood_preserved_within_same_epoch();
+    test_height_dedup_bypassed_when_no_valid_template();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";

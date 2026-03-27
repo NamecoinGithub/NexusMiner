@@ -97,7 +97,7 @@ conveyed no height data to the node.
 | Property | Value |
 |----------|-------|
 | Timer owner | `SessionManager::start_keepalive_timer()` |
-| Interval | 45 seconds |
+| Interval | 170 seconds |
 | Packet type | `SESSION_KEEPALIVE` |
 | Miner → Node payload | 8 bytes: `session_id (4 LE)` + `hashPrevBlock_lo32 (4 BE)` |
 | Node → Miner reply | 32 bytes: `unified_height`, `prime_height`, `hash_height`, `stake_height`, `hash_tip_lo32`, `fork_score` |

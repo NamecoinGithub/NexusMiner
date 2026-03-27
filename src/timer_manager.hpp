@@ -28,7 +28,7 @@ class Worker;
 
 
 // NOTE: Heartbeat / keepalive is NOT managed by Timer_manager.
-// SessionManager::start_keepalive_timer() owns the 45-second SESSION_KEEPALIVE
+// SessionManager::start_keepalive_timer() owns the 170-second SESSION_KEEPALIVE
 // heartbeat for both the primary and secondary lanes.  The former Packet::PING
 // timer (bare header-only ping) was removed because it carried no payload and
 // conveyed no height data to the node.
