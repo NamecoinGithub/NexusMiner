@@ -6,7 +6,7 @@
 ║             │                                                        ║
 ║             ▼                                                        ║
 ║   ╔══════════════════════════════╗                                   ║
-║   ║ reward_address_string        ║  human-readable / diagnostics     ║
+║   ║ reward_address                ║  human-readable / diagnostics     ║
 ║   ╚══════════════════════════════╝                                   ║
 ║             │ decode base58                                           ║
 ║             ▼                                                        ║

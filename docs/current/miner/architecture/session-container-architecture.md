@@ -39,7 +39,7 @@ recent refactor direction is explicitly trying to prevent that drift.
 | **Reward bound** (runtime) | **`SessionCoordinator`** → `SessionManager` synced from it | `commit_reward_bound()` propagates to coordinator |
 | Falcon identity | `falcon_pubkey`, `falcon_key_id`, `falcon_authenticated` | Set once auth succeeds |
 | Genesis / ChaCha20 context | `session_genesis`, `chacha20_session_key`, `chacha20_key_fingerprint`, `chacha20_ready` | Shared by reward and submit flows |
-| Reward binding details | `reward_address_string`, `reward_hash`, `reward_binding_source` | Keeps config intent and decoded bytes together |
+| Reward binding details | `reward_address`, `reward_hash`, `reward_binding_source` | Keeps config intent and decoded bytes together |
 | Lane metadata | `active_lane`, `channel`, `ready_for_submit`, `ready_for_get_block` | Keeps packet framing and mining readiness aligned |
 | Keepalive/fork canary input | `prevblock_suffix`, `last_keepalive`, `keepalive_count` | Session-scoped observability |
 
@@ -90,7 +90,7 @@ should treat these fields as a package:
 - session identity (`session_id`, `active_lane`)
 - Genesis/Falcon/ChaCha20 identity (`session_genesis`, `falcon_key_id`,
   `chacha20_key_fingerprint`)
-- reward identity (`reward_address_string`, `reward_hash`, `reward_bound`)
+- reward identity (`reward_address`, `reward_hash`, `reward_bound`)
 - submit readiness (`channel`, `ready_for_submit`, `ready_for_get_block`)
 
 That framing prevents future changes from passing these values piecemeal and
