@@ -425,6 +425,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                             // Fix 3: Raised from 120 → 400 to exceed the longest observed Prime
                             // block time (~330 s); prevents mid-mining resubscription on long blocks.
+                            // NOTE: For faster resubscription during active recovery (reorg scenario),
+                            // see the Reorg Resubscription Guard in check_template_health().
+                            // This path handles post-recovery push silence only after recovery completes.
                             constexpr int64_t PUSH_RESUBSCRIBE_THRESHOLD_SECONDS = 400;
 
                             if (since_recovery_s < POST_RECOVERY_HOLDOFF_SECONDS) {
@@ -1805,6 +1808,40 @@ void Worker_manager::check_template_health()
 
         // Retry GET_BLOCK on every health check tick
         retry_template_request(true);
+
+        /* ── Reorg Resubscription Guard ──────────────────────────────────────────
+         * After 60s in WAITING_TEMPLATE with a live authenticated session but no
+         * incoming push, proactively re-send MINER_READY.  This covers the reorg
+         * case: the node recovered the session but the push subscription state was
+         * lost during the TCP disconnect, so the node's heartbeat cycle (480s) is
+         * the only thing that would otherwise restore it.
+         * Cooldown: once per 60s to prevent rapid-fire. */
+        constexpr int64_t REORG_RESUBSCRIBE_THRESHOLD_SECONDS = 30;
+        constexpr int64_t REORG_RESUBSCRIBE_COOLDOWN_SECONDS  = 60;
+
+        bool push_silent_in_recovery = !push_recent &&
+            (degraded_secs > protocol::ProtocolConstants::DEGRADED_MODE_STAGE2_SECONDS);
+
+        if (push_silent_in_recovery && solo_protocol->is_authenticated())
+        {
+            auto since_last_resub_s =
+                (m_last_resubscribe_at == std::chrono::steady_clock::time_point{})
+                ? INT64_MAX
+                : std::chrono::duration_cast<std::chrono::seconds>(
+                      now - m_last_resubscribe_at).count();
+
+            if (since_last_resub_s >= REORG_RESUBSCRIBE_COOLDOWN_SECONDS &&
+                since_push_s >= REORG_RESUBSCRIBE_THRESHOLD_SECONDS)
+            {
+                int64_t display_push_silence_s = (since_push_s == INT64_MAX) ? -1 : since_push_s;
+                m_logger->warn("[Worker_manager] ⚡ REORG RESUBSCRIBE GUARD: {}s in recovery, "
+                               "push silent {}s, sending MINER_READY to restore subscription",
+                               degraded_secs, display_push_silence_s);
+                solo_protocol->resubscribe_push_notifications();
+                m_last_resubscribe_at = now;
+            }
+        }
+
         return;
     }
 
