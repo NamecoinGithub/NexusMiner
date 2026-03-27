@@ -202,9 +202,6 @@ public:
         return m_session_context ? m_session_context->get_session_manager().get() : nullptr;
     }
 
-    void mark_authoritative_recovery_required(const std::string& reason);
-    void mark_authoritative_recovery_healthy(const std::string& reason = "");
-
     // Recovery callback: called by the push handler when a channel-stale recovery GET_BLOCK
     // is triggered (is_template_stale() is true at request_work_fn invocation time).
     // Worker_manager registers this to set its recovery_pending flag for doom-loop prevention.
