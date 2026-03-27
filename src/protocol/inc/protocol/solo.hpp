@@ -12,6 +12,7 @@
 #include "protocol/session_ingress_gate.hpp"
 #include "protocol/session_recovery_policy.hpp"
 #include "protocol/submit_context.hpp"
+#include "protocol/epoch_coordinator.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "LLP/colin_ping_handler.h"
@@ -292,6 +293,9 @@ public:
     // Maximum time (seconds) auth is allowed to stay in-flight before being treated as failed.
     static constexpr int AUTH_IN_FLIGHT_TIMEOUT_S = 30;
 
+    /// Wire the shared EpochCoordinator (called by Worker_manager after construction).
+    void set_epoch_coordinator(std::shared_ptr<EpochCoordinator> coordinator);
+
 private:
     
     // Derive ChaCha20 session key from genesis hash
@@ -473,6 +477,7 @@ private:
     std::uint32_t m_session_id;
     uint64_t m_session_epoch{0};
     bool m_has_seen_session_epoch{false};
+    std::shared_ptr<EpochCoordinator> m_epoch_coordinator;
     std::string m_address;  // Miner's network address for auth message
     std::uint64_t m_auth_timestamp;  // Timestamp for auth message
     AuthState m_auth_state;  // Authentication state machine

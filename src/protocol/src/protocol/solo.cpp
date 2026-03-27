@@ -662,6 +662,11 @@ void Solo::mark_authoritative_recovery_healthy(const std::string& reason)
     }
 }
 
+void Solo::set_epoch_coordinator(std::shared_ptr<EpochCoordinator> coordinator)
+{
+    m_epoch_coordinator = std::move(coordinator);
+}
+
 const Solo::PacketIngressPreflightOptions Solo::kDefaultPacketIngressPreflightOptions{};
 
 bool Solo::run_packet_ingress_preflight(const char* log_scope,

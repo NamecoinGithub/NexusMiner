@@ -29,6 +29,7 @@ boundaries, ownership rules, and upgrade path.
 | Area | Document | Purpose |
 |------|----------|---------|
 | Architecture | [architecture/session-container-architecture.md](architecture/session-container-architecture.md) | Authoritative container, ownership, invariants |
+| Architecture | [architecture/epoch-coordinator-architecture.md](architecture/epoch-coordinator-architecture.md) | Single source of truth for all epoch counters; prevents epoch desync |
 | Architecture | [architecture/reconnect-and-resync-model.md](architecture/reconnect-and-resync-model.md) | Reconnect flow, packet-ingress resync, persistence |
 | Architecture | [architecture/submit-path-ownership.md](architecture/submit-path-ownership.md) | Reward binding, crypto context, submit snapshot lifecycle |
 | Architecture | [architecture/riscv-considerations.md](architecture/riscv-considerations.md) | Miner-side portability rules and RISC-V constraints |
@@ -61,6 +62,7 @@ screenshot-friendly ASCII with thick-box formatting for PR review.
 | 13 | [Per-session event journal](diagrams/13-session-event-journal-diagram.txt) | Ring-buffer event capture for auth, reward, reconnect, and submit debugging. |
 | 14 | [Packet-ingress preflight gate](diagrams/14-packet-preflight-gate-diagram.txt) | Resync and validate before packet-specific logic runs. |
 | 15 | [Strong semantic ID types](diagrams/15-strong-id-types-diagram.txt) | Compile-time wrappers reduce mix-ups between hashes, fingerprints, and IDs. |
+| 16 | [Epoch coordinator — single source of truth](diagrams/16-epoch-coordinator-diagram.txt) | One coordinator owns session_epoch and recovery_epoch; monotonic, never resets. |
 
 ## Current Architecture Direction
 

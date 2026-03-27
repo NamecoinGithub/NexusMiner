@@ -13,6 +13,7 @@
 #include "stats/mined_block_cache.hpp"
 #include "Util/include/exponential_backoff.h"
 #include "protocol/inc/protocol/protocol_constants.hpp"
+#include "protocol/inc/protocol/epoch_coordinator.hpp"
 #include "node_session/inc/node_session/node_session.hpp"
 #include <asio/steady_timer.hpp>
 
@@ -46,7 +47,6 @@ enum class RecoveryPhase : uint8_t {
 struct RecoveryContext {
     RecoveryPhase phase{RecoveryPhase::HEALTHY};
 
-    uint64_t epoch{0};                                              // Monotonic recovery counter
     std::chrono::steady_clock::time_point entered_at{};            // When current epoch (recovery start) began
     std::chrono::steady_clock::time_point degraded_since{};        // When current outage started (set once per outage)
     std::chrono::steady_clock::time_point last_get_block_at{};     // Last confirmed GET_BLOCK transmit
@@ -173,6 +173,9 @@ private:
     // Single authoritative RecoveryContext replaces 15 independent boolean/timestamp
     // fields that could combine into 32+ undefined configurations.
     RecoveryContext m_recovery;
+
+    // Single source of truth for all epoch counters (session_epoch + recovery_epoch).
+    std::shared_ptr<protocol::EpochCoordinator> m_epoch_coordinator;
 
     // Forced-retry timer state (not part of RecoveryContext — timer handle is not copyable)
     std::shared_ptr<asio::steady_timer> m_forced_retry_timer{};
