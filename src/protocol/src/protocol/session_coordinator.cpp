@@ -40,7 +40,7 @@ SessionEpoch SessionCoordinator::advance_session_epoch(const char* reason)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         old_val = m_session_epoch.get();
-        ++m_session_epoch.get();
+        m_session_epoch = SessionEpoch{old_val + 1};
         new_val = m_session_epoch.get();
         if (m_logger) {
             m_logger->info("[SessionCoordinator] session_epoch {} → {} ({})",
@@ -291,7 +291,7 @@ void SessionCoordinator::commit_authenticated(SessionId new_session_id, const ch
         const uint64_t old_epoch      = m_session_epoch.get();
         const SessionId old_session_id = m_session_id;
 
-        ++m_session_epoch.get();
+        m_session_epoch = SessionEpoch{old_epoch + 1};
         m_session_id    = new_session_id;
         m_authenticated = true;
 
