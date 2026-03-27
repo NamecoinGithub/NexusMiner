@@ -16,6 +16,7 @@
  */
 
 #include "protocol/session_coordinator.hpp"
+#include "protocol/session_semantic_types.hpp"
 #include <iostream>
 #include <cassert>
 #include <string>
@@ -48,16 +49,16 @@ void test_epoch_monotonicity()
     std::cout << "\nTest 1: Epoch monotonicity\n";
     SessionCoordinator c;
 
-    print_result("session_epoch starts at 0", c.session_epoch() == 0);
+    print_result("session_epoch starts at 0", c.session_epoch() == SessionEpoch{0});
     print_result("recovery_epoch starts at 0", c.recovery_epoch() == 0);
 
-    const uint64_t e1 = c.advance_session_epoch("t1");
-    print_result("advance_session_epoch returns 1", e1 == 1);
-    print_result("session_epoch() == 1 after first advance", c.session_epoch() == 1);
+    const auto e1 = c.advance_session_epoch("t1");
+    print_result("advance_session_epoch returns 1", e1 == SessionEpoch{1});
+    print_result("session_epoch() == 1 after first advance", c.session_epoch() == SessionEpoch{1});
 
-    const uint64_t e2 = c.advance_session_epoch("t2");
-    print_result("advance_session_epoch returns 2", e2 == 2);
-    print_result("session_epoch() == 2 after second advance", c.session_epoch() == 2);
+    const auto e2 = c.advance_session_epoch("t2");
+    print_result("advance_session_epoch returns 2", e2 == SessionEpoch{2});
+    print_result("session_epoch() == 2 after second advance", c.session_epoch() == SessionEpoch{2});
 
     const uint64_t r1 = c.advance_recovery_epoch("r1");
     print_result("advance_recovery_epoch returns 1", r1 == 1);
@@ -67,7 +68,7 @@ void test_epoch_monotonicity()
     print_result("advance_recovery_epoch returns 2", r2 == 2);
 
     // Verify neither ever goes back
-    print_result("session_epoch still >= 2 (monotonic)", c.session_epoch() >= 2);
+    print_result("session_epoch still >= 2 (monotonic)", c.session_epoch().get() >= 2);
     print_result("recovery_epoch still >= 2 (monotonic)", c.recovery_epoch() >= 2);
 }
 
@@ -78,12 +79,12 @@ void test_clear_preserves_epochs()
     SessionCoordinator c;
 
     c.advance_session_epoch("auth");
-    c.set_session_id(0xDEADBEEF, "auth");
+    c.set_session_id(SessionId{0xDEADBEEF}, "auth");
     c.set_authenticated(true, "auth");
     c.set_reward_bound(true, "reward");
     c.advance_recovery_epoch("recovery");
 
-    const uint64_t saved_session  = c.session_epoch();
+    const auto saved_session  = c.session_epoch();
     const uint64_t saved_recovery = c.recovery_epoch();
 
     c.clear_for_disconnect("disconnect");
@@ -92,7 +93,7 @@ void test_clear_preserves_epochs()
                  c.session_epoch() == saved_session);
     print_result("recovery_epoch preserved after clear_for_disconnect",
                  c.recovery_epoch() == saved_recovery);
-    print_result("session_id reset to 0",       c.session_id() == 0);
+    print_result("session_id reset to 0",       c.session_id().is_default());
     print_result("authenticated reset to false", !c.is_authenticated());
     print_result("reward_bound reset to false",  !c.is_reward_bound());
     print_result("subscribed_to_notifications reset", !c.is_subscribed_to_notifications());
@@ -105,24 +106,24 @@ void test_commit_authenticated_atomic()
     std::cout << "\nTest 3: commit_authenticated atomicity\n";
     SessionCoordinator c;
 
-    const uint64_t epoch_before = c.session_epoch();
-    c.commit_authenticated(0x12345678, "first_auth");
+    const auto epoch_before = c.session_epoch();
+    c.commit_authenticated(SessionId{0x12345678}, "first_auth");
 
     print_result("session_epoch advanced by commit_authenticated",
-                 c.session_epoch() == epoch_before + 1);
+                 c.session_epoch().get() == epoch_before.get() + 1);
     print_result("session_id set by commit_authenticated",
-                 c.session_id() == 0x12345678);
+                 c.session_id() == SessionId{0x12345678});
     print_result("authenticated set by commit_authenticated",
                  c.is_authenticated());
 
     // Second commit: epoch advances again
-    const uint64_t epoch_after_first = c.session_epoch();
-    c.commit_authenticated(0xCAFEBABE, "second_auth");
+    const auto epoch_after_first = c.session_epoch();
+    c.commit_authenticated(SessionId{0xCAFEBABE}, "second_auth");
 
     print_result("session_epoch advances on second commit",
-                 c.session_epoch() == epoch_after_first + 1);
+                 c.session_epoch().get() == epoch_after_first.get() + 1);
     print_result("session_id updated to new id",
-                 c.session_id() == 0xCAFEBABE);
+                 c.session_id() == SessionId{0xCAFEBABE});
     print_result("authenticated still true", c.is_authenticated());
 }
 
@@ -143,7 +144,7 @@ void test_observer_notification()
                  !log.empty() && log.back().find("session_epoch") != std::string::npos);
 
     const size_t before_auth = log.size();
-    c.commit_authenticated(0xABCD, "auth");
+    c.commit_authenticated(SessionId{0xABCD}, "auth");
     print_result("commit_authenticated fires at least one observer",
                  log.size() > before_auth);
 
@@ -180,7 +181,7 @@ void test_thread_safety()
             for (int j = 0; j < 100; ++j) {
                 try {
                     c->advance_session_epoch("writer");
-                    c->set_session_id(static_cast<uint32_t>(i * 100 + j), "writer");
+                    c->set_session_id(SessionId{static_cast<uint32_t>(i * 100 + j)}, "writer");
                     c->set_authenticated(j % 2 == 0, "writer");
                     c->set_reward_bound(j % 3 == 0, "writer");
                 } catch (...) {
@@ -208,7 +209,7 @@ void test_thread_safety()
 
     print_result("No exceptions in concurrent read/write (errors == 0)", errors.load() == 0);
     print_result("session_epoch >= 400 after 4x100 advances (monotonic)",
-                 c->session_epoch() >= 400);
+                 c->session_epoch().get() >= 400);
 }
 
 // ── Test 6: global_epoch == max ───────────────────────────────────────────────
@@ -254,7 +255,7 @@ void test_composite_queries()
     print_result("is_session_active() == false without session_id",
                  !c.is_session_active());
 
-    c.set_session_id(0x1234, "test");
+    c.set_session_id(SessionId{0x1234}, "test");
     print_result("is_session_active() == true with session_id + auth",
                  c.is_session_active());
 
@@ -276,7 +277,7 @@ void test_snapshot()
     c.advance_session_epoch("e");
     c.advance_recovery_epoch("r");
     c.advance_recovery_epoch("r");
-    c.set_session_id(0xABCDEF, "s");
+    c.set_session_id(SessionId{0xABCDEF}, "s");
     c.set_authenticated(true, "a");
     c.set_reward_bound(true, "rb");
     c.set_subscribed_to_notifications(true, "sub");
@@ -284,10 +285,10 @@ void test_snapshot()
 
     const auto snap = c.snapshot();
 
-    print_result("snap.session_epoch == 1",  snap.session_epoch == 1);
+    print_result("snap.session_epoch == 1",  snap.session_epoch == SessionEpoch{1});
     print_result("snap.recovery_epoch == 2", snap.recovery_epoch == 2);
     print_result("snap.global_epoch == 2",   snap.global_epoch == 2);
-    print_result("snap.session_id == 0xABCDEF", snap.session_id == 0xABCDEF);
+    print_result("snap.session_id == 0xABCDEF", snap.session_id == SessionId{0xABCDEF});
     print_result("snap.authenticated == true",   snap.authenticated);
     print_result("snap.reward_bound == true",     snap.reward_bound);
     print_result("snap.subscribed_to_notifications == true",
@@ -302,7 +303,7 @@ void test_diagnostics()
     std::cout << "\nTest 9: diagnostics()\n";
     SessionCoordinator c;
     c.advance_session_epoch("diag");
-    c.set_session_id(0x1111, "diag");
+    c.set_session_id(SessionId{0x1111}, "diag");
 
     const auto diag = c.diagnostics();
     print_result("diagnostics() is non-empty", !diag.empty());
@@ -319,11 +320,11 @@ void test_advance_return_values()
     SessionCoordinator c;
 
     print_result("advance_session_epoch(1st) returns 1",
-                 c.advance_session_epoch("r") == 1);
+                 c.advance_session_epoch("r") == SessionEpoch{1});
     print_result("advance_session_epoch(2nd) returns 2",
-                 c.advance_session_epoch("r") == 2);
+                 c.advance_session_epoch("r") == SessionEpoch{2});
     print_result("advance_session_epoch(3rd) returns 3",
-                 c.advance_session_epoch("r") == 3);
+                 c.advance_session_epoch("r") == SessionEpoch{3});
 
     print_result("advance_recovery_epoch(1st) returns 1",
                  c.advance_recovery_epoch("r") == 1);

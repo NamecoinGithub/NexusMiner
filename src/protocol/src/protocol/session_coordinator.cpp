@@ -26,22 +26,22 @@ void SessionCoordinator::fire_notifications(
 
 // ── Epoch management ──────────────────────────────────────────────────────────
 
-uint64_t SessionCoordinator::session_epoch() const
+SessionEpoch SessionCoordinator::session_epoch() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_session_epoch;
 }
 
-uint64_t SessionCoordinator::advance_session_epoch(const char* reason)
+SessionEpoch SessionCoordinator::advance_session_epoch(const char* reason)
 {
     uint64_t old_val, new_val;
     std::vector<StateChangeObserver> obs;
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        old_val = m_session_epoch;
-        ++m_session_epoch;
-        new_val = m_session_epoch;
+        old_val = m_session_epoch.get();
+        m_session_epoch = SessionEpoch{old_val + 1};
+        new_val = m_session_epoch.get();
         if (m_logger) {
             m_logger->info("[SessionCoordinator] session_epoch {} → {} ({})",
                            old_val, new_val, reason ? reason : "");
@@ -50,7 +50,7 @@ uint64_t SessionCoordinator::advance_session_epoch(const char* reason)
     }
 
     fire_notifications(obs, {{DOMAIN_SESSION_EPOCH, old_val, new_val}});
-    return new_val;
+    return SessionEpoch{new_val};
 }
 
 uint64_t SessionCoordinator::recovery_epoch() const
@@ -83,30 +83,30 @@ uint64_t SessionCoordinator::advance_recovery_epoch(const char* reason)
 uint64_t SessionCoordinator::global_epoch() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return std::max(m_session_epoch, m_recovery_epoch);
+    return std::max(m_session_epoch.get(), m_recovery_epoch);
 }
 
 // ── Session identity ──────────────────────────────────────────────────────────
 
-uint32_t SessionCoordinator::session_id() const
+SessionId SessionCoordinator::session_id() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_session_id;
 }
 
-void SessionCoordinator::set_session_id(uint32_t id, const char* reason)
+void SessionCoordinator::set_session_id(SessionId id, const char* reason)
 {
     uint64_t old_val, new_val;
     std::vector<StateChangeObserver> obs;
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        old_val = m_session_id;
-        new_val = id;
+        old_val = m_session_id.get();
+        new_val = id.get();
         m_session_id = id;
         if (m_logger && old_val != new_val) {
             m_logger->info("[SessionCoordinator] session_id 0x{:08x} → 0x{:08x} ({})",
-                           old_val, id, reason ? reason : "");
+                           old_val, id.get(), reason ? reason : "");
         }
         obs = m_observers;
     }
@@ -235,7 +235,7 @@ bool SessionCoordinator::can_submit() const
 bool SessionCoordinator::is_session_active() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return m_authenticated && m_session_id != 0;
+    return m_authenticated && !m_session_id.is_default();
 }
 
 // ── Bulk operations ───────────────────────────────────────────────────────────
@@ -248,11 +248,11 @@ void SessionCoordinator::clear_for_disconnect(const char* reason)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         // EPOCHS ARE NEVER CLEARED — preserves monotonicity across disconnects
-        const uint32_t old_session_id    = m_session_id;
+        const SessionId old_session_id   = m_session_id;
         const bool     old_authenticated = m_authenticated;
         const bool     old_reward_bound  = m_reward_bound;
 
-        m_session_id                  = 0;
+        m_session_id.clear();
         m_authenticated               = false;
         m_reward_bound                = false;
         m_subscribed_to_notifications = false;
@@ -263,11 +263,11 @@ void SessionCoordinator::clear_for_disconnect(const char* reason)
                            "session_id 0x{:08x}→0, authenticated {}→false, reward_bound {}→false; "
                            "session_epoch={} recovery_epoch={} (preserved)",
                            reason ? reason : "",
-                           old_session_id, old_authenticated, old_reward_bound,
-                           m_session_epoch, m_recovery_epoch);
+                           old_session_id.get(), old_authenticated, old_reward_bound,
+                           m_session_epoch.get(), m_recovery_epoch);
         }
-        if (old_session_id != 0) {
-            events.push_back({DOMAIN_SESSION_ID, old_session_id, 0});
+        if (!old_session_id.is_default()) {
+            events.push_back({DOMAIN_SESSION_ID, old_session_id.get(), 0});
         }
         if (old_authenticated) {
             events.push_back({DOMAIN_AUTHENTICATED, 1, 0});
@@ -281,17 +281,17 @@ void SessionCoordinator::clear_for_disconnect(const char* reason)
     fire_notifications(obs, events);
 }
 
-void SessionCoordinator::commit_authenticated(uint32_t new_session_id, const char* reason)
+void SessionCoordinator::commit_authenticated(SessionId new_session_id, const char* reason)
 {
     std::vector<Notification> events;
     std::vector<StateChangeObserver> obs;
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        const uint64_t old_epoch      = m_session_epoch;
-        const uint32_t old_session_id = m_session_id;
+        const uint64_t old_epoch      = m_session_epoch.get();
+        const SessionId old_session_id = m_session_id;
 
-        ++m_session_epoch;
+        m_session_epoch = SessionEpoch{old_epoch + 1};
         m_session_id    = new_session_id;
         m_authenticated = true;
 
@@ -299,12 +299,12 @@ void SessionCoordinator::commit_authenticated(uint32_t new_session_id, const cha
             m_logger->info("[SessionCoordinator] commit_authenticated ({}): "
                            "session_epoch {}→{}, session_id 0x{:08x}→0x{:08x}",
                            reason ? reason : "",
-                           old_epoch, m_session_epoch,
-                           old_session_id, new_session_id);
+                           old_epoch, m_session_epoch.get(),
+                           old_session_id.get(), new_session_id.get());
         }
-        events.push_back({DOMAIN_SESSION_EPOCH, old_epoch, m_session_epoch});
+        events.push_back({DOMAIN_SESSION_EPOCH, old_epoch, m_session_epoch.get()});
         if (old_session_id != new_session_id) {
-            events.push_back({DOMAIN_SESSION_ID, old_session_id, new_session_id});
+            events.push_back({DOMAIN_SESSION_ID, old_session_id.get(), new_session_id.get()});
         }
         events.push_back({DOMAIN_AUTHENTICATED, 0, 1});
         obs = m_observers;
@@ -329,7 +329,7 @@ SessionCoordinator::Snapshot SessionCoordinator::snapshot() const
     Snapshot s;
     s.session_epoch               = m_session_epoch;
     s.recovery_epoch              = m_recovery_epoch;
-    s.global_epoch                = std::max(m_session_epoch, m_recovery_epoch);
+    s.global_epoch                = std::max(m_session_epoch.get(), m_recovery_epoch);
     s.session_id                  = m_session_id;
     s.authenticated               = m_authenticated;
     s.reward_bound                = m_reward_bound;
@@ -343,10 +343,10 @@ std::string SessionCoordinator::diagnostics() const
     const auto snap = snapshot();
     std::ostringstream oss;
     oss << "SessionCoordinator{"
-        << "session_epoch=" << snap.session_epoch
+        << "session_epoch=" << snap.session_epoch.get()
         << " recovery_epoch=" << snap.recovery_epoch
         << " global_epoch=" << snap.global_epoch
-        << " session_id=0x" << std::hex << std::setw(8) << std::setfill('0') << snap.session_id
+        << " session_id=0x" << std::hex << std::setw(8) << std::setfill('0') << snap.session_id.get()
         << std::dec
         << " authenticated=" << snap.authenticated
         << " reward_bound=" << snap.reward_bound

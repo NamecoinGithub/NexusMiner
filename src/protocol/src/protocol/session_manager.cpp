@@ -163,7 +163,7 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     // std::max enforces the monotonic invariant: the local epoch can never
     // decrease, even if a future code path somehow changes call order.
     m_session.session_epoch = std::max(m_session.session_epoch,
-                                       m_coordinator->session_epoch());
+                                       m_coordinator->session_epoch().get());
 
     if (preserve_genesis) {
         m_session.session_genesis = saved_genesis;
@@ -182,9 +182,9 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
     // set_authenticated), which left a window where the epoch had advanced but
     // session_id and authenticated were not yet set — causing observers to see an
     // inconsistent state.
-    m_coordinator->commit_authenticated(session_id, "authenticated");
+    m_coordinator->commit_authenticated(SessionId{session_id}, "authenticated");
     // Read back the epoch that was just advanced so the local SessionInfo mirrors it.
-    m_session.session_epoch = m_coordinator->session_epoch();
+    m_session.session_epoch = m_coordinator->session_epoch().get();
     m_session.session_id = session_id;
     m_session.state = SessionState::AUTHENTICATED;
     m_session.authenticated = true;

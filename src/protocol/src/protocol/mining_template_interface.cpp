@@ -685,7 +685,7 @@ void MiningTemplateInterface::set_coordinator(std::shared_ptr<SessionCoordinator
         return;
     }
     // Seed the local epoch from the coordinator's current authoritative value.
-    set_session_epoch(coordinator->session_epoch());
+    set_session_epoch(coordinator->session_epoch().get());
 }
 
 void MiningTemplateInterface::set_channel(uint8_t channel)

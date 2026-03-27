@@ -330,7 +330,7 @@ void HeightTracker::set_coordinator(std::shared_ptr<SessionCoordinator> coordina
         return;
     }
     // Seed the local epoch from the coordinator's current authoritative value.
-    set_session_epoch(coordinator->session_epoch());
+    set_session_epoch(coordinator->session_epoch().get());
 }
 
 HeightTracker::CanonicalChainState HeightTracker::GetCanonicalSnapshot() const {
