@@ -124,6 +124,9 @@ public:
     // Falcon miner authentication
     void set_miner_keys(std::vector<uint8_t> const& pubkey, std::vector<uint8_t> const& privkey);
     bool is_authenticated() const { return m_session_context ? m_session_context->is_authenticated() : m_authenticated; }
+    bool can_request_get_block() const {
+        return m_session_context ? m_session_context->can_request_get_block() : m_authenticated;
+    }
     void set_address(std::string const& address) { m_address = address; }
     void set_protocol_lane(ProtocolLane lane);
     

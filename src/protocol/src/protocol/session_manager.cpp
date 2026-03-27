@@ -16,7 +16,7 @@ namespace protocol {
 constexpr uint16_t MIN_KEEPALIVE_HOURS = 1;
 constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
 constexpr auto KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);
-constexpr auto KEEPALIVE_TCP_INTERVAL   = std::chrono::seconds(45);
+constexpr auto KEEPALIVE_TCP_INTERVAL   = std::chrono::seconds(170);
 
 namespace {
 

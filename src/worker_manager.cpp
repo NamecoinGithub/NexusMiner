@@ -1711,6 +1711,21 @@ void Worker_manager::retry_template_request(bool bForce)
 
     bool forced_lane = bForce && is_recovery_active() && solo_protocol->is_authenticated() && no_valid_template;
 
+    // Gate: SessionManager::can_request_get_block() must be true before transmitting GET_BLOCK.
+    // This guard is bypassed when this is a forced recovery request (bForce && is_recovery_active())
+    // so the recovery ladder can always make progress even when push notifications are absent
+    // (no PUSH subscription, post-reorg push silence, or initial connection before first push).
+    if (!solo_protocol->can_request_get_block()) {
+        if (bForce && is_recovery_active()) {
+            m_logger->info("[Worker_manager] GET_BLOCK can_request_get_block=false bypassed by forced recovery");
+        } else {
+            m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=session_not_ready_for_get_block");
+            m_logger->info("[Worker_manager] GET_BLOCK deferred — session not ready for GET_BLOCK; "
+                           "health monitor will retry at next tick");
+            return;
+        }
+    }
+
     // Request template via NodeSession
     m_logger->info("[Worker_manager] Requesting fresh template via NodeSession (forced_lane={})",
                    forced_lane ? "true" : "false");
