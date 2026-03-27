@@ -121,7 +121,8 @@ public:
         network::Socket::Sptr socket,
         std::shared_ptr<stats::Collector> stats_collector,
         const std::string& node_label,
-        DualConnectionManager* dcm = nullptr);
+        DualConnectionManager* dcm = nullptr,
+        std::shared_ptr<protocol::SessionCoordinator> coordinator = nullptr);
 
     /**
      * @brief Connect to the node (both ports)
@@ -340,6 +341,10 @@ private:
 
     // Session management (shared across both ports) - AUTHORITATIVE source for session state
     std::shared_ptr<protocol::NodeSessionContext> m_session_context;
+
+    // Shared coordinator — single source of truth for session epoch and identity state.
+    // Forwarded from Worker_manager and wired into both protocol instances.
+    std::shared_ptr<protocol::SessionCoordinator> m_coordinator;
 
     // Receive accumulators for TCP stream reassembly
     std::deque<uint8_t> m_primary_rx_accumulator;

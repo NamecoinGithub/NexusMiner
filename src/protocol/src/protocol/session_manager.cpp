@@ -118,13 +118,15 @@ const char* SessionManager::expiry_state_name(ExpiryState state)
 
 // ── Constructors ──────────────────────────────────────────────────────────────
 
-SessionManager::SessionManager(std::shared_ptr<asio::io_context> io_context)
-    : SessionManager(12, std::move(io_context))
+SessionManager::SessionManager(std::shared_ptr<asio::io_context> io_context,
+                               std::shared_ptr<SessionCoordinator> coordinator)
+    : SessionManager(12, std::move(io_context), std::move(coordinator))
 {
 }
 
 SessionManager::SessionManager(uint16_t keepalive_interval_hours,
-                               std::shared_ptr<asio::io_context> io_context)
+                               std::shared_ptr<asio::io_context> io_context,
+                               std::shared_ptr<SessionCoordinator> coordinator)
     : m_session{}
     , m_keepalive_interval_hours(keepalive_interval_hours)
     , m_preserve_genesis_on_disconnect(true)
@@ -133,6 +135,8 @@ SessionManager::SessionManager(uint16_t keepalive_interval_hours,
     , m_keepalive_timer(nullptr)
     , m_keepalive_active(false)
     , m_logger(spdlog::get("logger"))
+    , m_coordinator(coordinator ? std::move(coordinator)
+                                : std::make_shared<SessionCoordinator>())
 {
     if (!m_logger) {
         m_logger = spdlog::default_logger();
@@ -175,6 +179,10 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     m_session.recovery_state = RecoveryState::HEALTHY;
     m_session.expiry_state = ExpiryState::FRESH;
 
+    // Restore the epoch from coordinator so it is never reset to 0.
+    // The coordinator is the monotonic authority; a struct-reset must not lose it.
+    m_session.session_epoch = m_coordinator->session_epoch();
+
     if (preserve_genesis) {
         m_session.session_genesis = saved_genesis;
     }
@@ -186,7 +194,10 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
 void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
                                                          const std::vector<uint8_t>& tritium_genesis)
 {
-    ++m_session.session_epoch;
+    // Advance epoch in coordinator atomically with session_id and auth flag.
+    // This replaces the local ++m_session.session_epoch and ensures all
+    // components that read from the coordinator see a consistent view.
+    m_session.session_epoch = m_coordinator->advance_session_epoch("authenticated");
     m_session.session_id = session_id;
     m_session.state = SessionState::AUTHENTICATED;
     m_session.authenticated = true;
@@ -199,6 +210,11 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
     if (!tritium_genesis.empty()) {
         m_session.session_genesis = tritium_genesis;
     }
+
+    // Propagate to coordinator (set_session_id and set_authenticated notify observers).
+    m_coordinator->set_session_id(session_id, "authenticated");
+    m_coordinator->set_authenticated(true, "authenticated");
+
     update_replay_allowances_locked();
 
     record_session_event_locked(SessionEventKind::AUTH_SUCCESS, "authenticated");
@@ -424,6 +440,8 @@ void SessionManager::clear_for_disconnect(const std::string& reward_address,
         record_session_event_locked(SessionEventKind::SESSION_RESET,
                                     reason.empty() ? "session cleared for disconnect" : reason);
     }
+    // Propagate transient-state clear to coordinator (epochs are preserved inside coordinator).
+    m_coordinator->clear_for_disconnect(reason.empty() ? "disconnect" : reason.c_str());
     stop_keepalive_timer();
 }
 
@@ -433,24 +451,28 @@ void SessionManager::clear_for_reauth(const std::string& reward_address,
                                       bool preserve_genesis)
 {
     stop_keepalive_timer();
-    std::lock_guard<std::mutex> lock(m_session_mutex);
-    const auto retained_reward_address =
-        reward_address.empty() ? m_session.reward_address_string : reward_address;
-    const auto retained_reward_source =
-        reward_source.empty() ? m_session.reward_binding_source : reward_source;
-    clear_runtime_session_locked(preserve_genesis, true);
-    m_session.reward_address_string = retained_reward_address;
-    m_session.reward_address = retained_reward_address;
-    m_session.reward_binding_source = retained_reward_source;
-    m_session.reward_state = retained_reward_address.empty() ? RewardState::NONE
-                                                             : RewardState::REQUIRED;
-    m_session.recovery_state = RecoveryState::FORCED_REAUTH;
-    m_session.recovery_reason = reason;
-    m_session.expiry_state = ExpiryState::FRESH;
-    m_session.last_activity = now_epoch_seconds();
-    update_replay_allowances_locked();
-    record_session_event_locked(SessionEventKind::SESSION_RESET,
-                                reason.empty() ? "session cleared for reauth" : reason);
+    {
+        std::lock_guard<std::mutex> lock(m_session_mutex);
+        const auto retained_reward_address =
+            reward_address.empty() ? m_session.reward_address_string : reward_address;
+        const auto retained_reward_source =
+            reward_source.empty() ? m_session.reward_binding_source : reward_source;
+        clear_runtime_session_locked(preserve_genesis, true);
+        m_session.reward_address_string = retained_reward_address;
+        m_session.reward_address = retained_reward_address;
+        m_session.reward_binding_source = retained_reward_source;
+        m_session.reward_state = retained_reward_address.empty() ? RewardState::NONE
+                                                                 : RewardState::REQUIRED;
+        m_session.recovery_state = RecoveryState::FORCED_REAUTH;
+        m_session.recovery_reason = reason;
+        m_session.expiry_state = ExpiryState::FRESH;
+        m_session.last_activity = now_epoch_seconds();
+        update_replay_allowances_locked();
+        record_session_event_locked(SessionEventKind::SESSION_RESET,
+                                    reason.empty() ? "session cleared for reauth" : reason);
+    }
+    // Propagate transient-state clear to coordinator (epochs are preserved inside coordinator).
+    m_coordinator->clear_for_disconnect(reason.empty() ? "reauth" : reason.c_str());
 }
 
 void SessionManager::end_session()
@@ -492,6 +514,8 @@ void SessionManager::commit_reward_bound(const std::string& reward_address,
     m_session.last_reward_bind_time = now_epoch_seconds();
     m_session.last_activity = now_epoch_seconds();
     update_replay_allowances_locked();
+    // Propagate to coordinator so all components see authoritative reward_bound state.
+    m_coordinator->set_reward_bound(true, "reward_result");
     record_session_event_locked(SessionEventKind::REWARD_BOUND,
                                 "accepted" + (source.empty() ? "" : " via " + source));
 }

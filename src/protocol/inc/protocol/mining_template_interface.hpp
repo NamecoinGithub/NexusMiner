@@ -17,6 +17,8 @@
 namespace nexusminer {
 namespace protocol {
 
+class SessionCoordinator;
+
 /**
  * @brief Mining Template Interface for unified READ/FEED operations
  * 
@@ -466,7 +468,17 @@ public:
      * @param session_epoch Session epoch/generation from SessionManager
      */
     void set_session_epoch(uint64_t session_epoch);
-    
+
+    /**
+     * @brief Wire a SessionCoordinator as the authoritative session-epoch source.
+     *
+     * Seeds the local session_epoch from the coordinator's current value so
+     * MiningTemplateInterface and the coordinator stay aligned without manual propagation.
+     *
+     * @param coordinator Shared coordinator instance
+     */
+    void set_coordinator(std::shared_ptr<SessionCoordinator> coordinator);
+
     /**
      * @brief Get current session ID
      * @return Session ID

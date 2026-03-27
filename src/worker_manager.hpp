@@ -13,6 +13,7 @@
 #include "stats/mined_block_cache.hpp"
 #include "Util/include/exponential_backoff.h"
 #include "protocol/inc/protocol/protocol_constants.hpp"
+#include "protocol/inc/protocol/session_coordinator.hpp"
 #include "node_session/inc/node_session/node_session.hpp"
 #include <asio/steady_timer.hpp>
 
@@ -46,7 +47,8 @@ enum class RecoveryPhase : uint8_t {
 struct RecoveryContext {
     RecoveryPhase phase{RecoveryPhase::HEALTHY};
 
-    uint64_t epoch{0};                                              // Monotonic recovery counter
+    // Note: 'epoch' (monotonic recovery counter) has been moved to SessionCoordinator
+    // as recovery_epoch. Use m_coordinator->recovery_epoch() in Worker_manager.
     std::chrono::steady_clock::time_point entered_at{};            // When current epoch (recovery start) began
     std::chrono::steady_clock::time_point degraded_since{};        // When current outage started (set once per outage)
     std::chrono::steady_clock::time_point last_get_block_at{};     // Last confirmed GET_BLOCK transmit
@@ -168,6 +170,11 @@ private:
 
     // Failover NodeSession (optional secondary node)
     std::shared_ptr<NodeSession> m_failover_node_session;
+
+    // Shared SessionCoordinator — single source of truth for session_epoch, recovery_epoch,
+    // session_id, authenticated, and reward_bound.  Created in connect() and threaded
+    // through all NodeSession/Solo instances so every component reads the same values.
+    std::shared_ptr<protocol::SessionCoordinator> m_coordinator;
 
     // ── Recovery state machine ────────────────────────────────────────────────
     // Single authoritative RecoveryContext replaces 15 independent boolean/timestamp

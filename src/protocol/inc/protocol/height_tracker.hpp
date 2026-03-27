@@ -7,10 +7,13 @@
 #include <mutex>
 #include <string>
 #include <optional>
+#include <memory>
 #include "LLC/types/uint1024.h"
 
 namespace nexusminer {
 namespace protocol {
+
+class SessionCoordinator;
 
 struct UnifiedHeight {
     uint32_t value{0};
@@ -625,6 +628,17 @@ public:
      * epoch's escape ladder (check_template_health ack_recent computation).
      */
     void set_session_epoch(uint64_t session_epoch);
+
+    /**
+     * @brief Wire a SessionCoordinator as the authoritative session-epoch source.
+     *
+     * Registers an observer on the coordinator so that any session_epoch change
+     * automatically calls set_session_epoch() — removing the need for callers to
+     * manually propagate epoch changes to HeightTracker.
+     *
+     * @param coordinator Shared coordinator instance
+     */
+    void set_coordinator(std::shared_ptr<SessionCoordinator> coordinator);
 
     /**
      * @brief Return a snapshot of canonical chain state only

@@ -16,6 +16,7 @@
 #include "asio/steady_timer.hpp"
 #include "network/types.hpp"
 #include "protocol/session_semantic_types.hpp"
+#include "protocol/session_coordinator.hpp"
 #include "protocol_lane.hpp"
 #include "spdlog/spdlog.h"
 #include "LLP/include/colin_ping_protocol.h"
@@ -159,10 +160,12 @@ public:
 
     // ── Constructors ──────────────────────────────────────────────────────────
     // New minimal constructor
-    explicit SessionManager(std::shared_ptr<asio::io_context> io_context = nullptr);
+    explicit SessionManager(std::shared_ptr<asio::io_context> io_context = nullptr,
+                            std::shared_ptr<SessionCoordinator> coordinator = nullptr);
     // Backward-compat constructor (tests use SessionManager(24, nullptr))
     explicit SessionManager(uint16_t keepalive_interval_hours,
-                            std::shared_ptr<asio::io_context> io_context = nullptr);
+                            std::shared_ptr<asio::io_context> io_context = nullptr,
+                            std::shared_ptr<SessionCoordinator> coordinator = nullptr);
     ~SessionManager();
 
     // ── Core session lifecycle (new minimal API) ──────────────────────────────
@@ -282,6 +285,9 @@ public:
     static const char* recovery_state_name(RecoveryState state);
     static const char* expiry_state_name(ExpiryState state);
 
+    // ── Coordinator access ────────────────────────────────────────────────────
+    std::shared_ptr<SessionCoordinator> get_coordinator() const { return m_coordinator; }
+
 private:
     void transition_to_authenticated_locked(uint32_t session_id,
                                             const std::vector<uint8_t>& tritium_genesis);
@@ -311,6 +317,10 @@ private:
 
     std::shared_ptr<spdlog::logger> m_logger;
     SessionExpiredHandler m_session_expired_handler;
+
+    // Shared coordinator — single source of truth for session epoch and identity state.
+    // If not provided externally, a local one is created in the constructor.
+    std::shared_ptr<SessionCoordinator> m_coordinator;
 };
 
 } // namespace protocol

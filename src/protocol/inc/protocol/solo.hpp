@@ -5,6 +5,7 @@
 #include "protocol/falcon_wrapper.hpp"
 #include "protocol/chacha20_wrapper.hpp"
 #include "protocol/session_manager.hpp"
+#include "protocol/session_coordinator.hpp"
 #include "protocol/node_session_context.hpp"
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/push_notification_handler.hpp"
@@ -47,7 +48,8 @@ public:
     };
 
     Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
-         std::shared_ptr<NodeSessionContext> session_context);
+         std::shared_ptr<NodeSessionContext> session_context,
+         std::shared_ptr<SessionCoordinator> coordinator = nullptr);
 
     void reset() override;
     network::Shared_payload login(Login_handler handler) override;
@@ -507,6 +509,10 @@ private:
     // Session context for centralized session management (passed from NodeSession)
     // This is the authoritative source for session state shared across primary/secondary protocols
     std::shared_ptr<NodeSessionContext> m_session_context;
+
+    // SessionCoordinator — single source of truth for session epoch, recovery epoch,
+    // session_id, authenticated, and reward_bound.  When provided, replaces local cached copies.
+    std::shared_ptr<SessionCoordinator> m_coordinator;
 
     // KEEPALIVE_V2 (0xD100) send-side tracking:
     // The lo32 of hashPrevBlock that the miner put in its last KEEPALIVE_V2 frame.
