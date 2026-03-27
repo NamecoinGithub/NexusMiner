@@ -450,8 +450,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 } else {
                     m_logger->error("[Worker_manager] FAILED: No workers received template!");
                     // Immediately request a new template — don't wait 30s for health monitor.
-                    // transition_to(HARD_RECOVERY) is triggered by mark_recovery_initiated()
-                    // inside retry_template_request(true), after stop_all_workers() here.
+                    // stop_all_workers() atomically enters WAITING_TEMPLATE; the forced
+                    // retry_template_request below sends the GET_BLOCK.
                     stop_all_workers();
                     retry_template_request(true);
                 }
@@ -1655,8 +1655,6 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
 
     // Notify protocol layer that recovery is required.
-    // Phase transition is handled by the caller (mark_recovery_initiated / transition_to)
-    // before or after stop_all_workers() — this function is a pure physical stop.
     if (auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr) {
         solo_protocol->mark_authoritative_recovery_required("workers_stopped_waiting_for_valid_template");
     }
@@ -1671,6 +1669,12 @@ void Worker_manager::stop_all_workers()
 
     // Clear the recovery gate so the next epoch can re-create workers
     m_recovery_workers_spawned = false;
+
+    // Atomically enter WAITING_TEMPLATE so there is no window where m_workers is
+    // empty while the phase is still HEALTHY.  mark_recovery_initiated() is
+    // idempotent — callers that also call retry_template_request(true) (which
+    // internally calls mark_recovery_initiated()) will harmlessly no-op.
+    mark_recovery_initiated("stop_all_workers");
 
     m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
     m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
