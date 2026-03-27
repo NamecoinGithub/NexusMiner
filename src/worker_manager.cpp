@@ -86,6 +86,11 @@ namespace {
     constexpr int64_t FORCED_RETRY_JITTER_MIN_MS = 100;
     constexpr int64_t FORCED_RETRY_JITTER_MAX_MS = 250;
 
+    // Minimum interval between successive proactive GET_BLOCKs in the 300-600s
+    // stale-template window (HEALTHY state).  Rate-limits the 300s push-alive
+    // check so it does not spam GET_BLOCK every 30s health-check tick.
+    constexpr int64_t PROACTIVE_GET_BLOCK_INTERVAL_SECONDS = 120;
+
 }
 
 Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Config& config,
@@ -2014,16 +2019,26 @@ void Worker_manager::check_template_health()
 
     // Proactive stale-template refresh: at 300s (PUSH_LIVENESS_THRESHOLD_SECONDS) the
     // template is as old as the push-alive window.  If no push has arrived for this long
-    // the PUSH system may be silently broken (Bug 4 from 600s drought incident).  Force
-    // a GET_BLOCK with bypass_dedup=true so height-based dedup cannot suppress it.
-    // This fires before the 480s warning and 600s emergency, giving the node 300s to
-    // respond before the miner escalates to hard recovery.
+    // the PUSH system may be silently broken (Bug 4 from 600s drought incident).  Send
+    // a non-forced GET_BLOCK (subject to height-based dedup) as an early intervention.
+    //
+    // This intentionally does NOT enter recovery (bForce=false) and does NOT return, so
+    // the 480s warning and 600s emergency escalation path below still fires on subsequent
+    // health-check ticks.  Rate-limited to one proactive request per
+    // PROACTIVE_GET_BLOCK_INTERVAL_SECONDS to avoid spamming every 30s tick.
     if (template_age > static_cast<uint64_t>(PUSH_ALIVE_THRESHOLD_SECONDS)) {
-        m_logger->warn("[Worker_manager] ⚠️  {} template age {}s > {}s push-alive threshold — "
-                       "proactive forced GET_BLOCK (push may be silent)",
-                       channel_name, template_age, PUSH_ALIVE_THRESHOLD_SECONDS);
-        retry_template_request(true);
-        return;
+        auto now = std::chrono::steady_clock::now();
+        auto since_last_proactive = (m_recovery.last_proactive_get_block_at == std::chrono::steady_clock::time_point{})
+            ? INT64_MAX
+            : std::chrono::duration_cast<std::chrono::seconds>(now - m_recovery.last_proactive_get_block_at).count();
+        if (since_last_proactive >= PROACTIVE_GET_BLOCK_INTERVAL_SECONDS) {
+            m_logger->warn("[Worker_manager] ⚠️  {} template age {}s > {}s push-alive threshold — "
+                           "proactive GET_BLOCK (push may be silent)",
+                           channel_name, template_age, PUSH_ALIVE_THRESHOLD_SECONDS);
+            retry_template_request(false);
+            m_recovery.last_proactive_get_block_at = now;
+        }
+        // Fall through to 480s/600s escalation checks below.
     }
 
     // Age-based warning: 480s gives operators a 120s (2-minute) window before the 600s emergency fires.

@@ -56,6 +56,9 @@ struct RecoveryContext {
     bool get_block_confirmed{false};                               // At least one GET_BLOCK confirmed this epoch
     const char* reason{nullptr};                                   // Why this phase was entered (for logging)
 
+    // ── Proactive refresh (300s) rate-limiter ────────────────────────────────
+    std::chrono::steady_clock::time_point last_proactive_get_block_at{};
+
     // ── Reconnect sub-state (only valid when phase == RECONNECTING) ──────────
     std::chrono::steady_clock::time_point reconnect_started_at{};
 
