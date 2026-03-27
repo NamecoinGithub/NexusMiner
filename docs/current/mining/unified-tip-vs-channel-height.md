@@ -56,6 +56,40 @@ when the current template was received).
 
 Every push notification may trigger one of two refresh reasons:
 
+### Reason: `hashPrevBlock_mismatch_reorg`
+
+**When**: The canonical `hash_prev_block` field in `HeightTracker` (set from the last
+adopted `BLOCK_DATA` response) is non-zero and differs from the live template's
+`hashPrevBlock`.
+
+**Meaning**: The node has moved to a new chain tip at the **same unified height** via a
+reorganization.  Height-based staleness (`channel_height >= channel_target`) and
+`is_tip_moved()` both fail to detect this because the heights don't change — only the
+tip hash changes.  Any block found on this template would be unconditionally rejected by
+the node's Guard 2 check (`hashPrevBlock != hashBestChain`).
+
+**Action**: Discard current template immediately, return `false` from
+`validate_current_template()` so the caller (Worker_manager) triggers a `GET_BLOCK`
+refresh.
+
+```
+m_template_interface->discard_template("hashPrevBlock_mismatch_reorg")
+```
+
+Log signature:
+```
+[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch (canonical=<hex>, template=<hex>) — discarding stale template
+```
+
+> **Note:** `push_hash_prev_block` is **not** used as a discard trigger in
+> `validate_current_template()`.  Using it would re-introduce the infinite
+> soft-refresh loop: a push sets `push_hash_prev_block = H_new`, but the node's
+> `BLOCK_DATA` response may legitimately return `hashPrevBlock = H_old` when the push
+> was premature.  Only the canonical `hash_prev_block` (from the last adopted
+> `BLOCK_DATA`) is authoritative.
+
+---
+
 ### Reason: `channel_advanced`
 
 **When**: The node's `channel_height` has reached or passed the template's
@@ -114,15 +148,15 @@ On every push notification:
   6. elif snap.is_tip_moved()     → request_work()   [reason: tip_moved]
   7. else                         → continue mining current template
 
-Before any freshly validated template is fed live:
+Before any freshly validated template is fed live (validate_current_template):
   A. finalize channel target metadata
-  B. if snap.has_same_height_push_tip_replacement(template.hashPrevBlock, template.nChannelHeight)
-       → discard template as same_height_tip_update
-       → notify the same soft-refresh/template-withheld handler used by PUSH-triggered same-height replacement
-       → request fresh work
-       → stay on the soft template-swap path until a replacement template is cross-checked
-       → only if that soft-refresh window times out may Worker_manager promote the incident into degraded mode
-  C. otherwise feed workers
+  B. if canonical hash_prev_block != 0 AND template.hashPrevBlock != canonical hash_prev_block
+       → discard template [reason: hashPrevBlock_mismatch_reorg]
+       → return false (triggers GET_BLOCK refresh)
+       [closes same-height reorg blind spot — height checks alone can't detect this]
+  C. if snap.has_same_height_push_tip_replacement(template.hashPrevBlock, template.nChannelHeight)
+       → informational log only (advisory); do NOT discard (prevents infinite loop)
+  D. otherwise feed workers
 ```
 
 ---
@@ -213,6 +247,8 @@ Use these terms consistently across all documentation:
 | `difficulty_nbits` | Push / GET_ROUND | Worker difficulty target |
 | `channel_target` | Template received | `is_template_stale()` comparison |
 | `template_unified_height` | Template received | `is_tip_moved()` comparison |
+| `hash_prev_block` | `OnBlockDataReceived` / `UpdateWithHashPrevBlock` | `hashPrevBlock_mismatch_reorg` discard check |
+| `push_hash_prev_block` | Extended push notification | Advisory logging only (not a discard trigger) |
 
 `is_template_stale()` → `channel_height >= channel_target` (both non-zero)  
 `is_tip_moved()`      → `unified_height > template_unified_height` (both non-zero)
@@ -227,6 +263,7 @@ Use these terms consistently across all documentation:
 |----------|----------------------|
 | Channel advanced, stale template | `[reason: channel_advanced]` |
 | Other channel found block, tip moved | `[reason: tip_moved]` |
+| Same-height reorg, hashPrevBlock changed | `hashPrevBlock mismatch (canonical=..., template=...) — discarding stale template` |
 | Template still valid | `✓ {channel} channel_target=N unchanged, unified_height=M` |
 | No template yet | `No template - requesting initial {channel} template` |
 | Drift mismatch detected | `HeightTracker: drift delta …` |
@@ -239,6 +276,8 @@ Use these terms consistently across all documentation:
 | Template **not** refreshed after another channel's block | Bug — missing `tip_moved` logic | Ensure miner version includes PR #164+ |
 | Template submitted and rejected as STALE | Push missed; submitted on old `hashPrevBlock` | Check for missed `tip_moved` refresh |
 | Mining stops after a Stake block | Expected if push subscription covers Stake events | Verify `MINER_READY` subscription active |
+| Template discarded with `hashPrevBlock_mismatch_reorg` | Same-height chain reorg detected | Correct — canonical tip moved without height change; miner requests fresh work |
+| 20+ minutes of fermat chains with no new template after reorg | `validate_current_template()` allowing stale template | Ensure miner version includes the hashPrevBlock discard-and-refresh fix |
 
 ### 8.3 Verifying Push Subscription
 
