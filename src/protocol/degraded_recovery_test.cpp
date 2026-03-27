@@ -25,6 +25,7 @@
 
 #include "protocol/height_tracker.hpp"
 #include "protocol/packet_builder.hpp"
+#include "protocol/epoch_coordinator.hpp"
 #include "miner_opcodes.hpp"
 #include <iostream>
 #include <cassert>
@@ -353,6 +354,18 @@ void test_successful_reauth_restarts_recovery_epoch() {
                       elapsed_after_reauth >= 0 && elapsed_after_reauth <= 1);
     print_test_result("Degraded timer is reset for the new authenticated session",
                       rt.m_degraded_since == std::chrono::steady_clock::time_point{});
+
+    // Verify EpochCoordinator-based recovery epoch works the same way
+    {
+        nexusminer::protocol::EpochCoordinator coordinator;
+        coordinator.advance_recovery_epoch("initial_recovery");  // simulate entering recovery
+        const uint64_t epoch_before_reauth = coordinator.recovery_epoch();
+        coordinator.advance_recovery_epoch("session_reauthenticated");  // simulate reauth
+        print_test_result("EpochCoordinator: re-authentication advances recovery epoch",
+                          coordinator.recovery_epoch() == epoch_before_reauth + 1);
+        print_test_result("EpochCoordinator: recovery epoch never resets to 0",
+                          coordinator.recovery_epoch() > 0);
+    }
 }
 
 // ============================================================================

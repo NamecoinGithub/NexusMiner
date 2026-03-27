@@ -132,6 +132,10 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             "PRIMARY",
             &m_sim_link);  // Pass DualConnectionManager for lane health tracking
 
+        // Create EpochCoordinator and wire it to the session manager before any auth begins.
+        m_epoch_coordinator = std::make_shared<protocol::EpochCoordinator>();
+        m_primary_node_session->set_epoch_coordinator(m_epoch_coordinator);
+
         // Configure miner keys
         m_primary_node_session->set_miner_keys(pubkey, privkey);
 
@@ -387,7 +391,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                             std::chrono::steady_clock::now() - m_recovery.entered_at).count();
                         m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
-                        m_logger->warn("[Worker_manager] ✅ RECOVERY COMPLETE — epoch {} ({}s elapsed)", m_recovery.epoch, elapsed);
+                        m_logger->warn("[Worker_manager] ✅ RECOVERY COMPLETE — epoch {} ({}s elapsed)", m_epoch_coordinator->recovery_epoch(), elapsed);
                         m_logger->warn("[Worker_manager]    Fresh template distributed to workers successfully");
                         m_logger->warn("[Worker_manager]    Workers resumed mining on valid template");
                         m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
@@ -508,12 +512,12 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* the TCP connection. Uses existing session auth backoff infrastructure.    */
         m_primary_node_session->set_session_expired_handler(
             [this]() {
-                if (is_reconnecting() || (is_recovery_active() && m_recovery.epoch > 0)) {
+                if (is_reconnecting() || (is_recovery_active() && m_epoch_coordinator->recovery_epoch() > 0)) {
                     m_logger->warn("[Worker_manager] Session EXPIRED ignored: reconnect/recovery already in progress "
                                    "(phase={}, recovery_active={}, recovery_epoch={})",
                                    phase_name(m_recovery.phase),
                                    is_recovery_active(),
-                                   m_recovery.epoch);
+                                   m_epoch_coordinator->recovery_epoch());
                     return;
                 }
 
@@ -1442,7 +1446,6 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
             auto now = std::chrono::steady_clock::now();
             m_recovery.degraded_since = {};
             m_recovery.last_completed_at = now;
-            m_recovery.epoch = 0;
             m_recovery.entered_at = {};
             // Template successfully adopted — reset GET_BLOCK mismatch backoff.
             m_get_block_backoff_ms    = 0;
@@ -1509,7 +1512,7 @@ void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) 
 
     // Reset per-epoch state for all non-HEALTHY phases
     if (new_phase != RecoveryPhase::HEALTHY) {
-        ++m_recovery.epoch;
+        m_epoch_coordinator->advance_recovery_epoch(reason ? reason : "unknown");
         m_recovery.entered_at = std::chrono::steady_clock::now();
         m_recovery.get_block_confirmed = false;
         m_recovery.last_get_block_at = {};
@@ -1524,7 +1527,7 @@ void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) 
 
     m_logger->info("[Worker_manager] ⚡ TRANSITION: {} → {} (epoch={}, reason={})",
                    phase_name(old_phase), phase_name(new_phase),
-                   m_recovery.epoch, reason ? reason : "unknown");
+                   m_epoch_coordinator->recovery_epoch(), reason ? reason : "unknown");
 }
 
 
@@ -1536,13 +1539,13 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - m_recovery.entered_at).count();
         m_logger->info("[Worker_manager] Recovery already pending (epoch {}, {}s elapsed, reason: {})",
-                       m_recovery.epoch, elapsed, reason ? reason : "unknown");
+                       m_epoch_coordinator->recovery_epoch(), elapsed, reason ? reason : "unknown");
         return;
     }
     // From HEALTHY → WAITING_TEMPLATE (new epoch; workers keep running)
     transition_to(RecoveryPhase::WAITING_TEMPLATE, reason);
     m_logger->warn("[Worker_manager] ⚑ RECOVERY INITIATED — epoch {} (reason: {})",
-                   m_recovery.epoch, reason ? reason : "unknown");
+                   m_epoch_coordinator->recovery_epoch(), reason ? reason : "unknown");
     m_logger->warn("[Worker_manager]   Workers keep running with current template while requesting fresh one");
 }
 
@@ -1580,7 +1583,7 @@ void Worker_manager::restart_recovery_window(const char* reason)
         m_logger->info("[Worker_manager] Restarting recovery window after {} "
                        "(prior_epoch={} prior_elapsed={}s phase={})",
                        reason ? reason : "unknown",
-                       m_recovery.epoch,
+                       m_epoch_coordinator->recovery_epoch(),
                        elapsed_s,
                        phase_name(m_recovery.phase));
     }
@@ -1793,7 +1796,7 @@ void Worker_manager::retry_template_request(bool bForce)
         if (forced_lane) {
             ++m_get_block_forced_retry_total;
         }
-        m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_recovery.epoch);
+        m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_epoch_coordinator->recovery_epoch());
     } else {
         auto last_status = solo_protocol->get_last_get_block_request_status();
         const char* status_str = "request_work_empty";
@@ -2063,7 +2066,7 @@ void Worker_manager::check_template_health()
         // escalation logic (above) handles escalation if the window expires without a template.
         if (is_recovery_active()) {
             m_logger->debug("[Worker_manager] Emergency aging ({}s) suppressed during active recovery (epoch {})",
-                            template_age, m_recovery.epoch);
+                            template_age, m_epoch_coordinator->recovery_epoch());
             // Resend GET_BLOCK (non-force: respects RECOVERY_RESEND_INTERVAL_SECONDS rate-limit)
             // so recovery keeps making progress without escalating to hard stop/restart.
             retry_template_request(false);

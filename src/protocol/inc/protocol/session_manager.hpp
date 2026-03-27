@@ -19,6 +19,7 @@
 #include "protocol_lane.hpp"
 #include "spdlog/spdlog.h"
 #include "LLP/include/colin_ping_protocol.h"
+#include "protocol/epoch_coordinator.hpp"
 
 namespace nexusminer {
 namespace network { class Connection; }
@@ -282,6 +283,9 @@ public:
     static const char* recovery_state_name(RecoveryState state);
     static const char* expiry_state_name(ExpiryState state);
 
+    /// Wire the shared EpochCoordinator (called by Worker_manager before sessions begin).
+    void set_epoch_coordinator(std::shared_ptr<EpochCoordinator> coordinator);
+
 private:
     void transition_to_authenticated_locked(uint32_t session_id,
                                             const std::vector<uint8_t>& tritium_genesis);
@@ -311,6 +315,7 @@ private:
 
     std::shared_ptr<spdlog::logger> m_logger;
     SessionExpiredHandler m_session_expired_handler;
+    std::shared_ptr<EpochCoordinator> m_epoch_coordinator;
 };
 
 } // namespace protocol

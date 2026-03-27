@@ -283,6 +283,13 @@ public:
      */
     network::Shared_payload send_session_keepalive();
 
+    /**
+     * @brief Wire the shared EpochCoordinator to the session manager.
+     * Called by Worker_manager after construction, before any connections are made.
+     * @param coordinator Shared EpochCoordinator instance
+     */
+    void set_epoch_coordinator(std::shared_ptr<protocol::EpochCoordinator> coordinator);
+
 private:
     /**
      * @brief Initialize primary connection (stateless port 9323)

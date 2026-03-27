@@ -155,6 +155,17 @@ SessionManager::~SessionManager()
     stop_keepalive_timer();
 }
 
+void SessionManager::set_epoch_coordinator(std::shared_ptr<EpochCoordinator> coordinator)
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    m_epoch_coordinator = std::move(coordinator);
+    // Sync session_epoch with coordinator's current value (in case coordinator
+    // already has a higher epoch from a previous session).
+    if (m_epoch_coordinator) {
+        m_session.session_epoch = m_epoch_coordinator->session_epoch();
+    }
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
@@ -166,6 +177,7 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     const auto saved_src       = m_session.reward_binding_source;
     const auto saved_suffix    = m_session.prevblock_suffix;
     const auto created_at      = m_session.created_at;
+    const auto saved_epoch     = m_session.session_epoch;
 
     m_session = SessionInfo{};
     m_session.created_at = created_at;
@@ -174,6 +186,13 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     m_session.reward_state = RewardState::NONE;
     m_session.recovery_state = RecoveryState::HEALTHY;
     m_session.expiry_state = ExpiryState::FRESH;
+
+    // Preserve epoch continuity: session_epoch MUST be monotonically increasing.
+    // If a coordinator is wired, use its authoritative value; otherwise restore
+    // the pre-reset value so we never regress to 0.
+    m_session.session_epoch = m_epoch_coordinator
+        ? m_epoch_coordinator->session_epoch()
+        : saved_epoch;
 
     if (preserve_genesis) {
         m_session.session_genesis = saved_genesis;
@@ -186,7 +205,15 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
 void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
                                                          const std::vector<uint8_t>& tritium_genesis)
 {
-    ++m_session.session_epoch;
+    if (m_epoch_coordinator) {
+        m_session.session_epoch = m_epoch_coordinator->advance_session_epoch("authenticated");
+    } else {
+        if (m_logger) {
+            m_logger->warn("[SessionManager] EpochCoordinator not wired — using local session_epoch counter. "
+                           "Call set_epoch_coordinator() before sessions begin to enable global epoch sync.");
+        }
+        ++m_session.session_epoch;
+    }
     m_session.session_id = session_id;
     m_session.state = SessionState::AUTHENTICATED;
     m_session.authenticated = true;
