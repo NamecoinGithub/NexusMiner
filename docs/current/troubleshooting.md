@@ -291,7 +291,7 @@ the miner will **not** tear it down just because `KEEPALIVE_V2_ACK` responses ha
 Instead, it retries the template request (`retry_template_request`) and logs a warning.
 
 A full TCP reconnect (`retry_connect`) is only triggered when **both** signals are stale:
-- No `KEEPALIVE_V2_ACK` for > 300 seconds, **AND**
+- No `KEEPALIVE_V2_ACK` for > 360 seconds, **AND**
 - No push notifications received for > 120 seconds
 
 **What to investigate:**
@@ -466,7 +466,7 @@ Degraded mode is entered when the miner has no valid mining template (e.g., afte
 
 Before escalating to a TCP reconnect, the miner checks two independent liveness signals:
 
-1. **KEEPALIVE_V2_ACK** — keepalive response from the node; stale if silent > 300 s
+1. **KEEPALIVE_V2_ACK** — keepalive response from the node; stale if silent > 360 s
 2. **Push notifications** (`PRIME_BLOCK_AVAILABLE`, `BLOCK_DATA`) — updated by `HeightTracker::OnPushNotification()`; stale if silent > 300 s
 
 **If push notifications are arriving but keepalive ACK is silent:** The TCP session is demonstrably alive. The miner logs a warning and retries GET_BLOCK instead of tearing down the connection. This prevents spurious reconnects caused by a node-side keepalive responder issue.

@@ -39,7 +39,7 @@ namespace nexusminer
 // Warning-catalog threshold constants
 static constexpr uint32_t WARN_CONNECTION_RETRIES = 100;
 static constexpr uint64_t WARN_TEMPLATE_AGE_SECONDS = 150;
-static constexpr int64_t DIAG_KEEPALIVE_ACK_STALE_SECONDS = 300;  // 5 min without keepalive ACK (diagnostic only)
+static constexpr int64_t DIAG_KEEPALIVE_ACK_STALE_SECONDS = 360;  // 6 min without keepalive ACK (diagnostic only); ~2× the 170s TCP keepalive interval
 static constexpr int32_t WARN_CANONICAL_DRIFT_THRESHOLD = 500;    // blocks ahead before warning
 static constexpr uint64_t WARN_DIAGNOSTIC_STALE_SECONDS = 180;    // 3 min without any diagnostic update
 static constexpr uint64_t WARN_DIAGNOSTIC_INIT_GRACE_SECONDS = 30; // grace period before warning about uninit diagnostic
@@ -422,10 +422,10 @@ void ColinAgent::emit_report(
         if (ht_snap.last_keepalive_ack_at != std::chrono::steady_clock::time_point{}) {
             auto keepalive_age_s = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - ht_snap.last_keepalive_ack_at).count();
-            if (keepalive_age_s < 300) {
+            if (keepalive_age_s < DIAG_KEEPALIVE_ACK_STALE_SECONDS) {
                 m_logger->info("[Colin]  💓 Keepalive │ last ACK {}s ago ✅", keepalive_age_s);
             } else {
-                m_logger->warn("[Colin]  💓 Keepalive │ last ACK {}s ago ⚠️  (>300s — silent death risk)", keepalive_age_s);
+                m_logger->warn("[Colin]  💓 Keepalive │ last ACK {}s ago ⚠️  (>{}s — silent death risk)", keepalive_age_s, DIAG_KEEPALIVE_ACK_STALE_SECONDS);
             }
         } else {
             m_logger->info("[Colin]  💓 Keepalive │ no ACK received yet (session just started or legacy node)");
