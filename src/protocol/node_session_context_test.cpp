@@ -650,7 +650,8 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     snapshot = context.get_runtime_snapshot();
     assert(snapshot.state == SessionManager::SessionState::DEGRADED);
     assert(snapshot.reward_state == SessionManager::RewardState::STALE);
-    assert(snapshot.expiry_state == SessionManager::ExpiryState::EXPIRED_ACCEPTED);
+    assert(snapshot.recovery_state == SessionManager::RecoveryState::FORCED_REAUTH);
+    assert(snapshot.expiry_state == SessionManager::ExpiryState::EXPIRED);
     assert(!context.can_submit_work());
     assert(!context.allow_get_block_replay());
 
