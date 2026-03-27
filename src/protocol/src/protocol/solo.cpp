@@ -4482,20 +4482,44 @@ bool Solo::validate_current_template()
 
     // hashPrevBlock staleness check (primary anchor, StakeMinter pattern).
     // Only active when HeightTracker has a known hashPrevBlock (non-zero).
-    // Discard-and-reject: the template is building on a fork that is no longer canonical.
+    //
+    // UPGRADED from warn-and-continue to discard-and-refresh:
+    // If the canonical hashPrevBlock (from the last adopted BLOCK_DATA) differs from
+    // the live template's hashPrevBlock, this template is building on a fork tip that
+    // the node has already moved past. Any block found would be rejected by the node's
+    // Guard 2 check (hashPrevBlock != hashBestChain). Discard immediately to stop
+    // wasting worker cycles.
+    //
+    // This closes the same-height reorg blind spot: height-based staleness
+    // (channel_height >= channel_target) doesn't catch reorgs that replace blocks at
+    // the same height, and is_tip_moved() only fires when unified_height advances.
+    // The hashPrevBlock anchor is the only reliable indicator in this scenario.
+    //
+    // Note: push_hash_prev_block is NOT used as a discard trigger here to avoid the
+    // infinite soft-refresh loop documented in the has_same_height_push_tip_replacement
+    // removal comment above. Only the canonical hash_prev_block (set by
+    // OnBlockDataReceived/UpdateWithHashPrevBlock from actual BLOCK_DATA responses)
+    // is authoritative for this check.
     if (snap.hash_prev_block != uint1024_t(0) &&
         tmpl->block.hashPrevBlock != snap.hash_prev_block) {
-        m_logger->warn("[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch detected");
-        m_logger->warn("[ValidateTemplate]   Template hashPrevBlock does not match HeightTracker canonical tip");
-        m_logger->warn("[ValidateTemplate]   This indicates a same-height chain reorganization (reorg replaced tip without advancing height)");
-        m_logger->warn("[ValidateTemplate]   Discarding stale template to prevent wasted hashrate");
-        m_template_interface->discard_template("hashPrevBlock mismatch — same-height chain reorg detected");
+        m_logger->warn("[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch "
+                       "(canonical={}, template={}) — discarding stale template",
+                       snap.hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString());
+        m_template_interface->discard_template("hashPrevBlock_mismatch_reorg");
         return false;
     }
-    
+
+    // Advisory: log if push_hash_prev_block differs (informational only, not a discard trigger)
+    if (snap.push_hash_prev_block != uint1024_t(0) &&
+        tmpl->block.hashPrevBlock != snap.push_hash_prev_block) {
+        m_logger->info("[ValidateTemplate] ℹ️  Push tip-anchor differs from live template "
+                       "(push={}, template={}) — monitoring; canonical check is authoritative",
+                       snap.push_hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString());
+    }
+
     // Note: Age timeout validation (60s safety net) is handled internally by
     // MiningTemplateInterface. No additional validation needed here.
-    
+
     m_logger->debug("[Solo Validate] ✓ Template valid (channel_target={}, unified_height={})", 
         tmpl->nChannelHeight, snap.unified_height);
     return true;

@@ -812,7 +812,7 @@ int main()
     // ====================================================================
     // Test 23: HeightTracker hash_prev_block — UpdateWithHashPrevBlock() and mismatch detection
     // ====================================================================
-    std::cout << "\nTest 23: HeightTracker hash_prev_block field and ValidateTemplate warning logic" << std::endl;
+    std::cout << "\nTest 23: HeightTracker hash_prev_block field and ValidateTemplate discard logic" << std::endl;
     {
         using nexusminer::protocol::HeightTracker;
 
@@ -835,8 +835,9 @@ int main()
         print_test_result("After UpdateWithHashPrevBlock(), hash_prev_block matches input",
             snap1.hash_prev_block == known_hash);
 
-        // Simulate ValidateTemplate warning logic:
-        // If snapshot.hash_prev_block != 0 and template.hashPrevBlock != snapshot.hash_prev_block → warn.
+        // Simulate ValidateTemplate discard logic (upgraded from warn-and-continue):
+        // If snapshot.hash_prev_block != 0 and template.hashPrevBlock != snapshot.hash_prev_block
+        // → discard template and return false (same-height reorg defense).
         uint1024_t different_hash;
         std::vector<uint8_t> diff_bytes(128, 0x99);
         different_hash.SetBytes(diff_bytes);
@@ -846,7 +847,7 @@ int main()
         print_test_result("ValidateTemplate logic: mismatch detected when template.hashPrevBlock differs",
             mismatch_detected);
 
-        // No warning when template.hashPrevBlock matches snapshot.
+        // No discard when template.hashPrevBlock matches snapshot.
         bool no_mismatch = !(snap1.hash_prev_block != uint1024_t(0) &&
                              known_hash != snap1.hash_prev_block);
         print_test_result("ValidateTemplate logic: no mismatch when template.hashPrevBlock matches",
