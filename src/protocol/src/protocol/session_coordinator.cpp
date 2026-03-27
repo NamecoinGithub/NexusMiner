@@ -27,7 +27,7 @@ uint64_t SessionCoordinator::advance_session_epoch(const char* reason)
         m_logger->info("[SessionCoordinator] session_epoch {} → {} ({})",
                        old_val, m_session_epoch, reason ? reason : "");
     }
-    notify_observers_locked("session_epoch", old_val, m_session_epoch);
+    notify_observers_locked(DOMAIN_SESSION_EPOCH, old_val, m_session_epoch);
     return m_session_epoch;
 }
 
@@ -46,7 +46,7 @@ uint64_t SessionCoordinator::advance_recovery_epoch(const char* reason)
         m_logger->info("[SessionCoordinator] recovery_epoch {} → {} ({})",
                        old_val, m_recovery_epoch, reason ? reason : "");
     }
-    notify_observers_locked("recovery_epoch", old_val, m_recovery_epoch);
+    notify_observers_locked(DOMAIN_RECOVERY_EPOCH, old_val, m_recovery_epoch);
     return m_recovery_epoch;
 }
 
@@ -73,7 +73,7 @@ void SessionCoordinator::set_session_id(uint32_t id, const char* reason)
         m_logger->info("[SessionCoordinator] session_id 0x{:08x} → 0x{:08x} ({})",
                        old_val, id, reason ? reason : "");
     }
-    notify_observers_locked("session_id", old_val, id);
+    notify_observers_locked(DOMAIN_SESSION_ID, old_val, id);
 }
 
 bool SessionCoordinator::is_authenticated() const
@@ -92,7 +92,7 @@ void SessionCoordinator::set_authenticated(bool auth, const char* reason)
         m_logger->info("[SessionCoordinator] authenticated {} → {} ({})",
                        old_val, new_val, reason ? reason : "");
     }
-    notify_observers_locked("authenticated", old_val, new_val);
+    notify_observers_locked(DOMAIN_AUTHENTICATED, old_val, new_val);
 }
 
 bool SessionCoordinator::is_reward_bound() const
@@ -111,7 +111,7 @@ void SessionCoordinator::set_reward_bound(bool bound, const char* reason)
         m_logger->info("[SessionCoordinator] reward_bound {} → {} ({})",
                        old_val, new_val, reason ? reason : "");
     }
-    notify_observers_locked("reward_bound", old_val, new_val);
+    notify_observers_locked(DOMAIN_REWARD_BOUND, old_val, new_val);
 }
 
 bool SessionCoordinator::is_subscribed_to_notifications() const
@@ -126,8 +126,11 @@ void SessionCoordinator::set_subscribed_to_notifications(bool subscribed, const 
     const uint64_t old_val = m_subscribed_to_notifications ? 1u : 0u;
     const uint64_t new_val = subscribed ? 1u : 0u;
     m_subscribed_to_notifications = subscribed;
-    notify_observers_locked("subscribed_to_notifications", old_val, new_val);
-    (void)reason;
+    if (m_logger && old_val != new_val) {
+        m_logger->info("[SessionCoordinator] subscribed_to_notifications {} → {} ({})",
+                       old_val, new_val, reason ? reason : "");
+    }
+    notify_observers_locked(DOMAIN_SUBSCRIBED, old_val, new_val);
 }
 
 bool SessionCoordinator::has_pending_push_after_auth() const
@@ -142,8 +145,11 @@ void SessionCoordinator::set_pending_push_after_auth(bool pending, const char* r
     const uint64_t old_val = m_pending_push_after_auth ? 1u : 0u;
     const uint64_t new_val = pending ? 1u : 0u;
     m_pending_push_after_auth = pending;
-    notify_observers_locked("pending_push_after_auth", old_val, new_val);
-    (void)reason;
+    if (m_logger && old_val != new_val) {
+        m_logger->info("[SessionCoordinator] pending_push_after_auth {} → {} ({})",
+                       old_val, new_val, reason ? reason : "");
+    }
+    notify_observers_locked(DOMAIN_PENDING_PUSH, old_val, new_val);
 }
 
 // ── Composite queries ─────────────────────────────────────────────────────────
@@ -191,13 +197,13 @@ void SessionCoordinator::clear_for_disconnect(const char* reason)
                        m_session_epoch, m_recovery_epoch);
     }
     if (old_session_id != 0) {
-        notify_observers_locked("session_id", old_session_id, 0);
+        notify_observers_locked(DOMAIN_SESSION_ID, old_session_id, 0);
     }
     if (old_authenticated) {
-        notify_observers_locked("authenticated", 1, 0);
+        notify_observers_locked(DOMAIN_AUTHENTICATED, 1, 0);
     }
     if (old_reward_bound) {
-        notify_observers_locked("reward_bound", 1, 0);
+        notify_observers_locked(DOMAIN_REWARD_BOUND, 1, 0);
     }
 }
 
@@ -218,11 +224,11 @@ void SessionCoordinator::commit_authenticated(uint32_t new_session_id, const cha
                        old_epoch, m_session_epoch,
                        old_session_id, new_session_id);
     }
-    notify_observers_locked("session_epoch", old_epoch, m_session_epoch);
+    notify_observers_locked(DOMAIN_SESSION_EPOCH, old_epoch, m_session_epoch);
     if (old_session_id != new_session_id) {
-        notify_observers_locked("session_id", old_session_id, new_session_id);
+        notify_observers_locked(DOMAIN_SESSION_ID, old_session_id, new_session_id);
     }
-    notify_observers_locked("authenticated", 0, 1);
+    notify_observers_locked(DOMAIN_AUTHENTICATED, 0, 1);
 }
 
 // ── Observer pattern ──────────────────────────────────────────────────────────

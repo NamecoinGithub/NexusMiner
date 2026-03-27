@@ -113,7 +113,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
     // Create the shared SessionCoordinator — single source of truth for all session epoch
     // and identity state across primary, failover, and all protocol instances.
-    // Created once per connect() call so primary and failover share the same monotonic counters.
+    // make_shared throws std::bad_alloc on failure; nullptr is not possible.
     m_coordinator = std::make_shared<protocol::SessionCoordinator>(m_logger);
     m_logger->info("[Worker_manager] SessionCoordinator created — unified epoch/session-state authority");
 

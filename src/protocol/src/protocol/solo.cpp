@@ -193,7 +193,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
         // Register observer: propagate session_epoch changes to HeightTracker + MTI
         m_coordinator->add_observer(
             [this](const char* domain, uint64_t /*old_val*/, uint64_t new_val) {
-                if (std::string_view(domain) == "session_epoch") {
+                if (domain == SessionCoordinator::DOMAIN_SESSION_EPOCH) {
                     m_height_tracker.set_session_epoch(new_val);
                     if (m_template_interface) {
                         m_template_interface->set_session_epoch(new_val);

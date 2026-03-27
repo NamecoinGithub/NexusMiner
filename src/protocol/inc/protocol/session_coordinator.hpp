@@ -28,8 +28,17 @@ namespace protocol {
 class SessionCoordinator : public std::enable_shared_from_this<SessionCoordinator>
 {
 public:
+    // ── Domain name constants (use these in observer comparisons for O(1) strcmp avoidance) ──
+    static constexpr const char* DOMAIN_SESSION_EPOCH    = "session_epoch";
+    static constexpr const char* DOMAIN_RECOVERY_EPOCH   = "recovery_epoch";
+    static constexpr const char* DOMAIN_SESSION_ID        = "session_id";
+    static constexpr const char* DOMAIN_AUTHENTICATED     = "authenticated";
+    static constexpr const char* DOMAIN_REWARD_BOUND      = "reward_bound";
+    static constexpr const char* DOMAIN_SUBSCRIBED        = "subscribed_to_notifications";
+    static constexpr const char* DOMAIN_PENDING_PUSH      = "pending_push_after_auth";
+
     // ── Observer callback types ───────────────────────────────────────────────
-    // domain: "session_epoch", "recovery_epoch", "session_id", "authenticated", "reward_bound"
+    // domain: one of the DOMAIN_* constants above
     using StateChangeObserver = std::function<void(const char* domain, uint64_t old_val, uint64_t new_val)>;
 
     explicit SessionCoordinator(std::shared_ptr<spdlog::logger> logger = nullptr);
