@@ -34,10 +34,7 @@ public:
         DISCONNECTED,    // No TCP connection to node
         AUTHENTICATING,  // Handshake in progress
         AUTHENTICATED,   // Session ID valid, mining can proceed
-        DEGRADED,        // Connection lost / keepalive failed; workers should pause
-        // Backward-compat aliases
-        ACTIVE   = AUTHENTICATED,
-        EXPIRED  = DEGRADED
+        DEGRADED         // Connection lost / keepalive failed; workers should pause
     };
 
     // Kept for backward compat
@@ -76,13 +73,11 @@ public:
         SESSION_START,
         REWARD_BIND_SENT,
         REWARD_BOUND,
-        REWARD_BIND_RESULT = REWARD_BOUND,
         KEEPALIVE_ACK,
         KEEPALIVE_MISSED,
         STATUS_ACK_ACCEPTED,
         STATUS_ACK_REJECTED,
         DEGRADED,
-        FORCED_REAUTH = DEGRADED,
         DISCONNECTED,
         SESSION_RESET,
         SUBMIT_SENT,

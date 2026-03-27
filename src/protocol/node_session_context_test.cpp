@@ -517,7 +517,7 @@ void test_runtime_snapshot_is_authoritative_copy() {
     const auto active_snapshot = context.get_runtime_snapshot();
     assert(active_snapshot.session_id == authenticated_snapshot.session_id);
     assert(active_snapshot.session_epoch == authenticated_snapshot.session_epoch);
-    assert(active_snapshot.state == SessionManager::SessionState::ACTIVE);
+    assert(active_snapshot.state == SessionManager::SessionState::AUTHENTICATED);
     // Snapshots are read-only copies of the authoritative container, so an older
     // snapshot must not change when the live session transitions forward.
     assert(authenticated_snapshot.state == SessionManager::SessionState::AUTHENTICATED);
@@ -557,7 +557,7 @@ void test_session_event_journal_tracks_current_session() {
     assert(journal[0].kind == SessionManager::SessionEventKind::AUTH_INIT);
     assert(journal[1].kind == SessionManager::SessionEventKind::AUTH_SUCCESS);
     assert(journal[2].kind == SessionManager::SessionEventKind::SESSION_START);
-    assert(journal.back().kind == SessionManager::SessionEventKind::REWARD_BIND_RESULT);
+    assert(journal.back().kind == SessionManager::SessionEventKind::REWARD_BOUND);
     assert(journal.back().session_id.get() == 0xABCDEF01u);
     assert(journal.back().session_epoch.get() == context.get_session_epoch());
 
@@ -639,7 +639,7 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     context.set_channel_state(2, true, true);
     context.note_keepalive_ack(true, "ack ok");
     snapshot = context.get_runtime_snapshot();
-    assert(snapshot.state == SessionManager::SessionState::ACTIVE);
+    assert(snapshot.state == SessionManager::SessionState::AUTHENTICATED);
     assert(snapshot.reward_state == SessionManager::RewardState::BOUND);
     assert(snapshot.expiry_state == SessionManager::ExpiryState::FRESH);
     assert(context.is_reward_bound());
@@ -659,7 +659,7 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
 
     context.mark_session_expired("ack mismatch");
     snapshot = context.get_runtime_snapshot();
-    assert(snapshot.state == SessionManager::SessionState::EXPIRED);
+    assert(snapshot.state == SessionManager::SessionState::DEGRADED);
     assert(snapshot.reward_state == SessionManager::RewardState::STALE);
     assert(snapshot.recovery_state == SessionManager::RecoveryState::FORCED_REAUTH);
     assert(snapshot.expiry_state == SessionManager::ExpiryState::EXPIRED_ACCEPTED);
