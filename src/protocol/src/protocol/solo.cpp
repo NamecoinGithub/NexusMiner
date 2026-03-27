@@ -1098,9 +1098,15 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
 
     // ── GET_BLOCK deduplication guard ────────────────────────────────────────
     // Height-based dedup: suppress GET_BLOCK when requesting the exact same
-    // (unified_height, channel_height) pair we last transmitted.  Prevents
-    // duplicate requests from push_notification_handler and Worker_manager when
-    // both independently respond to the same staleness event.
+    // (unified_height, channel_height) pair we last transmitted AND a valid
+    // template is already in hand.  Prevents duplicate requests from
+    // push_notification_handler and Worker_manager when both independently
+    // respond to the same staleness event.
+    //
+    // The guard is intentionally skipped when no valid template exists: in that
+    // state we must always attempt a fresh fetch regardless of whether the
+    // heights match the previous request, because the prior request may have
+    // returned nothing or a discarded template.
     //
     // Unlike the old 100ms time-based guard, height-based dedup does NOT prevent
     // retries when the chain has actually advanced — any height change unblocks
@@ -1127,16 +1133,21 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
             }
         }
         // Height-based dedup: suppress when (unified, channel) heights unchanged
+        // and a valid template already exists (guard only suppresses redundant
+        // refreshes of an already-valid template).
         auto snap = m_height_tracker.GetSnapshot();
         uint32_t cur_unified = snap.unified_height;
         uint32_t cur_channel = snap.channel_height;
+        bool have_valid_template = m_template_interface &&
+                                   m_template_interface->has_valid_template();
         if (m_last_get_block_unified_height > 0 &&
             cur_unified == m_last_get_block_unified_height &&
-            cur_channel == m_last_get_block_channel_height)
+            cur_channel == m_last_get_block_channel_height &&
+            have_valid_template)
         {
             m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
             m_logger->info("[Solo] GET_BLOCK height-based dedup: suppressing request "
-                          "(unified={} channel={} unchanged since last GET_BLOCK)",
+                          "(unified={} channel={} unchanged since last GET_BLOCK, template valid)",
                           cur_unified, cur_channel);
             return nullptr;
         }
