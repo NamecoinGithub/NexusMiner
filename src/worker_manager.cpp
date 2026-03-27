@@ -387,9 +387,6 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     auto solo_protocol = self->m_primary_node_session ? self->m_primary_node_session->get_primary_protocol() : nullptr;
                     self->m_logger->info("[Worker_manager] ✓ Template distributed to {} workers - MINING STARTED", 
                                   workers_fed);
-                    if (solo_protocol) {
-                        solo_protocol->mark_authoritative_recovery_healthy("fresh_template_distributed_to_workers");
-                    }
                     // ✅ Clear degraded mode and all recovery state now that a valid template
                     // has been successfully delivered to workers.  This is intentionally done
                     // AFTER distribution so we only exit recovery state when workers actually
@@ -1637,17 +1634,6 @@ void Worker_manager::clear_recovery_state()
         return;
     }
 
-    if (solo_protocol) {
-        auto* session_manager = solo_protocol->get_session_manager();
-        if (session_manager) {
-            const auto session_snapshot = session_manager->get_runtime_snapshot();
-            if (session_snapshot.recovery_state != protocol::SessionManager::RecoveryState::HEALTHY ||
-                !session_snapshot.recovery_reason.empty()) {
-                solo_protocol->mark_authoritative_recovery_healthy("worker_manager_clear_recovery_state");
-            }
-        }
-    }
-
     m_logger->info("[Worker_manager] Clearing recovery state — exiting {} phase",
                    phase_name(m_recovery.phase));
 
@@ -1670,10 +1656,8 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
 
-    // Notify protocol layer that recovery is required.
-    if (auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr) {
-        solo_protocol->mark_authoritative_recovery_required("workers_stopped_waiting_for_valid_template");
-    }
+    // Phase transition is handled by the caller (mark_recovery_initiated / transition_to)
+    // before or after stop_all_workers() — this function is a pure physical stop.
 
     // Move workers out under the lock, then destroy (and join their threads) OUTSIDE
     // the lock to prevent a deadlock where a worker thread is waiting to acquire

@@ -673,20 +673,6 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     return true;
 }
 
-void Solo::mark_authoritative_recovery_required(const std::string& reason)
-{
-    if (m_session_context) {
-        m_session_context->mark_recovery_required(reason);
-    }
-}
-
-void Solo::mark_authoritative_recovery_healthy(const std::string& reason)
-{
-    if (m_session_context) {
-        m_session_context->mark_recovery_healthy(reason);
-    }
-}
-
 const Solo::PacketIngressPreflightOptions Solo::kDefaultPacketIngressPreflightOptions{};
 
 bool Solo::run_packet_ingress_preflight(const char* log_scope,
@@ -2543,7 +2529,6 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                             get_block_sent_in_handler = true;
-                            mark_authoritative_recovery_required("get_round_height_parity");
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent (height parity backup)");
                         } else {
                             m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request (height parity)");
@@ -2721,7 +2706,6 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                             get_block_sent_in_handler = true;
-                            mark_authoritative_recovery_required("get_round_height_parity");
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent (height parity backup)");
                         } else {
                             m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request (height parity)");
@@ -3431,7 +3415,6 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
             },
             [this]() {
                 if (m_recovery_handler) {
-                    mark_authoritative_recovery_required("push_channel_stale_recovery");
                     m_logger->info("[Solo] ⚡ Unified Tip-Anchor Changed — recovery initiated (push-triggered template replacement), resetting dedup state and notifying Worker_manager");
                     // Reset dedup state so the recovery GET_BLOCK is not blocked by stale
                     // timestamp from the prior request that targeted the old canonical tip.
