@@ -84,14 +84,6 @@ public:
     // SIM Link: send SESSION_STATUS on each live lane if 300-second interval has elapsed
     void send_session_status_if_due();
 
-    /// Called by the stats-collector timer on each tick.
-    /// Iterates over the current worker set under m_worker_mutex and calls
-    /// update_statistics() on each live worker.  Using this method instead of
-    /// capturing the workers vector by value ensures the timer never holds
-    /// extra shared_ptr references that would prevent Worker destructors from
-    /// running during stop_all_workers() / stop().
-    void collect_worker_statistics(stats::Collector& collector);
-
     // ── Failover state accessor ────────────────────────────────────────────────
     struct FailoverStatus {
         bool has_failover_configured{false};

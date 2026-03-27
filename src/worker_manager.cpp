@@ -876,17 +876,13 @@ void Worker_manager::stop()
         m_failover_node_session->stop();
     }
 
-    // destroy workers: move them out of m_workers under the lock, then destroy
-    // (and join their threads) OUTSIDE the lock to prevent a deadlock where a
-    // worker thread is waiting to acquire m_worker_mutex (e.g. for block submission)
-    // while stop() holds m_worker_mutex waiting for the thread to join.
-    std::vector<std::shared_ptr<Worker>> workers_to_destroy;
+    // destroy workers
+    std::lock_guard<std::mutex> lock(m_worker_mutex);
+    for(auto& worker : m_workers)
     {
-        std::lock_guard<std::mutex> lock(m_worker_mutex);
-        workers_to_destroy = std::move(m_workers);
-        m_workers.clear();
+        worker.reset();
     }
-    workers_to_destroy.clear(); // destructors join threads here, outside the lock
+    m_workers.clear();
 }
 
 uint16_t Worker_manager::get_effective_keepalive_interval() const
@@ -1174,7 +1170,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         if (!self->m_stats_timers_started)
         {
             self->m_stats_timers_started = true;
-            self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self, self->m_stats_collector);
+            self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
             self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
         }
 
@@ -1369,18 +1365,6 @@ void Worker_manager::submit_solution(const std::vector<uint8_t>& full_block_byte
     }
 
     m_logger->error("[Worker_manager] Block submission failed — NodeSession not authenticated!");
-}
-
-void Worker_manager::collect_worker_statistics(stats::Collector& collector)
-{
-    std::lock_guard<std::mutex> lock(m_worker_mutex);
-    for (auto& worker : m_workers)
-    {
-        if (worker)
-        {
-            worker->update_statistics(collector);
-        }
-    }
 }
 
 void Worker_manager::log_lane_health()
@@ -1633,15 +1617,10 @@ void Worker_manager::clear_recovery_state()
     m_logger->info("[Worker_manager] Clearing recovery state — exiting {} phase",
                    phase_name(m_recovery.phase));
 
-    // Reset the per-epoch worker-spawn gate so that a *subsequent* degraded event can
-    // recreate workers.  Previously this was intentionally skipped here, but that
-    // caused a second degraded event (after a completed first recovery) to drop the
-    // incoming template: m_recovery_workers_spawned was still true from the first
-    // recovery, so create_workers_locked() was never called even though m_workers was
-    // empty (workers had been stopped).  Reset here so every new degraded cycle is
-    // independent.  stop_all_workers() also resets this flag, so the only scenario
-    // changed is: clear_recovery_state() called BEFORE a second stop_all_workers().
-    m_recovery_workers_spawned = false;
+    // Note: m_recovery_workers_spawned is intentionally NOT reset here.
+    // It is only reset in stop_all_workers() which actually destroys workers,
+    // preventing a mid-recovery clear_recovery_state() call (e.g. from a
+    // different epoch's template feed) from allowing duplicate worker creation.
 
     // transition_to(HEALTHY) handles: degraded time accounting, global stats,
     // stats reset, last_completed_at, clearing of all recovery fields.
@@ -1739,14 +1718,7 @@ void Worker_manager::retry_template_request(bool bForce)
         return;
     }
 
-    // forced_lane=true tells Solo::get_work() to bypass the height-based dedup gate.
-    // Previously this required no_valid_template=true, which prevented bypass during
-    // a same-height drought where the old template is still present.  We now also
-    // bypass when bForce=true and we are already in recovery (WAITING_TEMPLATE) —
-    // the scenario where the template is stale but not yet discarded.  The 30s health
-    // check interval provides natural rate-limiting; bypassing the dedup gate is safe
-    // at this cadence and is necessary to break same-height GET_BLOCK suppression.
-    bool forced_lane = bForce && is_recovery_active() && solo_protocol->is_authenticated();
+    bool forced_lane = bForce && is_recovery_active() && solo_protocol->is_authenticated() && no_valid_template;
 
     // Gate: SessionManager::can_request_get_block() must be true before transmitting GET_BLOCK.
     // This guard is bypassed when this is a forced recovery request (bForce && is_recovery_active())
@@ -2012,20 +1984,6 @@ void Worker_manager::check_template_health()
         // Do NOT stop workers based on keepalive fork_score alone.
     }
 
-    // Proactive stale-template refresh: at 300s (PUSH_LIVENESS_THRESHOLD_SECONDS) the
-    // template is as old as the push-alive window.  If no push has arrived for this long
-    // the PUSH system may be silently broken (Bug 4 from 600s drought incident).  Force
-    // a GET_BLOCK with bypass_dedup=true so height-based dedup cannot suppress it.
-    // This fires before the 480s warning and 600s emergency, giving the node 300s to
-    // respond before the miner escalates to hard recovery.
-    if (template_age > static_cast<uint64_t>(PUSH_ALIVE_THRESHOLD_SECONDS)) {
-        m_logger->warn("[Worker_manager] ⚠️  {} template age {}s > {}s push-alive threshold — "
-                       "proactive forced GET_BLOCK (push may be silent)",
-                       channel_name, template_age, PUSH_ALIVE_THRESHOLD_SECONDS);
-        retry_template_request(true);
-        return;
-    }
-
     // Age-based warning: 480s gives operators a 120s (2-minute) window before the 600s emergency fires.
     // Both channels use the same threshold — in the push-driven protocol the node pushes
     // on every unified tip advance (~18s apart via hash blocks), so 480s without a push
@@ -2082,9 +2040,7 @@ void Worker_manager::check_template_health()
             m_logger->warn("[Worker_manager] EMERGENCY deferred: push notification is recent ({}s ago) — "
                            "connection alive, awaiting fresh template",
                            since_push_s);
-            // Use forced=true so dedup is bypassed — during a same-height drought the
-            // height-based dedup gate in Solo::get_work() would otherwise suppress this request.
-            retry_template_request(true);
+            retry_template_request(false);
             return;
         }
 
