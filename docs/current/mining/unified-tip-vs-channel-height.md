@@ -150,13 +150,20 @@ On every push notification:
 
 Before any freshly validated template is fed live (validate_current_template):
   A. finalize channel target metadata
-  B. if canonical hash_prev_block != 0 AND template.hashPrevBlock != canonical hash_prev_block
+  B. UpdateWithHashPrevBlock(template.hashPrevBlock)  ← MUST come first
+       [advances canonical anchor to the new template BEFORE the mismatch guard runs;
+        prevents the doom loop where validate fires against a stale anchor and
+        UpdateWithHashPrevBlock is never reached]
+  C. ClearPushTipAnchor()
+       [prevents spurious "push tip-anchor differs" advisory log from repeating]
+  D. if canonical hash_prev_block != 0 AND template.hashPrevBlock != canonical hash_prev_block
        → discard template [reason: hashPrevBlock_mismatch_reorg]
        → return false (triggers GET_BLOCK refresh)
-       [closes same-height reorg blind spot — height checks alone can't detect this]
-  C. if snap.has_same_height_push_tip_replacement(template.hashPrevBlock, template.nChannelHeight)
+       [guards against templates buffered before the anchor advanced — i.e. a template
+        that arrived during a reorg but was not yet discarded]
+  E. if snap.has_same_height_push_tip_replacement(template.hashPrevBlock, template.nChannelHeight)
        → informational log only (advisory); do NOT discard (prevents infinite loop)
-  D. otherwise feed workers
+  F. otherwise feed workers
 ```
 
 ---

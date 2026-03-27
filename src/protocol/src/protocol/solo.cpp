@@ -538,6 +538,18 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
         return false;
     }
 
+    // Update the canonical tip anchor BEFORE validate_current_template() so that
+    // the freshly decoded BLOCK_DATA's hashPrevBlock becomes the canonical value
+    // against which validate checks.  If this call were placed AFTER validate (as
+    // it was before this fix), a legitimate chain-tip advance would leave the
+    // canonical anchor holding the previous tip's hash.  validate_current_template()
+    // would then fire the hashPrevBlock_mismatch_reorg guard, discard the new
+    // template, and return false — so UpdateWithHashPrevBlock would never be
+    // reached.  Every subsequent GET_BLOCK response brings the same new-tip
+    // template, which fails the same stale-anchor check, producing an infinite
+    // doom loop (workers stuck at NO VALID TEMPLATE).
+    m_height_tracker.UpdateWithHashPrevBlock(tmpl->block.hashPrevBlock);
+
     // Clear the push tip anchor now that a fresh BLOCK_DATA template is in hand.
     // This must happen BEFORE validate_current_template() so that any residual
     // push_hash_prev_block from a prior same-height push does not cause
@@ -577,8 +589,6 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     }
 
     m_last_known_hash_prev_block = tmpl->block.hashPrevBlock;
-    m_height_tracker.UpdateWithHashPrevBlock(tmpl->block.hashPrevBlock);
-    m_height_tracker.ClearPushTipAnchor();
 
     if (get_session_manager()) {
         auto prev_bytes = m_last_known_hash_prev_block.GetBytes();
