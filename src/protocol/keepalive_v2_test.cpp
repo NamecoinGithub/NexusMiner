@@ -294,8 +294,8 @@ void test_keepalive_ack_bookkeeping_updates_runtime_snapshot() {
     mgr->record_keepalive();
 
     const auto info = mgr->get_runtime_snapshot();
-    print_test_result("Accepted keepalive transitions session to ACTIVE",
-                      info.state == SessionManager::SessionState::ACTIVE);
+    print_test_result("Accepted keepalive keeps session AUTHENTICATED",
+                      info.state == SessionManager::SessionState::AUTHENTICATED);
     print_test_result("Accepted keepalive leaves expiry_state fresh",
                       info.expiry_state == SessionManager::ExpiryState::FRESH);
     print_test_result("Accepted keepalive increments keepalive_count",

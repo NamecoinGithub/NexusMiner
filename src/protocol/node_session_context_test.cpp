@@ -188,7 +188,7 @@ void test_authoritative_miner_session_container_binding() {
     assert(info.falcon_key_id == "2222222222222222");
     assert(info.chacha20_session_key == chacha_key);
     assert(info.chacha20_key_fingerprint == chacha_fingerprint);
-    assert(info.reward_address_string == "reward-address");
+    assert(info.reward_address == "reward-address");
     assert(info.reward_hash == reward_hash);
     assert(info.reward_bound);
     assert(info.channel == 2);
@@ -222,7 +222,7 @@ void test_reward_binding_persists_across_session_restart() {
     const auto info = context.get_session_info();
     assert(info.session_id == 0x87654321);
     assert(info.session_genesis == reconnect_genesis);
-    assert(info.reward_address_string == "reward-address");
+    assert(info.reward_address == "reward-address");
     assert(info.reward_hash == reward_hash);
     assert(info.reward_bound);
     assert(!info.ready_for_submit);
@@ -332,7 +332,7 @@ void test_auth_handshake_preserves_reward_crypto_material() {
     assert(snapshot.chacha20_session_key == chacha_key);
     assert(snapshot.chacha20_key_fingerprint == fingerprint);
     assert(snapshot.chacha20_ready);
-    assert(snapshot.reward_address_string == "reward-address");
+    assert(snapshot.reward_address == "reward-address");
     assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
 
     context.commit_authenticated_session(0x11223344,
@@ -435,8 +435,8 @@ void test_multiple_session_contexts_do_not_overlap() {
 
     assert(info_a.session_id == 0x11111111);
     assert(info_b.session_id == 0x22222222);
-    assert(info_a.reward_address_string == "reward-a");
-    assert(info_b.reward_address_string == "reward-b");
+    assert(info_a.reward_address == "reward-a");
+    assert(info_b.reward_address == "reward-b");
     assert(info_a.falcon_key_id == "aaaaaaaaaaaaaaaa");
     assert(info_b.falcon_key_id == "bbbbbbbbbbbbbbbb");
     assert(info_a.session_genesis != info_b.session_genesis);
@@ -517,7 +517,7 @@ void test_runtime_snapshot_is_authoritative_copy() {
     const auto active_snapshot = context.get_runtime_snapshot();
     assert(active_snapshot.session_id == authenticated_snapshot.session_id);
     assert(active_snapshot.session_epoch == authenticated_snapshot.session_epoch);
-    assert(active_snapshot.state == SessionManager::SessionState::ACTIVE);
+    assert(active_snapshot.state == SessionManager::SessionState::AUTHENTICATED);
     // Snapshots are read-only copies of the authoritative container, so an older
     // snapshot must not change when the live session transitions forward.
     assert(authenticated_snapshot.state == SessionManager::SessionState::AUTHENTICATED);
@@ -557,7 +557,7 @@ void test_session_event_journal_tracks_current_session() {
     assert(journal[0].kind == SessionManager::SessionEventKind::AUTH_INIT);
     assert(journal[1].kind == SessionManager::SessionEventKind::AUTH_SUCCESS);
     assert(journal[2].kind == SessionManager::SessionEventKind::SESSION_START);
-    assert(journal.back().kind == SessionManager::SessionEventKind::REWARD_BIND_RESULT);
+    assert(journal.back().kind == SessionManager::SessionEventKind::REWARD_BOUND);
     assert(journal.back().session_id.get() == 0xABCDEF01u);
     assert(journal.back().session_epoch.get() == context.get_session_epoch());
 
@@ -618,7 +618,6 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     auto snapshot = context.get_runtime_snapshot();
     assert(snapshot.state == SessionManager::SessionState::AUTHENTICATING);
     assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
-    assert(snapshot.recovery_state == SessionManager::RecoveryState::HEALTHY);
 
     context.commit_authenticated_session(0xABCDEF12,
                                          std::vector<uint8_t>(32, 0x21),
@@ -639,7 +638,7 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     context.set_channel_state(2, true, true);
     context.note_keepalive_ack(true, "ack ok");
     snapshot = context.get_runtime_snapshot();
-    assert(snapshot.state == SessionManager::SessionState::ACTIVE);
+    assert(snapshot.state == SessionManager::SessionState::AUTHENTICATED);
     assert(snapshot.reward_state == SessionManager::RewardState::BOUND);
     assert(snapshot.expiry_state == SessionManager::ExpiryState::FRESH);
     assert(context.is_reward_bound());
@@ -647,19 +646,9 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     assert(context.can_submit_work());
     assert(context.allow_get_block_replay());
 
-    context.mark_recovery_required("epoch mismatch");
-    snapshot = context.get_runtime_snapshot();
-    assert(snapshot.recovery_state == SessionManager::RecoveryState::RECOVERY_PENDING);
-    assert(snapshot.recovery_reason == "epoch mismatch");
-
-    context.mark_recovery_healthy("template delivered");
-    snapshot = context.get_runtime_snapshot();
-    assert(snapshot.recovery_state == SessionManager::RecoveryState::HEALTHY);
-    assert(snapshot.recovery_reason.empty());
-
     context.mark_session_expired("ack mismatch");
     snapshot = context.get_runtime_snapshot();
-    assert(snapshot.state == SessionManager::SessionState::EXPIRED);
+    assert(snapshot.state == SessionManager::SessionState::DEGRADED);
     assert(snapshot.reward_state == SessionManager::RewardState::STALE);
     assert(snapshot.recovery_state == SessionManager::RecoveryState::FORCED_REAUTH);
     assert(snapshot.expiry_state == SessionManager::ExpiryState::EXPIRED);
@@ -671,13 +660,12 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     assert(snapshot.state == SessionManager::SessionState::DISCONNECTED);
     assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
     assert(snapshot.recovery_state == SessionManager::RecoveryState::FORCED_REAUTH);
-    assert(snapshot.reward_address_string == "reward-address");
+    assert(snapshot.reward_address == "reward-address");
     assert(!snapshot.reward_bound);
     assert(!context.allow_deferred_push_replay());
 
     const auto diagnostics = context.build_miner_session_diagnostics();
     assert(diagnostics.find("reward_state: REQUIRED") != std::string::npos);
-    assert(diagnostics.find("recovery_state: FORCED_REAUTH") != std::string::npos);
     assert(diagnostics.find("expiry_state: FRESH") != std::string::npos);
 
     std::cout << "Authoritative transition API test passed!" << std::endl;

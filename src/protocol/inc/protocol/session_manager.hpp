@@ -34,10 +34,7 @@ public:
         DISCONNECTED,    // No TCP connection to node
         AUTHENTICATING,  // Handshake in progress
         AUTHENTICATED,   // Session ID valid, mining can proceed
-        DEGRADED,        // Connection lost / keepalive failed; workers should pause
-        // Backward-compat aliases
-        ACTIVE   = AUTHENTICATED,
-        EXPIRED  = DEGRADED
+        DEGRADED         // Connection lost / keepalive failed; workers should pause
     };
 
     // Kept for backward compat
@@ -48,14 +45,6 @@ public:
         BOUND,
         REJECTED,
         STALE
-    };
-
-    enum class RecoveryState {
-        HEALTHY,
-        RECOVERY_PENDING,
-        RECOVERY_IN_PROGRESS,
-        FORCED_REAUTH,
-        RECONNECT_REQUIRED
     };
 
     enum class ExpiryState {
@@ -71,13 +60,11 @@ public:
         SESSION_START,
         REWARD_BIND_SENT,
         REWARD_BOUND,
-        REWARD_BIND_RESULT = REWARD_BOUND,
         KEEPALIVE_ACK,
         KEEPALIVE_MISSED,
         STATUS_ACK_ACCEPTED,
         STATUS_ACK_REJECTED,
         DEGRADED,
-        FORCED_REAUTH = DEGRADED,
         DISCONNECTED,
         SESSION_RESET,
         SUBMIT_SENT,
@@ -126,15 +113,12 @@ public:
         std::vector<uint8_t> chacha20_session_key;
         std::string chacha20_key_fingerprint;
         bool chacha20_ready{false};
-        std::string reward_address_string;  // backward-compat alias; prefer reward_address in new code
         std::vector<uint8_t> reward_hash;
         RewardState reward_state{RewardState::NONE};
         std::string reward_binding_source;
         uint32_t channel{0};
         bool ready_for_submit{false};
         bool ready_for_get_block{false};
-        RecoveryState recovery_state{RecoveryState::HEALTHY};
-        std::string recovery_reason;
         ExpiryState expiry_state{ExpiryState::FRESH};
         std::string expiry_reason;
         bool deferred_push_replay_allowed{false};
@@ -182,8 +166,6 @@ public:
                        const std::vector<uint8_t>& session_key = {},
                        const std::vector<uint8_t>& tritium_genesis = {});
     void mark_session_expired(const std::string& reason);
-    void mark_recovery_required(const std::string& reason);
-    void mark_recovery_healthy(const std::string& reason = "");
     void clear_for_disconnect(const std::string& reward_address = {},
                               const std::string& reward_source = "",
                               const std::string& reason = "",
@@ -277,7 +259,6 @@ public:
     // Static name helpers (used by diagnostics)
     static const char* session_event_kind_name(SessionEventKind kind);
     static const char* reward_state_name(RewardState state);
-    static const char* recovery_state_name(RecoveryState state);
     static const char* expiry_state_name(ExpiryState state);
 
     // ── Coordinator access ────────────────────────────────────────────────────
