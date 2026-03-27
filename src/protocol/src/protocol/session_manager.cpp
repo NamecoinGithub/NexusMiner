@@ -509,14 +509,8 @@ void SessionManager::note_keepalive_ack(bool accepted, const std::string& detail
     }
 }
 
-void SessionManager::record_keepalive_ack(bool accepted)
+void SessionManager::record_keepalive_ack(bool /* accepted */)
 {
-    if (accepted) {
-        std::lock_guard<std::mutex> lock(m_session_mutex);
-        if (m_session.state == SessionState::AUTHENTICATED) {
-            m_session.state = SessionState::ACTIVE;
-        }
-    }
 }
 
 void SessionManager::record_keepalive()
@@ -525,9 +519,6 @@ void SessionManager::record_keepalive()
     m_session.last_keepalive = std::chrono::system_clock::now();
     m_session.keepalive_count++;
     m_session.last_activity = now_epoch_seconds();
-    if (m_session.state == SessionState::AUTHENTICATED) {
-        m_session.state = SessionState::ACTIVE;
-    }
     m_session.expiry_state = ExpiryState::FRESH;
     m_session.expiry_reason.clear();
 }

@@ -718,7 +718,7 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
     }
 
     if (decision.force_reauth && options.trigger_reauth && m_session_expired_handler) {
-        record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
+        record_session_event(SessionManager::SessionEventKind::DEGRADED,
                              std::string(log_scope) + ": " + decision.reason);
         m_logger->warn("[{}] Triggering session-expired handler after preflight rejection", log_scope);
         m_session_expired_handler();
@@ -758,7 +758,7 @@ bool Solo::ensure_session_ready_for_ingress(const char* log_scope,
         // whether to trigger recovery; this may advance m_auth_state.
         check_auth_in_flight_timeout(log_scope);
         if (decision.trigger_recovery && m_session_expired_handler) {
-            record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
+            record_session_event(SessionManager::SessionEventKind::DEGRADED,
                                  std::string(log_scope) + ": " + decision.reason);
             m_logger->warn("[{}] Triggering session-expired handler after ingress readiness failure",
                            log_scope);
