@@ -108,3 +108,8 @@ wrappers so those values cannot be mixed accidentally.
 - [02-validate-consistency-diagram.txt](../diagrams/02-validate-consistency-diagram.txt)
 - [03-state-machine-diagram.txt](../diagrams/03-state-machine-diagram.txt)
 - [15-strong-id-types-diagram.txt](../diagrams/15-strong-id-types-diagram.txt)
+- [16-epoch-coordinator-diagram.txt](../diagrams/16-epoch-coordinator-diagram.txt)
+
+## Related documents
+
+- [epoch-coordinator-architecture.md](epoch-coordinator-architecture.md) — Epoch desync root cause, coordinator design, wiring model, and invariants
