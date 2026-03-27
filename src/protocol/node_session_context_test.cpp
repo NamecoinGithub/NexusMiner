@@ -188,7 +188,7 @@ void test_authoritative_miner_session_container_binding() {
     assert(info.falcon_key_id == "2222222222222222");
     assert(info.chacha20_session_key == chacha_key);
     assert(info.chacha20_key_fingerprint == chacha_fingerprint);
-    assert(info.reward_address_string == "reward-address");
+    assert(info.reward_address == "reward-address");
     assert(info.reward_hash == reward_hash);
     assert(info.reward_bound);
     assert(info.channel == 2);
@@ -222,7 +222,7 @@ void test_reward_binding_persists_across_session_restart() {
     const auto info = context.get_session_info();
     assert(info.session_id == 0x87654321);
     assert(info.session_genesis == reconnect_genesis);
-    assert(info.reward_address_string == "reward-address");
+    assert(info.reward_address == "reward-address");
     assert(info.reward_hash == reward_hash);
     assert(info.reward_bound);
     assert(!info.ready_for_submit);
@@ -332,7 +332,7 @@ void test_auth_handshake_preserves_reward_crypto_material() {
     assert(snapshot.chacha20_session_key == chacha_key);
     assert(snapshot.chacha20_key_fingerprint == fingerprint);
     assert(snapshot.chacha20_ready);
-    assert(snapshot.reward_address_string == "reward-address");
+    assert(snapshot.reward_address == "reward-address");
     assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
 
     context.commit_authenticated_session(0x11223344,
@@ -435,8 +435,8 @@ void test_multiple_session_contexts_do_not_overlap() {
 
     assert(info_a.session_id == 0x11111111);
     assert(info_b.session_id == 0x22222222);
-    assert(info_a.reward_address_string == "reward-a");
-    assert(info_b.reward_address_string == "reward-b");
+    assert(info_a.reward_address == "reward-a");
+    assert(info_b.reward_address == "reward-b");
     assert(info_a.falcon_key_id == "aaaaaaaaaaaaaaaa");
     assert(info_b.falcon_key_id == "bbbbbbbbbbbbbbbb");
     assert(info_a.session_genesis != info_b.session_genesis);
@@ -671,7 +671,7 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     assert(snapshot.state == SessionManager::SessionState::DISCONNECTED);
     assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
     assert(snapshot.recovery_state == SessionManager::RecoveryState::FORCED_REAUTH);
-    assert(snapshot.reward_address_string == "reward-address");
+    assert(snapshot.reward_address == "reward-address");
     assert(!snapshot.reward_bound);
     assert(!context.allow_deferred_push_replay());
 

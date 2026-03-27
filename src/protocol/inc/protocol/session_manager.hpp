@@ -131,7 +131,6 @@ public:
         std::vector<uint8_t> chacha20_session_key;
         std::string chacha20_key_fingerprint;
         bool chacha20_ready{false};
-        std::string reward_address_string;  // backward-compat alias; prefer reward_address in new code
         std::vector<uint8_t> reward_hash;
         RewardState reward_state{RewardState::NONE};
         std::string reward_binding_source;

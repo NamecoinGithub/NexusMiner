@@ -165,8 +165,7 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
                                                    bool clear_prevblock_suffix)
 {
     const auto saved_genesis   = m_session.session_genesis;
-    const auto saved_addr      = m_session.reward_address_string;
-    const auto saved_addr_new  = m_session.reward_address;
+    const auto saved_addr      = m_session.reward_address;
     const auto saved_src       = m_session.reward_binding_source;
     const auto saved_suffix    = m_session.prevblock_suffix;
     const auto created_at      = m_session.created_at;
@@ -273,7 +272,6 @@ void SessionManager::commit_authenticated(uint32_t session_id, ProtocolLane lane
     if (!reward_address.empty()) {
         std::lock_guard<std::mutex> lock(m_session_mutex);
         m_session.reward_address = reward_address;
-        m_session.reward_address_string = reward_address;
         m_session.reward_state = RewardState::REQUIRED;
     }
 }
@@ -296,15 +294,13 @@ void SessionManager::begin_auth_handshake(const std::string& detail)
     stop_keepalive_timer();
 
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    const auto retained_reward_address = m_session.reward_address_string;
-    const auto retained_reward_address_new = m_session.reward_address;
+    const auto retained_reward_address = m_session.reward_address;
     const auto retained_reward_source = m_session.reward_binding_source;
     const auto retained_chacha20_session_key = m_session.chacha20_session_key;
     const auto retained_chacha20_key_fingerprint = m_session.chacha20_key_fingerprint;
     const bool retained_chacha20_ready = m_session.chacha20_ready;
     clear_runtime_session_locked(true, true);
-    m_session.reward_address_string = retained_reward_address;
-    m_session.reward_address = retained_reward_address_new;
+    m_session.reward_address = retained_reward_address;
     m_session.reward_binding_source = retained_reward_source;
     m_session.chacha20_session_key = retained_chacha20_session_key;
     m_session.chacha20_key_fingerprint = retained_chacha20_key_fingerprint;
@@ -426,12 +422,11 @@ void SessionManager::clear_for_disconnect(const std::string& reward_address,
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
         const auto retained_reward_address =
-            reward_address.empty() ? m_session.reward_address_string : reward_address;
+            reward_address.empty() ? m_session.reward_address : reward_address;
         const auto retained_reward_source =
             reward_source.empty() ? m_session.reward_binding_source : reward_source;
 
         clear_runtime_session_locked(preserve_genesis, false);
-        m_session.reward_address_string = retained_reward_address;
         m_session.reward_address = retained_reward_address;
         m_session.reward_binding_source = retained_reward_source;
         m_session.reward_state = retained_reward_address.empty() ? RewardState::NONE
@@ -457,11 +452,10 @@ void SessionManager::clear_for_reauth(const std::string& reward_address,
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
         const auto retained_reward_address =
-            reward_address.empty() ? m_session.reward_address_string : reward_address;
+            reward_address.empty() ? m_session.reward_address : reward_address;
         const auto retained_reward_source =
             reward_source.empty() ? m_session.reward_binding_source : reward_source;
         clear_runtime_session_locked(preserve_genesis, true);
-        m_session.reward_address_string = retained_reward_address;
         m_session.reward_address = retained_reward_address;
         m_session.reward_binding_source = retained_reward_source;
         m_session.reward_state = retained_reward_address.empty() ? RewardState::NONE
@@ -490,7 +484,6 @@ void SessionManager::begin_reward_binding(const std::string& addr,
                                           const std::string& src)
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    m_session.reward_address_string = addr;
     m_session.reward_address = addr;
     m_session.reward_hash = hash;
     m_session.reward_bound = false;
@@ -508,7 +501,6 @@ void SessionManager::commit_reward_bound(const std::string& reward_address,
                                          const std::string& source)
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    m_session.reward_address_string = reward_address;
     m_session.reward_address = reward_address;
     m_session.reward_hash = reward_hash;
     m_session.reward_bound = true;
@@ -528,7 +520,6 @@ void SessionManager::commit_reward_rejected(const std::string& addr,
                                             const std::string& rsn)
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    m_session.reward_address_string = addr;
     m_session.reward_address = addr;
     m_session.reward_hash.clear();
     m_session.reward_bound = false;
@@ -642,7 +633,6 @@ void SessionManager::set_reward_binding(const std::string& addr,
         commit_reward_bound(addr, hash, src);
     } else {
         std::lock_guard<std::mutex> lock(m_session_mutex);
-        m_session.reward_address_string = addr;
         m_session.reward_address = addr;
         m_session.reward_hash = hash;
         m_session.reward_bound = false;
@@ -766,7 +756,7 @@ bool SessionManager::allow_get_block_replay() const
 bool SessionManager::reward_binding_required() const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    return !m_session.reward_address_string.empty() && !m_session.reward_bound;
+    return !m_session.reward_address.empty() && !m_session.reward_bound;
 }
 
 SessionManager::RewardBindReadiness SessionManager::get_reward_bind_readiness() const
@@ -777,7 +767,7 @@ SessionManager::RewardBindReadiness SessionManager::get_reward_bind_readiness() 
         r.reason = "not authenticated";
         return r;
     }
-    if (m_session.reward_address_string.empty()) {
+    if (m_session.reward_address.empty()) {
         r.reason = "no reward address configured";
         return r;
     }
@@ -828,8 +818,8 @@ std::string SessionManager::build_miner_session_diagnostics() const
         << "- session_id: 0x"  << std::hex << std::setw(8) << std::setfill('0')
                                << m_session.session_id << std::dec << '\n'
         << "- session_epoch: " << m_session.session_epoch << '\n'
-        << "- reward_address: " << (m_session.reward_address_string.empty()
-                                     ? "<unset>" : m_session.reward_address_string) << '\n'
+        << "- reward_address: " << (m_session.reward_address.empty()
+                                     ? "<unset>" : m_session.reward_address) << '\n'
         << "- reward_bound: "  << (m_session.reward_bound ? "YES" : "NO") << '\n'
         << "- reward_state: "  << reward_state_name(m_session.reward_state) << '\n'
         << "- prevblock_suffix: " << format_hex_prefix(m_session.prevblock_suffix, 4) << '\n'
