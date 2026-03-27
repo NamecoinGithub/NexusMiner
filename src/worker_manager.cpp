@@ -1648,8 +1648,6 @@ void Worker_manager::clear_recovery_state()
 
 void Worker_manager::stop_all_workers()
 {
-    std::lock_guard<std::mutex> lock(m_worker_mutex);
-
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
     m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
@@ -1661,16 +1659,19 @@ void Worker_manager::stop_all_workers()
         solo_protocol->mark_authoritative_recovery_required("workers_stopped_waiting_for_valid_template");
     }
 
-    // Reset all worker instances so that the next create_workers() call starts fresh
-    // without duplicating existing workers.  The shared_ptr reset() destroys the Worker
-    // object (and joins its mining thread in the destructor), effectively stopping it.
-    for (auto& worker : m_workers) {
-        worker.reset();
+    // Move workers out under the lock, then destroy (and join their threads) OUTSIDE
+    // the lock to prevent a deadlock where a worker thread is waiting to acquire
+    // m_worker_mutex (e.g. for block submission) while stop_all_workers() holds
+    // m_worker_mutex waiting for the thread to join.
+    std::vector<std::shared_ptr<Worker>> workers_to_destroy;
+    {
+        std::lock_guard<std::mutex> lock(m_worker_mutex);
+        workers_to_destroy = std::move(m_workers);
+        m_workers.clear();
+        // Clear the recovery gate so the next epoch can re-create workers
+        m_recovery_workers_spawned = false;
     }
-    m_workers.clear();
-
-    // Clear the recovery gate so the next epoch can re-create workers
-    m_recovery_workers_spawned = false;
+    workers_to_destroy.clear(); // destructors join threads here, outside the lock
 
     m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
     m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
