@@ -862,6 +862,12 @@ void Worker_manager::stop()
 {
     m_timer_manager.stop();
 
+    // Reset timer guards so timers restart if connect() is called again after stop().
+    m_stats_timers_started = false;
+    m_template_health_timer_started = false;
+    m_get_round_timer_started = false;
+    m_lane_health_timer_started = false;
+
     if (m_colin_agent)
     {
         m_colin_agent->stop();
