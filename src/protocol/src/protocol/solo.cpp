@@ -548,6 +548,9 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
 
     if (!validate_current_template()) {
         m_logger->warn("[{}] Template invalidated by final adoption gate before worker feed", log_scope);
+        // Reset GET_BLOCK dedup state so the recovery request is not suppressed
+        // by stale height values from the prior (now-rejected) template request.
+        reset_get_block_dedup_state();
         return false;
     }
 
@@ -4477,12 +4480,17 @@ bool Solo::validate_current_template()
         // after successful adoption, preventing this informational log from repeating.
     }
 
-    // Optional: hashPrevBlock staleness check (primary anchor, StakeMinter pattern).
+    // hashPrevBlock staleness check (primary anchor, StakeMinter pattern).
     // Only active when HeightTracker has a known hashPrevBlock (non-zero).
-    // Warn-and-continue (compat mode) — node Guard 2 is the final arbiter.
+    // Discard-and-reject: the template is building on a fork that is no longer canonical.
     if (snap.hash_prev_block != uint1024_t(0) &&
         tmpl->block.hashPrevBlock != snap.hash_prev_block) {
-        m_logger->warn("[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch (warn-and-continue, node Guard 2 is final arbiter)");
+        m_logger->warn("[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch detected");
+        m_logger->warn("[ValidateTemplate]   Template hashPrevBlock does not match HeightTracker canonical tip");
+        m_logger->warn("[ValidateTemplate]   This indicates a same-height chain reorganization (reorg replaced tip without advancing height)");
+        m_logger->warn("[ValidateTemplate]   Discarding stale template to prevent wasted hashrate");
+        m_template_interface->discard_template("hashPrevBlock mismatch — same-height chain reorg detected");
+        return false;
     }
     
     // Note: Age timeout validation (60s safety net) is handled internally by
