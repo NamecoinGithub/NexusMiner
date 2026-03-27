@@ -60,12 +60,7 @@ public:
 
     enum class ExpiryState {
         FRESH,
-        KEEPALIVE_MISMATCH_WARNING,
-        STALE_ACK_IGNORED,
-        EXPIRED_ACCEPTED,
-        EXPIRED_REJECTED,
-        AUTH_TIMEOUT,
-        DEAD_SESSION_TIMEOUT
+        EXPIRED
     };
 
     using SessionExpiredHandler = std::function<void()>;

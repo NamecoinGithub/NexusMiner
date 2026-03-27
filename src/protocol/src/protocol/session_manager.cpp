@@ -105,13 +105,8 @@ const char* SessionManager::recovery_state_name(RecoveryState state)
 const char* SessionManager::expiry_state_name(ExpiryState state)
 {
     switch (state) {
-        case ExpiryState::FRESH:                      return "FRESH";
-        case ExpiryState::KEEPALIVE_MISMATCH_WARNING: return "KEEPALIVE_MISMATCH_WARNING";
-        case ExpiryState::STALE_ACK_IGNORED:          return "STALE_ACK_IGNORED";
-        case ExpiryState::EXPIRED_ACCEPTED:           return "EXPIRED_ACCEPTED";
-        case ExpiryState::EXPIRED_REJECTED:           return "EXPIRED_REJECTED";
-        case ExpiryState::AUTH_TIMEOUT:               return "AUTH_TIMEOUT";
-        case ExpiryState::DEAD_SESSION_TIMEOUT:       return "DEAD_SESSION_TIMEOUT";
+        case ExpiryState::FRESH:   return "FRESH";
+        case ExpiryState::EXPIRED: return "EXPIRED";
     }
     return "UNKNOWN";
 }
@@ -373,7 +368,7 @@ void SessionManager::mark_session_expired(const std::string& reason)
         notify = (m_session.state != SessionState::DEGRADED);
         m_session.state = SessionState::DEGRADED;
         m_session.authenticated = false;
-        m_session.expiry_state = ExpiryState::EXPIRED_ACCEPTED;
+        m_session.expiry_state = ExpiryState::EXPIRED;
         m_session.expiry_reason = reason;
         m_session.recovery_state = RecoveryState::FORCED_REAUTH;
         m_session.recovery_reason = reason;
@@ -554,7 +549,7 @@ void SessionManager::note_keepalive_ack(bool accepted, const std::string& detail
             record_session_event_locked(SessionEventKind::KEEPALIVE_ACK,
                                         detail.empty() ? "keepalive ack accepted" : detail);
         } else {
-            m_session.expiry_state = ExpiryState::KEEPALIVE_MISMATCH_WARNING;
+            m_session.expiry_state = ExpiryState::FRESH;
             m_session.expiry_reason = detail;
             record_session_event_locked(SessionEventKind::KEEPALIVE_ACK,
                                         detail.empty() ? "keepalive ack rejected" : detail);
