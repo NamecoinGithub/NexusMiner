@@ -254,7 +254,7 @@ add_test(NAME node_session_context_test COMMAND $<TARGET_FILE:node_session_conte
 
 # EpochCoordinator unit tests
 add_executable(epoch_coordinator_test epoch_coordinator_test.cpp)
-target_link_libraries(epoch_coordinator_test PRIVATE protocol spdlog)
+target_link_libraries(epoch_coordinator_test PRIVATE protocol network asio spdlog)
 target_include_directories(epoch_coordinator_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
     ${CMAKE_SOURCE_DIR}/src

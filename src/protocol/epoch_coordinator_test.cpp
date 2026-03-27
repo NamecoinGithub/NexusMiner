@@ -1,4 +1,5 @@
 #include "protocol/epoch_coordinator.hpp"
+#include "protocol/session_manager.hpp"
 #include <cassert>
 #include <iostream>
 #include <thread>
@@ -119,6 +120,56 @@ void test_no_reset_after_session_clear() {
     print_result("epoch is 3 after third advance", ec.session_epoch() == 3);
 }
 
+// Regression test: wiring the coordinator AFTER local epoch increments must
+// never decrease m_session.session_epoch (monotonic invariant).
+void test_set_epoch_coordinator_no_regression() {
+    std::cout << "\nTest: set_epoch_coordinator() must not regress session_epoch\n";
+
+    // Step 1-2: Create SessionManager without a coordinator; authenticate once
+    // via the fallback path so local epoch becomes 1.
+    auto sm = std::make_shared<SessionManager>(24, nullptr);
+    sm->start_session(/*session_id=*/1001);
+    uint64_t epoch_after_auth = sm->get_session_epoch();
+    print_result("epoch is 1 after first auth (no coordinator)", epoch_after_auth == 1);
+
+    // Step 3: Create a fresh EpochCoordinator — it starts at epoch 0.
+    auto coordinator = std::make_shared<EpochCoordinator>();
+    print_result("coordinator starts at epoch 0", coordinator->session_epoch() == 0);
+
+    // Step 4: Wire the coordinator AFTER the local increment.
+    sm->set_epoch_coordinator(coordinator);
+
+    // Step 5: Epoch must not have gone backwards.
+    uint64_t epoch_after_wire = sm->get_session_epoch();
+    print_result("epoch did not regress after late coordinator wire",
+                 epoch_after_wire >= epoch_after_auth);
+    print_result("epoch is still >= 1 after set_epoch_coordinator",
+                 epoch_after_wire >= 1);
+}
+
+// Regression test: clear_for_disconnect() (which calls clear_runtime_session_locked())
+// must not decrease the epoch below the pre-clear value.
+void test_clear_for_disconnect_epoch_preserved() {
+    std::cout << "\nTest: clear_for_disconnect() must preserve session_epoch\n";
+
+    // Wire the coordinator first so the normal authenticated path uses it.
+    auto coordinator = std::make_shared<EpochCoordinator>();
+    auto sm = std::make_shared<SessionManager>(24, nullptr);
+    sm->set_epoch_coordinator(coordinator);
+
+    // Authenticate — advances coordinator epoch to 1.
+    sm->start_session(/*session_id=*/2002);
+    uint64_t epoch_before_clear = sm->get_session_epoch();
+    print_result("epoch is 1 after auth with coordinator", epoch_before_clear == 1);
+
+    // Disconnect — calls clear_runtime_session_locked().
+    sm->clear_for_disconnect();
+
+    uint64_t epoch_after_clear = sm->get_session_epoch();
+    print_result("epoch did not regress after clear_for_disconnect",
+                 epoch_after_clear >= epoch_before_clear);
+}
+
 int main() {
     std::cout << "=== EpochCoordinator Unit Tests ===\n";
     test_initial_state();
@@ -128,6 +179,8 @@ int main() {
     test_observer_notification();
     test_thread_safety();
     test_no_reset_after_session_clear();
+    test_set_epoch_coordinator_no_regression();
+    test_clear_for_disconnect_epoch_preserved();
     std::cout << "\n=== Results: " << g_pass << " passed, " << g_fail << " failed ===\n";
     return g_fail == 0 ? 0 : 1;
 }

@@ -159,10 +159,13 @@ void SessionManager::set_epoch_coordinator(std::shared_ptr<EpochCoordinator> coo
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
     m_epoch_coordinator = std::move(coordinator);
-    // Sync session_epoch with coordinator's current value (in case coordinator
-    // already has a higher epoch from a previous session).
+    // Sync session_epoch with the coordinator's current value, but never let
+    // the epoch regress: if local state already advanced further (e.g., the
+    // coordinator was wired after session activity started), keep the higher
+    // value so the monotonic invariant is preserved in both directions.
     if (m_epoch_coordinator) {
-        m_session.session_epoch = m_epoch_coordinator->session_epoch();
+        const auto coord_epoch = m_epoch_coordinator->session_epoch();
+        m_session.session_epoch = std::max(m_session.session_epoch, coord_epoch);
     }
 }
 
@@ -188,10 +191,13 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     m_session.expiry_state = ExpiryState::FRESH;
 
     // Preserve epoch continuity: session_epoch MUST be monotonically increasing.
-    // If a coordinator is wired, use its authoritative value; otherwise restore
-    // the pre-reset value so we never regress to 0.
+    // If a coordinator is wired, take the max of the pre-reset (saved) value and
+    // the coordinator's authoritative value so we never regress in either
+    // direction.  Without a coordinator, restore the pre-reset value so we never
+    // regress to 0.
     if (m_epoch_coordinator) {
-        m_session.session_epoch = m_epoch_coordinator->session_epoch();
+        const auto coord_epoch = m_epoch_coordinator->session_epoch();
+        m_session.session_epoch = std::max(saved_epoch, coord_epoch);
     } else {
         m_session.session_epoch = saved_epoch;
     }
