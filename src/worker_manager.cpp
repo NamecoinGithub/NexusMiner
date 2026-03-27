@@ -1444,9 +1444,6 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
             m_recovery.last_completed_at = now;
             m_recovery.epoch = 0;
             m_recovery.entered_at = {};
-            // Template successfully adopted — reset GET_BLOCK mismatch backoff.
-            m_get_block_backoff_ms    = 0;
-            m_get_block_backoff_until = {};
             auto global_stats = m_stats_collector->get_global_stats();
             global_stats.m_degraded_mode = false;
             m_stats_collector->update_global_stats(global_stats);
@@ -1681,58 +1678,6 @@ void Worker_manager::retry_template_request(bool bForce)
         return;
     }
 
-    // ── GET_BLOCK exponential backoff (hashPrevBlock mismatch storm guard) ───
-    // If validate_current_template() has discarded the last several templates due to
-    // hashPrevBlock mismatch (consecutive > 0), a rapid-fire GET_BLOCK ↔ discard loop
-    // is forming.  Apply an exponential delay before the next request so we don't
-    // hammer a node that is already under load.  Forced recovery calls (bForce=true)
-    // coming from the health-monitor still respect the backoff; the health-monitor's
-    // own tick period (~5 s) already provides a natural floor delay.
-    {
-        uint32_t consecutive = solo_protocol->get_hashprev_mismatch_consecutive();
-        if (consecutive > 0) {
-            // Compute the target backoff for this mismatch depth (doubles each step, 30 s cap).
-            // consecutive==1 → 2 s, consecutive==2 → 4 s, … consecutive>=4 → 30 s
-            // Cap the iteration count to avoid a pathologically large loop; the backoff
-            // plateaus at GET_BLOCK_BACKOFF_MAX_MS well before the cap is reached.
-            constexpr uint32_t MAX_BACKOFF_ITERATIONS = 16;
-            uint32_t iterations = std::min(consecutive - 1, MAX_BACKOFF_ITERATIONS);
-            int64_t target_backoff_ms = GET_BLOCK_BACKOFF_INITIAL_MS;
-            for (uint32_t i = 0; i < iterations; ++i) {
-                target_backoff_ms = std::min(target_backoff_ms * 2, GET_BLOCK_BACKOFF_MAX_MS);
-                if (target_backoff_ms >= GET_BLOCK_BACKOFF_MAX_MS) break;
-            }
-
-            // Extend the deadline if the new target is longer than the current one.
-            auto desired_until = now + std::chrono::milliseconds(target_backoff_ms);
-            if (desired_until > m_get_block_backoff_until) {
-                m_get_block_backoff_ms    = target_backoff_ms;
-                m_get_block_backoff_until = desired_until;
-                m_logger->warn("[Worker_manager] ⏳ GET_BLOCK backoff set to {}ms "
-                               "({} consecutive hashPrevBlock mismatches) — deferring request",
-                               target_backoff_ms, consecutive);
-            }
-        } else {
-            // No consecutive mismatches — clear any residual backoff (template was
-            // recently adopted and the mismatch chain is broken).  The HEALTHY phase
-            // transition handler also resets the backoff as a second safety net for
-            // the case where the consecutive count is queried after adoption.
-            m_get_block_backoff_ms    = 0;
-            m_get_block_backoff_until = {};
-        }
-
-        // Suppress this GET_BLOCK if we are still within the backoff window.
-        if (m_get_block_backoff_until != std::chrono::steady_clock::time_point{} &&
-            now < m_get_block_backoff_until)
-        {
-            auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                m_get_block_backoff_until - now).count();
-            m_logger->info("[Worker_manager] GET_BLOCK suppressed: context=hashprev_mismatch_backoff "
-                           "({}ms remaining)", remaining_ms);
-            return;
-        }
-    }
-
     bool no_valid_template = !has_valid_template_available(solo_protocol);
 
     // When this is a forced recovery (bForce=true) and not already tracked as such,
@@ -1886,7 +1831,7 @@ void Worker_manager::check_template_health()
          * lost during the TCP disconnect, so the node's heartbeat cycle (480s) is
          * the only thing that would otherwise restore it.
          * Cooldown: once per 60s to prevent rapid-fire. */
-        constexpr int64_t REORG_RESUBSCRIBE_THRESHOLD_SECONDS = 60;
+        constexpr int64_t REORG_RESUBSCRIBE_THRESHOLD_SECONDS = 30;
         constexpr int64_t REORG_RESUBSCRIBE_COOLDOWN_SECONDS  = 60;
 
         bool push_silent_in_recovery = !push_recent &&

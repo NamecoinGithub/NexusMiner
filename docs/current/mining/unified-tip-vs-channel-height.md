@@ -70,10 +70,7 @@ the node's Guard 2 check (`hashPrevBlock != hashBestChain`).
 
 **Action**: Discard current template immediately, return `false` from
 `validate_current_template()` so the caller (Worker_manager) triggers a `GET_BLOCK`
-refresh.  This discard path is guarded by a consecutive-mismatch counter
-(`m_hashprev_mismatch_consecutive`): after `MAX_CONSECUTIVE_HASHPREV_MISMATCHES` (3)
-consecutive mismatches the template is **accepted** instead of discarded to prevent the
-doom loop described in the Chain-in-Flux section below.
+refresh.
 
 ```
 m_template_interface->discard_template("hashPrevBlock_mismatch_reorg")
@@ -81,12 +78,7 @@ m_template_interface->discard_template("hashPrevBlock_mismatch_reorg")
 
 Log signature:
 ```
-[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch (canonical=<hex>, template=<hex>) — discarding stale template [consecutive mismatch #N/3]
-```
-
-Chain-in-flux (accept) log signature:
-```
-[ValidateTemplate] ⚠️  Chain in flux: N consecutive hashPrevBlock mismatches (canonical=<hex>, template=<hex>) — accepting template to avoid doom loop (chain may be under attack / reorg storm)
+[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch (canonical=<hex>, template=<hex>) — discarding stale template
 ```
 
 > **Note:** `push_hash_prev_block` is **not** used as a discard trigger in
@@ -95,27 +87,6 @@ Chain-in-flux (accept) log signature:
 > `BLOCK_DATA` response may legitimately return `hashPrevBlock = H_old` when the push
 > was premature.  Only the canonical `hash_prev_block` (from the last adopted
 > `BLOCK_DATA`) is authoritative.
-
-### Chain-in-Flux Guard (DDoS / orphan-limit defense)
-
-When a miner node is under a DDoS block-flood attack (e.g. a peer exceeding 500
-`ACTION::GET::BLOCK` requests/60 s), the node may hit its orphan limit, drop
-connections, and return inconsistent `BLOCK_DATA` responses under load.  This causes
-the canonical `hash_prev_block` to disagree with successive `BLOCK_DATA` responses,
-triggering repeated `hashPrevBlock_mismatch_reorg` discards in a tight loop and putting
-workers into the `NO VALID TEMPLATE` state indefinitely.
-
-The guard works in two layers:
-
-1. **`Solo::validate_current_template()` consecutive-mismatch counter** — after
-   `MAX_CONSECUTIVE_HASHPREV_MISMATCHES` (3) consecutive discards the next mismatch is
-   treated as chain-in-flux and the template is accepted.  The counter resets on every
-   successful template adoption.
-
-2. **`Worker_manager` exponential GET_BLOCK backoff** — each consecutive mismatch
-   increases the inter-request delay (2 s → 4 s → … up to 30 s), reducing load on an
-   already-stressed node.  The backoff resets when the miner transitions to `HEALTHY`
-   (template successfully adopted).
 
 ---
 
