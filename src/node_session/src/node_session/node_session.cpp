@@ -785,13 +785,13 @@ network::Shared_payload NodeSession::send_session_keepalive()
 void NodeSession::set_epoch_coordinator(std::shared_ptr<protocol::EpochCoordinator> coordinator)
 {
     if (!m_session_context) {
-        m_logger->error("[NodeSession:{}] set_epoch_coordinator: m_session_context is null — "
+        m_logger->error("[NodeSession:{}] set_epoch_coordinator: m_session_context is null - "
                         "coordinator cannot be wired. Check initialization order.", m_node_label);
         return;
     }
     auto session_mgr = m_session_context->get_session_manager();
     if (!session_mgr) {
-        m_logger->error("[NodeSession:{}] set_epoch_coordinator: session_manager is null — "
+        m_logger->error("[NodeSession:{}] set_epoch_coordinator: session_manager is null - "
                         "coordinator cannot be wired. Check initialization order.", m_node_label);
         return;
     }

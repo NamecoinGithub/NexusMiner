@@ -190,9 +190,11 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     // Preserve epoch continuity: session_epoch MUST be monotonically increasing.
     // If a coordinator is wired, use its authoritative value; otherwise restore
     // the pre-reset value so we never regress to 0.
-    m_session.session_epoch = m_epoch_coordinator
-        ? m_epoch_coordinator->session_epoch()
-        : saved_epoch;
+    if (m_epoch_coordinator) {
+        m_session.session_epoch = m_epoch_coordinator->session_epoch();
+    } else {
+        m_session.session_epoch = saved_epoch;
+    }
 
     if (preserve_genesis) {
         m_session.session_genesis = saved_genesis;
