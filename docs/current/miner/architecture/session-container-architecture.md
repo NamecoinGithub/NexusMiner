@@ -1,11 +1,21 @@
 # Session Container Architecture
 
+> **See also**: For epoch and runtime-identity fields (`session_epoch`,
+> `recovery_epoch`, `session_id`, `authenticated`, `reward_bound`), the
+> authoritative owner is now `SessionCoordinator`.
+> → [session-coordinator.md](session-coordinator.md)
+
 ## Overview
 
 The miner-side architecture now revolves around a single authoritative
 per-session container: `SessionManager::MinerSessionContainer`.  This container
 is the place where session identity, crypto readiness, reward binding, lane
 metadata, and submit readiness are stored together.
+
+Monotonically-increasing epoch counters and runtime identity fields that must
+never reset to 0 are owned by `SessionCoordinator` (see above).  The
+`MinerSessionContainer` still carries those fields for backward compatibility,
+but they are always synced *from* the coordinator after any struct reset.
 
 The public surface for the rest of the miner is `NodeSessionContext`, which
 wraps `SessionManager` and exposes session-centric operations such as
@@ -22,10 +32,14 @@ recent refactor direction is explicitly trying to prevent that drift.
 
 | Concern | Authoritative owner | Notes |
 |---------|---------------------|-------|
-| Session ID | `MinerSessionContainer::session_id` | Required for authenticated session state |
+| **Session epoch** | **`SessionCoordinator`** | Monotonically increasing — never reset to 0 |
+| **Recovery epoch** | **`SessionCoordinator`** | Monotonically increasing — never reset even on HEALTHY |
+| **Session ID** (runtime) | **`SessionCoordinator`** → `MinerSessionContainer::session_id` synced from it | Required for authenticated session state |
+| **Authenticated** (runtime) | **`SessionCoordinator`** → `SessionManager` synced from it | `SessionManager::clear_runtime_session_locked()` restores from coordinator |
+| **Reward bound** (runtime) | **`SessionCoordinator`** → `SessionManager` synced from it | `commit_reward_bound()` propagates to coordinator |
 | Falcon identity | `falcon_pubkey`, `falcon_key_id`, `falcon_authenticated` | Set once auth succeeds |
 | Genesis / ChaCha20 context | `session_genesis`, `chacha20_session_key`, `chacha20_key_fingerprint`, `chacha20_ready` | Shared by reward and submit flows |
-| Reward binding | `reward_address_string`, `reward_hash`, `reward_bound`, `reward_binding_source` | Keeps config intent and decoded bytes together |
+| Reward binding details | `reward_address_string`, `reward_hash`, `reward_binding_source` | Keeps config intent and decoded bytes together |
 | Lane metadata | `active_lane`, `channel`, `ready_for_submit`, `ready_for_get_block` | Keeps packet framing and mining readiness aligned |
 | Keepalive/fork canary input | `prevblock_suffix`, `last_keepalive`, `keepalive_count` | Session-scoped observability |
 

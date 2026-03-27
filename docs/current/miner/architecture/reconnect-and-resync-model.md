@@ -1,11 +1,20 @@
 # Reconnect and Resync Model
 
+> **See also**: Epoch fields (`session_epoch`, `recovery_epoch`) are owned by
+> `SessionCoordinator` and are now monotonically increasing across reconnects.
+> → [session-coordinator.md](session-coordinator.md)
+
 ## Overview
 
 The reconnect model is built around a simple rule: the authoritative session
 container survives longer than any one hot-path cache.  When network or packet
 ordering causes local state to lag, the miner resyncs from the container rather
 than reconstructing a new truth from scattered fields.
+
+Since the introduction of `SessionCoordinator`, epoch state additionally
+survives any `SessionInfo` struct-reset that happens during reconnect.  The
+coordinator holds the monotonic counters; `SessionManager` reads them back
+after every `m_session = SessionInfo{}` reset.
 
 ## Runtime model
 
@@ -20,6 +29,10 @@ by `m_session_mutex`.  It records:
 - the reward binding source and decoded reward hash
 - the current channel readiness and keepalive metadata
 
+Epoch counters (`session_epoch`, `recovery_epoch`) are now owned by
+`SessionCoordinator`.  `MinerSessionContainer` mirrors them for backward
+compatibility but is never the source of their truth.
+
 ### Reconnect snapshot
 
 `Solo` may temporarily hold stale copies of auth, session ID, reward binding,
@@ -29,6 +42,18 @@ snapshots, not as independent sources of truth.
 `refresh_cached_session_state()` is the mechanism that reconciles the two.
 Expected reconnect drift is logged as a resync event; unexpected drift is logged
 as a warning.
+
+The epoch resync path within `refresh_cached_session_state()` now prefers the
+coordinator's epoch over the session snapshot's epoch:
+
+```cpp
+const uint64_t authoritative_epoch = m_coordinator
+    ? m_coordinator->session_epoch()   // ← always monotonic
+    : session.session_epoch;           // ← fallback when no coordinator
+```
+
+This eliminates the drift window where `clear_runtime_session_locked()` zeroed
+the epoch before the next `refresh_cached_session_state()` call could re-read it.
 
 ## Packet-ingress preflight direction
 

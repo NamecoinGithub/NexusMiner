@@ -25,6 +25,7 @@ stateDiagram-v2
 sequenceDiagram
     participant Miner
     participant Node
+    participant SC as SessionCoordinator
 
     Note over Miner: Connection lost detected
 
@@ -37,6 +38,8 @@ sequenceDiagram
             Node->>Miner: MINER_AUTH_CHALLENGE (208)<br/>nonce
             Miner->>Node: MINER_AUTH_RESPONSE (209)<br/>Falcon-512 signature
             Node->>Miner: MINER_AUTH_RESULT (210)<br/>session_id + success
+            Miner->>SC: advance_session_epoch("authenticated")<br/>set_session_id(session_id)<br/>set_authenticated(true)
+            Note over SC: epoch PRESERVED (monotonic ↑)<br/>no regression to 0
         end
     end
 
@@ -57,3 +60,4 @@ sequenceDiagram
 - **Genesis preservation:** Reconnection reuses genesis config (no reconfig needed)
 - **State machine:** `DISCONNECTED → AUTHENTICATED` managed by `session_manager`
 - **Encryption:** ChaCha20 derived from `SHA256(KDF_DOMAIN || genesis_hash)`
+- **Epoch continuity:** `SessionCoordinator` holds `session_epoch` and `recovery_epoch` — both are monotonically increasing and are **never reset to 0** on disconnect/reconnect.  See [session-coordinator.md](../../current/miner/architecture/session-coordinator.md).
