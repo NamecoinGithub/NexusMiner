@@ -8,6 +8,7 @@
 #include <string>
 #include <memory>
 #include "spdlog/spdlog.h"
+#include "protocol/session_semantic_types.hpp"
 
 namespace nexusminer {
 namespace protocol {
@@ -44,8 +45,8 @@ public:
     explicit SessionCoordinator(std::shared_ptr<spdlog::logger> logger = nullptr);
 
     // ── Epoch management (monotonically increasing, NEVER reset) ─────────────
-    uint64_t session_epoch() const;
-    uint64_t advance_session_epoch(const char* reason);
+    SessionEpoch session_epoch() const;
+    SessionEpoch advance_session_epoch(const char* reason);
 
     uint64_t recovery_epoch() const;
     uint64_t advance_recovery_epoch(const char* reason);
@@ -55,8 +56,8 @@ public:
     uint64_t global_epoch() const;
 
     // ── Session identity (authoritative, replaces all cached copies) ──────────
-    uint32_t session_id() const;
-    void set_session_id(uint32_t id, const char* reason);
+    SessionId session_id() const;
+    void set_session_id(SessionId id, const char* reason);
 
     bool is_authenticated() const;
     void set_authenticated(bool auth, const char* reason);
@@ -85,17 +86,17 @@ public:
 
     /// Called on successful authentication — sets session_id, authenticated,
     /// advances session_epoch atomically in one lock acquisition.
-    void commit_authenticated(uint32_t new_session_id, const char* reason);
+    void commit_authenticated(SessionId new_session_id, const char* reason);
 
     // ── Observer pattern ──────────────────────────────────────────────────────
     void add_observer(StateChangeObserver observer);
 
     // ── Snapshot (for diagnostics / logging) ─────────────────────────────────
     struct Snapshot {
-        uint64_t session_epoch{0};
+        SessionEpoch session_epoch{};
         uint64_t recovery_epoch{0};
         uint64_t global_epoch{0};
-        uint32_t session_id{0};
+        SessionId session_id{};
         bool authenticated{false};
         bool reward_bound{false};
         bool subscribed_to_notifications{false};
@@ -115,9 +116,9 @@ public:
 
 private:
     mutable std::mutex m_mutex;
-    uint64_t m_session_epoch{0};
+    SessionEpoch m_session_epoch{};
     uint64_t m_recovery_epoch{0};
-    uint32_t m_session_id{0};
+    SessionId m_session_id{};
     bool m_authenticated{false};
     bool m_reward_bound{false};
     bool m_subscribed_to_notifications{false};

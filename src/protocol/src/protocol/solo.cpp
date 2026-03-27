@@ -185,7 +185,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     // an observer so that any future session_epoch changes propagate automatically to
     // HeightTracker and MiningTemplateInterface without a manual resync call.
     if (m_coordinator) {
-        const uint64_t coord_epoch = m_coordinator->session_epoch();
+        const uint64_t coord_epoch = m_coordinator->session_epoch().get();
         if (coord_epoch != 0) {
             m_session_epoch = coord_epoch;
             m_has_seen_session_epoch = true;
@@ -413,7 +413,7 @@ void Solo::refresh_cached_session_state(const char* log_scope)
     // Prefer the coordinator's session_epoch when available — it is the single
     // monotonic authority and is NEVER reset to 0 on disconnect/reauth.
     const uint64_t authoritative_epoch = m_coordinator
-        ? m_coordinator->session_epoch()
+        ? m_coordinator->session_epoch().get()
         : session.session_epoch;
 
     if (!m_has_seen_session_epoch || m_session_epoch != authoritative_epoch) {
