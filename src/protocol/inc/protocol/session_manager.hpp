@@ -50,14 +50,6 @@ public:
         STALE
     };
 
-    enum class RecoveryState {
-        HEALTHY,
-        RECOVERY_PENDING,
-        RECOVERY_IN_PROGRESS,
-        FORCED_REAUTH,
-        RECONNECT_REQUIRED
-    };
-
     enum class ExpiryState {
         FRESH,
         KEEPALIVE_MISMATCH_WARNING,
@@ -137,8 +129,6 @@ public:
         uint32_t channel{0};
         bool ready_for_submit{false};
         bool ready_for_get_block{false};
-        RecoveryState recovery_state{RecoveryState::HEALTHY};
-        std::string recovery_reason;
         ExpiryState expiry_state{ExpiryState::FRESH};
         std::string expiry_reason;
         bool deferred_push_replay_allowed{false};
@@ -186,8 +176,6 @@ public:
                        const std::vector<uint8_t>& session_key = {},
                        const std::vector<uint8_t>& tritium_genesis = {});
     void mark_session_expired(const std::string& reason);
-    void mark_recovery_required(const std::string& reason);
-    void mark_recovery_healthy(const std::string& reason = "");
     void clear_for_disconnect(const std::string& reward_address = {},
                               const std::string& reward_source = "",
                               const std::string& reason = "",
@@ -281,7 +269,6 @@ public:
     // Static name helpers (used by diagnostics)
     static const char* session_event_kind_name(SessionEventKind kind);
     static const char* reward_state_name(RewardState state);
-    static const char* recovery_state_name(RecoveryState state);
     static const char* expiry_state_name(ExpiryState state);
 
     // ── Coordinator access ────────────────────────────────────────────────────

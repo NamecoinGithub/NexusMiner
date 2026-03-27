@@ -90,18 +90,6 @@ const char* SessionManager::reward_state_name(RewardState state)
     return "UNKNOWN";
 }
 
-const char* SessionManager::recovery_state_name(RecoveryState state)
-{
-    switch (state) {
-        case RecoveryState::HEALTHY:                  return "HEALTHY";
-        case RecoveryState::RECOVERY_PENDING:         return "RECOVERY_PENDING";
-        case RecoveryState::RECOVERY_IN_PROGRESS:     return "RECOVERY_IN_PROGRESS";
-        case RecoveryState::FORCED_REAUTH:            return "FORCED_REAUTH";
-        case RecoveryState::RECONNECT_REQUIRED:       return "RECONNECT_REQUIRED";
-    }
-    return "UNKNOWN";
-}
-
 const char* SessionManager::expiry_state_name(ExpiryState state)
 {
     switch (state) {
@@ -150,7 +138,6 @@ SessionManager::SessionManager(uint16_t keepalive_interval_hours,
     m_session.last_activity = m_session.created_at;
     m_session.state = SessionState::DISCONNECTED;
     m_session.reward_state = RewardState::NONE;
-    m_session.recovery_state = RecoveryState::HEALTHY;
     m_session.expiry_state = ExpiryState::FRESH;
 }
 
@@ -175,7 +162,6 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     m_session.last_activity = now_epoch_seconds();
     m_session.state = SessionState::DISCONNECTED;
     m_session.reward_state = RewardState::NONE;
-    m_session.recovery_state = RecoveryState::HEALTHY;
     m_session.expiry_state = ExpiryState::FRESH;
 
     // Restore the epoch from coordinator so it is never reset to 0.
@@ -308,8 +294,6 @@ void SessionManager::begin_auth_handshake(const std::string& detail)
     m_session.reward_state = retained_reward_address.empty() ? RewardState::NONE
                                                              : RewardState::REQUIRED;
     m_session.state = SessionState::AUTHENTICATING;
-    m_session.recovery_state = RecoveryState::HEALTHY;
-    m_session.recovery_reason.clear();
     m_session.expiry_state = ExpiryState::FRESH;
     m_session.expiry_reason.clear();
     m_session.last_activity = now_epoch_seconds();
@@ -371,8 +355,6 @@ void SessionManager::mark_session_expired(const std::string& reason)
         m_session.authenticated = false;
         m_session.expiry_state = ExpiryState::EXPIRED_ACCEPTED;
         m_session.expiry_reason = reason;
-        m_session.recovery_state = RecoveryState::FORCED_REAUTH;
-        m_session.recovery_reason = reason;
         m_session.ready_for_submit = false;
         m_session.ready_for_get_block = false;
         m_session.deferred_push_replay_allowed = false;
@@ -387,31 +369,6 @@ void SessionManager::mark_session_expired(const std::string& reason)
     if (notify && m_session_expired_handler) {
         m_session_expired_handler();
     }
-}
-
-void SessionManager::mark_recovery_required(const std::string& reason)
-{
-    std::lock_guard<std::mutex> lock(m_session_mutex);
-    m_session.recovery_state = RecoveryState::RECOVERY_PENDING;
-    m_session.recovery_reason = reason;
-    m_session.last_activity = now_epoch_seconds();
-    record_session_event_locked(SessionEventKind::RECOVERY_REQUESTED,
-                                reason.empty() ? "recovery required" : reason);
-}
-
-void SessionManager::mark_recovery_healthy(const std::string& reason)
-{
-    std::lock_guard<std::mutex> lock(m_session_mutex);
-    if (m_session.recovery_state == RecoveryState::FORCED_REAUTH ||
-        m_session.recovery_state == RecoveryState::RECONNECT_REQUIRED ||
-        m_session.state == SessionState::DEGRADED) {
-        return;
-    }
-    m_session.recovery_state = RecoveryState::HEALTHY;
-    m_session.recovery_reason.clear();
-    m_session.last_activity = now_epoch_seconds();
-    record_session_event_locked(SessionEventKind::RECOVERY_HEALTHY,
-                                reason.empty() ? "recovery healthy" : reason);
 }
 
 void SessionManager::clear_for_disconnect(const std::string& reward_address,
@@ -431,8 +388,6 @@ void SessionManager::clear_for_disconnect(const std::string& reward_address,
         m_session.reward_binding_source = retained_reward_source;
         m_session.reward_state = retained_reward_address.empty() ? RewardState::NONE
                                                                  : RewardState::REQUIRED;
-        m_session.recovery_state = RecoveryState::RECONNECT_REQUIRED;
-        m_session.recovery_reason = reason;
         m_session.expiry_state = ExpiryState::FRESH;
         update_replay_allowances_locked();
         record_session_event_locked(SessionEventKind::SESSION_RESET,
@@ -460,8 +415,6 @@ void SessionManager::clear_for_reauth(const std::string& reward_address,
         m_session.reward_binding_source = retained_reward_source;
         m_session.reward_state = retained_reward_address.empty() ? RewardState::NONE
                                                                  : RewardState::REQUIRED;
-        m_session.recovery_state = RecoveryState::FORCED_REAUTH;
-        m_session.recovery_reason = reason;
         m_session.expiry_state = ExpiryState::FRESH;
         m_session.last_activity = now_epoch_seconds();
         update_replay_allowances_locked();
@@ -823,7 +776,6 @@ std::string SessionManager::build_miner_session_diagnostics() const
         << "- reward_bound: "  << (m_session.reward_bound ? "YES" : "NO") << '\n'
         << "- reward_state: "  << reward_state_name(m_session.reward_state) << '\n'
         << "- prevblock_suffix: " << format_hex_prefix(m_session.prevblock_suffix, 4) << '\n'
-        << "- recovery_state: "<< recovery_state_name(m_session.recovery_state) << '\n'
         << "- expiry_state: "  << expiry_state_name(m_session.expiry_state) << '\n'
         << "- consistency: "   << (consistency ? "PASS" : "FAIL")
                                << " (" << consistency_reason << ")\n";

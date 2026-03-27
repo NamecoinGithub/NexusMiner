@@ -618,7 +618,6 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     auto snapshot = context.get_runtime_snapshot();
     assert(snapshot.state == SessionManager::SessionState::AUTHENTICATING);
     assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
-    assert(snapshot.recovery_state == SessionManager::RecoveryState::HEALTHY);
 
     context.commit_authenticated_session(0xABCDEF12,
                                          std::vector<uint8_t>(32, 0x21),
@@ -647,21 +646,10 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     assert(context.can_submit_work());
     assert(context.allow_get_block_replay());
 
-    context.mark_recovery_required("epoch mismatch");
-    snapshot = context.get_runtime_snapshot();
-    assert(snapshot.recovery_state == SessionManager::RecoveryState::RECOVERY_PENDING);
-    assert(snapshot.recovery_reason == "epoch mismatch");
-
-    context.mark_recovery_healthy("template delivered");
-    snapshot = context.get_runtime_snapshot();
-    assert(snapshot.recovery_state == SessionManager::RecoveryState::HEALTHY);
-    assert(snapshot.recovery_reason.empty());
-
     context.mark_session_expired("ack mismatch");
     snapshot = context.get_runtime_snapshot();
     assert(snapshot.state == SessionManager::SessionState::EXPIRED);
     assert(snapshot.reward_state == SessionManager::RewardState::STALE);
-    assert(snapshot.recovery_state == SessionManager::RecoveryState::FORCED_REAUTH);
     assert(snapshot.expiry_state == SessionManager::ExpiryState::EXPIRED_ACCEPTED);
     assert(!context.can_submit_work());
     assert(!context.allow_get_block_replay());
@@ -677,7 +665,6 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
 
     const auto diagnostics = context.build_miner_session_diagnostics();
     assert(diagnostics.find("reward_state: REQUIRED") != std::string::npos);
-    assert(diagnostics.find("recovery_state: FORCED_REAUTH") != std::string::npos);
     assert(diagnostics.find("expiry_state: FRESH") != std::string::npos);
 
     std::cout << "Authoritative transition API test passed!" << std::endl;
