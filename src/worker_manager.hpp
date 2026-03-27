@@ -75,6 +75,9 @@ public:
     // stop the component and destroy all workers
     void stop();
     
+    // Collect statistics from all live workers (called by the stats timer via weak_ptr)
+    void collect_worker_statistics(stats::Collector& collector);
+    
     // Worker control methods for degraded mode (public for timer access)
     void check_template_health();
 

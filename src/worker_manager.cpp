@@ -876,13 +876,29 @@ void Worker_manager::stop()
         m_failover_node_session->stop();
     }
 
-    // destroy workers
-    std::lock_guard<std::mutex> lock(m_worker_mutex);
-    for(auto& worker : m_workers)
+    // destroy workers: move them out of m_workers under the lock, then destroy
+    // (and join their threads) OUTSIDE the lock to prevent a deadlock where a
+    // worker thread is waiting to acquire m_worker_mutex (e.g. for block submission)
+    // while stop() holds m_worker_mutex waiting for the thread to join.
+    std::vector<std::shared_ptr<Worker>> workers_to_destroy;
     {
-        worker.reset();
+        std::lock_guard<std::mutex> lock(m_worker_mutex);
+        workers_to_destroy = std::move(m_workers);
+        m_workers.clear();
     }
-    m_workers.clear();
+    workers_to_destroy.clear(); // destructors join threads here, outside the lock
+}
+
+void Worker_manager::collect_worker_statistics(stats::Collector& collector)
+{
+    std::lock_guard<std::mutex> lock(m_worker_mutex);
+    for (auto& worker : m_workers)
+    {
+        if (worker)
+        {
+            worker->update_statistics(collector);
+        }
+    }
 }
 
 uint16_t Worker_manager::get_effective_keepalive_interval() const
@@ -1170,7 +1186,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         if (!self->m_stats_timers_started)
         {
             self->m_stats_timers_started = true;
-            self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
+            self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self, self->m_stats_collector);
             self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
         }
 
