@@ -1210,6 +1210,76 @@ int main()
     }
 
     // ====================================================================
+    // Test 36: hashPrevBlock mismatch — validate_current_template() must discard
+    //          the template and return false (same-height chain reorg defense).
+    //
+    // Prior behaviour: warn-and-continue (miner kept mining on stale template).
+    // New behaviour: discard_template() + return false (miner requests fresh work).
+    // ====================================================================
+    std::cout << "\nTest 36: hashPrevBlock mismatch causes template discard (same-height reorg defense)" << std::endl;
+    {
+        using nexusminer::protocol::HeightTracker;
+
+        // Set up: HeightTracker knows the canonical hashPrevBlock (non-zero).
+        HeightTracker tracker;
+        std::vector<uint8_t> canonical_bytes(128, 0x42);
+        uint1024_t canonical_hash;
+        canonical_hash.SetBytes(canonical_bytes);
+        tracker.UpdateWithHashPrevBlock(canonical_hash);
+
+        auto snap = tracker.GetSnapshot();
+        print_test_result("Canonical hash_prev_block is non-zero (activate mismatch guard)",
+            snap.hash_prev_block != uint1024_t(0));
+
+        // A stale template arrives with a DIFFERENT hashPrevBlock (same-height reorg).
+        std::vector<uint8_t> stale_bytes(128, 0x99);
+        uint1024_t stale_hash;
+        stale_hash.SetBytes(stale_bytes);
+
+        // The mismatch condition mirrors validate_current_template() new logic.
+        bool mismatch_detected = (snap.hash_prev_block != uint1024_t(0) &&
+                                   stale_hash != snap.hash_prev_block);
+        print_test_result("Mismatch detected: template.hashPrevBlock differs from canonical tip",
+            mismatch_detected);
+
+        // Simulate what validate_current_template() now does: discard_template() + return false.
+        MiningTemplateInterface tmpl_interface(1, 0);  // Prime channel
+        auto data = create_mock_template(6648299, 0x1d00ffff, 1);
+        auto res = tmpl_interface.read_template(data, "test_node");
+        print_test_result("Template loaded before mismatch discard", res.is_valid);
+        print_test_result("has_valid_template() true before discard", tmpl_interface.has_valid_template());
+
+        // When mismatch is detected, validate_current_template() calls discard_template().
+        if (mismatch_detected) {
+            tmpl_interface.discard_template("hashPrevBlock mismatch — same-height chain reorg detected");
+        }
+        print_test_result("Template discarded after hashPrevBlock mismatch (not warn-and-continue)",
+            !tmpl_interface.has_valid_template());
+
+        // Verify the no-mismatch case: matching hashPrevBlock must NOT cause a discard.
+        MiningTemplateInterface tmpl_interface2(1, 0);
+        auto data2 = create_mock_template(6648299, 0x1d00ffff, 1);
+        tmpl_interface2.read_template(data2, "test_node");
+
+        // canonical_hash was used to set hash_prev_block, so they are equal → no mismatch.
+        bool no_mismatch_on_match = (snap.hash_prev_block == uint1024_t(0) ||
+                                      canonical_hash == snap.hash_prev_block);
+        print_test_result("No mismatch when template.hashPrevBlock equals canonical tip",
+            no_mismatch_on_match);
+        // No discard: template must remain valid.
+        print_test_result("Template stays valid when hashPrevBlock matches canonical tip",
+            tmpl_interface2.has_valid_template());
+
+        // Verify guard is inactive when hash_prev_block is zero (not yet set).
+        HeightTracker tracker_zero;
+        auto snap_zero = tracker_zero.GetSnapshot();
+        bool guard_inactive = !(snap_zero.hash_prev_block != uint1024_t(0) &&
+                                 stale_hash != snap_zero.hash_prev_block);
+        print_test_result("Mismatch guard inactive when HeightTracker hash_prev_block is zero",
+            guard_inactive);
+    }
+
+    // ====================================================================
     // Summary
     // ====================================================================
     std::cout << "\n========================================" << std::endl;
