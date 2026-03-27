@@ -68,11 +68,11 @@ graph TD
 |---|-----------|-------------|
 | 1 | `session_epoch` is **monotonically increasing** — never resets to 0 | `advance_session_epoch()` only increments; `clear_for_disconnect()` does NOT touch epochs |
 | 2 | `recovery_epoch` is **monotonically increasing** — never resets to 0 | `advance_recovery_epoch()` only increments; `transition_to(HEALTHY)` no longer resets it |
-| 3 | `clear_for_disconnect()` clears identity fields but **preserves both epochs** | Epochs are stripped from `SessionInfo{}` reset via `m_session.session_epoch = m_coordinator->session_epoch()` |
-| 4 | `commit_authenticated()` advances epoch + sets `session_id` + sets `authenticated` **atomically** | Single `std::mutex` lock covers all three writes — no window where `session_id` is set but epoch has not advanced |
+| 3 | `clear_for_disconnect()` clears identity fields but **preserves both epochs** | Epoch is restored with `std::max(local, coordinator)` after `SessionInfo{}` reset — can never decrease |
+| 4 | `commit_authenticated()` advances epoch + sets `session_id` + sets `authenticated` **atomically** | Single `std::mutex` lock covers all three writes — replaces 3 separate coordinator calls in `transition_to_authenticated_locked()` |
 | 5 | All reads/writes are thread-safe | One `std::mutex m_mutex` for all state |
 | 6 | `global_epoch() = max(session_epoch, recovery_epoch)` | Lets any component detect staleness without knowing which domain advanced |
-| 7 | Observer notification is synchronous | Fired under the same mutex lock; `HeightTracker` and `MiningTemplateInterface` see changes atomically |
+| 7 | Observer notification happens **outside `m_mutex`** | Lock is released before calling observers — prevents deadlock when observers hold other mutexes (e.g., `HeightTracker`) |
 
 ---
 
@@ -126,19 +126,28 @@ The critical fix is inside `clear_runtime_session_locked()`:
 // Before: silently zeroed session_epoch
 m_session = SessionInfo{};
 
-// After: restore epoch from coordinator so it is never reset
+// After: std::max enforces the monotonic invariant defensively
 m_session = SessionInfo{};
-m_session.session_epoch = m_coordinator->session_epoch();
+m_session.session_epoch = std::max(m_session.session_epoch,
+                                   m_coordinator->session_epoch());
 ```
 
-On successful authentication, `transition_to_authenticated_locked()` advances
-the coordinator's epoch atomically together with setting `session_id` and
-`authenticated`:
+On successful authentication, `transition_to_authenticated_locked()` uses the
+atomic `commit_authenticated()` — one coordinator lock acquisition for epoch
+advance + session_id set + authenticated set.  This prevents the previous
+window where the epoch had advanced but the session_id and authenticated were
+not yet set when observers fired:
 
 ```cpp
+// Before: three separate lock acquisitions — epoch advance fires observers
+// before session_id/authenticated are updated
 m_session.session_epoch = m_coordinator->advance_session_epoch("authenticated");
 m_coordinator->set_session_id(session_id, "authenticated");
 m_coordinator->set_authenticated(true, "authenticated");
+
+// After: single atomic commit — observers only fire once all three are consistent
+m_coordinator->commit_authenticated(session_id, "authenticated");
+m_session.session_epoch = m_coordinator->session_epoch();  // read back
 ```
 
 On `clear_for_disconnect()` and `clear_for_reauth()`, the coordinator's
@@ -188,6 +197,13 @@ Observers are registered with `add_observer()` and receive three arguments:
 | `domain` | `const char*` | One of the `DOMAIN_*` string pointer constants (e.g., `DOMAIN_SESSION_EPOCH`) |
 | `old_val` | `uint64_t` | Value before the change |
 | `new_val` | `uint64_t` | Value after the change |
+
+**Observers are always fired outside `m_mutex`.**  The coordinator captures a
+snapshot of the current observer list and the pending notification events while
+holding the lock, then releases the lock before iterating.  This prevents
+deadlocks if an observer tries to acquire a second mutex (e.g., `HeightTracker`
+or `MiningTemplateInterface`) that is already held by a thread waiting to read
+from the coordinator.
 
 Use **pointer comparison** with `DOMAIN_*` constants in observer callbacks —
 they are `static constexpr` string literals, so pointer equality is O(1):

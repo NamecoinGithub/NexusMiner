@@ -180,8 +180,10 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     m_session.expiry_state = ExpiryState::FRESH;
 
     // Restore the epoch from coordinator so it is never reset to 0.
-    // The coordinator is the monotonic authority; a struct-reset must not lose it.
-    m_session.session_epoch = m_coordinator->session_epoch();
+    // std::max enforces the monotonic invariant: the local epoch can never
+    // decrease, even if a future code path somehow changes call order.
+    m_session.session_epoch = std::max(m_session.session_epoch,
+                                       m_coordinator->session_epoch());
 
     if (preserve_genesis) {
         m_session.session_genesis = saved_genesis;
@@ -194,10 +196,15 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
 void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
                                                          const std::vector<uint8_t>& tritium_genesis)
 {
-    // Advance epoch in coordinator atomically with session_id and auth flag.
-    // This replaces the local ++m_session.session_epoch and ensures all
-    // components that read from the coordinator see a consistent view.
-    m_session.session_epoch = m_coordinator->advance_session_epoch("authenticated");
+    // commit_authenticated() atomically advances session_epoch + sets session_id +
+    // sets authenticated in a single coordinator lock acquisition.  This replaces
+    // the previous three separate calls (advance_session_epoch / set_session_id /
+    // set_authenticated), which left a window where the epoch had advanced but
+    // session_id and authenticated were not yet set — causing observers to see an
+    // inconsistent state.
+    m_coordinator->commit_authenticated(session_id, "authenticated");
+    // Read back the epoch that was just advanced so the local SessionInfo mirrors it.
+    m_session.session_epoch = m_coordinator->session_epoch();
     m_session.session_id = session_id;
     m_session.state = SessionState::AUTHENTICATED;
     m_session.authenticated = true;
@@ -210,10 +217,6 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
     if (!tritium_genesis.empty()) {
         m_session.session_genesis = tritium_genesis;
     }
-
-    // Propagate to coordinator (set_session_id and set_authenticated notify observers).
-    m_coordinator->set_session_id(session_id, "authenticated");
-    m_coordinator->set_authenticated(true, "authenticated");
 
     update_replay_allowances_locked();
 

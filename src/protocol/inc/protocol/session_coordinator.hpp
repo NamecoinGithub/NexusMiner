@@ -106,6 +106,13 @@ public:
     /// Human-readable diagnostic dump for logging
     std::string diagnostics() const;
 
+    // ── Pending notification helper (for fire-outside-lock pattern) ──────────
+    struct Notification {
+        const char* domain{nullptr};
+        uint64_t old_val{0};
+        uint64_t new_val{0};
+    };
+
 private:
     mutable std::mutex m_mutex;
     uint64_t m_session_epoch{0};
@@ -119,7 +126,10 @@ private:
     std::vector<StateChangeObserver> m_observers;
     std::shared_ptr<spdlog::logger> m_logger;
 
-    void notify_observers_locked(const char* domain, uint64_t old_val, uint64_t new_val);
+    /// Fire a list of pre-captured notifications against a snapshot of observers.
+    /// Must be called OUTSIDE m_mutex to avoid deadlocks with observer-side locks.
+    static void fire_notifications(const std::vector<StateChangeObserver>& observers,
+                                   const std::vector<Notification>& notifications);
 };
 
 } // namespace protocol
