@@ -566,6 +566,10 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
         return false;
     }
 
+    // Template passed validation — reset the consecutive hashPrevBlock mismatch counter
+    // so the chain-in-flux guard doesn't carry over stale state to the next validate cycle.
+    m_hashprev_mismatch_consecutive = 0;
+
     m_current_height = unified_height;
 
     auto format_hex8 = [](const uint1024_t& h) -> std::string {
@@ -4523,11 +4527,38 @@ bool Solo::validate_current_template()
     // is authoritative for this check.
     if (snap.hash_prev_block != uint1024_t(0) &&
         tmpl->block.hashPrevBlock != snap.hash_prev_block) {
-        m_logger->warn("[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch "
-                       "(canonical={}, template={}) — discarding stale template",
-                       snap.hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString());
-        m_template_interface->discard_template("hashPrevBlock_mismatch_reorg");
-        return false;
+
+        ++m_hashprev_mismatch_consecutive;
+
+        if (m_hashprev_mismatch_consecutive <= MAX_CONSECUTIVE_HASHPREV_MISMATCHES) {
+            m_logger->warn("[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch "
+                           "(canonical={}, template={}) — discarding stale template "
+                           "[consecutive mismatch #{}/{}]",
+                           snap.hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString(),
+                           m_hashprev_mismatch_consecutive, MAX_CONSECUTIVE_HASHPREV_MISMATCHES);
+            m_template_interface->discard_template("hashPrevBlock_mismatch_reorg");
+            return false;
+        } else {
+            // Chain in flux (e.g. node under DDoS attack / orphan-limit storm):
+            // more than MAX_CONSECUTIVE_HASHPREV_MISMATCHES consecutive mismatches have
+            // occurred without a successful adoption.  Accepting the template here breaks
+            // the doom loop — workers will mine and submit; the node will reject any
+            // block built on the wrong tip, but the miner stays active rather than spinning
+            // in NO VALID TEMPLATE indefinitely.
+            m_logger->warn("[ValidateTemplate] ⚠️  Chain in flux: {} consecutive hashPrevBlock mismatches "
+                           "(canonical={}, template={}) — accepting template to avoid doom loop "
+                           "(chain may be under attack / reorg storm)",
+                           m_hashprev_mismatch_consecutive,
+                           snap.hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString());
+            // DO NOT discard — fall through to return true
+        }
+    } else {
+        // Hashes match (or canonical is zero): reset the consecutive counter.
+        // Note: finalize_and_feed_current_template() also resets the counter after a
+        // successful validation to cover the chain-in-flux acceptance path (where the if
+        // condition above was true but we fell through without discarding).  The reset
+        // here handles all other validate callers and the normal (no-mismatch) path.
+        m_hashprev_mismatch_consecutive = 0;
     }
 
     // Advisory: log if push_hash_prev_block differs (informational only, not a discard trigger)

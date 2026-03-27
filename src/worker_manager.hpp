@@ -239,6 +239,20 @@ private:
     // Prevents rapid-fire resubscription; see check_template_health().
     std::chrono::steady_clock::time_point m_last_resubscribe_at{};  ///< Last MINER_READY resubscription sent (reorg guard)
 
+    // ── GET_BLOCK exponential backoff (hashPrevBlock mismatch storm guard) ────
+    // When validate_current_template() triggers a hashPrevBlock_mismatch_reorg discard
+    // and immediately requests a new GET_BLOCK, a node under DDoS or orphan-limit
+    // pressure may return stale/inconsistent BLOCK_DATA, re-triggering the discard
+    // in a tight loop.  This backoff introduces a brief delay that grows exponentially
+    // (0 ms → 2 s → 4 s → … → 30 s max) after each successive discard-and-retry,
+    // and resets when a template is successfully adopted.
+    // m_get_block_backoff_ms: current backoff delay in milliseconds (0 = no delay)
+    // m_get_block_backoff_until: time before which the next GET_BLOCK is suppressed
+    int64_t m_get_block_backoff_ms{0};
+    std::chrono::steady_clock::time_point m_get_block_backoff_until{};
+    static constexpr int64_t GET_BLOCK_BACKOFF_INITIAL_MS   = 2000;   ///< First backoff step: 2 s
+    static constexpr int64_t GET_BLOCK_BACKOFF_MAX_MS       = 30000;  ///< Ceiling: 30 s
+
     // ── Mutex-based recovery gate (defense-in-depth) ─────────────────────────
     // Serialises the creation path in set_block_handler with the destruction
     // path in stop_all_workers() so they cannot interleave on m_workers.
