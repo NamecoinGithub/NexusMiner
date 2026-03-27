@@ -136,6 +136,105 @@ void NodeSession::set_epoch_coordinator(
 | Transition to HEALTHY | `on_phase_enter(HEALTHY)` — does **NOT** reset recovery_epoch | Counter preserved across recovery cycles |
 | Session clear / reauth prep | `clear_runtime_session_locked()` — restores epoch from coordinator | Prevents regression to 0 |
 
+## Coordinator Durability Across Reconnect and Reauth
+
+A key merge risk for any coordinator pattern is that it gets silently
+disconnected from the component it guards during reconnect or reauth.  The
+following chain proves the coordinator survives both paths unchanged.
+
+### TCP reconnect path
+
+```
+Worker_manager::retry_connect()
+  → transition_to(RecoveryPhase::RECONNECTING, "tcp_reconnect")
+  → m_primary_node_session->reset()
+      → NodeSession::reset()
+          → m_session_context->end_session()
+              → SessionManager::end_session()
+                  → SessionManager::clear_for_disconnect()
+                      → SessionManager::clear_runtime_session_locked()
+```
+
+`clear_runtime_session_locked()` only resets `m_session = SessionInfo{}` and
+then restores the epoch from the coordinator.  It does **NOT** touch
+`m_epoch_coordinator`.  The `SessionManager` member `m_epoch_coordinator` is a
+`shared_ptr` that is set once by `set_epoch_coordinator()` and never cleared by
+any session-lifecycle method (`clear_runtime_session_locked`,
+`clear_for_disconnect`, `clear_for_reauth`, `end_session`).
+
+After TCP reconnect completes and the Falcon handshake succeeds,
+`transition_to_authenticated_locked()` calls
+`m_epoch_coordinator->advance_session_epoch("authenticated")` on the same
+live coordinator instance.  No re-wiring is needed.
+
+### In-band reauth path
+
+```
+Worker_manager (in-band login path)
+  → NodeSession login (does NOT call reset())
+  → Solo processes AUTH_OK
+  → SessionManager::transition_to_authenticated_locked()
+      → m_epoch_coordinator->advance_session_epoch("authenticated")
+```
+
+The in-band reauth path never calls `reset()` at all; the coordinator is
+trivially preserved.
+
+### Summary
+
+The coordinator is created once, stored in `Worker_manager`, and passed to
+`SessionManager` once at startup.  Neither the TCP reconnect path nor the
+in-band reauth path replaces `m_primary_node_session`, `SessionManager`, or
+clears `m_epoch_coordinator`.  **No re-wiring after reconnect or reauth is
+required.**
+
+## HeightTracker and MiningTemplateInterface: Accepted Propagation Residual
+
+`HeightTracker` and `MiningTemplateInterface` do not read from
+`EpochCoordinator` directly.  They receive the epoch via
+`Solo::refresh_cached_session_state()`, which is the same mechanism used for
+session ID, auth state, and reward binding.
+
+### Propagation chain
+
+```
+EpochCoordinator::advance_session_epoch()
+  → SessionManager::m_session.session_epoch  (immediate, same call)
+  → Solo::m_session_epoch                    (next refresh_cached_session_state())
+      → HeightTracker::set_session_epoch()   (inside refresh_cached_session_state())
+      → MiningTemplateInterface::set_session_epoch()
+            (via propagate_session_to_template_interface() on auth resync or init)
+```
+
+### Why the lag is bounded and harmless
+
+`refresh_cached_session_state()` is called at the top of every packet-ingress
+path (`process_messages()`, GET_BLOCK handler, submit handler, reward handler,
+auth handler).  The propagation lag therefore ends at the **first packet ingress
+after the epoch advance** — in practice within milliseconds of authentication.
+
+More importantly, the epoch fields in these two components are **diagnostic
+only**:
+
+| Component | How epoch is used | Wire path impact |
+|-----------|-------------------|-----------------|
+| `HeightTracker` | Tags `Snapshot.session_epoch` for diagnostics | None — not used for packet framing or submit decisions |
+| `MiningTemplateInterface` | Stamps `MiningTemplate.session_epoch` at template adoption time | None — only used for template ownership logging and validation diagnostics |
+
+Neither component's epoch field is consulted when building or transmitting a
+wire packet.  A template stamped with epoch N that arrives in the brief window
+before the first `refresh_cached_session_state()` call will still be processed
+correctly; only its diagnostic tag will show the slightly stale epoch.
+
+### Accepted residual
+
+The propagation lag for `HeightTracker` and `MiningTemplateInterface` is
+**accepted residual** behavior, consistent with how all other cached session
+fields (session ID, auth state, reward binding) propagate via the same
+`refresh_cached_session_state()` resync mechanism.  Direct coordinator access
+for these two components would break the existing single-resync-point
+architecture without correctness benefit.
+
 ## Observer Pattern
 
 Components that need to react to epoch changes can register an observer:
