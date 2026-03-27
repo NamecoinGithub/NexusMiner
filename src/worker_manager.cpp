@@ -175,31 +175,33 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* Connects protocol layer (validated templates) to worker layer (mining threads) */
         /* This lambda is called by the template feed handler (PR #62) when templates arrive */
         m_primary_node_session->set_template_handler(
-            [this](const ::LLP::CBlock& block, uint32_t nBits) {
+            [weak_self = weak_from_this()](const ::LLP::CBlock& block, uint32_t nBits) {
+                auto self = weak_self.lock();
+                if (!self) return;
                 std::size_t worker_count = 0;
                 {
-                    std::lock_guard<std::mutex> lock(m_worker_mutex);
-                    worker_count = m_workers.size();
+                    std::lock_guard<std::mutex> lock(self->m_worker_mutex);
+                    worker_count = self->m_workers.size();
                 }
-                m_logger->info("[Worker_manager] ═══════════════════════════════════════");
-                m_logger->info("[Worker_manager] DISTRIBUTING TEMPLATE TO {} WORKERS", worker_count);
-                m_logger->info("[Worker_manager]   Height:     {}", block.nHeight);
-                m_logger->info("[Worker_manager]   Channel:    {} ({})", 
+                self->m_logger->info("[Worker_manager] ═══════════════════════════════════════");
+                self->m_logger->info("[Worker_manager] DISTRIBUTING TEMPLATE TO {} WORKERS", worker_count);
+                self->m_logger->info("[Worker_manager]   Height:     {}", block.nHeight);
+                self->m_logger->info("[Worker_manager]   Channel:    {} ({})", 
                               block.nChannel,
                               (block.nChannel == 1) ? "prime" : "hash");
-                m_logger->info("[Worker_manager]   Difficulty: 0x{:08x}", nBits);
-                m_logger->info("[Worker_manager]   Merkle:     {}...",
+                self->m_logger->info("[Worker_manager]   Difficulty: 0x{:08x}", nBits);
+                self->m_logger->info("[Worker_manager]   Merkle:     {}...",
                               block.hashMerkleRoot.ToString().substr(0, 16));
-                m_logger->info("[Worker_manager]   PrevHash:   {}...",
+                self->m_logger->info("[Worker_manager]   PrevHash:   {}...",
                               block.hashPrevBlock.ToString().substr(0, 20));
-                m_logger->info("[Worker_manager] ═══════════════════════════════════════");
+                self->m_logger->info("[Worker_manager] ═══════════════════════════════════════");
 
                 // Note: Template feed debounce is now handled in MiningTemplateInterface
                 // (unified dedup gate). This handler is only called after the template
                 // passes the debounce check, so no additional checking is needed here.
 
                 // Update mined-block cache confirmations based on new chain height.
-                m_mined_block_cache.update_confirmations(block.nHeight);
+                self->m_mined_block_cache.update_confirmations(block.nHeight);
 
                 // ═══════════════════════════════════════════════════════════════
                 // Soft-pause (SOFT_REFRESH) state is cleared by the phase transition
@@ -214,24 +216,24 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // workers_fed falsely reads 0 keeping the miner in a doom loop.
                 size_t workers_fed = 0;
                 {
-                    std::lock_guard<std::mutex> lock(m_worker_mutex);
-                    if (is_degraded() && !m_recovery_workers_spawned && m_workers.empty()) {
-                        m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
-                        create_workers_locked();
-                        m_recovery_workers_spawned = !m_workers.empty();  // set AFTER success for exception safety
+                    std::lock_guard<std::mutex> lock(self->m_worker_mutex);
+                    if (self->is_degraded() && !self->m_recovery_workers_spawned && self->m_workers.empty()) {
+                        self->m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
+                        self->create_workers_locked();
+                        self->m_recovery_workers_spawned = !self->m_workers.empty();  // set AFTER success for exception safety
                     }
 
                     /* Safety check - workers should be created by now */
-                    if (m_workers.empty()) {
-                        m_logger->error("[Worker_manager] CRITICAL: No workers available for mining!");
-                        m_logger->error("[Worker_manager]   Workers may not be initialized yet");
-                        m_logger->error("[Worker_manager]   Template will be lost - mining cannot start");
+                    if (self->m_workers.empty()) {
+                        self->m_logger->error("[Worker_manager] CRITICAL: No workers available for mining!");
+                        self->m_logger->error("[Worker_manager]   Workers may not be initialized yet");
+                        self->m_logger->error("[Worker_manager]   Template will be lost - mining cannot start");
                         return;
                     }
 
                     /* Create shared WorkPackage once for all workers */
                     auto work_package = std::make_shared<WorkPackage>(block, nBits);
-                    m_logger->debug("[Worker_manager] Created shared WorkPackage (block height: {}, nBits: 0x{:08x})",
+                    self->m_logger->debug("[Worker_manager] Created shared WorkPackage (block height: {}, nBits: 0x{:08x})",
                                     block.nHeight, nBits);
 
 #ifdef PRIME_ENABLED
@@ -241,41 +243,43 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         Block_data temp_block{block};
                         work_package->set_prime_base_hash(temp_block.GetPrimeBaseHash());
 
-                        m_logger->debug("[Worker_manager] Precomputed prime base hash for all workers");
+                        self->m_logger->debug("[Worker_manager] Precomputed prime base hash for all workers");
                     }
 #endif
 
                     /* Distribute template to all worker threads */
-                    for (size_t i = 0; i < m_workers.size(); ++i) {
-                        auto& worker = m_workers[i];
+                    for (size_t i = 0; i < self->m_workers.size(); ++i) {
+                        auto& worker = self->m_workers[i];
                         if (worker) {
-                            worker->set_block(work_package, [this](auto id, auto block_data)
+                            worker->set_block(work_package, [weak_self](auto id, auto block_data)
                             {
-                            m_logger->info("════════════════════════════════════════════════════════");
-                            m_logger->info("💎 BLOCK FOUND CALLBACK INVOKED!");
-                            m_logger->info("   Worker ID:  {}", id);
-                            m_logger->info("   Height:     {}", block_data->nHeight);
-                            m_logger->info("   Nonce:      0x{:016x}", block_data->nNonce);
-                            m_logger->info("════════════════════════════════════════════════════════");
+                            auto self = weak_self.lock();
+                            if (!self) return;
+                            self->m_logger->info("════════════════════════════════════════════════════════");
+                            self->m_logger->info("💎 BLOCK FOUND CALLBACK INVOKED!");
+                            self->m_logger->info("   Worker ID:  {}", id);
+                            self->m_logger->info("   Height:     {}", block_data->nHeight);
+                            self->m_logger->info("   Nonce:      0x{:016x}", block_data->nNonce);
+                            self->m_logger->info("════════════════════════════════════════════════════════");
 
-                            if (!m_primary_node_session || !m_primary_node_session->is_authenticated())
+                            if (!self->m_primary_node_session || !self->m_primary_node_session->is_authenticated())
                             {
-                                m_logger->error("[Worker_manager] No authenticated session. Can't submit block.");
+                                self->m_logger->error("[Worker_manager] No authenticated session. Can't submit block.");
                                 return;
                             }
 
                             // Get the mining template interface to prepare full block submission
-                            auto solo_protocol = m_primary_node_session->get_primary_protocol();
+                            auto solo_protocol = self->m_primary_node_session->get_primary_protocol();
                             if (!solo_protocol)
                             {
-                                m_logger->error("[Worker_manager] Failed to get protocol from NodeSession");
+                                self->m_logger->error("[Worker_manager] Failed to get protocol from NodeSession");
                                 return;
                             }
 
                             auto* template_interface = solo_protocol->get_template_interface();
                             if (!template_interface)
                             {
-                                m_logger->error("[Worker_manager] Template interface not available");
+                                self->m_logger->error("[Worker_manager] Template interface not available");
                                 return;
                             }
 
@@ -297,29 +301,29 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                     ? "submit_side_channel_stale"
                                     : "submit_side_age_stale";
                                 if (channel_stale) {
-                                    m_logger->error("[Worker_manager] ❌ Solution found but channel height ADVANCED!");
-                                    m_logger->error("[Worker_manager]    channel_height {} >= channel_target {}",
+                                    self->m_logger->error("[Worker_manager] ❌ Solution found but channel height ADVANCED!");
+                                    self->m_logger->error("[Worker_manager]    channel_height {} >= channel_target {}",
                                                    ht_snap.channel_height, ht_snap.channel_target);
-                                    m_logger->error("[Worker_manager]    Another miner found this block first - discarding");
+                                    self->m_logger->error("[Worker_manager]    Another miner found this block first - discarding");
                                 } else {
-                                    m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: 600s)",
+                                    self->m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: 600s)",
                                                    template_age);
-                                    m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
+                                    self->m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
                                 }
-                                mark_soft_refresh_requested(soft_refresh_reason);
+                                self->mark_soft_refresh_requested(soft_refresh_reason);
                                 template_interface->discard_template(channel_stale ? "Channel height advanced before submission"
                                                                                    : "Age exceeded 600s before submission");
 
                                 // Request fresh template via NodeSession
-                                m_logger->info("[Worker_manager] Requesting fresh template via NodeSession");
-                                auto work_payload = m_primary_node_session->request_work();
+                                self->m_logger->info("[Worker_manager] Requesting fresh template via NodeSession");
+                                auto work_payload = self->m_primary_node_session->request_work();
                                 if (work_payload && !work_payload->empty()) {
-                                    m_primary_node_session->transmit(work_payload);
+                                    self->m_primary_node_session->transmit(work_payload);
                                 }
                                 return;
                             }
 
-                            m_logger->info("[Worker_manager] 💎 Solution found! Age: {}s, Channel height valid ✅ - SUBMITTING", template_age);
+                            self->m_logger->info("[Worker_manager] 💎 Solution found! Age: {}s, Channel height valid ✅ - SUBMITTING", template_age);
 
                             // Gap 2: Log hashPrevBlock before submission (SUBMIT AUDIT).
                             // Cross-reference: node Guard 2 checks pBlock->hashPrevBlock == hashBestChain.
@@ -334,18 +338,18 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                         snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
                                         prev_hex += buf;
                                     }
-                                    m_logger->info("[SUBMIT AUDIT]   block.hashPrevBlock = {}... (tip anchor — node Guard 2 will verify this == hashBestChain)", prev_hex);
+                                    self->m_logger->info("[SUBMIT AUDIT]   block.hashPrevBlock = {}... (tip anchor — node Guard 2 will verify this == hashBestChain)", prev_hex);
                                 }
                             }
 
                             // Prepare full block submission (216 or 220 bytes depending on format)
                             // This reconstructs the full block from the current template with the
                             // mined merkle root and nonce
-                            m_logger->info("[Worker_manager] Preparing full block submission");
-                            m_logger->info("[Worker_manager]   Height: {}", block_data->nHeight);
-                            m_logger->info("[Worker_manager]   Nonce:  0x{:016x}", block_data->nNonce);
+                            self->m_logger->info("[Worker_manager] Preparing full block submission");
+                            self->m_logger->info("[Worker_manager]   Height: {}", block_data->nHeight);
+                            self->m_logger->info("[Worker_manager]   Nonce:  0x{:016x}", block_data->nNonce);
                             if (!block_data->vOffsets.empty())
-                                m_logger->info("[Worker_manager]   vOffsets: {} bytes (Prime channel)",
+                                self->m_logger->info("[Worker_manager]   vOffsets: {} bytes (Prime channel)",
                                                block_data->vOffsets.size());
 
                             auto full_block_bytes = template_interface->prepare_block_submission(
@@ -355,48 +359,48 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                             if (full_block_bytes.empty())
                             {
-                                m_logger->error("[Worker_manager] Failed to prepare block submission - empty payload");
-                                m_logger->error("[Worker_manager]   This indicates template or block data is invalid");
+                                self->m_logger->error("[Worker_manager] Failed to prepare block submission - empty payload");
+                                self->m_logger->error("[Worker_manager]   This indicates template or block data is invalid");
                                 return;
                             }
 
-                            m_logger->info("[Worker_manager] Full block serialized: {} bytes", full_block_bytes.size());
-                            m_logger->info("[Worker_manager] Submitting block to protocol layer...");
+                            self->m_logger->info("[Worker_manager] Full block serialized: {} bytes", full_block_bytes.size());
+                            self->m_logger->info("[Worker_manager] Submitting block to protocol layer...");
 
                             // Submit the full block via NodeSession
-                                submit_solution(full_block_bytes, block_data->nNonce);
+                                self->submit_solution(full_block_bytes, block_data->nNonce);
                             });
                             if (worker->is_running()) {
                                 workers_fed++;
-                                m_logger->debug("[Worker_manager] Template sent to worker {}/{}", 
-                                               workers_fed, m_workers.size());
+                                self->m_logger->debug("[Worker_manager] Template sent to worker {}/{}", 
+                                               workers_fed, self->m_workers.size());
                             } else {
-                                m_logger->warn("[Worker_manager] Worker {} did not start after set_block() — not counted", i);
+                                self->m_logger->warn("[Worker_manager] Worker {} did not start after set_block() — not counted", i);
                             }
                         } else {
-                            m_logger->warn("[Worker_manager] Skipping null worker at index {}", i);
+                            self->m_logger->warn("[Worker_manager] Skipping null worker at index {}", i);
                         }
                     }
                 }
                 
                 if (workers_fed > 0) {
-                    auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
-                    m_logger->info("[Worker_manager] ✓ Template distributed to {} workers - MINING STARTED", 
+                    auto solo_protocol = self->m_primary_node_session ? self->m_primary_node_session->get_primary_protocol() : nullptr;
+                    self->m_logger->info("[Worker_manager] ✓ Template distributed to {} workers - MINING STARTED", 
                                   workers_fed);
                     // ✅ Clear degraded mode and all recovery state now that a valid template
                     // has been successfully delivered to workers.  This is intentionally done
                     // AFTER distribution so we only exit recovery state when workers actually
                     // received the template (not merely on template arrival).
-                    if (is_recovery_active()) {
+                    if (self->is_recovery_active()) {
                         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                            std::chrono::steady_clock::now() - m_recovery.entered_at).count();
-                        m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
-                        m_logger->warn("[Worker_manager] ✅ RECOVERY COMPLETE — epoch {} ({}s elapsed)", m_coordinator->recovery_epoch(), elapsed);
-                        m_logger->warn("[Worker_manager]    Fresh template distributed to workers successfully");
-                        m_logger->warn("[Worker_manager]    Workers resumed mining on valid template");
-                        m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
+                            std::chrono::steady_clock::now() - self->m_recovery.entered_at).count();
+                        self->m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
+                        self->m_logger->warn("[Worker_manager] ✅ RECOVERY COMPLETE — epoch {} ({}s elapsed)", self->m_coordinator->recovery_epoch(), elapsed);
+                        self->m_logger->warn("[Worker_manager]    Fresh template distributed to workers successfully");
+                        self->m_logger->warn("[Worker_manager]    Workers resumed mining on valid template");
+                        self->m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
                     }
-                    clear_recovery_state();
+                    self->clear_recovery_state();
 
                     // Re-subscribe to push notifications if they have been silent too long.
                     // After prolonged push silence the node's push subscription may have been
@@ -411,7 +415,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         // is redundant and triggers an immediate STATELESS_GET_BLOCK that causes
                         // a duplicate-template loop.
                         if (!push_ever_received) {
-                            m_logger->info("[Worker_manager] No push notification ever received — skipping resubscribe");
+                            self->m_logger->info("[Worker_manager] No push notification ever received — skipping resubscribe");
                         } else {
                             auto now_resub = std::chrono::steady_clock::now();
                             int64_t since_push_s = std::chrono::duration_cast<std::chrono::seconds>(
@@ -422,9 +426,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             // flow before we declare push silence.
                             constexpr int64_t POST_RECOVERY_HOLDOFF_SECONDS = 60;
                             int64_t since_recovery_s =
-                                (m_recovery.last_completed_at != std::chrono::steady_clock::time_point{})
+                                (self->m_recovery.last_completed_at != std::chrono::steady_clock::time_point{})
                                 ? std::chrono::duration_cast<std::chrono::seconds>(
-                                      now_resub - m_recovery.last_completed_at).count()
+                                      now_resub - self->m_recovery.last_completed_at).count()
                                 : INT64_MAX;  // No recovery ever completed — hold-off does not apply
 
                             // Fix 3: Raised from 120 → 400 to exceed the longest observed Prime
@@ -435,22 +439,22 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             constexpr int64_t PUSH_RESUBSCRIBE_THRESHOLD_SECONDS = 400;
 
                             if (since_recovery_s < POST_RECOVERY_HOLDOFF_SECONDS) {
-                                m_logger->info("[Worker_manager] Recovery completed {}s ago — within hold-off, skipping resubscribe",
+                                self->m_logger->info("[Worker_manager] Recovery completed {}s ago — within hold-off, skipping resubscribe",
                                                since_recovery_s);
                             } else if (since_push_s > PUSH_RESUBSCRIBE_THRESHOLD_SECONDS) {
-                                m_logger->warn("[Worker_manager] Push notifications silent for {}s after recovery — re-subscribing",
+                                self->m_logger->warn("[Worker_manager] Push notifications silent for {}s after recovery — re-subscribing",
                                                since_push_s);
                                 solo_protocol->resubscribe_push_notifications();
                             }
                         }
                     }
                 } else {
-                    m_logger->error("[Worker_manager] FAILED: No workers received template!");
+                    self->m_logger->error("[Worker_manager] FAILED: No workers received template!");
                     // Immediately request a new template — don't wait 30s for health monitor.
                     // transition_to(HARD_RECOVERY) is triggered by mark_recovery_initiated()
                     // inside retry_template_request(true), after stop_all_workers() here.
-                    stop_all_workers();
-                    retry_template_request(true);
+                    self->stop_all_workers();
+                    self->retry_template_request(true);
                 }
             }
         );
@@ -465,14 +469,16 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             auto* template_interface = solo_protocol->get_template_interface();
             if (template_interface) {
             template_interface->set_validation_failure_handler(
-                [this](const protocol::MiningTemplateInterface::ValidationResult& result) {
-                    m_logger->error("[Worker_manager] ════════════════════════════════════════");
-                    m_logger->error("[Worker_manager] ⚠️  TEMPLATE VALIDATION FAILED");
-                    m_logger->error("[Worker_manager]    Reason: {}", result.error_message);
-                    m_logger->error("[Worker_manager] ════════════════════════════════════════");
+                [weak_self = weak_from_this()](const protocol::MiningTemplateInterface::ValidationResult& result) {
+                    auto self = weak_self.lock();
+                    if (!self) return;
+                    self->m_logger->error("[Worker_manager] ════════════════════════════════════════");
+                    self->m_logger->error("[Worker_manager] ⚠️  TEMPLATE VALIDATION FAILED");
+                    self->m_logger->error("[Worker_manager]    Reason: {}", result.error_message);
+                    self->m_logger->error("[Worker_manager] ════════════════════════════════════════");
                     
                     // Stop all workers
-                    stop_all_workers();
+                    self->stop_all_workers();
                     
                     // NOTE: create_workers() intentionally omitted here.
                     // Worker recreation is handled by recovery_initiated_handler (for push staleness)
@@ -481,7 +487,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // both handlers fire for the same staleness event.
                     
                     // Request fresh template
-                    retry_template_request(true);
+                    self->retry_template_request(true);
                 }
             );
             m_logger->info("[Worker_manager] Validation failure handler registered");
@@ -497,10 +503,12 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* canonical replacement now takes the dedicated soft-refresh handler below, */
         /* which withholds submissions while the replacement template is fetched.    */
         m_primary_node_session->set_recovery_initiated_handler(
-            [this]() {
-                mark_recovery_initiated("push_staleness");
+            [weak_self = weak_from_this()]() {
+                auto self = weak_self.lock();
+                if (!self) return;
+                self->mark_recovery_initiated("push_staleness");
                 // Workers keep running with current template while we request a fresh one.
-                retry_template_request(true);
+                self->retry_template_request(true);
             }
         );
         m_logger->info("[Worker_manager] Recovery handler registered");
@@ -511,18 +519,20 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* using login() on the existing connection, NOT reset() which tears down    */
         /* the TCP connection. Uses existing session auth backoff infrastructure.    */
         m_primary_node_session->set_session_expired_handler(
-            [this]() {
-                if (is_reconnecting() || (is_recovery_active() && m_coordinator->recovery_epoch() > 0)) {
-                    m_logger->warn("[Worker_manager] Session EXPIRED ignored: reconnect/recovery already in progress "
+            [weak_self = weak_from_this()]() {
+                auto self = weak_self.lock();
+                if (!self) return;
+                if (self->is_reconnecting() || (self->is_recovery_active() && self->m_coordinator->recovery_epoch() > 0)) {
+                    self->m_logger->warn("[Worker_manager] Session EXPIRED ignored: reconnect/recovery already in progress "
                                    "(phase={}, recovery_active={}, recovery_epoch={})",
-                                   phase_name(m_recovery.phase),
-                                   is_recovery_active(),
-                                   m_coordinator->recovery_epoch());
+                                   self->phase_name(self->m_recovery.phase),
+                                   self->is_recovery_active(),
+                                   self->m_coordinator->recovery_epoch());
                     return;
                 }
 
-                m_logger->warn("[Worker_manager] Session EXPIRED — initiating in-band re-authentication");
-                mark_recovery_initiated("session_expired");
+                self->m_logger->warn("[Worker_manager] Session EXPIRED — initiating in-band re-authentication");
+                self->mark_recovery_initiated("session_expired");
 
                 // Use the current session auth fail count to calculate backoff delay.
                 // NOTE: We do NOT increment m_session_auth_fail_count here.
@@ -530,34 +540,34 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // authentication fails (session_id == 0), avoiding double-counting.
 
                 // If we've already exceeded max retries, halt re-authentication
-                if (m_session_auth_fail_count >= protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES)
+                if (self->m_session_auth_fail_count >= protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES)
                 {
-                    m_logger->error("[Session] Max authentication retries ({}) already reached after SESSION_EXPIRED",
+                    self->m_logger->error("[Session] Max authentication retries ({}) already reached after SESSION_EXPIRED",
                         protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
-                    m_logger->error("[Session] Node appears to be persistently expiring or rejecting sessions");
-                    m_logger->error("[Session] Check node logs and session keepalive configuration");
+                    self->m_logger->error("[Session] Node appears to be persistently expiring or rejecting sessions");
+                    self->m_logger->error("[Session] Check node logs and session keepalive configuration");
                     return;
                 }
 
                 // Calculate backoff delay based on current failure count
                 // (will be 0 delay on first SESSION_EXPIRED if no prior auth failures)
-                auto delay_ms = m_session_auth_fail_count > 0
-                    ? m_session_auth_backoff.calculate_delay_ms(m_session_auth_fail_count)
+                auto delay_ms = self->m_session_auth_fail_count > 0
+                    ? self->m_session_auth_backoff.calculate_delay_ms(self->m_session_auth_fail_count)
                     : 0;
                 auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
 
                 if (delay_seconds > 0) {
-                    m_logger->warn("[Session] Scheduling in-band re-authentication in {}s (based on {} prior failures, exponential backoff)",
-                        delay_seconds, m_session_auth_fail_count);
+                    self->m_logger->warn("[Session] Scheduling in-band re-authentication in {}s (based on {} prior failures, exponential backoff)",
+                        delay_seconds, self->m_session_auth_fail_count);
                 } else {
-                    m_logger->info("[Session] Scheduling immediate in-band re-authentication (no prior auth failures)");
+                    self->m_logger->info("[Session] Scheduling immediate in-band re-authentication (no prior auth failures)");
                 }
 
                 // Schedule re-auth via io_context to avoid calling login()
                 // from within a packet-receive callback (stack depth / reentrancy safety).
-                if (m_io_context && m_primary_node_session) {
-                    auto timer = std::make_shared<asio::steady_timer>(*m_io_context, std::chrono::seconds(delay_seconds));
-                    timer->async_wait([self = shared_from_this(), timer](const asio::error_code& ec) {
+                if (self->m_io_context && self->m_primary_node_session) {
+                    auto timer = std::make_shared<asio::steady_timer>(*self->m_io_context, std::chrono::seconds(delay_seconds));
+                    timer->async_wait([self, timer](const asio::error_code& ec) {
                         if (ec) {
                             if (ec != asio::error::operation_aborted) {
                                 self->m_logger->error("[Session] Re-auth timer error: {}", ec.message());
@@ -607,61 +617,63 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* This is the correct place to check session_id=0 (not in the login callback which */
         /* fires before MINER_AUTH_RESULT arrives). Triggers retry with exponential backoff. */
         m_primary_node_session->set_session_authenticated_handler(
-            [this](uint32_t session_id) {
+            [weak_self = weak_from_this()](uint32_t session_id) {
+                auto self = weak_self.lock();
+                if (!self) return;
                 // CRITICAL: If session_id = 0, the node rejected authentication or didn't provide a session.
                 // Mining cannot proceed without a valid session_id (work submissions will be silently rejected).
                 // Use exponential backoff with max retry limit to prevent infinite tight retry loops.
                 if (session_id == 0)
                 {
-                    ++m_session_auth_fail_count;
-                    m_logger->error("[Session] CRITICAL: Node returned session_id=0x00000000 after authentication (attempt #{}/{})",
-                        m_session_auth_fail_count, protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
-                    m_logger->error("[Session] This indicates the node rejected the session or is misconfigured");
-                    m_logger->error("[Session] Work submissions cannot proceed without a valid session ID");
+                    ++self->m_session_auth_fail_count;
+                    self->m_logger->error("[Session] CRITICAL: Node returned session_id=0x00000000 after authentication (attempt #{}/{})",
+                        self->m_session_auth_fail_count, protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
+                    self->m_logger->error("[Session] This indicates the node rejected the session or is misconfigured");
+                    self->m_logger->error("[Session] Work submissions cannot proceed without a valid session ID");
 
                     // Hard limit: if we've exceeded max retries, halt reconnection to prevent infinite loop
-                    if (m_session_auth_fail_count > protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES)
+                    if (self->m_session_auth_fail_count > protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES)
                     {
-                        m_logger->error("[Session] Max authentication retries ({}) exceeded — halting reconnection",
+                        self->m_logger->error("[Session] Max authentication retries ({}) exceeded — halting reconnection",
                             protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
-                        m_logger->error("[Session] Node appears to be persistently rejecting authentication");
-                        m_logger->error("[Session] Check node logs, miner_auth handler, and mining account configuration");
+                        self->m_logger->error("[Session] Node appears to be persistently rejecting authentication");
+                        self->m_logger->error("[Session] Check node logs, miner_auth handler, and mining account configuration");
                         return;
                     }
 
                     // Exponential backoff: 1s, 2s, 4s, 8s, ..., capped at 60s
-                    auto delay_ms = m_session_auth_backoff.calculate_delay_ms(m_session_auth_fail_count);
+                    auto delay_ms = self->m_session_auth_backoff.calculate_delay_ms(self->m_session_auth_fail_count);
                     auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
 
-                    m_logger->warn("[Session] Scheduling reconnection retry in {}s (exponential backoff)",
+                    self->m_logger->warn("[Session] Scheduling reconnection retry in {}s (exponential backoff)",
                         delay_seconds);
 
                     // Get the endpoint from the current connection
-                    network::Endpoint wallet_endpoint = m_primary_endpoint;
+                    network::Endpoint wallet_endpoint = self->m_primary_endpoint;
 
                     // Schedule delayed retry using the existing connection retry timer infrastructure
-                    m_timer_manager.start_connection_retry_timer(delay_seconds, shared_from_this(), wallet_endpoint);
+                    self->m_timer_manager.start_connection_retry_timer(delay_seconds, self, wallet_endpoint);
                     return;
                 }
 
                 // Successful authentication: reset session auth failure counter
-                m_session_auth_fail_count = 0;
+                self->m_session_auth_fail_count = 0;
                 // Clear reconnect guard if we're in RECONNECTING phase (in-band re-auth path).
                 // For the TCP reconnect path, the connection callback already cleared it.
-                if (is_reconnecting()) {
+                if (self->is_reconnecting()) {
                     // Transition back to WAITING_TEMPLATE — still need a fresh template.
-                    transition_to(RecoveryPhase::WAITING_TEMPLATE, "in_band_reauth_complete");
-                    m_logger->info("[Worker_manager] In-band re-auth complete — back in WAITING_TEMPLATE");
+                    self->transition_to(RecoveryPhase::WAITING_TEMPLATE, "in_band_reauth_complete");
+                    self->m_logger->info("[Worker_manager] In-band re-auth complete — back in WAITING_TEMPLATE");
                 }
 
-                if (m_using_failover)
+                if (self->m_using_failover)
                 {
-                    m_logger->info("[Failover] Fresh session established on failover node: session_id=0x{:08x}",
+                    self->m_logger->info("[Failover] Fresh session established on failover node: session_id=0x{:08x}",
                         session_id);
                 }
                 else
                 {
-                    m_logger->info("[Primary] Fresh session established on primary node: session_id=0x{:08x}",
+                    self->m_logger->info("[Primary] Fresh session established on primary node: session_id=0x{:08x}",
                         session_id);
                 }
 
@@ -670,14 +682,14 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // to acquire a fresh template and exit degraded mode.  Without this call
                 // the miner has no way to escape degraded mode because workers can't be
                 // fed without a template and a template won't arrive without GET_BLOCK.
-                if (is_degraded() || is_recovery_active()) {
-                    m_logger->info("[Worker_manager] Re-authentication SUCCESS — "
+                if (self->is_degraded() || self->is_recovery_active()) {
+                    self->m_logger->info("[Worker_manager] Re-authentication SUCCESS — "
                                    "requesting fresh template to exit degraded mode");
                     // Reset m_recovery.degraded_since so the escape ladder timer restarts cleanly
                     // for this new authenticated session (avoids Stage 3 immediately firing).
-                    m_recovery.degraded_since = {};
-                    restart_recovery_window("session_reauthenticated");
-                    retry_template_request(true);
+                    self->m_recovery.degraded_since = {};
+                    self->restart_recovery_window("session_reauthenticated");
+                    self->retry_template_request(true);
                 }
             }
         );
@@ -858,6 +870,12 @@ void Worker_manager::create_workers()
 void Worker_manager::stop()
 {
     m_timer_manager.stop();
+
+    // Reset timer guards so timers restart if connect() is called again after stop().
+    m_stats_timers_started = false;
+    m_template_health_timer_started = false;
+    m_get_round_timer_started = false;
+    m_lane_health_timer_started = false;
 
     if (m_colin_agent)
     {
@@ -1634,8 +1652,6 @@ void Worker_manager::clear_recovery_state()
 
 void Worker_manager::stop_all_workers()
 {
-    std::lock_guard<std::mutex> lock(m_worker_mutex);
-
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
     m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
@@ -1643,16 +1659,25 @@ void Worker_manager::stop_all_workers()
     // Phase transition is handled by the caller (mark_recovery_initiated / transition_to)
     // before or after stop_all_workers() — this function is a pure physical stop.
 
-    // Reset all worker instances so that the next create_workers() call starts fresh
-    // without duplicating existing workers.  The shared_ptr reset() destroys the Worker
-    // object (and joins its mining thread in the destructor), effectively stopping it.
-    for (auto& worker : m_workers) {
-        worker.reset();
+    // Move workers out under the lock, then destroy (and join their threads) OUTSIDE
+    // the lock to prevent a deadlock where a worker thread is waiting to acquire
+    // m_worker_mutex (e.g. for block submission) while stop_all_workers() holds
+    // m_worker_mutex waiting for the thread to join.
+    std::vector<std::shared_ptr<Worker>> workers_to_destroy;
+    {
+        std::lock_guard<std::mutex> lock(m_worker_mutex);
+        workers_to_destroy = std::move(m_workers);
+        m_workers.clear();
+        // Clear the recovery gate so the next epoch can re-create workers
+        m_recovery_workers_spawned = false;
     }
-    m_workers.clear();
+    workers_to_destroy.clear(); // destructors join threads here, outside the lock
 
-    // Clear the recovery gate so the next epoch can re-create workers
-    m_recovery_workers_spawned = false;
+    // Atomically enter WAITING_TEMPLATE so there is no window where m_workers is
+    // empty while the phase is still HEALTHY.  mark_recovery_initiated() is
+    // idempotent — callers that also call retry_template_request(true) (which
+    // internally calls mark_recovery_initiated()) will harmlessly no-op.
+    mark_recovery_initiated("stop_all_workers");
 
     m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
     m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");

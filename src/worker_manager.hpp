@@ -210,7 +210,7 @@ private:
         protocol::ProtocolConstants::MAX_SESSION_RETRY_MS
     };
 
-    // ── Timer guards: start timers once only (prevent restart on reconnect) ───
+    // ── Timer guards: start timers once per connect/stop cycle (reset in stop()) ──
     bool m_stats_timers_started{false};
     bool m_template_health_timer_started{false};
     bool m_get_round_timer_started{false};
