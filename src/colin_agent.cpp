@@ -39,7 +39,7 @@ namespace nexusminer
 // Warning-catalog threshold constants
 static constexpr uint32_t WARN_CONNECTION_RETRIES = 100;
 static constexpr uint64_t WARN_TEMPLATE_AGE_SECONDS = 150;
-static constexpr int64_t DIAG_KEEPALIVE_ACK_STALE_SECONDS = 360;  // 6 min without keepalive ACK (diagnostic only); ~2× the 170s TCP keepalive interval
+static constexpr int64_t DIAG_KEEPALIVE_ACK_STALE_SECONDS = 360;  // 6 min without keepalive ACK (diagnostic only); ~2.1× the 170s TCP keepalive interval
 static constexpr int32_t WARN_CANONICAL_DRIFT_THRESHOLD = 500;    // blocks ahead before warning
 static constexpr uint64_t WARN_DIAGNOSTIC_STALE_SECONDS = 180;    // 3 min without any diagnostic update
 static constexpr uint64_t WARN_DIAGNOSTIC_INIT_GRACE_SECONDS = 30; // grace period before warning about uninit diagnostic
