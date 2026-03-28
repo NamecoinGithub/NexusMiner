@@ -76,22 +76,6 @@ static const std::vector<uint8_t> AAD_REWARD_RESULT{
     'R','E','S','U','L','T'
 };
 
-// Helper function to parse uint32 from big-endian bytes
-static uint32_t read_uint32_be(const std::vector<uint8_t>& src, size_t offset = 0) {
-    if (src.size() < offset + 4) {
-        return 0;
-    }
-    return (static_cast<uint32_t>(src[offset]) << 24) |
-           (static_cast<uint32_t>(src[offset + 1]) << 16) |
-           (static_cast<uint32_t>(src[offset + 2]) << 8) |
-           static_cast<uint32_t>(src[offset + 3]);
-}
-
-// Helper function to serialize uint16 to little-endian bytes  
-static void append_uint16_le(std::vector<uint8_t>& dest, uint16_t value) {
-    dest.push_back(value & 0xFF);
-    dest.push_back((value >> 8) & 0xFF);
-}
 
 // Helper function to get channel name string for logging
 static std::string get_channel_name(uint32_t channel) {
