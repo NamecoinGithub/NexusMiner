@@ -2,7 +2,6 @@
 #include "protocol/channel_utils.hpp"
 #include "protocol/protocol_constants.hpp"
 #include "protocol/session_coordinator.hpp"
-#include "mining/client_block.h"
 #include "LLP/block_utils.hpp"
 #include <cassert>
 #include <chrono>
