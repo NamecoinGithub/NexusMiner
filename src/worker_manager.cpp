@@ -1875,9 +1875,13 @@ void Worker_manager::check_template_health()
         // After 60s without template, check connection health.
         // IMPORTANT: push silence is orchestration-layer only — it may trigger reconnect,
         // but must not suppress authoritative GET_BLOCK refresh attempts.
+        // Intentional ordering: when this branch fires we do BOTH operations in the same
+        // tick (reconnect attempt + forced GET_BLOCK retry path) so orchestration signals
+        // can feed recovery without replacing authoritative refresh/submission decisions.
         if (degraded_secs > 60 && !push_recent) {
             m_logger->error("[Worker_manager] ⛔ 60s timeout: no template and push is dead — reconnecting");
             retry_connect(m_primary_endpoint);
+            // Fall through intentionally: still run forced GET_BLOCK retry below.
         }
 
         // Retry GET_BLOCK on every health check tick
@@ -2103,7 +2107,7 @@ void Worker_manager::check_template_health()
         bool template_is_newer_than_push = (!template_never_received &&
                                             ht_snap.last_template_update >= ht_snap.last_height_update);
         if (chain_advanced && template_is_newer_than_push) {
-            m_logger->debug("[Worker_manager] EMERGENCY {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive escalation",
+            m_logger->debug("[Worker_manager] ORCHESTRATION TIMEOUT {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive escalation",
                 channel_name,
                 std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
                 std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
@@ -2112,12 +2116,12 @@ void Worker_manager::check_template_health()
         }
 
         if (chain_advanced) {
-            m_logger->error("[Worker_manager] ⚠️  ORCHESTRATION TIMEOUT ({} channel): template {}s old and chain advanced — escalating refresh/reconnect",
+            m_logger->error("[Worker_manager] ⚠️  ORCHESTRATION TIMEOUT ({} channel): template {}s old and chain advanced — escalating recovery/refresh/reconnect",
                             channel_name, template_age);
             m_logger->error("[Worker_manager]    channel_height {} >= channel_target {}",
                             ht_snap.channel_height, ht_snap.channel_target);
         } else {
-            m_logger->error("[Worker_manager] ⚠️  ORCHESTRATION TIMEOUT ({} channel): template {}s old with no recent push — escalating refresh/reconnect",
+            m_logger->error("[Worker_manager] ⚠️  ORCHESTRATION TIMEOUT ({} channel): template {}s old with no recent push — escalating recovery/refresh/reconnect",
                             channel_name, template_age);
             m_logger->error("[Worker_manager]    channel_height {} / channel_target {}",
                             ht_snap.channel_height, ht_snap.channel_target);
