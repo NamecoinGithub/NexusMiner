@@ -566,6 +566,10 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
         return false;
     }
 
+    // Template passed validation — reset the consecutive hashPrevBlock mismatch counter
+    // so the chain-in-flux guard doesn't carry over stale state to the next validate cycle.
+    m_hashprev_mismatch_consecutive = 0;
+
     m_current_height = unified_height;
 
     auto format_hex8 = [](const uint1024_t& h) -> std::string {
@@ -3978,11 +3982,26 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
     }
 
     // DO NOT close the connection — the node kept it open deliberately
+    // (The whole point of PR-C is to re-auth on the same TCP connection)
 
-    // SESSION_EXPIRED: log only. The session will re-establish itself naturally
-    // when the node sends a new SESSION_START. We do not call m_session_expired_handler()
-    // because the connection is sacred — no re-auth loops, no stop-workers, no teardown.
-    m_logger->warn("[Solo] SESSION_EXPIRED noted — awaiting SESSION_START from node to re-establish session");
+    // STEP 3: STOP WORKERS (via callback)
+    // The m_session_expired_handler is registered by Worker_manager to pause workers
+    // (no valid template/session to work on)
+    if (m_session_expired_handler) {
+        m_logger->info("[Solo] Invoking session_expired_handler to stop workers");
+        m_session_expired_handler();
+    }
+
+    // STEP 4 & 5: EXPONENTIAL BACKOFF THEN RE-AUTH
+    // The Worker_manager's session_expired_handler callback will handle:
+    // - Exponential backoff using MAX_SESSION_AUTH_RETRIES / BASE_SESSION_RETRY_MS / MAX_SESSION_RETRY_MS
+    // - Incrementing retry counter
+    // - Scheduling io_context timer to delay re-auth
+    // - Calling login(m_login_handler) to re-send MINER_AUTH_INIT on same TCP connection
+    //
+    // The retry counter will be reset to 0 on next successful SESSION_START (handled separately)
+
+    m_logger->warn("[Solo] SESSION_EXPIRED handling complete — waiting for Worker_manager to re-authenticate");
 }
 
 void Solo::handle_miner_auth_challenge(const Packet& packet)
@@ -4491,11 +4510,72 @@ bool Solo::validate_current_template()
         // after successful adoption, preventing this informational log from repeating.
     }
 
-    // hashPrevBlock anchor: previously discarded templates when canonical hashPrevBlock differed.
-    // That logic caused a doom loop during live network attacks (DDoS reorg storms, orphan floods)
-    // where the chain tip churns rapidly — templates were endlessly discarded and never accepted.
-    // The node is authoritative: accept the template unconditionally after height/nBits checks.
-    // The node will reject any submission built on the wrong tip via Guard 2 (hashBestChain check).
+    // hashPrevBlock staleness check (primary anchor, StakeMinter pattern).
+    // Only active when HeightTracker has a known hashPrevBlock (non-zero).
+    //
+    // UPGRADED from warn-and-continue to discard-and-refresh:
+    // If the canonical hashPrevBlock (from the last adopted BLOCK_DATA) differs from
+    // the live template's hashPrevBlock, this template is building on a fork tip that
+    // the node has already moved past. Any block found would be rejected by the node's
+    // Guard 2 check (hashPrevBlock != hashBestChain). Discard immediately to stop
+    // wasting worker cycles.
+    //
+    // This closes the same-height reorg blind spot: height-based staleness
+    // (channel_height >= channel_target) doesn't catch reorgs that replace blocks at
+    // the same height, and is_tip_moved() only fires when unified_height advances.
+    // The hashPrevBlock anchor is the only reliable indicator in this scenario.
+    //
+    // Note: push_hash_prev_block is NOT used as a discard trigger here to avoid the
+    // infinite soft-refresh loop documented in the has_same_height_push_tip_replacement
+    // removal comment above. Only the canonical hash_prev_block (set by
+    // OnBlockDataReceived/UpdateWithHashPrevBlock from actual BLOCK_DATA responses)
+    // is authoritative for this check.
+    if (snap.hash_prev_block != uint1024_t(0) &&
+        tmpl->block.hashPrevBlock != snap.hash_prev_block) {
+
+        ++m_hashprev_mismatch_consecutive;
+
+        if (m_hashprev_mismatch_consecutive <= MAX_CONSECUTIVE_HASHPREV_MISMATCHES) {
+            m_logger->warn("[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch "
+                           "(canonical={}, template={}) — discarding stale template "
+                           "[consecutive mismatch #{}/{}]",
+                           snap.hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString(),
+                           m_hashprev_mismatch_consecutive, MAX_CONSECUTIVE_HASHPREV_MISMATCHES);
+            m_template_interface->discard_template("hashPrevBlock_mismatch_reorg");
+            return false;
+        } else {
+            // Chain in flux (e.g. node under DDoS attack / orphan-limit storm):
+            // more than MAX_CONSECUTIVE_HASHPREV_MISMATCHES consecutive mismatches have
+            // occurred without a successful adoption.  Accepting the template here breaks
+            // the doom loop — workers will mine and submit; the node will reject any
+            // block built on the wrong tip, but the miner stays active rather than spinning
+            // in NO VALID TEMPLATE indefinitely.
+            m_logger->warn("[ValidateTemplate] ⚠️  Chain in flux: {} consecutive hashPrevBlock mismatches "
+                           "(canonical={}, template={}) — accepting template to avoid doom loop "
+                           "(chain may be under attack / reorg storm)",
+                           m_hashprev_mismatch_consecutive,
+                           snap.hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString());
+            // DO NOT discard — fall through to return true
+        }
+    } else {
+        // Hashes match (or canonical is zero): reset the consecutive counter.
+        // Note: finalize_and_feed_current_template() also resets the counter after a
+        // successful validation to cover the chain-in-flux acceptance path (where the if
+        // condition above was true but we fell through without discarding).  The reset
+        // here handles all other validate callers and the normal (no-mismatch) path.
+        m_hashprev_mismatch_consecutive = 0;
+    }
+
+    // Advisory: log if push_hash_prev_block differs (informational only, not a discard trigger)
+    if (snap.push_hash_prev_block != uint1024_t(0) &&
+        tmpl->block.hashPrevBlock != snap.push_hash_prev_block) {
+        m_logger->info("[ValidateTemplate] ℹ️  Push tip-anchor differs from live template "
+                       "(push={}, template={}) — monitoring; canonical check is authoritative",
+                       snap.push_hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString());
+    }
+
+    // Note: Age timeout validation (60s safety net) is handled internally by
+    // MiningTemplateInterface. No additional validation needed here.
 
     m_logger->debug("[Solo Validate] ✓ Template valid (channel_target={}, unified_height={})", 
         tmpl->nChannelHeight, snap.unified_height);
