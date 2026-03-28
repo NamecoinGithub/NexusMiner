@@ -82,12 +82,6 @@ public:
     // SIM Link: send SESSION_STATUS on each live lane if 300-second interval has elapsed
     void send_session_status_if_due();
 
-    // Collect statistics from all currently-live workers into the stats collector.
-    // Called by the stats-collector timer on every tick so that the timer always
-    // polls the current worker generation instead of a frozen copy captured at
-    // timer-start time (which would report 0 hashrate after degraded-mode recovery).
-    void collect_worker_statistics();
-
     // ── Failover state accessor ────────────────────────────────────────────────
     struct FailoverStatus {
         bool has_failover_configured{false};
