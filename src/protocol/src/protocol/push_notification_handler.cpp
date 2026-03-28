@@ -13,11 +13,6 @@ PushNotificationHandler::PushNotificationHandler(
 {
 }
 
-const char* PushNotificationHandler::channel_name(std::uint32_t channel)
-{
-    return (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
-}
-
 void PushNotificationHandler::handle_push_notification(
     const Packet& packet,
     std::uint32_t expected_channel,
@@ -63,8 +58,7 @@ void PushNotificationHandler::handle_push_notification(
         m_logger->info("[Solo Push] ℹ️  {} push received on {} lane (mining {} channel) — informational only, refreshed push liveness",
                        ch_name,
                        (lane == ProtocolLane::STATELESS) ? "stateless" : "legacy",
-                       (m_current_channel == mining::CHANNEL_PRIME) ? "Prime" :
-                       (m_current_channel == mining::CHANNEL_HASH)  ? "Hash"  : "Unknown");
+                       channel_name(m_current_channel));
         return;
     }
 

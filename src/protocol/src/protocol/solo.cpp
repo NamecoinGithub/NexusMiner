@@ -1,5 +1,6 @@
 #include "protocol/solo.hpp"
 #include "protocol/protocol.hpp"
+#include "protocol/channel_utils.hpp"
 #include "protocol/falcon_constants.hpp"
 #include "protocol/protocol_constants.hpp"
 #include "protocol/push_notification_handler.hpp"
@@ -93,14 +94,7 @@ static void append_uint16_le(std::vector<uint8_t>& dest, uint16_t value) {
     dest.push_back((value >> 8) & 0xFF);
 }
 
-// Helper function to get channel name string for logging
-static std::string get_channel_name(uint32_t channel) {
-    switch(channel) {
-        case mining::CHANNEL_PRIME: return "Prime";
-        case mining::CHANNEL_HASH:  return "Hash";
-        default:                     return "Unknown";
-    }
-}
+
 
 Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
            std::shared_ptr<NodeSessionContext> session_context,
@@ -141,10 +135,10 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
 
     // Clamp channel to valid LLL-TAO channels: 1 = prime, 2 = hash
-    if (m_channel != 1 && m_channel != 2) {
+    if (m_channel != mining::CHANNEL_PRIME && m_channel != mining::CHANNEL_HASH) {
         m_logger->warn("Invalid channel {} specified. Valid channels: 1 (prime), 2 (hash). Defaulting to 2 (hash).",
             static_cast<int>(m_channel));
-        m_channel = 2;
+        m_channel = mining::CHANNEL_HASH;
     }
 
     // Initialize unified push notification handler
@@ -216,7 +210,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             m_logger->info("[Solo] ═══════════════════════════════════════");
             m_logger->info("[Solo] 🆕 NEW MINING TEMPLATE RECEIVED");
             m_logger->info("[Solo]   Channel:         {} ({})", tmpl.block.nChannel, 
-                get_channel_name(tmpl.block.nChannel));
+                channel_name(tmpl.block.nChannel));
             
             // block.nHeight is the UNIFIED blockchain height (tStateBest.nHeight + 1).
             // After the node fix, this is correct — do NOT treat it as channel-specific height.
@@ -644,7 +638,7 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
         if (snapshot_height > 0) {
             m_template_interface->set_template_channel_height_snapshot(snapshot_height);
             m_logger->info("[Solo] 📸 Snapshot: {} at height {} (template is for height {})",
-                get_channel_name(m_channel), snapshot_height, tmpl->block.nHeight);
+                channel_name(m_channel), snapshot_height, tmpl->block.nHeight);
         }
     }
 
@@ -895,9 +889,9 @@ void Solo::log_session_container_summary(const char* log_scope) const
 network::Shared_payload Solo::login(Login_handler handler)
 {
     // Clamp channel to valid values as safety net
-    if (m_channel != 1 && m_channel != 2) {
+    if (m_channel != mining::CHANNEL_PRIME && m_channel != mining::CHANNEL_HASH) {
         m_logger->warn("Solo::login: Invalid channel {}, clamping to 2 (hash)", static_cast<int>(m_channel));
-        m_channel = 2;
+        m_channel = mining::CHANNEL_HASH;
     }
     
     // Falcon authentication is mandatory - no legacy fallback
@@ -1420,7 +1414,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     m_logger->info("[Solo Submit] Channel-aware payload diagnostics:");
     m_logger->info("[Solo Submit]   channel            = {} ({})",
                    payload_info.channel,
-                   payload_info.channel == 1 ? "Prime" : "Hash");
+                   channel_name(payload_info.channel));
     m_logger->info("[Solo Submit]   base_block_size    = {} bytes", payload_info.base_block_size);
     m_logger->info("[Solo Submit]   offset_bytes_count = {} bytes", payload_info.offset_bytes_count);
     m_logger->info("[Solo Submit]   timestamp_size     = {} bytes", payload_info.timestamp_size);
@@ -2385,7 +2379,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         uint32_t previous_channel_height = m_last_round_channel_height;
 
         // Determine channel name for logging
-        std::string channel_name = get_channel_name(m_channel);
+        const char* ch_name = channel_name(m_channel);
         
         // Log response details
         m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (16-byte full height picture, lane={}):", lane_label);
@@ -2393,7 +2387,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         m_logger->info("[Solo GET_ROUND]   Prime height:    {}", prime_height);
         m_logger->info("[Solo GET_ROUND]   Hash height:     {}", hash_height);
         m_logger->info("[Solo GET_ROUND]   Stake height:    {}", stake_height);
-        m_logger->info("[Solo GET_ROUND]   {} height:      {} (derived)", channel_name, channel_height);
+        m_logger->info("[Solo GET_ROUND]   {} height:      {} (derived)", ch_name, channel_height);
         m_logger->info("[Solo GET_ROUND]   Difficulty:      (unchanged; not in 16-byte payload)");
         
         // Update RoundStatus
@@ -2432,7 +2426,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
                 if (is_stale) {
                     m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE (pending-finalization): {} channel advanced",
-                        get_channel_name(m_channel));
+                        channel_name(m_channel));
                     m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
                     if (connection) {
                         auto work_payload = get_work();
@@ -2453,7 +2447,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             }
 
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
-                channel_height, get_channel_name(m_channel));
+                channel_height, channel_name(m_channel));
         }
 
         // Use sync_template_state to handle: channel manager updates, fork detection,
@@ -2584,14 +2578,14 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             return;
         }
         
-        std::string channel_name = get_channel_name(m_channel);
+        const char* ch_name = channel_name(m_channel);
         
         m_logger->info("[Solo GET_ROUND] ✓ OLD_ROUND (16-byte full height picture, lane={}):", lane_label);
         m_logger->info("[Solo GET_ROUND]   Unified:       {}", unified_height);
         m_logger->info("[Solo GET_ROUND]   Prime height:  {}", prime_height);
         m_logger->info("[Solo GET_ROUND]   Hash height:   {}", hash_height);
         m_logger->info("[Solo GET_ROUND]   Stake height:  {}", stake_height);
-        m_logger->info("[Solo GET_ROUND]   {} height:   {} (derived)", channel_name, channel_height);
+        m_logger->info("[Solo GET_ROUND]   {} height:   {} (derived)", ch_name, channel_height);
         m_logger->info("[Solo GET_ROUND]   Difficulty:    (unchanged; not in 16-byte payload)");
         
         // Update RoundStatus
@@ -2626,7 +2620,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
                 if (is_stale) {
                     m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE (pending-finalization): {} channel advanced",
-                        get_channel_name(m_channel));
+                        channel_name(m_channel));
                     m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
                     if (connection) {
                         auto work_payload = get_work();
@@ -2645,7 +2639,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             }
 
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
-                channel_height, get_channel_name(m_channel));
+                channel_height, channel_name(m_channel));
         }
         
         // Use sync_template_state to handle: channel manager updates, fork detection,
@@ -3084,15 +3078,15 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             uint8_t acked_channel = (*packet.m_data)[0];
             m_logger->info("[Solo] Channel acknowledged: {} ({})", 
                 static_cast<int>(acked_channel), 
-                (acked_channel == 1) ? "prime" : "hash");
+                channel_name(acked_channel));
             
             // Validate acknowledged channel matches requested channel
             if (acked_channel != m_channel) {
                 m_logger->warn("[Solo] WARNING: Channel mismatch detected!");
                 m_logger->warn("[Solo]   - Requested channel: {} ({})", 
-                    static_cast<int>(m_channel), (m_channel == 1) ? "prime" : "hash");
+                    static_cast<int>(m_channel), channel_name(m_channel));
                 m_logger->warn("[Solo]   - Acknowledged channel: {} ({})", 
-                    static_cast<int>(acked_channel), (acked_channel == 1) ? "prime" : "hash");
+                    static_cast<int>(acked_channel), channel_name(acked_channel));
             }
             
             // Update template interface with confirmed channel
@@ -3787,8 +3781,7 @@ network::Shared_payload Solo::build_session_status_packet(
 
 void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
 {
-    std::string channel_name = (m_channel == 1) ? "prime" : "hash";
-    m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name);
+    m_logger->info("[Solo] Sending SET_CHANNEL channel={} ({})", static_cast<int>(m_channel), channel_name(m_channel));
     if (m_session_context) {
         m_session_context->set_channel_state(m_channel, false, false);
         m_session_context->mark_activity();
