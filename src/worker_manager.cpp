@@ -1899,16 +1899,10 @@ void Worker_manager::check_template_health()
                        push_received ? since_push_s : static_cast<int64_t>(-1),
                        push_recent ? "YES" : "NO");
 
-        // After 60s without template, check connection health.
-        // IMPORTANT: push silence is orchestration-layer only — it may trigger reconnect,
-        // but must not suppress authoritative GET_BLOCK refresh attempts.
-        // Intentional ordering: when this branch fires we do BOTH operations in the same
-        // tick (reconnect attempt + forced GET_BLOCK retry path) so orchestration signals
-        // can feed recovery without replacing authoritative refresh/submission decisions.
+        // After 60s without template and dead PUSH, keep recovery in template-refresh mode.
+        // Do not mutate transport/session state here; this path is request-only.
         if (degraded_secs > 60 && !push_recent) {
-            m_logger->error("[Worker_manager] ⛔ 60s timeout: no template and push is dead — reconnecting");
-            retry_connect(m_primary_endpoint);
-            // Fall through intentionally: still run forced GET_BLOCK retry below.
+            m_logger->error("[Worker_manager] ⛔ 60s timeout: no template and push is dead — forcing template refresh");
         }
 
         // Retry GET_BLOCK on every health check tick (forced: bypass local gates)
@@ -2092,9 +2086,9 @@ void Worker_manager::check_template_health()
     // tip advance.  Even during long Prime blocks, hash blocks keep advancing the unified
     // chain every ~18s, so a push should arrive well within 600s.
     //
-    // If template_age > 600s, treat this as an orchestration-layer recovery signal.
-    // It may escalate refresh/reconnect behavior, but MUST NOT invalidate a valid
-    // template or halt mining by itself.
+    // If template_age > 600s, treat this as a recovery signal.
+    // It may escalate refresh/degraded handling, but MUST NOT invalidate a valid
+    // template or halt mining by itself in this branch.
     if (template_age > protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
         constexpr const char* BLOCK_DATA_TIMEOUT_TRIGGER_REASON = "block_data_timeout";
 
@@ -2162,9 +2156,9 @@ void Worker_manager::check_template_health()
         }
 
         // Non-authoritative path: do NOT discard valid template and do NOT halt workers here.
-        // Escalate orchestration only (reconnect + forced GET_BLOCK lane).
+        // Keep this branch template-first/request-only; avoid reconnect state mutation in
+        // the same timeout authority path.
         mark_recovery_initiated(BLOCK_DATA_TIMEOUT_TRIGGER_REASON);
-        retry_connect(m_primary_endpoint);
         retry_template_request(true);
     }
 }
