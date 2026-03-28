@@ -145,7 +145,10 @@ void NodeSession::connect_primary(const network::Endpoint& node_endpoint, Connec
                    result == network::Result::connection_error) {
 
             self->m_logger->error("[NodeSession:{}] Primary connection failed: {}",
-                                 self->m_node_label, static_cast<int>(result));
+                                  self->m_node_label, static_cast<int>(result));
+            self->m_logger->warn("[NodeSession:{}] Transport-origin failure routed via connect callback "
+                                 "(recoverable path: Worker_manager::retry_connect; no auth-loss escalation)",
+                                 self->m_node_label);
             self->m_primary_connected = false;
 
             // Update DualConnectionManager: primary (stateless) lane has failed

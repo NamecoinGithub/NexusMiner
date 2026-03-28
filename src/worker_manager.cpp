@@ -30,6 +30,7 @@
 #include <random>
 #include <iomanip>
 #include <sstream>
+#include <cstring>
 
 namespace nexusminer
 {
@@ -85,6 +86,31 @@ namespace {
     constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
     constexpr int64_t FORCED_RETRY_JITTER_MIN_MS = 100;
     constexpr int64_t FORCED_RETRY_JITTER_MAX_MS = 250;
+
+    bool is_explicit_authenticated_session_loss_reason(const char* reason) {
+        if (!reason) {
+            return false;
+        }
+        return std::strcmp(reason, "session_expired") == 0 ||
+               std::strcmp(reason, "session_id_zero") == 0 ||
+               std::strcmp(reason, "session_auth_retry_exhausted") == 0 ||
+               std::strcmp(reason, "authenticated_session_lost") == 0;
+    }
+
+    bool is_transport_origin_reason(const char* reason) {
+        if (!reason) {
+            return false;
+        }
+        return std::strcmp(reason, "tcp_reconnect") == 0 ||
+               std::strcmp(reason, "connection_closed") == 0 ||
+               std::strcmp(reason, "connection_aborted") == 0 ||
+               std::strcmp(reason, "connection_declined") == 0 ||
+               std::strcmp(reason, "connection_error") == 0 ||
+               std::strcmp(reason, "keepalive_stale") == 0 ||
+               std::strcmp(reason, "push_silence") == 0 ||
+               std::strcmp(reason, "node_silence") == 0 ||
+               std::strcmp(reason, "transport_reconnect") == 0;
+    }
 
 }
 
@@ -809,6 +835,30 @@ void Worker_manager::handle_authenticated_session_loss(const char* reason)
 {
     const char* loss_reason = reason ? reason : "authenticated_session_lost";
     constexpr int AUTH_LOSS_DEGRADED_SIGNAL = 0;
+
+    // Invariant: terminal auth-loss handling is only valid when session loss is
+    // explicitly proven. Transport-origin failures must stay in reconnect/recovery.
+    if (!is_explicit_authenticated_session_loss_reason(loss_reason)) {
+        if (is_transport_origin_reason(loss_reason)) {
+            network::Endpoint recovery_endpoint = m_using_failover && m_failover_endpoint.is_valid()
+                                                      ? m_failover_endpoint
+                                                      : m_primary_endpoint;
+            m_logger->critical("[Session] INVARIANT: transport-origin reason '{}' reached "
+                               "handle_authenticated_session_loss(); rerouting to retry_connect",
+                               loss_reason);
+            if (recovery_endpoint.is_valid()) {
+                retry_connect(recovery_endpoint);
+            } else {
+                m_logger->critical("[Session] Transport reroute requested but no valid endpoint is available");
+            }
+            return;
+        }
+
+        m_logger->critical("[Session] INVARIANT: unproven session-loss reason '{}' rejected from terminal auth-loss path",
+                           loss_reason);
+        return;
+    }
+
     m_logger->critical("[Session] AUTHENTICATED SESSION LOST (reason={})", loss_reason);
 
     if (m_config.has_failover() && !m_using_failover && m_failover_endpoint.is_valid())

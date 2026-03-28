@@ -36,6 +36,9 @@ public:
         AUTHENTICATED,   // Session ID valid, mining can proceed
         DEGRADED,        // Connection lost / keepalive failed; workers should pause
         // Backward-compat aliases
+        // NOTE: EXPIRED is retained only for compatibility with older call-sites.
+        // New logic should prefer explicit recovery_state/expiry_state checks so
+        // transport degradation is never conflated with authenticated-session loss.
         ACTIVE   = AUTHENTICATED,
         EXPIRED  = DEGRADED
     };

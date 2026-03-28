@@ -3933,6 +3933,9 @@ bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
     // authoritative signal for session health.  Log for observability but do NOT
     // expire the session or invoke session_expired_handler(); the node-side ACK
     // responder can lag or fail independently of the PUSH path.
+    // Invariant: transport/telemetry faults (ACK mismatch, stale ACK cadence,
+    // temporary node silence) must remain on refresh/recovery paths and must not
+    // be escalated to authenticated-session-loss handling.
     m_logger->warn("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != authoritative=0x{:08x}"
                    " — diagnostic only, PUSH is authoritative (not self-expiring)",
         decision.reason, m_session_id_mismatch_count, ack_session_id, authoritative_session_id);
