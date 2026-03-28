@@ -596,7 +596,6 @@ int main()
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
         bool recovery_called = false;
-        bool reset_dedup_called = false;
 
         network::Payload payload = create_extended_push_payload(5000, 100, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -635,7 +634,6 @@ int main()
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
         bool recovery_called = false;
-        bool reset_dedup_called = false;
 
         network::Payload payload = create_extended_push_payload(5049, 99, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
