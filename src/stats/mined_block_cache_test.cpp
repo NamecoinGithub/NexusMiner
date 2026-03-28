@@ -31,12 +31,12 @@
 #include "stats/mined_block_cache.hpp"
 #include <LLC/types/uint1024.h>
 
+#include <cassert>
 #include <chrono>
 #include <iostream>
 #include <mutex>
 #include <string>
 #include <thread>
-#include <gtest/gtest.h>
 
 using nexusminer::stats::MinedBlockCache;
 using nexusminer::stats::MinedBlockRecord;
@@ -494,3 +494,39 @@ static void test_concurrent_recovery_gate()
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
+int main()
+{
+    std::cout << "==============================================\n";
+    std::cout << "MinedBlockCache + Dedup Guard Unit Tests\n";
+    std::cout << "==============================================\n";
+
+    test_record_one_block();
+    test_tier1_eviction_to_tier2();
+    test_tier2_overflow_to_tier3();
+    test_update_confirmations();
+    test_confirmation_threshold_promotion();
+    test_height_gated_confirmations();
+    test_sole_record_stays_in_tier1();
+    test_promotion_driven_tier2_overflow();
+    test_full_promotion_lifecycle();
+    test_tier1_newest_first();
+    test_channel_name();
+    test_status_emoji();
+    test_summary_line();
+    test_dedup_suppresses_same_pair_within_window();
+    test_dedup_fork_not_suppressed();
+    test_dedup_debounce_expired();
+    test_concurrent_recovery_gate();
+
+    std::cout << "\n==============================================\n";
+    std::cout << "Test Summary\n";
+    std::cout << "==============================================\n";
+    std::cout << "Tests run:    " << g_run    << "\n";
+    std::cout << "Tests passed: " << g_passed << "\n";
+    std::cout << "Tests failed: " << g_failed << "\n";
+    std::cout << "Success rate: "
+              << (g_run > 0 ? (100 * g_passed / g_run) : 0) << "%\n";
+    std::cout << "==============================================\n";
+
+    return g_failed > 0 ? 1 : 0;
+}

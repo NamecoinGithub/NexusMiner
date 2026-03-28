@@ -25,14 +25,31 @@
 #include <iostream>
 #include <vector>
 #include <cstdint>
+#include <cassert>
 #include <chrono>
 #include <functional>
 #include <optional>
-#include <gtest/gtest.h>
 
 using namespace nexusminer;
 using namespace nexusminer::protocol;
 using namespace nexusminer::mining;
+
+// Test statistics
+static int tests_run    = 0;
+static int tests_passed = 0;
+static int tests_failed = 0;
+
+void print_test_result(const char* name, bool passed)
+{
+    tests_run++;
+    if (passed) {
+        tests_passed++;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        tests_failed++;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
+}
 
 // ============================================================================
 // Helpers to build a 12-byte push notification packet
@@ -100,10 +117,10 @@ static void test_push_handler_callback_values()
         []() {}    // no-op request_work_fn
     );
 
-    EXPECT_TRUE(callback_invoked) << "callback invoked";
-    EXPECT_TRUE(got_unified == UNIFIED) << "unified_height passed correctly";
-    EXPECT_TRUE(got_channel == CHANNEL) << "channel_height passed correctly";
-    EXPECT_TRUE(got_diff    == DIFF) << "difficulty passed correctly";
+    print_test_result("callback invoked", callback_invoked);
+    print_test_result("unified_height passed correctly", got_unified == UNIFIED);
+    print_test_result("channel_height passed correctly", got_channel == CHANNEL);
+    print_test_result("difficulty passed correctly",     got_diff    == DIFF);
 }
 
 // ============================================================================
@@ -135,10 +152,11 @@ static void test_height_tracker_updated_via_callback()
     );
 
     auto snap = tracker.GetSnapshot();
-    EXPECT_TRUE(snap.unified_height == UNIFIED) << "HeightTracker unified_height == UNIFIED";
-    EXPECT_TRUE(snap.channel_height == CHANNEL) << "HeightTracker channel_height == CHANNEL";
-    EXPECT_TRUE(snap.difficulty_nbits == DIFF) << "HeightTracker difficulty_nbits == DIFF";
-    EXPECT_TRUE(snap.last_update_source == HeightTracker::UpdateSource::PUSH) << "HeightTracker source == PUSH";
+    print_test_result("HeightTracker unified_height == UNIFIED", snap.unified_height == UNIFIED);
+    print_test_result("HeightTracker channel_height == CHANNEL", snap.channel_height == CHANNEL);
+    print_test_result("HeightTracker difficulty_nbits == DIFF",  snap.difficulty_nbits == DIFF);
+    print_test_result("HeightTracker source == PUSH",
+        snap.last_update_source == HeightTracker::UpdateSource::PUSH);
 }
 
 // ============================================================================
@@ -172,12 +190,17 @@ static void test_channel_mismatch_refreshes_push_liveness_only()
     auto after_push = std::chrono::steady_clock::now();
 
     auto snap = tracker.GetSnapshot();
-    EXPECT_TRUE(!callback_invoked) << "channel-mismatch push does not invoke height callback";
-    EXPECT_TRUE(snap.last_push_notification_at >= before_push && snap.last_push_notification_at <= after_push) << "channel-mismatch push refreshes push liveness timestamp";
-    EXPECT_TRUE(snap.last_height_update == std::chrono::steady_clock::time_point{}) << "channel-mismatch push does not set last_height_update";
-    EXPECT_TRUE(snap.unified_height == 0) << "channel-mismatch push does not advance unified_height";
-    EXPECT_TRUE(snap.channel_height == 0) << "channel-mismatch push does not advance channel_height";
-    EXPECT_TRUE(snap.difficulty_nbits == 0) << "channel-mismatch push does not update difficulty";
+    print_test_result("channel-mismatch push does not invoke height callback", !callback_invoked);
+    print_test_result("channel-mismatch push refreshes push liveness timestamp",
+        snap.last_push_notification_at >= before_push && snap.last_push_notification_at <= after_push);
+    print_test_result("channel-mismatch push does not set last_height_update",
+        snap.last_height_update == std::chrono::steady_clock::time_point{});
+    print_test_result("channel-mismatch push does not advance unified_height",
+        snap.unified_height == 0);
+    print_test_result("channel-mismatch push does not advance channel_height",
+        snap.channel_height == 0);
+    print_test_result("channel-mismatch push does not update difficulty",
+        snap.difficulty_nbits == 0);
 }
 
 // ============================================================================
@@ -217,11 +240,11 @@ static void test_channel_manager_same_data_as_height_tracker()
     auto snap = tracker.GetSnapshot();
     auto [node_u, node_c] = mgr.GetNodeHeights();
 
-    EXPECT_TRUE(snap.unified_height == UNIFIED) << "HeightTracker unified_height == UNIFIED";
-    EXPECT_TRUE(node_u == UNIFIED) << "ClientChannelManager unified_height == UNIFIED";
-    EXPECT_TRUE(node_c == CHANNEL) << "ClientChannelManager channel_height == CHANNEL";
-    EXPECT_TRUE(snap.unified_height == node_u) << "Both sources match (unified)";
-    EXPECT_TRUE(snap.channel_height == node_c) << "Both sources match (channel)";
+    print_test_result("HeightTracker unified_height == UNIFIED", snap.unified_height == UNIFIED);
+    print_test_result("ClientChannelManager unified_height == UNIFIED", node_u == UNIFIED);
+    print_test_result("ClientChannelManager channel_height == CHANNEL", node_c == CHANNEL);
+    print_test_result("Both sources match (unified)",  snap.unified_height == node_u);
+    print_test_result("Both sources match (channel)",  snap.channel_height == node_c);
 }
 
 // ============================================================================
@@ -235,18 +258,18 @@ static void test_fork_detection_via_update_callback()
 
     // First update: height = 5000
     mgr.UpdateFromGetRound(5000, 200);
-    EXPECT_TRUE(!mgr.IsForkDetected()) << "No fork on first update";
+    print_test_result("No fork on first update", !mgr.IsForkDetected());
 
     // Second update: unified regresses (fork)
     mgr.UpdateFromGetRound(4999, 200);
-    EXPECT_TRUE(mgr.IsForkDetected()) << "Fork detected after height regression";
+    print_test_result("Fork detected after height regression", mgr.IsForkDetected());
 
     mgr.ClearForkFlag();
-    EXPECT_TRUE(!mgr.IsForkDetected()) << "Fork flag cleared after ClearForkFlag()";
+    print_test_result("Fork flag cleared after ClearForkFlag()", !mgr.IsForkDetected());
 
     // Advance normally: no fork
     mgr.UpdateFromGetRound(5001, 201);
-    EXPECT_TRUE(!mgr.IsForkDetected()) << "No fork after normal advance";
+    print_test_result("No fork after normal advance", !mgr.IsForkDetected());
 }
 
 // ============================================================================
@@ -267,22 +290,26 @@ static void test_height_tracker_staleness_matches_expected()
     tracker.OnTemplateReceived(CHANNEL_PRIME, 101);
 
     auto snap = tracker.GetSnapshot();
-    EXPECT_TRUE(!snap.is_template_stale()) << "Not stale when channel_height(100) < channel_target(101)";
+    print_test_result("Not stale when channel_height(100) < channel_target(101)",
+        !snap.is_template_stale());
 
     // Push update: channel_height advances to 101 (someone else mined that block)
     tracker.OnPushNotification(5001, 101, 0x1a0abc12);
     snap = tracker.GetSnapshot();
-    EXPECT_TRUE(snap.is_template_stale()) << "Stale when channel_height(101) >= channel_target(101)";
+    print_test_result("Stale when channel_height(101) >= channel_target(101)",
+        snap.is_template_stale());
 
     // A unified-only advance does NOT change the staleness (already stale from channel advance)
     tracker.OnPushNotification(5002, 101, 0x1a0abc12);
     snap = tracker.GetSnapshot();
-    EXPECT_TRUE(snap.is_template_stale()) << "Stale status unchanged by unified-only advance (was already stale)";  // still stale: channel_height(101) >= channel_target(101)
+    print_test_result("Stale status unchanged by unified-only advance (was already stale)",
+        snap.is_template_stale());  // still stale: channel_height(101) >= channel_target(101)
 
     // Reset: new template with channel_target = 102
     tracker.OnTemplateReceived(CHANNEL_PRIME, 102);
     snap = tracker.GetSnapshot();
-    EXPECT_TRUE(!snap.is_template_stale()) << "Not stale with new template target(102) > channel_height(101)";
+    print_test_result("Not stale with new template target(102) > channel_height(101)",
+        !snap.is_template_stale());
 }
 
 // ============================================================================
@@ -310,12 +337,12 @@ static void test_node_block_data_fields_drive_height_tracker()
     auto snap = tracker.GetSnapshot();
     auto [node_u, node_c] = mgr.GetNodeHeights();
 
-    EXPECT_TRUE(snap.unified_height == UNIFIED) << "HeightTracker unified_height from BLOCK_DATA metadata";
-    EXPECT_TRUE(snap.difficulty_nbits == DIFF) << "HeightTracker difficulty_nbits from BLOCK_DATA metadata";
-    EXPECT_TRUE(snap.channel_target == CHANNEL + 1) << "HeightTracker channel_target == channel_height + 1";
-    EXPECT_TRUE(snap.template_unified_height == UNIFIED) << "template_unified_height captured from metadata unified_height";
-    EXPECT_TRUE(node_u == UNIFIED) << "ClientChannelManager unified_height matches metadata";
-    EXPECT_TRUE(node_c == CHANNEL) << "ClientChannelManager channel_height matches metadata";
+    print_test_result("HeightTracker unified_height from BLOCK_DATA metadata", snap.unified_height == UNIFIED);
+    print_test_result("HeightTracker difficulty_nbits from BLOCK_DATA metadata", snap.difficulty_nbits == DIFF);
+    print_test_result("HeightTracker channel_target == channel_height + 1", snap.channel_target == CHANNEL + 1);
+    print_test_result("template_unified_height captured from metadata unified_height", snap.template_unified_height == UNIFIED);
+    print_test_result("ClientChannelManager unified_height matches metadata", node_u == UNIFIED);
+    print_test_result("ClientChannelManager channel_height matches metadata", node_c == CHANNEL);
 }
 
 // ============================================================================
@@ -345,14 +372,47 @@ static void test_stateless_lane_mirrors_legacy_for_height_tracker()
     auto snap_l = tracker_legacy.GetSnapshot();
     auto snap_s = tracker_stateless.GetSnapshot();
 
-    EXPECT_TRUE(snap_l.unified_height == snap_s.unified_height) << "Legacy and stateless lanes produce identical unified_height";
-    EXPECT_TRUE(snap_l.channel_height == snap_s.channel_height) << "Legacy and stateless lanes produce identical channel_height";
-    EXPECT_TRUE(snap_l.channel_target == snap_s.channel_target) << "Legacy and stateless lanes produce identical channel_target";
-    EXPECT_TRUE(snap_l.difficulty_nbits == snap_s.difficulty_nbits) << "Legacy and stateless lanes produce identical difficulty_nbits";
-    EXPECT_TRUE(snap_l.channel_target == CHANNEL + 1) << "channel_target == CHANNEL + 1";
-    EXPECT_TRUE(snap_l.template_unified_height == UNIFIED) << "template_unified_height == UNIFIED";
+    print_test_result("Legacy and stateless lanes produce identical unified_height",
+        snap_l.unified_height == snap_s.unified_height);
+    print_test_result("Legacy and stateless lanes produce identical channel_height",
+        snap_l.channel_height == snap_s.channel_height);
+    print_test_result("Legacy and stateless lanes produce identical channel_target",
+        snap_l.channel_target == snap_s.channel_target);
+    print_test_result("Legacy and stateless lanes produce identical difficulty_nbits",
+        snap_l.difficulty_nbits == snap_s.difficulty_nbits);
+    print_test_result("channel_target == CHANNEL + 1",
+        snap_l.channel_target == CHANNEL + 1);
+    print_test_result("template_unified_height == UNIFIED",
+        snap_l.template_unified_height == UNIFIED);
 }
 
 // ============================================================================
 // main
 // ============================================================================
+int main()
+{
+    std::cout << "========================================\n";
+    std::cout << "Phase 2B: Height State Update Tests\n";
+    std::cout << "========================================\n";
+
+    test_push_handler_callback_values();
+    test_height_tracker_updated_via_callback();
+    test_channel_mismatch_refreshes_push_liveness_only();
+    test_channel_manager_same_data_as_height_tracker();
+    test_fork_detection_via_update_callback();
+    test_height_tracker_staleness_matches_expected();
+    test_node_block_data_fields_drive_height_tracker();
+    test_stateless_lane_mirrors_legacy_for_height_tracker();
+
+    std::cout << "\n========================================\n";
+    std::cout << "Test Summary\n";
+    std::cout << "========================================\n";
+    std::cout << "Tests run:    " << tests_run    << "\n";
+    std::cout << "Tests passed: " << tests_passed << "\n";
+    std::cout << "Tests failed: " << tests_failed << "\n";
+    std::cout << "Success rate: "
+              << (tests_run > 0 ? (100 * tests_passed / tests_run) : 0) << "%\n";
+    std::cout << "========================================\n";
+
+    return tests_failed > 0 ? 1 : 0;
+}

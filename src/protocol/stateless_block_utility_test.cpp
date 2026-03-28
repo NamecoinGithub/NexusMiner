@@ -27,15 +27,30 @@
 #include "worker/block_header_utils.hpp"
 #include "miner_opcodes.hpp"
 #include <iostream>
+#include <cassert>
 #include <cstdint>
 #include <vector>
 #include <cstring>
-#include <gtest/gtest.h>
 
 using namespace nexusminer;
 using namespace nexusminer::protocol;
 
 // ── Test infrastructure ──────────────────────────────────────────────────────
+static int tests_run    = 0;
+static int tests_passed = 0;
+static int tests_failed = 0;
+
+static void print_result(const char* name, bool passed) {
+    tests_run++;
+    if (passed) {
+        tests_passed++;
+        std::cout << "  [PASS] " << name << "\n";
+    } else {
+        tests_failed++;
+        std::cout << "  [FAIL] " << name << "\n";
+    }
+}
+
 // ── Helper: extract uint32 big-endian ────────────────────────────────────────
 static uint8_t be_byte(uint32_t v, int i) {
     return static_cast<uint8_t>((v >> (24 - 8 * i)) & 0xFF);
@@ -183,7 +198,7 @@ static void test_decode_valid() {
     auto mti     = make_loaded_mti();
     auto payload = make_template_payload();
     auto result  = StatelessBlockUtility::decode_template(*mti, payload, 2, nullptr);
-    EXPECT_TRUE(result.valid) << "decode_template(): valid 228-byte buffer succeeds";
+    print_result("decode_template(): valid 228-byte buffer succeeds", result.valid);
 }
 
 // Test 2 -- decode_template(): reject shorter payload
@@ -192,7 +207,8 @@ static void test_decode_too_short() {
     auto payload = make_template_payload();
     payload.resize(227);  // one byte short
     auto result = StatelessBlockUtility::decode_template(mti, payload, 2, nullptr);
-    EXPECT_TRUE(!result.valid && !result.error_message.empty()) << "decode_template(): rejects payload < 228 bytes";
+    print_result("decode_template(): rejects payload < 228 bytes",
+                 !result.valid && !result.error_message.empty());
 }
 
 // Test 3 -- decode_template(): reject longer payload
@@ -201,7 +217,8 @@ static void test_decode_too_long() {
     auto payload = make_template_payload();
     payload.push_back(0xFF);  // one extra byte
     auto result = StatelessBlockUtility::decode_template(mti, payload, 2, nullptr);
-    EXPECT_TRUE(!result.valid && !result.error_message.empty()) << "decode_template(): rejects payload > 228 bytes";
+    print_result("decode_template(): rejects payload > 228 bytes",
+                 !result.valid && !result.error_message.empty());
 }
 
 // Test 4 -- encode_submit(): zero nonce rejected
@@ -211,7 +228,8 @@ static void test_encode_zero_nonce() {
     auto snap = make_snapshot();
     auto result = StatelessBlockUtility::encode_submit(
         *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
-    EXPECT_TRUE(!result.valid && !result.rejection_reason.empty()) << "encode_submit(): rejects zero nonce";
+    print_result("encode_submit(): rejects zero nonce",
+                 !result.valid && !result.rejection_reason.empty());
 }
 
 // Test 5 -- encode_submit(): invalid channel rejected
@@ -221,7 +239,8 @@ static void test_encode_invalid_channel() {
     auto snap = make_snapshot();
     auto result = StatelessBlockUtility::encode_submit(
         *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
-    EXPECT_TRUE(!result.valid && !result.rejection_reason.empty()) << "encode_submit(): rejects invalid channel (0)";
+    print_result("encode_submit(): rejects invalid channel (0)",
+                 !result.valid && !result.rejection_reason.empty());
 }
 
 // Test 6 -- encode_submit(): zero height rejected
@@ -231,7 +250,8 @@ static void test_encode_zero_height() {
     auto snap = make_snapshot();
     auto result = StatelessBlockUtility::encode_submit(
         *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
-    EXPECT_TRUE(!result.valid && !result.rejection_reason.empty()) << "encode_submit(): rejects zero height";
+    print_result("encode_submit(): rejects zero height",
+                 !result.valid && !result.rejection_reason.empty());
 }
 
 // Test 7 -- encode_submit(): STATELESS lane -> opcode 0xD001
@@ -247,7 +267,7 @@ static void test_encode_stateless_opcode() {
         const auto& w = *result.wire_bytes;
         ok = (w[0] == 0xD0 && w[1] == 0x01);
     }
-    EXPECT_TRUE(ok) << "encode_submit(): STATELESS lane produces opcode 0xD001";
+    print_result("encode_submit(): STATELESS lane produces opcode 0xD001", ok);
 }
 
 // Test 8 -- encode_submit(): LEGACY lane -> opcode 0x01
@@ -263,7 +283,7 @@ static void test_encode_legacy_opcode() {
         const auto& w = *result.wire_bytes;
         ok = (w[0] == 0x01);
     }
-    EXPECT_TRUE(ok) << "encode_submit(): LEGACY lane produces opcode 0x01";
+    print_result("encode_submit(): LEGACY lane produces opcode 0x01", ok);
 }
 
 // Test 9 -- encode_submit(): falcon=nullptr -> no signature suffix
@@ -284,7 +304,8 @@ static void test_encode_unsigned_submit() {
         size_t expected_total = 6 + StatelessBlockUtility::BLOCK_BODY_SIZE;
         ok = (result.wire_bytes->size() == expected_total);
     }
-    EXPECT_TRUE(ok) << "encode_submit(): falcon=nullptr produces unsigned submit (no signature suffix)";
+    print_result("encode_submit(): falcon=nullptr produces unsigned submit "
+                 "(no signature suffix)", ok);
 }
 
 // Test 10 -- decode_template(): metadata fields from 12-byte prefix
@@ -298,7 +319,8 @@ static void test_decode_metadata_fields() {
     bool ok = result.valid &&
               result.unified_height   == 7654321  &&
               result.channel_height   == 2500000;
-    EXPECT_TRUE(ok) << "decode_template(): metadata fields parsed correctly from 12-byte prefix (BE)";
+    print_result("decode_template(): metadata fields parsed correctly from "
+                 "12-byte prefix (BE)", ok);
 }
 
 // Test 11 -- decode_template(): canonical block fields from 216-byte body
@@ -314,7 +336,8 @@ static void test_decode_block_fields() {
               result.block.nChannel == 2    &&
               result.block.nHeight  == 6000001 &&
               result.block.nBits    == DEFAULT_DIFFICULTY;
-    EXPECT_TRUE(ok) << "decode_template(): canonical block fields from 216-byte body";
+    print_result("decode_template(): canonical block fields from 216-byte body",
+                 ok);
 }
 
 // Test 12 -- decode_template(): channel_consistent flag
@@ -324,7 +347,8 @@ static void test_decode_channel_consistent() {
     auto payload = make_template_payload(6000000, 2000000, 0, 8, 2, 6000001);
     auto result = StatelessBlockUtility::decode_template(mti, payload, /*mining_channel=*/1, nullptr);
     bool ok = result.valid && !result.channel_consistent;
-    EXPECT_TRUE(ok) << "decode_template(): channel_consistent=false when nChannel doesn't match mining_channel";
+    print_result("decode_template(): channel_consistent=false when nChannel "
+                 "doesn't match mining_channel", ok);
 }
 
 // Test 13 -- encode_submit(): stale/tip-moved are warnings, not blocks
@@ -341,7 +365,8 @@ static void test_encode_stale_does_not_block() {
 
     auto result = StatelessBlockUtility::encode_submit(
         *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
-    EXPECT_TRUE(result.valid) << "encode_submit(): stale template is a warning, not a hard rejection";
+    print_result("encode_submit(): stale template is a warning, not a hard "
+                 "rejection", result.valid);
 }
 
 // Test 14 -- Prime channel vOffsets produce larger payload than Hash channel
@@ -351,9 +376,10 @@ static void test_encode_rejects_submit_height_mismatch() {
     auto result = StatelessBlockUtility::encode_submit(
         *mti, blk, {}, nullptr, ProtocolLane::STATELESS, make_snapshot(), nullptr,
         make_submit_context(/*template_height=*/6000001, /*chain_height=*/6000000));
-    EXPECT_TRUE(!result.valid &&
+    print_result("encode_submit(): rejects authoritative submit-height mismatch",
+                 !result.valid &&
                  result.rejection_reason.find("template_height=6000001") != std::string::npos &&
-                 result.rejection_reason.find("submit_height=6000002") != std::string::npos) << "encode_submit(): rejects authoritative submit-height mismatch";
+                 result.rejection_reason.find("submit_height=6000002") != std::string::npos);
 }
 
 // Test 15 -- Prime channel vOffsets produce larger payload than Hash channel
@@ -385,7 +411,8 @@ static void test_encode_prime_voffsets_appended() {
     bool ok = prime_result.valid && hash_result.valid &&
               prime_result.wire_bytes->size() ==
                   hash_result.wire_bytes->size() + vOffsets.size();
-    EXPECT_TRUE(ok) << "encode_submit(): Prime vOffsets are appended to payload (Prime payload > Hash payload by vOffsets.size())";
+    print_result("encode_submit(): Prime vOffsets are appended to payload "
+                 "(Prime payload > Hash payload by vOffsets.size())", ok);
 }
 
 // Test 15 -- read_stateless_payload() + set_channel_height() does not trigger
@@ -410,7 +437,9 @@ static void test_set_channel_height_no_corruption_guard() {
     // Template must still be valid after set_channel_height().
     bool still_valid = mti.has_valid_template();
 
-    EXPECT_TRUE(template_valid && still_valid) << "read_stateless_payload() + set_channel_height(): corruption guard does NOT falsely fire (m_last_unified_height is NOT overridden)";
+    print_result("read_stateless_payload() + set_channel_height(): corruption guard "
+                 "does NOT falsely fire (m_last_unified_height is NOT overridden)",
+                 template_valid && still_valid);
 }
 
 // Test 16 -- worker header bytes with nonce match raw CBlock memory hashed by node
@@ -418,7 +447,8 @@ static void test_worker_header_bytes_match_raw_block_with_nonce() {
     auto blk = make_patterned_block();
     const auto expected = get_raw_block_header_bytes(blk, false);
     const auto actual = nexusminer::GetBlockHeaderBytes(blk, false);
-    EXPECT_TRUE(actual == expected && actual.size() == 216) << "GetBlockHeaderBytes(false) matches raw CBlock nVersion..nNonce bytes";
+    print_result("GetBlockHeaderBytes(false) matches raw CBlock nVersion..nNonce bytes",
+                 actual == expected && actual.size() == 216);
 }
 
 // Test 17 -- worker prime header bytes exclude nonce and match raw ProofHash span
@@ -426,7 +456,8 @@ static void test_worker_prime_header_bytes_match_raw_block_without_nonce() {
     auto blk = make_patterned_block();
     const auto expected = get_raw_block_header_bytes(blk, true);
     const auto actual = nexusminer::GetBlockHeaderBytes(blk, true);
-    EXPECT_TRUE(actual == expected && actual.size() == 208) << "GetBlockHeaderBytes(true) matches raw CBlock nVersion..nBits bytes";
+    print_result("GetBlockHeaderBytes(true) matches raw CBlock nVersion..nBits bytes",
+                 actual == expected && actual.size() == 208);
 }
 
 // Test 18 -- prime base hash uses upstream LLC::SK1024 on raw ProofHash span
@@ -437,7 +468,8 @@ static void test_worker_prime_base_hash_matches_llc_sk1024() {
     // by GetPrimeProofHash(), without calling the production helper itself.
     const auto expected = LLC::SK1024(get_raw_block_header_bytes(blk, true));
     const auto actual = nexusminer::GetPrimeProofHash(blk);
-    EXPECT_TRUE(actual == expected) << "GetPrimeProofHash() matches LLC::SK1024(raw nVersion..nBits bytes)";
+    print_result("GetPrimeProofHash() matches LLC::SK1024(raw nVersion..nBits bytes)",
+                 actual == expected);
 }
 
 // Test 19 -- prime base hash is nonce-independent just like node ProofHash
@@ -446,7 +478,8 @@ static void test_worker_prime_base_hash_ignores_nonce() {
     auto blk_b = blk_a;
     blk_b.nNonce = 0xFEDCBA9876543210ULL;
 
-    EXPECT_TRUE(nexusminer::GetPrimeProofHash(blk_a) == nexusminer::GetPrimeProofHash(blk_b)) << "GetPrimeProofHash() ignores nonce changes";
+    print_result("GetPrimeProofHash() ignores nonce changes",
+                 nexusminer::GetPrimeProofHash(blk_a) == nexusminer::GetPrimeProofHash(blk_b));
 }
 
 // Test 20 -- full worker header bytes remain nonce-sensitive for hash-channel mining
@@ -455,6 +488,52 @@ static void test_worker_hash_header_bytes_include_nonce() {
     auto blk_b = blk_a;
     blk_b.nNonce = 0xFEDCBA9876543210ULL;
 
-    EXPECT_TRUE(nexusminer::GetBlockHeaderBytes(blk_a, false) != nexusminer::GetBlockHeaderBytes(blk_b, false) &&
-                 nexusminer::GetBlockHeaderBytes(blk_a, true) == nexusminer::GetBlockHeaderBytes(blk_b, true)) << "GetBlockHeaderBytes(false) changes when nonce changes";
+    print_result("GetBlockHeaderBytes(false) changes when nonce changes",
+                 nexusminer::GetBlockHeaderBytes(blk_a, false) != nexusminer::GetBlockHeaderBytes(blk_b, false) &&
+                 nexusminer::GetBlockHeaderBytes(blk_a, true) == nexusminer::GetBlockHeaderBytes(blk_b, true));
+}
+
+
+
+int main() {
+    std::cout << "\n";
+    std::cout << "========================================\n";
+    std::cout << "  stateless_block_utility_test\n";
+    std::cout << "========================================\n";
+
+    test_decode_valid();
+    test_decode_too_short();
+    test_decode_too_long();
+    test_encode_zero_nonce();
+    test_encode_invalid_channel();
+    test_encode_zero_height();
+    test_encode_stateless_opcode();
+    test_encode_legacy_opcode();
+    test_encode_unsigned_submit();
+    test_decode_metadata_fields();
+    test_decode_block_fields();
+    test_decode_channel_consistent();
+    test_encode_stale_does_not_block();
+    test_encode_rejects_submit_height_mismatch();
+    test_encode_prime_voffsets_appended();
+    test_set_channel_height_no_corruption_guard();
+    test_worker_header_bytes_match_raw_block_with_nonce();
+    test_worker_prime_header_bytes_match_raw_block_without_nonce();
+    test_worker_prime_base_hash_matches_llc_sk1024();
+    test_worker_prime_base_hash_ignores_nonce();
+    test_worker_hash_header_bytes_include_nonce();
+
+    std::cout << "\n";
+    std::cout << "========================================\n";
+    std::cout << "Test Summary\n";
+    std::cout << "========================================\n";
+    std::cout << "Tests run:    " << tests_run    << "\n";
+    std::cout << "Tests passed: " << tests_passed << "\n";
+    std::cout << "Tests failed: " << tests_failed << "\n";
+    std::cout << "Success rate: "
+              << (tests_run > 0 ? 100 * tests_passed / tests_run : 0)
+              << "%\n";
+    std::cout << "========================================\n";
+
+    return (tests_failed == 0) ? 0 : 1;
 }

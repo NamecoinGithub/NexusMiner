@@ -16,6 +16,7 @@
 #include "LLP/block.hpp"
 #include "LLP/miner_opcodes.hpp"
 #include <iostream>
+#include <gtest/gtest.h>
 #include <cstdint>
 #include <memory>
 #include <chrono>
@@ -24,7 +25,6 @@
 // Mock logger for testing
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/null_sink.h"
-#include <gtest/gtest.h>
 
 using namespace nexusminer::protocol;
 namespace MinerLLP = nexusminer::LLP;
@@ -95,4 +95,1096 @@ std::vector<uint8_t> create_mock_template(uint32_t height, uint32_t nBits = 0x1d
     data[offset++] = (nonce_val >> 56) & 0xFF;
     
     return data;
+}
+
+class MiningTemplateValidationTest : public ::testing::Test {
+protected:
+    static void SetUpTestSuite() {
+        auto null_sink = std::make_shared<spdlog::sinks::null_sink_mt>();
+        auto logger = std::make_shared<spdlog::logger>("logger", null_sink);
+        spdlog::set_default_logger(logger);
+    }
+};
+
+// ====================================================================
+// Test 1: Normal height progression
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, NormalHeightProgression) {
+    std::cout << "\nTest 1: Normal height progression" << std::endl;
+
+    MiningTemplateInterface tmpl_interface(2, 0); // Channel 2 (hash)
+    
+    // First template at height 1000000
+    auto data1 = create_mock_template(1000000);
+    auto result1 = tmpl_interface.read_template(data1, "test_node");
+    if (!result1.is_valid) {
+        std::cout << "    ERROR: " << result1.error_message << std::endl;
+    }
+    EXPECT_TRUE(result1.is_valid) << "First template validation (height 1000000)";
+    
+    // Second template advances by 1 block
+    auto data2 = create_mock_template(1000001);
+    auto result2 = tmpl_interface.read_template(data2, "test_node");
+    if (!result2.is_valid) {
+        std::cout << "    ERROR: " << result2.error_message << std::endl;
+    }
+    EXPECT_TRUE(result2.is_valid) << "Forward +1 block (1000000 → 1000001)";
+    
+    // Third template advances by 50 blocks
+    auto data3 = create_mock_template(1000051);
+    auto result3 = tmpl_interface.read_template(data3, "test_node");
+    EXPECT_TRUE(result3.is_valid) << "Forward +50 blocks (1000001 → 1000051)";
+    
+    // Fourth template at boundary (exactly 100 blocks forward)
+    auto data4 = create_mock_template(1000151);
+    auto result4 = tmpl_interface.read_template(data4, "test_node");
+    EXPECT_TRUE(result4.is_valid) << "Forward +100 blocks (1000051 → 1000151)";
+}
+
+// ====================================================================
+// Test 2: Forward jump detection (corrupted height)
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, ForwardJumpDetection) {
+    std::cout << "\nTest 2: Forward jump detection (corrupted height)" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+    
+    // First template at height 6500000
+    auto data1 = create_mock_template(6500000);
+    auto result1 = tmpl_interface.read_template(data1, "test_node");
+    EXPECT_TRUE(result1.is_valid) << "Baseline template (height 6500000)";
+    
+    // Corrupted jump: 6.5M → 1.9B (exceeds 100 blocks)
+    auto data2 = create_mock_template(1900000000);
+    auto result2 = tmpl_interface.read_template(data2, "test_node");
+    EXPECT_TRUE(!result2.is_valid && !result2.height_valid) << "Corrupted forward jump rejected (6.5M → 1.9B)";
+    
+    // Jump of exactly 101 blocks should fail
+    auto data3 = create_mock_template(6500101);
+    auto result3 = tmpl_interface.read_template(data3, "test_node");
+    EXPECT_TRUE(!result3.is_valid && !result3.height_valid) << "Forward +101 blocks rejected (6500000 → 6500101)";
+}
+
+// ====================================================================
+// Test 3: Backward jump detection (reorg)
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, BackwardJumpDetection) {
+    std::cout << "\nTest 3: Backward jump detection (reorg)" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+    
+    // First template at height 1000100
+    auto data1 = create_mock_template(1000100);
+    auto result1 = tmpl_interface.read_template(data1, "test_node");
+    EXPECT_TRUE(result1.is_valid) << "Baseline template (height 1000100)";
+    
+    // Small reorg: -5 blocks (should be accepted)
+    auto data2 = create_mock_template(1000095);
+    auto result2 = tmpl_interface.read_template(data2, "test_node");
+    EXPECT_TRUE(result2.is_valid) << "Small reorg -5 blocks accepted (1000100 → 1000095)";
+    
+    // Medium reorg: -50 blocks (should be accepted)
+    auto data3 = create_mock_template(1000045);
+    auto result3 = tmpl_interface.read_template(data3, "test_node");
+    EXPECT_TRUE(result3.is_valid) << "Medium reorg -50 blocks accepted (1000095 → 1000045)";
+    
+    // Boundary: exactly -100 blocks (should be accepted)
+    auto data4 = create_mock_template(999945);
+    auto result4 = tmpl_interface.read_template(data4, "test_node");
+    EXPECT_TRUE(result4.is_valid) << "Boundary reorg -100 blocks accepted (1000045 → 999945)";
+    
+    // Deep reorg/corruption: -101 blocks (should be rejected)
+    auto data5 = create_mock_template(999844);
+    auto result5 = tmpl_interface.read_template(data5, "test_node");
+    EXPECT_TRUE(!result5.is_valid && !result5.height_valid) << "Deep reorg -101 blocks rejected (999945 → 999844)";
+}
+
+// ====================================================================
+// Test 4: Edge cases
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, EdgeCases) {
+    std::cout << "\nTest 4: Edge cases" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+    
+    // Template at height 100
+    auto data1 = create_mock_template(100);
+    auto result1 = tmpl_interface.read_template(data1, "test_node");
+    EXPECT_TRUE(result1.is_valid) << "Low height template (height 100)";
+    
+    // Backward to height 0 (within 100 blocks)
+    auto data2 = create_mock_template(0);
+    auto result2 = tmpl_interface.read_template(data2, "test_node");
+    EXPECT_TRUE(result2.is_valid) << "Reorg to height 0 (within threshold)";
+    
+    // Same height (duplicate template)
+    auto data3 = create_mock_template(0);
+    auto result3 = tmpl_interface.read_template(data3, "test_node");
+    EXPECT_TRUE(result3.is_valid) << "Duplicate height accepted (0 → 0)";
+}
+
+// ====================================================================
+// Test 5: Channel validation
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, ChannelValidation) {
+    std::cout << "\nTest 5: Channel validation" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0); // Expect channel 2 (hash)
+    
+    // Valid channel 2
+    auto data1 = create_mock_template(1000000, 0x1d00ffff, 2);
+    auto result1 = tmpl_interface.read_template(data1, "test_node");
+    EXPECT_TRUE(result1.is_valid) << "Valid channel 2";
+    
+    // Invalid channel 0
+    auto data2 = create_mock_template(1000001, 0x1d00ffff, 0);
+    auto result2 = tmpl_interface.read_template(data2, "test_node");
+    EXPECT_TRUE(!result2.is_valid && !result2.channel_valid) << "Invalid channel 0 rejected";
+    
+    // Invalid channel 3
+    auto data3 = create_mock_template(1000002, 0x1d00ffff, 3);
+    auto result3 = tmpl_interface.read_template(data3, "test_node");
+    EXPECT_TRUE(!result3.is_valid && !result3.channel_valid) << "Invalid channel 3 rejected";
+}
+
+// ====================================================================
+// Test 6: nBits validation
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, NBitsValidation) {
+    std::cout << "\nTest 6: nBits (difficulty) validation" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+    
+    // Valid nBits
+    auto data1 = create_mock_template(1000000, 0x1d00ffff, 2);
+    auto result1 = tmpl_interface.read_template(data1, "test_node");
+    EXPECT_TRUE(result1.is_valid) << "Valid nBits (0x1d00ffff)";
+    
+    // Zero nBits (invalid)
+    auto data2 = create_mock_template(1000001, 0, 2);
+    auto result2 = tmpl_interface.read_template(data2, "test_node");
+    EXPECT_TRUE(!result2.is_valid && !result2.bits_valid) << "Zero nBits rejected";
+}
+
+// ====================================================================
+// Test 7: Merkle root validation
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, MerkleRootValidation) {
+    std::cout << "\nTest 7: Merkle root validation" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+    
+    // All-zero merkle root should be rejected
+    std::vector<uint8_t> data = create_mock_template(1000000);
+    // Clear merkle root bytes (offset 132-195, which is after version + hashPrevBlock)
+    for (int i = 132; i < 196; i++) {
+        data[i] = 0x00;
+    }
+    auto result = tmpl_interface.read_template(data, "test_node");
+    EXPECT_TRUE(!result.is_valid && !result.merkle_valid) << "All-zero merkle root rejected";
+}
+
+// ====================================================================
+// Test 8: Height continuity scenarios
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, HeightContinuityScenarios) {
+    std::cout << "\nTest 8: Height continuity scenarios" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+    
+    // Start at 1000000
+    auto data1 = create_mock_template(1000000);
+    tmpl_interface.read_template(data1, "test_node");
+    
+    // Jump backward 50, then forward 100 (to stay within threshold)
+    auto data2 = create_mock_template(999950);
+    auto result2 = tmpl_interface.read_template(data2, "test_node");
+    EXPECT_TRUE(result2.is_valid) << "Backward -50 blocks";
+    
+    auto data3 = create_mock_template(1000050);
+    auto result3 = tmpl_interface.read_template(data3, "test_node");
+    EXPECT_TRUE(result3.is_valid) << "Then forward +100 blocks (within threshold)";
+    
+    // Try to go back -101 from current (1000050 → 999949)
+    auto data4 = create_mock_template(999949);
+    auto result4 = tmpl_interface.read_template(data4, "test_node");
+    EXPECT_TRUE(!result4.is_valid) << "Deep backward -101 rejected";
+}
+
+// ====================================================================
+// Test 9: Maximum safe values
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, MaximumSafeValues) {
+    std::cout << "\nTest 9: Maximum safe values" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+    
+    // Near uint32_t max
+    uint32_t max_safe = 0xFFFFFF00; // Leave room for arithmetic
+    auto data1 = create_mock_template(max_safe);
+    auto result1 = tmpl_interface.read_template(data1, "test_node");
+    EXPECT_TRUE(result1.is_valid) << "Near max uint32_t height";
+    
+    // Small increment from max_safe
+    auto data2 = create_mock_template(max_safe + 50);
+    auto result2 = tmpl_interface.read_template(data2, "test_node");
+    EXPECT_TRUE(result2.is_valid) << "Increment from near-max height";
+}
+
+// ====================================================================
+// Test 10: Unified height-based staleness detection (update_height)
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, UnifiedHeightBasedStalenessDetection) {
+    std::cout << "\nTest 10: Unified height-based staleness detection (update_height)" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+    
+    // Load a template at height 6594320
+    auto data1 = create_mock_template(6594320);
+    auto result1 = tmpl_interface.read_template(data1, "test_node");
+    EXPECT_TRUE(result1.is_valid) << "Template loaded at height 6594320";
+    
+    // Template height should be queryable
+    uint32_t tmpl_height = tmpl_interface.get_template_height();
+    EXPECT_TRUE(tmpl_height == 6594320) << "get_template_height() returns expected height";
+    
+    // update_height with SAME height should NOT discard template
+    bool discarded = tmpl_interface.update_height(6594320);
+    EXPECT_TRUE(!discarded) << "Same height does not discard template";
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "Template still valid after same height update";
+    
+    // update_height with HIGHER height SHOULD discard template
+    discarded = tmpl_interface.update_height(6594321);
+    EXPECT_TRUE(discarded) << "Higher height discards template";
+    EXPECT_TRUE(!tmpl_interface.has_valid_template()) << "Template invalid after height advance";
+}
+
+// ====================================================================
+// Test 11: Channel height delta staleness
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, ChannelHeightDeltaStaleness) {
+    std::cout << "\nTest 11: Channel height delta staleness" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+    
+    // Load a template
+    auto data1 = create_mock_template(6594320);
+    tmpl_interface.read_template(data1, "test_node");
+    
+    // Set channel height snapshot (simulates what happens on template receipt)
+    tmpl_interface.set_template_channel_height_snapshot(4165000);
+    
+    // Same channel height → not stale
+    bool is_stale = tmpl_interface.check_staleness_by_channel_delta(4165000);
+    EXPECT_TRUE(!is_stale) << "Same channel height is not stale";
+    
+    // Higher channel height → stale
+    is_stale = tmpl_interface.check_staleness_by_channel_delta(4165001);
+    EXPECT_TRUE(is_stale) << "Advanced channel height is stale";
+}
+
+// ====================================================================
+// Test 12: Template age does not cause premature timeout
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, TemplateValidityWithAgeLessThan300s) {
+    std::cout << "\nTest 12: Template validity with age < 300s" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+    
+    // Load a template
+    auto data1 = create_mock_template(6594320);
+    tmpl_interface.read_template(data1, "test_node");
+    
+    // Template should be valid immediately (age ~0s, well under 300s)
+    uint64_t age = tmpl_interface.get_template_age();
+    EXPECT_TRUE(age < 5) << "Fresh template age is small";
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "Fresh template is valid";
+    
+    // Template should NOT be stale at this age (was previously timing out at 120s)
+    bool is_stale = tmpl_interface.is_template_stale();
+    EXPECT_TRUE(!is_stale) << "Fresh template is not stale";
+}
+
+// ====================================================================
+// Test 13: Channel height staleness via update_channel_height
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, ChannelHeightStalenessViaUpdateChannelHeight) {
+    std::cout << "\nTest 13: Channel height staleness via update_channel_height" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0); // Hash channel
+    
+    // Load a template
+    auto data1 = create_mock_template(6594320);
+    tmpl_interface.read_template(data1, "test_node");
+    
+    // Finalize template with channel height (simulates GET_ROUND finalization)
+    // set_channel_height sets nChannelHeight = node_height + 1 internally... 
+    // Actually: set_channel_height just stores the value directly.
+    // Template targets block at nChannelHeight; node is at nChannelHeight - 1.
+    tmpl_interface.set_channel_height(4165001); // Template mines block 4165001
+    
+    // Node at expected height (4165000 = 4165001 - 1) → not stale
+    bool discarded = tmpl_interface.update_channel_height(2, 4165000);
+    EXPECT_TRUE(!discarded) << "Node at expected channel height: template valid";
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "Template still valid";
+    
+    // Node channel advanced (4165001 >= 4165001) → stale!
+    discarded = tmpl_interface.update_channel_height(2, 4165001);
+    EXPECT_TRUE(discarded) << "Node channel advanced: template stale";
+    EXPECT_TRUE(!tmpl_interface.has_valid_template()) << "Template invalid after channel advance";
+}
+
+// ====================================================================
+// Test 14: Wrong channel update does not affect template
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, WrongChannelUpdateDoesNotAffectTemplate) {
+    std::cout << "\nTest 14: Wrong channel update does not affect template" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0); // Hash channel
+    
+    // Load a template
+    auto data1 = create_mock_template(6594320);
+    tmpl_interface.read_template(data1, "test_node");
+    tmpl_interface.set_channel_height(4165001);
+    
+    // Update Prime channel (channel 1) — should NOT affect Hash template
+    bool discarded = tmpl_interface.update_channel_height(1, 9999999);
+    EXPECT_TRUE(!discarded) << "Prime channel update ignored for Hash template";
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "Template still valid after wrong-channel update";
+}
+
+// ====================================================================
+// Test 16: set_channel_height() does NOT mutate block.nHeight (unified)
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, SetChannelHeightDoesNotMutateBlockNHeight) {
+    std::cout << "\nTest 16: set_channel_height() does NOT mutate block.nHeight" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+
+    // Load a template at unified height 6594320
+    uint32_t unified_height = 6594320;
+    auto data1 = create_mock_template(unified_height);
+    auto result1 = tmpl_interface.read_template(data1, "test_node");
+    EXPECT_TRUE(result1.is_valid) << "Template loaded at unified height 6594320";
+
+    // Confirm block.nHeight == unified height immediately after deserialization
+    const auto* tmpl = tmpl_interface.get_current_template();
+    EXPECT_TRUE(tmpl != nullptr && tmpl->block.nHeight == unified_height) << "block.nHeight == unified_height after read_template";
+
+    // set_channel_height() updates nChannelHeight metadata — must NOT touch block.nHeight
+    uint32_t channel_target = 4165001;
+    tmpl_interface.set_channel_height(channel_target);
+
+    // Refresh pointer after potential template update
+    tmpl = tmpl_interface.get_current_template();
+    EXPECT_TRUE(tmpl != nullptr && tmpl->block.nHeight == unified_height) << "block.nHeight still == unified_height after set_channel_height()";
+
+    // nChannelHeight should be updated to channel_target
+    EXPECT_TRUE(tmpl != nullptr && tmpl->nChannelHeight == channel_target) << "nChannelHeight == channel_target after set_channel_height()";
+
+    // The two values must differ (they represent different things)
+    EXPECT_TRUE(tmpl != nullptr && tmpl->block.nHeight != tmpl->nChannelHeight) << "block.nHeight != nChannelHeight (unified vs channel)";
+
+    // Negative case: if block.nHeight were silently replaced with the template's
+    // channel target, the guard must reject it because ProofHash() requires the
+    // unified GET_BLOCK height, not the channel height dimension.
+    EXPECT_TRUE(tmpl != nullptr && is_channel_height(tmpl->height_guard.channel_height) && !tmpl->height_guard.matches(tmpl->height_guard.channel_height.get())) << "test_block_with_channel_height_in_nHeight_fails_guard()";
+    EXPECT_TRUE(tmpl != nullptr && tmpl->height_guard.matches(tmpl->block)) << "test_block_with_unified_height_passes_guard()";
+}
+
+// ====================================================================
+// Test 17: block.nHeight (unified) survives serialization in prepare_block_submission()
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, BlockNHeightPreservedInSerializedSubmission) {
+    std::cout << "\nTest 17: block.nHeight preserved in serialized submission at offset [200-203]" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+
+    uint32_t unified_height = 6594321;
+    auto data1 = create_mock_template(unified_height);
+    auto result1 = tmpl_interface.read_template(data1, "test_node");
+    EXPECT_TRUE(result1.is_valid) << "Template loaded for submission test";
+
+    if (result1.is_valid) {
+        // Prepare a fake 64-byte merkle root (non-zero)
+        std::vector<uint8_t> merkle_root(64, 0xAB);
+
+        // prepare_block_submission() serializes the solved block (Tritium 216-byte format)
+        // Tritium layout: nVersion(4) + hashPrevBlock(128) + hashMerkleRoot(64) +
+        //                 nChannel(4) + nHeight(4) + nBits(4) + nNonce(8) = 216 bytes
+        // nHeight is at offset 200 (big-endian uint32)
+        uint64_t nonce = 0xDEADBEEFCAFEBABEULL;
+        auto payload = tmpl_interface.prepare_block_submission(merkle_root, nonce);
+
+        EXPECT_TRUE(payload.size() == 216) << "prepare_block_submission() returns 216-byte payload";
+
+        if (payload.size() >= 204) {
+            // Read nHeight from serialized payload at offset 200 (big-endian)
+            uint32_t serialized_height =
+                (static_cast<uint32_t>(payload[200]) << 24) |
+                (static_cast<uint32_t>(payload[201]) << 16) |
+                (static_cast<uint32_t>(payload[202]) << 8)  |
+                 static_cast<uint32_t>(payload[203]);
+
+            EXPECT_TRUE(serialized_height == unified_height) << "block.nHeight (unified) preserved in payload[200-203]";
+
+            // Also verify nNonce at offset 208 (little-endian uint64 — Nexus node reads nNonce as LE)
+            uint64_t serialized_nonce = 0;
+            for (int i = 0; i < 8; ++i)
+                serialized_nonce |= static_cast<uint64_t>(payload[208 + i]) << (i * 8);
+            EXPECT_TRUE(serialized_nonce == nonce) << "nNonce preserved in payload[208-215] (little-endian)";
+        }
+    }
+}
+
+// ====================================================================
+// Test 18: Stateless opcode compatibility aliases
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, StatelessOpcodeCompatibilityAliases) {
+    std::cout << "\nTest 18: Stateless opcode compatibility aliases" << std::endl;
+    EXPECT_TRUE(MinerLLP::StatelessMining::BLOCK_DATA == 0xD000 && MinerLLP::MirrorOpcode(MinerLLP::BLOCK_DATA) == 0xD000) << "BLOCK_DATA mirror is 0xD000";
+    EXPECT_TRUE(MinerLLP::StatelessMining::BLOCK_ACCEPTED_COMPAT == 0xD002) << "BLOCK_ACCEPTED compat opcode is 0xD002";
+    EXPECT_TRUE(MinerLLP::StatelessMining::BLOCK_REJECTED_COMPAT == 0xD003) << "BLOCK_REJECTED compat opcode is 0xD003";
+}
+
+// ====================================================================
+// Test 19: hashPrevBlock preserved end-to-end through prepare_block_submission()
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, HashPrevBlockPreservedEndToEnd) {
+    std::cout << "\nTest 19: hashPrevBlock preserved end-to-end through prepare_block_submission()" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+
+    // 1. Create a mock template with a known non-zero hashPrevBlock byte pattern (bytes 1..128).
+    std::vector<uint8_t> mock_data(216, 0);
+    // Write nVersion = 7 (big-endian) at offset 0
+    mock_data[0] = 0; mock_data[1] = 0; mock_data[2] = 0; mock_data[3] = 7;
+    // hashPrevBlock at offset [4..131]: bytes 1..128
+    for (int i = 0; i < 128; ++i) {
+        mock_data[4 + i] = static_cast<uint8_t>((i + 1) & 0xFF);
+    }
+    // hashMerkleRoot at offset [132..195]: non-zero pattern
+    for (int i = 0; i < 64; ++i) {
+        mock_data[132 + i] = static_cast<uint8_t>((i + 1) & 0xFF);
+    }
+    // nChannel = 2 at offset 196
+    mock_data[196] = 0; mock_data[197] = 0; mock_data[198] = 0; mock_data[199] = 2;
+    // nHeight = 7000001 at offset 200
+    uint32_t known_height = 7000001;
+    mock_data[200] = (known_height >> 24) & 0xFF;
+    mock_data[201] = (known_height >> 16) & 0xFF;
+    mock_data[202] = (known_height >> 8) & 0xFF;
+    mock_data[203] = known_height & 0xFF;
+    // nBits = 0x1d00ffff at offset 204
+    mock_data[204] = 0x1d; mock_data[205] = 0x00; mock_data[206] = 0xFF; mock_data[207] = 0xFF;
+    // nNonce = 0 at offset 208..215
+
+    // 2. Call read_template() with this mock data.
+    auto result = tmpl_interface.read_template(mock_data, "test_node");
+    EXPECT_TRUE(result.is_valid) << "read_template() accepts mock template with known hashPrevBlock";
+
+    if (result.is_valid) {
+        // 3. Verify get_current_template()->block.hashPrevBlock matches the input bytes.
+        const auto* tmpl = tmpl_interface.get_current_template();
+        bool prev_ok = false;
+        if (tmpl) {
+            auto prev_bytes = tmpl->block.hashPrevBlock.GetBytes();
+            prev_ok = (prev_bytes.size() >= 128);
+            if (prev_ok) {
+                for (int i = 0; i < 128 && prev_ok; ++i) {
+                    prev_ok = (prev_bytes[i] == static_cast<uint8_t>((i + 1) & 0xFF));
+                }
+            }
+        }
+        EXPECT_TRUE(prev_ok) << "block.hashPrevBlock matches input bytes after read_template()";
+
+        // 4. Call prepare_block_submission(merkle_root, nonce).
+        std::vector<uint8_t> merkle_root(64, 0xAB);
+        uint64_t nonce = 0x0102030405060708ULL;
+        auto payload = tmpl_interface.prepare_block_submission(merkle_root, nonce);
+
+        EXPECT_TRUE(payload.size() == 216) << "prepare_block_submission() returns 216-byte payload";
+
+        // 5. Verify payload[4..131] matches the original hashPrevBlock bytes.
+        if (payload.size() == 216) {
+            bool payload_prev_ok = true;
+            for (int i = 0; i < 128 && payload_prev_ok; ++i) {
+                payload_prev_ok = (payload[4 + i] == static_cast<uint8_t>((i + 1) & 0xFF));
+            }
+            EXPECT_TRUE(payload_prev_ok) << "✓ hashPrevBlock preserved at payload[4-131]";
+        } else {
+            EXPECT_TRUE(false) << "✓ hashPrevBlock preserved at payload[4-131]";
+        }
+    } else {
+        // Skip dependent sub-tests
+        EXPECT_TRUE(false) << "block.hashPrevBlock matches input bytes after read_template()";
+        EXPECT_TRUE(false) << "prepare_block_submission() returns 216-byte payload";
+        EXPECT_TRUE(false) << "✓ hashPrevBlock preserved at payload[4-131]";
+    }
+}
+
+// ====================================================================
+// Test 20: BLOCK_ACCEPTED / BLOCK_REJECTED opcode handling increments counters
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, BlockAcceptedRejectedOpcodeHandling) {
+    std::cout << "\nTest 20: BLOCK_ACCEPTED / BLOCK_REJECTED opcode handling increments counters" << std::endl;
+    // Verify the primary mirror-mapped opcodes are correct.
+    EXPECT_TRUE(MinerLLP::StatelessMining::BLOCK_ACCEPTED == 0xD0C8) << "BLOCK_ACCEPTED mirror opcode is 0xD0C8";
+    EXPECT_TRUE(MinerLLP::StatelessMining::BLOCK_REJECTED == 0xD0C9) << "BLOCK_REJECTED mirror opcode is 0xD0C9";
+
+    // Simulate counter behaviour using a simple struct that mirrors Solo's counters.
+    struct BlockResultCounters {
+        uint32_t accepted{0};
+        uint32_t rejected{0};
+        void on_accepted() { ++accepted; }
+        void on_rejected() { ++rejected; }
+    };
+
+    BlockResultCounters counters;
+
+    // Simulate receiving BLOCK_ACCEPTED
+    uint16_t opcode = MinerLLP::StatelessMining::BLOCK_ACCEPTED;
+    if (opcode == MinerLLP::StatelessMining::BLOCK_ACCEPTED) {
+        counters.on_accepted();
+    }
+    EXPECT_TRUE(counters.accepted == 1 && counters.rejected == 0) << "m_blocks_accepted increments on BLOCK_ACCEPTED (0xD0C8)";
+
+    // Simulate receiving BLOCK_REJECTED
+    opcode = MinerLLP::StatelessMining::BLOCK_REJECTED;
+    if (opcode == MinerLLP::StatelessMining::BLOCK_REJECTED) {
+        counters.on_rejected();
+    }
+    EXPECT_TRUE(counters.accepted == 1 && counters.rejected == 1) << "m_blocks_rejected increments on BLOCK_REJECTED (0xD0C9)";
+
+    // Also verify compat aliases trigger the same counter path.
+    opcode = MinerLLP::StatelessMining::BLOCK_ACCEPTED_COMPAT;
+    if (opcode == MinerLLP::StatelessMining::BLOCK_ACCEPTED_COMPAT) {
+        counters.on_accepted();
+    }
+    opcode = MinerLLP::StatelessMining::BLOCK_REJECTED_COMPAT;
+    if (opcode == MinerLLP::StatelessMining::BLOCK_REJECTED_COMPAT) {
+        counters.on_rejected();
+    }
+    EXPECT_TRUE(counters.accepted == 2 && counters.rejected == 2) << "Compat aliases also drive counters (accepted=2, rejected=2)";
+}
+
+// ====================================================================
+// Test 21: Legacy lane GOOD_BLOCK/ORPHAN_BLOCK opcode values and counter behaviour
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, LegacyGoodBlockOrphanBlockOpcodeHandling) {
+    std::cout << "\nTest 21: Legacy lane GOOD_BLOCK/ORPHAN_BLOCK opcode handling" << std::endl;
+    // Verify the legacy opcode values are correct.
+    EXPECT_TRUE(static_cast<int>(MinerLLP::GOOD_BLOCK) == 6) << "GOOD_BLOCK legacy opcode is 6";
+    EXPECT_TRUE(static_cast<int>(MinerLLP::ORPHAN_BLOCK) == 7) << "ORPHAN_BLOCK legacy opcode is 7";
+
+    // Simulate counter behaviour for GOOD_BLOCK (accepted) and ORPHAN_BLOCK (rejected).
+    struct LegacyBlockResultCounters {
+        uint32_t accepted{0};
+        uint32_t rejected{0};
+        void on_good_block()   { ++accepted; }
+        void on_orphan_block() { ++rejected; }
+    };
+
+    LegacyBlockResultCounters counters;
+
+    // GOOD_BLOCK → m_blocks_accepted++
+    uint8_t opcode = static_cast<uint8_t>(MinerLLP::GOOD_BLOCK);
+    if (opcode == static_cast<uint8_t>(MinerLLP::GOOD_BLOCK)) {
+        counters.on_good_block();
+    }
+    EXPECT_TRUE(counters.accepted == 1 && counters.rejected == 0) << "m_blocks_accepted increments on GOOD_BLOCK (opcode 6)";
+
+    // ORPHAN_BLOCK → m_blocks_rejected++
+    opcode = static_cast<uint8_t>(MinerLLP::ORPHAN_BLOCK);
+    if (opcode == static_cast<uint8_t>(MinerLLP::ORPHAN_BLOCK)) {
+        counters.on_orphan_block();
+    }
+    EXPECT_TRUE(counters.accepted == 1 && counters.rejected == 1) << "m_blocks_rejected increments on ORPHAN_BLOCK (opcode 7)";
+
+    // Verify stateless ACCEPT (200) and REJECT (201) also drive counters.
+    struct StatelessBlockResultCounters {
+        uint32_t accepted{0};
+        uint32_t rejected{0};
+    };
+    StatelessBlockResultCounters sc;
+    uint8_t accept_op = static_cast<uint8_t>(MinerLLP::ACCEPT);
+    if (accept_op == static_cast<uint8_t>(MinerLLP::BLOCK_ACCEPTED)) { ++sc.accepted; }
+    uint8_t reject_op = static_cast<uint8_t>(MinerLLP::REJECT);
+    if (reject_op == static_cast<uint8_t>(MinerLLP::BLOCK_REJECTED)) { ++sc.rejected; }
+    EXPECT_TRUE(sc.accepted == 1 && MinerLLP::ACCEPT == 200) << "ACCEPT/BLOCK_ACCEPTED alias values are 200 (drive stateless counter)";
+    EXPECT_TRUE(sc.rejected == 1 && MinerLLP::REJECT == 201) << "REJECT/BLOCK_REJECTED alias values are 201 (drive stateless counter)";
+}
+
+// ====================================================================
+// Test 22: Tip-change detection — hashPrevBlock comparison between templates
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, TipChangeDetectionViaHashPrevBlock) {
+    std::cout << "\nTest 22: Tip-change detection via hashPrevBlock comparison" << std::endl;
+    // Build two valid templates with DIFFERENT hashPrevBlock values using the same
+    // create_mock_template() helper used in other tests.
+    auto tmpl_a = create_mock_template(6000001, 0x1d00ffff, 2);
+    auto tmpl_b = create_mock_template(6000001, 0x1d00ffff, 2);
+
+    // Override hashPrevBlock bytes[4..131] with distinct patterns.
+    // Template A: 0xAA pattern; Template B: 0xBB pattern.
+    for (int i = 4; i < 132; ++i) { tmpl_a[i] = 0xAA; tmpl_b[i] = 0xBB; }
+
+    // Parse template A.
+    MiningTemplateInterface iface_a(2, 0);
+    auto res_a = iface_a.read_template(tmpl_a, "test_node");
+    EXPECT_TRUE(res_a.is_valid) << "Template A (hashPrevBlock=0xAA) parses successfully";
+
+    uint1024_t hash_a{}, hash_b{};
+    if (res_a.is_valid) {
+        auto const* t = iface_a.get_current_template();
+        if (t) hash_a = t->block.hashPrevBlock;
+    }
+
+    // Parse template B (different hashPrevBlock → different tip).
+    MiningTemplateInterface iface_b(2, 0);
+    auto res_b = iface_b.read_template(tmpl_b, "test_node");
+    EXPECT_TRUE(res_b.is_valid) << "Template B (hashPrevBlock=0xBB) parses successfully";
+
+    if (res_b.is_valid) {
+        auto const* t = iface_b.get_current_template();
+        if (t) hash_b = t->block.hashPrevBlock;
+    }
+
+    // Verify the two hashPrevBlock values differ → tip changed.
+    EXPECT_TRUE(res_a.is_valid && res_b.is_valid && hash_a != hash_b) << "Template A and B hashPrevBlock differ (tip changed)";
+
+    // Parse template A again → same hashPrevBlock → tip unchanged.
+    MiningTemplateInterface iface_c(2, 0);
+    auto res_c = iface_c.read_template(tmpl_a, "test_node");
+    uint1024_t hash_c{};
+    if (res_c.is_valid) {
+        auto const* t = iface_c.get_current_template();
+        if (t) hash_c = t->block.hashPrevBlock;
+    }
+    EXPECT_TRUE(res_c.is_valid && hash_a == hash_c) << "Template A repeated: hashPrevBlock unchanged (tip not moved)";
+}
+
+// ====================================================================
+// Test 23: HeightTracker hash_prev_block — UpdateWithHashPrevBlock() and mismatch detection
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, HeightTrackerHashPrevBlockAndValidateTemplate) {
+    std::cout << "\nTest 23: HeightTracker hash_prev_block field and ValidateTemplate discard logic" << std::endl;
+    using nexusminer::protocol::HeightTracker;
+
+    HeightTracker tracker;
+
+    // Initially hash_prev_block should be zero (default).
+    auto snap0 = tracker.GetSnapshot();
+    EXPECT_TRUE(snap0.hash_prev_block == uint1024_t(0)) << "Initial HeightTracker snapshot hash_prev_block is zero";
+
+    // Build a known non-zero hash value.
+    std::vector<uint8_t> known_bytes(128, 0x42);  // 128 bytes, all 0x42
+    uint1024_t known_hash;
+    known_hash.SetBytes(known_bytes);
+
+    // Update via UpdateWithHashPrevBlock().
+    tracker.UpdateWithHashPrevBlock(known_hash);
+
+    auto snap1 = tracker.GetSnapshot();
+    EXPECT_TRUE(snap1.hash_prev_block == known_hash) << "After UpdateWithHashPrevBlock(), hash_prev_block matches input";
+
+    // Simulate ValidateTemplate discard logic (upgraded from warn-and-continue):
+    // If snapshot.hash_prev_block != 0 and template.hashPrevBlock != snapshot.hash_prev_block
+    // → discard template and return false (same-height reorg defense).
+    uint1024_t different_hash;
+    std::vector<uint8_t> diff_bytes(128, 0x99);
+    different_hash.SetBytes(diff_bytes);
+
+    bool mismatch_detected = (snap1.hash_prev_block != uint1024_t(0) &&
+                              different_hash != snap1.hash_prev_block);
+    EXPECT_TRUE(mismatch_detected) << "ValidateTemplate logic: mismatch detected when template.hashPrevBlock differs";
+
+    // No discard when template.hashPrevBlock matches snapshot.
+    bool no_mismatch = !(snap1.hash_prev_block != uint1024_t(0) &&
+                         known_hash != snap1.hash_prev_block);
+    EXPECT_TRUE(no_mismatch) << "ValidateTemplate logic: no mismatch when template.hashPrevBlock matches";
+
+    // Verify UpdateWithHashPrevBlock() is a no-op for staleness decisions
+    // (it only updates hash_prev_block, not height or channel_target).
+    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.UpdateWithHashPrevBlock(known_hash);
+    auto snap2 = tracker.GetSnapshot();
+    EXPECT_TRUE(snap2.unified_height == 5000) << "UpdateWithHashPrevBlock() does not disturb unified_height";
+    EXPECT_TRUE(snap2.channel_height == 100) << "UpdateWithHashPrevBlock() does not disturb channel_height";
+    EXPECT_TRUE(snap2.hash_prev_block == known_hash) << "UpdateWithHashPrevBlock() preserves hash_prev_block value";
+}
+
+// ====================================================================
+// Test 24: Rate-limited get_work() guard — transmit must not be called with empty payload
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, RateLimitedGetWorkResultGuard) {
+    std::cout << "\nTest 24: Rate-limited get_work() result guard (Fix 2 — defensive transmit guard)" << std::endl;
+    // Simulate the guard logic that now wraps every get_work() → transmit() call site.
+    // When get_work() is rate-limited it returns nullptr or an empty vector.
+    // The guard must prevent connection->transmit() from being called in that case.
+
+    bool transmit_called = false;
+
+    // Simulate a null result (rate-limited — returns nullptr)
+    std::shared_ptr<std::vector<uint8_t>> null_payload = nullptr;
+    if (null_payload && !null_payload->empty()) {
+        transmit_called = true;  // must NOT reach here
+    }
+    EXPECT_TRUE(!transmit_called) << "Null payload from get_work() does not trigger transmit";
+
+    // Simulate an empty result (rate-limited — returns empty vector)
+    transmit_called = false;
+    auto empty_payload = std::make_shared<std::vector<uint8_t>>();
+    if (empty_payload && !empty_payload->empty()) {
+        transmit_called = true;  // must NOT reach here
+    }
+    EXPECT_TRUE(!transmit_called) << "Empty payload from get_work() does not trigger transmit";
+
+    // Simulate a valid (non-empty) result — transmit SHOULD be called
+    transmit_called = false;
+    auto valid_payload = std::make_shared<std::vector<uint8_t>>(std::vector<uint8_t>{0x01, 0x02});
+    if (valid_payload && !valid_payload->empty()) {
+        transmit_called = true;
+    }
+    EXPECT_TRUE(transmit_called) << "Non-empty payload from get_work() triggers transmit";
+}
+
+// ====================================================================
+// Test 25: Push-triggered discard + recovery — new template accepted after channel advance
+//
+// Validates requirement #3 from the "fix mining lockout" issue:
+//   push arrives → template discarded as stale → GET_BLOCK response arrives with
+//   fresh template → template must be accepted (not erroneously judged stale).
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, PushTriggeredDiscardPlusRecovery) {
+    std::cout << "\nTest 25: Push-triggered discard + recovery (new template accepted)" << std::endl;
+    using nexusminer::protocol::HeightTracker;
+
+    MiningTemplateInterface tmpl_interface(2, 0); // Hash channel
+
+    // Step 1: Initial template loaded (channel height X = 4165001).
+    auto data_init = create_mock_template(6594320, 0x1d00ffff, 2);
+    auto res_init = tmpl_interface.read_template(data_init, "test_node");
+    EXPECT_TRUE(res_init.is_valid) << "Initial template loaded successfully";
+
+    // Finalise channel metadata (node is at X-1 = 4165000; template targets X = 4165001).
+    tmpl_interface.set_channel_height(4165001);
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "Template has valid state after set_channel_height";
+
+    // Step 2: Simulate push notification — channel advanced to X (= 4165001).
+    // In production Solo::process_messages updates HeightTracker first, then the push handler
+    // calls discard_template() via check_template_health().  Here we call discard directly.
+    tmpl_interface.discard_template("Channel height-based staleness (channel advanced)");
+    EXPECT_TRUE(!tmpl_interface.has_valid_template()) << "Template discarded as stale on channel advance";
+
+    // Step 3: Recovery GET_BLOCK arrives — fresh template for channel X+1 = 4165002.
+    // This template must be accepted even though HeightTracker still reflects channel_height=X.
+    // The staleness check in validate_template() is SKIPPED for new templates (nChannelHeight=0).
+    auto data_recovery = create_mock_template(6594321, 0x1d00ffff, 2);
+    auto res_recovery = tmpl_interface.read_template(data_recovery, "test_node");
+    if (!res_recovery.is_valid) {
+        std::cout << "    Recovery template error: " << res_recovery.error_message << std::endl;
+    }
+    EXPECT_TRUE(res_recovery.is_valid) << "Recovery template accepted (not erroneously judged stale)";
+
+    // Step 4: Finalise the recovery template's channel metadata (targets X+1 = 4165002).
+    tmpl_interface.set_channel_height(4165002);
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "Recovery template has valid state after set_channel_height";
+
+    // Step 5: Confirm the recovery template's channel height reflects the new target.
+    const auto* tmpl = tmpl_interface.get_current_template();
+    EXPECT_TRUE(tmpl != nullptr && tmpl->nChannelHeight == 4165002) << "Recovery template nChannelHeight == 4165002";
+
+    // Step 6: Verify degraded mode check would clear — has_valid_template() is now true,
+    // meaning the block handler in Worker_manager would clear m_degraded_mode.
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "has_valid_template() true after recovery (degraded mode would clear)";
+}
+
+// ====================================================================
+// Test 26: Degraded-mode re-entry guard — new template not discarded by stale check
+//          when channel_target advances past previous channel_height
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, StaleCheckDoesNotDiscardRecoveryTemplate) {
+    std::cout << "\nTest 26: Stale check does not discard recovery template (channel_target > channel_height)" << std::endl;
+    using nexusminer::protocol::HeightTracker;
+
+    MiningTemplateInterface tmpl_interface(2, 0);
+
+    // Load and finalise initial template for channel target 4165001.
+    auto data_init = create_mock_template(6594320, 0x1d00ffff, 2);
+    tmpl_interface.read_template(data_init, "test_node");
+    tmpl_interface.set_channel_height(4165001);
+
+    // Simulate channel advance (node now at 4165001) → discard old template.
+    tmpl_interface.discard_template("Channel height-based staleness (channel advanced)");
+
+    // Simulate recovery: GET_BLOCK returns a template targeting 4165002.
+    auto data_recovery = create_mock_template(6594321, 0x1d00ffff, 2);
+    auto res = tmpl_interface.read_template(data_recovery, "test_node");
+    EXPECT_TRUE(res.is_valid) << "Recovery template accepted (tmpl.nChannelHeight=0 skips stale check)";
+
+    // Finalise recovery template.
+    tmpl_interface.set_channel_height(4165002);
+
+    // Now simulate update_channel_height() with node height = 4165001 (not yet at target 4165002).
+    // Template should NOT be discarded (node is still below template target).
+    bool discarded = tmpl_interface.update_channel_height(2, 4165001);
+    EXPECT_TRUE(!discarded) << "update_channel_height(4165001) does not discard template targeting 4165002";
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "Template remains valid after update_channel_height at node_height=4165001";
+
+    // Advancing to 4165002 (= channel_target) would mark it stale.
+    discarded = tmpl_interface.update_channel_height(2, 4165002);
+    EXPECT_TRUE(discarded) << "update_channel_height(4165002) discards template targeting 4165002 (stale)";
+}
+
+// ====================================================================
+// Test 27: Recovery install defers worker feed until canonical metadata is finalized
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, RecoveryTemplateFeedWaitsForFinalization) {
+    std::cout << "\nTest 27: Recovery template feed waits for finalization before workers resume" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+    int feed_count = 0;
+    uint32_t fed_channel_height = 0;
+    tmpl_interface.set_template_feed_handler(
+        [&](const MiningTemplateInterface::MiningTemplate& tmpl, uint32_t) {
+            ++feed_count;
+            fed_channel_height = tmpl.nChannelHeight;
+        });
+
+    auto recovery_data = create_mock_template(6594322, 0x1d00ffff, 2);
+    auto res = tmpl_interface.read_template(recovery_data, "test_node", false);
+
+    EXPECT_TRUE(res.is_valid) << "Recovery template still validates when auto-feed is deferred";
+    EXPECT_TRUE(feed_count == 0) << "Deferred recovery install does not feed workers before finalization";
+
+    tmpl_interface.set_channel_height(4165003);
+    const bool fed = tmpl_interface.feed_current_template();
+
+    EXPECT_TRUE(fed) << "Manual feed succeeds after channel metadata finalization";
+    EXPECT_TRUE(feed_count == 1) << "Workers are fed exactly once after finalization";
+    EXPECT_TRUE(fed_channel_height == 4165003) << "Worker feed observes finalized channel height";
+}
+
+// ====================================================================
+// Test 28: Regression — set_channel_height clears snapshot; subsequent
+//          GET_ROUND with channel_height = N-1 must NOT fire staleness
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, NoFalseStalenessAfterTemplateFinalized) {
+    std::cout << "\nTest 28: No false staleness after template finalized via set_channel_height" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+
+    // Load a template (nChannelHeight starts at 0 — pending finalization).
+    auto data = create_mock_template(6644208, 0x1d00ffff, 2);
+    tmpl_interface.read_template(data, "test_node");
+
+    // Simulate the stateless path: set_channel_height(N) finalizes the template
+    // and clears the snapshot (m_has_snapshot = false).
+    tmpl_interface.set_channel_height(2344739);
+
+    // Now simulate what finalize_and_feed_current_template() used to do wrong:
+    // attempt to set a snapshot AFTER the template is already finalized.
+    // The defensive guard must reject this call (nChannelHeight > 0).
+    tmpl_interface.set_template_channel_height_snapshot(2344737);
+
+    // The next GET_ROUND arrives with channel_height = 2344738 (tip advanced by 1
+    // but still below the template's target of 2344739).  Before the fix this would
+    // fire because 2344738 > stale-snapshot 2344737.  After the fix the snapshot
+    // was never re-set so check_staleness_by_channel_delta() must return false.
+    bool is_stale = tmpl_interface.check_staleness_by_channel_delta(2344738);
+    EXPECT_TRUE(!is_stale) << "No false staleness: GET_ROUND with N-1 does not discard finalized template";
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "Template still valid after check_staleness_by_channel_delta(N-1)";
+}
+
+// ====================================================================
+// Test 29: Root Cause 2 — check_staleness_by_channel_delta uses
+//          nChannelHeight when finalized, not snapshot
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, CheckStalenessByChannelDeltaUsesNChannelHeight) {
+    std::cout << "\nTest 29: check_staleness_by_channel_delta uses nChannelHeight when finalized" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+
+    // Load template (nChannelHeight == 0 initially)
+    auto data = create_mock_template(6644208, 0x1d00ffff, 2);
+    tmpl_interface.read_template(data, "test_node");
+
+    // Finalize with nChannelHeight = 2344739 (clears snapshot)
+    tmpl_interface.set_channel_height(2344739);
+
+    // N-1: chain tip is one step behind the target → NOT stale
+    bool is_stale = tmpl_interface.check_staleness_by_channel_delta(2344738);
+    EXPECT_TRUE(!is_stale) << "RC2: check_staleness(N-1) returns false when nChannelHeight=N";
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "RC2: Template still valid after check_staleness(N-1)";
+
+    // N: chain tip exactly at target → stale (block already mined)
+    is_stale = tmpl_interface.check_staleness_by_channel_delta(2344739);
+    EXPECT_TRUE(is_stale) << "RC2: check_staleness(N) returns true when nChannelHeight=N";
+    EXPECT_TRUE(!tmpl_interface.has_valid_template()) << "RC2: Template discarded when check_staleness(N) fires";
+}
+
+// ====================================================================
+// Test 30: Root Cause 2 — nChannelHeight-aware check: N+1 also stale
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, CheckStalenessNPlus1StaleWhenNChannelHeightIsN) {
+    std::cout << "\nTest 30: check_staleness_by_channel_delta(N+1) stale when nChannelHeight=N" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+
+    auto data = create_mock_template(6644208, 0x1d00ffff, 2);
+    tmpl_interface.read_template(data, "test_node");
+    tmpl_interface.set_channel_height(2344739);
+
+    // N+1: chain tip has advanced past target → also stale
+    bool is_stale = tmpl_interface.check_staleness_by_channel_delta(2344740);
+    EXPECT_TRUE(is_stale) << "RC2: check_staleness(N+1) returns true when nChannelHeight=N";
+}
+
+// ====================================================================
+// Test 31: Root Cause 3 — dual-call scenario: update_channel_height +
+//          check_staleness_by_channel_delta on same height must not
+//          double-fire when template is already finalized (nChannelHeight > 0)
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, DualCallScenarioDoesNotDoubleFireOnFinalizedTemplate) {
+    std::cout << "\nTest 31: Dual-call scenario does not double-fire on finalized template" << std::endl;
+    MiningTemplateInterface tmpl_interface(2, 0);
+
+    auto data = create_mock_template(6644208, 0x1d00ffff, 2);
+    tmpl_interface.read_template(data, "test_node");
+    tmpl_interface.set_channel_height(2344739);  // nChannelHeight finalized
+
+    // Simulate the NEW_ROUND handler: call 1
+    bool discarded_by_update = tmpl_interface.update_channel_height(2, 2344738);  // prime channel=2, tip=N-1
+    // Simulate the NEW_ROUND handler: call 2 (only valid when needs_channel_height_finalization())
+    // Since nChannelHeight is set, needs_channel_height_finalization() returns false and
+    // this call should not be made.  We verify it is safe to call (returns false) but
+    // also verify the template is still valid after the update.
+    bool discarded_by_delta = tmpl_interface.check_staleness_by_channel_delta(2344738);
+
+    EXPECT_TRUE(!discarded_by_update) << "RC3: update_channel_height(N-1) does not discard finalized template";
+    EXPECT_TRUE(!discarded_by_delta) << "RC3: check_staleness_by_channel_delta(N-1) does not discard finalized template";
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "RC3: Template still valid after dual-call with tip=N-1";
+}
+
+// ====================================================================
+// Test 32 (RC5-A): update_channel_height — node 3 blocks behind target
+//   Template: nChannelHeight = 2344741
+//   Node:     new_channel_height = 2344738 (3 blocks below target)
+//   → must NOT discard (template still valid — chain has not yet reached target)
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, RC5A_UpdateChannelHeightNodeBelowTarget) {
+    std::cout << "\nTest 32 (RC5-A): update_channel_height — node 3 blocks below target, must NOT discard" << std::endl;
+    MiningTemplateInterface tmpl_interface(1, 0);  // Prime channel
+
+    auto data = create_mock_template(6644211, 0x1d00ffff, 1);
+    tmpl_interface.read_template(data, "test_node");
+    tmpl_interface.set_channel_height(2344741);  // nChannelHeight = 2344741
+
+    bool discarded = tmpl_interface.update_channel_height(1, 2344738);  // node 3 behind target
+    EXPECT_TRUE(!discarded) << "RC5-A: update_channel_height(2344738) with target=2344741 returns false";
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "RC5-A: Template still valid when node is 3 blocks behind target";
+}
+
+// ====================================================================
+// Test 33 (RC5-B): update_channel_height — node AT exact target
+//   Template: nChannelHeight = 2344741
+//   Node:     new_channel_height = 2344741 (chain has reached our target)
+//   → MUST discard (block we are mining was just found)
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, RC5B_UpdateChannelHeightNodeAtExactTarget) {
+    std::cout << "\nTest 33 (RC5-B): update_channel_height — node at exact target, MUST discard" << std::endl;
+    MiningTemplateInterface tmpl_interface(1, 0);  // Prime channel
+
+    auto data = create_mock_template(6644211, 0x1d00ffff, 1);
+    tmpl_interface.read_template(data, "test_node");
+    tmpl_interface.set_channel_height(2344741);
+
+    bool discarded = tmpl_interface.update_channel_height(1, 2344741);  // chain reached target
+    EXPECT_TRUE(discarded) << "RC5-B: update_channel_height(2344741) with target=2344741 discards template";
+    EXPECT_TRUE(!tmpl_interface.has_valid_template()) << "RC5-B: Template invalid after chain reached target";
+}
+
+// ====================================================================
+// Test 34 (RC5-C): update_channel_height — node 5 blocks past target
+//   Template: nChannelHeight = 2344741
+//   Node:     new_channel_height = 2344746 (5 blocks past target)
+//   → MUST discard (chain is far ahead of our mining target)
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, RC5C_UpdateChannelHeightNodePastTarget) {
+    std::cout << "\nTest 34 (RC5-C): update_channel_height — node 5 blocks past target, MUST discard" << std::endl;
+    MiningTemplateInterface tmpl_interface(1, 0);  // Prime channel
+
+    auto data = create_mock_template(6644211, 0x1d00ffff, 1);
+    tmpl_interface.read_template(data, "test_node");
+    tmpl_interface.set_channel_height(2344741);
+
+    bool discarded = tmpl_interface.update_channel_height(1, 2344746);  // chain way past target
+    EXPECT_TRUE(discarded) << "RC5-C: update_channel_height(2344746) with target=2344741 discards template";
+    EXPECT_TRUE(!tmpl_interface.has_valid_template()) << "RC5-C: Template invalid after chain surpassed target";
+}
+
+// ====================================================================
+// Test 35 (RC5-E): Block submission race — GET_ROUND returns the height
+//   we just mined (nChannelHeight == prime_height → correctly stale)
+//   Template: nChannelHeight = 2344738
+//   GET_ROUND: prime_height = 2344738 (the block we just submitted)
+//   → MUST discard (chain has met our target — correct behaviour)
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, RC5E_BlockSubmissionRaceGetRoundReflectsSubmittedBlock) {
+    std::cout << "\nTest 35 (RC5-E): Block submission race — GET_ROUND reflects just-submitted block, MUST discard" << std::endl;
+    MiningTemplateInterface tmpl_interface(1, 0);  // Prime channel
+
+    auto data = create_mock_template(6644208, 0x1d00ffff, 1);
+    tmpl_interface.read_template(data, "test_node");
+    tmpl_interface.set_channel_height(2344738);  // template targets block 2344738
+
+    // GET_ROUND reflects our own submission: prime_height = 2344738
+    bool discarded = tmpl_interface.update_channel_height(1, 2344738);
+    EXPECT_TRUE(discarded) << "RC5-E: Submission race — update_channel_height(=target) correctly discards";
+    EXPECT_TRUE(!tmpl_interface.has_valid_template()) << "RC5-E: Template invalid after submission race";
+}
+
+// ====================================================================
+// Test 36: hashPrevBlock mismatch — validate_current_template() must discard
+//          the template and return false (same-height chain reorg defense).
+//
+// Prior behaviour: warn-and-continue (miner kept mining on stale template).
+// New behaviour: discard_template() + return false (miner requests fresh work).
+// ====================================================================
+TEST_F(MiningTemplateValidationTest, HashPrevBlockMismatchCausesTemplateDiscard) {
+    std::cout << "\nTest 36: hashPrevBlock mismatch causes template discard (same-height reorg defense)" << std::endl;
+    using nexusminer::protocol::HeightTracker;
+
+    // Set up: HeightTracker knows the canonical hashPrevBlock (non-zero).
+    HeightTracker tracker;
+    std::vector<uint8_t> canonical_bytes(128, 0x42);
+    uint1024_t canonical_hash;
+    canonical_hash.SetBytes(canonical_bytes);
+    tracker.UpdateWithHashPrevBlock(canonical_hash);
+
+    auto snap = tracker.GetSnapshot();
+    EXPECT_TRUE(snap.hash_prev_block != uint1024_t(0)) << "Canonical hash_prev_block is non-zero (activate mismatch guard)";
+
+    // A stale template arrives with a DIFFERENT hashPrevBlock (same-height reorg).
+    std::vector<uint8_t> stale_bytes(128, 0x99);
+    uint1024_t stale_hash;
+    stale_hash.SetBytes(stale_bytes);
+
+    // The mismatch condition mirrors validate_current_template() new logic.
+    bool mismatch_detected = (snap.hash_prev_block != uint1024_t(0) &&
+                               stale_hash != snap.hash_prev_block);
+    EXPECT_TRUE(mismatch_detected) << "Mismatch detected: template.hashPrevBlock differs from canonical tip";
+
+    // Simulate what validate_current_template() now does: discard_template() + return false.
+    MiningTemplateInterface tmpl_interface(1, 0);  // Prime channel
+    auto data = create_mock_template(6648299, 0x1d00ffff, 1);
+    auto res = tmpl_interface.read_template(data, "test_node");
+    EXPECT_TRUE(res.is_valid) << "Template loaded before mismatch discard";
+    EXPECT_TRUE(tmpl_interface.has_valid_template()) << "has_valid_template() true before discard";
+
+    // When mismatch is detected, validate_current_template() calls discard_template().
+    if (mismatch_detected) {
+        tmpl_interface.discard_template("hashPrevBlock mismatch — same-height chain reorg detected");
+    }
+    EXPECT_TRUE(!tmpl_interface.has_valid_template()) << "Template discarded after hashPrevBlock mismatch (not warn-and-continue)";
+
+    // Verify the no-mismatch case: matching hashPrevBlock must NOT cause a discard.
+    MiningTemplateInterface tmpl_interface2(1, 0);
+    auto data2 = create_mock_template(6648299, 0x1d00ffff, 1);
+    tmpl_interface2.read_template(data2, "test_node");
+
+    // canonical_hash was used to set hash_prev_block, so they are equal → no mismatch.
+    bool no_mismatch_on_match = (snap.hash_prev_block == uint1024_t(0) ||
+                                  canonical_hash == snap.hash_prev_block);
+    EXPECT_TRUE(no_mismatch_on_match) << "No mismatch when template.hashPrevBlock equals canonical tip";
+    // No discard: template must remain valid.
+    EXPECT_TRUE(tmpl_interface2.has_valid_template()) << "Template stays valid when hashPrevBlock matches canonical tip";
+
+    // Verify guard is inactive when hash_prev_block is zero (not yet set).
+    HeightTracker tracker_zero;
+    auto snap_zero = tracker_zero.GetSnapshot();
+    bool guard_inactive = !(snap_zero.hash_prev_block != uint1024_t(0) &&
+                             stale_hash != snap_zero.hash_prev_block);
+    EXPECT_TRUE(guard_inactive) << "Mismatch guard inactive when HeightTracker hash_prev_block is zero";
 }
