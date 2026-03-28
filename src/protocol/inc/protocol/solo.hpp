@@ -59,13 +59,6 @@ public:
     network::Shared_payload get_work(bool bypass_dedup);
     GetBlockRequestStatus get_last_get_block_request_status() const { return m_last_get_block_request_status.load(); }
 
-    /// Returns the number of consecutive hashPrevBlock mismatches detected by
-    /// validate_current_template() since the last successful template adoption.
-    /// Worker_manager uses this to apply exponential GET_BLOCK backoff during
-    /// node-attack / chain-flux scenarios that would otherwise cause a rapid-fire
-    /// discard-and-retry doom loop.
-    uint32_t get_hashprev_mismatch_consecutive() const { return m_hashprev_mismatch_consecutive; }
-
     /// Reset the GET_BLOCK deduplication timestamp so the next get_work() call will
     /// not be suppressed.  Must be called whenever the canonical tip-anchor changes
     /// (same-height chain reorg) or a new degraded-recovery epoch begins, because the
@@ -490,16 +483,6 @@ private:
     // self-expired once this reaches SESSION_MISMATCH_EXPIRE_THRESHOLD,
     // preventing premature expiry on late/replayed ACKs or node-side races.
     uint32_t m_session_id_mismatch_count{0};
-
-    // Consecutive hashPrevBlock mismatch counter (chain-in-flux doom-loop guard).
-    // Incremented each time validate_current_template() detects a hashPrevBlock mismatch
-    // and would normally discard the template.  After MAX_CONSECUTIVE_HASHPREV_MISMATCHES
-    // consecutive mismatches the template is accepted (not discarded) to prevent the
-    // NO VALID TEMPLATE doom loop that occurs when the node is under attack or its chain
-    // tip is churning rapidly (e.g. orphan limit exceeded by DDoS peer).
-    // Reset to zero whenever a template is successfully validated and fed to workers.
-    uint32_t m_hashprev_mismatch_consecutive{0};
-    static constexpr uint32_t MAX_CONSECUTIVE_HASHPREV_MISMATCHES = 3;
     
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
