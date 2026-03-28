@@ -84,6 +84,9 @@ public:
     // SIM Link: send SESSION_STATUS on each live lane if 300-second interval has elapsed
     void send_session_status_if_due();
 
+    /// Called by the stats timer each tick to collect statistics from the current live workers.
+    void collect_worker_statistics(stats::Collector& collector);
+
     // ── Failover state accessor ────────────────────────────────────────────────
     struct FailoverStatus {
         bool has_failover_configured{false};
@@ -250,11 +253,6 @@ private:
     // Serialises the creation path in set_block_handler with the destruction
     // path in stop_all_workers() so they cannot interleave on m_workers.
     std::mutex m_worker_mutex;
-
-    // Per-epoch idempotency key: set after create_workers() succeeds in the
-    // degraded-mode guard; checked before every subsequent creation attempt.
-    // Reset in stop_all_workers() and clear_recovery_state().
-    bool m_recovery_workers_spawned{false};
 
     // ── Three-tier mined-block confirmation cache ────────────────────────────
     // Tier 1: last 5 mined blocks (confirmation tracking active)

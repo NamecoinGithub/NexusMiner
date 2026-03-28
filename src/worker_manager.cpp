@@ -218,10 +218,10 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 size_t workers_fed = 0;
                 {
                     std::lock_guard<std::mutex> lock(self->m_worker_mutex);
-                    if (self->is_degraded() && !self->m_recovery_workers_spawned && self->m_workers.empty()) {
+                    if (self->is_degraded() && self->m_workers.empty()) {
                         self->m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
                         self->create_workers_locked();
-                        self->m_recovery_workers_spawned = !self->m_workers.empty();  // set AFTER success for exception safety
+                        // create_workers_locked() has its own !m_workers.empty() guard — no separate flag needed
                     }
 
                     /* Safety check - workers should be created by now */
@@ -1186,7 +1186,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         if (!self->m_stats_timers_started)
         {
             self->m_stats_timers_started = true;
-            self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
+            self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self, self->m_stats_collector);
             self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
         }
 
@@ -1622,17 +1622,22 @@ void Worker_manager::clear_recovery_state()
     m_logger->info("[Worker_manager] Clearing recovery state — exiting {} phase",
                    phase_name(m_recovery.phase));
 
-    // Note: m_recovery_workers_spawned is intentionally NOT reset here.
-    // It is only reset in stop_all_workers() which actually destroys workers,
-    // preventing a mid-recovery clear_recovery_state() call (e.g. from a
-    // different epoch's template feed) from allowing duplicate worker creation.
-
     // transition_to(HEALTHY) handles: degraded time accounting, global stats,
     // stats reset, last_completed_at, clearing of all recovery fields.
     transition_to(RecoveryPhase::HEALTHY, "template_distributed");
 
     m_logger->info("[Worker_manager] Recovery state cleared — degraded_exit_count={} cumulative_degraded_time_ms={}",
                    m_degraded_exit_total, m_time_in_degraded_ms);
+}
+
+void Worker_manager::collect_worker_statistics(stats::Collector& collector)
+{
+    std::lock_guard<std::mutex> lock(m_worker_mutex);
+    for (auto& worker : m_workers) {
+        if (worker) {
+            worker->update_statistics(collector);
+        }
+    }
 }
 
 void Worker_manager::stop_all_workers()
@@ -1653,9 +1658,6 @@ void Worker_manager::stop_all_workers()
         worker.reset();
     }
     m_workers.clear();
-
-    // Clear the recovery gate so the next epoch can re-create workers
-    m_recovery_workers_spawned = false;
 
     // Atomically enter WAITING_TEMPLATE so there is no window where m_workers is
     // empty while the phase is still HEALTHY.  mark_recovery_initiated() is
