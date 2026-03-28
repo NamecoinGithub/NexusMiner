@@ -226,6 +226,104 @@ void test_serialization_helpers() {
         test_assert(serialization::read_uint32_le(data, 0) == 0x11111111, "First value correct");
         test_assert(serialization::read_uint32_le(data, 4) == 0x22222222, "Second value correct");
     }
+
+    // --- New helpers: big-endian and uint16/uint8 ---
+
+    std::cout << "\nTest 20: append_uint16_le - basic serialization" << std::endl;
+    {
+        std::vector<uint8_t> data;
+        serialization::append_uint16_le(data, 0xABCD);
+        test_assert(data.size() == 2, "uint16 produces 2 bytes");
+        test_assert(data[0] == 0xCD, "Byte 0 is LSB (0xCD)");
+        test_assert(data[1] == 0xAB, "Byte 1 is MSB (0xAB)");
+    }
+
+    std::cout << "\nTest 21: append_uint16_le - zero and max" << std::endl;
+    {
+        std::vector<uint8_t> data;
+        serialization::append_uint16_le(data, 0);
+        test_assert(data[0] == 0 && data[1] == 0, "Zero produces two zero bytes");
+        data.clear();
+        serialization::append_uint16_le(data, 0xFFFF);
+        test_assert(data[0] == 0xFF && data[1] == 0xFF, "Max produces two 0xFF bytes");
+    }
+
+    std::cout << "\nTest 22: append_uint32_be - basic serialization" << std::endl;
+    {
+        std::vector<uint8_t> data;
+        serialization::append_uint32_be(data, 0x12345678);
+        test_assert(data.size() == 4, "uint32 BE produces 4 bytes");
+        test_assert(data[0] == 0x12, "Byte 0 is MSB (0x12)");
+        test_assert(data[1] == 0x34, "Byte 1 is second byte (0x34)");
+        test_assert(data[2] == 0x56, "Byte 2 is third byte (0x56)");
+        test_assert(data[3] == 0x78, "Byte 3 is LSB (0x78)");
+    }
+
+    std::cout << "\nTest 23: read_uint32_be - basic deserialization" << std::endl;
+    {
+        std::vector<uint8_t> data = {0x12, 0x34, 0x56, 0x78};
+        uint32_t value = serialization::read_uint32_be(data);
+        test_assert(value == 0x12345678, "Reads correct uint32 BE value");
+    }
+
+    std::cout << "\nTest 24: read_uint32_be - with offset" << std::endl;
+    {
+        std::vector<uint8_t> data = {0xFF, 0xFF, 0x12, 0x34, 0x56, 0x78};
+        uint32_t value = serialization::read_uint32_be(data, 2);
+        test_assert(value == 0x12345678, "Reads correct uint32 BE value with offset");
+    }
+
+    std::cout << "\nTest 25: read_uint32_be - insufficient data" << std::endl;
+    {
+        std::vector<uint8_t> data = {0x12, 0x34};
+        uint32_t value = serialization::read_uint32_be(data);
+        test_assert(value == 0, "Returns 0 for insufficient data");
+    }
+
+    std::cout << "\nTest 26: round-trip append/read uint32 BE" << std::endl;
+    {
+        std::vector<uint8_t> data;
+        uint32_t original = 0xDEADBEEF;
+        serialization::append_uint32_be(data, original);
+        uint32_t decoded = serialization::read_uint32_be(data);
+        test_assert(decoded == original, "Round-trip BE preserves value");
+    }
+
+    std::cout << "\nTest 27: read_uint16_be - basic deserialization" << std::endl;
+    {
+        std::vector<uint8_t> data = {0xAB, 0xCD};
+        uint16_t value = serialization::read_uint16_be(data);
+        test_assert(value == 0xABCD, "Reads correct uint16 BE value");
+    }
+
+    std::cout << "\nTest 28: read_uint16_be - with offset" << std::endl;
+    {
+        std::vector<uint8_t> data = {0x00, 0xAB, 0xCD};
+        uint16_t value = serialization::read_uint16_be(data, 1);
+        test_assert(value == 0xABCD, "Reads correct uint16 BE value with offset");
+    }
+
+    std::cout << "\nTest 29: read_uint16_be - insufficient data" << std::endl;
+    {
+        std::vector<uint8_t> data = {0xAB};
+        uint16_t value = serialization::read_uint16_be(data);
+        test_assert(value == 0, "Returns 0 for insufficient data");
+    }
+
+    std::cout << "\nTest 30: read_uint8 - basic read" << std::endl;
+    {
+        std::vector<uint8_t> data = {0x42, 0xFF};
+        test_assert(serialization::read_uint8(data, 0) == 0x42, "Reads first byte");
+        test_assert(serialization::read_uint8(data, 1) == 0xFF, "Reads second byte");
+    }
+
+    std::cout << "\nTest 31: read_uint8 - out of bounds" << std::endl;
+    {
+        std::vector<uint8_t> data = {0x42};
+        test_assert(serialization::read_uint8(data, 1) == 0, "Returns 0 for out-of-bounds offset");
+        std::vector<uint8_t> empty;
+        test_assert(serialization::read_uint8(empty, 0) == 0, "Returns 0 for empty vector");
+    }
 }
 
 int main() {
