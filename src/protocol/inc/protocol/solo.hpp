@@ -116,7 +116,8 @@ public:
     static constexpr uint32_t POLL_INTERVAL_MAX_MS = 60000;    // 60 seconds maximum
     // Minimum push-silence duration before GET_ROUND fallback may trigger GET_BLOCK.
     // Policy: while PUSH is active, GET_ROUND is informational only. Once PUSH has
-    // been silent for 600s, each GET_ROUND poll (20s minimum cadence) may request GET_BLOCK.
+    // been silent for 600s, each GET_ROUND poll (POLL_INTERVAL_MIN_MS minimum cadence)
+    // may request GET_BLOCK.
     static constexpr int64_t PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS = 600;
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work().

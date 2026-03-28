@@ -2067,7 +2067,8 @@ void Worker_manager::check_template_health()
         // Do NOT stop workers based on keepalive fork_score alone.
     }
 
-    // Age-based warning: 480s gives operators a 120s (2-minute) window before the 600s emergency fires.
+    // BLOCK_DATA timeout warning: 480s gives operators a 120s (2-minute) window
+    // before the 600s BLOCK_DATA timeout trigger fires.
     // Both channels use the same threshold — in the push-driven protocol the node pushes
     // on every unified tip advance (~18s apart via hash blocks), so 480s without a push
     // is unusual for either channel.
@@ -2085,7 +2086,7 @@ void Worker_manager::check_template_health()
         retry_template_request(false);
     }
 
-    // Age-based emergency (600s) — dead-connection detector for both channels.
+    // BLOCK_DATA timeout trigger (600s) — dead-connection detector for both channels.
     //
     // In the push-driven era the node pushes fresh BLOCK_DATA within ~2s of every unified
     // tip advance.  Even during long Prime blocks, hash blocks keep advancing the unified
@@ -2095,6 +2096,7 @@ void Worker_manager::check_template_health()
     // It may escalate refresh/reconnect behavior, but MUST NOT invalidate a valid
     // template or halt mining by itself.
     if (template_age > protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
+        constexpr const char* BLOCK_DATA_TIMEOUT_TRIGGER_REASON = "block_data_timeout";
 
         // Bug D fix: During an active recovery epoch, the miner is already waiting for a
         // fresh GET_BLOCK response.  Discarding the template now makes recovery self-defeating:
@@ -2102,7 +2104,7 @@ void Worker_manager::check_template_health()
         // Suppress the hard emergency discard while recovery is pending; the recovery window
         // escalation logic (above) handles escalation if the window expires without a template.
         if (is_recovery_active()) {
-            m_logger->debug("[Worker_manager] Emergency aging ({}s) suppressed during active recovery (epoch {})",
+            m_logger->debug("[Worker_manager] BLOCK_DATA timeout trigger ({}s) suppressed during active recovery (epoch {})",
                             template_age, m_epoch_coordinator->recovery_epoch());
             // Resend GET_BLOCK (non-force: respects RECOVERY_RESEND_INTERVAL_SECONDS rate-limit)
             // so recovery keeps making progress without escalating to hard stop/restart.
@@ -2123,7 +2125,7 @@ void Worker_manager::check_template_health()
         if (recent_push && !chain_advanced) {
             auto since_push_s = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - ht_snap.last_push_notification_at).count();
-            m_logger->warn("[Worker_manager] EMERGENCY deferred: push notification is recent ({}s ago) — "
+            m_logger->warn("[Worker_manager] BLOCK_DATA timeout deferred: push notification is recent ({}s ago) — "
                            "connection alive, awaiting fresh BLOCK_DATA",
                            since_push_s);
             retry_template_request(false);
@@ -2136,7 +2138,7 @@ void Worker_manager::check_template_health()
         bool template_is_newer_than_push = (!template_never_received &&
                                             ht_snap.last_template_update >= ht_snap.last_height_update);
         if (chain_advanced && template_is_newer_than_push) {
-            m_logger->debug("[Worker_manager] ORCHESTRATION TIMEOUT {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive escalation",
+            m_logger->debug("[Worker_manager] BLOCK_DATA timeout {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive escalation",
                 channel_name,
                 std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
                 std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
@@ -2145,12 +2147,12 @@ void Worker_manager::check_template_health()
         }
 
         if (chain_advanced) {
-            m_logger->error("[Worker_manager] ⚠️  ORCHESTRATION TIMEOUT ({} channel): template {}s old and chain advanced — escalating recovery/refresh/reconnect",
+            m_logger->error("[Worker_manager] ⚠️  BLOCK_DATA TIMEOUT TRIGGER ({} channel): template {}s old and chain advanced — escalating recovery",
                             channel_name, template_age);
             m_logger->error("[Worker_manager]    channel_height {} >= channel_target {}",
                             ht_snap.channel_height, ht_snap.channel_target);
         } else {
-            m_logger->error("[Worker_manager] ⚠️  ORCHESTRATION TIMEOUT ({} channel): template {}s old with no recent push — escalating recovery/refresh/reconnect",
+            m_logger->error("[Worker_manager] ⚠️  BLOCK_DATA TIMEOUT TRIGGER ({} channel): template {}s old with no recent push — escalating recovery",
                             channel_name, template_age);
             m_logger->error("[Worker_manager]    channel_height {} / channel_target {}",
                             ht_snap.channel_height, ht_snap.channel_target);
@@ -2161,7 +2163,7 @@ void Worker_manager::check_template_health()
 
         // Non-authoritative path: do NOT discard valid template and do NOT halt workers here.
         // Escalate orchestration only (reconnect + forced GET_BLOCK lane).
-        mark_recovery_initiated("template_age_orchestration_timeout");
+        mark_recovery_initiated(BLOCK_DATA_TIMEOUT_TRIGGER_REASON);
         retry_connect(m_primary_endpoint);
         retry_template_request(true);
     }

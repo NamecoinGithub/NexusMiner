@@ -4869,13 +4869,14 @@ void Solo::disarm_get_round_fallback(const char* reason, int64_t push_age_second
         return;
     }
     m_get_round_push_silent_fallback_active = false;
+    const char* reason_text = reason ? reason : (push_age_seconds >= 0 ? "PUSH active again" : "PUSH re-established");
     if (push_age_seconds >= 0) {
         m_logger->info("[Solo GET_ROUND] {} ({}s ago) — disabling GET_ROUND fallback GET_BLOCK mode",
-            reason ? reason : "PUSH active again",
+            reason_text,
             push_age_seconds);
     } else {
         m_logger->info("[Solo GET_ROUND] {} — disabling GET_ROUND fallback GET_BLOCK mode",
-            reason ? reason : "PUSH re-established");
+            reason_text);
     }
 }
 

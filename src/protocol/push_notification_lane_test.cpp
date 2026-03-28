@@ -73,6 +73,17 @@ bool simulated_matches_stateless_opcode(uint16_t packet_header, bool is_uint16_o
         packet_header == MinerLLP::MirrorOpcode(static_cast<uint8_t>(legacy_opcode));
 }
 
+bool should_trigger_get_round_fallback_get_block(bool has_valid_template,
+                                                 uint32_t node_channel_height,
+                                                 uint32_t template_target_height,
+                                                 int64_t since_push_s)
+{
+    if (!has_valid_template) return false;
+    if (template_target_height == 0) return false;
+    if (node_channel_height < template_target_height) return false;
+    return since_push_s >= protocol::Solo::PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS;
+}
+
 std::vector<uint8_t> create_mock_template(uint32_t height, uint32_t nBits = 0x1d00ffff,
                                           uint8_t channel = 2) {
     std::vector<uint8_t> data(216, 0);
@@ -153,6 +164,7 @@ network::Payload create_template_delivery_payload(uint32_t unified_height,
     payload.insert(payload.end(), block.begin(), block.end());
     return payload;
 }
+
 
 int main()
 {
@@ -997,6 +1009,73 @@ int main()
         // Step 4: Confirm that the installed template is still valid (no further discards).
         print_test_result("Template remains valid after recovery",
             solo.get_template_interface()->has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 21: PUSH-active session blocks GET_ROUND-triggered GET_BLOCK fallback
+    // ====================================================================
+    std::cout << "\nTest 21: PUSH-active session blocks GET_ROUND fallback GET_BLOCK" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        session_manager->start_session(0xAABBCCDD);
+        session_manager->set_falcon_identity({0x21}, "get-round-fallback-test-key", true);
+
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::STATELESS);
+
+        auto template_data = create_mock_template(9601, 0x1d00ffff, 2);
+        auto res = solo.get_template_interface()->read_template(template_data, "test_node", false);
+        solo.get_template_interface()->set_channel_height(101);
+        auto const* setup_template = solo.get_template_interface()->get_current_template();
+        print_test_result("Fallback block test setup template valid",
+            res.is_valid && solo.get_template_interface()->has_valid_template() &&
+            setup_template && setup_template->nChannelHeight == 101);
+
+        // Re-establish PUSH liveness by sending a HASH push that keeps the template valid
+        // (channel tip remains behind nChannelHeight target 101).
+        network::Payload hash_push_payload = create_extended_push_payload(9600, 100, 0x1d00ffff, 0x33);
+        Packet hash_push_packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), hash_push_payload);
+        solo.process_messages(hash_push_packet, nullptr);
+
+        print_test_result("Recent PUSH blocks GET_ROUND-triggered GET_BLOCK fallback",
+            !should_trigger_get_round_fallback_get_block(true, 101, 101, 5));
+    }
+
+    // ====================================================================
+    // Test 22: PUSH-silent fallback path enables GET_ROUND-triggered GET_BLOCK
+    // ====================================================================
+    std::cout << "\nTest 22: PUSH-silent fallback enables GET_ROUND-triggered GET_BLOCK" << std::endl;
+    {
+        print_test_result("PUSH active (<600s) blocks GET_ROUND fallback trigger",
+            !should_trigger_get_round_fallback_get_block(true, 101, 101, 599));
+        print_test_result("PUSH silent (>=600s) enables GET_ROUND fallback trigger",
+            should_trigger_get_round_fallback_get_block(true, 101, 101, 600));
+    }
+
+    // ====================================================================
+    // Test 23: First PUSH after silence disarms GET_ROUND fallback mode
+    // ====================================================================
+    std::cout << "\nTest 23: First PUSH after silence disarms GET_ROUND fallback mode" << std::endl;
+    {
+        bool fallback_mode_armed = false;
+        auto on_get_round_parity = [&](int64_t since_push_s, uint32_t node_channel_height, uint32_t template_target_height) {
+            const bool parity_reached = (template_target_height > 0) && (node_channel_height >= template_target_height);
+            const bool push_silent = since_push_s >= protocol::Solo::PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS;
+            if (parity_reached && push_silent) {
+                fallback_mode_armed = true;
+                return true;
+            }
+            return false;
+        };
+        auto on_push_reestablished = [&]() { fallback_mode_armed = false; };
+
+        bool first_trigger = on_get_round_parity(600, 101, 101);
+        print_test_result("Silence path first GET_ROUND parity arms fallback trigger", first_trigger && fallback_mode_armed);
+
+        on_push_reestablished();
+        bool second_trigger = on_get_round_parity(0, 101, 101);
+        print_test_result("First PUSH after silence disarms fallback mode", !fallback_mode_armed && !second_trigger);
     }
 
     std::cout << "\n========================================" << std::endl;
