@@ -596,6 +596,7 @@ int main()
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
         bool recovery_called = false;
+        bool reset_dedup_called = false;
 
         network::Payload payload = create_extended_push_payload(5000, 100, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -634,6 +635,7 @@ int main()
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
         bool recovery_called = false;
+        bool reset_dedup_called = false;
 
         network::Payload payload = create_extended_push_payload(5049, 99, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -765,6 +767,7 @@ int main()
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
         bool recovery_called = false;
+        bool reset_dedup_called = false;
 
         network::Payload payload = create_extended_push_payload(8002, 100, 0x1d00ffff, 0x00);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -777,11 +780,13 @@ int main()
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
             [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; });
+            [&recovery_called]() { recovery_called = true; },
+            [&reset_dedup_called]() { reset_dedup_called = true; });
 
         print_test_result("Tip moved requests fresh work", request_work_called);
         print_test_result("Tip moved keeps active template valid", tmpl_interface.has_valid_template());
         print_test_result("Tip moved does not notify hard recovery path", !recovery_called);
+        print_test_result("Tip moved resets GET_BLOCK dedup guard before refresh", reset_dedup_called);
     }
 
     // ====================================================================
