@@ -32,9 +32,11 @@ namespace stats { class Collector; }
 namespace protocol { class Protocol; class Solo; }
 class Worker;
 class ColinAgent;
+class TemplateDistributor;
 
 class Worker_manager : public std::enable_shared_from_this<Worker_manager>
 {
+    friend class TemplateDistributor;  // accesses private members for template distribution
 public:
 
     using Config = config::Config;
@@ -164,11 +166,10 @@ private:
     bool m_lane_health_timer_started{false};
 
     // ── Failover state ────────────────────────────────────────────────────────
+    // Failover switchover logic is centralized in DualConnectionManager (m_sim_link).
+    // Worker_manager retains only the endpoint storage needed for retry_connect().
     network::Endpoint m_primary_endpoint;      // saved on first connect()
     network::Endpoint m_failover_endpoint;     // built from config if has_failover()
-    bool              m_using_failover{false}; // currently retrying on failover?
-    uint32_t          m_primary_fail_count{0}; // consecutive failures on the active side
-    std::chrono::steady_clock::time_point m_failover_activated_at{}; // when failover last became active
 
     // Node-advertised keepalive interval (hours), updated from SESSION_START on primary lane.
     // Used to seed secondary/failover Solo instances instead of the static config value.

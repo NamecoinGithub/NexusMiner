@@ -126,6 +126,49 @@ public:
     bool is_using_failover() const { return m_using_failover; }
     std::string const& get_active_node_ip() const { return m_active_node_ip; }
 
+    // ── Failover switchover state ────────────────────────────────────────────
+    /// Result of a connection failure decision.
+    struct FailoverDecision {
+        bool switched{false};            ///< True if primary↔failover switch occurred
+        bool endpoint_changed{false};    ///< True if caller should use a different endpoint
+    };
+
+    /// Store the primary and failover endpoints and switchover threshold.
+    /// Called once during initial connection setup.
+    void init_failover(uint32_t max_retries)
+    {
+        m_failover_max_retries = max_retries;
+    }
+
+    /// Record a connection failure and decide whether to switch nodes.
+    /// Returns a decision struct indicating whether a switchover occurred.
+    FailoverDecision record_connection_failure()
+    {
+        FailoverDecision decision;
+        ++m_primary_fail_count;
+        if (m_primary_fail_count >= m_failover_max_retries)
+        {
+            m_using_failover = !m_using_failover;
+            m_primary_fail_count = 0;
+            decision.switched = true;
+            decision.endpoint_changed = true;
+            if (m_using_failover) {
+                m_failover_activated_at = std::chrono::steady_clock::now();
+            }
+        }
+        return decision;
+    }
+
+    /// Reset failure counters after a successful connection.
+    void reset_fail_count()
+    {
+        m_primary_fail_count = 0;
+    }
+
+    uint32_t primary_fail_count()      const { return m_primary_fail_count; }
+    uint32_t failover_max_retries()    const { return m_failover_max_retries; }
+    std::chrono::steady_clock::time_point failover_activated_at() const { return m_failover_activated_at; }
+
 private:
     bool m_stateless_alive{false};
     bool m_legacy_alive{false};
@@ -140,6 +183,9 @@ private:
     // Failover state (node endpoint changes; lane never changes)
     bool m_using_failover{false};
     std::string m_active_node_ip;
+    uint32_t m_primary_fail_count{0};
+    uint32_t m_failover_max_retries{3};  // default; set by init_failover()
+    std::chrono::steady_clock::time_point m_failover_activated_at{};
 };
 
 } // namespace nexusminer

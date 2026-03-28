@@ -132,6 +132,55 @@ int main()
         std::cout << '\n';
     }
 
+    {
+        std::cout << "Test 8: Failover switchover after max retries\n";
+        DualConnectionManager mgr;
+        mgr.init_failover(3);  // switch after 3 failures
+        ok &= expect(!mgr.is_using_failover(), "Initially on primary");
+        // First two failures — no switch
+        auto d1 = mgr.record_connection_failure();
+        ok &= expect(!d1.switched, "No switch after 1 failure");
+        ok &= expect(mgr.primary_fail_count() == 1, "Fail count is 1");
+        auto d2 = mgr.record_connection_failure();
+        ok &= expect(!d2.switched, "No switch after 2 failures");
+        // Third failure — switch to failover
+        auto d3 = mgr.record_connection_failure();
+        ok &= expect(d3.switched, "Switch after 3 failures");
+        ok &= expect(mgr.is_using_failover(), "Now on failover");
+        ok &= expect(mgr.primary_fail_count() == 0, "Fail count reset after switch");
+        ok &= expect(mgr.failover_activated_at() != std::chrono::steady_clock::time_point{},
+                      "Failover activation timestamp set");
+        std::cout << '\n';
+    }
+
+    {
+        std::cout << "Test 9: Failover switches back to primary after max retries\n";
+        DualConnectionManager mgr;
+        mgr.init_failover(2);
+        // Force to failover
+        mgr.record_connection_failure();
+        mgr.record_connection_failure();
+        ok &= expect(mgr.is_using_failover(), "On failover after 2 failures");
+        // Now fail failover twice — should switch back to primary
+        mgr.record_connection_failure();
+        auto d = mgr.record_connection_failure();
+        ok &= expect(d.switched, "Switch back after failover failures");
+        ok &= expect(!mgr.is_using_failover(), "Back on primary");
+        std::cout << '\n';
+    }
+
+    {
+        std::cout << "Test 10: reset_fail_count clears on success\n";
+        DualConnectionManager mgr;
+        mgr.init_failover(3);
+        mgr.record_connection_failure();
+        mgr.record_connection_failure();
+        ok &= expect(mgr.primary_fail_count() == 2, "Fail count is 2");
+        mgr.reset_fail_count();
+        ok &= expect(mgr.primary_fail_count() == 0, "Fail count reset to 0");
+        std::cout << '\n';
+    }
+
     std::cout << "========================================\n";
     std::cout << "Test Summary\n";
     std::cout << "========================================\n";

@@ -205,6 +205,7 @@ set(MAIN_SOURCE_FILES src/main.cpp
                 src/timer_manager.cpp
                 src/dual_connection_manager.cpp
                 src/recovery_state_machine.cpp
+                src/template_distributor.cpp
                 src/colin_agent.cpp)
 
 add_executable(NexusMiner ${MAIN_SOURCE_FILES})
@@ -249,6 +250,14 @@ target_link_libraries(NexusMiner Threads::Threads)
 add_executable(dual_connection_manager_test src/dual_connection_manager_test.cpp src/dual_connection_manager.cpp)
 target_include_directories(dual_connection_manager_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME dual_connection_manager_test COMMAND $<TARGET_FILE:dual_connection_manager_test>)
+
+# RecoveryStateMachine unit test
+add_executable(recovery_state_machine_test
+    src/recovery_state_machine_test.cpp
+    src/recovery_state_machine.cpp)
+target_include_directories(recovery_state_machine_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(recovery_state_machine_test protocol stats config spdlog::spdlog)
+add_test(NAME recovery_state_machine_test COMMAND $<TARGET_FILE:recovery_state_machine_test>)
 
 # ============================================================================
 # Installation and packaging
