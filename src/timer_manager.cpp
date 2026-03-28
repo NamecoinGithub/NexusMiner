@@ -4,7 +4,6 @@
 #include "worker_manager.hpp"
 #include "stats/stats_collector.hpp"
 #include "stats/stats_printer.hpp"
-#include "worker.hpp"
 #include "protocol/solo.hpp"
 
 namespace nexusminer
@@ -28,11 +27,11 @@ void Timer_manager::start_connection_retry_timer(std::uint16_t timer_interval, s
         connection_retry_handler(std::move(worker_manager), wallet_endpoint));
 }
 
-void Timer_manager::start_stats_collector_timer(std::uint16_t timer_interval, std::vector<std::shared_ptr<Worker>> workers, 
+void Timer_manager::start_stats_collector_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager,
     std::shared_ptr<stats::Collector> stats_collector)
 {
-    m_stats_collector_timer->start(chrono::Seconds(timer_interval), stats_collector_handler(timer_interval, workers, 
-        std::move(stats_collector)));
+    m_stats_collector_timer->start(chrono::Seconds(timer_interval), stats_collector_handler(timer_interval,
+        std::move(worker_manager), std::move(stats_collector)));
 }
 
 void Timer_manager::start_stats_printer_timer(std::uint16_t timer_interval, std::vector<std::shared_ptr<stats::Printer>> stats_printers)
@@ -75,23 +74,27 @@ chrono::Timer::Handler Timer_manager::connection_retry_handler(std::weak_ptr<Wor
     }; 
 }
 
-chrono::Timer::Handler Timer_manager::stats_collector_handler(std::uint16_t stats_collector_interval, 
-    std::vector<std::shared_ptr<Worker>> workers, std::shared_ptr<stats::Collector> stats_collector)
+chrono::Timer::Handler Timer_manager::stats_collector_handler(std::uint16_t stats_collector_interval,
+    std::weak_ptr<Worker_manager> worker_manager, std::shared_ptr<stats::Collector> stats_collector)
 {
-    return[this, workers, stats_collector_interval, stats_collector = std::move(stats_collector)](bool canceled)
+    return[this, worker_manager, stats_collector_interval, stats_collector = std::move(stats_collector)](bool canceled)
     {
         if (canceled)	// don't do anything if the timer has been canceled
         {
             return;
         }
 
-        for(auto& worker : workers)
+        auto wm = worker_manager.lock();
+        if (!wm)
         {
-            worker->update_statistics(*stats_collector);
+            return;
         }
+
+        wm->collect_worker_statistics(*stats_collector);
+
         // restart timer
         m_stats_collector_timer->start(chrono::Seconds(stats_collector_interval), 
-            stats_collector_handler(stats_collector_interval, workers, std::move(stats_collector)));
+            stats_collector_handler(stats_collector_interval, worker_manager, std::move(stats_collector)));
     }; 
 }
 
