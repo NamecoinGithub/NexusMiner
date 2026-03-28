@@ -1872,11 +1872,12 @@ void Worker_manager::check_template_health()
                        push_received ? since_push_s : static_cast<int64_t>(-1),
                        push_recent ? "YES" : "NO");
 
-        // After 60s without template, check connection health
+        // After 60s without template, check connection health.
+        // IMPORTANT: push silence is orchestration-layer only — it may trigger reconnect,
+        // but must not suppress authoritative GET_BLOCK refresh attempts.
         if (degraded_secs > 60 && !push_recent) {
             m_logger->error("[Worker_manager] ⛔ 60s timeout: no template and push is dead — reconnecting");
             retry_connect(m_primary_endpoint);
-            return;
         }
 
         // Retry GET_BLOCK on every health check tick
@@ -2057,11 +2058,9 @@ void Worker_manager::check_template_health()
     // tip advance.  Even during long Prime blocks, hash blocks keep advancing the unified
     // chain every ~18s, so a push should arrive well within 600s.
     //
-    // If template_age > 600s the connection is almost certainly dead (missed push).
-    // We then check HeightTracker to distinguish the two sub-cases for logging:
-    //   • chain advanced  → push missed while chain moved  (clear emergency)
-    //   • chain unchanged → push missed, chain stuck or truly no advance yet
-    //     Either way the connection needs recovery — do NOT silently loop forever.
+    // If template_age > 600s, treat this as an orchestration-layer recovery signal.
+    // It may escalate refresh/reconnect behavior, but MUST NOT invalidate a valid
+    // template or halt mining by itself.
     if (template_age > protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
 
         // Bug D fix: During an active recovery epoch, the miner is already waiting for a
@@ -2098,46 +2097,39 @@ void Worker_manager::check_template_health()
             return;
         }
 
-        if (chain_advanced) {
-            // Apply the same temporal guard as the primary staleness check.
-            // Even in the emergency path, if the template is newer than the last push,
-            // the staleness is a false positive — suppress the hard recovery.
-            // STARTUP GUARD: zero time_point compares as epoch; treat as "never received".
-            bool template_never_received = (ht_snap.last_template_update == std::chrono::steady_clock::time_point{});
-            bool template_is_newer_than_push = (!template_never_received &&
-                                                ht_snap.last_template_update >= ht_snap.last_height_update);
-            if (template_is_newer_than_push) {
-                m_logger->debug("[Worker_manager] EMERGENCY {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive stop",
-                    channel_name,
-                    std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
-                    std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
-                retry_template_request(false);
-                return;
-            }
-            m_logger->error("[Worker_manager] ❌ EMERGENCY ({} channel): template {}s old AND chain advanced!",
-                            channel_name, template_age);
-            m_logger->error("[Worker_manager]    channel_height {} >= channel_target {} — push notification missed",
-                            ht_snap.channel_height, ht_snap.channel_target);
-            m_logger->error("[Worker_manager]    Forcing hard recovery (discard + stop + retry)");
-        } else {
-            // Chain has not advanced in HeightTracker, but 200s without a push means the
-            // connection is likely dead.  For Prime this could also be a genuinely long block,
-            // but 600s without any hash-block push is still a dead-connection signal.
-            m_logger->error("[Worker_manager] ❌ EMERGENCY ({} channel): template {}s old — no push received",
-                            channel_name, template_age);
-            m_logger->error("[Worker_manager]    channel_height {} / channel_target {} (chain not yet advanced in tracker)",
-                            ht_snap.channel_height, ht_snap.channel_target);
-            if (channel == mining::CHANNEL_PRIME) {
-                m_logger->error("[Worker_manager]    Prime blocks are long, but 600s without ANY push (hash or prime) indicates a dead connection");
-            }
-            m_logger->error("[Worker_manager]    Forcing hard recovery (discard + stop + retry)");
+        // Apply the same temporal guard as the primary staleness check.
+        // Even in this emergency path, if template is newer than last push, staleness is false-positive.
+        bool template_never_received = (ht_snap.last_template_update == std::chrono::steady_clock::time_point{});
+        bool template_is_newer_than_push = (!template_never_received &&
+                                            ht_snap.last_template_update >= ht_snap.last_height_update);
+        if (chain_advanced && template_is_newer_than_push) {
+            m_logger->debug("[Worker_manager] EMERGENCY {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive escalation",
+                channel_name,
+                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
+                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
+            retry_template_request(false);
+            return;
         }
 
-        template_interface->discard_template("Emergency: age " + std::to_string(template_age) +
-                                             "s exceeded " + std::to_string(protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) + "s limit");
-        stop_all_workers();
-        // Keep degraded mode authoritative here: workers are recreated just-in-time by the
-        // template feed path once a valid replacement template actually arrives.
+        if (chain_advanced) {
+            m_logger->error("[Worker_manager] ⚠️  EMERGENCY signal ({} channel): template {}s old and chain advanced — escalating refresh/reconnect",
+                            channel_name, template_age);
+            m_logger->error("[Worker_manager]    channel_height {} >= channel_target {}",
+                            ht_snap.channel_height, ht_snap.channel_target);
+        } else {
+            m_logger->error("[Worker_manager] ⚠️  EMERGENCY signal ({} channel): template {}s old with no recent push — escalating refresh/reconnect",
+                            channel_name, template_age);
+            m_logger->error("[Worker_manager]    channel_height {} / channel_target {}",
+                            ht_snap.channel_height, ht_snap.channel_target);
+            if (channel == mining::CHANNEL_PRIME) {
+                m_logger->error("[Worker_manager]    Prime blocks may be long; treating this as recovery signal only");
+            }
+        }
+
+        // Non-authoritative path: do NOT discard valid template and do NOT halt workers here.
+        // Escalate orchestration only (reconnect + forced GET_BLOCK lane).
+        mark_recovery_initiated("template_age_emergency_signal");
+        retry_connect(m_primary_endpoint);
         retry_template_request(true);
     }
 }
