@@ -45,6 +45,39 @@ private:
     network::Endpoint m_local_endpoint;
 };
 
+class MockSocketTransportFailure : public network::Socket {
+public:
+    MockSocketTransportFailure(std::shared_ptr<asio::io_context> io_context, network::Result::Code result)
+        : m_io_context(std::move(io_context)), m_result(result), m_local_endpoint{} {}
+
+    network::Result::Code listen(Connect_handler handler) override
+    {
+        return network::Result::Code::socket_ok;
+    }
+
+    void stop_listen() override {}
+
+    network::Endpoint const& local_endpoint() const override
+    {
+        return m_local_endpoint;
+    }
+
+    network::Connection::Sptr connect(network::Endpoint remote_endpoint,
+                                      network::Connection::Handler handler) override
+    {
+        if (handler) {
+            auto rx = std::make_shared<std::vector<uint8_t>>();
+            handler(m_result, std::move(rx));
+        }
+        return nullptr;
+    }
+
+private:
+    std::shared_ptr<asio::io_context> m_io_context;
+    network::Result::Code m_result;
+    network::Endpoint m_local_endpoint;
+};
+
 void test_node_session_creation()
 {
     std::cout << "Test: NodeSession creation..." << std::endl;
@@ -247,6 +280,53 @@ void test_node_session_stop_and_reset()
     std::cout << "  ✓ Stop closes connections and resets state" << std::endl;
 }
 
+void test_transport_failure_routes_to_recoverable_connect_callback()
+{
+    std::cout << "Test: transport failure routes to recoverable callback..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+
+    auto logger = spdlog::get("test_logger_transport_failure");
+    if (!logger) {
+        logger = spdlog::stdout_color_mt("test_logger_transport_failure");
+    }
+    config::Config config(logger);
+    config.set_mining_mode(config::Mining_mode::HASH);
+
+    auto socket = std::make_shared<MockSocketTransportFailure>(
+        io_context,
+        network::Result::Code::connection_closed);
+    auto stats_collector = std::make_shared<stats::Collector>(config);
+
+    auto node_session = std::make_shared<NodeSession>(
+        io_context,
+        config,
+        socket,
+        stats_collector,
+        "TEST_PRIMARY");
+
+    bool callback_called = false;
+    bool connect_success = true;
+    network::Endpoint endpoint{
+        network::Transport_protocol::tcp,
+        "127.0.0.1",
+        9323
+    };
+
+    bool connect_started = node_session->connect(endpoint, [&](bool success) {
+        callback_called = true;
+        connect_success = success;
+    });
+
+    assert(connect_started);
+    assert(callback_called);
+    assert(!connect_success);
+    assert(!node_session->is_primary_connected());
+
+    std::cout << "  ✓ connection_closed propagates through recoverable connect callback" << std::endl;
+    std::cout << "  ✓ primary-connected state remains false after transport failure" << std::endl;
+}
+
 int main()
 {
     std::cout << "\n=== NodeSession Unit Tests ===\n" << std::endl;
@@ -265,6 +345,9 @@ int main()
         std::cout << std::endl;
 
         test_node_session_stop_and_reset();
+        std::cout << std::endl;
+
+        test_transport_failure_routes_to_recoverable_connect_callback();
         std::cout << std::endl;
 
         std::cout << "=== All NodeSession tests passed! ===\n" << std::endl;

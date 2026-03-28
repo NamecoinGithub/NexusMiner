@@ -30,7 +30,7 @@
 #include <random>
 #include <iomanip>
 #include <sstream>
-#include <cstring>
+#include <string_view>
 
 namespace nexusminer
 {
@@ -91,25 +91,27 @@ namespace {
         if (!reason) {
             return false;
         }
-        return std::strcmp(reason, "session_expired") == 0 ||
-               std::strcmp(reason, "session_id_zero") == 0 ||
-               std::strcmp(reason, "session_auth_retry_exhausted") == 0 ||
-               std::strcmp(reason, "authenticated_session_lost") == 0;
+        const std::string_view r{reason};
+        return r == "session_expired" ||
+               r == "session_id_zero" ||
+               r == "session_auth_retry_exhausted" ||
+               r == "authenticated_session_lost";
     }
 
     bool is_transport_origin_reason(const char* reason) {
         if (!reason) {
             return false;
         }
-        return std::strcmp(reason, "tcp_reconnect") == 0 ||
-               std::strcmp(reason, "connection_closed") == 0 ||
-               std::strcmp(reason, "connection_aborted") == 0 ||
-               std::strcmp(reason, "connection_declined") == 0 ||
-               std::strcmp(reason, "connection_error") == 0 ||
-               std::strcmp(reason, "keepalive_stale") == 0 ||
-               std::strcmp(reason, "push_silence") == 0 ||
-               std::strcmp(reason, "node_silence") == 0 ||
-               std::strcmp(reason, "transport_reconnect") == 0;
+        const std::string_view r{reason};
+        return r == "tcp_reconnect" ||
+               r == "connection_closed" ||
+               r == "connection_aborted" ||
+               r == "connection_declined" ||
+               r == "connection_error" ||
+               r == "keepalive_stale" ||
+               r == "push_silence" ||
+               r == "node_silence" ||
+               r == "transport_reconnect";
     }
 
 }
