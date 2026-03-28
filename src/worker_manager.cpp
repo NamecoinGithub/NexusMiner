@@ -873,10 +873,10 @@ void Worker_manager::stop()
     m_timer_manager.stop();
 
     // Reset timer guards so timers restart if connect() is called again after stop().
-    m_stats_timers_started = false;
-    m_template_health_timer_started = false;
-    m_get_round_timer_started = false;
-    m_lane_health_timer_started = false;
+    m_stats_timers_started.store(false);
+    m_template_health_timer_started.store(false);
+    m_get_round_timer_started.store(false);
+    m_lane_health_timer_started.store(false);
 
     if (m_colin_agent)
     {
@@ -1199,27 +1199,24 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 
         // Start timers once only (guarded by flags)
         auto const print_statistics_interval = self->m_config.get_print_statistics_interval();
-        if (!self->m_stats_timers_started)
+        if (!self->m_stats_timers_started.exchange(true))
         {
-            self->m_stats_timers_started = true;
             self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self, self->m_stats_collector);
             self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
         }
 
         // Start template health monitor
         constexpr uint16_t TEMPLATE_HEALTH_INTERVAL = 30;
-        if (!self->m_template_health_timer_started)
+        if (!self->m_template_health_timer_started.exchange(true))
         {
-            self->m_template_health_timer_started = true;
             self->m_timer_manager.start_template_health_timer(TEMPLATE_HEALTH_INTERVAL, self);
             self->m_logger->info("[Worker_manager] Template health monitor started (30s interval)");
         }
 
         // Start GET_ROUND timer (access primary protocol through NodeSession)
         constexpr uint16_t GET_ROUND_TIMER_INTERVAL = 1;
-        if (!self->m_get_round_timer_started)
+        if (!self->m_get_round_timer_started.exchange(true))
         {
-            self->m_get_round_timer_started = true;
             auto solo_protocol_ptr = self->m_primary_node_session->get_primary_protocol();
             auto connection_shared = self->m_primary_node_session->get_primary_connection();
             if (solo_protocol_ptr && connection_shared) {
@@ -1236,9 +1233,8 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 
         // Start lane health check timer
         constexpr uint16_t LANE_HEALTH_INTERVAL = 30;
-        if (!self->m_lane_health_timer_started)
+        if (!self->m_lane_health_timer_started.exchange(true))
         {
-            self->m_lane_health_timer_started = true;
             self->m_timer_manager.start_lane_health_check_timer(LANE_HEALTH_INTERVAL, self);
         }
 

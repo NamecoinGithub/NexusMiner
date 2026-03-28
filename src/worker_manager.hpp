@@ -211,10 +211,10 @@ private:
     };
 
     // ── Timer guards: start timers once per connect/stop cycle (reset in stop()) ──
-    bool m_stats_timers_started{false};
-    bool m_template_health_timer_started{false};
-    bool m_get_round_timer_started{false};
-    bool m_lane_health_timer_started{false};
+    std::atomic<bool> m_stats_timers_started{false};
+    std::atomic<bool> m_template_health_timer_started{false};
+    std::atomic<bool> m_get_round_timer_started{false};
+    std::atomic<bool> m_lane_health_timer_started{false};
 
     // ── Failover state ────────────────────────────────────────────────────────
     network::Endpoint m_primary_endpoint;      // saved on first connect()
