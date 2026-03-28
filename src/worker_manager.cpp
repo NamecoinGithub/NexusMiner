@@ -883,6 +883,14 @@ void Worker_manager::stop()
     m_workers.clear();
 }
 
+void Worker_manager::enter_terminal_degraded_mode(int signal_number)
+{
+    m_recovery.degraded_signal = signal_number;
+    transition_to(RecoveryPhase::DEGRADED_MODE, "signal_terminal_exit");
+    m_logger->critical("[Worker_manager] TERMINAL DEGRADED MODE entered by signal {} — full stop", signal_number);
+    stop();
+}
+
 uint16_t Worker_manager::get_effective_keepalive_interval() const
 {
     uint16_t node_interval = m_node_keepalive_interval_hours.load();
@@ -1411,12 +1419,15 @@ const char* Worker_manager::phase_name(RecoveryPhase phase) {
         case RecoveryPhase::HEALTHY:          return "HEALTHY";
         case RecoveryPhase::WAITING_TEMPLATE: return "WAITING_TEMPLATE";
         case RecoveryPhase::RECONNECTING:     return "RECONNECTING";
+        case RecoveryPhase::DEGRADED_MODE:    return "DEGRADED_MODE";
     }
     return "UNKNOWN";
 }
 
 bool Worker_manager::is_valid_transition(RecoveryPhase from, RecoveryPhase to) {
     if (from == to) return true;
+    if (from == RecoveryPhase::DEGRADED_MODE) return false;
+    if (to == RecoveryPhase::DEGRADED_MODE) return true;
     switch (from) {
         case RecoveryPhase::HEALTHY:
             return to == RecoveryPhase::WAITING_TEMPLATE ||
@@ -1427,6 +1438,8 @@ bool Worker_manager::is_valid_transition(RecoveryPhase from, RecoveryPhase to) {
         case RecoveryPhase::RECONNECTING:
             return to == RecoveryPhase::HEALTHY ||
                    to == RecoveryPhase::WAITING_TEMPLATE;
+        case RecoveryPhase::DEGRADED_MODE:
+            return false;
     }
     return false;
 }
@@ -1471,6 +1484,12 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
         }
         case RecoveryPhase::RECONNECTING: {
             m_recovery.reconnect_started_at = std::chrono::steady_clock::now();
+            break;
+        }
+        case RecoveryPhase::DEGRADED_MODE: {
+            auto global_stats = m_stats_collector->get_global_stats();
+            global_stats.m_degraded_mode = true;
+            m_stats_collector->update_global_stats(global_stats);
             break;
         }
     }

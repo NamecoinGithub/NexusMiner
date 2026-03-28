@@ -37,14 +37,17 @@ namespace nexusminer
 		m_signals->add(SIGQUIT);
 #endif 
 
-		m_signals->async_wait([this](auto, auto)
+		m_signals->async_wait([this](const asio::error_code&, int signal_number)
 		{
-			m_logger->info("Shutting down NexusMiner");
+			m_logger->info("Shutting down NexusMiner (signal={})", signal_number);
 			if (m_worker_manager)
 			{
-				m_worker_manager->stop();
+				m_worker_manager->enter_terminal_degraded_mode(signal_number);
 			}
-			m_io_context->stop();
+			else
+			{
+				m_io_context->stop();
+			}
 			exit(1);
 		});
 	}
