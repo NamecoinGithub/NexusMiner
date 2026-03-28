@@ -42,6 +42,7 @@ enum class RecoveryPhase : uint8_t {
     HEALTHY,          // Mining normally
     WAITING_TEMPLATE, // Waiting for new template; workers keep running
     RECONNECTING,     // TCP reconnect in progress
+    DEGRADED_MODE,    // Terminal full-stop (signal-driven shutdown path)
 };
 
 struct RecoveryContext {
@@ -56,6 +57,7 @@ struct RecoveryContext {
 
     // ── Reconnect sub-state (only valid when phase == RECONNECTING) ──────────
     std::chrono::steady_clock::time_point reconnect_started_at{};
+    int degraded_signal{0};
 
 };
 
@@ -72,6 +74,7 @@ public:
 
     // stop the component and destroy all workers
     void stop();
+    void enter_terminal_degraded_mode(int signal_number);
     
     // Worker control methods for degraded mode (public for timer access)
     void check_template_health();
