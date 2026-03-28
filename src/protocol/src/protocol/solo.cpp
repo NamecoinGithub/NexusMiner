@@ -392,7 +392,7 @@ void Solo::refresh_cached_session_state(const char* log_scope)
     // monotonic authority and is NEVER reset to 0 on disconnect/reauth.
     const uint64_t authoritative_epoch = m_coordinator
         ? m_coordinator->session_epoch().get()
-        : session.session_epoch;
+        : session.coordinator.session_epoch.get();
 
     if (!m_has_seen_session_epoch || m_session_epoch != authoritative_epoch) {
         if (!m_has_seen_session_epoch) {
@@ -409,41 +409,41 @@ void Solo::refresh_cached_session_state(const char* log_scope)
         m_height_tracker.set_session_epoch(m_session_epoch);
     }
 
-    if (m_authenticated != session.authenticated) {
-        if (is_expected_cached_session_resync(m_authenticated, session.authenticated)) {
+    if (m_authenticated != session.coordinator.authenticated) {
+        if (is_expected_cached_session_resync(m_authenticated, session.coordinator.authenticated)) {
             m_logger->info("[{}] Resyncing local auth flag from authoritative session container after reconnect: local={} authoritative={}",
-                           log_scope, m_authenticated ? "true" : "false", session.authenticated ? "true" : "false");
+                           log_scope, m_authenticated ? "true" : "false", session.coordinator.authenticated ? "true" : "false");
         } else {
             m_logger->warn("[{}] Local auth flag drifted from authoritative session container mid-session: local={} authoritative={}",
-                           log_scope, m_authenticated ? "true" : "false", session.authenticated ? "true" : "false");
+                           log_scope, m_authenticated ? "true" : "false", session.coordinator.authenticated ? "true" : "false");
         }
-        m_authenticated = session.authenticated;
+        m_authenticated = session.coordinator.authenticated;
     }
 
-    if (m_session_id != session.session_id) {
-        if (is_expected_cached_session_resync(m_session_id != 0, session.session_id != 0)) {
+    if (m_session_id != session.coordinator.session_id.get()) {
+        if (is_expected_cached_session_resync(m_session_id != 0, session.coordinator.session_id.get() != 0)) {
             m_logger->info("[{}] Resyncing local session_id from authoritative session container after reconnect: local=0x{:08x} authoritative=0x{:08x}",
-                           log_scope, m_session_id, session.session_id);
+                           log_scope, m_session_id, session.coordinator.session_id.get());
         } else {
             m_logger->warn("[{}] Local session_id drifted from authoritative session container mid-session: local=0x{:08x} authoritative=0x{:08x}",
-                           log_scope, m_session_id, session.session_id);
+                           log_scope, m_session_id, session.coordinator.session_id.get());
         }
-        m_session_id = session.session_id;
+        m_session_id = session.coordinator.session_id.get();
     }
 
-    if (session.authenticated && session.session_id != 0) {
+    if (session.coordinator.authenticated && session.coordinator.session_id.get() != 0) {
         propagate_session_to_template_interface(log_scope);
     }
 
-    if (m_reward_bound != session.reward_bound) {
-        if (is_expected_cached_session_resync(m_reward_bound, session.reward_bound)) {
+    if (m_reward_bound != session.coordinator.reward_bound) {
+        if (is_expected_cached_session_resync(m_reward_bound, session.coordinator.reward_bound)) {
             m_logger->info("[{}] Resyncing local reward_bound from authoritative session container after reconnect: local={} authoritative={}",
-                           log_scope, m_reward_bound ? "true" : "false", session.reward_bound ? "true" : "false");
+                           log_scope, m_reward_bound ? "true" : "false", session.coordinator.reward_bound ? "true" : "false");
         } else {
             m_logger->warn("[{}] Local reward_bound drifted from authoritative session container mid-session: local={} authoritative={}",
-                           log_scope, m_reward_bound ? "true" : "false", session.reward_bound ? "true" : "false");
+                           log_scope, m_reward_bound ? "true" : "false", session.coordinator.reward_bound ? "true" : "false");
         }
-        m_reward_bound = session.reward_bound;
+        m_reward_bound = session.coordinator.reward_bound;
     }
 
     if (m_protocol_lane != session.active_lane &&
@@ -464,7 +464,7 @@ SessionOwnershipStamp Solo::capture_session_ownership() const
     }
 
     const auto session = m_session_context->get_runtime_snapshot();
-    return { SessionId(session.session_id), SessionEpoch(session.session_epoch) };
+    return { session.coordinator.session_id, session.coordinator.session_epoch };
 }
 
 SubmitContext Solo::capture_submit_context(uint32_t template_height,
@@ -479,8 +479,8 @@ SubmitContext Solo::capture_submit_context(uint32_t template_height,
     }
 
     const auto session = m_session_context->get_runtime_snapshot();
-    context.session_id = SessionId(session.session_id);
-    context.session_epoch = SessionEpoch(session.session_epoch);
+    context.session_id = session.coordinator.session_id;
+    context.session_epoch = session.coordinator.session_epoch;
     return context;
 }
 
@@ -667,9 +667,9 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
     const uint32_t owner_session_id = options.owner ? options.owner->session_id.get() : uint32_t{0};
     const auto decision = PacketIngressPreflight::evaluate({
         true,
-        session.authenticated,
-        session.session_id,
-        session.session_epoch,
+        session.coordinator.authenticated,
+        session.coordinator.session_id.get(),
+        session.coordinator.session_epoch.get(),
         session.active_lane,
         m_protocol_lane,
         options.validate_lane,
@@ -852,7 +852,7 @@ bool Solo::validate_authoritative_session(const char* log_scope, bool require_re
     }
 
     const auto session = m_session_context->get_runtime_snapshot();
-    if (require_reward_binding && !session.reward_address.empty() && !session.reward_bound) {
+    if (require_reward_binding && !session.reward_address.empty() && !session.coordinator.reward_bound) {
         m_logger->error("[{}] Authoritative miner session container requires reward binding before continuing", log_scope);
         m_logger->error("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
         return false;

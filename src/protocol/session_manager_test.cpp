@@ -327,7 +327,7 @@ void test_reward_state_machine()
     auto info = mgr->get_session_info();
     print_result("reward_state is REQUIRED after auth with reward address",
                  info.reward_state == SessionManager::RewardState::REQUIRED);
-    print_result("reward_bound is false before binding", !info.reward_bound);
+    print_result("reward_bound is false before binding", !info.coordinator.reward_bound);
     print_result("can_submit() == false before reward binding",
                  !mgr->can_submit());
 
@@ -342,7 +342,7 @@ void test_reward_state_machine()
     info = mgr->get_session_info();
     print_result("reward_state is BOUND after commit_reward_bound",
                  info.reward_state == SessionManager::RewardState::BOUND);
-    print_result("reward_bound is true", info.reward_bound);
+    print_result("reward_bound is true", info.coordinator.reward_bound);
     print_result("can_submit() == true after reward binding",
                  mgr->can_submit());
     print_result("is_reward_bound() == true", mgr->is_reward_bound());
@@ -401,16 +401,16 @@ void test_diagnostic_snapshot()
 
     // get_session_info / get_runtime_snapshot
     auto info = mgr->get_session_info();
-    print_result("snapshot session_id matches", info.session_id == 0xABCD0001);
+    print_result("snapshot session_id matches", info.coordinator.session_id.get() == 0xABCD0001);
     print_result("snapshot state is AUTHENTICATED",
                  info.state == SessionManager::SessionState::AUTHENTICATED);
-    print_result("snapshot authenticated == true", info.authenticated);
+    print_result("snapshot authenticated == true", info.coordinator.authenticated);
     print_result("snapshot reward_address matches",
                  info.reward_address == "diag-reward");
-    print_result("snapshot reward_bound == true", info.reward_bound);
+    print_result("snapshot reward_bound == true", info.coordinator.reward_bound);
     print_result("snapshot reward_state is BOUND",
                  info.reward_state == SessionManager::RewardState::BOUND);
-    print_result("snapshot session_epoch > 0", info.session_epoch > 0);
+    print_result("snapshot session_epoch > 0", info.coordinator.session_epoch.get() > 0);
     print_result("snapshot session_start > 0", info.session_start > 0);
     print_result("snapshot last_activity > 0", info.last_activity > 0);
     print_result("snapshot expiry_state is FRESH",
@@ -571,7 +571,7 @@ void test_clear_for_reauth()
                  info.state == SessionManager::SessionState::DISCONNECTED);
     print_result("reward_address preserved",
                  info.reward_address == "my-reward");
-    print_result("session_id reset to 0", info.session_id == 0);
+    print_result("session_id reset to 0", info.coordinator.session_id.get() == 0);
     print_result("epoch preserved",
                  mgr->get_session_epoch() == epoch_before);
     print_result("reward_state is REQUIRED (not BOUND)",
@@ -681,7 +681,7 @@ void test_reward_rejected()
     auto info = mgr->get_session_info();
     print_result("reward_state is REJECTED",
                  info.reward_state == SessionManager::RewardState::REJECTED);
-    print_result("reward_bound is false", !info.reward_bound);
+    print_result("reward_bound is false", !info.coordinator.reward_bound);
     print_result("can_submit() == false after rejection",
                  !mgr->can_submit());
 }

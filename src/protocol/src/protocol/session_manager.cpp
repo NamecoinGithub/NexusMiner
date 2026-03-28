@@ -163,7 +163,7 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     // Restore the epoch from coordinator so it is never reset to 0.
     // std::max enforces the monotonic invariant: the local epoch can never
     // decrease, even if a future code path somehow changes call order.
-    util::monotonic_advance(m_session.session_epoch,
+    util::monotonic_advance(m_session.coordinator.session_epoch.get(),
                             m_coordinator->session_epoch().get());
 
     if (preserve_genesis) {
@@ -185,10 +185,10 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
     // inconsistent state.
     m_coordinator->commit_authenticated(SessionId{session_id}, "authenticated");
     // Read back the epoch that was just advanced so the local SessionInfo mirrors it.
-    m_session.session_epoch = m_coordinator->session_epoch().get();
-    m_session.session_id = session_id;
+    m_session.coordinator.session_epoch = m_coordinator->session_epoch();
+    m_session.coordinator.session_id = SessionId{session_id};
     m_session.state = SessionState::AUTHENTICATED;
-    m_session.authenticated = true;
+    m_session.coordinator.authenticated = true;
     m_session.falcon_authenticated = true;
     m_session.last_auth_time = now_epoch_seconds();
     m_session.last_activity = m_session.last_auth_time;
@@ -217,7 +217,7 @@ void SessionManager::update_replay_allowances_locked()
     m_session.deferred_push_replay_allowed = authenticated;
     m_session.get_block_replay_allowed = authenticated;
     m_session.ready_for_get_block = authenticated;
-    m_session.ready_for_submit = authenticated && m_session.reward_bound;
+    m_session.ready_for_submit = authenticated && m_session.coordinator.reward_bound;
 }
 
 void SessionManager::clear_session_event_journal_locked()
@@ -230,8 +230,8 @@ void SessionManager::record_session_event_locked(SessionEventKind kind, const st
     m_session_event_journal.push_back(SessionEvent{
         now_epoch_seconds(),
         kind,
-        SessionId(m_session.session_id),
-        SessionEpoch(m_session.session_epoch),
+        m_session.coordinator.session_id,
+        m_session.coordinator.session_epoch,
         detail
     });
     while (m_session_event_journal.size() > SESSION_EVENT_JOURNAL_CAPACITY) {
@@ -348,14 +348,14 @@ void SessionManager::mark_session_expired(const std::string& reason)
         std::lock_guard<std::mutex> lock(m_session_mutex);
         notify = (m_session.state != SessionState::DEGRADED);
         m_session.state = SessionState::DEGRADED;
-        m_session.authenticated = false;
+        m_session.coordinator.authenticated = false;
         m_session.expiry_state = ExpiryState::EXPIRED;
         m_session.expiry_reason = reason;
         m_session.ready_for_submit = false;
         m_session.ready_for_get_block = false;
         m_session.deferred_push_replay_allowed = false;
         m_session.get_block_replay_allowed = false;
-        if (m_session.reward_bound) {
+        if (m_session.coordinator.reward_bound) {
             m_session.reward_state = RewardState::STALE;
         }
         m_session.last_activity = now_epoch_seconds();
@@ -435,7 +435,7 @@ void SessionManager::begin_reward_binding(const std::string& addr,
     std::lock_guard<std::mutex> lock(m_session_mutex);
     m_session.reward_address = addr;
     m_session.reward_hash = hash;
-    m_session.reward_bound = false;
+    m_session.coordinator.reward_bound = false;
     m_session.reward_binding_source = src;
     m_session.reward_state = addr.empty() ? RewardState::NONE : RewardState::BINDING;
     m_session.ready_for_submit = false;
@@ -452,7 +452,7 @@ void SessionManager::commit_reward_bound(const std::string& reward_address,
     std::lock_guard<std::mutex> lock(m_session_mutex);
     m_session.reward_address = reward_address;
     m_session.reward_hash = reward_hash;
-    m_session.reward_bound = true;
+    m_session.coordinator.reward_bound = true;
     m_session.reward_binding_source = source;
     m_session.reward_state = reward_address.empty() ? RewardState::NONE : RewardState::BOUND;
     m_session.last_reward_bind_time = now_epoch_seconds();
@@ -471,7 +471,7 @@ void SessionManager::commit_reward_rejected(const std::string& addr,
     std::lock_guard<std::mutex> lock(m_session_mutex);
     m_session.reward_address = addr;
     m_session.reward_hash.clear();
-    m_session.reward_bound = false;
+    m_session.coordinator.reward_bound = false;
     m_session.reward_binding_source = src;
     m_session.reward_state = addr.empty() ? RewardState::NONE : RewardState::REJECTED;
     m_session.ready_for_submit = false;
@@ -575,7 +575,7 @@ void SessionManager::set_reward_binding(const std::string& addr,
         std::lock_guard<std::mutex> lock(m_session_mutex);
         m_session.reward_address = addr;
         m_session.reward_hash = hash;
-        m_session.reward_bound = false;
+        m_session.coordinator.reward_bound = false;
         m_session.reward_binding_source = src;
         m_session.reward_state = addr.empty() ? RewardState::NONE : RewardState::REQUIRED;
         update_replay_allowances_locked();
@@ -640,7 +640,7 @@ void SessionManager::set_state(SessionState state)
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
     m_session.state = state;
-    m_session.authenticated = (state == SessionState::AUTHENTICATED);
+    m_session.coordinator.authenticated = (state == SessionState::AUTHENTICATED);
 }
 
 // ── State queries ─────────────────────────────────────────────────────────────
@@ -648,7 +648,7 @@ void SessionManager::set_state(SessionState state)
 bool SessionManager::is_authenticated() const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    return m_session.authenticated;
+    return m_session.coordinator.authenticated;
 }
 
 bool SessionManager::is_degraded() const
@@ -660,13 +660,13 @@ bool SessionManager::is_degraded() const
 bool SessionManager::is_reward_bound() const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    return m_session.reward_bound;
+    return m_session.coordinator.reward_bound;
 }
 
 bool SessionManager::can_submit() const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    return m_session.authenticated && m_session.reward_bound;
+    return m_session.coordinator.authenticated && m_session.coordinator.reward_bound;
 }
 
 bool SessionManager::can_submit_work() const
@@ -696,14 +696,14 @@ bool SessionManager::allow_get_block_replay() const
 bool SessionManager::reward_binding_required() const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    return !m_session.reward_address.empty() && !m_session.reward_bound;
+    return !m_session.reward_address.empty() && !m_session.coordinator.reward_bound;
 }
 
 SessionManager::RewardBindReadiness SessionManager::get_reward_bind_readiness() const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
     RewardBindReadiness r;
-    if (!m_session.authenticated) {
+    if (!m_session.coordinator.authenticated) {
         r.reason = "not authenticated";
         return r;
     }
@@ -711,7 +711,7 @@ SessionManager::RewardBindReadiness SessionManager::get_reward_bind_readiness() 
         r.reason = "no reward address configured";
         return r;
     }
-    if (m_session.reward_bound) {
+    if (m_session.coordinator.reward_bound) {
         r.reason = "already bound";
         return r;
     }
@@ -735,10 +735,10 @@ bool SessionManager::validate_miner_session_container_locked(const SessionInfo& 
         return false;
     };
 
-    if (!session.authenticated) {
+    if (!session.coordinator.authenticated) {
         return fail("session not authenticated");
     }
-    if (session.session_id == 0) {
+    if (session.coordinator.session_id.get() == 0) {
         return fail("authenticated session missing session_id");
     }
     if (reason) *reason = "PASS";
@@ -754,13 +754,13 @@ std::string SessionManager::build_miner_session_diagnostics() const
     std::ostringstream oss;
     oss << "MINER SESSION CONTAINER\n"
         << "- active lane: "   << lane_name(m_session.active_lane) << '\n'
-        << "- authenticated: " << (m_session.authenticated ? "YES" : "NO") << '\n'
+        << "- authenticated: " << (m_session.coordinator.authenticated ? "YES" : "NO") << '\n'
         << "- session_id: 0x"  << std::hex << std::setw(8) << std::setfill('0')
-                               << m_session.session_id << std::dec << '\n'
-        << "- session_epoch: " << m_session.session_epoch << '\n'
+                               << m_session.coordinator.session_id.get() << std::dec << '\n'
+        << "- session_epoch: " << m_session.coordinator.session_epoch.get() << '\n'
         << "- reward_address: " << (m_session.reward_address.empty()
                                      ? "<unset>" : m_session.reward_address) << '\n'
-        << "- reward_bound: "  << (m_session.reward_bound ? "YES" : "NO") << '\n'
+        << "- reward_bound: "  << (m_session.coordinator.reward_bound ? "YES" : "NO") << '\n'
         << "- reward_state: "  << reward_state_name(m_session.reward_state) << '\n'
         << "- prevblock_suffix: " << format_hex_prefix(m_session.prevblock_suffix, 4) << '\n'
         << "- expiry_state: "  << expiry_state_name(m_session.expiry_state) << '\n'
@@ -785,13 +785,13 @@ std::string SessionManager::build_miner_session_diagnostics() const
 uint32_t SessionManager::get_session_id() const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    return m_session.session_id;
+    return m_session.coordinator.session_id.get();
 }
 
 uint64_t SessionManager::get_session_epoch() const
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
-    return m_session.session_epoch;
+    return m_session.coordinator.session_epoch.get();
 }
 
 SessionManager::SessionState SessionManager::get_state() const
@@ -943,7 +943,7 @@ void SessionManager::send_keepalive(const char* cadence)
     uint32_t session_id;
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
-        session_id = m_session.session_id;
+        session_id = m_session.coordinator.session_id.get();
         m_session.last_activity = now_epoch_seconds();
     }
     connection->transmit(payload);
@@ -958,7 +958,7 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
     std::array<uint8_t, 4> prevblock_suffix;
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
-        session_id = m_session.session_id;
+        session_id = m_session.coordinator.session_id.get();
         lane = m_protocol_lane;
         prevblock_suffix = m_session.prevblock_suffix;
     }
@@ -989,7 +989,7 @@ network::Shared_payload SessionManager::build_session_status_packet(
     ProtocolLane lane;
     {
         std::lock_guard<std::mutex> lock(m_session_mutex);
-        session_id = m_session.session_id;
+        session_id = m_session.coordinator.session_id.get();
         lane = m_protocol_lane;
     }
     if (session_id == 0) return {};

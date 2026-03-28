@@ -85,21 +85,22 @@ public:
         std::string detail;
     };
 
-    // Full session info — new minimal fields plus backward-compat fields
+    // Full session info — coordinator snapshot plus extended fields.
+    // Uses composition: coordinator-owned identity fields live in the embedded
+    // Snapshot, eliminating the previous flat-field duplication.
     struct SessionInfo {
-        // ── Core minimal fields (new design) ──────────────────────────────
-        uint32_t session_id{0};
-        uint64_t session_epoch{0};
+        // ── Coordinator snapshot (single source of truth for session identity) ──
+        SessionCoordinator::Snapshot coordinator;
+
+        // ── Extended fields (not in coordinator) ──────────────────────────
         SessionState state{SessionState::DISCONNECTED};
         ProtocolLane active_lane{ProtocolLane::UNKNOWN};
         std::string reward_address;   // canonical name (new design)
-        bool reward_bound{false};
         std::array<uint8_t, 4> prevblock_suffix{};
         uint64_t session_start{0};
         uint64_t last_activity{0};
         std::chrono::system_clock::time_point last_keepalive{};
         uint32_t keepalive_count{0};
-        bool authenticated{false};   // Convenience: derived from state
 
         // ── Backward-compat fields (used by solo.cpp and existing tests) ──
         std::string remote_endpoint;
