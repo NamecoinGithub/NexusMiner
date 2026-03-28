@@ -1613,10 +1613,21 @@ void Worker_manager::clear_recovery_state()
         return;  // Already HEALTHY — nothing to clear
 
     auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
-    if (is_degraded() && !has_valid_template_available(solo_protocol)) {
+    bool has_valid_template_now = has_valid_template_available(solo_protocol);
+    if (is_degraded() && !has_valid_template_now) {
         m_logger->warn("[Worker_manager] clear_recovery_state() deferred: no valid template accepted yet");
         return;
     }
+
+    auto now = std::chrono::steady_clock::now();
+    auto recovery_age_s =
+        (m_recovery.entered_at != std::chrono::steady_clock::time_point{})
+        ? std::chrono::duration_cast<std::chrono::seconds>(now - m_recovery.entered_at).count()
+        : 0;
+    m_logger->info("[Worker_manager] Recovery exit gate: valid_template={} recovery_age={}s phase={}",
+                   has_valid_template_now ? "YES" : "NO",
+                   recovery_age_s,
+                   phase_name(m_recovery.phase));
 
     if (solo_protocol) {
         auto* session_manager = solo_protocol->get_session_manager();

@@ -114,10 +114,10 @@ public:
     static constexpr bool POLLING_ENABLED = true;              // Enabled: GET_ROUND sanity probe for both lanes
     static constexpr uint32_t POLL_INTERVAL_MIN_MS = 20000;    // 20 seconds minimum
     static constexpr uint32_t POLL_INTERVAL_MAX_MS = 60000;    // 60 seconds maximum
-    // Minimum push-silence duration before GET_ROUND height parity check may trigger GET_BLOCK.
-    // 45s is intentionally shorter than POLL_INTERVAL_MAX_MS/1000 (60s) to catch missed pushes
-    // on long Prime blocks (300-330s) without waiting for the 600s emergency timeout.
-    static constexpr int64_t PUSH_ABSENT_FOR_PARITY_CHECK_SECONDS = 45;
+    // Minimum push-silence duration before GET_ROUND fallback may trigger GET_BLOCK.
+    // Policy: while PUSH is active, GET_ROUND is informational only. Once PUSH has
+    // been silent for 600s, each GET_ROUND poll (20s minimum cadence) may request GET_BLOCK.
+    static constexpr int64_t PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS = 600;
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work().
     /// Returns null/empty if not yet authenticated — callers must guard for this.
@@ -626,9 +626,12 @@ private:
     bool m_needs_initial_round_check;  // Set true when new template received
     uint32_t m_template_unified_height;    // Informational only: unified height at last template receipt (logging unified drift).
                                            // NOT used for staleness decisions (channel height is authoritative).
+    bool m_get_round_push_silent_fallback_active{false};  // Armed after PUSH silence >= 600s; cleared by new PUSH.
     
     // Helper methods for intelligent polling
     bool should_poll_get_round();
+    void arm_get_round_fallback(int64_t push_silent_seconds);
+    void disarm_get_round_fallback(const char* reason, int64_t push_age_seconds = -1);
     void on_new_round_received(uint32_t new_unified_height);
     void on_old_round_received();
     void on_template_received(uint32_t template_height);

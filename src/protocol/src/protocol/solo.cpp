@@ -512,6 +512,7 @@ void Solo::clear_generation_bound_state(const char* reason)
     m_last_session_status_ack_time = {};
     m_last_known_hash_prev_block = uint1024_t(0);
     m_last_keepalive_prevhash_lo32 = 0;
+    m_get_round_push_silent_fallback_active = false;
 
     if (m_template_interface) {
         m_template_interface->discard_template(reason);
@@ -2507,14 +2508,15 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 auto last_push = snap.last_push_notification_at;
                 bool push_silent = (last_push == std::chrono::steady_clock::time_point{}) ||
                     (std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count()
-                         >= PUSH_ABSENT_FOR_PARITY_CHECK_SECONDS);
+                         >= PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS);
                 if (push_silent)
                 {
                     int64_t elapsed = (last_push == std::chrono::steady_clock::time_point{})
                         ? -1
                         : std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count();
-                    m_logger->warn("[Solo GET_ROUND] ⚠️  Height parity: node tip {} >= template target {} "
-                        "(push silent {}s) — sending GET_BLOCK",
+                    arm_get_round_fallback(elapsed);
+                    m_logger->warn("[Solo GET_ROUND] ⚠️  Fallback parity: node tip {} >= template target {} "
+                        "(push silent {}s) — GET_ROUND triggering GET_BLOCK",
                         channel_height, tmpl->nChannelHeight, elapsed);
                     m_template_interface->discard_template(
                         "GET_ROUND height parity: node tip met template target");
@@ -2531,6 +2533,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     } else {
                         m_logger->error("[Solo GET_ROUND] Cannot send GET_BLOCK (height parity) — connection is null");
                     }
+                } else if (m_get_round_push_silent_fallback_active) {
+                    disarm_get_round_fallback(
+                        "PUSH active again",
+                        std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count());
                 }
             }
         }
@@ -2685,14 +2691,15 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 auto last_push = snap.last_push_notification_at;
                 bool push_silent = (last_push == std::chrono::steady_clock::time_point{}) ||
                     (std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count()
-                         >= PUSH_ABSENT_FOR_PARITY_CHECK_SECONDS);
+                         >= PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS);
                 if (push_silent)
                 {
                     int64_t elapsed = (last_push == std::chrono::steady_clock::time_point{})
                         ? -1
                         : std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count();
-                    m_logger->warn("[Solo GET_ROUND] ⚠️  Height parity: node tip {} >= template target {} "
-                        "(push silent {}s) — sending GET_BLOCK",
+                    arm_get_round_fallback(elapsed);
+                    m_logger->warn("[Solo GET_ROUND] ⚠️  Fallback parity: node tip {} >= template target {} "
+                        "(push silent {}s) — GET_ROUND triggering GET_BLOCK",
                         channel_height, tmpl->nChannelHeight, elapsed);
                     m_template_interface->discard_template(
                         "GET_ROUND height parity: node tip met template target");
@@ -2709,6 +2716,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     } else {
                         m_logger->error("[Solo GET_ROUND] Cannot send GET_BLOCK (height parity) — connection is null");
                     }
+                } else if (m_get_round_push_silent_fallback_active) {
+                    disarm_get_round_fallback(
+                        "PUSH active again",
+                        std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count());
                 }
             }
         }
@@ -3384,6 +3395,8 @@ void Solo::on_session_expired(Packet const& packet, std::shared_ptr<network::Con
 
 void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::Connection> connection, uint32_t channel)
 {
+    disarm_get_round_fallback("PUSH re-established");
+
     const char* push_opcode_name = (channel == mining::CHANNEL_PRIME) ? "PRIME_BLOCK_AVAILABLE" : "HASH_BLOCK_AVAILABLE";
         m_push_handler->handle_push_notification(
             packet, channel, m_protocol_lane,
@@ -4837,6 +4850,33 @@ bool Solo::should_poll_get_round()
     m_last_get_round_time = now;
     m_logger->debug("[Solo Poll] GET_ROUND sanity-check poll (interval {}ms)", m_current_poll_interval_ms);
     return true;
+}
+
+void Solo::arm_get_round_fallback(int64_t push_silent_seconds)
+{
+    if (m_get_round_push_silent_fallback_active) {
+        return;
+    }
+    m_get_round_push_silent_fallback_active = true;
+    m_logger->warn("[Solo GET_ROUND] PUSH silent for {}s (threshold {}s) — arming GET_ROUND fallback GET_BLOCK mode",
+        push_silent_seconds,
+        PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS);
+}
+
+void Solo::disarm_get_round_fallback(const char* reason, int64_t push_age_seconds)
+{
+    if (!m_get_round_push_silent_fallback_active) {
+        return;
+    }
+    m_get_round_push_silent_fallback_active = false;
+    if (push_age_seconds >= 0) {
+        m_logger->info("[Solo GET_ROUND] {} ({}s ago) — disabling GET_ROUND fallback GET_BLOCK mode",
+            reason ? reason : "PUSH active again",
+            push_age_seconds);
+    } else {
+        m_logger->info("[Solo GET_ROUND] {} — disabling GET_ROUND fallback GET_BLOCK mode",
+            reason ? reason : "PUSH re-established");
+    }
 }
 
 void Solo::on_new_round_received(uint32_t new_unified_height)
