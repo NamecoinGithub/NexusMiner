@@ -330,15 +330,15 @@ public:
         }
 
         /**
-         * @brief True when template age exceeds the warning threshold (300s)
+         * @brief True when template age exceeds the warning threshold (480s)
          *
          * Proactive warning threshold to detect degraded connectivity before
-         * hitting the hard 600s timeout. Fires after Prime block window expires.
+         * hitting the hard 600s timeout.
          *
-         * @return true if template age exceeds 300 seconds
+         * @return true if template age exceeds 480 seconds
          */
         bool is_template_age_old() const {
-            constexpr uint64_t WARNING_TEMPLATE_AGE_SECONDS = 300;
+            constexpr uint64_t WARNING_TEMPLATE_AGE_SECONDS = 480;
             return get_template_age_seconds() > WARNING_TEMPLATE_AGE_SECONDS;
         }
 
