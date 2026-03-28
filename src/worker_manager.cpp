@@ -284,7 +284,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             bool channel_stale = ht_snap.is_template_stale();
 
                             // Check 2 — Age (SECONDARY: safety net for missed push notifications)
-                            // 600s matches the push-driven era MAX_TEMPLATE_AGE
+                            // 600s is the hard dead-connection gate; warning path starts at 480s.
                             bool age_stale = ht_snap.is_template_age_stale();
                             uint64_t template_age = ht_snap.get_template_age_seconds();
 
@@ -401,7 +401,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // Re-subscribe to push notifications if they have been silent too long.
                     // After prolonged push silence the node's push subscription may have been
                     // lost during TCP disruption or session cycling.  Sending MINER_READY
-                    // re-establishes the subscription and prevents the 600s timeout cycle.
+                    // re-establishes the subscription and helps avoid entering the 480s warning window.
                     if (solo_protocol) {
                         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
                         bool push_ever_received = (ht_snap.last_push_notification_at != std::chrono::steady_clock::time_point{});
