@@ -969,8 +969,8 @@ void test_integration_forced_retry_is_bounded() {
 }
 
 // ============================================================================
-// Test 13: Health policy — one-block stale refresh stays soft; multi-block lag
-//          escalates into recovery/degraded mode.
+// Test 13: Health policy — channel staleness requests refresh without forcing
+//          degraded/worker-stop; session is preserved for reorg-heavy periods.
 // ============================================================================
 void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
     std::cout << "\nTest 13: Health policy distinguishes 1-block refresh from 2+-block lag\n";
@@ -1000,8 +1000,6 @@ void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
         }
 
         decision.request_refresh = true;
-        decision.recovery_initiated = true;
-        decision.stop_workers = true;
         return decision;
     };
 
@@ -1021,8 +1019,8 @@ void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
     two_block_tracker.OnPushNotification(5002, 102, 0x1d00ffff);
     auto two_block = decide(two_block_tracker.GetSnapshot(), false);
     print_test_result("Two-block lag requests refresh", two_block.request_refresh);
-    print_test_result("Two-block lag initiates recovery", two_block.recovery_initiated);
-    print_test_result("Two-block lag stops workers", two_block.stop_workers);
+    print_test_result("Two-block lag does not initiate recovery", !two_block.recovery_initiated);
+    print_test_result("Two-block lag does not stop workers", !two_block.stop_workers);
 
     HeightTracker::Snapshot post_push_snap;
     post_push_snap.channel_height = 300;

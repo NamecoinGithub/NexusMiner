@@ -1976,9 +1976,10 @@ void Worker_manager::check_template_health()
                 std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count(),
                 blocks_behind);
 
-            // Enter WAITING_TEMPLATE: workers keep running with stale template while we request a fresh one
-            mark_recovery_initiated("health_monitor_channel_stale");
-            retry_template_request(true);
+            // Session-preserving staleness handling:
+            // even for multi-block lag, keep workers/session alive and request fresh template.
+            // Hard recovery should only be used for explicit connection/session failures.
+            retry_template_request(false);
             return;
         }
     }
