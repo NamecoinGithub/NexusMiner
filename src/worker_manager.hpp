@@ -110,9 +110,10 @@ private:
     // Worker control methods for degraded mode
     void stop_all_workers();
     /**
-     * @param bForce When true, bypasses GET_BLOCK session dedup/gating lanes so
-     *               recovery callers can force a fresh request attempt. This helper
-     *               is request-only: it does not mutate recovery state or reconnect.
+     * @param bForce When true, bypasses local GET_BLOCK gating/dedup so callers can
+     *               force an immediate fresh work request on a live primary session.
+     *               This helper is request-only: it does not mutate recovery state
+     *               or reconnect.
      */
     void retry_template_request(bool bForce = false);
     void restart_recovery_window(const char* reason);

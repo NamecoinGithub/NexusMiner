@@ -307,9 +307,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                 template_interface->discard_template(channel_stale ? "Channel height advanced before submission"
                                                                                    : "Age exceeded 600s before submission");
 
-                                // Request fresh template via NodeSession
-                                m_logger->info("[Worker_manager] Requesting fresh template via NodeSession");
-                                auto work_payload = m_primary_node_session->request_work();
+                                // Request fresh work/GET_BLOCK via NodeSession
+                                m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK via NodeSession");
+                                auto work_payload = m_primary_node_session->request_work(true);
                                 if (work_payload && !work_payload->empty()) {
                                     m_primary_node_session->transmit(work_payload);
                                 }
@@ -446,7 +446,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     }
                 } else {
                     m_logger->error("[Worker_manager] FAILED: No workers received template!");
-                    // Immediately request a new template — don't wait 30s for health monitor.
+                    // Immediately request fresh work/GET_BLOCK — don't wait 30s for health monitor.
                     // Recovery state transition is explicit (domain-isolation rule).
                     mark_recovery_initiated("template_distribution_failed");
                     stop_all_workers();
@@ -459,7 +459,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
         /* ========== REGISTER VALIDATION FAILURE HANDLER ========== */
         /* This handler is called when template validation fails */
-        /* It stops workers and requests a fresh template */
+        /* It stops workers and requests fresh work/GET_BLOCK */
         auto solo_protocol = m_primary_node_session->get_primary_protocol();
         if (solo_protocol) {
             auto* template_interface = solo_protocol->get_template_interface();
@@ -480,7 +480,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // template arrives. Calling create_workers() here causes duplicate workers when
                     // both handlers fire for the same staleness event.
                     
-                    // Request fresh template
+                    // Request fresh work/GET_BLOCK
                     mark_recovery_initiated("template_validation_failed");
                     retry_template_request(true);
                 }
@@ -500,7 +500,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         m_primary_node_session->set_recovery_initiated_handler(
             [this]() {
                 mark_recovery_initiated("push_staleness");
-                // Workers keep running with current template while we request a fresh one.
+                // Workers keep running while we request fresh work/GET_BLOCK.
                 retry_template_request(true);
             }
         );
@@ -650,7 +650,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // Clear reconnect guard if we're in RECONNECTING phase (in-band re-auth path).
                 // For the TCP reconnect path, the connection callback already cleared it.
                 if (is_reconnecting()) {
-                    // Transition back to WAITING_TEMPLATE — still need a fresh template.
+                    // Transition back to WAITING_TEMPLATE — still need fresh BLOCK_DATA.
                     transition_to(RecoveryPhase::WAITING_TEMPLATE, "in_band_reauth_complete");
                     m_logger->info("[Worker_manager] In-band re-auth complete — back in WAITING_TEMPLATE");
                 }
@@ -668,12 +668,12 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                 // Bug 4 fix: If we are in degraded/recovery mode (e.g. after in-band
                 // re-authentication following SESSION_EXPIRED), explicitly send GET_BLOCK
-                // to acquire a fresh template and exit degraded mode.  Without this call
+                // to acquire fresh BLOCK_DATA and exit degraded mode. Without this call
                 // the miner has no way to escape degraded mode because workers can't be
-                // fed without a template and a template won't arrive without GET_BLOCK.
+                // fed without BLOCK_DATA and BLOCK_DATA won't arrive without GET_BLOCK.
                 if (is_degraded() || is_recovery_active()) {
                     m_logger->info("[Worker_manager] Re-authentication SUCCESS — "
-                                   "requesting fresh template to exit degraded mode");
+                                   "requesting fresh work/GET_BLOCK to exit degraded mode");
                     // Reset m_recovery.degraded_since so the escape ladder timer restarts cleanly
                     // for this new authenticated session (avoids Stage 3 immediately firing).
                     m_recovery.degraded_since = {};
@@ -1095,7 +1095,7 @@ void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
     ++m_forced_retry_timer_token;
     const auto token = m_forced_retry_timer_token;
     m_forced_retry_timer = std::make_shared<asio::steady_timer>(*m_io_context, std::chrono::milliseconds(wait_ms));
-    m_logger->info("[Worker_manager] Queue forced degraded retry token={} in {}ms (reason={})",
+    m_logger->info("[Worker_manager] Queue forced GET_BLOCK retry token={} in {}ms (reason={})",
                    token, wait_ms, trigger_reason ? trigger_reason : "unknown");
     m_forced_retry_timer->async_wait([self = shared_from_this(), token](const asio::error_code& ec) {
         if (ec) {
@@ -1157,10 +1157,10 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         self->m_primary_fail_count = 0;
 
         // Clear reconnect guard now that connection is fully authenticated.
-        // Transition back from RECONNECTING to HARD_RECOVERY to request a fresh template.
+        // Transition back from RECONNECTING to WAITING_TEMPLATE to request fresh BLOCK_DATA.
         if (self->is_reconnecting()) {
             self->transition_to(RecoveryPhase::WAITING_TEMPLATE, "reconnect_complete");
-            self->m_logger->info("[Worker_manager] Reconnect complete — entering WAITING_TEMPLATE to obtain fresh template");
+            self->m_logger->info("[Worker_manager] Reconnect complete — entering WAITING_TEMPLATE to obtain fresh BLOCK_DATA");
         }
 
         // Start timers once only (guarded by flags)
@@ -1664,10 +1664,10 @@ void Worker_manager::stop_all_workers()
 void Worker_manager::retry_template_request(bool bForce)
 {
     auto now = std::chrono::steady_clock::now();
-    m_logger->info("[Worker_manager] Requesting fresh template... (force={})", bForce ? "true" : "false");
+    m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK... (force={})", bForce ? "true" : "false");
 
     // Domain-isolation contract:
-    //   - retry_template_request(): template-request semantics only
+    //   - retry_template_request(): fresh work/GET_BLOCK request semantics only
     //   - no reconnect/session-state mutation here
     // Reconnect/recovery transitions are handled by explicit orchestration helpers/callers.
     if (!m_primary_node_session || !m_primary_node_session->is_authenticated()) {
@@ -1724,7 +1724,10 @@ void Worker_manager::retry_template_request(bool bForce)
         }
 
         // Suppress this GET_BLOCK if we are still within the backoff window.
-        if (m_get_block_backoff_until != std::chrono::steady_clock::time_point{} &&
+        // Forced live-session refresh requests bypass this guard so stalled/waiting
+        // recovery can always attempt a fresh BLOCK_DATA pull immediately.
+        if (!bForce &&
+            m_get_block_backoff_until != std::chrono::steady_clock::time_point{} &&
             now < m_get_block_backoff_until)
         {
             auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1732,10 +1735,15 @@ void Worker_manager::retry_template_request(bool bForce)
             m_logger->info("[Worker_manager] GET_BLOCK suppressed: context=hashprev_mismatch_backoff "
                            "({}ms remaining)", remaining_ms);
             return;
+        } else if (bForce &&
+                   m_get_block_backoff_until != std::chrono::steady_clock::time_point{} &&
+                   now < m_get_block_backoff_until) {
+            auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                m_get_block_backoff_until - now).count();
+            m_logger->warn("[Worker_manager] GET_BLOCK hashprev backoff bypassed by forced live-session request "
+                           "({}ms remaining)", remaining_ms);
         }
     }
-
-    bool no_valid_template = !has_valid_template_available(solo_protocol);
 
     // Early-exit if not yet authenticated — the channel-advanced staleness detector
     // can fire during the brief window after a push increments channel_height but
@@ -1757,15 +1765,16 @@ void Worker_manager::retry_template_request(bool bForce)
         return;
     }
 
-    bool forced_lane = bForce && is_recovery_active() && solo_protocol->is_authenticated() && no_valid_template;
+    bool no_valid_template = !has_valid_template_available(solo_protocol);
+    bool forced_lane = bForce && (is_recovery_active() || no_valid_template) && solo_protocol->is_authenticated();
 
     // Gate: SessionManager::can_request_get_block() must be true before transmitting GET_BLOCK.
     // This guard is bypassed when this is a forced recovery request (bForce && is_recovery_active())
     // so the recovery ladder can always make progress even when push notifications are absent
     // (no PUSH subscription, post-reorg push silence, or initial connection before first push).
     if (!solo_protocol->can_request_get_block()) {
-        if (bForce && is_recovery_active()) {
-            m_logger->info("[Worker_manager] GET_BLOCK can_request_get_block=false bypassed by forced recovery");
+        if (bForce) {
+            m_logger->info("[Worker_manager] GET_BLOCK can_request_get_block=false bypassed by forced live-session request");
         } else {
             m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=session_not_ready_for_get_block");
             m_logger->info("[Worker_manager] GET_BLOCK deferred — session not ready for GET_BLOCK; "
@@ -1774,8 +1783,8 @@ void Worker_manager::retry_template_request(bool bForce)
         }
     }
 
-    // Request template via NodeSession
-    m_logger->info("[Worker_manager] Requesting fresh template via NodeSession (forced_lane={})",
+    // Request fresh work via NodeSession (wire-level GET_BLOCK)
+    m_logger->info("[Worker_manager] Requesting fresh work via NodeSession (forced_lane={})",
                    forced_lane ? "true" : "false");
     auto work_payload = m_primary_node_session->request_work(forced_lane);
     if (work_payload && !work_payload->empty()) {
@@ -1874,7 +1883,7 @@ void Worker_manager::check_template_health()
             // Fall through intentionally: still run forced GET_BLOCK retry below.
         }
 
-        // Retry GET_BLOCK on every health check tick
+        // Retry GET_BLOCK on every health check tick (forced: bypass local gates)
         retry_template_request(true);
 
         /* ── Reorg Resubscription Guard ──────────────────────────────────────────
@@ -1923,8 +1932,9 @@ void Worker_manager::check_template_health()
     const bool has_valid_template = template_interface->has_valid_template();
 
     if (!has_valid_template) {
-        // No template in HEALTHY state — request one
-        retry_template_request(false);
+        // No template in HEALTHY state — force fresh work/GET_BLOCK so local gates
+        // do not stall BLOCK_DATA delivery while the primary session is alive.
+        retry_template_request(true);
         return;
     }
 
@@ -1951,7 +1961,7 @@ void Worker_manager::check_template_health()
             }
 
             if (blocks_behind == 1) {
-                m_logger->info("[Worker_manager] {} template anchor advanced normally: channel_height {} -> next target {} (template target {}, 1 block behind) — requesting refresh without recovery",
+                m_logger->info("[Worker_manager] {} template anchor advanced normally: channel_height {} -> next target {} (template target {}, 1 block behind) — requesting fresh work without recovery",
                     channel_name,
                     ht_snap.channel_height,
                     ht_snap.expected_template_target(),
@@ -1961,7 +1971,7 @@ void Worker_manager::check_template_health()
             }
 
             if (blocks_behind == 0) {
-                m_logger->debug("[Worker_manager] {} stale snapshot reported with zero block lag (channel_height {}, channel_target {}) — requesting refresh without recovery",
+                m_logger->debug("[Worker_manager] {} stale snapshot reported with zero block lag (channel_height {}, channel_target {}) — requesting fresh work without recovery",
                     channel_name,
                     ht_snap.channel_height,
                     ht_snap.channel_target);
@@ -1977,16 +1987,16 @@ void Worker_manager::check_template_health()
                 blocks_behind);
 
             // Session-preserving staleness handling:
-            // even for multi-block lag, keep workers/session alive and request fresh template.
+            // even for multi-block lag, keep workers/session alive and force fresh work.
             // Hard recovery should only be used for explicit connection/session failures.
-            retry_template_request(false);
+            retry_template_request(true);
             return;
         }
     }
 
-    // Unified tip moved on another channel — request fresh template opportunistically
+    // Unified tip moved on another channel — request fresh work opportunistically
     if (ht_snap.is_tip_moved()) {
-        m_logger->debug("[Worker_manager] Unified tip moved (template_unified_height {} → unified_height {}) — requesting fresh template; workers continue on valid channel template",
+        m_logger->debug("[Worker_manager] Unified tip moved (template_unified_height {} → unified_height {}) — requesting fresh work; workers continue on valid channel template",
                        ht_snap.template_unified_height, ht_snap.unified_height);
         retry_template_request(false);
         return;
@@ -2033,7 +2043,7 @@ void Worker_manager::check_template_health()
     // Both channels use the same threshold — in the push-driven protocol the node pushes
     // on every unified tip advance (~18s apart via hash blocks), so 480s without a push
     // is unusual for either channel.
-    // Proactively request a fresh template at the warning threshold so the age clock resets
+    // Proactively request fresh work at the warning threshold so the age clock resets
     // before the 600s emergency fires.  Workers continue mining on the same height in the
     // meantime; only the timestamp is refreshed.  retry_template_request(false) is non-forced
     // so it respects the can_request_get_block() session gate and hashPrevBlock mismatch backoff.
@@ -2043,13 +2053,13 @@ void Worker_manager::check_template_health()
             channel_name, template_age,
             protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS,
             protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
-        m_logger->warn("[Worker_manager]    No push received for {}s — requesting proactive template refresh", template_age);
+        m_logger->warn("[Worker_manager]    No push received for {}s — requesting proactive fresh work/GET_BLOCK", template_age);
         retry_template_request(false);
     }
 
     // Age-based emergency (600s) — dead-connection detector for both channels.
     //
-    // In the push-driven era the node pushes a fresh template within ~2s of every unified
+    // In the push-driven era the node pushes fresh BLOCK_DATA within ~2s of every unified
     // tip advance.  Even during long Prime blocks, hash blocks keep advancing the unified
     // chain every ~18s, so a push should arrive well within 600s.
     //
@@ -2086,7 +2096,7 @@ void Worker_manager::check_template_health()
             auto since_push_s = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - ht_snap.last_push_notification_at).count();
             m_logger->warn("[Worker_manager] EMERGENCY deferred: push notification is recent ({}s ago) — "
-                           "connection alive, awaiting fresh template",
+                           "connection alive, awaiting fresh BLOCK_DATA",
                            since_push_s);
             retry_template_request(false);
             return;
