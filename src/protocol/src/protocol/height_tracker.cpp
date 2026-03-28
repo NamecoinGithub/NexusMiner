@@ -1,5 +1,6 @@
 #include "protocol/height_tracker.hpp"
 #include "protocol/session_coordinator.hpp"
+#include "Util/include/monotonic_value.hpp"
 #include <algorithm>
 #include <sstream>
 
@@ -67,10 +68,10 @@ void HeightTracker::OnPushFullPicture(uint32_t unified_height,
                                        uint32_t stake_height)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_diagnostic.push_unified_height = std::max(m_diagnostic.push_unified_height, unified_height);
-    m_diagnostic.push_prime_height   = std::max(m_diagnostic.push_prime_height,   prime_height);
-    m_diagnostic.push_hash_height    = std::max(m_diagnostic.push_hash_height,    hash_height);
-    m_diagnostic.push_stake_height   = std::max(m_diagnostic.push_stake_height,   stake_height);
+    util::monotonic_advance(m_diagnostic.push_unified_height, unified_height);
+    util::monotonic_advance(m_diagnostic.push_prime_height,   prime_height);
+    util::monotonic_advance(m_diagnostic.push_hash_height,    hash_height);
+    util::monotonic_advance(m_diagnostic.push_stake_height,   stake_height);
     m_diagnostic.last_push_at        = std::chrono::steady_clock::now();
 }
 

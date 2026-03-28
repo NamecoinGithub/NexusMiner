@@ -1,6 +1,7 @@
 #include "protocol/session_manager.hpp"
 #include "protocol/hex_prefix_utils.hpp"
 #include "protocol/serialization_helpers.hpp"
+#include "Util/include/monotonic_value.hpp"
 #include "network/connection.hpp"
 #include "packet.hpp"
 #include "miner_opcodes.hpp"
@@ -162,8 +163,8 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     // Restore the epoch from coordinator so it is never reset to 0.
     // std::max enforces the monotonic invariant: the local epoch can never
     // decrease, even if a future code path somehow changes call order.
-    m_session.session_epoch = std::max(m_session.session_epoch,
-                                       m_coordinator->session_epoch().get());
+    util::monotonic_advance(m_session.session_epoch,
+                            m_coordinator->session_epoch().get());
 
     if (preserve_genesis) {
         m_session.session_genesis = saved_genesis;
