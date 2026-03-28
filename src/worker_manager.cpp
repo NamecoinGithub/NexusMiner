@@ -1845,7 +1845,7 @@ void Worker_manager::check_template_health()
     }
 
     // Guard against a stalled reconnect. If RECONNECTING phase has been active for
-    // more than 60 seconds, the TCP connect attempt itself has likely failed silently.
+    // more than 45 seconds, the TCP connect attempt itself has likely failed silently.
     // Transition back to WAITING_TEMPLATE so the escape ladder is not indefinitely suppressed.
     if (is_reconnecting()) {
         if (m_recovery.reconnect_started_at == std::chrono::steady_clock::time_point{}) {
@@ -1855,7 +1855,9 @@ void Worker_manager::check_template_health()
         }
         auto reconnect_age_s = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - m_recovery.reconnect_started_at).count();
-        constexpr int64_t MAX_RECONNECT_WAIT_SECONDS = 60;
+        // 45 s: tightened from 60 s — under a DDoS reorg storm the TCP session stays alive
+        // (pushes keep arriving) so a stalled reconnect is a logic error that should resolve faster.
+        constexpr int64_t MAX_RECONNECT_WAIT_SECONDS = 45;
         if (reconnect_age_s > MAX_RECONNECT_WAIT_SECONDS) {
             m_logger->warn("[Worker_manager] Reconnect stalled for {}s > {}s — clearing RECONNECTING phase",
                            reconnect_age_s, MAX_RECONNECT_WAIT_SECONDS);
@@ -1924,6 +1926,12 @@ void Worker_manager::check_template_health()
                                degraded_secs, display_push_silence_s);
                 solo_protocol->resubscribe_push_notifications();
                 m_last_resubscribe_at = now;
+            }
+            else
+            {
+                int64_t display_since_last = (since_last_resub_s == INT64_MAX) ? -1 : since_last_resub_s;
+                m_logger->warn("[Worker_manager] MINER_READY resubscription rate-limited ({}s since last, threshold {}s) — skipping",
+                               display_since_last, REORG_RESUBSCRIBE_COOLDOWN_SECONDS);
             }
         }
 

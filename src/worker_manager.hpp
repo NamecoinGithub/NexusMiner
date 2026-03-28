@@ -253,14 +253,14 @@ private:
     // and immediately requests a new GET_BLOCK, a node under DDoS or orphan-limit
     // pressure may return stale/inconsistent BLOCK_DATA, re-triggering the discard
     // in a tight loop.  This backoff introduces a brief delay that grows exponentially
-    // (0 ms → 2 s → 4 s → … → 30 s max) after each successive discard-and-retry,
+    // (0 ms → 500 ms → 1 s → 2 s → … → 16 s max) after each successive discard-and-retry,
     // and resets when a template is successfully adopted.
     // m_get_block_backoff_ms: current backoff delay in milliseconds (0 = no delay)
     // m_get_block_backoff_until: time before which the next GET_BLOCK is suppressed
     int64_t m_get_block_backoff_ms{0};
     std::chrono::steady_clock::time_point m_get_block_backoff_until{};
-    static constexpr int64_t GET_BLOCK_BACKOFF_INITIAL_MS   = 2000;   ///< First backoff step: 2 s
-    static constexpr int64_t GET_BLOCK_BACKOFF_MAX_MS       = 30000;  ///< Ceiling: 30 s
+    static constexpr int64_t GET_BLOCK_BACKOFF_INITIAL_MS   = 500;    ///< First backoff step: 500 ms (faster first retry under attack)
+    static constexpr int64_t GET_BLOCK_BACKOFF_MAX_MS       = 16000;  ///< Ceiling: 16 s (faster recovery when DDoS subsides)
 
     // ── Mutex-based recovery gate (defense-in-depth) ─────────────────────────
     // Serialises the creation path in set_block_handler with the destruction

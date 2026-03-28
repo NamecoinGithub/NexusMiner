@@ -499,7 +499,10 @@ private:
     // tip is churning rapidly (e.g. orphan limit exceeded by DDoS peer).
     // Reset to zero whenever a template is successfully validated and fed to workers.
     uint32_t m_hashprev_mismatch_consecutive{0};
-    static constexpr uint32_t MAX_CONSECUTIVE_HASHPREV_MISMATCHES = 3;
+    // After 2 consecutive mismatches the template is accepted (not discarded) to prevent
+    // the NO VALID TEMPLATE doom loop. Lowered from 3 to reduce idle time under live
+    // DDoS/reorg-storm attacks.
+    static constexpr uint32_t MAX_CONSECUTIVE_HASHPREV_MISMATCHES = 2;
     
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;

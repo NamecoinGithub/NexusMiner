@@ -4552,7 +4552,7 @@ bool Solo::validate_current_template()
             // in NO VALID TEMPLATE indefinitely.
             m_logger->warn("[ValidateTemplate] ⚠️  Chain in flux: {} consecutive hashPrevBlock mismatches "
                            "(canonical={}, template={}) — accepting template to avoid doom loop "
-                           "(chain may be under attack / reorg storm)",
+                           "(chain may be under attack / reorg storm; GET_BLOCK backoff active in Worker_manager)",
                            m_hashprev_mismatch_consecutive,
                            snap.hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString());
             // DO NOT discard — fall through to return true
