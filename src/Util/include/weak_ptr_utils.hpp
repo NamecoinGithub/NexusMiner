@@ -12,6 +12,11 @@ namespace util {
  * function returns immediately.  An optional return value may be supplied
  * for non-void functions.
  *
+ * @note This macro intentionally does NOT use the do { ... } while(0)
+ *       idiom because the declared variable @p name must remain in scope
+ *       after the macro for subsequent code to use.  Always invoke on its
+ *       own statement line with a trailing semicolon.
+ *
  * @code
  *   // void function — returns nothing on failure:
  *   LOCK_WEAK_OR_RETURN(weak_self, self);

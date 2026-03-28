@@ -133,6 +133,9 @@ public:
         bool endpoint_changed{false};    ///< True if caller should use a different endpoint
     };
 
+    /// Default switchover threshold when init_failover() is not called.
+    static constexpr uint32_t DEFAULT_FAILOVER_MAX_RETRIES = 3;
+
     /// Store the primary and failover endpoints and switchover threshold.
     /// Called once during initial connection setup.
     void init_failover(uint32_t max_retries)
@@ -184,7 +187,7 @@ private:
     bool m_using_failover{false};
     std::string m_active_node_ip;
     uint32_t m_primary_fail_count{0};
-    uint32_t m_failover_max_retries{3};  // default; set by init_failover()
+    uint32_t m_failover_max_retries{DEFAULT_FAILOVER_MAX_RETRIES};
     std::chrono::steady_clock::time_point m_failover_activated_at{};
 };
 
