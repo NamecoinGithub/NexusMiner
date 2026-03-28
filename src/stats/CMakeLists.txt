@@ -4,6 +4,8 @@ target_include_directories(stats
     PUBLIC 
         $<INSTALL_INTERFACE:inc>    
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
 )
 
 target_link_libraries(stats PRIVATE config spdlog::spdlog)

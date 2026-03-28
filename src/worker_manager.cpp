@@ -22,6 +22,7 @@
 #include "stats/stats_collector.hpp"
 #include "miner_keys.hpp"
 #include "protocol/solo.hpp"
+#include "protocol/channel_utils.hpp"
 #include "protocol/protocol_constants.hpp"
 #include "protocol/session_status_policy.hpp"
 #include <asio/steady_timer.hpp>
@@ -718,7 +719,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 if (!self) return;
                 self->m_mined_block_cache.record_accepted_block(height, hash_prev_block, channel, nonce);
                 self->m_logger->info("[Worker_manager] ⛏ Block recorded in mined-block cache — height={} ch={} total={}",
-                    height, channel == 1 ? "Prime" : "Hash", self->m_mined_block_cache.total_blocks());
+                    height, protocol::channel_name(channel), self->m_mined_block_cache.total_blocks());
                 self->log_mined_block_cache();
             }
         );
@@ -1898,7 +1899,7 @@ void Worker_manager::check_template_health()
     }
 
     uint8_t channel = template_interface->get_channel();
-    std::string channel_name = (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
+    const char* ch_name = protocol::channel_name(channel);
     const bool has_valid_template = template_interface->has_valid_template();
 
     if (!has_valid_template) {
@@ -1922,7 +1923,7 @@ void Worker_manager::check_template_health()
                                                 ht_snap.last_template_update >= ht_snap.last_height_update);
             if (template_is_newer_than_push) {
                 m_logger->debug("[Worker_manager] {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive stop",
-                    channel_name,
+                    ch_name,
                     std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
                     std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
                 retry_template_request(false);
@@ -1931,7 +1932,7 @@ void Worker_manager::check_template_health()
 
             if (blocks_behind == 1) {
                 m_logger->info("[Worker_manager] {} template anchor advanced normally: channel_height {} -> next target {} (template target {}, 1 block behind) — requesting refresh without recovery",
-                    channel_name,
+                    ch_name,
                     ht_snap.channel_height,
                     ht_snap.expected_template_target(),
                     ht_snap.channel_target);
@@ -1941,7 +1942,7 @@ void Worker_manager::check_template_health()
 
             if (blocks_behind == 0) {
                 m_logger->debug("[Worker_manager] {} stale snapshot reported with zero block lag (channel_height {}, channel_target {}) — requesting refresh without recovery",
-                    channel_name,
+                    ch_name,
                     ht_snap.channel_height,
                     ht_snap.channel_target);
                 retry_template_request(false);
@@ -1949,7 +1950,7 @@ void Worker_manager::check_template_health()
             }
 
             m_logger->warn("[Worker_manager] ⚠️  {} channel advanced: channel_height {} >= channel_target {} — age {}s",
-                channel_name, ht_snap.channel_height, ht_snap.channel_target, template_age);
+                ch_name, ht_snap.channel_height, ht_snap.channel_target, template_age);
             m_logger->info("[Worker_manager]    Template (t={}) predates last push (t={}) — true staleness ({} blocks behind)",
                 std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
                 std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count(),
@@ -2014,7 +2015,7 @@ void Worker_manager::check_template_health()
     if (template_age > protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS &&
         template_age <= protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
         m_logger->warn("[Worker_manager] ⚠️  {} template age {}s (warning threshold {}s, emergency {}s)",
-            channel_name, template_age,
+            ch_name, template_age,
             protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS,
             protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
         m_logger->warn("[Worker_manager]    No push received for {}s — connection may be degrading", template_age);
@@ -2077,14 +2078,14 @@ void Worker_manager::check_template_health()
                                                 ht_snap.last_template_update >= ht_snap.last_height_update);
             if (template_is_newer_than_push) {
                 m_logger->debug("[Worker_manager] EMERGENCY {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive stop",
-                    channel_name,
+                    ch_name,
                     std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
                     std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
                 retry_template_request(false);
                 return;
             }
             m_logger->error("[Worker_manager] ❌ EMERGENCY ({} channel): template {}s old AND chain advanced!",
-                            channel_name, template_age);
+                            ch_name, template_age);
             m_logger->error("[Worker_manager]    channel_height {} >= channel_target {} — push notification missed",
                             ht_snap.channel_height, ht_snap.channel_target);
             m_logger->error("[Worker_manager]    Forcing hard recovery (discard + stop + retry)");
@@ -2093,7 +2094,7 @@ void Worker_manager::check_template_health()
             // connection is likely dead.  For Prime this could also be a genuinely long block,
             // but 600s without any hash-block push is still a dead-connection signal.
             m_logger->error("[Worker_manager] ❌ EMERGENCY ({} channel): template {}s old — no push received",
-                            channel_name, template_age);
+                            ch_name, template_age);
             m_logger->error("[Worker_manager]    channel_height {} / channel_target {} (chain not yet advanced in tracker)",
                             ht_snap.channel_height, ht_snap.channel_target);
             if (channel == mining::CHANNEL_PRIME) {

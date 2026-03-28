@@ -2,6 +2,7 @@
 #define NEXUSMINER_PROTOCOL_PUSH_NOTIFICATION_HANDLER_HPP
 
 #include "protocol/mining_template_interface.hpp"
+#include "protocol/channel_utils.hpp"
 #include "protocol/height_tracker.hpp"
 #include "protocol_lane.hpp"
 #include "packet.hpp"
@@ -89,8 +90,6 @@ private:
     static constexpr std::size_t HASH_BEST_CHAIN_SIZE_BYTES  = 128; // uint1024_t serialised size
     static constexpr std::size_t HASH_LOG_PREVIEW_BYTES      = 8;   // how many bytes to log for preview
     static constexpr int64_t BURST_RECOVERY_GRACE_SECONDS    = 5;
-
-    static const char* channel_name(std::uint32_t channel);
 };
 
 } // namespace protocol

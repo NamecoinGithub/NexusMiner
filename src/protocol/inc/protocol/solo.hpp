@@ -2,6 +2,7 @@
 #define NEXUSMINER_PROTOCOL_SOLO_HPP
 
 #include "protocol/protocol.hpp"
+#include "protocol/channel_utils.hpp"
 #include "protocol/falcon_wrapper.hpp"
 #include "protocol/chacha20_wrapper.hpp"
 #include "protocol/session_manager.hpp"
@@ -89,12 +90,7 @@ public:
          * @return Channel height, or 0 if not set
          */
         uint32_t get_channel_height(uint32_t channel) const {
-            switch(channel) {
-                case 1:  return prime_height;
-                case 2:  return hash_height;
-                case 3:  return stake_height;
-                default: return 0;
-            }
+            return select_channel_height(channel, prime_height, hash_height, stake_height);
         }
     };
     /// Send GET_ROUND on all lanes (legacy: 0x85; stateless: 0xD085).

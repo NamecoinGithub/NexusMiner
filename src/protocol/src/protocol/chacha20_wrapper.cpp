@@ -1,5 +1,6 @@
 #include "protocol/chacha20_wrapper.hpp"
 #include "protocol/falcon_constants.hpp"
+#include "mining/client_block.h"
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
@@ -354,7 +355,7 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::encrypt_submit_block_payload(
     }
 
     // Log a warning if the Hash channel carries unexpected offset bytes
-    if (payload_info.channel == 2 && payload_info.offset_bytes_count != 0) {
+    if (payload_info.channel == mining::CHANNEL_HASH && payload_info.offset_bytes_count != 0) {
         m_logger->warn("[ChaCha20] Hash channel SUBMIT_BLOCK has {} offset bytes (expected 0)",
                        payload_info.offset_bytes_count);
     }

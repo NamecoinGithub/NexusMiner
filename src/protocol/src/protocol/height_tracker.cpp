@@ -1,4 +1,5 @@
 #include "protocol/height_tracker.hpp"
+#include "protocol/channel_utils.hpp"
 #include "protocol/session_coordinator.hpp"
 #include "Util/include/monotonic_value.hpp"
 #include <algorithm>
@@ -96,12 +97,7 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
     // 16-byte GET_ROUND carries no difficulty — always zero.
     m_diagnostic.round_difficulty_nbits = 0;
     // Derive active-channel height with monotonic guard.
-    // Channel 1 = Prime, 2 = Hash; anything else → 0.
-    uint32_t new_channel_height = 0;
-    if (m_channel == 1)
-        new_channel_height = prime_height;
-    else if (m_channel == 2)
-        new_channel_height = hash_height;
+    uint32_t new_channel_height = select_channel_height(m_channel, prime_height, hash_height);
 
     if (new_channel_height > m_diagnostic.round_channel_height)
         m_diagnostic.round_channel_height = new_channel_height;

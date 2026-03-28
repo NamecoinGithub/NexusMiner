@@ -2,6 +2,7 @@
 #define NEXUSMINER_STATS_MINED_BLOCK_CACHE_HPP
 
 #include "LLC/types/uint1024.h"
+#include "mining/client_block.h"
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -25,8 +26,8 @@ struct MinedBlockRecord
     std::string channel_name() const
     {
         switch (channel) {
-            case 1: return "Prime";
-            case 2: return "Hash";
+            case mining::CHANNEL_PRIME: return "Prime";
+            case mining::CHANNEL_HASH:  return "Hash";
             default: return "Unknown";
         }
     }
@@ -181,8 +182,8 @@ public:
         if (!m_tier2.empty()) {
             uint32_t prime_count = 0, hash_count = 0;
             for (auto const& rec : m_tier2) {
-                if (rec.channel == 1) ++prime_count;
-                else if (rec.channel == 2) ++hash_count;
+                if (rec.channel == mining::CHANNEL_PRIME) ++prime_count;
+                else if (rec.channel == mining::CHANNEL_HASH) ++hash_count;
             }
             out += "    Channels: Prime=" + std::to_string(prime_count)
                  + " Hash=" + std::to_string(hash_count) + "\n";

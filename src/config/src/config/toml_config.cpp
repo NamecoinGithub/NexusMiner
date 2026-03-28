@@ -3,6 +3,7 @@
 #include "config/types.hpp"
 #include "config/worker_config.hpp"
 #include "config/stats_printer_config.hpp"
+#include "mining/client_block.h"
 #include <limits>
 #include <spdlog/spdlog.h>
 #include <fstream>
@@ -106,11 +107,11 @@ namespace config
                     if (key == "channel")
                     {
                         int channel = parse_int_value(value);
-                        if (channel == 1)
+                        if (channel == static_cast<int>(mining::CHANNEL_PRIME))
                         {
                             config.set_mining_mode(Mining_mode::PRIME);
                         }
-                        else if (channel == 2)
+                        else if (channel == static_cast<int>(mining::CHANNEL_HASH))
                         {
                             config.set_mining_mode(Mining_mode::HASH);
                         }

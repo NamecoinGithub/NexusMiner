@@ -1,4 +1,5 @@
 #include "protocol/mining_template_interface.hpp"
+#include "protocol/channel_utils.hpp"
 #include "protocol/protocol_constants.hpp"
 #include "protocol/session_coordinator.hpp"
 #include "LLP/block_utils.hpp"
@@ -56,15 +57,15 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     m_has_snapshot = false;
     
     // Validate channel
-    if (m_channel != 1 && m_channel != 2) {
+    if (m_channel != mining::CHANNEL_PRIME && m_channel != mining::CHANNEL_HASH) {
         m_logger->warn("[TemplateInterface] Invalid channel {} specified, defaulting to 2 (hash)", 
             static_cast<int>(m_channel));
-        m_channel = 2;
+        m_channel = mining::CHANNEL_HASH;
     }
     
     m_logger->info("[TemplateInterface] Initialized for channel {} ({})", 
         static_cast<int>(m_channel), 
-        (m_channel == 1) ? "prime" : "hash");
+        channel_name(m_channel));
 }
 
 MiningTemplateInterface::~MiningTemplateInterface()
@@ -145,8 +146,7 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     m_logger->info("[TemplateInterface]   nHeight: {}", tmpl.block.nHeight);
     m_logger->info("[TemplateInterface]   nChannel: {} ({})", 
         tmpl.block.nChannel,
-        (tmpl.block.nChannel == 1) ? "Prime" : 
-        (tmpl.block.nChannel == 2) ? "Hash" : "INVALID");
+        channel_name(tmpl.block.nChannel));
     m_logger->info("[TemplateInterface]   nBits: 0x{:08x}", tmpl.block.nBits);
     
     auto merkle_bytes = tmpl.block.hashMerkleRoot.GetBytes();
@@ -165,13 +165,13 @@ MiningTemplateInterface::read_template(const network::Payload& data,
         m_logger->warn("[TemplateInterface] ⚠️  WARNING: Channel mismatch detected!");
         m_logger->warn("[TemplateInterface]   - Node sent: {} ({})", 
             tmpl.block.nChannel,
-            (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
+            channel_name(tmpl.block.nChannel));
         m_logger->warn("[TemplateInterface]   - Connection expects: {} ({})",
-            static_cast<int>(m_channel), (m_channel == 1) ? "Prime" : "Hash");
+            static_cast<int>(m_channel), channel_name(m_channel));
         m_logger->warn("[TemplateInterface]   - Mining what node sent (node is authoritative)");
     } else {
         m_logger->info("[TemplateInterface] ✓ Channel validation passed: {} ({})",
-            tmpl.block.nChannel, (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
+            tmpl.block.nChannel, channel_name(tmpl.block.nChannel));
     }
     
     // Initialize channel height (will be set later when GET_ROUND response arrives)
@@ -212,7 +212,7 @@ MiningTemplateInterface::read_template(const network::Payload& data,
         m_logger->info("[TemplateInterface] ✅ TEMPLATE VALIDATION SUCCESS");
         m_logger->info("[TemplateInterface]   Height: {}", tmpl.block.nHeight);
         m_logger->info("[TemplateInterface]   Channel: {} ({})", tmpl.block.nChannel, 
-            (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
+            channel_name(tmpl.block.nChannel));
         m_logger->info("[TemplateInterface]   nBits: 0x{:08x}", tmpl.nBits);
         m_logger->info("[TemplateInterface]   Validation time: {} μs", read_time.count());
         m_logger->info("[TemplateInterface] ═══════════════════════════════════════");
@@ -652,7 +652,7 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     // For Prime channel, append Cunningham-chain offsets so the node can verify
     // the prime cluster via GetPrimeDifficulty() / GetOffsets().
     // Hash channel vOffsets are always empty — no-op.
-    if (!vOffsets.empty() && m_channel == 1) {
+    if (!vOffsets.empty() && m_channel == mining::CHANNEL_PRIME) {
         payload.insert(payload.end(), vOffsets.begin(), vOffsets.end());
         m_logger->debug("[TemplateInterface] Appended {} vOffset bytes for Prime channel",
                         vOffsets.size());
@@ -690,7 +690,7 @@ void MiningTemplateInterface::set_coordinator(std::shared_ptr<SessionCoordinator
 
 void MiningTemplateInterface::set_channel(uint8_t channel)
 {
-    if (channel != 1 && channel != 2) {
+    if (channel != mining::CHANNEL_PRIME && channel != mining::CHANNEL_HASH) {
         m_logger->warn("[TemplateInterface] Invalid channel {} specified, keeping current channel {}",
             static_cast<int>(channel), static_cast<int>(m_channel));
         return;
@@ -698,7 +698,7 @@ void MiningTemplateInterface::set_channel(uint8_t channel)
     
     m_channel = channel;
     m_logger->info("[TemplateInterface] Channel set to {} ({})",
-        static_cast<int>(m_channel), (m_channel == 1) ? "prime" : "hash");
+        static_cast<int>(m_channel), channel_name(m_channel));
 }
 
 MiningTemplateInterface::TemplateStats MiningTemplateInterface::get_stats() const
@@ -777,7 +777,7 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     
     // Validation: Check if channel is valid (1=Prime or 2=Hash)
     // nChannel is now properly deserialized from all block formats (Tritium/Legacy/Compact)
-    if (tmpl.block.nChannel != 1 && tmpl.block.nChannel != 2) {
+    if (tmpl.block.nChannel != mining::CHANNEL_PRIME && tmpl.block.nChannel != mining::CHANNEL_HASH) {
         result.channel_valid = false;
         result.is_valid = false;
         result.error_message = "❌ Invalid channel value: " + 
@@ -800,7 +800,7 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     
     m_logger->info("[TemplateInterface] ✓ nChannel validation passed: {} ({})", 
         tmpl.block.nChannel,
-        (tmpl.block.nChannel == 1) ? "Prime" : "Hash");
+        channel_name(tmpl.block.nChannel));
     
     // ═══════════════════════════════════════════════════════════════════════
     // VALIDATE UNIFIED HEIGHT (Sanity Check for Corrupted Height)
@@ -895,8 +895,7 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
             result.height_valid = false;
             result.is_valid = false;
             // Use template's actual channel for accurate error messages
-            std::string channel_name = (tmpl.block.nChannel == 1) ? "Prime" : "Hash";
-            result.error_message = channel_name + " channel stale: template for height " + 
+            result.error_message = std::string(channel_name(tmpl.block.nChannel)) + " channel stale: template for height " + 
                 std::to_string(tmpl.nChannelHeight) + " but node already at " + 
                 std::to_string(node_channel_height);
             
@@ -1150,7 +1149,7 @@ bool MiningTemplateInterface::update_channel_height(uint32_t channel, uint32_t n
     if (new_channel_height >= m_current_template.nChannelHeight) {
         m_logger->info("[TemplateInterface] ⚠ Channel {} height {}/{} reached/passed target {} — template stale",
             channel, new_channel_height,
-            (channel == 1) ? "Prime" : (channel == 2) ? "Hash" : "Stake",
+            channel_name(channel),
             m_current_template.nChannelHeight);
         discard_template_unsafe("Channel height reached or passed target");
         m_templates_expired_height.fetch_add(1, std::memory_order_relaxed);
