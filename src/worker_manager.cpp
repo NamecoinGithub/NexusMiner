@@ -568,7 +568,13 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // from within a packet-receive callback (stack depth / reentrancy safety).
                 if (self->m_io_context && self->m_primary_node_session) {
                     auto timer = std::make_shared<asio::steady_timer>(*self->m_io_context, std::chrono::seconds(delay_seconds));
-                    timer->async_wait([self, timer](const asio::error_code& ec) {
+                    // Capture weak_self to avoid preventing shutdown while the
+                    // timer is pending.  The timer shared_ptr keeps the timer
+                    // object alive; Worker_manager itself is allowed to destruct.
+                    std::weak_ptr<Worker_manager> weak_self_timer = self;
+                    timer->async_wait([weak_self_timer, timer](const asio::error_code& ec) {
+                        auto self = weak_self_timer.lock();
+                        if (!self) return;
                         if (ec) {
                             if (ec != asio::error::operation_aborted) {
                                 self->m_logger->error("[Session] Re-auth timer error: {}", ec.message());
@@ -593,7 +599,10 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         // The login callback result is not critical here - the session_authenticated_handler
                         // will be invoked after MINER_AUTH_RESULT is received and will handle
                         // success/failure and further retry logic if needed
-                        auto auth_payload = primary_protocol->login([self](bool login_result) {
+                        std::weak_ptr<Worker_manager> weak_self_login = self;
+                        auto auth_payload = primary_protocol->login([weak_self_login](bool login_result) {
+                            auto self = weak_self_login.lock();
+                            if (!self) return;
                             if (!login_result) {
                                 self->m_logger->error("[Session] In-band re-authentication login() call failed");
                                 // The session_authenticated_handler will handle retry logic
@@ -1115,10 +1124,13 @@ void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
     m_forced_retry_timer = std::make_shared<asio::steady_timer>(*m_io_context, std::chrono::milliseconds(wait_ms));
     m_logger->info("[Worker_manager] Queue forced degraded retry token={} in {}ms (reason={})",
                    token, wait_ms, trigger_reason ? trigger_reason : "unknown");
-    m_forced_retry_timer->async_wait([self = shared_from_this(), token](const asio::error_code& ec) {
+    std::weak_ptr<Worker_manager> weak_self = shared_from_this();
+    m_forced_retry_timer->async_wait([weak_self, token](const asio::error_code& ec) {
         if (ec) {
             return;
         }
+        auto self = weak_self.lock();
+        if (!self) return;
         if (!self->is_recovery_active() || token != self->m_forced_retry_timer_token) {
             self->m_forced_retry_timer_pending = false;
             return;
@@ -1622,14 +1634,14 @@ void Worker_manager::clear_recovery_state()
     m_logger->info("[Worker_manager] Clearing recovery state — exiting {} phase",
                    phase_name(m_recovery.phase));
 
-    // Note: m_recovery_workers_spawned is intentionally NOT reset here.
-    // It is only reset in stop_all_workers() which actually destroys workers,
-    // preventing a mid-recovery clear_recovery_state() call (e.g. from a
-    // different epoch's template feed) from allowing duplicate worker creation.
-
     // transition_to(HEALTHY) handles: degraded time accounting, global stats,
     // stats reset, last_completed_at, clearing of all recovery fields.
     transition_to(RecoveryPhase::HEALTHY, "template_distributed");
+
+    // Reset the spawn gate so the next degraded cycle can re-create workers.
+    // This must happen after the HEALTHY transition to avoid a window where
+    // a concurrent template feed could trigger a duplicate spawn.
+    m_recovery_workers_spawned = false;
 
     m_logger->info("[Worker_manager] Recovery state cleared — degraded_exit_count={} cumulative_degraded_time_ms={}",
                    m_degraded_exit_total, m_time_in_degraded_ms);
