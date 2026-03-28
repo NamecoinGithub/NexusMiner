@@ -9,6 +9,7 @@
 #include "timer_manager.hpp"
 #include "stats/stats_printer.hpp"
 #include "dual_connection_manager.hpp"
+#include "recovery_state_machine.hpp"
 #include "LLC/types/uint1024.h"
 #include "stats/mined_block_cache.hpp"
 #include "Util/include/exponential_backoff.h"
@@ -31,35 +32,6 @@ namespace stats { class Collector; }
 namespace protocol { class Protocol; class Solo; }
 class Worker;
 class ColinAgent;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ⚡ Explicit Recovery State Machine
-// ─────────────────────────────────────────────────────────────────────────────
-// Replaces 15 independent boolean/timestamp fields that could combine into 32+
-// undefined configurations.  Exactly one phase is active at any moment.
-// ─────────────────────────────────────────────────────────────────────────────
-enum class RecoveryPhase : uint8_t {
-    HEALTHY,          // Mining normally
-    WAITING_TEMPLATE, // Waiting for new template; workers keep running
-    RECONNECTING,     // TCP reconnect in progress
-};
-
-struct RecoveryContext {
-    RecoveryPhase phase{RecoveryPhase::HEALTHY};
-
-    // Note: 'epoch' (monotonic recovery counter) has been moved to SessionCoordinator
-    // as recovery_epoch. Use m_coordinator->recovery_epoch() in Worker_manager.
-    std::chrono::steady_clock::time_point entered_at{};            // When current epoch (recovery start) began
-    std::chrono::steady_clock::time_point degraded_since{};        // When current outage started (set once per outage)
-    std::chrono::steady_clock::time_point last_get_block_at{};     // Last confirmed GET_BLOCK transmit
-    std::chrono::steady_clock::time_point last_completed_at{};     // When last recovery finished (hold-off)
-    bool get_block_confirmed{false};                               // At least one GET_BLOCK confirmed this epoch
-    const char* reason{nullptr};                                   // Why this phase was entered (for logging)
-
-    // ── Reconnect sub-state (only valid when phase == RECONNECTING) ──────────
-    std::chrono::steady_clock::time_point reconnect_started_at{};
-
-};
 
 class Worker_manager : public std::enable_shared_from_this<Worker_manager>
 {
@@ -121,39 +93,21 @@ private:
     void restart_recovery_window(const char* reason);
 
     /// Mark that a hard GET_BLOCK recovery is now in progress.
-    /// Sets m_recovery.phase=HARD_RECOVERY, increments epoch, records start time.
-    /// Called from:
-    ///  - the recovery_handler callback (push handler detected channel-stale staleness),
-    ///  - retry_template_request(true) (health monitor or validation failure path).
     void mark_recovery_initiated(const char* reason);
 
     /// Mark that a soft refresh is now in progress.
-    /// Sets m_recovery.phase=SOFT_REFRESH, increments epoch, records start time,
-    /// and withholds submissions without stopping workers or entering degraded mode.
     void mark_soft_refresh_requested(const char* reason);
 
     /// Clear degraded mode and all recovery state after a valid template is delivered to workers.
-    /// Called from the template feed handler when workers_fed > 0, and as a belt-and-suspenders
-    /// guard from check_template_health() when a valid template exists but is_degraded() is set.
     void clear_recovery_state();
 
     void retry_connect(network::Endpoint const& wallet_endpoint);
 
-    // ── State machine transition API ───────────────────────────────────────────
-    /// Transition to a new RecoveryPhase.  Logs the transition, validates legality
-    /// (in debug builds: asserts; in release: logs error and returns without change),
-    /// runs on_phase_exit() for the old phase and on_phase_enter() for the new one.
-    void transition_to(RecoveryPhase new_phase, const char* reason = nullptr);
-    static bool is_valid_transition(RecoveryPhase from, RecoveryPhase to);
-    void on_phase_enter(RecoveryPhase phase);
-    void on_phase_exit(RecoveryPhase phase);
-    static const char* phase_name(RecoveryPhase phase);
-
-    // ── State query helpers (backward-compat convenience) ─────────────────────
-    bool is_degraded()              const { return m_recovery.phase == RecoveryPhase::WAITING_TEMPLATE; }
-    bool is_submissions_withheld()  const { return false; }
-    bool is_recovery_active()       const { return m_recovery.phase != RecoveryPhase::HEALTHY; }
-    bool is_reconnecting()          const { return m_recovery.phase == RecoveryPhase::RECONNECTING; }
+    // ── State query helpers (delegates to m_recovery_sm) ─────────────────────
+    bool is_degraded()              const { return m_recovery_sm.is_degraded(); }
+    bool is_submissions_withheld()  const { return m_recovery_sm.is_submissions_withheld(); }
+    bool is_recovery_active()       const { return m_recovery_sm.is_recovery_active(); }
+    bool is_reconnecting()          const { return m_recovery_sm.is_reconnecting(); }
 
     /// Submit a found block: try primary lane first, fallback to secondary within 100 ms.
     void submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce);
@@ -177,19 +131,15 @@ private:
     std::shared_ptr<protocol::SessionCoordinator> m_coordinator;
 
     // ── Recovery state machine ────────────────────────────────────────────────
-    // Single authoritative RecoveryContext replaces 15 independent boolean/timestamp
-    // fields that could combine into 32+ undefined configurations.
-    RecoveryContext m_recovery;
+    // Self-contained state machine replaces the old embedded RecoveryContext
+    // and counter/token fields.  Worker_manager delegates all phase transition
+    // logic through m_recovery_sm.
+    RecoveryStateMachine m_recovery_sm;
 
-    // Forced-retry timer state (not part of RecoveryContext — timer handle is not copyable)
+    // Forced-retry timer handle (IO object — not owned by the state machine)
     std::shared_ptr<asio::steady_timer> m_forced_retry_timer{};
-    bool m_forced_retry_timer_pending{false};
-    uint64_t m_forced_retry_timer_token{0};
     uint64_t m_get_block_sent_total{0};
     uint64_t m_get_block_forced_retry_total{0};
-    uint64_t m_degraded_enter_total{0};
-    uint64_t m_degraded_exit_total{0};
-    uint64_t m_time_in_degraded_ms{0};
 
     // Connection retry state for exponential backoff
     uint32_t m_connection_retry_count{0};
