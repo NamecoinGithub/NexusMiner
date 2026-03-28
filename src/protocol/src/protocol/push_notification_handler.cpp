@@ -300,6 +300,7 @@ void PushNotificationHandler::handle_push_notification(
         {
             m_logger->info("[Solo Push] ℹ️  Tip moved (unified {} → {}) on {} channel — informational; workers continue on current valid template",
                           snap.template_unified_height, snap.unified_height, ch_name);
+            if (reset_dedup_fn) { reset_dedup_fn(); }
             request_work_fn();  // Opportunistic GET_BLOCK to refresh hashPrevBlock — no recovery state changes
         }
         else
