@@ -521,84 +521,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                    m_epoch_coordinator->recovery_epoch());
                     return;
                 }
-
-                m_logger->warn("[Worker_manager] Session EXPIRED — initiating in-band re-authentication");
-                mark_recovery_initiated("session_expired");
-
-                // Use the current session auth fail count to calculate backoff delay.
-                // NOTE: We do NOT increment m_session_auth_fail_count here.
-                // The session_authenticated_handler will increment it if the subsequent
-                // authentication fails (session_id == 0), avoiding double-counting.
-
-                // If we've already exceeded max retries, halt re-authentication
-                if (m_session_auth_fail_count >= protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES)
-                {
-                    m_logger->error("[Session] Max authentication retries ({}) already reached after SESSION_EXPIRED",
-                        protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
-                    m_logger->error("[Session] Node appears to be persistently expiring or rejecting sessions");
-                    m_logger->error("[Session] Check node logs and session keepalive configuration");
-                    return;
-                }
-
-                // Calculate backoff delay based on current failure count
-                // (will be 0 delay on first SESSION_EXPIRED if no prior auth failures)
-                auto delay_ms = m_session_auth_fail_count > 0
-                    ? m_session_auth_backoff.calculate_delay_ms(m_session_auth_fail_count)
-                    : 0;
-                auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
-
-                if (delay_seconds > 0) {
-                    m_logger->warn("[Session] Scheduling in-band re-authentication in {}s (based on {} prior failures, exponential backoff)",
-                        delay_seconds, m_session_auth_fail_count);
-                } else {
-                    m_logger->info("[Session] Scheduling immediate in-band re-authentication (no prior auth failures)");
-                }
-
-                // Schedule re-auth via io_context to avoid calling login()
-                // from within a packet-receive callback (stack depth / reentrancy safety).
-                if (m_io_context && m_primary_node_session) {
-                    auto timer = std::make_shared<asio::steady_timer>(*m_io_context, std::chrono::seconds(delay_seconds));
-                    timer->async_wait([self = shared_from_this(), timer](const asio::error_code& ec) {
-                        if (ec) {
-                            if (ec != asio::error::operation_aborted) {
-                                self->m_logger->error("[Session] Re-auth timer error: {}", ec.message());
-                            }
-                            return;
-                        }
-
-                        if (!self->m_primary_node_session) {
-                            self->m_logger->warn("[Session] Node session destroyed before re-auth could execute");
-                            return;
-                        }
-
-                        self->m_logger->info("[Session] Executing in-band re-authentication (calling login() on existing connection)");
-
-                        // Call login() on the existing connection via the primary protocol
-                        auto primary_protocol = self->m_primary_node_session->get_primary_protocol();
-                        if (!primary_protocol) {
-                            self->m_logger->error("[Session] Primary protocol not available for re-authentication");
-                            return;
-                        }
-
-                        // The login callback result is not critical here - the session_authenticated_handler
-                        // will be invoked after MINER_AUTH_RESULT is received and will handle
-                        // success/failure and further retry logic if needed
-                        auto auth_payload = primary_protocol->login([self](bool login_result) {
-                            if (!login_result) {
-                                self->m_logger->error("[Session] In-band re-authentication login() call failed");
-                                // The session_authenticated_handler will handle retry logic
-                            } else {
-                                self->m_logger->info("[Session] In-band re-authentication login() call succeeded, awaiting MINER_AUTH_RESULT");
-                            }
-                        });
-
-                        if (auth_payload && !auth_payload->empty()) {
-                            self->m_primary_node_session->transmit(auth_payload);
-                        } else {
-                            self->m_logger->error("[Session] Failed to generate re-authentication payload");
-                        }
-                    });
-                }
+                handle_authenticated_session_loss("session_expired");
             }
         );
         m_logger->info("[Worker_manager] Session expired handler registered");
@@ -620,28 +543,19 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     m_logger->error("[Session] This indicates the node rejected the session or is misconfigured");
                     m_logger->error("[Session] Work submissions cannot proceed without a valid session ID");
 
-                    // Hard limit: if we've exceeded max retries, halt reconnection to prevent infinite loop
+                    // Hard limit: if we've exceeded max retries, authenticated session is lost.
                     if (m_session_auth_fail_count > protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES)
                     {
-                        m_logger->error("[Session] Max authentication retries ({}) exceeded — halting reconnection",
+                        m_logger->error("[Session] Max authentication retries ({}) exceeded — authenticated session loss is final",
                             protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
                         m_logger->error("[Session] Node appears to be persistently rejecting authentication");
-                        m_logger->error("[Session] Check node logs, miner_auth handler, and mining account configuration");
+                        m_logger->error("[Session] Enforcing hard degraded shutdown or failover handoff");
+                        handle_authenticated_session_loss("session_auth_retry_exhausted");
                         return;
                     }
 
-                    // Exponential backoff: 1s, 2s, 4s, 8s, ..., capped at 60s
-                    auto delay_ms = m_session_auth_backoff.calculate_delay_ms(m_session_auth_fail_count);
-                    auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
-
-                    m_logger->warn("[Session] Scheduling reconnection retry in {}s (exponential backoff)",
-                        delay_seconds);
-
-                    // Get the endpoint from the current connection
-                    network::Endpoint wallet_endpoint = m_primary_endpoint;
-
-                    // Schedule delayed retry using the existing connection retry timer infrastructure
-                    m_timer_manager.start_connection_retry_timer(delay_seconds, shared_from_this(), wallet_endpoint);
+                    m_logger->error("[Session] Authentication failed (session_id=0) — treating as authenticated-session loss");
+                    handle_authenticated_session_loss("session_id_zero");
                     return;
                 }
 
@@ -889,6 +803,38 @@ void Worker_manager::enter_terminal_degraded_mode(int signal_number)
     transition_to(RecoveryPhase::DEGRADED_MODE, "signal_terminal_exit");
     m_logger->critical("[Worker_manager] TERMINAL DEGRADED MODE entered by signal {} — full stop", signal_number);
     stop();
+}
+
+void Worker_manager::handle_authenticated_session_loss(const char* reason)
+{
+    const char* loss_reason = reason ? reason : "authenticated_session_lost";
+    constexpr int AUTH_LOSS_DEGRADED_SIGNAL = 0;
+    m_logger->critical("[Session] AUTHENTICATED SESSION LOST (reason={})", loss_reason);
+
+    if (m_config.has_failover() && !m_using_failover && m_failover_endpoint.is_valid())
+    {
+        m_logger->critical("[Failover] Session-loss handoff to secondary {} (no reconnect semantics)",
+                           m_failover_endpoint.to_string());
+        m_auth_loss_handoff_in_progress = true;
+        m_using_failover = true;
+        m_primary_fail_count = 0;
+        m_failover_activated_at = std::chrono::steady_clock::now();
+        m_node_keepalive_interval_hours.store(0);
+        if (m_primary_node_session) {
+            m_primary_node_session->reset();
+        }
+        if (!connect(m_failover_endpoint)) {
+            m_auth_loss_handoff_in_progress = false;
+            m_logger->critical("[Failover] Session-loss handoff connect initiation failed — entering terminal degraded mode");
+            enter_terminal_degraded_mode(AUTH_LOSS_DEGRADED_SIGNAL);
+        }
+        return;
+    }
+
+    m_logger->critical("[Session] No secondary handoff available (configured={}, using_failover={}) — entering terminal degraded mode",
+                       m_config.has_failover() ? "YES" : "NO",
+                       m_using_failover ? "YES" : "NO");
+    enter_terminal_degraded_mode(AUTH_LOSS_DEGRADED_SIGNAL);
 }
 
 uint16_t Worker_manager::get_effective_keepalive_interval() const
@@ -1152,8 +1098,20 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 
         if (!success) {
             self->m_logger->error("[Solo] Connection to wallet {} not successful", wallet_endpoint.to_string());
+            if (self->m_auth_loss_handoff_in_progress) {
+                self->m_auth_loss_handoff_in_progress = false;
+                self->m_logger->critical("[Failover] Session-loss handoff connection failed — entering terminal degraded mode");
+                self->enter_terminal_degraded_mode(0);
+                return;
+            }
             self->retry_connect(wallet_endpoint);
             return;
+        }
+
+        if (self->m_auth_loss_handoff_in_progress) {
+            self->m_auth_loss_handoff_in_progress = false;
+            self->m_logger->critical("[Failover] Session-loss handoff succeeded on {} — authenticated failover session established",
+                                     wallet_endpoint.to_string());
         }
 
         // Connection and authentication succeeded
@@ -1899,16 +1857,10 @@ void Worker_manager::check_template_health()
                        push_received ? since_push_s : static_cast<int64_t>(-1),
                        push_recent ? "YES" : "NO");
 
-        // After 60s without template, check connection health.
-        // IMPORTANT: push silence is orchestration-layer only — it may trigger reconnect,
-        // but must not suppress authoritative GET_BLOCK refresh attempts.
-        // Intentional ordering: when this branch fires we do BOTH operations in the same
-        // tick (reconnect attempt + forced GET_BLOCK retry path) so orchestration signals
-        // can feed recovery without replacing authoritative refresh/submission decisions.
+        // After 60s without template and dead PUSH, keep recovery in template-refresh mode.
+        // Do not mutate transport/session state here; this path is request-only.
         if (degraded_secs > 60 && !push_recent) {
-            m_logger->error("[Worker_manager] ⛔ 60s timeout: no template and push is dead — reconnecting");
-            retry_connect(m_primary_endpoint);
-            // Fall through intentionally: still run forced GET_BLOCK retry below.
+            m_logger->error("[Worker_manager] ⛔ 60s timeout: no template and push is dead — forcing template refresh");
         }
 
         // Retry GET_BLOCK on every health check tick (forced: bypass local gates)
@@ -2092,9 +2044,9 @@ void Worker_manager::check_template_health()
     // tip advance.  Even during long Prime blocks, hash blocks keep advancing the unified
     // chain every ~18s, so a push should arrive well within 600s.
     //
-    // If template_age > 600s, treat this as an orchestration-layer recovery signal.
-    // It may escalate refresh/reconnect behavior, but MUST NOT invalidate a valid
-    // template or halt mining by itself.
+    // If template_age > 600s, treat this as a recovery signal.
+    // It may escalate refresh/degraded handling, but MUST NOT invalidate a valid
+    // template or halt mining by itself in this branch.
     if (template_age > protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
         constexpr const char* BLOCK_DATA_TIMEOUT_TRIGGER_REASON = "block_data_timeout";
 
@@ -2162,9 +2114,9 @@ void Worker_manager::check_template_health()
         }
 
         // Non-authoritative path: do NOT discard valid template and do NOT halt workers here.
-        // Escalate orchestration only (reconnect + forced GET_BLOCK lane).
+        // Keep this branch template-first/request-only; avoid reconnect state mutation in
+        // the same timeout authority path.
         mark_recovery_initiated(BLOCK_DATA_TIMEOUT_TRIGGER_REASON);
-        retry_connect(m_primary_endpoint);
         retry_template_request(true);
     }
 }
