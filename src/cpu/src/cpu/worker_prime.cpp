@@ -174,7 +174,6 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 			// where set_block() could mutate the sieve while run() is using it.
 
 			// Signal new work is available
-			m_stop = true;
 			m_new_work = true;
 			m_running = true;
 		}
@@ -242,7 +241,6 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 			// where set_block() could mutate the sieve while run() is using it.
 
 			// Signal new work is available
-			m_stop = true;
 			m_new_work = true;
 			m_running = true;
 		}
