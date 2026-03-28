@@ -447,8 +447,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 } else {
                     m_logger->error("[Worker_manager] FAILED: No workers received template!");
                     // Immediately request a new template — don't wait 30s for health monitor.
-                    // transition_to(HARD_RECOVERY) is triggered by mark_recovery_initiated()
-                    // inside retry_template_request(true), after stop_all_workers() here.
+                    // Recovery state transition is explicit (domain-isolation rule).
+                    mark_recovery_initiated("template_distribution_failed");
                     stop_all_workers();
                     retry_template_request(true);
                 }
@@ -481,6 +481,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // both handlers fire for the same staleness event.
                     
                     // Request fresh template
+                    mark_recovery_initiated("template_validation_failed");
                     retry_template_request(true);
                 }
             );
@@ -1665,15 +1666,13 @@ void Worker_manager::retry_template_request(bool bForce)
     auto now = std::chrono::steady_clock::now();
     m_logger->info("[Worker_manager] Requesting fresh template... (force={})", bForce ? "true" : "false");
 
+    // Domain-isolation contract:
+    //   - retry_template_request(): template-request semantics only
+    //   - no reconnect/session-state mutation here
+    // Reconnect/recovery transitions are handled by explicit orchestration helpers/callers.
     if (!m_primary_node_session || !m_primary_node_session->is_authenticated()) {
         m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=missing_authenticated_session");
-        m_logger->error("[Worker_manager] No authenticated session available to request template");
-        // Reconstruct wallet endpoint from config and retry connection
-        auto const ip_address = m_config.get_wallet_ip();
-        auto const port = m_config.get_port();
-        network::Endpoint wallet_endpoint{network::Transport_protocol::tcp, ip_address, port};
-        m_logger->info("[Worker_manager] Attempting to reconnect to {}:{}", ip_address, port);
-        retry_connect(wallet_endpoint);
+        m_logger->info("[Worker_manager] GET_BLOCK deferred — no authenticated session available");
         return;
     }
 
@@ -1738,12 +1737,6 @@ void Worker_manager::retry_template_request(bool bForce)
 
     bool no_valid_template = !has_valid_template_available(solo_protocol);
 
-    // When this is a forced recovery (bForce=true) and not already tracked as such,
-    // mark a new recovery epoch so check_template_health() knows recovery is pending.
-    if (bForce) {
-        mark_recovery_initiated("health_monitor_or_validation");
-    }
-
     // Early-exit if not yet authenticated — the channel-advanced staleness detector
     // can fire during the brief window after a push increments channel_height but
     // before MINER_AUTH_RESULT has set m_authenticated.  This is a normal transient
@@ -1757,13 +1750,10 @@ void Worker_manager::retry_template_request(bool bForce)
 
     // Early-exit if primary TCP connection is down — request_work() would silently
     // return nullptr in this case (NodeSession checks m_primary_connected before
-    // calling get_work).  Detect it here so we can log the real reason and trigger
-    // reconnect immediately instead of burning a recovery tick.
+    // calling get_work).  Detect it here so we can log the real reason explicitly.
     if (!m_primary_node_session->is_primary_connected()) {
         m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=primary_disconnected");
-        m_logger->warn("[Worker_manager] GET_BLOCK deferred — primary TCP connection is not established; "
-                       "initiating reconnect");
-        retry_connect(m_primary_endpoint);
+        m_logger->warn("[Worker_manager] GET_BLOCK deferred — primary TCP connection is not established");
         return;
     }
 
