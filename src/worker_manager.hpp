@@ -228,6 +228,12 @@ private:
     // Atomic to allow concurrent access from primary and secondary SESSION_START handlers.
     std::atomic<uint16_t> m_node_keepalive_interval_hours{0};  // 0 = not yet received; fall back to config value
 
+    // Set to true while old worker threads are being joined (outside m_worker_mutex)
+    // to prevent the template distribution handler from creating new workers before
+    // old ones are fully destroyed — closing the race window introduced by the
+    // move-out-then-destroy deadlock fix (PR #539/#543).
+    std::atomic<bool> m_workers_draining{false};
+
     // Returns the best known keepalive interval: node-advertised if received, else config default.
     uint16_t get_effective_keepalive_interval() const;
 

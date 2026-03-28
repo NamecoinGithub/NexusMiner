@@ -218,7 +218,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 size_t workers_fed = 0;
                 {
                     std::lock_guard<std::mutex> lock(self->m_worker_mutex);
-                    if (self->is_degraded() && !self->m_recovery_workers_spawned && self->m_workers.empty()) {
+                    if (self->is_degraded() && !self->m_recovery_workers_spawned && self->m_workers.empty() && !self->m_workers_draining) {
                         self->m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
                         self->create_workers_locked();
                         self->m_recovery_workers_spawned = !self->m_workers.empty();  // set AFTER success for exception safety
@@ -902,7 +902,9 @@ void Worker_manager::stop()
         workers_to_destroy = std::move(m_workers);
         m_workers.clear();
     }
+    m_workers_draining = true;
     workers_to_destroy.clear(); // destructors join threads here, outside the lock
+    m_workers_draining = false;
 }
 
 void Worker_manager::collect_worker_statistics(stats::Collector& collector)
@@ -1672,7 +1674,9 @@ void Worker_manager::stop_all_workers()
         // Clear the recovery gate so the next epoch can re-create workers
         m_recovery_workers_spawned = false;
     }
+    m_workers_draining = true;
     workers_to_destroy.clear(); // destructors join threads here, outside the lock
+    m_workers_draining = false;
 
     // Atomically enter WAITING_TEMPLATE so there is no window where m_workers is
     // empty while the phase is still HEALTHY.  mark_recovery_initiated() is
