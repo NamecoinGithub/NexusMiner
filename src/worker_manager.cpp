@@ -1167,7 +1167,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         if (!self->m_stats_timers_started)
         {
             self->m_stats_timers_started = true;
-            self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
+            self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, weak_self);
             self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
         }
 
@@ -1625,6 +1625,18 @@ void Worker_manager::clear_recovery_state()
 
     m_logger->info("[Worker_manager] Recovery state cleared — degraded_exit_count={} cumulative_degraded_time_ms={}",
                    m_degraded_exit_total, m_time_in_degraded_ms);
+}
+
+void Worker_manager::collect_worker_statistics()
+{
+    std::lock_guard<std::mutex> lock(m_worker_mutex);
+    for (auto& worker : m_workers)
+    {
+        if (worker)
+        {
+            worker->update_statistics(*m_stats_collector);
+        }
+    }
 }
 
 void Worker_manager::stop_all_workers()
