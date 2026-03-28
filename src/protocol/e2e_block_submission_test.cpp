@@ -33,31 +33,16 @@
 #include "protocol/falcon_constants.hpp"
 #include "miner_opcodes.hpp"
 #include <iostream>
-#include <cassert>
 #include <cstdint>
 #include <vector>
 #include <cstring>
 #include <openssl/sha.h>
+#include <gtest/gtest.h>
 
 using namespace nexusminer;
 using namespace nexusminer::protocol;
 
 // ── Test infrastructure ──────────────────────────────────────────────────────
-static int tests_run    = 0;
-static int tests_passed = 0;
-static int tests_failed = 0;
-
-static void print_result(const char* name, bool passed) {
-    tests_run++;
-    if (passed) {
-        tests_passed++;
-        std::cout << "  [PASS] " << name << "\n";
-    } else {
-        tests_failed++;
-        std::cout << "  [FAIL] " << name << "\n";
-    }
-}
-
 // ── Constants matching solo.cpp (must stay in sync) ──────────────────────────
 static const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
 static const std::vector<uint8_t> AAD_BLOCK_SUBMISSION{};  // empty — node uses no AAD
@@ -143,7 +128,7 @@ static void test_height_tracker_snapshot_carries_session_epoch() {
     HeightTracker tracker;
     tracker.set_session_epoch(42);
     auto snap = tracker.GetSnapshot();
-    print_result("HeightTracker snapshot carries authoritative session epoch", snap.session_epoch == 42);
+    EXPECT_TRUE(snap.session_epoch == 42) << "HeightTracker snapshot carries authoritative session epoch";
 }
 
 static void test_template_interface_stamps_session_epoch() {
@@ -155,7 +140,7 @@ static void test_template_interface_stamps_session_epoch() {
     const auto* tmpl = mti_hash.get_current_template();
 
     bool ok = result.is_valid && tmpl != nullptr && tmpl->session_epoch == 11;
-    print_result("MiningTemplateInterface stamps templates with authoritative session epoch", ok);
+    EXPECT_TRUE(ok) << "MiningTemplateInterface stamps templates with authoritative session epoch";
 }
 
 /**
@@ -196,14 +181,14 @@ static void test_e2e_hash_channel_round_trip() {
     auto submit = StatelessBlockUtility::encode_submit(
         *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     if (!submit.valid) {
-        print_result("E2E Hash: encode_submit succeeds", false);
+        EXPECT_TRUE(false) << "E2E Hash: encode_submit succeeds";
         return;
     }
 
     // Step 2: strip wire header
     auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
     if (plaintext.empty()) {
-        print_result("E2E Hash: strip wire header", false);
+        EXPECT_TRUE(false) << "E2E Hash: strip wire header";
         return;
     }
 
@@ -216,14 +201,14 @@ static void test_e2e_hash_channel_round_trip() {
     auto enc_nonce = ChaCha20Wrapper::generate_nonce();
     auto enc = wrapper.encrypt(plaintext, session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
     if (!enc.success) {
-        print_result("E2E Hash: ChaCha20 encrypt succeeds", false);
+        EXPECT_TRUE(false) << "E2E Hash: ChaCha20 encrypt succeeds";
         return;
     }
 
     // Step 5: decrypt (node side — same key, same nonce, empty AAD)
     auto dec = wrapper.decrypt(enc.data, session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
     bool ok = dec.success && (dec.data == plaintext);
-    print_result("E2E Hash: encode_submit → ChaCha20 encrypt → decrypt round-trip", ok);
+    EXPECT_TRUE(ok) << "E2E Hash: encode_submit → ChaCha20 encrypt → decrypt round-trip";
 }
 
 // Test 2: Prime channel with vOffsets full pipeline
@@ -237,7 +222,7 @@ static void test_e2e_prime_channel_voffsets_round_trip() {
     auto submit = StatelessBlockUtility::encode_submit(
         *mti, blk, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     if (!submit.valid) {
-        print_result("E2E Prime: encode_submit with vOffsets succeeds", false);
+        EXPECT_TRUE(false) << "E2E Prime: encode_submit with vOffsets succeeds";
         return;
     }
 
@@ -254,7 +239,7 @@ static void test_e2e_prime_channel_voffsets_round_trip() {
     // Step 4: decrypt (node side)
     auto dec = wrapper.decrypt(enc.data, session_key, enc_nonce, AAD_BLOCK_SUBMISSION);
     bool ok = dec.success && (dec.data == plaintext);
-    print_result("E2E Prime: encode_submit + vOffsets → ChaCha20 round-trip", ok);
+    EXPECT_TRUE(ok) << "E2E Prime: encode_submit + vOffsets → ChaCha20 round-trip";
 }
 
 // Test 3: Hash decrypted payload is exactly BLOCK_BODY_SIZE (216 bytes)
@@ -267,7 +252,7 @@ static void test_hash_payload_size() {
         *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
     bool ok = submit.valid && (plaintext.size() == StatelessBlockUtility::BLOCK_BODY_SIZE);
-    print_result("E2E Hash: decrypted payload = 216 bytes (BLOCK_BODY_SIZE)", ok);
+    EXPECT_TRUE(ok) << "E2E Hash: decrypted payload = 216 bytes (BLOCK_BODY_SIZE)";
 }
 
 // Test 4: Prime decrypted payload = BLOCK_BODY_SIZE + vOffsets.size()
@@ -282,7 +267,7 @@ static void test_prime_payload_size() {
     auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
     bool ok = submit.valid &&
               (plaintext.size() == StatelessBlockUtility::BLOCK_BODY_SIZE + vOffsets.size());
-    print_result("E2E Prime: decrypted payload = 216 + vOffsets.size() bytes", ok);
+    EXPECT_TRUE(ok) << "E2E Prime: decrypted payload = 216 + vOffsets.size() bytes";
 }
 
 // Test 5: vOffsets bytes survive the full pipeline (byte-exact)
@@ -314,7 +299,7 @@ static void test_voffsets_byte_exact() {
             dec.data.begin() + offset_start + vOffsets.size());
         ok = (recovered == vOffsets);
     }
-    print_result("E2E: vOffsets bytes survive full pipeline (byte-exact match)", ok);
+    EXPECT_TRUE(ok) << "E2E: vOffsets bytes survive full pipeline (byte-exact match)";
 }
 
 // Test 6: KDF determinism — same genesis → same session key
@@ -323,7 +308,7 @@ static void test_kdf_determinism() {
     auto key1 = derive_session_key(genesis);
     auto key2 = derive_session_key(genesis);
     bool ok = (key1 == key2) && (key1.size() == 32);
-    print_result("KDF: same genesis → same 32-byte session key (deterministic)", ok);
+    EXPECT_TRUE(ok) << "KDF: same genesis → same 32-byte session key (deterministic)";
 }
 
 // Test 7: Wrong session key → decrypt fails
@@ -346,7 +331,7 @@ static void test_wrong_key_decrypt_fails() {
     std::vector<uint8_t> wrong_genesis(32, 0xCD);
     auto wrong_key = derive_session_key(wrong_genesis);
     auto dec = wrapper.decrypt(enc.data, wrong_key, enc_nonce, AAD_BLOCK_SUBMISSION);
-    print_result("E2E: wrong session key → ChaCha20 decrypt FAILS", !dec.success);
+    EXPECT_TRUE(!dec.success) << "E2E: wrong session key → ChaCha20 decrypt FAILS";
 }
 
 // Test 8: AAD mismatch → decrypt fails (node vs miner disagree)
@@ -370,7 +355,7 @@ static void test_aad_mismatch_fails() {
     // Simulated buggy node tries to decrypt with non-empty AAD
     std::vector<uint8_t> wrong_aad{'B','L','O','C','K','_','S','U','B','M','I','S','S','I','O','N'};
     auto dec = wrapper.decrypt(enc.data, session_key, enc_nonce, wrong_aad);
-    print_result("E2E: AAD mismatch (non-empty vs empty) → decrypt FAILS", !dec.success);
+    EXPECT_TRUE(!dec.success) << "E2E: AAD mismatch (non-empty vs empty) → decrypt FAILS";
 }
 
 // Test 9: STATELESS lane final SUBMIT_BLOCK packet structure
@@ -405,7 +390,7 @@ static void test_stateless_submit_packet_structure() {
         size_t expected = 6 + 12 + plaintext.size() + 16;
         ok = ok && (packet->size() == expected);
     }
-    print_result("E2E STATELESS: SUBMIT_BLOCK packet = [0xD001][len][nonce(12)][ct+tag]", ok);
+    EXPECT_TRUE(ok) << "E2E STATELESS: SUBMIT_BLOCK packet = [0xD001][len][nonce(12)][ct+tag]";
 }
 
 // Test 10: LEGACY lane final SUBMIT_BLOCK packet structure
@@ -437,7 +422,7 @@ static void test_legacy_submit_packet_structure() {
         size_t expected = 5 + 12 + plaintext.size() + 16;
         ok = ok && (packet->size() == expected);
     }
-    print_result("E2E LEGACY: SUBMIT_BLOCK packet = [0x01][len][nonce(12)][ct+tag]", ok);
+    EXPECT_TRUE(ok) << "E2E LEGACY: SUBMIT_BLOCK packet = [0x01][len][nonce(12)][ct+tag]";
 }
 
 // Test 11: vOffsets flow through prepare_block_submission (Prime channel)
@@ -449,7 +434,7 @@ static void test_voffsets_flow_prepare_block_submission() {
 
     const auto* tmpl = mti_prime.get_current_template();
     if (!tmpl) {
-        print_result("vOffsets flow: template loaded", false);
+        EXPECT_TRUE(false) << "vOffsets flow: template loaded";
         return;
     }
 
@@ -474,8 +459,7 @@ static void test_voffsets_flow_prepare_block_submission() {
         tail_ok = (tail == vOffsets);
     }
 
-    print_result("vOffsets flow: prepare_block_submission() appends vOffsets "
-                 "(Prime channel, byte-exact at tail)", size_ok && tail_ok);
+    EXPECT_TRUE(size_ok && tail_ok) << "vOffsets flow: prepare_block_submission() appends vOffsets (Prime channel, byte-exact at tail)";
 }
 
 // Test 12: Hash channel prepare_block_submission with empty vOffsets
@@ -487,7 +471,7 @@ static void test_hash_no_voffsets_appended() {
 
     const auto* tmpl = mti_hash.get_current_template();
     if (!tmpl) {
-        print_result("Hash no-vOffsets: template loaded", false);
+        EXPECT_TRUE(false) << "Hash no-vOffsets: template loaded";
         return;
     }
 
@@ -495,7 +479,7 @@ static void test_hash_no_voffsets_appended() {
         tmpl->block.hashMerkleRoot.GetBytes(), 0xDEADBEEFCAFEBABEULL, {});
 
     bool ok = (result.size() == StatelessBlockUtility::BLOCK_BODY_SIZE);
-    print_result("Hash channel: prepare_block_submission() = 216 bytes (no vOffsets)", ok);
+    EXPECT_TRUE(ok) << "Hash channel: prepare_block_submission() = 216 bytes (no vOffsets)";
 }
 
 // ── Test 13: SubmitBlockPayloadInfo Hash Falcon-1024 fixed-size ─────────────
@@ -514,9 +498,8 @@ static void test_payload_info_hash_falcon1024() {
     bool plain_ok     = (info.expected_plaintext_size() == 1803);
     bool enc_ok       = (info.expected_encrypted_size() == 1831);
 
-    print_result("PayloadInfo Hash F1024: plaintext=1803, encrypted=1831",
-                 channel_ok && base_ok && offset_ok && ts_ok &&
-                 siglen_ok && sig_ok && plain_ok && enc_ok);
+    EXPECT_TRUE(channel_ok && base_ok && offset_ok && ts_ok &&
+                 siglen_ok && sig_ok && plain_ok && enc_ok) << "PayloadInfo Hash F1024: plaintext=1803, encrypted=1831";
 }
 
 // ── Test 14: SubmitBlockPayloadInfo Prime with 10 offset bytes ──────────────
@@ -533,8 +516,7 @@ static void test_payload_info_prime_with_offsets() {
     bool plain_ok     = (info.expected_plaintext_size() == 1813);
     bool enc_ok       = (info.expected_encrypted_size() == 1841);
 
-    print_result("PayloadInfo Prime F1024 (10 offsets): plaintext=1813, encrypted=1841",
-                 channel_ok && base_ok && offset_ok && plain_ok && enc_ok);
+    EXPECT_TRUE(channel_ok && base_ok && offset_ok && plain_ok && enc_ok) << "PayloadInfo Prime F1024 (10 offsets): plaintext=1813, encrypted=1841";
 }
 
 // ── Test 15: Prime variable-size is NOT Hash fixed-size ─────────────────────
@@ -550,8 +532,7 @@ static void test_payload_info_prime_not_equal_hash() {
     bool prime_larger  = (prime_info.expected_plaintext_size() ==
                           hash_info.expected_plaintext_size() + 7);
 
-    print_result("PayloadInfo: Prime(7 offsets) != Hash, differs by offset count",
-                 sizes_differ && prime_larger);
+    EXPECT_TRUE(sizes_differ && prime_larger) << "PayloadInfo: Prime(7 offsets) != Hash, differs by offset count";
 }
 
 // ── Test 16: E2E integration — encode_submit → compute_payload_info → ChaCha20 ──
@@ -584,8 +565,7 @@ static void test_e2e_payload_info_hash_unsigned() {
     bool enc_ok = enc.success &&
                   (enc.data.size() == plaintext.size() + 16);  // ct+tag
 
-    print_result("E2E PayloadInfo: Hash unsigned → encrypt size correct",
-                 actual_ok && enc_ok);
+    EXPECT_TRUE(actual_ok && enc_ok) << "E2E PayloadInfo: Hash unsigned → encrypt size correct";
 }
 
 // ── Test 17: E2E integration — Prime with vOffsets through full pipeline ─────
@@ -599,7 +579,7 @@ static void test_e2e_payload_info_prime_pipeline() {
     auto submit = StatelessBlockUtility::encode_submit(
         *mti, blk, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
     if (!submit.valid) {
-        print_result("E2E PayloadInfo Prime pipeline: encode_submit succeeds", false);
+        EXPECT_TRUE(false) << "E2E PayloadInfo Prime pipeline: encode_submit succeeds";
         return;
     }
 
@@ -628,8 +608,7 @@ static void test_e2e_payload_info_prime_pipeline() {
     wire_payload.insert(wire_payload.end(), enc.data.begin(), enc.data.end());
     bool wire_ok = (wire_payload.size() == expected_wire);
 
-    print_result("E2E PayloadInfo Prime (10 offsets): full pipeline size correct",
-                 plain_ok && rt_ok && info_ok && wire_ok);
+    EXPECT_TRUE(plain_ok && rt_ok && info_ok && wire_ok) << "E2E PayloadInfo Prime (10 offsets): full pipeline size correct";
 }
 
 
@@ -650,7 +629,7 @@ static void test_e2e_encrypt_submit_block_payload() {
         auto submit = StatelessBlockUtility::encode_submit(
             *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
         if (!submit.valid) {
-            print_result("E2E encrypt_submit_block_payload: Hash encode_submit succeeds", false);
+            EXPECT_TRUE(false) << "E2E encrypt_submit_block_payload: Hash encode_submit succeeds";
             return;
         }
 
@@ -664,13 +643,11 @@ static void test_e2e_encrypt_submit_block_payload() {
         // (since expected_plaintext_size() includes ts+sig overhead), but must
         // still succeed encryption.
         auto enc = wrapper.encrypt_submit_block_payload(plaintext, session_key, info);
-        print_result("E2E encrypt_submit_block_payload: Hash unsigned — succeeds",
-                     enc.success);
+        EXPECT_TRUE(enc.success) << "E2E encrypt_submit_block_payload: Hash unsigned — succeeds";
 
         // Output must be [nonce(12)][ciphertext(plaintext.size())][tag(16)]
         const size_t expected_size = 12 + plaintext.size() + 16;
-        print_result("E2E encrypt_submit_block_payload: Hash unsigned — size = nonce+ct+tag",
-                     enc.success && enc.data.size() == expected_size);
+        EXPECT_TRUE(enc.success && enc.data.size() == expected_size) << "E2E encrypt_submit_block_payload: Hash unsigned — size = nonce+ct+tag";
     }
 
     // ── Case B: Prime channel with 10 vOffsets (unsigned) ────────────────
@@ -683,7 +660,7 @@ static void test_e2e_encrypt_submit_block_payload() {
         auto submit = StatelessBlockUtility::encode_submit(
             *mti, blk, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
         if (!submit.valid) {
-            print_result("E2E encrypt_submit_block_payload: Prime encode_submit succeeds", false);
+            EXPECT_TRUE(false) << "E2E encrypt_submit_block_payload: Prime encode_submit succeeds";
             return;
         }
 
@@ -694,17 +671,14 @@ static void test_e2e_encrypt_submit_block_payload() {
             1, plaintext.size(), 0);
 
         auto enc = wrapper.encrypt_submit_block_payload(plaintext, session_key, info);
-        print_result("E2E encrypt_submit_block_payload: Prime+10-offsets unsigned — succeeds",
-                     enc.success);
+        EXPECT_TRUE(enc.success) << "E2E encrypt_submit_block_payload: Prime+10-offsets unsigned — succeeds";
 
         const size_t expected_size = 12 + plaintext.size() + 16;
-        print_result("E2E encrypt_submit_block_payload: Prime+10-offsets — size = nonce+ct+tag",
-                     enc.success && enc.data.size() == expected_size);
+        EXPECT_TRUE(enc.success && enc.data.size() == expected_size) << "E2E encrypt_submit_block_payload: Prime+10-offsets — size = nonce+ct+tag";
 
         // Two calls must produce different outputs (fresh nonce each time)
         auto enc2 = wrapper.encrypt_submit_block_payload(plaintext, session_key, info);
-        print_result("E2E encrypt_submit_block_payload: each call generates a fresh nonce",
-                     enc.success && enc2.success && enc.data != enc2.data);
+        EXPECT_TRUE(enc.success && enc2.success && enc.data != enc2.data) << "E2E encrypt_submit_block_payload: each call generates a fresh nonce";
 
         // The first 12 bytes are the nonce; the rest is ciphertext+tag.
         // Verify the ciphertext+tag portion (bytes [12..end]) can be decrypted
@@ -713,62 +687,7 @@ static void test_e2e_encrypt_submit_block_payload() {
             std::vector<uint8_t> nonce(enc.data.begin(), enc.data.begin() + 12);
             std::vector<uint8_t> ct_tag(enc.data.begin() + 12, enc.data.end());
             auto dec = wrapper.decrypt(ct_tag, session_key, nonce, {});
-            print_result("E2E encrypt_submit_block_payload: Prime — decrypt(nonce, ct+tag) succeeds",
-                         dec.success && dec.data == plaintext);
+            EXPECT_TRUE(dec.success && dec.data == plaintext) << "E2E encrypt_submit_block_payload: Prime — decrypt(nonce, ct+tag) succeeds";
         }
     }
-}
-
-
-int main() {
-    std::cout << "\n";
-    std::cout << "========================================\n";
-    std::cout << "  End-to-End Block Submission Tests\n";
-    std::cout << "========================================\n";
-    std::cout << "\n--- Full Pipeline (encode_submit → ChaCha20) ---\n";
-
-    test_e2e_hash_channel_round_trip();         // 1
-    test_e2e_prime_channel_voffsets_round_trip();// 2
-    test_hash_payload_size();                    // 3
-    test_prime_payload_size();                   // 4
-    test_voffsets_byte_exact();                  // 5
-
-    std::cout << "\n--- Crypto Correctness ---\n";
-    test_kdf_determinism();                      // 6
-    test_wrong_key_decrypt_fails();              // 7
-    test_aad_mismatch_fails();                   // 8
-
-    std::cout << "\n--- Wire Format ---\n";
-    test_stateless_submit_packet_structure();    // 9
-    test_legacy_submit_packet_structure();       // 10
-
-    std::cout << "\n--- vOffsets Flow ---\n";
-    test_voffsets_flow_prepare_block_submission();// 11
-    test_hash_no_voffsets_appended();            // 12
-
-    std::cout << "\n--- Channel-Aware Payload Sizing ---\n";
-    test_payload_info_hash_falcon1024();          // 13
-    test_payload_info_prime_with_offsets();        // 14
-    test_payload_info_prime_not_equal_hash();      // 15
-    test_e2e_payload_info_hash_unsigned();         // 16
-    test_e2e_payload_info_prime_pipeline();        // 17
-    test_height_tracker_snapshot_carries_session_epoch();
-    test_template_interface_stamps_session_epoch();
-
-    std::cout << "\n--- Canonical Wrapper Path (encrypt_submit_block_payload) ---\n";
-    test_e2e_encrypt_submit_block_payload();       // 18
-
-    std::cout << "\n";
-    std::cout << "========================================\n";
-    std::cout << "Test Summary\n";
-    std::cout << "========================================\n";
-    std::cout << "Tests run:    " << tests_run    << "\n";
-    std::cout << "Tests passed: " << tests_passed << "\n";
-    std::cout << "Tests failed: " << tests_failed << "\n";
-    std::cout << "Success rate: "
-              << (tests_run > 0 ? 100 * tests_passed / tests_run : 0)
-              << "%\n";
-    std::cout << "========================================\n";
-
-    return (tests_failed == 0) ? 0 : 1;
 }

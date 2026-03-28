@@ -15,15 +15,12 @@
 #include <vector>
 
 #include <openssl/sha.h>
+#include <gtest/gtest.h>
 
 using namespace nexusminer;
 using namespace nexusminer::protocol;
 
 namespace {
-
-int tests_run = 0;
-int tests_passed = 0;
-int tests_failed = 0;
 
 constexpr uint32_t DEFAULT_DIFFICULTY = 0x04308519u;
 constexpr uint16_t DEFAULT_KEEPALIVE_INTERVAL_HOURS = 24u;
@@ -37,18 +34,6 @@ constexpr uint64_t ACCEPTANCE_NONCE = 0x0102030405060708ULL;
 constexpr uint32_t ACCEPTANCE_SESSION_ID = 0x12345678u;
 constexpr uint32_t ACCEPTANCE_TIMEOUT_SECONDS = 7200u;
 const std::string KDF_DOMAIN = "nexus-mining-chacha20-v1";
-
-void print_result(const char* name, bool passed)
-{
-    ++tests_run;
-    if (passed) {
-        ++tests_passed;
-        std::cout << "  [PASS] " << name << '\n';
-    } else {
-        ++tests_failed;
-        std::cout << "  [FAIL] " << name << '\n';
-    }
-}
 
 uint8_t be_byte(uint32_t value, int index)
 {
@@ -535,7 +520,7 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
     return result;
 }
 
-void test_first_block_acceptance_fast_mode()
+TEST(FirstBlockAcceptanceTest, test_first_block_acceptance_fast_mode)
 {
     std::cout << "\nTest 1: deterministic first-block acceptance harness (fast mode)\n";
 
@@ -552,14 +537,11 @@ void test_first_block_acceptance_fast_mode()
         "accept"
     };
 
-    print_result("Fast harness: completes required phase sequence",
-                 result.ok && result.artifacts.phases == expected_phases);
-    print_result("Fast harness: captures reward/session diagnostics",
-                 result.ok &&
+    EXPECT_TRUE(result.ok && result.artifacts.phases == expected_phases) << "Fast harness: completes required phase sequence";
+    EXPECT_TRUE(result.ok &&
                  !result.artifacts.reward_diagnostics.empty() &&
-                 !result.artifacts.post_accept_diagnostics.empty());
-    print_result("Fast harness: captures template anchor and derived keepalive",
-                 result.ok &&
+                 !result.artifacts.post_accept_diagnostics.empty()) << "Fast harness: captures reward/session diagnostics";
+    EXPECT_TRUE((result.ok &&
                   result.artifacts.session_id == ACCEPTANCE_SESSION_ID &&
                   result.artifacts.keepalive_hours == 1 &&
                   result.artifacts.authoritative_submit_height == ACCEPTANCE_TEMPLATE_HEIGHT &&
@@ -567,51 +549,45 @@ void test_first_block_acceptance_fast_mode()
                   result.artifacts.template_channel == ACCEPTANCE_CHANNEL &&
                   result.artifacts.unified_height == ACCEPTANCE_UNIFIED_HEIGHT &&
                   result.artifacts.channel_height == ACCEPTANCE_CHANNEL_HEIGHT &&
-                  result.artifacts.prevblock_suffix != std::array<uint8_t, 4>{});
-    print_result("Fast harness: authoritative submit height matches template, built block, and payload",
-                 result.ok &&
+                  result.artifacts.prevblock_suffix != std::array<uint8_t, 4>{})) << "Fast harness: captures template anchor and derived keepalive";
+    EXPECT_TRUE(result.ok &&
                  result.artifacts.authoritative_submit_height == ACCEPTANCE_TEMPLATE_HEIGHT &&
                  result.artifacts.template_height == result.artifacts.authoritative_submit_height &&
                  result.artifacts.built_block_height == result.artifacts.authoritative_submit_height &&
-                 result.artifacts.submitted_payload_height == result.artifacts.authoritative_submit_height);
-    print_result("Fast harness: submit decrypt + validation + accept path succeed",
-                 result.ok &&
+                 result.artifacts.submitted_payload_height == result.artifacts.authoritative_submit_height) << "Fast harness: authoritative submit height matches template, built block, and payload";
+    EXPECT_TRUE(result.ok &&
                  result.artifacts.session_valid_before_submit &&
                  result.artifacts.submit_validation_matches_template &&
                  result.artifacts.decrypt_matches_submit &&
                  result.artifacts.accept_used_snapshot &&
                  result.artifacts.accept_response == "ACCEPT" &&
-                 result.artifacts.post_accept_session_valid);
+                 result.artifacts.post_accept_session_valid) << "Fast harness: submit decrypt + validation + accept path succeed";
 
     if (!result.ok) {
         std::cout << "    Failure: " << result.failure << '\n';
     }
 }
 
-void test_first_block_acceptance_full_validation_mode()
+TEST(FirstBlockAcceptanceTest, test_first_block_acceptance_full_validation_mode)
 {
     std::cout << "\nTest 2: deterministic first-block acceptance harness (full validation mode)\n";
 
     const auto result = run_first_block_acceptance_harness(HarnessOptions{true});
     const auto suffix_hex = format_hex_prefix(result.artifacts.prevblock_suffix, 4);
 
-    print_result("Full harness: retains pre-submit diagnostics with template suffix",
-                 result.ok &&
+    EXPECT_TRUE(result.ok &&
                  result.artifacts.pre_submit_diagnostics.find("consistency: PASS") != std::string::npos &&
-                 result.artifacts.pre_submit_diagnostics.find(suffix_hex) != std::string::npos);
-    print_result("Full harness: produces deterministic submit payload sizes",
-                 result.ok &&
+                 result.artifacts.pre_submit_diagnostics.find(suffix_hex) != std::string::npos) << "Full harness: retains pre-submit diagnostics with template suffix";
+    EXPECT_TRUE(result.ok &&
                  result.artifacts.submitted_nonce == ACCEPTANCE_NONCE &&
                  result.artifacts.plaintext_submit_size == StatelessBlockUtility::BLOCK_BODY_SIZE &&
-                 result.artifacts.encrypted_submit_size == 12u + StatelessBlockUtility::BLOCK_BODY_SIZE + 16u);
-    print_result("Full harness: consumes accepted snapshot before fallback path",
-                 result.ok &&
+                 result.artifacts.encrypted_submit_size == 12u + StatelessBlockUtility::BLOCK_BODY_SIZE + 16u) << "Full harness: produces deterministic submit payload sizes";
+    EXPECT_TRUE(result.ok &&
                  result.artifacts.accept_used_snapshot &&
-                 result.artifacts.fallback_after_snapshot_consumption);
-    print_result("Full harness: preserves session consistency after accept",
-                 result.ok &&
+                 result.artifacts.fallback_after_snapshot_consumption) << "Full harness: consumes accepted snapshot before fallback path";
+    EXPECT_TRUE(result.ok &&
                  result.artifacts.post_accept_session_valid &&
-                 result.artifacts.post_accept_diagnostics.find("reward-address") != std::string::npos);
+                 result.artifacts.post_accept_diagnostics.find("reward-address") != std::string::npos) << "Full harness: preserves session consistency after accept";
 
     if (!result.ok) {
         std::cout << "    Failure: " << result.failure << '\n';
@@ -619,23 +595,3 @@ void test_first_block_acceptance_full_validation_mode()
 }
 
 } // namespace
-
-int main()
-{
-    std::cout << "\n========================================\n";
-    std::cout << "  First-Block Acceptance Harness Tests\n";
-    std::cout << "========================================\n";
-
-    test_first_block_acceptance_fast_mode();
-    test_first_block_acceptance_full_validation_mode();
-
-    std::cout << "\n========================================\n";
-    std::cout << "Test Summary\n";
-    std::cout << "========================================\n";
-    std::cout << "Tests run:    " << tests_run << "\n";
-    std::cout << "Tests passed: " << tests_passed << "\n";
-    std::cout << "Tests failed: " << tests_failed << "\n";
-    std::cout << "========================================\n";
-
-    return (tests_failed == 0) ? 0 : 1;
-}

@@ -27,32 +27,16 @@
 #include "protocol/packet_builder.hpp"
 #include "miner_opcodes.hpp"
 #include <iostream>
-#include <cassert>
 #include <cstdint>
 #include <chrono>
 #include <thread>
 #include <memory>
 #include <vector>
 #include <deque>
+#include <gtest/gtest.h>
 
 using namespace nexusminer::protocol;
 using namespace nexusminer;
-
-// Test statistics
-static int tests_run    = 0;
-static int tests_passed = 0;
-static int tests_failed = 0;
-
-void print_test_result(const char* name, bool passed) {
-    tests_run++;
-    if (passed) {
-        tests_passed++;
-        std::cout << "  [PASS] " << name << "\n";
-    } else {
-        tests_failed++;
-        std::cout << "  [FAIL] " << name << "\n";
-    }
-}
 
 // ============================================================================
 // ⚡ TestRecoveryPhase — minimal mirror of worker_manager RecoveryPhase enum
@@ -109,7 +93,7 @@ static bool phase_is_reconnecting(TestRecoveryPhase p) {
 // ============================================================================
 // Test 1: Keepalive ACK update across epoch change — old-epoch ack invalidated
 // ============================================================================
-void test_keepalive_ack_invalidated_on_epoch_change() {
+TEST(DegradedRecoveryTest, test_keepalive_ack_invalidated_on_epoch_change) {
     std::cout << "\nTest 1: Keepalive ACK invalidated when session epoch advances\n";
     HeightTracker tracker;
 
@@ -118,27 +102,24 @@ void test_keepalive_ack_invalidated_on_epoch_change() {
     tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0xDEADBEEFu, 0);
     auto snap1 = tracker.GetSnapshot();
     bool ack_was_set = (snap1.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
-    print_test_result("Epoch 1: keepalive ACK timestamp is set after response", ack_was_set);
+    EXPECT_TRUE(ack_was_set) << "Epoch 1: keepalive ACK timestamp is set after response";
 
     // Advance to epoch 2 (session re-auth or channel re-init)
     tracker.set_session_epoch(2);
     auto snap2 = tracker.GetSnapshot();
-    print_test_result("Epoch 2: keepalive ACK timestamp cleared on epoch advance",
-                      snap2.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
-    print_test_result("Epoch 2: snapshot session_epoch reflects new epoch",
-                      snap2.session_epoch == 2);
+    EXPECT_TRUE(snap2.last_keepalive_ack_at == std::chrono::steady_clock::time_point{}) << "Epoch 2: keepalive ACK timestamp cleared on epoch advance";
+    EXPECT_TRUE(snap2.session_epoch == 2) << "Epoch 2: snapshot session_epoch reflects new epoch";
 
     // New keepalive in epoch 2 should be accepted
     tracker.OnKeepaliveResponse(5001, 401, 701, 901, 0xCAFEBABEu, 0);
     auto snap3 = tracker.GetSnapshot();
-    print_test_result("Epoch 2: new keepalive ACK is accepted",
-                      snap3.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+    EXPECT_TRUE(snap3.last_keepalive_ack_at != std::chrono::steady_clock::time_point{}) << "Epoch 2: new keepalive ACK is accepted";
 }
 
 // ============================================================================
 // Test 2: Channel advance + stale template transition — staleness detection
 // ============================================================================
-void test_channel_advance_stale_template_transition() {
+TEST(DegradedRecoveryTest, test_channel_advance_stale_template_transition) {
     std::cout << "\nTest 2: Channel advance + stale template transition\n";
     HeightTracker tracker;
 
@@ -146,33 +127,28 @@ void test_channel_advance_stale_template_transition() {
     tracker.OnPushNotification(5000, 100, 0x1d00ffff);
     tracker.OnTemplateReceived(2, 101);
     auto snap = tracker.GetSnapshot();
-    print_test_result("Initial: is_template_stale() == false (channel_height=100 < target=101)",
-                      !snap.is_template_stale());
-    print_test_result("Initial: channel_height == 100", snap.channel_height == 100);
-    print_test_result("Initial: channel_target == 101", snap.channel_target == 101);
+    EXPECT_TRUE(!snap.is_template_stale()) << "Initial: is_template_stale() == false (channel_height=100 < target=101)";
+    EXPECT_TRUE(snap.channel_height == 100) << "Initial: channel_height == 100";
+    EXPECT_TRUE(snap.channel_target == 101) << "Initial: channel_target == 101";
 
     // Channel advances — node found a block
     tracker.OnPushNotification(5001, 101, 0x1d00ffff);
     auto snap2 = tracker.GetSnapshot();
-    print_test_result("After channel advance: is_template_stale() == true (height=101 >= target=101)",
-                      snap2.is_template_stale());
-    print_test_result("After channel advance: channel_height == 101", snap2.channel_height == 101);
+    EXPECT_TRUE(snap2.is_template_stale()) << "After channel advance: is_template_stale() == true (height=101 >= target=101)";
+    EXPECT_TRUE(snap2.channel_height == 101) << "After channel advance: channel_height == 101";
 
     // Simulate keepalive arriving from OLD session — should not affect staleness
     tracker.OnKeepaliveResponse(5001, 300, 101, 900, 0xDEADBEEFu, 0);
     auto snap3 = tracker.GetSnapshot();
-    print_test_result("After old keepalive: is_template_stale() still true",
-                      snap3.is_template_stale());
-    print_test_result("After old keepalive: channel_height unchanged at 101",
-                      snap3.channel_height == 101);
+    EXPECT_TRUE(snap3.is_template_stale()) << "After old keepalive: is_template_stale() still true";
+    EXPECT_TRUE(snap3.channel_height == 101) << "After old keepalive: channel_height unchanged at 101";
 
     // New template from GET_BLOCK response — staleness resolved
     tracker.OnTemplateReceived(2, 102);
     tracker.AdvanceChannelTarget(102);
     auto snap4 = tracker.GetSnapshot();
-    print_test_result("After new template: is_template_stale() == false",
-                      !snap4.is_template_stale());
-    print_test_result("After new template: channel_target == 102", snap4.channel_target == 102);
+    EXPECT_TRUE(!snap4.is_template_stale()) << "After new template: is_template_stale() == false";
+    EXPECT_TRUE(snap4.channel_target == 102) << "After new template: channel_target == 102";
 }
 
 // ============================================================================
@@ -180,7 +156,7 @@ void test_channel_advance_stale_template_transition() {
 // Simulates the "Recovery already pending" scenario: multiple staleness sources
 // calling mark_recovery_initiated() for the same event must not reset the epoch.
 // ============================================================================
-void test_recovery_pending_debounce_idempotent() {
+TEST(DegradedRecoveryTest, test_recovery_pending_debounce_idempotent) {
     std::cout << "\nTest 3: Recovery-pending debounce — multiple mark_recovery calls are idempotent\n";
 
     // Simulate the mark_recovery_initiated() logic using the 5-state RecoveryPhase machine
@@ -215,40 +191,34 @@ void test_recovery_pending_debounce_idempotent() {
 
     // First initiation from push handler
     rt.initiate("push_staleness");
-    print_test_result("First initiation starts recovery (epoch=1)",
-                      rt.epoch == 1 && phase_is_recovery_active(rt.phase));
+    EXPECT_TRUE(rt.epoch == 1 && phase_is_recovery_active(rt.phase)) << "First initiation starts recovery (epoch=1)";
 
     // Second initiation from health monitor (same staleness event)
     rt.initiate("health_monitor_channel_stale");
-    print_test_result("Second initiation is a no-op (epoch still 1)",
-                      rt.epoch == 1 && phase_is_recovery_active(rt.phase));
+    EXPECT_TRUE(rt.epoch == 1 && phase_is_recovery_active(rt.phase)) << "Second initiation is a no-op (epoch still 1)";
 
     // Third initiation from different source
     rt.initiate("health_monitor_or_validation");
-    print_test_result("Third initiation is still a no-op (epoch still 1)",
-                      rt.epoch == 1 && phase_is_recovery_active(rt.phase));
+    EXPECT_TRUE(rt.epoch == 1 && phase_is_recovery_active(rt.phase)) << "Third initiation is still a no-op (epoch still 1)";
 
-    print_test_result("All initiation calls produced at least one STARTED entry",
-                      std::any_of(rt.m_log.begin(), rt.m_log.end(),
-                                  [](const auto& s) { return s.find("STARTED") != std::string::npos; }));
+    EXPECT_TRUE(std::any_of(rt.m_log.begin(), rt.m_log.end(),
+                                  [](const auto& s) { return s.find("STARTED") != std::string::npos; })) << "All initiation calls produced at least one STARTED entry";
     size_t noop_count = 0;
     for (const auto& entry : rt.m_log)
         if (entry.find("NOOP") != std::string::npos) ++noop_count;
-    print_test_result("Subsequent initiations were all NOOP (2 no-ops for 3 total calls)",
-                      noop_count == 2);
+    EXPECT_TRUE(noop_count == 2) << "Subsequent initiations were all NOOP (2 no-ops for 3 total calls)";
 
     // Clear and re-initiate — new epoch must be incremented
     rt.clear();
     rt.initiate("escalation_hard_recovery");
-    print_test_result("After clear, new initiation produces epoch=2",
-                      rt.epoch == 2 && phase_is_recovery_active(rt.phase));
+    EXPECT_TRUE(rt.epoch == 2 && phase_is_recovery_active(rt.phase)) << "After clear, new initiation produces epoch=2";
 }
 
 // ============================================================================
 // Test 4: Recovery GET_BLOCK can dispatch after debounce window — no starvation
 // Simulates the deduplication window expiring between recovery retries.
 // ============================================================================
-void test_recovery_get_block_no_permanent_starvation() {
+TEST(DegradedRecoveryTest, test_recovery_get_block_no_permanent_starvation) {
     std::cout << "\nTest 4: Recovery GET_BLOCK dispatches after dedup window expires\n";
 
     // Simulate GET_BLOCK deduplication logic (mirrors Solo::get_work dedup guard)
@@ -277,25 +247,24 @@ void test_recovery_get_block_no_permanent_starvation() {
 
     // First dispatch should succeed
     bool first = gate.try_dispatch();
-    print_test_result("First GET_BLOCK dispatch succeeds", first);
+    EXPECT_TRUE(first) << "First GET_BLOCK dispatch succeeds";
 
     // Immediate second dispatch should be suppressed (within 100ms)
     bool second = gate.try_dispatch();
-    print_test_result("Immediate second dispatch suppressed by dedup window", !second);
+    EXPECT_TRUE(!second) << "Immediate second dispatch suppressed by dedup window";
 
     // After dedup window expires, dispatch should succeed again
     std::this_thread::sleep_for(std::chrono::milliseconds(110));
     bool third = gate.try_dispatch();
-    print_test_result("GET_BLOCK dispatch succeeds after dedup window (110ms wait)", third);
+    EXPECT_TRUE(third) << "GET_BLOCK dispatch succeeds after dedup window (110ms wait)";
 
     // Another immediate attempt should be suppressed again
     bool fourth = gate.try_dispatch();
-    print_test_result("Immediate dispatch after third is suppressed again", !fourth);
+    EXPECT_TRUE(!fourth) << "Immediate dispatch after third is suppressed again";
 
     // Recovery timer interval (30s >> 100ms dedup) ensures no starvation
     // at normal check_template_health intervals
-    print_test_result("30s timer interval >> 100ms dedup = no starvation at timer cadence",
-                      30000 > DEDUP_MS * 100);
+    EXPECT_TRUE(30000 > DEDUP_MS * 100) << "30s timer interval >> 100ms dedup = no starvation at timer cadence";
 }
 
 // ============================================================================
@@ -303,7 +272,7 @@ void test_recovery_get_block_no_permanent_starvation() {
 // Mirrors Worker_manager::restart_recovery_window() + retry_template_request(true)
 // so a fresh session does not inherit a long-expired recovery epoch.
 // ============================================================================
-void test_successful_reauth_restarts_recovery_epoch() {
+TEST(DegradedRecoveryTest, test_successful_reauth_restarts_recovery_epoch) {
     std::cout << "\nTest 4b: Re-authentication restarts recovery window on a fresh epoch\n";
 
     struct RecoveryTracker {
@@ -340,25 +309,20 @@ void test_successful_reauth_restarts_recovery_epoch() {
     const auto old_started_at = rt.m_recovery_started_at;
     rt.on_reauthenticated();
 
-    print_test_result("Re-authentication starts a new recovery epoch",
-                      rt.m_recovery_epoch == 2);
-    print_test_result("Recovery remains pending after re-authentication",
-                      rt.m_recovery_pending);
-    print_test_result("Recovery start time is refreshed after re-authentication",
-                      rt.m_recovery_started_at != std::chrono::steady_clock::time_point{} &&
-                      rt.m_recovery_started_at > old_started_at);
+    EXPECT_TRUE(rt.m_recovery_epoch == 2) << "Re-authentication starts a new recovery epoch";
+    EXPECT_TRUE(rt.m_recovery_pending) << "Recovery remains pending after re-authentication";
+    EXPECT_TRUE(rt.m_recovery_started_at != std::chrono::steady_clock::time_point{} &&
+                      rt.m_recovery_started_at > old_started_at) << "Recovery start time is refreshed after re-authentication";
     auto elapsed_after_reauth = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - rt.m_recovery_started_at).count();
-    print_test_result("Fresh recovery epoch elapsed time is near-zero after re-authentication",
-                      elapsed_after_reauth >= 0 && elapsed_after_reauth <= 1);
-    print_test_result("Degraded timer is reset for the new authenticated session",
-                      rt.m_degraded_since == std::chrono::steady_clock::time_point{});
+    EXPECT_TRUE(elapsed_after_reauth >= 0 && elapsed_after_reauth <= 1) << "Fresh recovery epoch elapsed time is near-zero after re-authentication";
+    EXPECT_TRUE(rt.m_degraded_since == std::chrono::steady_clock::time_point{}) << "Degraded timer is reset for the new authenticated session";
 }
 
 // ============================================================================
 // Test 4c: Soft refresh timeout escalates only after the hot-swap window stalls
 // ============================================================================
-void test_same_height_soft_refresh_escalates_only_after_timeout() {
+TEST(DegradedRecoveryTest, test_same_height_soft_refresh_escalates_only_after_timeout) {
     std::cout << "\nTest 4c: Template request enters WAITING_TEMPLATE until timeout triggers reconnect\n";
     constexpr int64_t RECOVERY_WINDOW_SECONDS = 60;
     constexpr int64_t TIMEOUT_TEST_SECONDS = RECOVERY_WINDOW_SECONDS + 1;
@@ -391,29 +355,24 @@ void test_same_height_soft_refresh_escalates_only_after_timeout() {
 
     RecoveryTracker rt;
     rt.start_waiting_template("same_height_push_tip_replacement_pre_adoption");
-    print_test_result("Template request starts WAITING_TEMPLATE recovery tracking",
-                      phase_is_recovery_active(rt.phase) && rt.epoch == 1);
-    print_test_result("WAITING_TEMPLATE logs template refresh requested",
-                      !rt.m_log.empty() && rt.m_log.back() == "template refresh requested");
-    print_test_result("WAITING_TEMPLATE records correct reason",
-                      rt.authoritative_recovery_reason == "same_height_push_tip_replacement_pre_adoption");
-    print_test_result("WAITING_TEMPLATE: submissions not withheld (workers keep running)",
-                      !phase_is_submissions_withheld(rt.phase));
-    print_test_result("WAITING_TEMPLATE: is_degraded() == true (waiting for template)",
-                      phase_is_degraded(rt.phase));
-    print_test_result("WAITING_TEMPLATE does not reconnect immediately", !rt.should_reconnect(RECOVERY_WINDOW_SECONDS));
+    EXPECT_TRUE(phase_is_recovery_active(rt.phase) && rt.epoch == 1) << "Template request starts WAITING_TEMPLATE recovery tracking";
+    EXPECT_TRUE(!rt.m_log.empty() && rt.m_log.back() == "template refresh requested") << "WAITING_TEMPLATE logs template refresh requested";
+    EXPECT_TRUE(rt.authoritative_recovery_reason == "same_height_push_tip_replacement_pre_adoption") << "WAITING_TEMPLATE records correct reason";
+    EXPECT_TRUE(!phase_is_submissions_withheld(rt.phase)) << "WAITING_TEMPLATE: submissions not withheld (workers keep running)";
+    EXPECT_TRUE(phase_is_degraded(rt.phase)) << "WAITING_TEMPLATE: is_degraded() == true (waiting for template)";
+    EXPECT_TRUE(!rt.should_reconnect(RECOVERY_WINDOW_SECONDS)) << "WAITING_TEMPLATE does not reconnect immediately";
 
     rt.entered_at = std::chrono::steady_clock::now() - std::chrono::seconds(TIMEOUT_TEST_SECONDS);
-    print_test_result("WAITING_TEMPLATE triggers reconnect after 60s timeout", rt.should_reconnect(RECOVERY_WINDOW_SECONDS));
+    EXPECT_TRUE(rt.should_reconnect(RECOVERY_WINDOW_SECONDS)) << "WAITING_TEMPLATE triggers reconnect after 60s timeout";
     rt.do_reconnect();
-    print_test_result("After timeout: phase is RECONNECTING", phase_is_reconnecting(rt.phase));
-    print_test_result("After timeout: submissions still not withheld", !phase_is_submissions_withheld(rt.phase));
+    EXPECT_TRUE(phase_is_reconnecting(rt.phase)) << "After timeout: phase is RECONNECTING";
+    EXPECT_TRUE(!phase_is_submissions_withheld(rt.phase)) << "After timeout: submissions still not withheld";
 }
 
 // ============================================================================
 // Test 4d: clear_recovery_state-style normalization restores healthy baseline
 // ============================================================================
-void test_degraded_exit_normalizes_recovery_state() {
+TEST(DegradedRecoveryTest, test_degraded_exit_normalizes_recovery_state) {
     std::cout << "\nTest 4d: Degraded exit normalization clears recovery bookkeeping\n";
 
     struct RecoveryTracker {
@@ -441,20 +400,17 @@ void test_degraded_exit_normalizes_recovery_state() {
     RecoveryTracker rt;
     rt.clear();
 
-    print_test_result("Phase returned to HEALTHY", rt.phase == TestRecoveryPhase::HEALTHY);
-    print_test_result("Recovery active cleared", !phase_is_recovery_active(rt.phase));
-    print_test_result("Degraded mode cleared", !phase_is_degraded(rt.phase));
-    print_test_result("Soft-pause guard cleared", !phase_is_submissions_withheld(rt.phase));
-    print_test_result("Recovery epoch reset", rt.epoch == 0);
-    print_test_result("GET_BLOCK bookkeeping cleared",
-                      rt.entered_at == std::chrono::steady_clock::time_point{} &&
+    EXPECT_TRUE(rt.phase == TestRecoveryPhase::HEALTHY) << "Phase returned to HEALTHY";
+    EXPECT_TRUE(!phase_is_recovery_active(rt.phase)) << "Recovery active cleared";
+    EXPECT_TRUE(!phase_is_degraded(rt.phase)) << "Degraded mode cleared";
+    EXPECT_TRUE(!phase_is_submissions_withheld(rt.phase)) << "Soft-pause guard cleared";
+    EXPECT_TRUE(rt.epoch == 0) << "Recovery epoch reset";
+    EXPECT_TRUE(rt.entered_at == std::chrono::steady_clock::time_point{} &&
                       rt.last_get_block_at == std::chrono::steady_clock::time_point{} &&
-                      !rt.get_block_confirmed);
-    print_test_result("Escalation timer cleared",
-                      rt.degraded_since == std::chrono::steady_clock::time_point{});
-    print_test_result("Authoritative recovery state normalized",
-                      rt.authoritative_recovery_healthy_called &&
-                      rt.authoritative_recovery_reason.empty());
+                      !rt.get_block_confirmed) << "GET_BLOCK bookkeeping cleared";
+    EXPECT_TRUE(rt.degraded_since == std::chrono::steady_clock::time_point{}) << "Escalation timer cleared";
+    EXPECT_TRUE(rt.authoritative_recovery_healthy_called &&
+                      rt.authoritative_recovery_reason.empty()) << "Authoritative recovery state normalized";
 }
 
 // ============================================================================
@@ -463,7 +419,7 @@ void test_degraded_exit_normalizes_recovery_state() {
 // which referenced the removed RecoveryState::SOFT_REFRESH_REQUESTED enum value.
 // Now tests the surviving RecoveryPhase::SOFT_REFRESH transition path.
 // ============================================================================
-void test_authoritative_soft_refresh_backfills_local_state() {
+TEST(DegradedRecoveryTest, test_authoritative_soft_refresh_backfills_local_state) {
     std::cout << "\nTest 4e: Template refresh request enters WAITING_TEMPLATE (new 3-state model)\n";
 
     struct RecoveryTracker {
@@ -484,23 +440,22 @@ void test_authoritative_soft_refresh_backfills_local_state() {
 
     RecoveryTracker rt;
     const bool transitioned = rt.request_template_refresh("same_height_push_tip_replacement");
-    print_test_result("Template refresh transitions from HEALTHY to WAITING_TEMPLATE", transitioned);
-    print_test_result("WAITING_TEMPLATE: submissions are NOT withheld (new model)", !phase_is_submissions_withheld(rt.phase));
-    print_test_result("WAITING_TEMPLATE: is_degraded() == true (waiting for template)", phase_is_degraded(rt.phase));
-    print_test_result("WAITING_TEMPLATE anchors recovery epoch", rt.epoch == 1);
-    print_test_result("WAITING_TEMPLATE anchors the recovery timer",
-                      rt.entered_at != std::chrono::steady_clock::time_point{});
+    EXPECT_TRUE(transitioned) << "Template refresh transitions from HEALTHY to WAITING_TEMPLATE";
+    EXPECT_TRUE(!phase_is_submissions_withheld(rt.phase)) << "WAITING_TEMPLATE: submissions are NOT withheld (new model)";
+    EXPECT_TRUE(phase_is_degraded(rt.phase)) << "WAITING_TEMPLATE: is_degraded() == true (waiting for template)";
+    EXPECT_TRUE(rt.epoch == 1) << "WAITING_TEMPLATE anchors recovery epoch";
+    EXPECT_TRUE(rt.entered_at != std::chrono::steady_clock::time_point{}) << "WAITING_TEMPLATE anchors the recovery timer";
 
     const bool second = rt.request_template_refresh("duplicate_push");
-    print_test_result("Second refresh request is a no-op (idempotent)", !second);
-    print_test_result("Epoch unchanged after idempotent call", rt.epoch == 1);
+    EXPECT_TRUE(!second) << "Second refresh request is a no-op (idempotent)";
+    EXPECT_TRUE(rt.epoch == 1) << "Epoch unchanged after idempotent call";
 }
 
 // ============================================================================
 // Test 4f: tip_moved soft refresh shields workers from immediate HEIGHT_DRIFT
 //          escalation until the replacement-template window actually times out.
 // ============================================================================
-void test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout() {
+TEST(DegradedRecoveryTest, test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout) {
     std::cout << "\nTest 4f: tip_moved requests fresh template without halting submissions\n";
     // KEY CHANGE: is_tip_moved() no longer triggers soft refresh.
     // Cross-channel tip advances are informational — the current channel template
@@ -540,20 +495,17 @@ void test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout() {
 
     HealthState state;
     state.tick(/*tip_moved=*/true, /*unified_drift=*/7, /*recovery_elapsed_s=*/0);
-    print_test_result("tip_moved requests fresh template without stopping workers",
-                      state.request_refresh && !state.stop_workers && !state.m_degraded_mode);
-    print_test_result("tip_moved does NOT withhold submissions (workers keep submitting)",
-                      !state.m_template_withheld && !state.m_recovery_pending);
+    EXPECT_TRUE(state.request_refresh && !state.stop_workers && !state.m_degraded_mode) << "tip_moved requests fresh template without stopping workers";
+    EXPECT_TRUE(!state.m_template_withheld && !state.m_recovery_pending) << "tip_moved does NOT withhold submissions (workers keep submitting)";
 
     state.tick(/*tip_moved=*/false, /*unified_drift=*/7, /*recovery_elapsed_s=*/10);
-    print_test_result("HEIGHT_DRIFT fires on next tick when drift exceeds threshold and tip no longer moved",
-                      state.stop_workers && state.m_degraded_mode);
+    EXPECT_TRUE(state.stop_workers && state.m_degraded_mode) << "HEIGHT_DRIFT fires on next tick when drift exceeds threshold and tip no longer moved";
 }
 
 // ============================================================================
 // Test 4g: Worker respawn guard prevents duplicate worker recreation on exit
 // ============================================================================
-void test_worker_respawn_guard_is_single_shot_per_degraded_exit() {
+TEST(DegradedRecoveryTest, test_worker_respawn_guard_is_single_shot_per_degraded_exit) {
     std::cout << "\nTest 4g: Recovery worker respawn guard is single-shot per degraded exit\n";
 
     struct WorkerRestartTracker {
@@ -577,16 +529,16 @@ void test_worker_respawn_guard_is_single_shot_per_degraded_exit() {
     bool first_restart = rt.restart_workers_if_needed();
     bool second_restart = rt.restart_workers_if_needed();
 
-    print_test_result("First degraded-exit restart creates workers", first_restart);
-    print_test_result("Second degraded-exit restart is suppressed", !second_restart);
-    print_test_result("Workers are created only once for the outage", rt.create_calls == 1);
-    print_test_result("Worker count stays at the expected 8 threads", rt.worker_instances == 8);
+    EXPECT_TRUE(first_restart) << "First degraded-exit restart creates workers";
+    EXPECT_TRUE(!second_restart) << "Second degraded-exit restart is suppressed";
+    EXPECT_TRUE(rt.create_calls == 1) << "Workers are created only once for the outage";
+    EXPECT_TRUE(rt.worker_instances == 8) << "Worker count stays at the expected 8 threads";
 }
 
 // ============================================================================
 // Test 4h: Workers only respawn after the prior generation is fully stopped
 // ============================================================================
-void test_worker_respawn_waits_for_authoritative_empty_generation() {
+TEST(DegradedRecoveryTest, test_worker_respawn_waits_for_authoritative_empty_generation) {
     std::cout << "\nTest 4h: Worker respawn waits for authoritative empty generation\n";
 
     struct WorkerLifecycleTracker {
@@ -630,17 +582,17 @@ void test_worker_respawn_waits_for_authoritative_empty_generation() {
     bool restart_after_stop = rt.restart_workers_if_needed();
     bool second_restart_after_stop = rt.restart_workers_if_needed();
 
-    print_test_result("Respawn is blocked while prior generation is still stopping", !restart_during_stop);
-    print_test_result("Respawn succeeds once workers are authoritatively gone", restart_after_stop);
-    print_test_result("Respawn remains single-shot after the restart", !second_restart_after_stop);
-    print_test_result("Only one new worker generation is created", rt.create_calls == 1);
-    print_test_result("Worker count returns to the expected 8 threads", rt.worker_instances == 8);
+    EXPECT_TRUE(!restart_during_stop) << "Respawn is blocked while prior generation is still stopping";
+    EXPECT_TRUE(restart_after_stop) << "Respawn succeeds once workers are authoritatively gone";
+    EXPECT_TRUE(!second_restart_after_stop) << "Respawn remains single-shot after the restart";
+    EXPECT_TRUE(rt.create_calls == 1) << "Only one new worker generation is created";
+    EXPECT_TRUE(rt.worker_instances == 8) << "Worker count returns to the expected 8 threads";
 }
 
 // ============================================================================
 // Test 5: Keepalive epoch isolation — new epoch starts with clean ack timestamp
 // ============================================================================
-void test_keepalive_epoch_isolation_clean_start() {
+TEST(DegradedRecoveryTest, test_keepalive_epoch_isolation_clean_start) {
     std::cout << "\nTest 5: New epoch starts with clean keepalive ACK timestamp\n";
     HeightTracker tracker;
 
@@ -650,14 +602,12 @@ void test_keepalive_epoch_isolation_clean_start() {
 
         // At start of each epoch, ack timestamp must be clear
         auto snap_start = tracker.GetSnapshot();
-        print_test_result(("Epoch " + std::to_string(epoch) + ": ack timestamp clear at epoch start").c_str(),
-                          snap_start.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
+        EXPECT_TRUE(snap_start.last_keepalive_ack_at == std::chrono::steady_clock::time_point{}) << "Epoch " << epoch << ": ack timestamp clear at epoch start";
 
         // Receive keepalive for this epoch
         tracker.OnKeepaliveResponse(5000 + static_cast<uint32_t>(epoch), 400, 700, 900, 0u, 0);
         auto snap_after = tracker.GetSnapshot();
-        print_test_result(("Epoch " + std::to_string(epoch) + ": ack timestamp set after response").c_str(),
-                          snap_after.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
+        EXPECT_TRUE(snap_after.last_keepalive_ack_at != std::chrono::steady_clock::time_point{}) << "Epoch " << epoch << ": ack timestamp set after response";
     }
 }
 
@@ -665,7 +615,7 @@ void test_keepalive_epoch_isolation_clean_start() {
 // Test 6: Stale template after channel advance triggers is_template_stale()
 // (Validates the push-staleness detection that feeds the recovery path)
 // ============================================================================
-void test_stale_template_after_channel_advance() {
+TEST(DegradedRecoveryTest, test_stale_template_after_channel_advance) {
     std::cout << "\nTest 6: Stale template detection after channel advance\n";
     HeightTracker tracker;
 
@@ -675,25 +625,24 @@ void test_stale_template_after_channel_advance() {
 
     // Confirm not stale before advance
     auto snap_before = tracker.GetSnapshot();
-    print_test_result("Before advance: is_template_stale() == false", !snap_before.is_template_stale());
+    EXPECT_TRUE(!snap_before.is_template_stale()) << "Before advance: is_template_stale() == false";
 
     // Channel advances (block found)
     tracker.OnPushNotification(5001, 101, 0x1d00ffff);
     auto snap_after = tracker.GetSnapshot();
-    print_test_result("After advance: is_template_stale() == true", snap_after.is_template_stale());
-    print_test_result("After advance: channel_height == 101", snap_after.channel_height == 101);
-    print_test_result("After advance: channel_target == 101", snap_after.channel_target == 101);
+    EXPECT_TRUE(snap_after.is_template_stale()) << "After advance: is_template_stale() == true";
+    EXPECT_TRUE(snap_after.channel_height == 101) << "After advance: channel_height == 101";
+    EXPECT_TRUE(snap_after.channel_target == 101) << "After advance: channel_target == 101";
 
     // is_template_stale condition: channel_height >= channel_target
-    print_test_result("is_template_stale() satisfies: channel_height >= channel_target",
-                      snap_after.channel_height >= snap_after.channel_target);
+    EXPECT_TRUE(snap_after.channel_height >= snap_after.channel_target) << "is_template_stale() satisfies: channel_height >= channel_target";
 }
 
 // ============================================================================
 // Test 7: set_session_epoch() suppresses old keepalive signal
 // Confirms keepalive ACK timestamp is cleared after epoch change (diagnostic field)
 // ============================================================================
-void test_epoch_advance_suppresses_old_keepalive_signal() {
+TEST(DegradedRecoveryTest, test_epoch_advance_suppresses_old_keepalive_signal) {
     std::cout << "\nTest 7: Epoch advance clears keepalive ACK timestamp (diagnostic field)\n";
     HeightTracker tracker;
 
@@ -703,7 +652,7 @@ void test_epoch_advance_suppresses_old_keepalive_signal() {
     // Confirm old epoch keepalive is "set"
     auto snap_epoch10 = tracker.GetSnapshot();
     bool was_set = (snap_epoch10.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
-    print_test_result("Epoch 10: keepalive ACK timestamp is set", was_set);
+    EXPECT_TRUE(was_set) << "Epoch 10: keepalive ACK timestamp is set";
 
     // Advance epoch — simulates re-auth or session restart
     tracker.set_session_epoch(11);
@@ -713,16 +662,14 @@ void test_epoch_advance_suppresses_old_keepalive_signal() {
     // signal for session liveness.  After epoch change, the diagnostic timestamp is cleared.
     bool keepalive_ack_received = (snap_epoch11.last_keepalive_ack_at !=
                                     std::chrono::steady_clock::time_point{});
-    print_test_result("Epoch 11: keepalive_ack_received == false after epoch advance",
-                      !keepalive_ack_received);
-    print_test_result("Epoch 11: keepalive diagnostic timestamp cleared (epoch isolation)",
-                      !keepalive_ack_received);
+    EXPECT_TRUE(!keepalive_ack_received) << "Epoch 11: keepalive_ack_received == false after epoch advance";
+    EXPECT_TRUE(!keepalive_ack_received) << "Epoch 11: keepalive diagnostic timestamp cleared (epoch isolation)";
 }
 
 // ============================================================================
 // Test 8: Multiple rapid epoch changes produce clean keepalive state
 // ============================================================================
-void test_multiple_rapid_epoch_changes_clean_state() {
+TEST(DegradedRecoveryTest, test_multiple_rapid_epoch_changes_clean_state) {
     std::cout << "\nTest 8: Multiple rapid epoch changes always produce clean keepalive state\n";
     HeightTracker tracker;
 
@@ -733,8 +680,7 @@ void test_multiple_rapid_epoch_changes_clean_state() {
 
         // Epoch starts clean
         auto snap_start = tracker.GetSnapshot();
-        print_test_result(("Epoch " + std::to_string(current_epoch) + ": clean start").c_str(),
-                          snap_start.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
+        EXPECT_TRUE(snap_start.last_keepalive_ack_at == std::chrono::steady_clock::time_point{}) << "Epoch " << current_epoch << ": clean start";
 
         // Receive keepalive
         tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0u, 0);
@@ -742,16 +688,15 @@ void test_multiple_rapid_epoch_changes_clean_state() {
 
     // Final state: keepalive is set for epoch 5
     auto snap_final = tracker.GetSnapshot();
-    print_test_result("Final epoch (5): keepalive ACK timestamp is set from epoch 5 response",
-                      snap_final.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
-    print_test_result("Final epoch (5): session_epoch == 5", snap_final.session_epoch == 5);
+    EXPECT_TRUE(snap_final.last_keepalive_ack_at != std::chrono::steady_clock::time_point{}) << "Final epoch (5): keepalive ACK timestamp is set from epoch 5 response";
+    EXPECT_TRUE(snap_final.session_epoch == 5) << "Final epoch (5): session_epoch == 5";
 }
 
 // ============================================================================
 // Test 9: Push notification does not reset keepalive timestamp on epoch change
 // Pushes and keepalives are orthogonal — epoch change clears ONLY keepalive ack
 // ============================================================================
-void test_push_does_not_clear_keepalive_on_epoch_change() {
+TEST(DegradedRecoveryTest, test_push_does_not_clear_keepalive_on_epoch_change) {
     std::cout << "\nTest 9: Push notifications do not clear keepalive timestamp on epoch change\n";
     HeightTracker tracker;
 
@@ -762,24 +707,22 @@ void test_push_does_not_clear_keepalive_on_epoch_change() {
     auto snap1 = tracker.GetSnapshot();
     bool push_at_set  = (snap1.last_push_notification_at != std::chrono::steady_clock::time_point{});
     bool ack_at_set   = (snap1.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
-    print_test_result("Epoch 1: push timestamp is set", push_at_set);
-    print_test_result("Epoch 1: keepalive ACK timestamp is set", ack_at_set);
+    EXPECT_TRUE(push_at_set) << "Epoch 1: push timestamp is set";
+    EXPECT_TRUE(ack_at_set) << "Epoch 1: keepalive ACK timestamp is set";
 
     // Epoch change: keepalive clears, push is unchanged
     tracker.set_session_epoch(2);
     auto snap2 = tracker.GetSnapshot();
     bool push_unchanged  = (snap2.last_push_notification_at == snap1.last_push_notification_at);
     bool ack_cleared     = (snap2.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
-    print_test_result("Epoch 2: push timestamp preserved (not cleared by epoch change)",
-                      push_unchanged);
-    print_test_result("Epoch 2: keepalive ACK timestamp cleared by epoch change",
-                      ack_cleared);
+    EXPECT_TRUE(push_unchanged) << "Epoch 2: push timestamp preserved (not cleared by epoch change)";
+    EXPECT_TRUE(ack_cleared) << "Epoch 2: keepalive ACK timestamp cleared by epoch change";
 }
 
 // ============================================================================
 // Test 9b: Session epoch advance clears stale push tip-anchor hints but keeps push liveness
 // ============================================================================
-void test_epoch_change_clears_push_tip_anchor_hint() {
+TEST(DegradedRecoveryTest, test_epoch_change_clears_push_tip_anchor_hint) {
     std::cout << "\nTest 9b: Session epoch advance clears stale push tip-anchor hint only\n";
     HeightTracker tracker;
 
@@ -788,32 +731,26 @@ void test_epoch_change_clears_push_tip_anchor_hint() {
     tracker.UpdatePushTipAnchor(uint1024_t(0x42));
 
     auto snap_before = tracker.GetSnapshot();
-    print_test_result("Epoch 7: push tip-anchor hint is present before epoch change",
-                      snap_before.push_hash_prev_block != uint1024_t{});
-    print_test_result("Epoch 7: push liveness timestamp is present before epoch change",
-                      snap_before.last_push_notification_at != std::chrono::steady_clock::time_point{});
+    EXPECT_TRUE(snap_before.push_hash_prev_block != uint1024_t{}) << "Epoch 7: push tip-anchor hint is present before epoch change";
+    EXPECT_TRUE(snap_before.last_push_notification_at != std::chrono::steady_clock::time_point{}) << "Epoch 7: push liveness timestamp is present before epoch change";
 
     tracker.set_session_epoch(8);
     auto snap_after = tracker.GetSnapshot();
-    print_test_result("Epoch 8: push tip-anchor hint cleared on epoch change",
-                      snap_after.push_hash_prev_block == uint1024_t{});
-    print_test_result("Epoch 8: push liveness timestamp preserved across epoch change",
-                      snap_after.last_push_notification_at == snap_before.last_push_notification_at);
+    EXPECT_TRUE(snap_after.push_hash_prev_block == uint1024_t{}) << "Epoch 8: push tip-anchor hint cleared on epoch change";
+    EXPECT_TRUE(snap_after.last_push_notification_at == snap_before.last_push_notification_at) << "Epoch 8: push liveness timestamp preserved across epoch change";
 
     tracker.UpdatePushTipAnchor(uint1024_t(0x77));
     auto snap_reseeded = tracker.GetSnapshot();
-    print_test_result("Explicit clear test re-seeds push tip-anchor hint first",
-                      snap_reseeded.push_hash_prev_block != uint1024_t{});
+    EXPECT_TRUE(snap_reseeded.push_hash_prev_block != uint1024_t{}) << "Explicit clear test re-seeds push tip-anchor hint first";
     tracker.ClearPushTipAnchor();
     auto snap_cleared = tracker.GetSnapshot();
-    print_test_result("Explicit tip-anchor clear consumes replacement hint after adoption",
-                      snap_cleared.push_hash_prev_block == uint1024_t{});
+    EXPECT_TRUE(snap_cleared.push_hash_prev_block == uint1024_t{}) << "Explicit tip-anchor clear consumes replacement hint after adoption";
 }
 
 // ============================================================================
 // Test 10: Recovery epoch tracking — monotonic with idempotent initiation
 // ============================================================================
-void test_recovery_epoch_monotonic_with_idempotent_initiation() {
+TEST(DegradedRecoveryTest, test_recovery_epoch_monotonic_with_idempotent_initiation) {
     std::cout << "\nTest 10: Recovery epoch is monotonic; initiation is idempotent within epoch\n";
 
     struct RecoveryState {
@@ -838,30 +775,29 @@ void test_recovery_epoch_monotonic_with_idempotent_initiation() {
     rs.initiate();
     rs.initiate();
     int epoch_after_many = rs.epoch;
-    print_test_result("Epoch is monotonic: multiple inits don't increment past 1",
-                      epoch_after_first == 1 && epoch_after_many == 1);
-    print_test_result("Pending remains true after multiple inits", rs.pending);
+    EXPECT_TRUE(epoch_after_first == 1 && epoch_after_many == 1) << "Epoch is monotonic: multiple inits don't increment past 1";
+    EXPECT_TRUE(rs.pending) << "Pending remains true after multiple inits";
 
     // Recovery completes (template received)
     rs.clear();
-    print_test_result("After clear: pending == false", !rs.pending);
-    print_test_result("After clear: epoch still == 1 (preserved for audit)", rs.epoch == 1);
+    EXPECT_TRUE(!rs.pending) << "After clear: pending == false";
+    EXPECT_TRUE(rs.epoch == 1) << "After clear: epoch still == 1 (preserved for audit)";
 
     // Next staleness event: epoch advances
     rs.initiate();
-    print_test_result("Second staleness: epoch == 2 (monotonically incremented)", rs.epoch == 2);
-    print_test_result("Second staleness: pending == true", rs.pending);
+    EXPECT_TRUE(rs.epoch == 2) << "Second staleness: epoch == 2 (monotonically incremented)";
+    EXPECT_TRUE(rs.pending) << "Second staleness: pending == true";
 
     // Multiple calls again: no increment past 2
     rs.initiate();
     rs.initiate();
-    print_test_result("Multiple inits after epoch 2: epoch remains 2", rs.epoch == 2);
+    EXPECT_TRUE(rs.epoch == 2) << "Multiple inits after epoch 2: epoch remains 2";
 }
 
 // ============================================================================
 // Test 11: Integration - channel advance -> stale -> degraded -> fresh -> resume
 // ============================================================================
-void test_integration_degraded_recovery_to_resume() {
+TEST(DegradedRecoveryTest, test_integration_degraded_recovery_to_resume) {
     std::cout << "\nTest 11: Integration degraded recovery returns to active mining\n";
 
     struct IntegrationState {
@@ -902,20 +838,20 @@ void test_integration_degraded_recovery_to_resume() {
 
     IntegrationState s;
     s.on_channel_advance(101);  // stale
-    print_test_result("Stale transition enters degraded mode", s.degraded && !s.mining_active);
+    EXPECT_TRUE(s.degraded && !s.mining_active) << "Stale transition enters degraded mode";
 
     s.recovery_tick();
-    print_test_result("Recovery tick sends GET_BLOCK while degraded", s.get_block_sent == 1);
+    EXPECT_TRUE(s.get_block_sent == 1) << "Recovery tick sends GET_BLOCK while degraded";
 
     s.on_fresh_template(102);
-    print_test_result("Fresh template exits degraded mode", !s.degraded && !s.recovery_pending);
-    print_test_result("Mining resumes after template acceptance", s.mining_active);
+    EXPECT_TRUE(!s.degraded && !s.recovery_pending) << "Fresh template exits degraded mode";
+    EXPECT_TRUE(s.mining_active) << "Mining resumes after template acceptance";
 }
 
 // ============================================================================
 // Test 12: Integration - bounded forced retries prevent flooding
 // ============================================================================
-void test_integration_forced_retry_is_bounded() {
+TEST(DegradedRecoveryTest, test_integration_forced_retry_is_bounded) {
     std::cout << "\nTest 12: Integration forced retry channel remains bounded\n";
 
     struct ForcedBound {
@@ -951,15 +887,15 @@ void test_integration_forced_retry_is_bounded() {
             ++sent;
         }
     }
-    print_test_result("Forced retries stay at or below max_forced_burst_per_60s", sent <= 25);
-    print_test_result("Forced retries still make progress (at least one send)", sent > 0);
+    EXPECT_TRUE(sent <= 25) << "Forced retries stay at or below max_forced_burst_per_60s";
+    EXPECT_TRUE(sent > 0) << "Forced retries still make progress (at least one send)";
 }
 
 // ============================================================================
 // Test 13: Health policy — one-block stale refresh stays soft; multi-block lag
 //          escalates into recovery/degraded mode.
 // ============================================================================
-void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
+TEST(DegradedRecoveryTest, test_health_policy_distinguishes_normal_refresh_from_multi_block_lag) {
     std::cout << "\nTest 13: Health policy distinguishes 1-block refresh from 2+-block lag\n";
 
     struct HealthDecision {
@@ -997,9 +933,9 @@ void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
     one_block_tracker.OnTemplateReceived(2, 101);
     one_block_tracker.OnPushNotification(5001, 101, 0x1d00ffff);
     auto one_block = decide(one_block_tracker.GetSnapshot(), false);
-    print_test_result("One-block lag requests refresh", one_block.request_refresh);
-    print_test_result("One-block lag does not initiate recovery", !one_block.recovery_initiated);
-    print_test_result("One-block lag does not stop workers", !one_block.stop_workers);
+    EXPECT_TRUE(one_block.request_refresh) << "One-block lag requests refresh";
+    EXPECT_TRUE(!one_block.recovery_initiated) << "One-block lag does not initiate recovery";
+    EXPECT_TRUE(!one_block.stop_workers) << "One-block lag does not stop workers";
 
     HeightTracker two_block_tracker;
     two_block_tracker.OnPushNotification(5000, 100, 0x1d00ffff);
@@ -1007,16 +943,16 @@ void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
     two_block_tracker.OnPushNotification(5001, 101, 0x1d00ffff);
     two_block_tracker.OnPushNotification(5002, 102, 0x1d00ffff);
     auto two_block = decide(two_block_tracker.GetSnapshot(), false);
-    print_test_result("Two-block lag requests refresh", two_block.request_refresh);
-    print_test_result("Two-block lag initiates recovery", two_block.recovery_initiated);
-    print_test_result("Two-block lag stops workers", two_block.stop_workers);
+    EXPECT_TRUE(two_block.request_refresh) << "Two-block lag requests refresh";
+    EXPECT_TRUE(two_block.recovery_initiated) << "Two-block lag initiates recovery";
+    EXPECT_TRUE(two_block.stop_workers) << "Two-block lag stops workers";
 
     HeightTracker::Snapshot post_push_snap;
     post_push_snap.channel_height = 300;
     post_push_snap.channel_target = 300;
     auto post_push = decide(post_push_snap, true);
-    print_test_result("Post-push template freshness still stays soft", post_push.request_refresh);
-    print_test_result("Post-push template freshness does not initiate recovery", !post_push.recovery_initiated);
+    EXPECT_TRUE(post_push.request_refresh) << "Post-push template freshness still stays soft";
+    EXPECT_TRUE(!post_push.recovery_initiated) << "Post-push template freshness does not initiate recovery";
 }
 
 // ============================================================================
@@ -1024,113 +960,87 @@ void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
 // ============================================================================
 
 // ── Test 18: Legal transitions succeed, illegal ones are rejected ──────────
-void test_recovery_phase_valid_transitions() {
+TEST(DegradedRecoveryTest, test_recovery_phase_valid_transitions) {
     std::cout << "\nTest 18: RecoveryPhase state machine — valid transition matrix (3-state)\n";
 
     // Legal transitions
-    print_test_result("HEALTHY → WAITING_TEMPLATE is legal",
-        test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::WAITING_TEMPLATE));
-    print_test_result("HEALTHY → RECONNECTING is legal",
-        test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::RECONNECTING));
-    print_test_result("WAITING_TEMPLATE → HEALTHY is legal",
-        test_is_valid_transition(TestRecoveryPhase::WAITING_TEMPLATE, TestRecoveryPhase::HEALTHY));
-    print_test_result("WAITING_TEMPLATE → RECONNECTING is legal",
-        test_is_valid_transition(TestRecoveryPhase::WAITING_TEMPLATE, TestRecoveryPhase::RECONNECTING));
-    print_test_result("RECONNECTING → HEALTHY is legal",
-        test_is_valid_transition(TestRecoveryPhase::RECONNECTING, TestRecoveryPhase::HEALTHY));
-    print_test_result("RECONNECTING → WAITING_TEMPLATE is legal",
-        test_is_valid_transition(TestRecoveryPhase::RECONNECTING, TestRecoveryPhase::WAITING_TEMPLATE));
+    EXPECT_TRUE(test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::WAITING_TEMPLATE)) << "HEALTHY → WAITING_TEMPLATE is legal";
+    EXPECT_TRUE(test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::RECONNECTING)) << "HEALTHY → RECONNECTING is legal";
+    EXPECT_TRUE(test_is_valid_transition(TestRecoveryPhase::WAITING_TEMPLATE, TestRecoveryPhase::HEALTHY)) << "WAITING_TEMPLATE → HEALTHY is legal";
+    EXPECT_TRUE(test_is_valid_transition(TestRecoveryPhase::WAITING_TEMPLATE, TestRecoveryPhase::RECONNECTING)) << "WAITING_TEMPLATE → RECONNECTING is legal";
+    EXPECT_TRUE(test_is_valid_transition(TestRecoveryPhase::RECONNECTING, TestRecoveryPhase::HEALTHY)) << "RECONNECTING → HEALTHY is legal";
+    EXPECT_TRUE(test_is_valid_transition(TestRecoveryPhase::RECONNECTING, TestRecoveryPhase::WAITING_TEMPLATE)) << "RECONNECTING → WAITING_TEMPLATE is legal";
 
     // Same-phase no-ops are always valid
-    print_test_result("HEALTHY → HEALTHY is valid (no-op)",
-        test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::HEALTHY));
-    print_test_result("WAITING_TEMPLATE → WAITING_TEMPLATE is valid (no-op)",
-        test_is_valid_transition(TestRecoveryPhase::WAITING_TEMPLATE, TestRecoveryPhase::WAITING_TEMPLATE));
+    EXPECT_TRUE(test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::HEALTHY)) << "HEALTHY → HEALTHY is valid (no-op)";
+    EXPECT_TRUE(test_is_valid_transition(TestRecoveryPhase::WAITING_TEMPLATE, TestRecoveryPhase::WAITING_TEMPLATE)) << "WAITING_TEMPLATE → WAITING_TEMPLATE is valid (no-op)";
 }
 
 // ── Test 19: Phase helper equivalences match new 3-state design ─────────
-void test_recovery_phase_helpers_equivalence() {
+TEST(DegradedRecoveryTest, test_recovery_phase_helpers_equivalence) {
     std::cout << "\nTest 19: Phase helpers match 3-state design\n";
 
     // is_degraded() ← WAITING_TEMPLATE only
-    print_test_result("HEALTHY: is_degraded() == false",       !phase_is_degraded(TestRecoveryPhase::HEALTHY));
-    print_test_result("WAITING_TEMPLATE: is_degraded() == true", phase_is_degraded(TestRecoveryPhase::WAITING_TEMPLATE));
-    print_test_result("RECONNECTING: is_degraded() == false",  !phase_is_degraded(TestRecoveryPhase::RECONNECTING));
+    EXPECT_TRUE(!phase_is_degraded(TestRecoveryPhase::HEALTHY)) << "HEALTHY: is_degraded() == false";
+    EXPECT_TRUE(phase_is_degraded(TestRecoveryPhase::WAITING_TEMPLATE)) << "WAITING_TEMPLATE: is_degraded() == true";
+    EXPECT_TRUE(!phase_is_degraded(TestRecoveryPhase::RECONNECTING)) << "RECONNECTING: is_degraded() == false";
 
     // is_submissions_withheld() ← always false in new design
-    print_test_result("HEALTHY: is_submissions_withheld() == false",
-        !phase_is_submissions_withheld(TestRecoveryPhase::HEALTHY));
-    print_test_result("WAITING_TEMPLATE: is_submissions_withheld() == false",
-        !phase_is_submissions_withheld(TestRecoveryPhase::WAITING_TEMPLATE));
+    EXPECT_TRUE(!phase_is_submissions_withheld(TestRecoveryPhase::HEALTHY)) << "HEALTHY: is_submissions_withheld() == false";
+    EXPECT_TRUE(!phase_is_submissions_withheld(TestRecoveryPhase::WAITING_TEMPLATE)) << "WAITING_TEMPLATE: is_submissions_withheld() == false";
 
     // is_recovery_active() ← any non-HEALTHY phase
-    print_test_result("HEALTHY: is_recovery_active() == false",
-        !phase_is_recovery_active(TestRecoveryPhase::HEALTHY));
-    print_test_result("WAITING_TEMPLATE: is_recovery_active() == true",
-        phase_is_recovery_active(TestRecoveryPhase::WAITING_TEMPLATE));
-    print_test_result("RECONNECTING: is_recovery_active() == true",
-        phase_is_recovery_active(TestRecoveryPhase::RECONNECTING));
+    EXPECT_TRUE(!phase_is_recovery_active(TestRecoveryPhase::HEALTHY)) << "HEALTHY: is_recovery_active() == false";
+    EXPECT_TRUE(phase_is_recovery_active(TestRecoveryPhase::WAITING_TEMPLATE)) << "WAITING_TEMPLATE: is_recovery_active() == true";
+    EXPECT_TRUE(phase_is_recovery_active(TestRecoveryPhase::RECONNECTING)) << "RECONNECTING: is_recovery_active() == true";
 
     // is_reconnecting() ← RECONNECTING only
-    print_test_result("HEALTHY: is_reconnecting() == false",
-        !phase_is_reconnecting(TestRecoveryPhase::HEALTHY));
-    print_test_result("RECONNECTING: is_reconnecting() == true",
-        phase_is_reconnecting(TestRecoveryPhase::RECONNECTING));
-    print_test_result("WAITING_TEMPLATE: is_reconnecting() == false",
-        !phase_is_reconnecting(TestRecoveryPhase::WAITING_TEMPLATE));
+    EXPECT_TRUE(!phase_is_reconnecting(TestRecoveryPhase::HEALTHY)) << "HEALTHY: is_reconnecting() == false";
+    EXPECT_TRUE(phase_is_reconnecting(TestRecoveryPhase::RECONNECTING)) << "RECONNECTING: is_reconnecting() == true";
+    EXPECT_TRUE(!phase_is_reconnecting(TestRecoveryPhase::WAITING_TEMPLATE)) << "WAITING_TEMPLATE: is_reconnecting() == false";
 }
 
 // ── Test 20: WAITING_TEMPLATE state — clearing state always exits it ──────
-void test_orphaned_soft_refresh_cleared() {
+TEST(DegradedRecoveryTest, test_orphaned_soft_refresh_cleared) {
     std::cout << "\nTest 20: WAITING_TEMPLATE state is cleared by clear_recovery_state\n";
 
     // Simulate: was in WAITING_TEMPLATE, clear_recovery_state() transitions to HEALTHY
     TestRecoveryPhase phase = TestRecoveryPhase::WAITING_TEMPLATE;
 
     // Verify waiting-template is active
-    print_test_result("Initial: is_recovery_active() == true (WAITING_TEMPLATE)",
-        phase_is_recovery_active(phase));
-    print_test_result("Initial: is_degraded() == true (WAITING_TEMPLATE)",
-        phase_is_degraded(phase));
+    EXPECT_TRUE(phase_is_recovery_active(phase)) << "Initial: is_recovery_active() == true (WAITING_TEMPLATE)";
+    EXPECT_TRUE(phase_is_degraded(phase)) << "Initial: is_degraded() == true (WAITING_TEMPLATE)";
 
     // clear_recovery_state() logic: transition to HEALTHY
     phase = TestRecoveryPhase::HEALTHY;
 
-    print_test_result("After clear: phase == HEALTHY",
-        phase == TestRecoveryPhase::HEALTHY);
-    print_test_result("After clear: is_submissions_withheld() == false",
-        !phase_is_submissions_withheld(phase));
-    print_test_result("After clear: is_recovery_active() == false",
-        !phase_is_recovery_active(phase));
+    EXPECT_TRUE(phase == TestRecoveryPhase::HEALTHY) << "After clear: phase == HEALTHY";
+    EXPECT_TRUE(!phase_is_submissions_withheld(phase)) << "After clear: is_submissions_withheld() == false";
+    EXPECT_TRUE(!phase_is_recovery_active(phase)) << "After clear: is_recovery_active() == false";
 }
 
 // ── Test 21: WAITING_TEMPLATE → RECONNECTING escalation path ─────────────
-void test_soft_refresh_escalation_to_hard_recovery() {
+TEST(DegradedRecoveryTest, test_soft_refresh_escalation_to_hard_recovery) {
     std::cout << "\nTest 21: WAITING_TEMPLATE → RECONNECTING after 60s timeout\n";
 
     TestRecoveryPhase phase = TestRecoveryPhase::HEALTHY;
 
     // Enter WAITING_TEMPLATE (stale template)
-    assert(test_is_valid_transition(phase, TestRecoveryPhase::WAITING_TEMPLATE));
+    ASSERT_TRUE(test_is_valid_transition(phase, TestRecoveryPhase::WAITING_TEMPLATE));
     phase = TestRecoveryPhase::WAITING_TEMPLATE;
-    print_test_result("Entered WAITING_TEMPLATE: is_recovery_active() == true",
-        phase_is_recovery_active(phase));
-    print_test_result("WAITING_TEMPLATE: is_degraded() == true",
-        phase_is_degraded(phase));
-    print_test_result("WAITING_TEMPLATE: is_submissions_withheld() == false (workers keep running)",
-        !phase_is_submissions_withheld(phase));
+    EXPECT_TRUE(phase_is_recovery_active(phase)) << "Entered WAITING_TEMPLATE: is_recovery_active() == true";
+    EXPECT_TRUE(phase_is_degraded(phase)) << "WAITING_TEMPLATE: is_degraded() == true";
+    EXPECT_TRUE(!phase_is_submissions_withheld(phase)) << "WAITING_TEMPLATE: is_submissions_withheld() == false (workers keep running)";
 
     // After 60s timeout → enter RECONNECTING
-    assert(test_is_valid_transition(phase, TestRecoveryPhase::RECONNECTING));
+    ASSERT_TRUE(test_is_valid_transition(phase, TestRecoveryPhase::RECONNECTING));
     phase = TestRecoveryPhase::RECONNECTING;
-    print_test_result("After timeout: RECONNECTING phase active",
-        phase_is_reconnecting(phase));
-    print_test_result("After timeout: is_recovery_active() == true",
-        phase_is_recovery_active(phase));
+    EXPECT_TRUE(phase_is_reconnecting(phase)) << "After timeout: RECONNECTING phase active";
+    EXPECT_TRUE(phase_is_recovery_active(phase)) << "After timeout: is_recovery_active() == true";
 }
 
 // ── Test 22: RECONNECTING prevents SESSION_EXPIRED re-entrance ────────────
-void test_reconnecting_guards_session_expired() {
+TEST(DegradedRecoveryTest, test_reconnecting_guards_session_expired) {
     std::cout << "\nTest 22: RECONNECTING phase prevents Session EXPIRED from re-entering\n";
 
     TestRecoveryPhase phase = TestRecoveryPhase::RECONNECTING;
@@ -1139,28 +1049,25 @@ void test_reconnecting_guards_session_expired() {
     uint64_t epoch = 1;
     bool should_ignore = phase_is_reconnecting(phase) ||
                          (phase_is_recovery_active(phase) && epoch > 0);
-    print_test_result("RECONNECTING: session_expired is ignored",
-        should_ignore);
+    EXPECT_TRUE(should_ignore) << "RECONNECTING: session_expired is ignored";
 
     // Verify HEALTHY does NOT suppress session_expired
     TestRecoveryPhase healthy = TestRecoveryPhase::HEALTHY;
     uint64_t healthy_epoch = 0;
     bool healthy_ignore = phase_is_reconnecting(healthy) ||
                           (phase_is_recovery_active(healthy) && healthy_epoch > 0);
-    print_test_result("HEALTHY: session_expired is NOT ignored",
-        !healthy_ignore);
+    EXPECT_TRUE(!healthy_ignore) << "HEALTHY: session_expired is NOT ignored";
 
     // Verify WAITING_TEMPLATE with epoch 0 does NOT suppress session_expired
     TestRecoveryPhase waiting = TestRecoveryPhase::WAITING_TEMPLATE;
     uint64_t waiting_epoch = 0;  // epoch 0 = just entered, no recovery epoch yet
     bool waiting_ignore = phase_is_reconnecting(waiting) ||
                           (phase_is_recovery_active(waiting) && waiting_epoch > 0);
-    print_test_result("WAITING_TEMPLATE with epoch=0: session_expired is NOT ignored",
-        !waiting_ignore);
+    EXPECT_TRUE(!waiting_ignore) << "WAITING_TEMPLATE with epoch=0: session_expired is NOT ignored";
 }
 
 // ── Test 23: Mutual exclusivity — only one phase at a time ───────────────
-void test_recovery_phase_mutual_exclusivity() {
+TEST(DegradedRecoveryTest, test_recovery_phase_mutual_exclusivity) {
     std::cout << "\nTest 23: Phase mutual exclusivity — only one phase at a time\n";
 
     // The enum class guarantees mutual exclusivity at the type level.
@@ -1180,62 +1087,14 @@ void test_recovery_phase_mutual_exclusivity() {
             }
         }
     }
-    print_test_result("All 3 phases have distinct enum values", all_distinct);
+    EXPECT_TRUE(all_distinct) << "All 3 phases have distinct enum values";
 
     // Verify: WAITING_TEMPLATE cannot have submissions withheld
     TestRecoveryPhase waiting = TestRecoveryPhase::WAITING_TEMPLATE;
     bool withheld = phase_is_submissions_withheld(waiting);
-    print_test_result("WAITING_TEMPLATE: is_submissions_withheld() == false",
-        !withheld);
+    EXPECT_TRUE(!withheld) << "WAITING_TEMPLATE: is_submissions_withheld() == false";
 
     // Verify: WAITING_TEMPLATE is degraded (workers have no fresh template)
     bool degraded = phase_is_degraded(waiting);
-    print_test_result("WAITING_TEMPLATE: is_degraded() == true",
-        degraded);
-}
-
-
-int main() {
-    std::cout << "\n═══════════════════════════════════════════════════════════\n";
-    std::cout << "Degraded Recovery / Keepalive Epoch Tests\n";
-    std::cout << "═══════════════════════════════════════════════════════════\n";
-
-    test_keepalive_ack_invalidated_on_epoch_change();
-    test_channel_advance_stale_template_transition();
-    test_recovery_pending_debounce_idempotent();
-    test_recovery_get_block_no_permanent_starvation();
-    test_successful_reauth_restarts_recovery_epoch();
-    test_same_height_soft_refresh_escalates_only_after_timeout();
-    test_degraded_exit_normalizes_recovery_state();
-    test_authoritative_soft_refresh_backfills_local_state();
-    test_tip_moved_soft_refresh_defers_unified_drift_stop_until_timeout();
-    test_worker_respawn_guard_is_single_shot_per_degraded_exit();
-    test_worker_respawn_waits_for_authoritative_empty_generation();
-    test_keepalive_epoch_isolation_clean_start();
-    test_stale_template_after_channel_advance();
-    test_epoch_advance_suppresses_old_keepalive_signal();
-    test_multiple_rapid_epoch_changes_clean_state();
-    test_push_does_not_clear_keepalive_on_epoch_change();
-    test_epoch_change_clears_push_tip_anchor_hint();
-    test_recovery_epoch_monotonic_with_idempotent_initiation();
-    test_integration_degraded_recovery_to_resume();
-    test_integration_forced_retry_is_bounded();
-    test_health_policy_distinguishes_normal_refresh_from_multi_block_lag();
-
-    // ── RecoveryPhase state machine tests (new with explicit 5-state machine) ──
-    test_recovery_phase_valid_transitions();
-    test_recovery_phase_helpers_equivalence();
-    test_orphaned_soft_refresh_cleared();
-    test_soft_refresh_escalation_to_hard_recovery();
-    test_reconnecting_guards_session_expired();
-    test_recovery_phase_mutual_exclusivity();
-
-    std::cout << "\n═══════════════════════════════════════════════════════════\n";
-    std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";
-    if (tests_failed > 0) {
-        std::cout << " (" << tests_failed << " failed)";
-    }
-    std::cout << "\n═══════════════════════════════════════════════════════════\n\n";
-
-    return (tests_failed == 0) ? 0 : 1;
+    EXPECT_TRUE(degraded) << "WAITING_TEMPLATE: is_degraded() == true";
 }
