@@ -16,28 +16,12 @@
 #include "protocol_lane.hpp"
 #include <iostream>
 #include <iomanip>
-#include <cassert>
 #include <vector>
 #include <deque>
 #include <sstream>
+#include <gtest/gtest.h>
 
 using namespace nexusminer;
-
-// Test statistics
-static int tests_run = 0;
-static int tests_passed = 0;
-static int tests_failed = 0;
-
-void print_test_result(const char* name, bool passed) {
-    tests_run++;
-    if (passed) {
-        tests_passed++;
-        std::cout << "  [PASS] " << name << std::endl;
-    } else {
-        tests_failed++;
-        std::cout << "  [FAIL] " << name << std::endl;
-    }
-}
 
 void print_hex(const std::vector<uint8_t>& data, size_t max_bytes = 32) {
     std::ostringstream ss;
@@ -97,7 +81,7 @@ public:
 // ============================================================================
 // Test Case 1: Complete packet in single receive
 // ============================================================================
-void test_complete_packet_single_receive() {
+TEST(PacketFramingTest, test_complete_packet_single_receive) {
     std::cout << "\nTest 1: Complete packet in single receive" << std::endl;
     
     TestAccumulator acc;
@@ -121,13 +105,13 @@ void test_complete_packet_single_receive() {
                        (packet.m_length == 5) &&
                        acc.empty();
     
-    print_test_result("Complete packet parsed successfully", test_passed);
+    EXPECT_TRUE(test_passed) << "Complete packet parsed successfully";
 }
 
 // ============================================================================
 // Test Case 2: Header + length split across receives
 // ============================================================================
-void test_header_fragmented() {
+TEST(PacketFramingTest, test_header_fragmented) {
     std::cout << "\nTest 2: Header + length split across multiple receives" << std::endl;
     
     TestAccumulator acc;
@@ -140,7 +124,7 @@ void test_header_fragmented() {
     
     bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 3);
-    print_test_result("Incomplete length field triggers NEED_MORE_DATA", test1);
+    EXPECT_TRUE(test1) << "Incomplete length field triggers NEED_MORE_DATA";
     
     // Second receive: rest of length + data
     acc.feed({0x00, 0x03, 'a', 'b', 'c'});
@@ -151,13 +135,13 @@ void test_header_fragmented() {
                  (packet.m_header == 0x02) &&
                  (packet.m_length == 3) &&
                  acc.empty();
-    print_test_result("Complete packet after split length field", test2);
+    EXPECT_TRUE(test2) << "Complete packet after split length field";
 }
 
 // ============================================================================
 // Test Case 3: Payload split across receives
 // ============================================================================
-void test_payload_fragmented() {
+TEST(PacketFramingTest, test_payload_fragmented) {
     std::cout << "\nTest 3: Payload split across multiple receives" << std::endl;
     
     TestAccumulator acc;
@@ -170,14 +154,14 @@ void test_payload_fragmented() {
     
     bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA);
-    print_test_result("Header+length without payload triggers NEED_MORE_DATA", test1);
+    EXPECT_TRUE(test1) << "Header+length without payload triggers NEED_MORE_DATA";
     
     // Second receive: first 5 bytes of payload
     acc.feed({'a', 'b', 'c', 'd', 'e'});
     
     bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test2 = !parsed2 && (result == ParseResult::NEED_MORE_DATA);
-    print_test_result("Partial payload triggers NEED_MORE_DATA", test2);
+    EXPECT_TRUE(test2) << "Partial payload triggers NEED_MORE_DATA";
     
     // Third receive: remaining 5 bytes
     acc.feed({'f', 'g', 'h', 'i', 'j'});
@@ -187,13 +171,13 @@ void test_payload_fragmented() {
                  (result == ParseResult::SUCCESS) &&
                  (packet.m_length == 10) &&
                  acc.empty();
-    print_test_result("Complete payload after fragmentation", test3);
+    EXPECT_TRUE(test3) << "Complete payload after fragmentation";
 }
 
 // ============================================================================
 // Test Case 4: Multiple packets in single receive
 // ============================================================================
-void test_multiple_packets_single_receive() {
+TEST(PacketFramingTest, test_multiple_packets_single_receive) {
     std::cout << "\nTest 4: Multiple packets in single receive" << std::endl;
     
     TestAccumulator acc;
@@ -213,20 +197,20 @@ void test_multiple_packets_single_receive() {
     ParseResult result1;
     bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet1, result1);
     bool test1 = parsed1 && (packet1.m_header == 0x04) && (packet1.m_length == 3);
-    print_test_result("First packet parsed from batch", test1);
+    EXPECT_TRUE(test1) << "First packet parsed from batch";
     
     // Parse second packet
     Packet packet2;
     ParseResult result2;
     bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet2, result2);
     bool test2 = parsed2 && (packet2.m_header == 0x05) && (packet2.m_length == 2) && acc.empty();
-    print_test_result("Second packet parsed from batch", test2);
+    EXPECT_TRUE(test2) << "Second packet parsed from batch";
 }
 
 // ============================================================================
 // Test Case 5: Stateless lane with 16-bit header fragmentation
 // ============================================================================
-void test_stateless_header_fragmented() {
+TEST(PacketFramingTest, test_stateless_header_fragmented) {
     std::cout << "\nTest 5: Stateless lane - 16-bit header fragmented" << std::endl;
     
     TestAccumulator acc;
@@ -239,14 +223,14 @@ void test_stateless_header_fragmented() {
     
     bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
     bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
-    print_test_result("Partial 16-bit header triggers NEED_MORE_DATA", test1);
+    EXPECT_TRUE(test1) << "Partial 16-bit header triggers NEED_MORE_DATA";
     
     // Second receive: second byte of header + partial length
     acc.feed({0x01, 0x00, 0x00});
     
     bool parsed2 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
     bool test2 = !parsed2 && (result == ParseResult::NEED_MORE_DATA);
-    print_test_result("Incomplete length field in stateless", test2);
+    EXPECT_TRUE(test2) << "Incomplete length field in stateless";
     
     // Third receive: complete length + data
     acc.feed({0x00, 0x04, 't', 'e', 's', 't'});
@@ -257,13 +241,13 @@ void test_stateless_header_fragmented() {
                  (packet.m_header == 0xD001) &&
                  (packet.m_length == 4) &&
                  acc.empty();
-    print_test_result("Stateless packet after multiple receives", test3);
+    EXPECT_TRUE(test3) << "Stateless packet after multiple receives";
 }
 
 // ============================================================================
 // Test Case 6: Malformed packet - unreasonably large length
 // ============================================================================
-void test_malformed_huge_length() {
+TEST(PacketFramingTest, test_malformed_huge_length) {
     std::cout << "\nTest 6: Malformed packet - unreasonably large length" << std::endl;
     
     TestAccumulator acc;
@@ -284,13 +268,13 @@ void test_malformed_huge_length() {
                        (result == ParseResult::MALFORMED) &&
                        acc.empty(); // Buffer cleared on malformed
     
-    print_test_result("Huge length detected as malformed", test_passed);
+    EXPECT_TRUE(test_passed) << "Huge length detected as malformed";
 }
 
 // ============================================================================
 // Test Case 7: Malformed - invalid stateless opcode
 // ============================================================================
-void test_malformed_invalid_stateless_opcode() {
+TEST(PacketFramingTest, test_malformed_invalid_stateless_opcode) {
     std::cout << "\nTest 7: Malformed - invalid stateless opcode" << std::endl;
     
     TestAccumulator acc;
@@ -311,13 +295,13 @@ void test_malformed_invalid_stateless_opcode() {
                        (result == ParseResult::MALFORMED) &&
                        acc.empty();
     
-    print_test_result("Invalid stateless opcode detected", test_passed);
+    EXPECT_TRUE(test_passed) << "Invalid stateless opcode detected";
 }
 
 // ============================================================================
 // Test Case 8: Complex scenario - mixed fragmentation and batching
 // ============================================================================
-void test_complex_mixed_scenario() {
+TEST(PacketFramingTest, test_complex_mixed_scenario) {
     std::cout << "\nTest 8: Complex scenario - mixed fragmentation and batching" << std::endl;
     
     TestAccumulator acc;
@@ -330,7 +314,7 @@ void test_complex_mixed_scenario() {
     ParseResult result;
     bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA);
-    print_test_result("Partial first packet", test1);
+    EXPECT_TRUE(test1) << "Partial first packet";
     
     // Receive 2: Rest of packet 1 + complete packet 2 + partial packet 3
     acc.feed({
@@ -342,30 +326,30 @@ void test_complex_mixed_scenario() {
     // Parse packet 1
     bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test2 = parsed2 && (packet.m_header == 0x20) && (packet.m_length == 2);
-    print_test_result("First packet completed", test2);
+    EXPECT_TRUE(test2) << "First packet completed";
     
     // Parse packet 2
     bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test3 = parsed3 && (packet.m_header == 0x21) && (packet.m_length == 1);
-    print_test_result("Second packet completed", test3);
+    EXPECT_TRUE(test3) << "Second packet completed";
     
     // Try to parse packet 3 (incomplete)
     bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test4 = !parsed4 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 2);
-    print_test_result("Third packet incomplete", test4);
+    EXPECT_TRUE(test4) << "Third packet incomplete";
     
     // Receive 3: Complete packet 3
     acc.feed({0x00, 0x00, 0x03, 'a', 'b', 'c'});
     
     bool parsed5 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test5 = parsed5 && (packet.m_header == 0x22) && (packet.m_length == 3) && acc.empty();
-    print_test_result("Third packet completed", test5);
+    EXPECT_TRUE(test5) << "Third packet completed";
 }
 
 // ============================================================================
 // Test Case 9: Byte-by-byte feeding (extreme fragmentation)
 // ============================================================================
-void test_byte_by_byte_feeding() {
+TEST(PacketFramingTest, test_byte_by_byte_feeding) {
     std::cout << "\nTest 9: Extreme fragmentation - byte-by-byte feeding" << std::endl;
     
     TestAccumulator acc;
@@ -383,7 +367,7 @@ void test_byte_by_byte_feeding() {
     acc.feed({complete_packet[0], complete_packet[1]});
     bool parsed0 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     if (parsed0 || result != ParseResult::NEED_MORE_DATA) {
-        print_test_result("Byte-by-byte feeding - initial state", false);
+        EXPECT_TRUE(false) << "Byte-by-byte feeding - initial state";
         return;
     }
     
@@ -393,7 +377,7 @@ void test_byte_by_byte_feeding() {
         bool parsed = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
         
         if (parsed || result != ParseResult::NEED_MORE_DATA) {
-            print_test_result("Byte-by-byte feeding - intermediate", false);
+            EXPECT_TRUE(false) << "Byte-by-byte feeding - intermediate";
             return;
         }
     }
@@ -408,13 +392,13 @@ void test_byte_by_byte_feeding() {
                        (packet.m_length == 5) &&
                        acc.empty();
     
-    print_test_result("Byte-by-byte feeding completes successfully", test_passed);
+    EXPECT_TRUE(test_passed) << "Byte-by-byte feeding completes successfully";
 }
 
 // ============================================================================
 // Test Case 10: Zero-length payload
 // ============================================================================
-void test_zero_length_payload() {
+TEST(PacketFramingTest, test_zero_length_payload) {
     std::cout << "\nTest 10: Zero-length payload packet" << std::endl;
     
     TestAccumulator acc;
@@ -436,14 +420,14 @@ void test_zero_length_payload() {
                        (packet.m_length == 0) &&
                        acc.empty();
     
-    print_test_result("Zero-length payload handled correctly", test_passed);
+    EXPECT_TRUE(test_passed) << "Zero-length payload handled correctly";
 }
 
 // ============================================================================
 // Test Case 11: Push notification packets (PRIME_BLOCK_AVAILABLE / HASH_BLOCK_AVAILABLE)
 // These carry 12-byte payloads on the legacy lane and must be parsed correctly
 // ============================================================================
-void test_push_notification_legacy_lane() {
+TEST(PacketFramingTest, test_push_notification_legacy_lane) {
     std::cout << "\nTest 11: Push notification packets on legacy lane (12-byte and 148-byte payloads)" << std::endl;
     
     TestAccumulator acc;
@@ -469,12 +453,12 @@ void test_push_notification_legacy_lane() {
                  (packet.m_length == 12) &&
                  (packet.m_data && packet.m_data->size() == 12) &&
                  acc.empty();
-    print_test_result("PRIME_BLOCK_AVAILABLE (217) with 12-byte payload", test1);
+    EXPECT_TRUE(test1) << "PRIME_BLOCK_AVAILABLE (217) with 12-byte payload";
     
     // Verify is_auth_packet() returns true for PRIME_BLOCK_AVAILABLE
     Packet prime_pkt(static_cast<uint8_t>(217));
     bool test1b = prime_pkt.is_auth_packet();
-    print_test_result("is_auth_packet() returns true for PRIME_BLOCK_AVAILABLE (217)", test1b);
+    EXPECT_TRUE(test1b) << "is_auth_packet() returns true for PRIME_BLOCK_AVAILABLE (217)";
     
     // HASH_BLOCK_AVAILABLE (218 = 0xDA) with 12-byte payload
     std::vector<uint8_t> hash_notification = {
@@ -494,12 +478,12 @@ void test_push_notification_legacy_lane() {
                  (packet.m_length == 12) &&
                  (packet.m_data && packet.m_data->size() == 12) &&
                  acc.empty();
-    print_test_result("HASH_BLOCK_AVAILABLE (218) with 12-byte payload", test2);
+    EXPECT_TRUE(test2) << "HASH_BLOCK_AVAILABLE (218) with 12-byte payload";
     
     // Verify is_auth_packet() returns true for HASH_BLOCK_AVAILABLE
     Packet hash_pkt(static_cast<uint8_t>(218));
     bool test2b = hash_pkt.is_auth_packet();
-    print_test_result("is_auth_packet() returns true for HASH_BLOCK_AVAILABLE (218)", test2b);
+    EXPECT_TRUE(test2b) << "is_auth_packet() returns true for HASH_BLOCK_AVAILABLE (218)";
 
     // PRIME_BLOCK_AVAILABLE (217 = 0xD9) with 148-byte full-picture payload
     // Layout: unified(4) + prime(4) + difficulty(4) + hash_height(4) + stake_height(4) + hashBestChain(128)
@@ -538,7 +522,7 @@ void test_push_notification_legacy_lane() {
                  (packet.m_length == 148) &&
                  (packet.m_data && packet.m_data->size() == 148) &&
                  acc.empty();
-    print_test_result("PRIME_BLOCK_AVAILABLE (217) with 148-byte full-picture payload", test3);
+    EXPECT_TRUE(test3) << "PRIME_BLOCK_AVAILABLE (217) with 148-byte full-picture payload";
 
     // HASH_BLOCK_AVAILABLE (218 = 0xDA) with 148-byte full-picture payload
     std::vector<uint8_t> hash_notification_148(5 + 148, 0x00);
@@ -561,13 +545,13 @@ void test_push_notification_legacy_lane() {
                  (packet.m_length == 148) &&
                  (packet.m_data && packet.m_data->size() == 148) &&
                  acc.empty();
-    print_test_result("HASH_BLOCK_AVAILABLE (218) with 148-byte full-picture payload", test4);
+    EXPECT_TRUE(test4) << "HASH_BLOCK_AVAILABLE (218) with 148-byte full-picture payload";
 }
 
 // ============================================================================
 // Test Case 12: is_auth_packet() covers full 206-218 range
 // ============================================================================
-void test_is_auth_packet_full_range() {
+TEST(PacketFramingTest, test_is_auth_packet_full_range) {
     std::cout << "\nTest 12: is_auth_packet() covers full 206-218 range" << std::endl;
     
     // All opcodes 206-218 should return true
@@ -575,21 +559,21 @@ void test_is_auth_packet_full_range() {
         Packet pkt(static_cast<uint8_t>(opcode));
         bool in_range = pkt.is_auth_packet();
         std::string name = "is_auth_packet() returns true for opcode " + std::to_string(opcode);
-        print_test_result(name.c_str(), in_range);
+        EXPECT_TRUE(in_range) << name;
     }
     
     // Opcodes just outside the range should return false
     Packet below(static_cast<uint8_t>(205));
-    print_test_result("is_auth_packet() returns false for opcode 205", !below.is_auth_packet());
+    EXPECT_TRUE(!below.is_auth_packet()) << "is_auth_packet() returns false for opcode 205";
     
     Packet above(static_cast<uint8_t>(219));
-    print_test_result("is_auth_packet() returns false for opcode 219", !above.is_auth_packet());
+    EXPECT_TRUE(!above.is_auth_packet()) << "is_auth_packet() returns false for opcode 219";
 }
 
 // ============================================================================
 // Test Case 13: MINER_READY (216) is header-only and validates correctly
 // ============================================================================
-void test_miner_ready_header_only() {
+TEST(PacketFramingTest, test_miner_ready_header_only) {
     std::cout << "\nTest 13: MINER_READY (216) is header-only and validates correctly" << std::endl;
     
     // MINER_READY is header-only (no payload)
@@ -597,11 +581,11 @@ void test_miner_ready_header_only() {
     
     // Should be in is_auth_packet() range
     bool test1 = ready_pkt.is_auth_packet();
-    print_test_result("MINER_READY (216) is in is_auth_packet() range", test1);
+    EXPECT_TRUE(test1) << "MINER_READY (216) is in is_auth_packet() range";
     
     // Should still validate as valid (header-only request)
     bool test2 = ready_pkt.is_valid();
-    print_test_result("MINER_READY (216) with m_length=0 validates as valid", test2);
+    EXPECT_TRUE(test2) << "MINER_READY (216) with m_length=0 validates as valid";
 }
 
 // ============================================================================
@@ -609,7 +593,7 @@ void test_miner_ready_header_only() {
 // When only 1 byte of a data packet (opcode < 128) arrives, it should NOT
 // be treated as a header-only packet - NEED_MORE_DATA should be returned
 // ============================================================================
-void test_legacy_data_packet_single_byte() {
+TEST(PacketFramingTest, test_legacy_data_packet_single_byte) {
     std::cout << "\nTest 14: Legacy data packet single-byte fragmentation" << std::endl;
     
     TestAccumulator acc;
@@ -621,7 +605,7 @@ void test_legacy_data_packet_single_byte() {
     
     bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
-    print_test_result("Single byte of BLOCK_DATA triggers NEED_MORE_DATA", test1);
+    EXPECT_TRUE(test1) << "Single byte of BLOCK_DATA triggers NEED_MORE_DATA";
     
     // Feed remaining bytes (length + payload)
     acc.feed({0x00, 0x00, 0x00, 0x05, 'h', 'e', 'l', 'l', 'o'});
@@ -632,14 +616,14 @@ void test_legacy_data_packet_single_byte() {
                  (packet.m_header == 0x00) &&
                  (packet.m_length == 5) &&
                  acc.empty();
-    print_test_result("Complete BLOCK_DATA after fragmented single byte", test2);
+    EXPECT_TRUE(test2) << "Complete BLOCK_DATA after fragmented single byte";
     
     // Test with SUBMIT_BLOCK (opcode 1) - also a data packet
     acc.feed({0x01});
     
     bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test3 = !parsed3 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
-    print_test_result("Single byte of SUBMIT_BLOCK triggers NEED_MORE_DATA", test3);
+    EXPECT_TRUE(test3) << "Single byte of SUBMIT_BLOCK triggers NEED_MORE_DATA";
     
     acc.feed({0x00, 0x00, 0x00, 0x03, 'a', 'b', 'c'});
     
@@ -649,7 +633,7 @@ void test_legacy_data_packet_single_byte() {
                  (packet.m_header == 0x01) &&
                  (packet.m_length == 3) &&
                  acc.empty();
-    print_test_result("Complete SUBMIT_BLOCK after fragmented single byte", test4);
+    EXPECT_TRUE(test4) << "Complete SUBMIT_BLOCK after fragmented single byte";
 }
 
 // ============================================================================
@@ -657,7 +641,7 @@ void test_legacy_data_packet_single_byte() {
 // When a header-only opcode (>= 128, not auth) arrives as 1 byte,
 // it should be treated as a complete packet
 // ============================================================================
-void test_legacy_header_only_single_byte() {
+TEST(PacketFramingTest, test_legacy_header_only_single_byte) {
     std::cout << "\nTest 15: Legacy header-only opcode single-byte" << std::endl;
     
     TestAccumulator acc;
@@ -673,14 +657,14 @@ void test_legacy_header_only_single_byte() {
                  (packet.m_header == 129) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("GET_BLOCK (129) header-only packet parsed immediately", test1);
+    EXPECT_TRUE(test1) << "GET_BLOCK (129) header-only packet parsed immediately";
     
     // NEW_ROUND (204) has payload (12 bytes) - NOT header-only
     acc.feed({204});
     
     bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test2 = !parsed2 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
-    print_test_result("NEW_ROUND (204) single byte triggers NEED_MORE_DATA (has payload)", test2);
+    EXPECT_TRUE(test2) << "NEW_ROUND (204) single byte triggers NEED_MORE_DATA (has payload)";
     acc.clear();
     
     // PING (253) is header-only
@@ -692,7 +676,7 @@ void test_legacy_header_only_single_byte() {
                  (packet.m_header == 253) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("PING (253) header-only packet parsed immediately", test3);
+    EXPECT_TRUE(test3) << "PING (253) header-only packet parsed immediately";
     
     // MINER_READY (216) is header-only even though it's in auth range
     acc.feed({216});
@@ -703,7 +687,7 @@ void test_legacy_header_only_single_byte() {
                  (packet.m_header == 216) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("MINER_READY (216) header-only packet parsed immediately", test4);
+    EXPECT_TRUE(test4) << "MINER_READY (216) header-only packet parsed immediately";
 }
 
 // ============================================================================
@@ -711,7 +695,7 @@ void test_legacy_header_only_single_byte() {
 // Auth packets (206-218, except MINER_READY) always have payload,
 // so a single byte should trigger NEED_MORE_DATA
 // ============================================================================
-void test_legacy_auth_packet_single_byte() {
+TEST(PacketFramingTest, test_legacy_auth_packet_single_byte) {
     std::cout << "\nTest 16: Legacy auth packet single-byte fragmentation" << std::endl;
     
     TestAccumulator acc;
@@ -723,7 +707,7 @@ void test_legacy_auth_packet_single_byte() {
     
     bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
-    print_test_result("Single byte of MINER_AUTH_CHALLENGE triggers NEED_MORE_DATA", test1);
+    EXPECT_TRUE(test1) << "Single byte of MINER_AUTH_CHALLENGE triggers NEED_MORE_DATA";
     
     // Complete the packet
     acc.feed({0x00, 0x00, 0x00, 0x04, 0xAA, 0xBB, 0xCC, 0xDD});
@@ -734,7 +718,7 @@ void test_legacy_auth_packet_single_byte() {
                  (packet.m_header == 208) &&
                  (packet.m_length == 4) &&
                  acc.empty();
-    print_test_result("Complete MINER_AUTH_CHALLENGE after single byte", test2);
+    EXPECT_TRUE(test2) << "Complete MINER_AUTH_CHALLENGE after single byte";
 }
 
 // ============================================================================
@@ -742,7 +726,7 @@ void test_legacy_auth_packet_single_byte() {
 // When only 2 bytes of a stateless data packet arrive, NEED_MORE_DATA
 // should be returned (not treated as header-only)
 // ============================================================================
-void test_stateless_data_packet_two_byte() {
+TEST(PacketFramingTest, test_stateless_data_packet_two_byte) {
     std::cout << "\nTest 17: Stateless data packet two-byte fragmentation" << std::endl;
     
     TestAccumulator acc;
@@ -754,7 +738,7 @@ void test_stateless_data_packet_two_byte() {
     
     bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
     bool test1 = !parsed1 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 2);
-    print_test_result("Two bytes of STATELESS_SUBMIT_BLOCK triggers NEED_MORE_DATA", test1);
+    EXPECT_TRUE(test1) << "Two bytes of STATELESS_SUBMIT_BLOCK triggers NEED_MORE_DATA";
     
     // Complete the packet
     acc.feed({0x00, 0x00, 0x00, 0x03, 'x', 'y', 'z'});
@@ -765,7 +749,7 @@ void test_stateless_data_packet_two_byte() {
                  (packet.m_header == 0xD001) &&
                  (packet.m_length == 3) &&
                  acc.empty();
-    print_test_result("Complete STATELESS_SUBMIT_BLOCK after fragmentation", test2);
+    EXPECT_TRUE(test2) << "Complete STATELESS_SUBMIT_BLOCK after fragmentation";
 }
 
 // ============================================================================
@@ -774,7 +758,7 @@ void test_stateless_data_packet_two_byte() {
 // treated as a complete packet.
 // NOTE: GET_BLOCK (0xD081) is NOT header-only on stateless (template push).
 // ============================================================================
-void test_stateless_header_only_two_byte() {
+TEST(PacketFramingTest, test_stateless_header_only_two_byte) {
     std::cout << "\nTest 18: Stateless header-only opcode two-byte" << std::endl;
     
     TestAccumulator acc;
@@ -789,7 +773,7 @@ void test_stateless_header_only_two_byte() {
     bool test1 = !parsed1 && 
                  (result == ParseResult::NEED_MORE_DATA) &&
                  (acc.size() == 2);
-    print_test_result("STATELESS_GET_BLOCK (0xD081) is NOT header-only (needs payload)", test1);
+    EXPECT_TRUE(test1) << "STATELESS_GET_BLOCK (0xD081) is NOT header-only (needs payload)";
     acc.clear();
     
     // STATELESS MINER_READY (0xD0D8) is header-only
@@ -801,14 +785,14 @@ void test_stateless_header_only_two_byte() {
                  (packet.m_header == 0xD0D8) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("STATELESS_MINER_READY (0xD0D8) header-only parsed immediately", test2);
+    EXPECT_TRUE(test2) << "STATELESS_MINER_READY (0xD0D8) header-only parsed immediately";
 }
 
 // ============================================================================
 // Test Case 19: NEW_ROUND (204) with 12-byte payload
 // NEW_ROUND carries payload: [unified_height][channel_height][difficulty]
 // ============================================================================
-void test_new_round_with_payload() {
+TEST(PacketFramingTest, test_new_round_with_payload) {
     std::cout << "\nTest 19: NEW_ROUND (204) with 12-byte payload" << std::endl;
     
     TestAccumulator acc;
@@ -834,14 +818,14 @@ void test_new_round_with_payload() {
                  (packet.m_data != nullptr) &&
                  (packet.m_data->size() == 12) &&
                  acc.empty();
-    print_test_result("NEW_ROUND 12-byte payload parsed correctly", test1);
+    EXPECT_TRUE(test1) << "NEW_ROUND 12-byte payload parsed correctly";
     
     // NEW_ROUND single byte should trigger NEED_MORE_DATA (not treated as header-only)
     acc.feed({204});
     
     bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test2 = !parsed2 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
-    print_test_result("NEW_ROUND single byte triggers NEED_MORE_DATA", test2);
+    EXPECT_TRUE(test2) << "NEW_ROUND single byte triggers NEED_MORE_DATA";
     acc.clear();
 }
 
@@ -849,7 +833,7 @@ void test_new_round_with_payload() {
 // Test Case 20: OLD_ROUND (205) with 12-byte payload
 // OLD_ROUND carries payload: [unified_height][channel_height][difficulty]
 // ============================================================================
-void test_old_round_with_payload() {
+TEST(PacketFramingTest, test_old_round_with_payload) {
     std::cout << "\nTest 20: OLD_ROUND (205) with 12-byte payload" << std::endl;
     
     TestAccumulator acc;
@@ -875,14 +859,14 @@ void test_old_round_with_payload() {
                  (packet.m_data != nullptr) &&
                  (packet.m_data->size() == 12) &&
                  acc.empty();
-    print_test_result("OLD_ROUND 12-byte payload parsed correctly", test1);
+    EXPECT_TRUE(test1) << "OLD_ROUND 12-byte payload parsed correctly";
     
     // OLD_ROUND single byte should trigger NEED_MORE_DATA
     acc.feed({205});
     
     bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test2 = !parsed2 && (result == ParseResult::NEED_MORE_DATA) && (acc.size() == 1);
-    print_test_result("OLD_ROUND single byte triggers NEED_MORE_DATA", test2);
+    EXPECT_TRUE(test2) << "OLD_ROUND single byte triggers NEED_MORE_DATA";
     acc.clear();
 }
 
@@ -890,7 +874,7 @@ void test_old_round_with_payload() {
 // Test Case 21: NEW_ROUND/OLD_ROUND with legacy 16-byte payload
 // Legacy lane accepts 16-byte format: [unified][prime][hash][stake]
 // ============================================================================
-void test_round_legacy_16byte_payload() {
+TEST(PacketFramingTest, test_round_legacy_16byte_payload) {
     std::cout << "\nTest 21: NEW_ROUND/OLD_ROUND with legacy 16-byte payload" << std::endl;
     
     TestAccumulator acc;
@@ -917,14 +901,14 @@ void test_round_legacy_16byte_payload() {
                  (packet.m_data != nullptr) &&
                  (packet.m_data->size() == 16) &&
                  acc.empty();
-    print_test_result("NEW_ROUND 16-byte legacy payload parsed correctly", test1);
+    EXPECT_TRUE(test1) << "NEW_ROUND 16-byte legacy payload parsed correctly";
 }
 
 // ============================================================================
 // Test Case 22: ACCEPT/REJECT still header-only (regression check)
 // Ensure the fix doesn't break ACCEPT (200) and REJECT (201) classification
 // ============================================================================
-void test_accept_reject_still_header_only() {
+TEST(PacketFramingTest, test_accept_reject_still_header_only) {
     std::cout << "\nTest 22: ACCEPT/REJECT still header-only (regression check)" << std::endl;
     
     TestAccumulator acc;
@@ -940,7 +924,7 @@ void test_accept_reject_still_header_only() {
                  (packet.m_header == 200) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("ACCEPT (200) still header-only", test1);
+    EXPECT_TRUE(test1) << "ACCEPT (200) still header-only";
     
     // REJECT (201) should still be header-only
     acc.feed({201});
@@ -951,7 +935,7 @@ void test_accept_reject_still_header_only() {
                  (packet.m_header == 201) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("REJECT (201) still header-only", test2);
+    EXPECT_TRUE(test2) << "REJECT (201) still header-only";
     
     // COINBASE_SET (202) should still be header-only
     acc.feed({202});
@@ -962,7 +946,7 @@ void test_accept_reject_still_header_only() {
                  (packet.m_header == 202) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("COINBASE_SET (202) still header-only", test3);
+    EXPECT_TRUE(test3) << "COINBASE_SET (202) still header-only";
     
     // COINBASE_FAIL (203) should still be header-only
     acc.feed({203});
@@ -973,14 +957,14 @@ void test_accept_reject_still_header_only() {
                  (packet.m_header == 203) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("COINBASE_FAIL (203) still header-only", test4);
+    EXPECT_TRUE(test4) << "COINBASE_FAIL (203) still header-only";
 }
 
 // ============================================================================
 // Test Case 23: Stateless GET_BLOCK (0xD081) with 228-byte payload
 // On stateless lane, GET_BLOCK is a template push with 228-byte payload
 // ============================================================================
-void test_stateless_get_block_with_payload() {
+TEST(PacketFramingTest, test_stateless_get_block_with_payload) {
     std::cout << "\nTest 23: Stateless GET_BLOCK (0xD081) with 228-byte payload" << std::endl;
     
     TestAccumulator acc;
@@ -1011,7 +995,7 @@ void test_stateless_get_block_with_payload() {
                  (packet.m_data != nullptr) &&
                  (packet.m_data->size() == 228) &&
                  acc.empty();
-    print_test_result("STATELESS_GET_BLOCK (0xD081) with 228-byte payload parsed correctly", test1);
+    EXPECT_TRUE(test1) << "STATELESS_GET_BLOCK (0xD081) with 228-byte payload parsed correctly";
     
     // Verify first few bytes of payload
     if (packet.m_data && packet.m_data->size() >= 4) {
@@ -1019,9 +1003,9 @@ void test_stateless_get_block_with_payload() {
                            ((*packet.m_data)[1] == 0x01) &&
                            ((*packet.m_data)[2] == 0x02) &&
                            ((*packet.m_data)[3] == 0x03);
-        print_test_result("STATELESS_GET_BLOCK payload data verified", data_correct);
+        EXPECT_TRUE(data_correct) << "STATELESS_GET_BLOCK payload data verified";
     } else {
-        print_test_result("STATELESS_GET_BLOCK payload data verified", false);
+        EXPECT_TRUE(false) << "STATELESS_GET_BLOCK payload data verified";
     }
 }
 
@@ -1029,7 +1013,7 @@ void test_stateless_get_block_with_payload() {
 // Test Case 23b: Stateless GET_BLOCK (0xD081) with zero-length payload
 // Node can send GET_BLOCK with length=0 (no template available yet)
 // ============================================================================
-void test_stateless_get_block_zero_length() {
+TEST(PacketFramingTest, test_stateless_get_block_zero_length) {
     std::cout << "\nTest 23b: Stateless GET_BLOCK (0xD081) with zero-length payload" << std::endl;
     
     TestAccumulator acc;
@@ -1051,14 +1035,14 @@ void test_stateless_get_block_zero_length() {
                  (packet.m_header == 0xD081) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("STATELESS_GET_BLOCK (0xD081) with length=0 parsed correctly", test1);
+    EXPECT_TRUE(test1) << "STATELESS_GET_BLOCK (0xD081) with length=0 parsed correctly";
 }
 
 // ============================================================================
 // Test Case 23c: Stateless BLOCK_DATA (0xD000) with 216-byte payload
 // Node responds to GET_BLOCK with BLOCK_DATA containing 216-byte block template
 // ============================================================================
-void test_stateless_block_data_with_payload() {
+TEST(PacketFramingTest, test_stateless_block_data_with_payload) {
     std::cout << "\nTest 23c: Stateless BLOCK_DATA (0xD000) with 216-byte payload" << std::endl;
     
     TestAccumulator acc;
@@ -1090,7 +1074,7 @@ void test_stateless_block_data_with_payload() {
                  (packet.m_data != nullptr) &&
                  (packet.m_data->size() == 216) &&
                  acc.empty();
-    print_test_result("STATELESS_BLOCK_DATA (0xD000) with 216-byte payload parsed correctly", test1);
+    EXPECT_TRUE(test1) << "STATELESS_BLOCK_DATA (0xD000) with 216-byte payload parsed correctly";
     
     // Verify first few bytes of payload
     if (packet.m_data && packet.m_data->size() >= 4) {
@@ -1098,21 +1082,21 @@ void test_stateless_block_data_with_payload() {
                            ((*packet.m_data)[1] == 0x01) &&
                            ((*packet.m_data)[2] == 0x02) &&
                            ((*packet.m_data)[3] == 0x03);
-        print_test_result("STATELESS_BLOCK_DATA payload data verified", data_correct);
+        EXPECT_TRUE(data_correct) << "STATELESS_BLOCK_DATA payload data verified";
     } else {
-        print_test_result("STATELESS_BLOCK_DATA payload data verified", false);
+        EXPECT_TRUE(false) << "STATELESS_BLOCK_DATA payload data verified";
     }
     
     // Verify opcode matches the StatelessMining::BLOCK_DATA constant
     bool opcode_test = (packet.m_header == nexusminer::LLP::StatelessMining::BLOCK_DATA);
-    print_test_result("STATELESS_BLOCK_DATA header matches StatelessMining::BLOCK_DATA", opcode_test);
+    EXPECT_TRUE(opcode_test) << "STATELESS_BLOCK_DATA header matches StatelessMining::BLOCK_DATA";
 }
 
 // ============================================================================
 // Test Case 24: Stateless auth opcodes (mirror-mapped) with payload
 // Auth opcodes 0xD0CE, 0xD0D0, 0xD0D2 should parse as 2-byte headers with payload
 // ============================================================================
-void test_stateless_auth_opcodes_with_payload() {
+TEST(PacketFramingTest, test_stateless_auth_opcodes_with_payload) {
     std::cout << "\nTest 24: Stateless auth opcodes (mirror-mapped) with payload" << std::endl;
     
     TestAccumulator acc;
@@ -1134,7 +1118,7 @@ void test_stateless_auth_opcodes_with_payload() {
                  (packet.m_length == 1) &&
                  (packet.m_data != nullptr) &&
                  acc.empty();
-    print_test_result("CHANNEL_ACK (0xD0CE) parsed with payload", test1);
+    EXPECT_TRUE(test1) << "CHANNEL_ACK (0xD0CE) parsed with payload";
     
     // MINER_AUTH_CHALLENGE (0xD0D0 = mirror of 208) with 34-byte nonce payload
     std::vector<uint8_t> auth_challenge;
@@ -1157,7 +1141,7 @@ void test_stateless_auth_opcodes_with_payload() {
                  (packet.m_length == 34) &&
                  (packet.m_data != nullptr) &&
                  acc.empty();
-    print_test_result("MINER_AUTH_CHALLENGE (0xD0D0) parsed with payload", test2);
+    EXPECT_TRUE(test2) << "MINER_AUTH_CHALLENGE (0xD0D0) parsed with payload";
     
     // MINER_AUTH_RESULT (0xD0D2 = mirror of 210) with 5-byte payload
     std::vector<uint8_t> auth_result = {
@@ -1175,14 +1159,14 @@ void test_stateless_auth_opcodes_with_payload() {
                  (packet.m_length == 5) &&
                  (packet.m_data != nullptr) &&
                  acc.empty();
-    print_test_result("MINER_AUTH_RESULT (0xD0D2) parsed with payload", test3);
+    EXPECT_TRUE(test3) << "MINER_AUTH_RESULT (0xD0D2) parsed with payload";
 }
 
 // ============================================================================
 // Test Case 25: Legacy auth opcode 208 (0xD0) parses correctly (NOT rejected)
 // Byte 0xD0 on legacy lane is MINER_AUTH_CHALLENGE and must NOT be rejected
 // ============================================================================
-void test_legacy_auth_opcode_208_not_rejected() {
+TEST(PacketFramingTest, test_legacy_auth_opcode_208_not_rejected) {
     std::cout << "\nTest 25: Legacy auth opcode 208 (0xD0) not rejected" << std::endl;
     
     TestAccumulator acc;
@@ -1209,7 +1193,7 @@ void test_legacy_auth_opcode_208_not_rejected() {
                  (packet.m_data != nullptr) &&
                  (packet.m_data->size() == 34) &&
                  acc.empty();
-    print_test_result("Legacy MINER_AUTH_CHALLENGE (208/0xD0) parsed correctly (NOT rejected)", test1);
+    EXPECT_TRUE(test1) << "Legacy MINER_AUTH_CHALLENGE (208/0xD0) parsed correctly (NOT rejected)";
     
     // Also verify MINER_AUTH_INIT (207) on legacy lane
     std::vector<uint8_t> auth_init = {
@@ -1225,7 +1209,7 @@ void test_legacy_auth_opcode_208_not_rejected() {
                  (packet.m_header == 207) &&
                  (packet.m_length == 4) &&
                  acc.empty();
-    print_test_result("Legacy MINER_AUTH_INIT (207) parsed correctly", test2);
+    EXPECT_TRUE(test2) << "Legacy MINER_AUTH_INIT (207) parsed correctly";
     
     // Also verify MINER_AUTH_RESULT (210) on legacy lane
     std::vector<uint8_t> auth_result = {
@@ -1242,54 +1226,9 @@ void test_legacy_auth_opcode_208_not_rejected() {
                  (packet.m_header == 210) &&
                  (packet.m_length == 5) &&
                  acc.empty();
-    print_test_result("Legacy MINER_AUTH_RESULT (210) parsed correctly", test3);
+    EXPECT_TRUE(test3) << "Legacy MINER_AUTH_RESULT (210) parsed correctly";
 }
 
 // ============================================================================
 // Main test runner
 // ============================================================================
-int main() {
-    std::cout << "========================================" << std::endl;
-    std::cout << "LLP Packet Framing Test Suite" << std::endl;
-    std::cout << "Testing TCP fragmentation handling" << std::endl;
-    std::cout << "========================================" << std::endl;
-    
-    test_complete_packet_single_receive();
-    test_header_fragmented();
-    test_payload_fragmented();
-    test_multiple_packets_single_receive();
-    test_stateless_header_fragmented();
-    test_malformed_huge_length();
-    test_malformed_invalid_stateless_opcode();
-    test_complex_mixed_scenario();
-    test_byte_by_byte_feeding();
-    test_zero_length_payload();
-    test_push_notification_legacy_lane();
-    test_is_auth_packet_full_range();
-    test_miner_ready_header_only();
-    test_legacy_data_packet_single_byte();
-    test_legacy_header_only_single_byte();
-    test_legacy_auth_packet_single_byte();
-    test_stateless_data_packet_two_byte();
-    test_stateless_header_only_two_byte();
-    test_new_round_with_payload();
-    test_old_round_with_payload();
-    test_round_legacy_16byte_payload();
-    test_accept_reject_still_header_only();
-    test_stateless_get_block_with_payload();
-    test_stateless_get_block_zero_length();
-    test_stateless_block_data_with_payload();
-    test_stateless_auth_opcodes_with_payload();
-    test_legacy_auth_opcode_208_not_rejected();
-    
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "Test Summary" << std::endl;
-    std::cout << "========================================" << std::endl;
-    std::cout << "Tests run:    " << tests_run << std::endl;
-    std::cout << "Tests passed: " << tests_passed << std::endl;
-    std::cout << "Tests failed: " << tests_failed << std::endl;
-    std::cout << "Success rate: " << (tests_run > 0 ? (100 * tests_passed / tests_run) : 0) << "%" << std::endl;
-    std::cout << "========================================" << std::endl;
-    
-    return (tests_failed == 0) ? 0 : 1;
-}

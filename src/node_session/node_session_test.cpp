@@ -11,8 +11,8 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <iostream>
-#include <cassert>
 #include <memory>
+#include <gtest/gtest.h>
 
 using namespace nexusminer;
 
@@ -45,7 +45,7 @@ private:
     network::Endpoint m_local_endpoint;
 };
 
-void test_node_session_creation()
+TEST(NodeSessionTest, test_node_session_creation)
 {
     std::cout << "Test: NodeSession creation..." << std::endl;
 
@@ -67,17 +67,17 @@ void test_node_session_creation()
         stats_collector,
         "TEST_PRIMARY");
 
-    assert(node_session != nullptr);
-    assert(!node_session->is_authenticated());
-    assert(node_session->session_id() == 0);
-    assert(!node_session->is_session_active());
+    ASSERT_TRUE(node_session != nullptr);
+    ASSERT_TRUE(!node_session->is_authenticated());
+    ASSERT_TRUE(node_session->session_id() == 0);
+    ASSERT_TRUE(!node_session->is_session_active());
 
     std::cout << "  ✓ NodeSession created successfully" << std::endl;
     std::cout << "  ✓ Initial state is unauthenticated" << std::endl;
     std::cout << "  ✓ Initial session_id is 0" << std::endl;
 }
 
-void test_node_session_configuration()
+TEST(NodeSessionTest, test_node_session_configuration)
 {
     std::cout << "Test: NodeSession configuration..." << std::endl;
 
@@ -116,7 +116,7 @@ void test_node_session_configuration()
     std::cout << "  ✓ Keepalive interval set" << std::endl;
 }
 
-void test_node_session_handlers()
+TEST(NodeSessionTest, test_node_session_handlers)
 {
     std::cout << "Test: NodeSession handler registration..." << std::endl;
 
@@ -181,7 +181,7 @@ void test_node_session_handlers()
     std::cout << "  ✓ Node shutdown handler registered" << std::endl;
 }
 
-void test_node_session_protocol_access()
+TEST(NodeSessionTest, test_node_session_protocol_access)
 {
     std::cout << "Test: NodeSession protocol access..." << std::endl;
 
@@ -203,17 +203,17 @@ void test_node_session_protocol_access()
 
     // Access protocol instances
     auto primary_protocol = node_session->get_primary_protocol();
-    assert(primary_protocol != nullptr);
+    ASSERT_TRUE(primary_protocol != nullptr);
 
     auto secondary_protocol = node_session->get_secondary_protocol();
     // Secondary is null until connection is attempted
-    assert(secondary_protocol == nullptr);
+    ASSERT_TRUE(secondary_protocol == nullptr);
 
     std::cout << "  ✓ Primary protocol accessible" << std::endl;
     std::cout << "  ✓ Secondary protocol initially null" << std::endl;
 }
 
-void test_node_session_stop_and_reset()
+TEST(NodeSessionTest, test_node_session_stop_and_reset)
 {
     std::cout << "Test: NodeSession stop and reset..." << std::endl;
 
@@ -235,43 +235,14 @@ void test_node_session_stop_and_reset()
 
     // Test reset
     node_session->reset();
-    assert(!node_session->is_authenticated());
-    assert(node_session->session_id() == 0);
+    ASSERT_TRUE(!node_session->is_authenticated());
+    ASSERT_TRUE(node_session->session_id() == 0);
 
     // Test stop
     node_session->stop();
-    assert(!node_session->is_authenticated());
-    assert(node_session->session_id() == 0);
+    ASSERT_TRUE(!node_session->is_authenticated());
+    ASSERT_TRUE(node_session->session_id() == 0);
 
     std::cout << "  ✓ Reset clears authentication state" << std::endl;
     std::cout << "  ✓ Stop closes connections and resets state" << std::endl;
-}
-
-int main()
-{
-    std::cout << "\n=== NodeSession Unit Tests ===\n" << std::endl;
-
-    try {
-        test_node_session_creation();
-        std::cout << std::endl;
-
-        test_node_session_configuration();
-        std::cout << std::endl;
-
-        test_node_session_handlers();
-        std::cout << std::endl;
-
-        test_node_session_protocol_access();
-        std::cout << std::endl;
-
-        test_node_session_stop_and_reset();
-        std::cout << std::endl;
-
-        std::cout << "=== All NodeSession tests passed! ===\n" << std::endl;
-        return 0;
-
-    } catch (const std::exception& e) {
-        std::cerr << "Test failed with exception: " << e.what() << std::endl;
-        return 1;
-    }
 }

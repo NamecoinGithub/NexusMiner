@@ -22,31 +22,15 @@
 #include "protocol/packet_builder.hpp"
 #include "miner_opcodes.hpp"
 #include <iostream>
-#include <cassert>
 #include <cstdint>
 #include <chrono>
 #include <thread>
 #include <memory>
 #include <deque>
+#include <gtest/gtest.h>
 
 using namespace nexusminer;
 using namespace nexusminer::protocol;
-
-// Test statistics
-static int tests_run    = 0;
-static int tests_passed = 0;
-static int tests_failed = 0;
-
-void print_test_result(const char* name, bool passed) {
-    tests_run++;
-    if (passed) {
-        tests_passed++;
-        std::cout << "  [PASS] " << name << "\n";
-    } else {
-        tests_failed++;
-        std::cout << "  [FAIL] " << name << "\n";
-    }
-}
 
 // ============================================================================
 // Mock GET_BLOCK deduplication logic (mirrors Solo::get_work)
@@ -166,7 +150,7 @@ private:
 // ============================================================================
 // Test 1: GET_BLOCK deduplication within 100ms window
 // ============================================================================
-void test_get_block_dedup_within_window() {
+TEST(GetBlockDedupRecoveryTest, test_get_block_dedup_within_window) {
     std::cout << "\nTest 1: GET_BLOCK deduplication within 100ms window\n";
 
     GetBlockDeduplicator dedup;
@@ -187,13 +171,13 @@ void test_get_block_dedup_within_window() {
     bool correct_call_count = (call_count == 3);  // All 3 calls should be counted
 
     bool passed = first_success && second_suppressed && third_suppressed && correct_call_count;
-    print_test_result("GET_BLOCK deduplication within 100ms", passed);
+    EXPECT_TRUE(passed) << "GET_BLOCK deduplication within 100ms";
 }
 
 // ============================================================================
 // Test 2: GET_BLOCK allowed after deduplication window expires
 // ============================================================================
-void test_get_block_after_window() {
+TEST(GetBlockDedupRecoveryTest, test_get_block_after_window) {
     std::cout << "\nTest 2: GET_BLOCK allowed after deduplication window expires\n";
 
     GetBlockDeduplicator dedup;
@@ -211,13 +195,13 @@ void test_get_block_after_window() {
     bool second_success = (payload2 != nullptr && !payload2->empty());
 
     bool passed = first_success && second_success;
-    print_test_result("GET_BLOCK allowed after dedup window expires", passed);
+    EXPECT_TRUE(passed) << "GET_BLOCK allowed after dedup window expires";
 }
 
 // ============================================================================
 // Test 3: Multiple rapid GET_BLOCK requests deduplicated
 // ============================================================================
-void test_multiple_rapid_requests() {
+TEST(GetBlockDedupRecoveryTest, test_multiple_rapid_requests) {
     std::cout << "\nTest 3: Multiple rapid GET_BLOCK requests deduplicated\n";
 
     GetBlockDeduplicator dedup;
@@ -245,13 +229,13 @@ void test_multiple_rapid_requests() {
               << ", Suppressed: " << suppressed_transmissions << "\n";
 
     bool passed = (successful_transmissions == 1) && (suppressed_transmissions == 9);
-    print_test_result("Multiple rapid requests deduplicated correctly", passed);
+    EXPECT_TRUE(passed) << "Multiple rapid requests deduplicated correctly";
 }
 
 // ============================================================================
 // Test 4: GET_BLOCK deduplication across push handler and Worker_manager
 // ============================================================================
-void test_dedup_across_callers() {
+TEST(GetBlockDedupRecoveryTest, test_dedup_across_callers) {
     std::cout << "\nTest 4: GET_BLOCK deduplication across callers\n";
 
     GetBlockDeduplicator dedup;
@@ -267,13 +251,13 @@ void test_dedup_across_callers() {
     bool worker_suppressed = (payload2 == nullptr);
 
     bool passed = push_success && worker_suppressed;
-    print_test_result("Deduplication works across different callers", passed);
+    EXPECT_TRUE(passed) << "Deduplication works across different callers";
 }
 
 // ============================================================================
 // Test 5: Deduplication resets after timestamp reset
 // ============================================================================
-void test_dedup_reset() {
+TEST(GetBlockDedupRecoveryTest, test_dedup_reset) {
     std::cout << "\nTest 5: Deduplication state can be reset\n";
 
     GetBlockDeduplicator dedup;
@@ -294,13 +278,13 @@ void test_dedup_reset() {
     bool third_success = (payload3 != nullptr && !payload3->empty());
 
     bool passed = first_success && second_suppressed && third_success;
-    print_test_result("Deduplication state resets correctly", passed);
+    EXPECT_TRUE(passed) << "Deduplication state resets correctly";
 }
 
 // ============================================================================
 // Test 6: Three successive GET_BLOCK calls with proper timing
 // ============================================================================
-void test_three_successive_calls() {
+TEST(GetBlockDedupRecoveryTest, test_three_successive_calls) {
     std::cout << "\nTest 6: Three successive GET_BLOCK calls with proper timing\n";
 
     GetBlockDeduplicator dedup;
@@ -330,13 +314,13 @@ void test_three_successive_calls() {
     bool timestamps_advance = (first_tp < second_tp) && (second_tp < third_tp);
 
     bool passed = first_success && second_success && third_success && timestamps_advance;
-    print_test_result("Three successive calls with proper timing", passed);
+    EXPECT_TRUE(passed) << "Three successive calls with proper timing";
 }
 
 // ============================================================================
 // Test 7: Verify packet format
 // ============================================================================
-void test_packet_format() {
+TEST(GetBlockDedupRecoveryTest, test_packet_format) {
     std::cout << "\nTest 7: Verify GET_BLOCK packet format\n";
 
     GetBlockDeduplicator dedup;
@@ -360,31 +344,31 @@ void test_packet_format() {
     }
 
     bool passed = valid_payload && correct_size && correct_header;
-    print_test_result("GET_BLOCK packet format correct", passed);
+    EXPECT_TRUE(passed) << "GET_BLOCK packet format correct";
 }
 
 // ============================================================================
 // Test 8: Degraded forced retry sends within bounded interval
 // ============================================================================
-void test_degraded_forced_retry_sends_within_interval() {
+TEST(GetBlockDedupRecoveryTest, test_degraded_forced_retry_sends_within_interval) {
     std::cout << "\nTest 8: Degraded forced retry sends within bounded interval\n";
     DegradedForcedRetryController controller;
     auto now = std::chrono::steady_clock::now();
 
     bool first_sent = controller.tick(now);
-    print_test_result("Forced retry sends immediately on degraded tick", first_sent);
+    EXPECT_TRUE(first_sent) << "Forced retry sends immediately on degraded tick";
 
     bool second_sent_too_early = controller.tick(now + std::chrono::milliseconds(50));
-    print_test_result("Second retry before interval is suppressed", !second_sent_too_early);
+    EXPECT_TRUE(!second_sent_too_early) << "Second retry before interval is suppressed";
 
     bool third_sent = controller.tick(now + std::chrono::milliseconds(1200));
-    print_test_result("Forced retry sends again after interval", third_sent);
+    EXPECT_TRUE(third_sent) << "Forced retry sends again after interval";
 }
 
 // ============================================================================
 // Test 9: Dedup window cannot starve degraded forced retry lane
 // ============================================================================
-void test_dedup_still_allows_periodic_forced_retry() {
+TEST(GetBlockDedupRecoveryTest, test_dedup_still_allows_periodic_forced_retry) {
     std::cout << "\nTest 9: Dedup still allows periodic forced retry in degraded mode\n";
     DegradedForcedRetryController controller;
     auto now = std::chrono::steady_clock::now();
@@ -393,27 +377,27 @@ void test_dedup_still_allows_periodic_forced_retry() {
     bool immediate_retry = controller.tick(now + std::chrono::milliseconds(10));  // interval gate
     bool second_sent = controller.tick(now + std::chrono::milliseconds(1200));
 
-    print_test_result("First forced send succeeds", first_sent);
-    print_test_result("Immediate retry is suppressed by local interval", !immediate_retry);
-    print_test_result("Periodic forced retry succeeds after interval despite dedup", second_sent);
+    EXPECT_TRUE(first_sent) << "First forced send succeeds";
+    EXPECT_TRUE(!immediate_retry) << "Immediate retry is suppressed by local interval";
+    EXPECT_TRUE(second_sent) << "Periodic forced retry succeeds after interval despite dedup";
 }
 
 // ============================================================================
 // Test 10: request_work empty schedules delayed retry (no starvation)
 // ============================================================================
-void test_request_work_empty_delayed_retry_path() {
+TEST(GetBlockDedupRecoveryTest, test_request_work_empty_delayed_retry_path) {
     std::cout << "\nTest 10: request_work empty triggers delayed retry path\n";
     DegradedForcedRetryController controller;
     controller.request_work_empty_once = true;
     auto now = std::chrono::steady_clock::now();
 
     bool first_sent = controller.tick(now);
-    print_test_result("Initial empty work does not send", !first_sent);
-    print_test_result("Empty work schedules retry token", controller.scheduled_retry_count == 1);
+    EXPECT_TRUE(!first_sent) << "Initial empty work does not send";
+    EXPECT_TRUE(controller.scheduled_retry_count == 1) << "Empty work schedules retry token";
 
     bool retry_sent = controller.tick(now + std::chrono::milliseconds(1200));
-    print_test_result("Delayed retry sends GET_BLOCK", retry_sent);
-    print_test_result("No starvation after empty work transient", controller.sent_count >= 1);
+    EXPECT_TRUE(retry_sent) << "Delayed retry sends GET_BLOCK";
+    EXPECT_TRUE(controller.sent_count >= 1) << "No starvation after empty work transient";
 }
 
 // ============================================================================
@@ -423,7 +407,7 @@ void test_request_work_empty_delayed_retry_path() {
 // changes at the same channel height.  The old dedup timestamp refers to
 // a request for the wrong canonical state and must not suppress the new one.
 // ============================================================================
-void test_tip_anchor_change_resets_dedup_allows_fresh_get_block() {
+TEST(GetBlockDedupRecoveryTest, test_tip_anchor_change_resets_dedup_allows_fresh_get_block) {
     std::cout << "\nTest 11: ⚡ Unified Tip-Anchor Changed — dedup reset allows fresh GET_BLOCK\n";
 
     GetBlockDeduplicator dedup;
@@ -431,12 +415,12 @@ void test_tip_anchor_change_resets_dedup_allows_fresh_get_block() {
     // First GET_BLOCK succeeds (current canonical tip-anchor, epoch 1)
     auto payload1 = dedup.get_work();
     bool first_success = (payload1 != nullptr && !payload1->empty());
-    print_test_result("Initial GET_BLOCK for first tip-anchor succeeds", first_success);
+    EXPECT_TRUE(first_success) << "Initial GET_BLOCK for first tip-anchor succeeds";
 
     // Immediate second request within 100ms is suppressed (same epoch, no tip change)
     auto payload_dup = dedup.get_work();
     bool dup_suppressed = (payload_dup == nullptr);
-    print_test_result("Immediate duplicate within same epoch is suppressed", dup_suppressed);
+    EXPECT_TRUE(dup_suppressed) << "Immediate duplicate within same epoch is suppressed";
 
     // ⚡ Unified Tip-Anchor Changed — simulate recovery epoch reset:
     // reset_get_block_dedup_state() clears the dedup timestamp so the new canonical
@@ -447,7 +431,7 @@ void test_tip_anchor_change_resets_dedup_allows_fresh_get_block() {
     // being within 100ms of the previous request.
     auto payload_recovery = dedup.get_work();
     bool recovery_allowed = (payload_recovery != nullptr && !payload_recovery->empty());
-    print_test_result("GET_BLOCK after tip-anchor change succeeds (not suppressed)", recovery_allowed);
+    EXPECT_TRUE(recovery_allowed) << "GET_BLOCK after tip-anchor change succeeds (not suppressed)";
 }
 
 // ============================================================================
@@ -457,7 +441,7 @@ void test_tip_anchor_change_resets_dedup_allows_fresh_get_block() {
 // subsequent rapid-fire requests in the *new* epoch are correctly deduplicated
 // again (anti-flood preserved) while the first request is allowed through.
 // ============================================================================
-void test_new_recovery_epoch_does_not_inherit_stale_dedup() {
+TEST(GetBlockDedupRecoveryTest, test_new_recovery_epoch_does_not_inherit_stale_dedup) {
     std::cout << "\nTest 12: New recovery epoch — anti-flood preserved within epoch\n";
 
     GetBlockDeduplicator dedup;
@@ -466,12 +450,12 @@ void test_new_recovery_epoch_does_not_inherit_stale_dedup() {
     // Epoch 1: first request succeeds
     auto p1 = dedup.get_work();
     bool epoch1_first_ok = (p1 != nullptr && !p1->empty());
-    print_test_result("Epoch 1 first GET_BLOCK succeeds", epoch1_first_ok);
+    EXPECT_TRUE(epoch1_first_ok) << "Epoch 1 first GET_BLOCK succeeds";
 
     // Epoch 1: second rapid request is suppressed
     auto p2 = dedup.get_work();
     bool epoch1_second_suppressed = (p2 == nullptr);
-    print_test_result("Epoch 1 second rapid request suppressed (anti-flood)", epoch1_second_suppressed);
+    EXPECT_TRUE(epoch1_second_suppressed) << "Epoch 1 second rapid request suppressed (anti-flood)";
 
     // ⚡ Recovery epoch transition (Unified Tip-Anchor Changed or degraded recovery begin)
     dedup.reset_timestamp();  // mirrors Solo::reset_get_block_dedup_state()
@@ -479,16 +463,16 @@ void test_new_recovery_epoch_does_not_inherit_stale_dedup() {
     // Epoch 2: first request after reset succeeds (new canonical state)
     auto p3 = dedup.get_work();
     bool epoch2_first_ok = (p3 != nullptr && !p3->empty());
-    print_test_result("Epoch 2 first GET_BLOCK after reset succeeds", epoch2_first_ok);
+    EXPECT_TRUE(epoch2_first_ok) << "Epoch 2 first GET_BLOCK after reset succeeds";
 
     // Epoch 2: second rapid request within same epoch is still suppressed (anti-flood preserved)
     auto p4 = dedup.get_work();
     bool epoch2_second_suppressed = (p4 == nullptr);
-    print_test_result("Epoch 2 anti-flood still active — rapid duplicate suppressed", epoch2_second_suppressed);
+    EXPECT_TRUE(epoch2_second_suppressed) << "Epoch 2 anti-flood still active — rapid duplicate suppressed";
 
     // Verify call count is as expected
     bool correct_count = (dedup.get_call_count() == 4);
-    print_test_result("All 4 calls tracked regardless of suppression", correct_count);
+    EXPECT_TRUE(correct_count) << "All 4 calls tracked regardless of suppression";
 }
 
 // ============================================================================
@@ -497,7 +481,7 @@ void test_new_recovery_epoch_does_not_inherit_stale_dedup() {
 // Verifies that the dedup reset mechanism does not disable flood protection:
 // within a single recovery epoch, rapid duplicate requests are still suppressed.
 // ============================================================================
-void test_anti_flood_preserved_within_same_epoch() {
+TEST(GetBlockDedupRecoveryTest, test_anti_flood_preserved_within_same_epoch) {
     std::cout << "\nTest 13: Anti-flood preserved for true duplicates (same epoch/state)\n";
 
     GetBlockDeduplicator dedup;
@@ -514,14 +498,14 @@ void test_anti_flood_preserved_within_same_epoch() {
     }
 
     bool flood_blocked = (suppressed == 5);
-    print_test_result("First request in epoch succeeds", first_ok);
-    print_test_result("5 rapid true duplicates are all suppressed", flood_blocked);
+    EXPECT_TRUE(first_ok) << "First request in epoch succeeds";
+    EXPECT_TRUE(flood_blocked) << "5 rapid true duplicates are all suppressed";
 
     // After dedup window, one more request should succeed
     std::this_thread::sleep_for(std::chrono::milliseconds(110));
     auto p_after = dedup.get_work();
     bool after_window_ok = (p_after != nullptr && !p_after->empty());
-    print_test_result("After dedup window, next request succeeds again", after_window_ok);
+    EXPECT_TRUE(after_window_ok) << "After dedup window, next request succeeds again";
 }
 
 // ============================================================================
@@ -559,7 +543,7 @@ struct HeightDeduplicator {
     }
 };
 
-void test_height_dedup_bypassed_when_no_valid_template() {
+TEST(GetBlockDedupRecoveryTest, test_height_dedup_bypassed_when_no_valid_template) {
     std::cout << "\nTest 14: Height-based dedup bypassed when no valid template\n";
 
     HeightDeduplicator dedup;
@@ -567,55 +551,26 @@ void test_height_dedup_bypassed_when_no_valid_template() {
     // First request: no prior heights recorded, always passes.
     dedup.has_valid_template = false;
     bool first_ok = dedup.would_send();
-    print_test_result("Initial GET_BLOCK succeeds (no prior heights)", first_ok);
+    EXPECT_TRUE(first_ok) << "Initial GET_BLOCK succeeds (no prior heights)";
     // Heights are now recorded as (100, 50).
 
     // Same heights, valid template present → guard fires, request suppressed.
     dedup.has_valid_template = true;
     bool suppressed_with_template = !dedup.would_send();
-    print_test_result("Same heights with valid template → suppressed", suppressed_with_template);
+    EXPECT_TRUE(suppressed_with_template) << "Same heights with valid template → suppressed";
 
     // Same heights, NO valid template → guard bypassed, request allowed.
     dedup.has_valid_template = false;
     bool allowed_no_template = dedup.would_send();
-    print_test_result("Same heights without valid template → allowed (bypass)", allowed_no_template);
+    EXPECT_TRUE(allowed_no_template) << "Same heights without valid template → allowed (bypass)";
 
     // Heights advance, valid template present → height change unblocks guard.
     dedup.has_valid_template = true;
     dedup.cur_unified = 101;
     bool allowed_new_height = dedup.would_send();
-    print_test_result("New height with valid template → allowed (height changed)", allowed_new_height);
+    EXPECT_TRUE(allowed_new_height) << "New height with valid template → allowed (height changed)";
 }
 
 // ============================================================================
 // Main Test Runner
 // ============================================================================
-int main() {
-    std::cout << "\n═══════════════════════════════════════════════════════════\n";
-    std::cout << "GET_BLOCK Deduplication Tests\n";
-    std::cout << "═══════════════════════════════════════════════════════════\n";
-
-    test_get_block_dedup_within_window();
-    test_get_block_after_window();
-    test_multiple_rapid_requests();
-    test_dedup_across_callers();
-    test_dedup_reset();
-    test_three_successive_calls();
-    test_packet_format();
-    test_degraded_forced_retry_sends_within_interval();
-    test_dedup_still_allows_periodic_forced_retry();
-    test_request_work_empty_delayed_retry_path();
-    test_tip_anchor_change_resets_dedup_allows_fresh_get_block();
-    test_new_recovery_epoch_does_not_inherit_stale_dedup();
-    test_anti_flood_preserved_within_same_epoch();
-    test_height_dedup_bypassed_when_no_valid_template();
-
-    std::cout << "\n═══════════════════════════════════════════════════════════\n";
-    std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";
-    if (tests_failed > 0) {
-        std::cout << " (" << tests_failed << " failed)";
-    }
-    std::cout << "\n═══════════════════════════════════════════════════════════\n\n";
-
-    return (tests_failed == 0) ? 0 : 1;
-}

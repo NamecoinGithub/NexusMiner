@@ -3,7 +3,6 @@
 #include <spdlog/sinks/null_sink.h>
 
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <future>
 #include <iostream>
@@ -12,6 +11,7 @@
 #include "cpu/worker_hash.hpp"
 
 #include "config/worker_config.hpp"
+#include <gtest/gtest.h>
 
 using namespace nexusminer;
 
@@ -43,7 +43,7 @@ void install_test_logger()
     spdlog::register_logger(std::move(logger));
 }
 
-void test_shutdown_sets_stop_before_locking_worker_mutex()
+TEST(WorkerHashShutdownTest, test_shutdown_sets_stop_before_locking_worker_mutex)
 {
     using namespace std::chrono_literals;
 
@@ -89,10 +89,10 @@ void test_shutdown_sets_stop_before_locking_worker_mutex()
     lock_holder.join();
     shutdown.wait();
 
-    assert(!timed_out);
+    ASSERT_TRUE(!timed_out);
 }
 
-void test_set_block_resets_stop_for_new_work()
+TEST(WorkerHashShutdownTest, test_set_block_resets_stop_for_new_work)
 {
     using namespace std::chrono_literals;
 
@@ -125,17 +125,6 @@ void test_set_block_resets_stop_for_new_work()
         std::this_thread::sleep_for(1ms);
     }
 
-    assert(!cpu::Worker_hash_test_access::load_stop(*worker));
+    ASSERT_TRUE(!cpu::Worker_hash_test_access::load_stop(*worker));
 }
-}
-
-int main()
-{
-    std::cout << "Test: Worker_hash shutdown sets stop before waiting on worker mutex..." << std::endl;
-    test_shutdown_sets_stop_before_locking_worker_mutex();
-    std::cout << "  [PASS] Worker_hash destructor completed without locking shutdown behind m_mtx" << std::endl;
-    std::cout << "Test: Worker_hash set_block clears stop after new work is latched..." << std::endl;
-    test_set_block_resets_stop_for_new_work();
-    std::cout << "  [PASS] Worker_hash resumed mining after set_block signaled new work" << std::endl;
-    return 0;
 }

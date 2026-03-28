@@ -24,7 +24,7 @@ target_link_libraries(node_session
 add_executable(node_session_test
     node_session_test.cpp
     ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp)
-target_link_libraries(node_session_test PRIVATE node_session protocol network config stats LLC spdlog)
+target_link_libraries(node_session_test PRIVATE node_session protocol network config stats LLC spdlog GTest::gtest_main)
 target_include_directories(node_session_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
     ${CMAKE_SOURCE_DIR}/src/LLP
@@ -38,4 +38,4 @@ target_include_directories(node_session_test PRIVATE
 )
 
 # Register test with CTest
-add_test(NAME node_session_test COMMAND $<TARGET_FILE:node_session_test>)
+gtest_discover_tests(node_session_test)

@@ -15,34 +15,18 @@
 #include "protocol/session_ingress_gate.hpp"
 #include "protocol_lane.hpp"
 #include <iostream>
-#include <cassert>
 #include <cstdint>
 #include <vector>
+#include <gtest/gtest.h>
 
 using namespace LLP;
 using namespace nexusminer;
 using namespace nexusminer::protocol;
 
-// Test statistics
-static int tests_run    = 0;
-static int tests_passed = 0;
-static int tests_failed = 0;
-
-void print_test_result(const char* name, bool passed) {
-    tests_run++;
-    if (passed) {
-        tests_passed++;
-        std::cout << "  [PASS] " << name << "\n";
-    } else {
-        tests_failed++;
-        std::cout << "  [FAIL] " << name << "\n";
-    }
-}
-
 // ============================================================================
 // Test 1: SessionStatusFrame serializes and round-trips correctly
 // ============================================================================
-void test_session_status_frame_serialize_roundtrip() {
+TEST(SessionStatusWireTest, test_session_status_frame_serialize_roundtrip) {
     std::cout << "\nTest 1: SessionStatusFrame serializes and round-trips correctly\n";
 
     SessionStatusFrame frame;
@@ -51,34 +35,33 @@ void test_session_status_frame_serialize_roundtrip() {
                        | SessionStatusOpcodes::MINER_WORKERS_ACTIVE;
 
     auto v = frame.Serialize();
-    print_test_result("Serialize() produces 8 bytes", v.size() == 8);
+    EXPECT_TRUE(v.size() == 8) << "Serialize() produces 8 bytes";
 
     // session_id little-endian
-    print_test_result("v[0] == 0x34 (LE LSB of 0xABCD1234)", v[0] == 0x34);
-    print_test_result("v[1] == 0x12",                        v[1] == 0x12);
-    print_test_result("v[2] == 0xCD",                        v[2] == 0xCD);
-    print_test_result("v[3] == 0xAB (LE MSB)",               v[3] == 0xAB);
+    EXPECT_TRUE(v[0] == 0x34) << "v[0] == 0x34 (LE LSB of 0xABCD1234)";
+    EXPECT_TRUE(v[1] == 0x12) << "v[1] == 0x12";
+    EXPECT_TRUE(v[2] == 0xCD) << "v[2] == 0xCD";
+    EXPECT_TRUE(v[3] == 0xAB) << "v[3] == 0xAB (LE MSB)";
 
     // status_flags = MINER_HAS_TEMPLATE|MINER_WORKERS_ACTIVE = 0x06 big-endian
     uint32_t expected_flags = SessionStatusOpcodes::MINER_HAS_TEMPLATE
                             | SessionStatusOpcodes::MINER_WORKERS_ACTIVE;
-    print_test_result("v[4] == 0x00 (BE MSB of flags)", v[4] == 0x00);
-    print_test_result("v[5] == 0x00",                   v[5] == 0x00);
-    print_test_result("v[6] == 0x00",                   v[6] == 0x00);
-    print_test_result("v[7] == flags_lsb",
-                      v[7] == static_cast<uint8_t>(expected_flags & 0xFF));
+    EXPECT_TRUE(v[4] == 0x00) << "v[4] == 0x00 (BE MSB of flags)";
+    EXPECT_TRUE(v[5] == 0x00) << "v[5] == 0x00";
+    EXPECT_TRUE(v[6] == 0x00) << "v[6] == 0x00";
+    EXPECT_TRUE(v[7] == static_cast<uint8_t>(expected_flags & 0xFF)) << "v[7] == flags_lsb";
 
     // Round-trip
     SessionStatusFrame f2;
-    print_test_result("Parse() returns true on 8-byte buffer", f2.Parse(v));
-    print_test_result("Round-trip session_id",   f2.session_id   == frame.session_id);
-    print_test_result("Round-trip status_flags", f2.status_flags == frame.status_flags);
+    EXPECT_TRUE(f2.Parse(v)) << "Parse() returns true on 8-byte buffer";
+    EXPECT_TRUE(f2.session_id   == frame.session_id) << "Round-trip session_id";
+    EXPECT_TRUE(f2.status_flags == frame.status_flags) << "Round-trip status_flags";
 }
 
 // ============================================================================
 // Test 2: SessionStatusAckFrame parses correctly
 // ============================================================================
-void test_session_status_ack_parse() {
+TEST(SessionStatusWireTest, test_session_status_ack_parse) {
     std::cout << "\nTest 2: SessionStatusAckFrame parses correctly\n";
 
     // Manually construct a 16-byte ACK payload
@@ -94,64 +77,54 @@ void test_session_status_ack_parse() {
     };
 
     SessionStatusAckFrame ack;
-    print_test_result("Parse() returns true for 16-byte buffer", ack.Parse(raw));
-    print_test_result("session_id == 0xDEADBEEF",
-                      ack.session_id == 0xDEADBEEFu);
-    print_test_result("lane_health_flags == 0x09",
-                      ack.lane_health_flags == 0x09u);
-    print_test_result("uptime_seconds == 999",
-                      ack.uptime_seconds == 999u);
-    print_test_result("status_echo_flags == 0x02",
-                      ack.status_echo_flags == 0x02u);
+    EXPECT_TRUE(ack.Parse(raw)) << "Parse() returns true for 16-byte buffer";
+    EXPECT_TRUE(ack.session_id == 0xDEADBEEFu) << "session_id == 0xDEADBEEF";
+    EXPECT_TRUE(ack.lane_health_flags == 0x09u) << "lane_health_flags == 0x09";
+    EXPECT_TRUE(ack.uptime_seconds == 999u) << "uptime_seconds == 999";
+    EXPECT_TRUE(ack.status_echo_flags == 0x02u) << "status_echo_flags == 0x02";
 
-    print_test_result("IsPrimaryAlive() == true",    ack.IsPrimaryAlive());
-    print_test_result("IsSecondaryAlive() == false",  !ack.IsSecondaryAlive());
-    print_test_result("IsSimLinkActive() == false",   !ack.IsSimLinkActive());
-    print_test_result("IsAuthenticated() == true",    ack.IsAuthenticated());
+    EXPECT_TRUE(ack.IsPrimaryAlive()) << "IsPrimaryAlive() == true";
+    EXPECT_TRUE(!ack.IsSecondaryAlive()) << "IsSecondaryAlive() == false";
+    EXPECT_TRUE(!ack.IsSimLinkActive()) << "IsSimLinkActive() == false";
+    EXPECT_TRUE(ack.IsAuthenticated()) << "IsAuthenticated() == true";
 }
 
 // ============================================================================
 // Test 3: SessionStatusAckFrame rejects short buffer
 // ============================================================================
-void test_session_status_ack_rejects_short_buffer() {
+TEST(SessionStatusWireTest, test_session_status_ack_rejects_short_buffer) {
     std::cout << "\nTest 3: SessionStatusAckFrame rejects short buffer\n";
 
     SessionStatusAckFrame ack;
     std::vector<uint8_t> short_buf(15, 0x00);
-    print_test_result("Parse() returns false for 15-byte buffer", !ack.Parse(short_buf));
+    EXPECT_TRUE(!ack.Parse(short_buf)) << "Parse() returns false for 15-byte buffer";
 
     std::vector<uint8_t> empty_buf;
-    print_test_result("Parse() returns false for empty buffer", !ack.Parse(empty_buf));
+    EXPECT_TRUE(!ack.Parse(empty_buf)) << "Parse() returns false for empty buffer";
 
     std::vector<uint8_t> ok_buf(16, 0x00);
-    print_test_result("Parse() returns true for 16-byte buffer", ack.Parse(ok_buf));
+    EXPECT_TRUE(ack.Parse(ok_buf)) << "Parse() returns true for 16-byte buffer";
 }
 
 // ============================================================================
 // Test 4: SESSION_STATUS opcode constants match LLL-TAO values
 // ============================================================================
-void test_session_status_opcode_constants() {
+TEST(SessionStatusWireTest, test_session_status_opcode_constants) {
     std::cout << "\nTest 4: SESSION_STATUS opcode constants match LLL-TAO values\n";
 
-    print_test_result("SESSION_STATUS_LEGACY == 219",
-                      SessionStatusOpcodes::SESSION_STATUS_LEGACY == 219u);
-    print_test_result("SESSION_STATUS_ACK_LEGACY == 220",
-                      SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY == 220u);
-    print_test_result("SESSION_STATUS == 0xD0DB",
-                      SessionStatusOpcodes::SESSION_STATUS == 0xD0DBu);
-    print_test_result("SESSION_STATUS_ACK == 0xD0DC",
-                      SessionStatusOpcodes::SESSION_STATUS_ACK == 0xD0DCu);
+    EXPECT_TRUE(SessionStatusOpcodes::SESSION_STATUS_LEGACY == 219u) << "SESSION_STATUS_LEGACY == 219";
+    EXPECT_TRUE(SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY == 220u) << "SESSION_STATUS_ACK_LEGACY == 220";
+    EXPECT_TRUE(SessionStatusOpcodes::SESSION_STATUS == 0xD0DBu) << "SESSION_STATUS == 0xD0DB";
+    EXPECT_TRUE(SessionStatusOpcodes::SESSION_STATUS_ACK == 0xD0DCu) << "SESSION_STATUS_ACK == 0xD0DC";
 
-    print_test_result("REQUEST_PAYLOAD_SIZE == 8",
-                      SessionStatusOpcodes::REQUEST_PAYLOAD_SIZE == 8u);
-    print_test_result("ACK_PAYLOAD_SIZE == 16",
-                      SessionStatusOpcodes::ACK_PAYLOAD_SIZE == 16u);
+    EXPECT_TRUE(SessionStatusOpcodes::REQUEST_PAYLOAD_SIZE == 8u) << "REQUEST_PAYLOAD_SIZE == 8";
+    EXPECT_TRUE(SessionStatusOpcodes::ACK_PAYLOAD_SIZE == 16u) << "ACK_PAYLOAD_SIZE == 16";
 }
 
 // ============================================================================
 // Test 5: SessionStatusAckFrame helper predicates cover all flags
 // ============================================================================
-void test_session_status_ack_predicates() {
+TEST(SessionStatusWireTest, test_session_status_ack_predicates) {
     std::cout << "\nTest 5: SessionStatusAckFrame predicates cover all lane flags\n";
 
     // lane_health_flags = 0x0F (all four bits set)
@@ -160,53 +133,46 @@ void test_session_status_ack_predicates() {
 
     SessionStatusAckFrame ack;
     ack.Parse(raw);
-    print_test_result("All flags set: IsPrimaryAlive()",   ack.IsPrimaryAlive());
-    print_test_result("All flags set: IsSecondaryAlive()", ack.IsSecondaryAlive());
-    print_test_result("All flags set: IsSimLinkActive()",  ack.IsSimLinkActive());
-    print_test_result("All flags set: IsAuthenticated()",  ack.IsAuthenticated());
+    EXPECT_TRUE(ack.IsPrimaryAlive()) << "All flags set: IsPrimaryAlive()";
+    EXPECT_TRUE(ack.IsSecondaryAlive()) << "All flags set: IsSecondaryAlive()";
+    EXPECT_TRUE(ack.IsSimLinkActive()) << "All flags set: IsSimLinkActive()";
+    EXPECT_TRUE(ack.IsAuthenticated()) << "All flags set: IsAuthenticated()";
 
     // lane_health_flags = 0x00 (no flags set)
     raw[7] = 0x00;
     ack.Parse(raw);
-    print_test_result("No flags set: IsPrimaryAlive() == false",   !ack.IsPrimaryAlive());
-    print_test_result("No flags set: IsSecondaryAlive() == false",  !ack.IsSecondaryAlive());
-    print_test_result("No flags set: IsSimLinkActive() == false",   !ack.IsSimLinkActive());
-    print_test_result("No flags set: IsAuthenticated() == false",   !ack.IsAuthenticated());
+    EXPECT_TRUE(!ack.IsPrimaryAlive()) << "No flags set: IsPrimaryAlive() == false";
+    EXPECT_TRUE(!ack.IsSecondaryAlive()) << "No flags set: IsSecondaryAlive() == false";
+    EXPECT_TRUE(!ack.IsSimLinkActive()) << "No flags set: IsSimLinkActive() == false";
+    EXPECT_TRUE(!ack.IsAuthenticated()) << "No flags set: IsAuthenticated() == false";
 }
 
 // ============================================================================
 // Test 6: IsSessionStatusOpcode() helper
 // ============================================================================
-void test_is_session_status_opcode() {
+TEST(SessionStatusWireTest, test_is_session_status_opcode) {
     std::cout << "\nTest 6: IsSessionStatusOpcode() helper\n";
 
-    print_test_result("IsSessionStatusOpcode(SESSION_STATUS) == true",
-                      IsSessionStatusOpcode(SessionStatusOpcodes::SESSION_STATUS));
-    print_test_result("IsSessionStatusOpcode(SESSION_STATUS_ACK) == true",
-                      IsSessionStatusOpcode(SessionStatusOpcodes::SESSION_STATUS_ACK));
-    print_test_result("IsSessionStatusOpcode(0xD0D4) == false",
-                      !IsSessionStatusOpcode(0xD0D4));
-    print_test_result("IsSessionStatusOpcode(0xD100) == false",
-                      !IsSessionStatusOpcode(0xD100));
-    print_test_result("IsSessionStatusOpcode(0x0000) == false",
-                      !IsSessionStatusOpcode(0x0000));
+    EXPECT_TRUE(IsSessionStatusOpcode(SessionStatusOpcodes::SESSION_STATUS)) << "IsSessionStatusOpcode(SESSION_STATUS) == true";
+    EXPECT_TRUE(IsSessionStatusOpcode(SessionStatusOpcodes::SESSION_STATUS_ACK)) << "IsSessionStatusOpcode(SESSION_STATUS_ACK) == true";
+    EXPECT_TRUE(!IsSessionStatusOpcode(0xD0D4)) << "IsSessionStatusOpcode(0xD0D4) == false";
+    EXPECT_TRUE(!IsSessionStatusOpcode(0xD100)) << "IsSessionStatusOpcode(0xD100) == false";
+    EXPECT_TRUE(!IsSessionStatusOpcode(0x0000)) << "IsSessionStatusOpcode(0x0000) == false";
 }
 
 // ============================================================================
 // Test 7: SessionStatusFrame PAYLOAD_SIZE constant
 // ============================================================================
-void test_session_status_frame_payload_size() {
+TEST(SessionStatusWireTest, test_session_status_frame_payload_size) {
     std::cout << "\nTest 7: SessionStatusFrame PAYLOAD_SIZE constant\n";
-    print_test_result("SessionStatusFrame::PAYLOAD_SIZE == 8",
-                      SessionStatusFrame::PAYLOAD_SIZE == 8u);
-    print_test_result("SessionStatusAckFrame::PAYLOAD_SIZE == 16",
-                      SessionStatusAckFrame::PAYLOAD_SIZE == 16u);
+    EXPECT_TRUE(SessionStatusFrame::PAYLOAD_SIZE == 8u) << "SessionStatusFrame::PAYLOAD_SIZE == 8";
+    EXPECT_TRUE(SessionStatusAckFrame::PAYLOAD_SIZE == 16u) << "SessionStatusAckFrame::PAYLOAD_SIZE == 16";
 }
 
 // ============================================================================
 // Test 8: shared ingress gate rejects stale owner generation
 // ============================================================================
-void test_session_ingress_gate_rejects_stale_owner_generation() {
+TEST(SessionStatusWireTest, test_session_ingress_gate_rejects_stale_owner_generation) {
     std::cout << "\nTest 8: Session ingress gate rejects stale owner generation\n";
 
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
@@ -223,17 +189,16 @@ void test_session_ingress_gate_rejects_stale_owner_generation() {
         0x22222222u         // owner_session_id
     });
 
-    print_test_result("stale owner epoch is rejected", !decision.allow_processing);
-    print_test_result("stale owner epoch is marked stale", decision.drop_as_stale);
-    print_test_result("stale owner epoch does not force reauth", !decision.force_reauth);
-    print_test_result("stale owner epoch reason mentions ownership epoch",
-                      decision.reason.find("ownership epoch") != std::string::npos);
+    EXPECT_TRUE(!decision.allow_processing) << "stale owner epoch is rejected";
+    EXPECT_TRUE(decision.drop_as_stale) << "stale owner epoch is marked stale";
+    EXPECT_TRUE(!decision.force_reauth) << "stale owner epoch does not force reauth";
+    EXPECT_TRUE(decision.reason.find("ownership epoch") != std::string::npos) << "stale owner epoch reason mentions ownership epoch";
 }
 
 // ============================================================================
 // Test 9: shared ingress gate — crypto readiness check removed (no-op)
 // ============================================================================
-void test_session_ingress_gate_requires_crypto_context_when_requested() {
+TEST(SessionStatusWireTest, test_session_ingress_gate_requires_crypto_context_when_requested) {
     std::cout << "\nTest 9: Session ingress gate — crypto readiness check removed (no-op)\n";
 
     // require_crypto_ready is removed from the new design.
@@ -253,15 +218,15 @@ void test_session_ingress_gate_requires_crypto_context_when_requested() {
     });
 
     // Feature removed: crypto check no longer blocks processing
-    print_test_result("crypto check removed: session passes", decision.allow_processing);
-    print_test_result("crypto check removed: no force reauth", !decision.force_reauth);
-    print_test_result("crypto check removed: reason is set", !decision.reason.empty());
+    EXPECT_TRUE(decision.allow_processing) << "crypto check removed: session passes";
+    EXPECT_TRUE(!decision.force_reauth) << "crypto check removed: no force reauth";
+    EXPECT_TRUE(!decision.reason.empty()) << "crypto check removed: reason is set";
 }
 
 // ============================================================================
 // Test 10: shared ingress gate rejects packet session id mismatches
 // ============================================================================
-void test_session_ingress_gate_rejects_stale_packet_session_id() {
+TEST(SessionStatusWireTest, test_session_ingress_gate_rejects_stale_packet_session_id) {
     std::cout << "\nTest 10: Session ingress gate rejects stale packet session ids\n";
 
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
@@ -278,17 +243,16 @@ void test_session_ingress_gate_rejects_stale_packet_session_id() {
         0x11112222u         // owner_session_id
     });
 
-    print_test_result("stale packet session ID is rejected", !decision.allow_processing);
-    print_test_result("stale packet session ID is marked stale", decision.drop_as_stale);
-    print_test_result("stale packet session ID marks session degraded", decision.mark_degraded);
-    print_test_result("stale packet session ID reason mentions session ID",
-                      decision.reason.find("session id") != std::string::npos);
+    EXPECT_TRUE(!decision.allow_processing) << "stale packet session ID is rejected";
+    EXPECT_TRUE(decision.drop_as_stale) << "stale packet session ID is marked stale";
+    EXPECT_TRUE(decision.mark_degraded) << "stale packet session ID marks session degraded";
+    EXPECT_TRUE(decision.reason.find("session id") != std::string::npos) << "stale packet session ID reason mentions session ID";
 }
 
 // ============================================================================
 // Test 11: shared ingress gate rejects owner/session mismatches
 // ============================================================================
-void test_session_ingress_gate_rejects_stale_owner_session_id() {
+TEST(SessionStatusWireTest, test_session_ingress_gate_rejects_stale_owner_session_id) {
     std::cout << "\nTest 11: Session ingress gate rejects stale owner session ids\n";
 
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
@@ -305,16 +269,15 @@ void test_session_ingress_gate_rejects_stale_owner_session_id() {
         0xA0B0C0D0u         // owner_session_id (mismatches)
     });
 
-    print_test_result("stale owner session ID is rejected", !decision.allow_processing);
-    print_test_result("stale owner session ID is marked stale", decision.drop_as_stale);
-    print_test_result("stale owner session ID reason mentions owner session ID",
-                      decision.reason.find("ownership session id") != std::string::npos);
+    EXPECT_TRUE(!decision.allow_processing) << "stale owner session ID is rejected";
+    EXPECT_TRUE(decision.drop_as_stale) << "stale owner session ID is marked stale";
+    EXPECT_TRUE(decision.reason.find("ownership session id") != std::string::npos) << "stale owner session ID reason mentions owner session ID";
 }
 
 // ============================================================================
 // Test 12: shared ingress gate enforces lane readiness
 // ============================================================================
-void test_session_ingress_gate_rejects_lane_mismatch() {
+TEST(SessionStatusWireTest, test_session_ingress_gate_rejects_lane_mismatch) {
     std::cout << "\nTest 12: Session ingress gate rejects lane mismatches\n";
 
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
@@ -331,17 +294,16 @@ void test_session_ingress_gate_rejects_lane_mismatch() {
         0x0A0B0C0Du         // owner_session_id
     });
 
-    print_test_result("lane mismatch is rejected", !decision.allow_processing);
-    print_test_result("lane mismatch is not treated as stale", !decision.drop_as_stale);
-    print_test_result("lane mismatch marks session degraded", decision.mark_degraded);
-    print_test_result("lane mismatch reason mentions lane",
-                      decision.reason.find("lane") != std::string::npos);
+    EXPECT_TRUE(!decision.allow_processing) << "lane mismatch is rejected";
+    EXPECT_TRUE(!decision.drop_as_stale) << "lane mismatch is not treated as stale";
+    EXPECT_TRUE(decision.mark_degraded) << "lane mismatch marks session degraded";
+    EXPECT_TRUE(decision.reason.find("lane") != std::string::npos) << "lane mismatch reason mentions lane";
 }
 
 // ============================================================================
 // Test 13: shared ingress gate forces reauth when auth is required
 // ============================================================================
-void test_session_ingress_gate_requires_authenticated_session() {
+TEST(SessionStatusWireTest, test_session_ingress_gate_requires_authenticated_session) {
     std::cout << "\nTest 13: Session ingress gate forces re-auth for unauthenticated sessions\n";
 
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
@@ -358,45 +320,12 @@ void test_session_ingress_gate_requires_authenticated_session() {
         0x55667788u         // owner_session_id
     });
 
-    print_test_result("unauthenticated authoritative session is rejected", !decision.allow_processing);
-    print_test_result("unauthenticated authoritative session forces reauth", decision.force_reauth);
-    print_test_result("unauthenticated authoritative session marks session degraded",
-                      decision.mark_degraded);
-    print_test_result("unauthenticated authoritative session reason mentions authentication",
-                      decision.reason.find("not authenticated") != std::string::npos);
+    EXPECT_TRUE(!decision.allow_processing) << "unauthenticated authoritative session is rejected";
+    EXPECT_TRUE(decision.force_reauth) << "unauthenticated authoritative session forces reauth";
+    EXPECT_TRUE(decision.mark_degraded) << "unauthenticated authoritative session marks session degraded";
+    EXPECT_TRUE(decision.reason.find("not authenticated") != std::string::npos) << "unauthenticated authoritative session reason mentions authentication";
 }
 
 // ============================================================================
 // main
 // ============================================================================
-int main() {
-    std::cout << "========================================\n";
-    std::cout << "SESSION_STATUS Wire Protocol Unit Tests\n";
-    std::cout << "========================================\n";
-
-    test_session_status_frame_serialize_roundtrip();
-    test_session_status_ack_parse();
-    test_session_status_ack_rejects_short_buffer();
-    test_session_status_opcode_constants();
-    test_session_status_ack_predicates();
-    test_is_session_status_opcode();
-    test_session_status_frame_payload_size();
-    test_session_ingress_gate_rejects_stale_owner_generation();
-    test_session_ingress_gate_requires_crypto_context_when_requested();
-    test_session_ingress_gate_rejects_stale_packet_session_id();
-    test_session_ingress_gate_rejects_stale_owner_session_id();
-    test_session_ingress_gate_rejects_lane_mismatch();
-    test_session_ingress_gate_requires_authenticated_session();
-
-    std::cout << "\n========================================\n";
-    std::cout << "Test Summary\n";
-    std::cout << "========================================\n";
-    std::cout << "Tests run:    " << tests_run    << "\n";
-    std::cout << "Tests passed: " << tests_passed << "\n";
-    std::cout << "Tests failed: " << tests_failed << "\n";
-    std::cout << "Success rate: "
-              << (tests_run > 0 ? (100 * tests_passed / tests_run) : 0) << "%\n";
-    std::cout << "========================================\n";
-
-    return tests_failed > 0 ? 1 : 0;
-}

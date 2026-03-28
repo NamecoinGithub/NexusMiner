@@ -8,23 +8,13 @@
 #include <stdexcept>
 #include <sstream>
 #include <vector>
+#include <gtest/gtest.h>
 
 using boost_uint1024_t = boost::multiprecision::uint1024_t;
 
 namespace
 {
 constexpr std::size_t kBoostUint1kLimbBytes = sizeof(boost::multiprecision::limb_type);
-
-int tests_run = 0;
-int tests_failed = 0;
-
-void print_result(const char* name, bool passed)
-{
-    ++tests_run;
-    std::cout << (passed ? "  [PASS] " : "  [FAIL] ") << name << '\n';
-    if (!passed)
-        ++tests_failed;
-}
 
 uint1024_t hex_roundtrip_reference(const boost_uint1024_t& value)
 {
@@ -47,7 +37,7 @@ uint1024_t optimized_conversion(const boost_uint1024_t& value)
     return result;
 }
 
-void test_optimized_conversion_matches_hex_roundtrip()
+TEST(PrimeValidationTest, test_optimized_conversion_matches_hex_roundtrip)
 {
     const std::vector<boost_uint1024_t> samples = {
         0,
@@ -71,22 +61,7 @@ void test_optimized_conversion_matches_hex_roundtrip()
         }
     }
 
-    print_result("Optimized uint1024 conversion matches legacy hex round-trip", matches);
+    EXPECT_TRUE(matches) << "Optimized uint1024 conversion matches legacy hex round-trip";
 }
 
-}
-
-int main()
-{
-    test_optimized_conversion_matches_hex_roundtrip();
-
-    if (tests_failed != 0)
-    {
-        std::cout << "\nprime_validation_test: " << tests_failed << " of " << tests_run
-                  << " test(s) failed.\n";
-        return 1;
-    }
-
-    std::cout << "\nprime_validation_test: all " << tests_run << " test(s) passed.\n";
-    return 0;
 }

@@ -6,6 +6,7 @@
 
 #include "protocol/protocol_constants.hpp"
 #include "protocol/session_status_policy.hpp"
+#include <gtest/gtest.h>
 
 enum class AuthState {
     NOT_AUTHENTICATED,
@@ -51,32 +52,13 @@ bool should_reject_auth_challenge(size_t packet_size, uint16_t nonce_len)
     return packet_size < static_cast<size_t>(2 + nonce_len);
 }
 
-int tests_run = 0;
-int tests_passed = 0;
-int tests_failed = 0;
-
-void print_test_result(const char* name, bool passed)
-{
-    ++tests_run;
-    if (passed) {
-        ++tests_passed;
-        std::cout << "  [PASS] " << name << '\n';
-    } else {
-        ++tests_failed;
-        std::cout << "  [FAIL] " << name << '\n';
-    }
-}
-
-void test_zero_length_auth_challenge_is_rejected()
+TEST(SoloAuthResyncTest, test_zero_length_auth_challenge_is_rejected)
 {
     std::cout << "\nTest 0: zero-length MINER_AUTH_CHALLENGE is rejected\n";
 
-    print_test_result("Packet with only nonce_len field is rejected when nonce_len == 0",
-                      should_reject_auth_challenge(2, 0));
-    print_test_result("Valid non-empty nonce is not rejected by zero-length guard",
-                      !should_reject_auth_challenge(6, 4));
-    print_test_result("Incomplete non-empty nonce is still rejected",
-                      should_reject_auth_challenge(3, 4));
+    EXPECT_TRUE(should_reject_auth_challenge(2, 0)) << "Packet with only nonce_len field is rejected when nonce_len == 0";
+    EXPECT_TRUE(!should_reject_auth_challenge(6, 4)) << "Valid non-empty nonce is not rejected by zero-length guard";
+    EXPECT_TRUE(should_reject_auth_challenge(3, 4)) << "Incomplete non-empty nonce is still rejected";
 }
 
 struct SimulatedSoloAuthGuard
@@ -411,7 +393,7 @@ struct SimulatedSessionStatusAckHandler
     }
 };
 
-void test_guard_requires_both_sources_to_be_unauthenticated()
+TEST(SoloAuthResyncTest, test_guard_requires_both_sources_to_be_unauthenticated)
 {
     std::cout << "\nTest 1: guard only re-auths when both auth sources are false\n";
 
@@ -422,12 +404,12 @@ void test_guard_requires_both_sources_to_be_unauthenticated()
 
     bool continued = guard.should_continue_after_guard();
 
-    print_test_result("Guard blocks processing when both sources are unauthenticated", !continued);
-    print_test_result("Guard requests exactly one re-auth", guard.reauth_requests == 1);
-    print_test_result("Local auth flag remains false", !guard.m_authenticated);
+    EXPECT_TRUE(!continued) << "Guard blocks processing when both sources are unauthenticated";
+    EXPECT_TRUE(guard.reauth_requests == 1) << "Guard requests exactly one re-auth";
+    EXPECT_TRUE(!guard.m_authenticated) << "Local auth flag remains false";
 }
 
-void test_guard_resyncs_stale_local_flag_from_session_context()
+TEST(SoloAuthResyncTest, test_guard_resyncs_stale_local_flag_from_session_context)
 {
     std::cout << "\nTest 2: guard resyncs stale local auth from session context\n";
 
@@ -440,24 +422,18 @@ void test_guard_resyncs_stale_local_flag_from_session_context()
 
     bool continued = guard.should_continue_after_guard();
 
-    print_test_result("Guard continues processing when session context is authenticated", continued);
-    print_test_result("Local auth flag is resynced to true", guard.m_authenticated);
-    print_test_result("Auth enum is resynced to AUTHENTICATED",
-                      guard.m_auth_state == AuthState::AUTHENTICATED);
-    print_test_result("In-flight timestamp is cleared on resync",
-                      guard.m_auth_in_flight_since == std::chrono::steady_clock::time_point{});
-    print_test_result("Resync pulls session ID from authoritative container",
-                      guard.m_session_id == 0xD0D0A11E);
-    print_test_result("Resync pulls session epoch from authoritative container",
-                      guard.m_session_epoch == 42);
-    print_test_result("Resync rebinds template interface session ID",
-                      guard.template_interface_session_id == 0xD0D0A11E);
-    print_test_result("Resync rebinds template interface session epoch",
-                      guard.template_interface_session_epoch == 42);
-    print_test_result("Re-auth is not requested during resync", guard.reauth_requests == 0);
+    EXPECT_TRUE(continued) << "Guard continues processing when session context is authenticated";
+    EXPECT_TRUE(guard.m_authenticated) << "Local auth flag is resynced to true";
+    EXPECT_TRUE(guard.m_auth_state == AuthState::AUTHENTICATED) << "Auth enum is resynced to AUTHENTICATED";
+    EXPECT_TRUE(guard.m_auth_in_flight_since == std::chrono::steady_clock::time_point{}) << "In-flight timestamp is cleared on resync";
+    EXPECT_TRUE(guard.m_session_id == 0xD0D0A11E) << "Resync pulls session ID from authoritative container";
+    EXPECT_TRUE(guard.m_session_epoch == 42) << "Resync pulls session epoch from authoritative container";
+    EXPECT_TRUE(guard.template_interface_session_id == 0xD0D0A11E) << "Resync rebinds template interface session ID";
+    EXPECT_TRUE(guard.template_interface_session_epoch == 42) << "Resync rebinds template interface session epoch";
+    EXPECT_TRUE(guard.reauth_requests == 0) << "Re-auth is not requested during resync";
 }
 
-void test_auth_result_success_sets_authenticated_state()
+TEST(SoloAuthResyncTest, test_auth_result_success_sets_authenticated_state)
 {
     std::cout << "\nTest 3: successful auth result finalizes state and rebinds template interface\n";
 
@@ -468,20 +444,16 @@ void test_auth_result_success_sets_authenticated_state()
 
     guard.handle_auth_result(true, 0x1234ABCD, 77);
 
-    print_test_result("Auth success sets local flag", guard.m_authenticated);
-    print_test_result("Auth success sets session ID", guard.m_session_id == 0x1234ABCD);
-    print_test_result("Auth success sets session epoch", guard.m_session_epoch == 77);
-    print_test_result("Auth success sets enum to AUTHENTICATED",
-                      guard.m_auth_state == AuthState::AUTHENTICATED);
-    print_test_result("Auth success clears in-flight timestamp",
-                      guard.m_auth_in_flight_since == std::chrono::steady_clock::time_point{});
-    print_test_result("Auth success immediately rebinds template session ID",
-                      guard.template_interface_session_id == 0x1234ABCD);
-    print_test_result("Auth success immediately rebinds template session epoch",
-                      guard.template_interface_session_epoch == 77);
+    EXPECT_TRUE(guard.m_authenticated) << "Auth success sets local flag";
+    EXPECT_TRUE(guard.m_session_id == 0x1234ABCD) << "Auth success sets session ID";
+    EXPECT_TRUE(guard.m_session_epoch == 77) << "Auth success sets session epoch";
+    EXPECT_TRUE(guard.m_auth_state == AuthState::AUTHENTICATED) << "Auth success sets enum to AUTHENTICATED";
+    EXPECT_TRUE(guard.m_auth_in_flight_since == std::chrono::steady_clock::time_point{}) << "Auth success clears in-flight timestamp";
+    EXPECT_TRUE(guard.template_interface_session_id == 0x1234ABCD) << "Auth success immediately rebinds template session ID";
+    EXPECT_TRUE(guard.template_interface_session_epoch == 77) << "Auth success immediately rebinds template session epoch";
 }
 
-void test_auth_result_failure_clears_in_flight_state()
+TEST(SoloAuthResyncTest, test_auth_result_failure_clears_in_flight_state)
 {
     std::cout << "\nTest 4: failed auth result clears local in-flight state\n";
 
@@ -492,14 +464,12 @@ void test_auth_result_failure_clears_in_flight_state()
 
     guard.handle_auth_result(false);
 
-    print_test_result("Auth failure clears local flag", !guard.m_authenticated);
-    print_test_result("Auth failure returns enum to NOT_AUTHENTICATED",
-                      guard.m_auth_state == AuthState::NOT_AUTHENTICATED);
-    print_test_result("Auth failure clears in-flight timestamp",
-                      guard.m_auth_in_flight_since == std::chrono::steady_clock::time_point{});
+    EXPECT_TRUE(!guard.m_authenticated) << "Auth failure clears local flag";
+    EXPECT_TRUE(guard.m_auth_state == AuthState::NOT_AUTHENTICATED) << "Auth failure returns enum to NOT_AUTHENTICATED";
+    EXPECT_TRUE(guard.m_auth_in_flight_since == std::chrono::steady_clock::time_point{}) << "Auth failure clears in-flight timestamp";
 }
 
-void test_cached_session_state_resyncs_from_authoritative_container()
+TEST(SoloAuthResyncTest, test_cached_session_state_resyncs_from_authoritative_container)
 {
     std::cout << "\nTest 5: cached local session state resyncs from authoritative container\n";
 
@@ -511,19 +481,16 @@ void test_cached_session_state_resyncs_from_authoritative_container()
 
     guard.refresh_cached_session_state();
 
-    print_test_result("Auth flag resynced from authoritative container", guard.m_authenticated);
-    print_test_result("Session ID resynced from authoritative container", guard.m_session_id == 0x12345678);
-    print_test_result("Session epoch resynced from authoritative container", guard.m_session_epoch == 99);
-    print_test_result("Reward binding resynced from authoritative container", guard.m_reward_bound);
-    print_test_result("ChaCha20 key resynced from authoritative container",
-                      guard.m_chacha_key == std::vector<unsigned char>(32, 0xAB));
-    print_test_result("Resync updates template interface session ID",
-                      guard.template_interface_session_id == 0x12345678);
-    print_test_result("Resync updates template interface session epoch",
-                      guard.template_interface_session_epoch == 99);
+    EXPECT_TRUE(guard.m_authenticated) << "Auth flag resynced from authoritative container";
+    EXPECT_TRUE(guard.m_session_id == 0x12345678) << "Session ID resynced from authoritative container";
+    EXPECT_TRUE(guard.m_session_epoch == 99) << "Session epoch resynced from authoritative container";
+    EXPECT_TRUE(guard.m_reward_bound) << "Reward binding resynced from authoritative container";
+    EXPECT_TRUE(guard.m_chacha_key == std::vector<unsigned char>(32, 0xAB)) << "ChaCha20 key resynced from authoritative container";
+    EXPECT_TRUE(guard.template_interface_session_id == 0x12345678) << "Resync updates template interface session ID";
+    EXPECT_TRUE(guard.template_interface_session_epoch == 99) << "Resync updates template interface session epoch";
 }
 
-void test_reward_send_validates_before_packet_build()
+TEST(SoloAuthResyncTest, test_reward_send_validates_before_packet_build)
 {
     std::cout << "\nTest 6: reward send guard runs before packet build\n";
 
@@ -532,11 +499,11 @@ void test_reward_send_validates_before_packet_build()
 
     const bool sent = guard.send_set_reward();
 
-    print_test_result("Reward send fails when authoritative session is invalid", !sent);
-    print_test_result("Reward send does not build a packet before validation", guard.packet_build_requests == 0);
+    EXPECT_TRUE(!sent) << "Reward send fails when authoritative session is invalid";
+    EXPECT_TRUE(guard.packet_build_requests == 0) << "Reward send does not build a packet before validation";
 }
 
-void test_reward_send_requires_authoritative_reward_key_after_auth()
+TEST(SoloAuthResyncTest, test_reward_send_requires_authoritative_reward_key_after_auth)
 {
     std::cout << "\nTest 6b: reward send requires authoritative reward key after auth\n";
 
@@ -549,12 +516,11 @@ void test_reward_send_requires_authoritative_reward_key_after_auth()
 
     const bool sent = guard.send_set_reward();
 
-    print_test_result("Reward send fails when authoritative reward key is missing after auth", !sent);
-    print_test_result("Reward send still does not build a packet without authoritative reward key",
-                      guard.packet_build_requests == 0);
+    EXPECT_TRUE(!sent) << "Reward send fails when authoritative reward key is missing after auth";
+    EXPECT_TRUE(guard.packet_build_requests == 0) << "Reward send still does not build a packet without authoritative reward key";
 }
 
-void test_process_messages_entry_resyncs_cached_reward_binding()
+TEST(SoloAuthResyncTest, test_process_messages_entry_resyncs_cached_reward_binding)
 {
     std::cout << "\nTest 7: process_messages entry resyncs cached reward binding before handlers run\n";
 
@@ -566,19 +532,16 @@ void test_process_messages_entry_resyncs_cached_reward_binding()
 
     guard.process_messages_entry();
 
-    print_test_result("Process entry resyncs auth flag", guard.m_authenticated);
-    print_test_result("Process entry resyncs session ID", guard.m_session_id == 0xABCDEF01);
-    print_test_result("Process entry resyncs session epoch", guard.m_session_epoch == 123);
-    print_test_result("Process entry resyncs reward binding", guard.m_reward_bound);
-    print_test_result("Process entry resyncs ChaCha20 key",
-                      guard.m_chacha_key == std::vector<unsigned char>(32, 0xCD));
-    print_test_result("Process entry rebinds template interface session ID",
-                      guard.template_interface_session_id == 0xABCDEF01);
-    print_test_result("Process entry rebinds template interface session epoch",
-                      guard.template_interface_session_epoch == 123);
+    EXPECT_TRUE(guard.m_authenticated) << "Process entry resyncs auth flag";
+    EXPECT_TRUE(guard.m_session_id == 0xABCDEF01) << "Process entry resyncs session ID";
+    EXPECT_TRUE(guard.m_session_epoch == 123) << "Process entry resyncs session epoch";
+    EXPECT_TRUE(guard.m_reward_bound) << "Process entry resyncs reward binding";
+    EXPECT_TRUE(guard.m_chacha_key == std::vector<unsigned char>(32, 0xCD)) << "Process entry resyncs ChaCha20 key";
+    EXPECT_TRUE(guard.template_interface_session_id == 0xABCDEF01) << "Process entry rebinds template interface session ID";
+    EXPECT_TRUE(guard.template_interface_session_epoch == 123) << "Process entry rebinds template interface session epoch";
 }
 
-void test_epoch_resync_clears_generation_bound_runtime_state()
+TEST(SoloAuthResyncTest, test_epoch_resync_clears_generation_bound_runtime_state)
 {
     std::cout << "\nTest 7b: epoch resync clears generation-bound template and tip state\n";
 
@@ -593,18 +556,14 @@ void test_epoch_resync_clears_generation_bound_runtime_state()
 
     guard.refresh_cached_session_state();
 
-    print_test_result("Epoch resync advances the local epoch", guard.m_session_epoch == 56);
-    print_test_result("Epoch resync clears generation-bound template state",
-                      !guard.generation_bound_template_live);
-    print_test_result("Epoch resync clears cached tip anchor",
-                      guard.last_known_tip_stamp == 0);
-    print_test_result("Epoch resync clears keepalive prevhash canary",
-                      guard.last_keepalive_prevhash_lo32 == 0);
-    print_test_result("Epoch resync invalidates stale submit snapshot",
-                      !guard.m_last_submitted_valid);
+    EXPECT_TRUE(guard.m_session_epoch == 56) << "Epoch resync advances the local epoch";
+    EXPECT_TRUE(!guard.generation_bound_template_live) << "Epoch resync clears generation-bound template state";
+    EXPECT_TRUE(guard.last_known_tip_stamp == 0) << "Epoch resync clears cached tip anchor";
+    EXPECT_TRUE(guard.last_keepalive_prevhash_lo32 == 0) << "Epoch resync clears keepalive prevhash canary";
+    EXPECT_TRUE(!guard.m_last_submitted_valid) << "Epoch resync invalidates stale submit snapshot";
 }
 
-void test_public_auth_accessors_prefer_authoritative_session_state()
+TEST(SoloAuthResyncTest, test_public_auth_accessors_prefer_authoritative_session_state)
 {
     std::cout << "\nTest 8: public accessors prefer authoritative session state over stale local cache\n";
 
@@ -614,13 +573,11 @@ void test_public_auth_accessors_prefer_authoritative_session_state()
     guard.session_context_authenticated = true;
     guard.authoritative = {true, 0xA1B2C3D4, 17, true, {}};
 
-    print_test_result("is_authenticated() follows authoritative session context",
-                      guard.is_authenticated());
-    print_test_result("is_reward_bound() follows authoritative reward binding",
-                      guard.is_reward_bound());
+    EXPECT_TRUE(guard.is_authenticated()) << "is_authenticated() follows authoritative session context";
+    EXPECT_TRUE(guard.is_reward_bound()) << "is_reward_bound() follows authoritative reward binding";
 }
 
-void test_push_during_handshake_is_queued_until_auth_completes()
+TEST(SoloAuthResyncTest, test_push_during_handshake_is_queued_until_auth_completes)
 {
     std::cout << "\nTest 9: push during auth handshake queues a post-auth GET_BLOCK\n";
 
@@ -631,20 +588,20 @@ void test_push_during_handshake_is_queued_until_auth_completes()
 
     const bool push_handled_immediately = guard.on_push_notification();
 
-    print_test_result("Push during handshake does not request GET_BLOCK immediately", !push_handled_immediately);
-    print_test_result("Push during handshake is queued for post-auth replay", guard.m_pending_push_after_auth);
-    print_test_result("Push during handshake does not trigger duplicate re-auth", guard.reauth_requests == 0);
-    print_test_result("Push during handshake does not send GET_BLOCK early", guard.get_block_requests == 0);
+    EXPECT_TRUE(!push_handled_immediately) << "Push during handshake does not request GET_BLOCK immediately";
+    EXPECT_TRUE(guard.m_pending_push_after_auth) << "Push during handshake is queued for post-auth replay";
+    EXPECT_TRUE(guard.reauth_requests == 0) << "Push during handshake does not trigger duplicate re-auth";
+    EXPECT_TRUE(guard.get_block_requests == 0) << "Push during handshake does not send GET_BLOCK early";
 
     guard.handle_auth_result(true);
     const bool flushed = guard.flush_pending_push_after_auth();
 
-    print_test_result("Queued push flushes immediately after auth completes", flushed);
-    print_test_result("Queued push sends exactly one GET_BLOCK after auth", guard.get_block_requests == 1);
-    print_test_result("Queued push is cleared after the post-auth GET_BLOCK", !guard.m_pending_push_after_auth);
+    EXPECT_TRUE(flushed) << "Queued push flushes immediately after auth completes";
+    EXPECT_TRUE(guard.get_block_requests == 1) << "Queued push sends exactly one GET_BLOCK after auth";
+    EXPECT_TRUE(!guard.m_pending_push_after_auth) << "Queued push is cleared after the post-auth GET_BLOCK";
 }
 
-void test_push_during_handshake_uses_preserved_lifeline()
+TEST(SoloAuthResyncTest, test_push_during_handshake_uses_preserved_lifeline)
 {
     std::cout << "\nTest 9b: push during speculative re-auth uses preserved mining lifeline\n";
 
@@ -657,13 +614,13 @@ void test_push_during_handshake_uses_preserved_lifeline()
 
     const bool push_handled_immediately = guard.on_push_notification();
 
-    print_test_result("Push lifeline accepts ingress during auth-in-flight", push_handled_immediately);
-    print_test_result("Push lifeline does not queue post-auth replay", !guard.m_pending_push_after_auth);
-    print_test_result("Push lifeline sends GET_BLOCK immediately", guard.get_block_requests == 1);
-    print_test_result("Push lifeline avoids duplicate re-auth", guard.reauth_requests == 0);
+    EXPECT_TRUE(push_handled_immediately) << "Push lifeline accepts ingress during auth-in-flight";
+    EXPECT_TRUE(!guard.m_pending_push_after_auth) << "Push lifeline does not queue post-auth replay";
+    EXPECT_TRUE(guard.get_block_requests == 1) << "Push lifeline sends GET_BLOCK immediately";
+    EXPECT_TRUE(guard.reauth_requests == 0) << "Push lifeline avoids duplicate re-auth";
 }
 
-void test_session_expired_accepts_authoritative_session_id_when_local_cache_is_stale()
+TEST(SoloAuthResyncTest, test_session_expired_accepts_authoritative_session_id_when_local_cache_is_stale)
 {
     std::cout << "\nTest 10: SESSION_EXPIRED is validated against authoritative session state\n";
 
@@ -677,14 +634,14 @@ void test_session_expired_accepts_authoritative_session_id_when_local_cache_is_s
 
     const bool handled = guard.handle_session_expired(0xCAFEBABE);
 
-    print_test_result("SESSION_EXPIRED accepts authoritative session ID despite stale local cache", handled);
-    print_test_result("Authoritative session is cleared after expiry handling", !guard.authoritative.authenticated);
-    print_test_result("Session context auth is cleared after expiry handling", !guard.session_context_authenticated);
-    print_test_result("Local session ID cache is cleared after expiry handling", guard.m_session_id == 0);
-    print_test_result("Local reward binding cache is cleared after expiry handling", !guard.m_reward_bound);
+    EXPECT_TRUE(handled) << "SESSION_EXPIRED accepts authoritative session ID despite stale local cache";
+    EXPECT_TRUE(!guard.authoritative.authenticated) << "Authoritative session is cleared after expiry handling";
+    EXPECT_TRUE(!guard.session_context_authenticated) << "Session context auth is cleared after expiry handling";
+    EXPECT_TRUE(guard.m_session_id == 0) << "Local session ID cache is cleared after expiry handling";
+    EXPECT_TRUE(!guard.m_reward_bound) << "Local reward binding cache is cleared after expiry handling";
 }
 
-void test_push_triggered_reauth_queues_followup_get_block()
+TEST(SoloAuthResyncTest, test_push_triggered_reauth_queues_followup_get_block)
 {
     std::cout << "\nTest 9: push-triggered re-auth also queues the recovery GET_BLOCK\n";
 
@@ -695,18 +652,18 @@ void test_push_triggered_reauth_queues_followup_get_block()
 
     const bool push_handled_immediately = guard.on_push_notification();
 
-    print_test_result("Push-triggered re-auth defers GET_BLOCK until auth completes", !push_handled_immediately);
-    print_test_result("Push-triggered re-auth queues a post-auth GET_BLOCK", guard.m_pending_push_after_auth);
-    print_test_result("Push-triggered re-auth requests exactly one re-auth", guard.reauth_requests == 1);
+    EXPECT_TRUE(!push_handled_immediately) << "Push-triggered re-auth defers GET_BLOCK until auth completes";
+    EXPECT_TRUE(guard.m_pending_push_after_auth) << "Push-triggered re-auth queues a post-auth GET_BLOCK";
+    EXPECT_TRUE(guard.reauth_requests == 1) << "Push-triggered re-auth requests exactly one re-auth";
 
     guard.handle_auth_result(true);
     const bool flushed = guard.flush_pending_push_after_auth();
 
-    print_test_result("Queued GET_BLOCK flushes after re-auth completes", flushed);
-    print_test_result("Re-auth path sends exactly one queued GET_BLOCK", guard.get_block_requests == 1);
+    EXPECT_TRUE(flushed) << "Queued GET_BLOCK flushes after re-auth completes";
+    EXPECT_TRUE(guard.get_block_requests == 1) << "Re-auth path sends exactly one queued GET_BLOCK";
 }
 
-void test_multiple_pushes_during_handshake_queue_single_followup_get_block()
+TEST(SoloAuthResyncTest, test_multiple_pushes_during_handshake_queue_single_followup_get_block)
 {
     std::cout << "\nTest 10: multiple pushes during one handshake queue a single post-auth GET_BLOCK\n";
 
@@ -718,21 +675,21 @@ void test_multiple_pushes_during_handshake_queue_single_followup_get_block()
     const bool first_push_handled_immediately = guard.on_push_notification();
     const bool second_push_handled_immediately = guard.on_push_notification();
 
-    print_test_result("First push during handshake is deferred", !first_push_handled_immediately);
-    print_test_result("Second push during handshake is also deferred", !second_push_handled_immediately);
-    print_test_result("Multiple pushes keep only one queued follow-up", guard.m_pending_push_after_auth);
-    print_test_result("Multiple pushes during handshake still avoid duplicate re-auth", guard.reauth_requests == 0);
-    print_test_result("Multiple pushes during handshake do not send GET_BLOCK early", guard.get_block_requests == 0);
+    EXPECT_TRUE(!first_push_handled_immediately) << "First push during handshake is deferred";
+    EXPECT_TRUE(!second_push_handled_immediately) << "Second push during handshake is also deferred";
+    EXPECT_TRUE(guard.m_pending_push_after_auth) << "Multiple pushes keep only one queued follow-up";
+    EXPECT_TRUE(guard.reauth_requests == 0) << "Multiple pushes during handshake still avoid duplicate re-auth";
+    EXPECT_TRUE(guard.get_block_requests == 0) << "Multiple pushes during handshake do not send GET_BLOCK early";
 
     guard.handle_auth_result(true);
     const bool flushed = guard.flush_pending_push_after_auth();
 
-    print_test_result("Queued follow-up flushes once after auth completes", flushed);
-    print_test_result("Multiple deferred pushes still produce exactly one GET_BLOCK", guard.get_block_requests == 1);
-    print_test_result("Queued follow-up is cleared after the single replay", !guard.m_pending_push_after_auth);
+    EXPECT_TRUE(flushed) << "Queued follow-up flushes once after auth completes";
+    EXPECT_TRUE(guard.get_block_requests == 1) << "Multiple deferred pushes still produce exactly one GET_BLOCK";
+    EXPECT_TRUE(!guard.m_pending_push_after_auth) << "Queued follow-up is cleared after the single replay";
 }
 
-void test_multiple_pushes_during_auth_limbo_continue_driving_get_block()
+TEST(SoloAuthResyncTest, test_multiple_pushes_during_auth_limbo_continue_driving_get_block)
 {
     std::cout << "\nTest 10b: repeated pushes during auth limbo keep driving GET_BLOCK via lifeline\n";
 
@@ -745,14 +702,13 @@ void test_multiple_pushes_during_auth_limbo_continue_driving_get_block()
     const bool first_push_handled = guard.on_push_notification();
     const bool second_push_handled = guard.on_push_notification();
 
-    print_test_result("First limbo push is accepted", first_push_handled);
-    print_test_result("Second limbo push is also accepted", second_push_handled);
-    print_test_result("Limbo pushes do not queue deferred replay", !guard.m_pending_push_after_auth);
-    print_test_result("Limbo pushes can continue driving replacement GET_BLOCK requests",
-                      guard.get_block_requests == 2);
+    EXPECT_TRUE(first_push_handled) << "First limbo push is accepted";
+    EXPECT_TRUE(second_push_handled) << "Second limbo push is also accepted";
+    EXPECT_TRUE(!guard.m_pending_push_after_auth) << "Limbo pushes do not queue deferred replay";
+    EXPECT_TRUE(guard.get_block_requests == 2) << "Limbo pushes can continue driving replacement GET_BLOCK requests";
 }
 
-void test_queued_push_waits_for_reward_binding_before_flushing()
+TEST(SoloAuthResyncTest, test_queued_push_waits_for_reward_binding_before_flushing)
 {
     std::cout << "\nTest 11: queued push waits for reward binding before flushing\n";
 
@@ -763,19 +719,19 @@ void test_queued_push_waits_for_reward_binding_before_flushing()
 
     const bool flushed_before_binding = guard.flush_pending_push_after_auth();
 
-    print_test_result("Queued push does not flush before reward binding completes", !flushed_before_binding);
-    print_test_result("Queued push remains queued until reward binding completes", guard.m_pending_push_after_auth);
-    print_test_result("Queued push does not send GET_BLOCK before reward binding", guard.get_block_requests == 0);
+    EXPECT_TRUE(!flushed_before_binding) << "Queued push does not flush before reward binding completes";
+    EXPECT_TRUE(guard.m_pending_push_after_auth) << "Queued push remains queued until reward binding completes";
+    EXPECT_TRUE(guard.get_block_requests == 0) << "Queued push does not send GET_BLOCK before reward binding";
 
     guard.m_reward_bound = true;
     const bool flushed_after_binding = guard.flush_pending_push_after_auth();
 
-    print_test_result("Queued push flushes once reward binding completes", flushed_after_binding);
-    print_test_result("Queued push sends exactly one GET_BLOCK after reward binding", guard.get_block_requests == 1);
-    print_test_result("Queued push clears after successful flush", !guard.m_pending_push_after_auth);
+    EXPECT_TRUE(flushed_after_binding) << "Queued push flushes once reward binding completes";
+    EXPECT_TRUE(guard.get_block_requests == 1) << "Queued push sends exactly one GET_BLOCK after reward binding";
+    EXPECT_TRUE(!guard.m_pending_push_after_auth) << "Queued push clears after successful flush";
 }
 
-void test_cached_session_state_logging_downgrades_expected_reconnect_resyncs()
+TEST(SoloAuthResyncTest, test_cached_session_state_logging_downgrades_expected_reconnect_resyncs)
 {
     std::cout << "\nTest 12: expected reconnect resyncs log at info while drift stays warn\n";
 
@@ -797,17 +753,17 @@ void test_cached_session_state_logging_downgrades_expected_reconnect_resyncs()
     const auto chacha_drift = is_expected_cached_session_resync(true, true)
         ? ResyncLogSeverity::INFO : ResyncLogSeverity::WARN;
 
-    print_test_result("Auth reconnect resync is informational", auth_reconnect == ResyncLogSeverity::INFO);
-    print_test_result("Session ID reconnect resync is informational", session_id_reconnect == ResyncLogSeverity::INFO);
-    print_test_result("Reward reconnect resync is informational", reward_reconnect == ResyncLogSeverity::INFO);
-    print_test_result("ChaCha20 reconnect resync is informational", chacha_reconnect == ResyncLogSeverity::INFO);
-    print_test_result("Auth drift remains warning-level", auth_drift == ResyncLogSeverity::WARN);
-    print_test_result("Session ID drift remains warning-level", session_id_drift == ResyncLogSeverity::WARN);
-    print_test_result("Reward drift remains warning-level", reward_drift == ResyncLogSeverity::WARN);
-    print_test_result("ChaCha20 drift remains warning-level", chacha_drift == ResyncLogSeverity::WARN);
+    EXPECT_TRUE(auth_reconnect == ResyncLogSeverity::INFO) << "Auth reconnect resync is informational";
+    EXPECT_TRUE(session_id_reconnect == ResyncLogSeverity::INFO) << "Session ID reconnect resync is informational";
+    EXPECT_TRUE(reward_reconnect == ResyncLogSeverity::INFO) << "Reward reconnect resync is informational";
+    EXPECT_TRUE(chacha_reconnect == ResyncLogSeverity::INFO) << "ChaCha20 reconnect resync is informational";
+    EXPECT_TRUE(auth_drift == ResyncLogSeverity::WARN) << "Auth drift remains warning-level";
+    EXPECT_TRUE(session_id_drift == ResyncLogSeverity::WARN) << "Session ID drift remains warning-level";
+    EXPECT_TRUE(reward_drift == ResyncLogSeverity::WARN) << "Reward drift remains warning-level";
+    EXPECT_TRUE(chacha_drift == ResyncLogSeverity::WARN) << "ChaCha20 drift remains warning-level";
 }
 
-void test_submit_requires_authoritative_chacha20_key()
+TEST(SoloAuthResyncTest, test_submit_requires_authoritative_chacha20_key)
 {
     std::cout << "\nTest 13: submit path only accepts authoritative session key\n";
 
@@ -816,11 +772,10 @@ void test_submit_requires_authoritative_chacha20_key()
     guard.authoritative.chacha_key.clear();
     const bool can_submit = guard.has_authoritative_chacha_key();
 
-    print_test_result("Submit fails when authoritative key is empty even if local cache is populated",
-                      !can_submit);
+    EXPECT_TRUE(!can_submit) << "Submit fails when authoritative key is empty even if local cache is populated";
 }
 
-void test_block_accepted_consumes_snapshot_before_future_fallback()
+TEST(SoloAuthResyncTest, test_block_accepted_consumes_snapshot_before_future_fallback)
 {
     std::cout << "\nTest 14: accepted-block snapshot is consumed before later fallback use\n";
 
@@ -832,17 +787,15 @@ void test_block_accepted_consumes_snapshot_before_future_fallback()
     const auto first_accept = guard.on_block_accepted(202, 1);
     const auto second_accept = guard.on_block_accepted(202, 1);
 
-    print_test_result("First accept uses submitted height", first_accept.height == 101);
-    print_test_result("First accept uses submitted channel", first_accept.channel == 2);
-    print_test_result("Accepted snapshot is invalidated after first consumption", !guard.m_last_submitted_valid);
-    print_test_result("Second accept falls back instead of reusing stale submitted height",
-                      second_accept.height == 202);
-    print_test_result("Second accept falls back instead of reusing stale submitted channel",
-                      second_accept.channel == 1);
-    print_test_result("Second accept records that fallback was used", second_accept.used_fallback);
+    EXPECT_TRUE(first_accept.height == 101) << "First accept uses submitted height";
+    EXPECT_TRUE(first_accept.channel == 2) << "First accept uses submitted channel";
+    EXPECT_TRUE(!guard.m_last_submitted_valid) << "Accepted snapshot is invalidated after first consumption";
+    EXPECT_TRUE(second_accept.height == 202) << "Second accept falls back instead of reusing stale submitted height";
+    EXPECT_TRUE(second_accept.channel == 1) << "Second accept falls back instead of reusing stale submitted channel";
+    EXPECT_TRUE(second_accept.used_fallback) << "Second accept records that fallback was used";
 }
 
-void test_session_status_policy_resets_mismatch_counter_on_match()
+TEST(SoloAuthResyncTest, test_session_status_policy_resets_mismatch_counter_on_match)
 {
     std::cout << "\nTest 15: matching SESSION_STATUS_ACK resets mismatch counter\n";
 
@@ -852,13 +805,13 @@ void test_session_status_policy_resets_mismatch_counter_on_match()
 
     const bool accepted = handler.on_session_status_ack(0x12345678, 0x0F, 120, 0x07);
 
-    print_test_result("Matching SESSION_STATUS_ACK is accepted", accepted);
-    print_test_result("Mismatch counter resets on match", handler.mismatch_count == 0);
-    print_test_result("Healthy ACK does not force re-auth", !handler.force_reauth);
-    print_test_result("Healthy ACK does not mark degraded", !handler.mark_degraded);
+    EXPECT_TRUE(accepted) << "Matching SESSION_STATUS_ACK is accepted";
+    EXPECT_TRUE(handler.mismatch_count == 0) << "Mismatch counter resets on match";
+    EXPECT_TRUE(!handler.force_reauth) << "Healthy ACK does not force re-auth";
+    EXPECT_TRUE(!handler.mark_degraded) << "Healthy ACK does not mark degraded";
 }
 
-void test_session_status_ack_ignores_stale_session_id()
+TEST(SoloAuthResyncTest, test_session_status_ack_ignores_stale_session_id)
 {
     std::cout << "\nTest 16: stale SESSION_STATUS_ACK does not overwrite cached status\n";
 
@@ -872,16 +825,16 @@ void test_session_status_ack_ignores_stale_session_id()
 
     const bool accepted = handler.on_session_status_ack(0x87654321, 0x0F, 999, 0x07);
 
-    print_test_result("Mismatched SESSION_STATUS_ACK is rejected", !accepted);
-    print_test_result("Mismatch counter increments", handler.mismatch_count == 1);
-    print_test_result("Threshold not yet reached does not expire session", !handler.expired_session);
-    print_test_result("Cached session ID is not overwritten", handler.last_session_id == 0x12345678);
-    print_test_result("Cached lane health is not overwritten", handler.last_lane_health_flags == 0x09);
-    print_test_result("Cached uptime is not overwritten", handler.last_uptime_seconds == 60);
-    print_test_result("Cached echoed status is not overwritten", handler.last_status_echo_flags == 0x02);
+    EXPECT_TRUE(!accepted) << "Mismatched SESSION_STATUS_ACK is rejected";
+    EXPECT_TRUE(handler.mismatch_count == 1) << "Mismatch counter increments";
+    EXPECT_TRUE(!handler.expired_session) << "Threshold not yet reached does not expire session";
+    EXPECT_TRUE(handler.last_session_id == 0x12345678) << "Cached session ID is not overwritten";
+    EXPECT_TRUE(handler.last_lane_health_flags == 0x09) << "Cached lane health is not overwritten";
+    EXPECT_TRUE(handler.last_uptime_seconds == 60) << "Cached uptime is not overwritten";
+    EXPECT_TRUE(handler.last_status_echo_flags == 0x02) << "Cached echoed status is not overwritten";
 }
 
-void test_session_status_ack_mismatch_is_diagnostic_only()
+TEST(SoloAuthResyncTest, test_session_status_ack_mismatch_is_diagnostic_only)
 {
     std::cout << "\nTest 17: repeated mismatched SESSION_STATUS_ACKs are diagnostic only (no session expiry)\n";
 
@@ -892,15 +845,15 @@ void test_session_status_ack_mismatch_is_diagnostic_only()
 
     const bool accepted = handler.on_session_status_ack(0x87654321, 0x0F, 999, 0x07);
 
-    print_test_result("Threshold mismatch SESSION_STATUS_ACK is rejected", !accepted);
+    EXPECT_TRUE(!accepted) << "Threshold mismatch SESSION_STATUS_ACK is rejected";
     // ACK mismatch is diagnostic only — PUSH is the sole authoritative signal.
     // Session must NOT be expired or force-reauthed based on keepalive ACK mismatches.
-    print_test_result("Threshold mismatch does NOT expire session (PUSH is authoritative)", !handler.expired_session);
-    print_test_result("Threshold mismatch does NOT force re-auth (PUSH is authoritative)", !handler.force_reauth);
-    print_test_result("Threshold mismatch does NOT mark degraded (PUSH is authoritative)", !handler.mark_degraded);
+    EXPECT_TRUE(!handler.expired_session) << "Threshold mismatch does NOT expire session (PUSH is authoritative)";
+    EXPECT_TRUE(!handler.force_reauth) << "Threshold mismatch does NOT force re-auth (PUSH is authoritative)";
+    EXPECT_TRUE(!handler.mark_degraded) << "Threshold mismatch does NOT mark degraded (PUSH is authoritative)";
 }
 
-void test_session_status_ack_unhealthy_is_diagnostic_only()
+TEST(SoloAuthResyncTest, test_session_status_ack_unhealthy_is_diagnostic_only)
 {
     // Test 18: SessionStatusPolicy::evaluate_ack_health() intentionally keeps force_reauth
     // and mark_degraded false — SESSION_STATUS is a telemetry probe and must not trigger
@@ -912,15 +865,15 @@ void test_session_status_ack_unhealthy_is_diagnostic_only()
 
     const bool accepted = handler.on_session_status_ack(0x12345678, 0x01, 0, 0x02, false);
 
-    print_test_result("Unhealthy SESSION_STATUS_ACK is still accepted for caching", accepted);
+    EXPECT_TRUE(accepted) << "Unhealthy SESSION_STATUS_ACK is still accepted for caching";
     // SessionStatusPolicy::evaluate_ack_health() intentionally does NOT set force_reauth
     // or mark_degraded — these are diagnostic observations only, PUSH is the sole
     // authoritative signal.
-    print_test_result("Unhealthy ACK does NOT force re-auth (PUSH is authoritative)", !handler.force_reauth);
-    print_test_result("Unhealthy ACK does NOT mark degraded (PUSH is authoritative)", !handler.mark_degraded);
+    EXPECT_TRUE(!handler.force_reauth) << "Unhealthy ACK does NOT force re-auth (PUSH is authoritative)";
+    EXPECT_TRUE(!handler.mark_degraded) << "Unhealthy ACK does NOT mark degraded (PUSH is authoritative)";
 }
 
-void test_degraded_live_session_policy_prefers_reauth_over_reconnect()
+TEST(SoloAuthResyncTest, test_degraded_live_session_policy_prefers_reauth_over_reconnect)
 {
     // Test 19: With fix 3 applied, a degraded session with live push traffic should
     // NOT force reauth and NOT force reconnect — it should hold.
@@ -932,12 +885,12 @@ void test_degraded_live_session_policy_prefers_reauth_over_reconnect()
         true
     });
 
-    print_test_result("Hard-limit degraded live session does NOT force re-auth (push is alive)", !decision.force_reauth);
-    print_test_result("Hard-limit degraded live session does NOT force reconnect (push is alive)", !decision.force_reconnect);
-    print_test_result("Hard-limit degraded live session is still marked degraded for monitoring", decision.mark_degraded);
+    EXPECT_TRUE(!decision.force_reauth) << "Hard-limit degraded live session does NOT force re-auth (push is alive)";
+    EXPECT_TRUE(!decision.force_reconnect) << "Hard-limit degraded live session does NOT force reconnect (push is alive)";
+    EXPECT_TRUE(decision.mark_degraded) << "Hard-limit degraded live session is still marked degraded for monitoring";
 }
 
-void test_degraded_dead_session_policy_forces_reconnect()
+TEST(SoloAuthResyncTest, test_degraded_dead_session_policy_forces_reconnect)
 {
     std::cout << "\nTest 20: degraded session without live push traffic reconnects\n";
 
@@ -947,64 +900,18 @@ void test_degraded_dead_session_policy_forces_reconnect()
         false
     });
 
-    print_test_result("Hard-limit degraded dead session forces reconnect", decision.force_reconnect);
-    print_test_result("Hard-limit degraded dead session does not force re-auth", !decision.force_reauth);
-    print_test_result("Hard-limit degraded dead session is marked degraded", decision.mark_degraded);
+    EXPECT_TRUE(decision.force_reconnect) << "Hard-limit degraded dead session forces reconnect";
+    EXPECT_TRUE(!decision.force_reauth) << "Hard-limit degraded dead session does not force re-auth";
+    EXPECT_TRUE(decision.mark_degraded) << "Hard-limit degraded dead session is marked degraded";
 }
 
-void test_session_expired_reauth_guard_skips_when_reconnect_or_recovery_active()
+TEST(SoloAuthResyncTest, test_session_expired_reauth_guard_skips_when_reconnect_or_recovery_active)
 {
     std::cout << "\nTest 21: session-expired handler guard blocks duplicate in-band login\n";
 
-    print_test_result("Guard blocks in-band re-auth while reconnect is in progress",
-                      !should_schedule_in_band_reauth(true, false, 0));
-    print_test_result("Guard blocks in-band re-auth while recovery epoch is active",
-                      !should_schedule_in_band_reauth(false, true, 3));
-    print_test_result("Guard allows in-band re-auth when reconnect/recovery are idle",
-                      should_schedule_in_band_reauth(false, false, 0));
+    EXPECT_TRUE(!should_schedule_in_band_reauth(true, false, 0)) << "Guard blocks in-band re-auth while reconnect is in progress";
+    EXPECT_TRUE(!should_schedule_in_band_reauth(false, true, 3)) << "Guard blocks in-band re-auth while recovery epoch is active";
+    EXPECT_TRUE(should_schedule_in_band_reauth(false, false, 0)) << "Guard allows in-band re-auth when reconnect/recovery are idle";
 }
 
 }  // namespace
-
-int main()
-{
-    std::cout << "========================================\n";
-    std::cout << "Solo Auth Resync Tests\n";
-    std::cout << "========================================\n";
-
-    test_zero_length_auth_challenge_is_rejected();
-    test_guard_requires_both_sources_to_be_unauthenticated();
-    test_guard_resyncs_stale_local_flag_from_session_context();
-    test_auth_result_success_sets_authenticated_state();
-    test_auth_result_failure_clears_in_flight_state();
-    test_cached_session_state_resyncs_from_authoritative_container();
-    test_reward_send_validates_before_packet_build();
-    test_reward_send_requires_authoritative_reward_key_after_auth();
-    test_process_messages_entry_resyncs_cached_reward_binding();
-    test_epoch_resync_clears_generation_bound_runtime_state();
-    test_public_auth_accessors_prefer_authoritative_session_state();
-    test_push_during_handshake_is_queued_until_auth_completes();
-    test_push_during_handshake_uses_preserved_lifeline();
-    test_session_expired_accepts_authoritative_session_id_when_local_cache_is_stale();
-    test_push_triggered_reauth_queues_followup_get_block();
-    test_multiple_pushes_during_handshake_queue_single_followup_get_block();
-    test_multiple_pushes_during_auth_limbo_continue_driving_get_block();
-    test_queued_push_waits_for_reward_binding_before_flushing();
-    test_cached_session_state_logging_downgrades_expected_reconnect_resyncs();
-    test_submit_requires_authoritative_chacha20_key();
-    test_block_accepted_consumes_snapshot_before_future_fallback();
-    test_session_status_policy_resets_mismatch_counter_on_match();
-    test_session_status_ack_ignores_stale_session_id();
-    test_session_status_ack_mismatch_is_diagnostic_only();
-    test_session_status_ack_unhealthy_is_diagnostic_only();
-    test_degraded_live_session_policy_prefers_reauth_over_reconnect();
-    test_degraded_dead_session_policy_forces_reconnect();
-    test_session_expired_reauth_guard_skips_when_reconnect_or_recovery_active();
-
-    std::cout << "\n========================================\n";
-    std::cout << "Results: " << tests_passed << "/" << tests_run
-              << " passed, " << tests_failed << " failed\n";
-    std::cout << "========================================\n";
-
-    return tests_failed == 0 ? 0 : 1;
-}

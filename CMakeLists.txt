@@ -21,6 +21,10 @@ CPMAddPackage(NAME spdlog GITHUB_REPOSITORY gabime/spdlog VERSION 1.13.0 OPTIONS
 #nlohmann json
 CPMAddPackage(NAME nlohmann_json GITHUB_REPOSITORY nlohmann/json  VERSION 3.11.3)
 
+# Google Test (testing framework)
+CPMAddPackage(NAME googletest GITHUB_REPOSITORY google/googletest VERSION 1.14.0 OPTIONS "INSTALL_GTEST OFF")
+include(GoogleTest)
+
 include_directories(${CMAKE_SOURCE_DIR}/include)
 link_directories(${CMAKE_SOURCE_DIR}/libs)
 
@@ -247,7 +251,8 @@ target_link_libraries(NexusMiner Threads::Threads)
 # SIM Link DualConnectionManager unit test
 add_executable(dual_connection_manager_test src/dual_connection_manager_test.cpp src/dual_connection_manager.cpp)
 target_include_directories(dual_connection_manager_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-add_test(NAME dual_connection_manager_test COMMAND $<TARGET_FILE:dual_connection_manager_test>)
+target_link_libraries(dual_connection_manager_test PRIVATE GTest::gtest_main)
+gtest_discover_tests(dual_connection_manager_test)
 
 # ============================================================================
 # Installation and packaging

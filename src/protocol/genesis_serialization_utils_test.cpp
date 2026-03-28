@@ -23,6 +23,7 @@ ________________________________________________________________________________
 #include <iomanip>
 #include <vector>
 #include <cassert>
+#include <gtest/gtest.h>
 
 // Simple test framework
 int test_count = 0;
@@ -38,7 +39,7 @@ void test_assert(bool condition, const char* test_name) {
     }
 }
 
-void test_genesis_validation() {
+TEST(GenesisSerializationUtilsTest, test_genesis_validation) {
     std::cout << "\nTest 1: Genesis validation - empty vector" << std::endl;
     {
         std::vector<uint8_t> empty;
@@ -148,7 +149,7 @@ void test_genesis_validation() {
     }
 }
 
-void test_serialization_helpers() {
+TEST(GenesisSerializationUtilsTest, test_serialization_helpers) {
     std::cout << "\nTest 11: append_uint32_le - basic serialization" << std::endl;
     {
         std::vector<uint8_t> data;
@@ -226,24 +227,4 @@ void test_serialization_helpers() {
         test_assert(serialization::read_uint32_le(data, 0) == 0x11111111, "First value correct");
         test_assert(serialization::read_uint32_le(data, 4) == 0x22222222, "Second value correct");
     }
-}
-
-int main() {
-    std::cout << "========================================" << std::endl;
-    std::cout << "Genesis & Serialization Utils Tests" << std::endl;
-    std::cout << "========================================" << std::endl;
-
-    test_genesis_validation();
-    test_serialization_helpers();
-
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "Test Summary" << std::endl;
-    std::cout << "========================================" << std::endl;
-    std::cout << "Tests run:    " << test_count << std::endl;
-    std::cout << "Tests passed: " << pass_count << std::endl;
-    std::cout << "Tests failed: " << (test_count - pass_count) << std::endl;
-    std::cout << "Success rate: " << (100 * pass_count / test_count) << "%" << std::endl;
-    std::cout << "========================================" << std::endl;
-
-    return (pass_count == test_count) ? 0 : 1;
 }

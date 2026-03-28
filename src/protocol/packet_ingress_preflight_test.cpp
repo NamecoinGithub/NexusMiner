@@ -17,6 +17,7 @@
 #include "protocol_lane.hpp"
 #include "protocol/packet_ingress_preflight.hpp"
 #include "protocol/session_recovery_policy.hpp"
+#include <gtest/gtest.h>
 
 using namespace nexusminer::protocol;
 using nexusminer::ProtocolLane;
@@ -25,22 +26,6 @@ using nexusminer::ProtocolLane;
 // Test scaffolding
 // ─────────────────────────────────────────────────────────────────────────────
 namespace {
-
-int tests_run    = 0;
-int tests_passed = 0;
-int tests_failed = 0;
-
-void print_test_result(const char* name, bool passed)
-{
-    ++tests_run;
-    if (passed) {
-        ++tests_passed;
-        std::cout << "  [PASS] " << name << '\n';
-    } else {
-        ++tests_failed;
-        std::cout << "  [FAIL] " << name << '\n';
-    }
-}
 
 // Helper: build a minimal authenticated Input
 struct AuthSession {
@@ -95,20 +80,20 @@ PacketIngressPreflight::Input make_input(const AuthSession& s,
 // PacketIngressPreflight::evaluate() tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-void test_preflight_allows_clean_authenticated_session()
+TEST(PacketIngressPreflightTest, test_preflight_allows_clean_authenticated_session)
 {
     std::cout << "\nTest: PacketIngressPreflight — clean authenticated session is allowed\n";
 
     const auto session = make_authenticated_session();
     const auto decision = PacketIngressPreflight::evaluate(make_input(session));
 
-    print_test_result("allow_processing is true",  decision.allow_processing);
-    print_test_result("force_reauth is false",     !decision.force_reauth);
-    print_test_result("drop_as_stale is false",    !decision.drop_as_stale);
-    print_test_result("mark_degraded is false",    !decision.mark_degraded);
+    EXPECT_TRUE(decision.allow_processing) << "allow_processing is true";
+    EXPECT_TRUE(!decision.force_reauth) << "force_reauth is false";
+    EXPECT_TRUE(!decision.drop_as_stale) << "drop_as_stale is false";
+    EXPECT_TRUE(!decision.mark_degraded) << "mark_degraded is false";
 }
 
-void test_preflight_rejects_no_session_container()
+TEST(PacketIngressPreflightTest, test_preflight_rejects_no_session_container)
 {
     std::cout << "\nTest: PacketIngressPreflight — no authoritative session container\n";
 
@@ -116,11 +101,11 @@ void test_preflight_rejects_no_session_container()
     in.has_authoritative_session = false;
     const auto decision = PacketIngressPreflight::evaluate(in);
 
-    print_test_result("allow_processing is false",  !decision.allow_processing);
-    print_test_result("force_reauth is false",       !decision.force_reauth);
+    EXPECT_TRUE(!decision.allow_processing) << "allow_processing is false";
+    EXPECT_TRUE(!decision.force_reauth) << "force_reauth is false";
 }
 
-void test_preflight_rejects_inconsistent_session()
+TEST(PacketIngressPreflightTest, test_preflight_rejects_inconsistent_session)
 {
     std::cout << "\nTest: PacketIngressPreflight — unauthenticated session rejected\n";
 
@@ -129,22 +114,22 @@ void test_preflight_rejects_inconsistent_session()
     in.authoritative_authenticated = false;  // not authenticated
     const auto decision = PacketIngressPreflight::evaluate(in);
 
-    print_test_result("allow_processing is false", !decision.allow_processing);
+    EXPECT_TRUE(!decision.allow_processing) << "allow_processing is false";
 }
 
-void test_preflight_forces_reauth_when_not_authenticated()
+TEST(PacketIngressPreflightTest, test_preflight_forces_reauth_when_not_authenticated)
 {
     std::cout << "\nTest: PacketIngressPreflight — unauthenticated session triggers reauth\n";
 
     AuthSession s{false, 0, 0, ProtocolLane::UNKNOWN};
     const auto decision = PacketIngressPreflight::evaluate(make_input(s));
 
-    print_test_result("allow_processing is false", !decision.allow_processing);
-    print_test_result("force_reauth is true",       decision.force_reauth);
-    print_test_result("mark_degraded is true",      decision.mark_degraded);
+    EXPECT_TRUE(!decision.allow_processing) << "allow_processing is false";
+    EXPECT_TRUE(decision.force_reauth) << "force_reauth is true";
+    EXPECT_TRUE(decision.mark_degraded) << "mark_degraded is true";
 }
 
-void test_preflight_allows_unauthenticated_when_explicitly_permitted()
+TEST(PacketIngressPreflightTest, test_preflight_allows_unauthenticated_when_explicitly_permitted)
 {
     std::cout << "\nTest: PacketIngressPreflight — unauthenticated allowed when allow_without_active_session\n";
 
@@ -152,11 +137,11 @@ void test_preflight_allows_unauthenticated_when_explicitly_permitted()
     const auto decision = PacketIngressPreflight::evaluate(
         make_input(s, ProtocolLane::UNKNOWN, false, true /*allow_without*/));
 
-    print_test_result("allow_processing is true",  decision.allow_processing);
-    print_test_result("force_reauth is false",     !decision.force_reauth);
+    EXPECT_TRUE(decision.allow_processing) << "allow_processing is true";
+    EXPECT_TRUE(!decision.force_reauth) << "force_reauth is false";
 }
 
-void test_preflight_rejects_lane_mismatch()
+TEST(PacketIngressPreflightTest, test_preflight_rejects_lane_mismatch)
 {
     std::cout << "\nTest: PacketIngressPreflight — lane mismatch marks degraded\n";
 
@@ -166,11 +151,11 @@ void test_preflight_rejects_lane_mismatch()
     const auto decision = PacketIngressPreflight::evaluate(
         make_input(session, ProtocolLane::STATELESS, true /*validate_lane*/));
 
-    print_test_result("allow_processing is false", !decision.allow_processing);
-    print_test_result("mark_degraded is true",      decision.mark_degraded);
+    EXPECT_TRUE(!decision.allow_processing) << "allow_processing is false";
+    EXPECT_TRUE(decision.mark_degraded) << "mark_degraded is true";
 }
 
-void test_preflight_allows_unknown_lane_without_marking_degraded()
+TEST(PacketIngressPreflightTest, test_preflight_allows_unknown_lane_without_marking_degraded)
 {
     std::cout << "\nTest: PacketIngressPreflight — UNKNOWN packet lane skips lane check\n";
 
@@ -180,24 +165,24 @@ void test_preflight_allows_unknown_lane_without_marking_degraded()
     const auto decision = PacketIngressPreflight::evaluate(
         make_input(session, ProtocolLane::UNKNOWN, true /*validate_lane*/));
 
-    print_test_result("allow_processing is true", decision.allow_processing);
+    EXPECT_TRUE(decision.allow_processing) << "allow_processing is true";
 }
 
-void test_preflight_rejects_crypto_not_ready()
+TEST(PacketIngressPreflightTest, test_preflight_rejects_crypto_not_ready)
 {
     // require_crypto_ready is removed from the new design — this is now a no-op test
     std::cout << "\nTest: PacketIngressPreflight — crypto readiness check removed (no-op)\n";
-    print_test_result("no-op: feature removed", true);
+    EXPECT_TRUE(true) << "no-op: feature removed";
 }
 
-void test_preflight_rejects_reward_not_bound()
+TEST(PacketIngressPreflightTest, test_preflight_rejects_reward_not_bound)
 {
     // require_reward_binding is removed from the new design — this is now a no-op test
     std::cout << "\nTest: PacketIngressPreflight — reward binding check removed (no-op)\n";
-    print_test_result("no-op: feature removed", true);
+    EXPECT_TRUE(true) << "no-op: feature removed";
 }
 
-void test_preflight_allows_reward_bound()
+TEST(PacketIngressPreflightTest, test_preflight_allows_reward_bound)
 {
     // require_reward_binding is removed from the new design — plain authenticated is allowed
     std::cout << "\nTest: PacketIngressPreflight — plain authenticated session is allowed\n";
@@ -205,10 +190,10 @@ void test_preflight_allows_reward_bound()
     const auto session = make_authenticated_session();
     const auto decision = PacketIngressPreflight::evaluate(make_input(session));
 
-    print_test_result("allow_processing is true", decision.allow_processing);
+    EXPECT_TRUE(decision.allow_processing) << "allow_processing is true";
 }
 
-void test_preflight_drops_stale_session_id_mismatch()
+TEST(PacketIngressPreflightTest, test_preflight_drops_stale_session_id_mismatch)
 {
     std::cout << "\nTest: PacketIngressPreflight — packet session_id mismatch drops as stale\n";
 
@@ -217,14 +202,13 @@ void test_preflight_drops_stale_session_id_mismatch()
         make_input(session, ProtocolLane::STATELESS, false, false,
                    0xDEADBEEF /*mismatched packet_session_id*/));
 
-    print_test_result("allow_processing is false",                    !decision.allow_processing);
-    print_test_result("drop_as_stale is true",                         decision.drop_as_stale);
-    print_test_result("stale_reason is SESSION_ID_MISMATCH",
-        decision.stale_reason == PacketStaleReason::SESSION_ID_MISMATCH);
-    print_test_result("mark_degraded is true",                         decision.mark_degraded);
+    EXPECT_TRUE(!decision.allow_processing) << "allow_processing is false";
+    EXPECT_TRUE(decision.drop_as_stale) << "drop_as_stale is true";
+    EXPECT_TRUE(decision.stale_reason == PacketStaleReason::SESSION_ID_MISMATCH) << "stale_reason is SESSION_ID_MISMATCH";
+    EXPECT_TRUE(decision.mark_degraded) << "mark_degraded is true";
 }
 
-void test_preflight_drops_stale_ownership_epoch_mismatch()
+TEST(PacketIngressPreflightTest, test_preflight_drops_stale_ownership_epoch_mismatch)
 {
     std::cout << "\nTest: PacketIngressPreflight — ownership epoch mismatch drops as stale\n";
 
@@ -237,13 +221,12 @@ void test_preflight_drops_stale_ownership_epoch_mismatch()
                    stamp.session_epoch.get(),
                    stamp.session_id.get()));
 
-    print_test_result("allow_processing is false",                        !decision.allow_processing);
-    print_test_result("drop_as_stale is true",                             decision.drop_as_stale);
-    print_test_result("stale_reason is OWNERSHIP_EPOCH_MISMATCH",
-        decision.stale_reason == PacketStaleReason::OWNERSHIP_EPOCH_MISMATCH);
+    EXPECT_TRUE(!decision.allow_processing) << "allow_processing is false";
+    EXPECT_TRUE(decision.drop_as_stale) << "drop_as_stale is true";
+    EXPECT_TRUE(decision.stale_reason == PacketStaleReason::OWNERSHIP_EPOCH_MISMATCH) << "stale_reason is OWNERSHIP_EPOCH_MISMATCH";
 }
 
-void test_preflight_drops_stale_ownership_session_id_mismatch()
+TEST(PacketIngressPreflightTest, test_preflight_drops_stale_ownership_session_id_mismatch)
 {
     std::cout << "\nTest: PacketIngressPreflight — ownership session_id mismatch drops as stale\n";
 
@@ -256,13 +239,12 @@ void test_preflight_drops_stale_ownership_session_id_mismatch()
                    stamp.session_epoch.get(),
                    stamp.session_id.get()));
 
-    print_test_result("allow_processing is false",                            !decision.allow_processing);
-    print_test_result("drop_as_stale is true",                                 decision.drop_as_stale);
-    print_test_result("stale_reason is OWNERSHIP_SESSION_ID_MISMATCH",
-        decision.stale_reason == PacketStaleReason::OWNERSHIP_SESSION_ID_MISMATCH);
+    EXPECT_TRUE(!decision.allow_processing) << "allow_processing is false";
+    EXPECT_TRUE(decision.drop_as_stale) << "drop_as_stale is true";
+    EXPECT_TRUE(decision.stale_reason == PacketStaleReason::OWNERSHIP_SESSION_ID_MISMATCH) << "stale_reason is OWNERSHIP_SESSION_ID_MISMATCH";
 }
 
-void test_preflight_allows_matching_ownership_stamp()
+TEST(PacketIngressPreflightTest, test_preflight_allows_matching_ownership_stamp)
 {
     std::cout << "\nTest: PacketIngressPreflight — matching ownership stamp is allowed\n";
 
@@ -275,11 +257,11 @@ void test_preflight_allows_matching_ownership_stamp()
         make_input(session, ProtocolLane::STATELESS, false, false,
                    0, stamp.session_epoch.get(), stamp.session_id.get()));
 
-    print_test_result("allow_processing is true",  decision.allow_processing);
-    print_test_result("drop_as_stale is false",    !decision.drop_as_stale);
+    EXPECT_TRUE(decision.allow_processing) << "allow_processing is true";
+    EXPECT_TRUE(!decision.drop_as_stale) << "drop_as_stale is false";
 }
 
-void test_preflight_drops_after_epoch_change()
+TEST(PacketIngressPreflightTest, test_preflight_drops_after_epoch_change)
 {
     std::cout << "\nTest: PacketIngressPreflight — stale stamp rejected after epoch change\n";
 
@@ -291,17 +273,16 @@ void test_preflight_drops_after_epoch_change()
         make_input(session, ProtocolLane::STATELESS, false, false,
                    0, old_stamp.session_epoch.get(), old_stamp.session_id.get()));
 
-    print_test_result("allow_processing is false",                      !decision.allow_processing);
-    print_test_result("drop_as_stale is true",                           decision.drop_as_stale);
-    print_test_result("stale_reason is OWNERSHIP_EPOCH_MISMATCH",
-        decision.stale_reason == PacketStaleReason::OWNERSHIP_EPOCH_MISMATCH);
+    EXPECT_TRUE(!decision.allow_processing) << "allow_processing is false";
+    EXPECT_TRUE(decision.drop_as_stale) << "drop_as_stale is true";
+    EXPECT_TRUE(decision.stale_reason == PacketStaleReason::OWNERSHIP_EPOCH_MISMATCH) << "stale_reason is OWNERSHIP_EPOCH_MISMATCH";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SessionRecoveryPolicy::evaluate_session_expired() tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-void test_recovery_allows_matching_session_expired()
+TEST(PacketIngressPreflightTest, test_recovery_allows_matching_session_expired)
 {
     std::cout << "\nTest: SessionRecoveryPolicy — SESSION_EXPIRED with matching session_id allows recovery\n";
 
@@ -312,11 +293,11 @@ void test_recovery_allows_matching_session_expired()
         0x01            // reason_code
     });
 
-    print_test_result("allow_recovery is true",     decision.allow_recovery);
-    print_test_result("is_stale_replay is false",  !decision.is_stale_replay);
+    EXPECT_TRUE(decision.allow_recovery) << "allow_recovery is true";
+    EXPECT_TRUE(!decision.is_stale_replay) << "is_stale_replay is false";
 }
 
-void test_recovery_ignores_stale_replay_session_expired()
+TEST(PacketIngressPreflightTest, test_recovery_ignores_stale_replay_session_expired)
 {
     std::cout << "\nTest: SessionRecoveryPolicy — SESSION_EXPIRED with mismatched session_id is stale replay\n";
 
@@ -327,11 +308,11 @@ void test_recovery_ignores_stale_replay_session_expired()
         0x01
     });
 
-    print_test_result("allow_recovery is false",    !decision.allow_recovery);
-    print_test_result("is_stale_replay is true",     decision.is_stale_replay);
+    EXPECT_TRUE(!decision.allow_recovery) << "allow_recovery is false";
+    EXPECT_TRUE(decision.is_stale_replay) << "is_stale_replay is true";
 }
 
-void test_recovery_ignores_session_expired_when_no_authoritative_session()
+TEST(PacketIngressPreflightTest, test_recovery_ignores_session_expired_when_no_authoritative_session)
 {
     std::cout << "\nTest: SessionRecoveryPolicy — SESSION_EXPIRED without authoritative session is stale replay\n";
 
@@ -342,11 +323,11 @@ void test_recovery_ignores_session_expired_when_no_authoritative_session()
         0x01
     });
 
-    print_test_result("allow_recovery is false",    !decision.allow_recovery);
-    print_test_result("is_stale_replay is true",     decision.is_stale_replay);
+    EXPECT_TRUE(!decision.allow_recovery) << "allow_recovery is false";
+    EXPECT_TRUE(decision.is_stale_replay) << "is_stale_replay is true";
 }
 
-void test_recovery_allows_zero_session_id_when_both_zero()
+TEST(PacketIngressPreflightTest, test_recovery_allows_zero_session_id_when_both_zero)
 {
     std::cout << "\nTest: SessionRecoveryPolicy — SESSION_EXPIRED with both IDs zero is accepted as recovery\n";
 
@@ -357,15 +338,15 @@ void test_recovery_allows_zero_session_id_when_both_zero()
         0x01
     });
 
-    print_test_result("allow_recovery is true",     decision.allow_recovery);
-    print_test_result("is_stale_replay is false",  !decision.is_stale_replay);
+    EXPECT_TRUE(decision.allow_recovery) << "allow_recovery is true";
+    EXPECT_TRUE(!decision.is_stale_replay) << "is_stale_replay is false";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SessionRecoveryPolicy::evaluate_ingress_readiness() tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-void test_ingress_readiness_legacy_mode_always_allowed()
+TEST(PacketIngressPreflightTest, test_ingress_readiness_legacy_mode_always_allowed)
 {
     std::cout << "\nTest: SessionRecoveryPolicy ingress — legacy mode always allowed\n";
 
@@ -376,12 +357,12 @@ void test_ingress_readiness_legacy_mode_always_allowed()
         true    // auth_not_in_flight
     });
 
-    print_test_result("allow_ingress is true",          decision.allow_ingress);
-    print_test_result("trigger_recovery is false",     !decision.trigger_recovery);
-    print_test_result("resync_local_cache is false",   !decision.resync_local_cache);
+    EXPECT_TRUE(decision.allow_ingress) << "allow_ingress is true";
+    EXPECT_TRUE(!decision.trigger_recovery) << "trigger_recovery is false";
+    EXPECT_TRUE(!decision.resync_local_cache) << "resync_local_cache is false";
 }
 
-void test_ingress_readiness_authoritative_not_auth_triggers_recovery_when_not_in_flight()
+TEST(PacketIngressPreflightTest, test_ingress_readiness_authoritative_not_auth_triggers_recovery_when_not_in_flight)
 {
     std::cout << "\nTest: SessionRecoveryPolicy ingress — authoritative not authenticated, no auth in-flight → recovery\n";
 
@@ -392,13 +373,13 @@ void test_ingress_readiness_authoritative_not_auth_triggers_recovery_when_not_in
         true    // auth_not_in_flight = true
     });
 
-    print_test_result("allow_ingress is false",         !decision.allow_ingress);
-    print_test_result("trigger_recovery is true",        decision.trigger_recovery);
-    print_test_result("queue_deferred_push is true",     decision.queue_deferred_push);
-    print_test_result("resync_local_cache is false",    !decision.resync_local_cache);
+    EXPECT_TRUE(!decision.allow_ingress) << "allow_ingress is false";
+    EXPECT_TRUE(decision.trigger_recovery) << "trigger_recovery is true";
+    EXPECT_TRUE(decision.queue_deferred_push) << "queue_deferred_push is true";
+    EXPECT_TRUE(!decision.resync_local_cache) << "resync_local_cache is false";
 }
 
-void test_ingress_readiness_authoritative_not_auth_defers_without_recovery_when_auth_in_flight()
+TEST(PacketIngressPreflightTest, test_ingress_readiness_authoritative_not_auth_defers_without_recovery_when_auth_in_flight)
 {
     std::cout << "\nTest: SessionRecoveryPolicy ingress — authoritative not authenticated, auth in-flight → defer only\n";
 
@@ -409,12 +390,12 @@ void test_ingress_readiness_authoritative_not_auth_defers_without_recovery_when_
         false   // auth_not_in_flight = false
     });
 
-    print_test_result("allow_ingress is false",         !decision.allow_ingress);
-    print_test_result("trigger_recovery is false",      !decision.trigger_recovery);
-    print_test_result("queue_deferred_push is true",     decision.queue_deferred_push);
+    EXPECT_TRUE(!decision.allow_ingress) << "allow_ingress is false";
+    EXPECT_TRUE(!decision.trigger_recovery) << "trigger_recovery is false";
+    EXPECT_TRUE(decision.queue_deferred_push) << "queue_deferred_push is true";
 }
 
-void test_ingress_readiness_stale_local_cache_resync()
+TEST(PacketIngressPreflightTest, test_ingress_readiness_stale_local_cache_resync)
 {
     std::cout << "\nTest: SessionRecoveryPolicy ingress — authoritative authenticated but local cache stale → resync\n";
 
@@ -425,12 +406,12 @@ void test_ingress_readiness_stale_local_cache_resync()
         true    // auth_not_in_flight
     });
 
-    print_test_result("allow_ingress is true",           decision.allow_ingress);
-    print_test_result("resync_local_cache is true",      decision.resync_local_cache);
-    print_test_result("trigger_recovery is false",      !decision.trigger_recovery);
+    EXPECT_TRUE(decision.allow_ingress) << "allow_ingress is true";
+    EXPECT_TRUE(decision.resync_local_cache) << "resync_local_cache is true";
+    EXPECT_TRUE(!decision.trigger_recovery) << "trigger_recovery is false";
 }
 
-void test_ingress_readiness_both_authenticated_passes()
+TEST(PacketIngressPreflightTest, test_ingress_readiness_both_authenticated_passes)
 {
     std::cout << "\nTest: SessionRecoveryPolicy ingress — both authoritative and local authenticated → pass\n";
 
@@ -441,13 +422,13 @@ void test_ingress_readiness_both_authenticated_passes()
         true    // auth_not_in_flight
     });
 
-    print_test_result("allow_ingress is true",          decision.allow_ingress);
-    print_test_result("resync_local_cache is false",   !decision.resync_local_cache);
-    print_test_result("trigger_recovery is false",     !decision.trigger_recovery);
-    print_test_result("queue_deferred_push is false",  !decision.queue_deferred_push);
+    EXPECT_TRUE(decision.allow_ingress) << "allow_ingress is true";
+    EXPECT_TRUE(!decision.resync_local_cache) << "resync_local_cache is false";
+    EXPECT_TRUE(!decision.trigger_recovery) << "trigger_recovery is false";
+    EXPECT_TRUE(!decision.queue_deferred_push) << "queue_deferred_push is false";
 }
 
-void test_ingress_readiness_authoritative_overrides_stale_local_authenticated()
+TEST(PacketIngressPreflightTest, test_ingress_readiness_authoritative_overrides_stale_local_authenticated)
 {
     std::cout << "\nTest: SessionRecoveryPolicy ingress — local says authenticated but authoritative says no → defer\n";
 
@@ -458,11 +439,11 @@ void test_ingress_readiness_authoritative_overrides_stale_local_authenticated()
         true    // auth_not_in_flight
     });
 
-    print_test_result("allow_ingress is false (authoritative prevails)", !decision.allow_ingress);
-    print_test_result("trigger_recovery is true",                         decision.trigger_recovery);
+    EXPECT_TRUE(!decision.allow_ingress) << "allow_ingress is false (authoritative prevails)";
+    EXPECT_TRUE(decision.trigger_recovery) << "trigger_recovery is true";
 }
 
-void test_ingress_readiness_push_context_always_allows_even_when_not_authenticated()
+TEST(PacketIngressPreflightTest, test_ingress_readiness_push_context_always_allows_even_when_not_authenticated)
 {
     std::cout << "\nTest: SessionRecoveryPolicy ingress — push context always allows ingress, never triggers recovery\n";
 
@@ -476,13 +457,13 @@ void test_ingress_readiness_push_context_always_allows_even_when_not_authenticat
         true    // is_push_context = true
     });
 
-    print_test_result("allow_ingress is true (push context overrides)",  decision.allow_ingress);
-    print_test_result("trigger_recovery is false (push never kills)",   !decision.trigger_recovery);
-    print_test_result("queue_deferred_push is false",                   !decision.queue_deferred_push);
-    print_test_result("resync_local_cache is false",                    !decision.resync_local_cache);
+    EXPECT_TRUE(decision.allow_ingress) << "allow_ingress is true (push context overrides)";
+    EXPECT_TRUE(!decision.trigger_recovery) << "trigger_recovery is false (push never kills)";
+    EXPECT_TRUE(!decision.queue_deferred_push) << "queue_deferred_push is false";
+    EXPECT_TRUE(!decision.resync_local_cache) << "resync_local_cache is false";
 }
 
-void test_ingress_readiness_push_context_resyncs_stale_local_cache()
+TEST(PacketIngressPreflightTest, test_ingress_readiness_push_context_resyncs_stale_local_cache)
 {
     std::cout << "\nTest: SessionRecoveryPolicy ingress — push context with stale local cache → allow + resync, no recovery\n";
 
@@ -494,54 +475,12 @@ void test_ingress_readiness_push_context_resyncs_stale_local_cache()
         true    // is_push_context = true
     });
 
-    print_test_result("allow_ingress is true",          decision.allow_ingress);
-    print_test_result("resync_local_cache is true",      decision.resync_local_cache);
-    print_test_result("trigger_recovery is false",      !decision.trigger_recovery);
-    print_test_result("queue_deferred_push is false",   !decision.queue_deferred_push);
+    EXPECT_TRUE(decision.allow_ingress) << "allow_ingress is true";
+    EXPECT_TRUE(decision.resync_local_cache) << "resync_local_cache is true";
+    EXPECT_TRUE(!decision.trigger_recovery) << "trigger_recovery is false";
+    EXPECT_TRUE(!decision.queue_deferred_push) << "queue_deferred_push is false";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
-int main()
-{
-    std::cout << "=== packet_ingress_preflight_test ===\n";
-
-    test_preflight_allows_clean_authenticated_session();
-    test_preflight_rejects_no_session_container();
-    test_preflight_rejects_inconsistent_session();
-    test_preflight_forces_reauth_when_not_authenticated();
-    test_preflight_allows_unauthenticated_when_explicitly_permitted();
-    test_preflight_rejects_lane_mismatch();
-    test_preflight_allows_unknown_lane_without_marking_degraded();
-    test_preflight_rejects_crypto_not_ready();
-    test_preflight_rejects_reward_not_bound();
-    test_preflight_allows_reward_bound();
-    test_preflight_drops_stale_session_id_mismatch();
-    test_preflight_drops_stale_ownership_epoch_mismatch();
-    test_preflight_drops_stale_ownership_session_id_mismatch();
-    test_preflight_allows_matching_ownership_stamp();
-    test_preflight_drops_after_epoch_change();
-
-    test_recovery_allows_matching_session_expired();
-    test_recovery_ignores_stale_replay_session_expired();
-    test_recovery_ignores_session_expired_when_no_authoritative_session();
-    test_recovery_allows_zero_session_id_when_both_zero();
-
-    test_ingress_readiness_legacy_mode_always_allowed();
-    test_ingress_readiness_authoritative_not_auth_triggers_recovery_when_not_in_flight();
-    test_ingress_readiness_authoritative_not_auth_defers_without_recovery_when_auth_in_flight();
-    test_ingress_readiness_stale_local_cache_resync();
-    test_ingress_readiness_both_authenticated_passes();
-    test_ingress_readiness_authoritative_overrides_stale_local_authenticated();
-    test_ingress_readiness_push_context_always_allows_even_when_not_authenticated();
-    test_ingress_readiness_push_context_resyncs_stale_local_cache();
-
-    std::cout << "\n=== Results: " << tests_passed << "/" << tests_run << " passed";
-    if (tests_failed > 0) {
-        std::cout << " (" << tests_failed << " FAILED)";
-    }
-    std::cout << " ===\n";
-
-    return tests_failed > 0 ? 1 : 0;
-}
