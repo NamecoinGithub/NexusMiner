@@ -2112,12 +2112,12 @@ void Worker_manager::check_template_health()
         }
 
         if (chain_advanced) {
-            m_logger->error("[Worker_manager] ⚠️  EMERGENCY signal ({} channel): template {}s old and chain advanced — escalating refresh/reconnect",
+            m_logger->error("[Worker_manager] ⚠️  ORCHESTRATION TIMEOUT ({} channel): template {}s old and chain advanced — escalating refresh/reconnect",
                             channel_name, template_age);
             m_logger->error("[Worker_manager]    channel_height {} >= channel_target {}",
                             ht_snap.channel_height, ht_snap.channel_target);
         } else {
-            m_logger->error("[Worker_manager] ⚠️  EMERGENCY signal ({} channel): template {}s old with no recent push — escalating refresh/reconnect",
+            m_logger->error("[Worker_manager] ⚠️  ORCHESTRATION TIMEOUT ({} channel): template {}s old with no recent push — escalating refresh/reconnect",
                             channel_name, template_age);
             m_logger->error("[Worker_manager]    channel_height {} / channel_target {}",
                             ht_snap.channel_height, ht_snap.channel_target);
@@ -2128,7 +2128,7 @@ void Worker_manager::check_template_health()
 
         // Non-authoritative path: do NOT discard valid template and do NOT halt workers here.
         // Escalate orchestration only (reconnect + forced GET_BLOCK lane).
-        mark_recovery_initiated("template_age_emergency_signal");
+        mark_recovery_initiated("template_age_orchestration_timeout");
         retry_connect(m_primary_endpoint);
         retry_template_request(true);
     }
