@@ -184,9 +184,10 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
     // session_id and authenticated were not yet set — causing observers to see an
     // inconsistent state.
     m_coordinator->commit_authenticated(SessionId{session_id}, "authenticated");
-    // Read back the epoch that was just advanced so the local SessionInfo mirrors it.
+    // Read back the epoch and session_id that were just set so the local SessionInfo mirrors
+    // the coordinator's authoritative state using consistent assignment patterns.
     m_session.coordinator.session_epoch = m_coordinator->session_epoch();
-    m_session.coordinator.session_id = SessionId{session_id};
+    m_session.coordinator.session_id = m_coordinator->session_id();
     m_session.state = SessionState::AUTHENTICATED;
     m_session.coordinator.authenticated = true;
     m_session.falcon_authenticated = true;
