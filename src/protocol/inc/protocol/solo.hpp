@@ -116,9 +116,9 @@ public:
     static constexpr uint32_t POLL_INTERVAL_MAX_MS = 60000;    // 60 seconds maximum
     // Minimum push-silence duration before GET_ROUND fallback may trigger GET_BLOCK.
     // Policy: while PUSH is active, GET_ROUND is informational only. Once PUSH has
-    // been silent for 600s, each GET_ROUND poll (POLL_INTERVAL_MIN_MS minimum cadence)
+    // been silent for 480s, each GET_ROUND poll (POLL_INTERVAL_MIN_MS minimum cadence)
     // may request GET_BLOCK.
-    static constexpr int64_t PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS = 600;
+    static constexpr int64_t PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS = 480;
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work().
     /// Returns null/empty if not yet authenticated — callers must guard for this.
@@ -627,7 +627,7 @@ private:
     bool m_needs_initial_round_check;  // Set true when new template received
     uint32_t m_template_unified_height;    // Informational only: unified height at last template receipt (logging unified drift).
                                            // NOT used for staleness decisions (channel height is authoritative).
-    bool m_get_round_push_silent_fallback_active{false};  // Armed after PUSH silence >= 600s; cleared by new PUSH.
+    bool m_get_round_push_silent_fallback_active{false};  // Armed after PUSH silence >= 480s; cleared by new PUSH.
     
     // Helper methods for intelligent polling
     bool should_poll_get_round();
