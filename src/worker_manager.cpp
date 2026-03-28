@@ -30,7 +30,6 @@
 #include <random>
 #include <iomanip>
 #include <sstream>
-#include <csignal>
 
 namespace nexusminer
 {
@@ -809,6 +808,7 @@ void Worker_manager::enter_terminal_degraded_mode(int signal_number)
 void Worker_manager::handle_authenticated_session_loss(const char* reason)
 {
     const char* loss_reason = reason ? reason : "authenticated_session_lost";
+    constexpr int AUTH_LOSS_DEGRADED_SIGNAL = 0;
     m_logger->critical("[Session] AUTHENTICATED SESSION LOST (reason={})", loss_reason);
 
     if (m_config.has_failover() && !m_using_failover && m_failover_endpoint.is_valid())
@@ -823,14 +823,18 @@ void Worker_manager::handle_authenticated_session_loss(const char* reason)
         if (m_primary_node_session) {
             m_primary_node_session->reset();
         }
-        (void)connect(m_failover_endpoint);
+        if (!connect(m_failover_endpoint)) {
+            m_auth_loss_handoff_in_progress = false;
+            m_logger->critical("[Failover] Session-loss handoff connect initiation failed — entering terminal degraded mode");
+            enter_terminal_degraded_mode(AUTH_LOSS_DEGRADED_SIGNAL);
+        }
         return;
     }
 
     m_logger->critical("[Session] No secondary handoff available (configured={}, using_failover={}) — entering terminal degraded mode",
                        m_config.has_failover() ? "YES" : "NO",
                        m_using_failover ? "YES" : "NO");
-    enter_terminal_degraded_mode(SIGTERM);
+    enter_terminal_degraded_mode(AUTH_LOSS_DEGRADED_SIGNAL);
 }
 
 uint16_t Worker_manager::get_effective_keepalive_interval() const
@@ -1097,7 +1101,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
             if (self->m_auth_loss_handoff_in_progress) {
                 self->m_auth_loss_handoff_in_progress = false;
                 self->m_logger->critical("[Failover] Session-loss handoff connection failed — entering terminal degraded mode");
-                self->enter_terminal_degraded_mode(SIGTERM);
+                self->enter_terminal_degraded_mode(0);
                 return;
             }
             self->retry_connect(wallet_endpoint);
@@ -1106,6 +1110,8 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 
         if (self->m_auth_loss_handoff_in_progress) {
             self->m_auth_loss_handoff_in_progress = false;
+            self->m_logger->critical("[Failover] Session-loss handoff succeeded on {} — authenticated failover session established",
+                                     wallet_endpoint.to_string());
         }
 
         // Connection and authentication succeeded
