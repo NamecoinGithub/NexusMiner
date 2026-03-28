@@ -2049,13 +2049,18 @@ void Worker_manager::check_template_health()
     // Both channels use the same threshold — in the push-driven protocol the node pushes
     // on every unified tip advance (~18s apart via hash blocks), so 480s without a push
     // is unusual for either channel.
+    // Proactively request a fresh template at the warning threshold so the age clock resets
+    // before the 600s emergency fires.  Workers continue mining on the same height in the
+    // meantime; only the timestamp is refreshed.  retry_template_request(false) is non-forced
+    // so it respects the can_request_get_block() session gate and hashPrevBlock mismatch backoff.
     if (template_age > protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS &&
         template_age <= protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
         m_logger->warn("[Worker_manager] ⚠️  {} template age {}s (warning threshold {}s, emergency {}s)",
             channel_name, template_age,
             protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS,
             protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
-        m_logger->warn("[Worker_manager]    No push received for {}s — connection may be degrading", template_age);
+        m_logger->warn("[Worker_manager]    No push received for {}s — requesting proactive template refresh", template_age);
+        retry_template_request(false);
     }
 
     // Age-based emergency (600s) — dead-connection detector for both channels.
