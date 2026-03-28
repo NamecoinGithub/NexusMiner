@@ -1949,6 +1949,48 @@ void Worker_manager::check_template_health()
     auto ht_snap = solo_protocol->get_height_tracker_snapshot();
     uint64_t template_age = ht_snap.get_template_age_seconds();
 
+    // ── HEALTHY push-silence resubscription guard ───────────────────────────────
+    // During a network attack the push subscription can silently die while the miner
+    // appears HEALTHY (valid template, workers running).  If push has been silent for
+    // >120s and the template is getting old, proactively re-send MINER_READY to restore
+    // the subscription without entering recovery.
+    // Only fires when template is moderately old (> warning_threshold/4) to avoid spurious
+    // resubscribes during normal hash-block gaps.
+    // Cooldown: once per 120s to prevent rapid-fire.
+    {
+        constexpr int64_t HEALTHY_PUSH_SILENCE_RESUBSCRIBE_SECONDS = 120;
+        constexpr int64_t HEALTHY_RESUBSCRIBE_COOLDOWN_SECONDS     = 120;
+
+        bool push_received = (ht_snap.last_push_notification_at != std::chrono::steady_clock::time_point{});
+        int64_t since_push_s = push_received
+            ? std::chrono::duration_cast<std::chrono::seconds>(
+                  std::chrono::steady_clock::now() - ht_snap.last_push_notification_at).count()
+            : INT64_MAX;
+
+        bool template_aging = (template_age >
+            static_cast<uint64_t>(protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS / 4));
+
+        if (template_aging &&
+            since_push_s >= HEALTHY_PUSH_SILENCE_RESUBSCRIBE_SECONDS &&
+            solo_protocol->is_authenticated())
+        {
+            auto now_resub = std::chrono::steady_clock::now();
+            auto since_last_resub_s =
+                (m_last_resubscribe_at == std::chrono::steady_clock::time_point{})
+                ? INT64_MAX
+                : std::chrono::duration_cast<std::chrono::seconds>(
+                      now_resub - m_last_resubscribe_at).count();
+
+            if (since_last_resub_s >= HEALTHY_RESUBSCRIBE_COOLDOWN_SECONDS) {
+                m_logger->warn("[Worker_manager] ⚡ HEALTHY push-silence guard: template {}s old, "
+                               "push silent {}s — re-sending MINER_READY",
+                               template_age, since_push_s == INT64_MAX ? -1LL : since_push_s);
+                solo_protocol->resubscribe_push_notifications();
+                m_last_resubscribe_at = now_resub;
+            }
+        }
+    }
+
     // Channel height-based staleness detection (primary check — HeightTracker is the single
     // source of truth).  Template is stale when channel_height >= channel_target (both non-zero).
     {

@@ -114,10 +114,14 @@ public:
     static constexpr bool POLLING_ENABLED = true;              // Enabled: GET_ROUND sanity probe for both lanes
     static constexpr uint32_t POLL_INTERVAL_MIN_MS = 20000;    // 20 seconds minimum
     static constexpr uint32_t POLL_INTERVAL_MAX_MS = 60000;    // 60 seconds maximum
-    // Minimum push-silence duration before GET_ROUND height parity check may trigger GET_BLOCK.
-    // 45s is intentionally shorter than POLL_INTERVAL_MAX_MS/1000 (60s) to catch missed pushes
-    // on long Prime blocks (300-330s) without waiting for the 600s emergency timeout.
-    static constexpr int64_t PUSH_ABSENT_FOR_PARITY_CHECK_SECONDS = 45;
+    // Minimum push-silence duration before GET_ROUND height parity check may trigger GET_BLOCK,
+    // and before the adaptive backoff is clamped to POLL_INTERVAL_MIN_MS.
+    // Lowered to 30s (from 45s) so the height-parity fallback fires within one polling cycle
+    // during a chain-tip attack or push infrastructure disruption, without triggering on
+    // normal short push gaps between hash blocks (~18s).
+    // The existing channel_height >= tmpl->nChannelHeight guard ensures GET_BLOCK is only
+    // sent when height parity is actually met, so a lower threshold is safe.
+    static constexpr int64_t PUSH_ABSENT_FOR_PARITY_CHECK_SECONDS = 30;
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work().
     /// Returns null/empty if not yet authenticated — callers must guard for this.

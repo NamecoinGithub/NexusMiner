@@ -4826,6 +4826,23 @@ bool Solo::should_poll_get_round()
     }
 
     auto now = std::chrono::steady_clock::now();
+
+    // Push-silence clamp: if push has been silent for >= PUSH_ABSENT_FOR_PARITY_CHECK_SECONDS,
+    // hold GET_ROUND at POLL_INTERVAL_MIN_MS regardless of backoff state.
+    // This ensures height-parity checks fire at the fastest rate during push-dead scenarios
+    // (attacks, node restart, reorg push loss) without waiting for the 600s emergency.
+    // The clamp is naturally released when push resumes (push_silent becomes false).
+    {
+        auto ht_snap = m_height_tracker.GetSnapshot();
+        auto last_push = ht_snap.last_push_notification_at;
+        bool push_silent = (last_push == std::chrono::steady_clock::time_point{}) ||
+            (std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count()
+                 >= PUSH_ABSENT_FOR_PARITY_CHECK_SECONDS);
+        if (push_silent) {
+            m_current_poll_interval_ms = POLL_INTERVAL_MIN_MS;
+        }
+    }
+
     auto elapsed_ms = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             now - m_last_get_round_time).count());
