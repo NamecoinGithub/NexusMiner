@@ -249,6 +249,12 @@ add_executable(dual_connection_manager_test src/dual_connection_manager_test.cpp
 target_include_directories(dual_connection_manager_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME dual_connection_manager_test COMMAND $<TARGET_FILE:dual_connection_manager_test>)
 
+# ScheduledTask unit test
+add_executable(scheduled_task_test src/scheduled_task_test.cpp)
+target_include_directories(scheduled_task_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(scheduled_task_test PRIVATE asio)
+add_test(NAME scheduled_task_test COMMAND $<TARGET_FILE:scheduled_task_test>)
+
 # ============================================================================
 # Installation and packaging
 # ============================================================================
