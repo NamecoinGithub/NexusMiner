@@ -110,10 +110,10 @@ private:
     // Worker control methods for degraded mode
     void stop_all_workers();
     /**
-     * @param bForce When true, marks a new recovery epoch so check_template_health()
-     *               knows recovery is pending. Pass true from staleness recovery paths
-     *               where the template has already been discarded and workers stopped.
-     *               Pass false (default) from the periodic health-check timer.
+     * @param bForce When true, bypasses local GET_BLOCK gating/dedup so callers can
+     *               force an immediate fresh work request on a live primary session.
+     *               This helper is request-only: it does not mutate recovery state
+     *               or reconnect.
      */
     void retry_template_request(bool bForce = false);
     void restart_recovery_window(const char* reason);

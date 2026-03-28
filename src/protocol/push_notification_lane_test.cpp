@@ -361,7 +361,7 @@ int main()
     //
     // Verifies the corrected push handler decision tree:
     //   STEP 1 - stale (blocks_behind == 1): normal anchor update, no recovery
-    //   STEP 1 - stale (blocks_behind >= 2): discard template by height alone, recovery
+    //   STEP 1 - stale (blocks_behind >= 2): session-preserving refresh (no discard, no hard recovery)
     //   STEP 2 - not stale + hash mismatch:  same-height tip replacement, discard, soft refresh
     //   STEP 2 - not stale + hashes match:   healthy, no action
     //
@@ -393,15 +393,12 @@ int main()
                     return d;
                 }
                 if (blocks_behind == 2 && burst_grace_active) {
-                    d.discard_template_called = true;
                     d.request_work_called = true;
                     return d;
                 }
-                // blocks_behind >= 2: height alone is sufficient — discard and recover.
+                // blocks_behind >= 2: keep session/workers alive and refresh.
                 // Hash is NOT checked for stale templates (it will always differ anyway).
-                d.discard_template_called = true;
                 d.request_work_called = true;
-                d.recovery_triggered = true;
                 return d;
             }
             // Not stale — STEP 2: check hash for same-height tip replacement
@@ -434,7 +431,7 @@ int main()
         }
 
         // Scenario B: Multi-block lag with hash mismatch
-        // Expected: discard by height alone (hash is irrelevant), request work, recovery
+        // Expected: request work only, keep template/session running, no hard recovery
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/3,
                                        /*has_hash=*/true, /*hash_matches=*/false,
@@ -442,14 +439,14 @@ int main()
                                        /*tip_moved=*/false);
             print_test_result("Scenario B1: 3-block lag → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario B2: 3-block lag → discard_template called (height alone, no hash check)",
-                d.discard_template_called);
-            print_test_result("Scenario B3: 3-block lag → recovery triggered",
-                d.recovery_triggered);
+            print_test_result("Scenario B2: 3-block lag → discard_template NOT called",
+                !d.discard_template_called);
+            print_test_result("Scenario B3: 3-block lag → recovery NOT triggered",
+                !d.recovery_triggered);
         }
 
         // Scenario C: 2-block burst within grace window
-        // Expected: discard template, request fresh work, soft refresh — NOT hard recovery
+        // Expected: request fresh work, keep template/session live — NOT hard recovery
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
                                        /*has_hash=*/true, /*hash_matches=*/true,
@@ -457,14 +454,14 @@ int main()
                                        /*tip_moved=*/false);
             print_test_result("Scenario C1: 2-block burst within grace → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario C2: 2-block burst within grace → discard_template called",
-                d.discard_template_called);
+            print_test_result("Scenario C2: 2-block burst within grace → discard_template NOT called",
+                !d.discard_template_called);
             print_test_result("Scenario C3: 2-block burst within grace → recovery NOT triggered",
                 !d.recovery_triggered);
         }
 
         // Scenario D: 2-block lag after grace expires
-        // Expected: discard by height alone and enter recovery
+        // Expected: refresh request only (no discard, no hard recovery)
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
                                        /*has_hash=*/true, /*hash_matches=*/true,
@@ -472,14 +469,14 @@ int main()
                                        /*tip_moved=*/false);
             print_test_result("Scenario D1: 2-block lag after grace → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario D2: 2-block lag after grace → discard_template called",
-                d.discard_template_called);
-            print_test_result("Scenario D3: 2-block lag after grace → recovery triggered",
-                d.recovery_triggered);
+            print_test_result("Scenario D2: 2-block lag after grace → discard_template NOT called",
+                !d.discard_template_called);
+            print_test_result("Scenario D3: 2-block lag after grace → recovery NOT triggered",
+                !d.recovery_triggered);
         }
 
         // Scenario E: Compact payload (no hashPrevBlock) — multi-block lag
-        // Expected: discard by height alone (hash data unavailable but irrelevant)
+        // Expected: request refresh (hash data unavailable but irrelevant)
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
                                        /*has_hash=*/false, /*hash_matches=*/false,
@@ -487,8 +484,8 @@ int main()
                                        /*tip_moved=*/false);
             print_test_result("Scenario E1: 2-block lag, compact payload → request_work called",
                 d.request_work_called);
-            print_test_result("Scenario E2: 2-block lag, compact payload → discard called (height alone)",
-                d.discard_template_called);
+            print_test_result("Scenario E2: 2-block lag, compact payload → discard NOT called",
+                !d.discard_template_called);
         }
 
         // Scenario F: Same-height tip replacement (blocks_behind == 0, hash changed)
@@ -700,9 +697,9 @@ int main()
     }
 
     // ====================================================================
-    // Test 13: Burst guard keeps a fresh template alive for a short 2-block burst
+    // Test 13: Burst guard keeps template/session alive for a short 2-block burst
     // ====================================================================
-    std::cout << "\nTest 13: Burst guard suppresses immediate degraded recovery at 2 blocks behind" << std::endl;
+    std::cout << "\nTest 13: Burst guard keeps session alive at 2 blocks behind" << std::endl;
     {
         protocol::HeightTracker tracker;
         protocol::MiningTemplateInterface tmpl_interface(2, 0);
@@ -733,7 +730,7 @@ int main()
             [&recovery_called]() { recovery_called = true; });
 
         print_test_result("2-block burst within grace requests fresh work", request_work_called);
-        print_test_result("2-block burst within grace discards stale template", !tmpl_interface.has_valid_template());
+        print_test_result("2-block burst within grace keeps active template valid", tmpl_interface.has_valid_template());
         print_test_result("2-block burst within grace does not enter recovery", !recovery_called);
     }
 
@@ -805,9 +802,9 @@ int main()
     }
 
     // ====================================================================
-    // Test 16: Solo wires multi-block lag push to hard recovery
+    // Test 16: Solo keeps multi-block lag push on session-preserving refresh path
     // ====================================================================
-    std::cout << "\nTest 16: Solo routes multi-block lag push to hard recovery" << std::endl;
+    std::cout << "\nTest 16: Solo multi-block lag push requests refresh without hard recovery" << std::endl;
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
@@ -828,9 +825,9 @@ int main()
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
         solo.process_messages(packet, nullptr);
 
-        print_test_result("Solo stale push triggers recovery handler", recovery_called);
-        print_test_result("Solo stale push discards stale template",
-            !solo.get_template_interface()->has_valid_template());
+        print_test_result("Solo stale push does not trigger recovery handler", !recovery_called);
+        print_test_result("Solo stale push keeps current template valid",
+            solo.get_template_interface()->has_valid_template());
     }
 
     // ====================================================================
@@ -859,7 +856,7 @@ int main()
         print_test_result("Disconnected-session push does not trigger hard recovery handler", !recovery_called);
         print_test_result("Disconnected-session push updates unified height", push_snapshot.unified_height == 9200);
         print_test_result("Disconnected-session push updates channel height", push_snapshot.channel_height == 100);
-        print_test_result("Disconnected-session push still discards obsolete template",
+        print_test_result("Disconnected-session push discards template when disconnected",
             !solo.get_template_interface()->has_valid_template());
     }
 

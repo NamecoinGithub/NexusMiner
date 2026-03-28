@@ -187,7 +187,7 @@ void PushNotificationHandler::handle_push_notification(
             if (blocks_behind == 1)
             {
                 // Normal case: exactly one block behind after a fresh block was found.
-                // Just request a fresh template; workers keep mining the current one.
+                // Just request fresh work; workers keep mining the current one.
                 m_logger->info("[Solo Push] ℹ️  Normal anchor update (blocks_behind=1) — requesting fresh {} template",
                                ch_name);
                 // Reset height-based dedup so the recovery GET_BLOCK is not suppressed.
@@ -217,25 +217,23 @@ void PushNotificationHandler::handle_push_notification(
                 if (has_recent_template) {
                     const auto template_age_s = std::chrono::duration_cast<std::chrono::seconds>(
                         now - snap.last_template_update).count();
-                    m_logger->info("[Solo Push] ℹ️  Burst: 2 blocks behind (template {}s old) — discarding stale template and requesting fresh {} template (soft refresh)",
+                    m_logger->info("[Solo Push] ℹ️  Burst: 2 blocks behind (template {}s old) — requesting fresh {} template (session-preserving refresh)",
                                    template_age_s, ch_name);
-                    // Discard the stale template so workers stop hashing on an unsubmittable block
-                    // and so has_valid_template=false is correctly reported to Worker_manager.
-                    template_interface->discard_template("burst_2_block_lag");
                     if (reset_dedup_fn) { reset_dedup_fn(); }
                     request_work_fn();
+                    // Burst-only target advance: keep repeated burst pushes at the same
+                    // channel height from retriggering this branch.
+                    if (height_tracker) {
+                        height_tracker->AdvanceChannelTarget(snap.channel_height + 1);
+                    }
                     return;
                 }
             }
 
-            // blocks_behind >= 2: miner is multiple blocks behind — genuine recovery.
-            // Height alone is sufficient to determine staleness; no hash check needed.
-            m_logger->warn("[Solo Push] ⚠️  Template {} block(s) behind (channel_height {} >= channel_target {}) — discarding",
+            // blocks_behind >= 2: keep session/workers alive and refresh aggressively.
+            // Do NOT discard or escalate hard recovery from push staleness alone.
+            m_logger->warn("[Solo Push] ⚠️  Template {} block(s) behind (channel_height {} >= channel_target {}) — requesting fresh work/GET_BLOCK (no discard, no hard recovery)",
                            blocks_behind, snap.channel_height, snap.channel_target);
-            template_interface->discard_template("multi_block_lag");
-            if (recovery_initiated_fn) {
-                recovery_initiated_fn();
-            }
             if (reset_dedup_fn) { reset_dedup_fn(); }
             request_work_fn();
 
