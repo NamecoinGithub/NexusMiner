@@ -1438,8 +1438,6 @@ bool Worker_manager::is_valid_transition(RecoveryPhase from, RecoveryPhase to) {
         case RecoveryPhase::RECONNECTING:
             return to == RecoveryPhase::HEALTHY ||
                    to == RecoveryPhase::WAITING_TEMPLATE;
-        case RecoveryPhase::DEGRADED_MODE:
-            return false;
     }
     return false;
 }

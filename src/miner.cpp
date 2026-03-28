@@ -44,11 +44,7 @@ namespace nexusminer
 			{
 				m_worker_manager->enter_terminal_degraded_mode(signal_number);
 			}
-			else
-			{
-				m_io_context->stop();
-			}
-			exit(1);
+			m_io_context->stop();
 		});
 	}
 
