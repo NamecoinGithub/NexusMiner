@@ -260,3 +260,12 @@ target_include_directories(node_session_context_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 add_test(NAME node_session_context_test COMMAND $<TARGET_FILE:node_session_context_test>)
+
+# SessionManager unit tests
+add_executable(session_manager_test session_manager_test.cpp)
+target_link_libraries(session_manager_test PRIVATE protocol network asio spdlog)
+target_include_directories(session_manager_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME session_manager_test COMMAND $<TARGET_FILE:session_manager_test>)
