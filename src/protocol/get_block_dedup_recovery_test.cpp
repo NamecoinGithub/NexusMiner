@@ -538,23 +538,21 @@ void test_anti_flood_preserved_within_same_epoch() {
 struct HeightDeduplicator {
     bool has_valid_template{false};
     uint32_t last_unified{0};
-    uint32_t last_channel{0};
     uint32_t cur_unified{100};
-    uint32_t cur_channel{50};
 
     // Returns true when the GET_BLOCK would be transmitted (not suppressed).
     // Mirrors the solo.cpp height-based dedup condition exactly:
-    //   suppress only when heights unchanged AND a valid template exists.
+    //   suppress only when unified height unchanged AND a valid template exists.
+    //   Channel height is intentionally excluded — hashPrevBlock changes on every
+    //   unified-height advance regardless of which channel mined the block.
     bool would_send() {
         if (last_unified > 0 &&
             cur_unified == last_unified &&
-            cur_channel == last_channel &&
             has_valid_template)
         {
             return false;  // suppressed — redundant refresh of valid template
         }
         last_unified = cur_unified;
-        last_channel = cur_channel;
         return true;
     }
 };
@@ -564,27 +562,67 @@ void test_height_dedup_bypassed_when_no_valid_template() {
 
     HeightDeduplicator dedup;
 
-    // First request: no prior heights recorded, always passes.
+    // First request: no prior height recorded, always passes.
     dedup.has_valid_template = false;
     bool first_ok = dedup.would_send();
-    print_test_result("Initial GET_BLOCK succeeds (no prior heights)", first_ok);
-    // Heights are now recorded as (100, 50).
+    print_test_result("Initial GET_BLOCK succeeds (no prior height)", first_ok);
+    // Unified height is now recorded as 100.
 
-    // Same heights, valid template present → guard fires, request suppressed.
+    // Same height, valid template present → guard fires, request suppressed.
     dedup.has_valid_template = true;
     bool suppressed_with_template = !dedup.would_send();
-    print_test_result("Same heights with valid template → suppressed", suppressed_with_template);
+    print_test_result("Same unified height with valid template → suppressed", suppressed_with_template);
 
-    // Same heights, NO valid template → guard bypassed, request allowed.
+    // Same height, NO valid template → guard bypassed, request allowed.
     dedup.has_valid_template = false;
     bool allowed_no_template = dedup.would_send();
-    print_test_result("Same heights without valid template → allowed (bypass)", allowed_no_template);
+    print_test_result("Same unified height without valid template → allowed (bypass)", allowed_no_template);
 
-    // Heights advance, valid template present → height change unblocks guard.
+    // Height advances, valid template present → height change unblocks guard.
     dedup.has_valid_template = true;
     dedup.cur_unified = 101;
     bool allowed_new_height = dedup.would_send();
-    print_test_result("New height with valid template → allowed (height changed)", allowed_new_height);
+    print_test_result("New unified height with valid template → allowed (height changed)", allowed_new_height);
+}
+
+// ============================================================================
+// Test 15: Unified-only dedup allows cross-channel template refresh
+//
+// Simulates the scenario where a non-Prime block (Hash/Stake) advances the
+// unified chain tip without changing Prime channel height.  With the old
+// (unified, channel) pair guard, a Prime miner would be suppressed because
+// channel height is unchanged.  With unified-only dedup, the GET_BLOCK is
+// allowed whenever unified height advances — regardless of which channel mined.
+// ============================================================================
+void test_unified_only_dedup_allows_cross_channel_refresh() {
+    std::cout << "\nTest 15: Cross-channel refresh — unified advances, channel stays same\n";
+
+    HeightDeduplicator dedup;
+    dedup.has_valid_template = true;
+
+    // First GET_BLOCK at unified=100 (no prior state).
+    bool first_ok = dedup.would_send();
+    print_test_result("Initial GET_BLOCK at unified=100 succeeds", first_ok);
+
+    // Same unified height → suppressed (valid template, no new block on any channel).
+    bool same_height_suppressed = !dedup.would_send();
+    print_test_result("Same unified=100 with valid template → suppressed", same_height_suppressed);
+
+    // A Hash block arrives, advancing unified to 101 but Prime channel stays at 50.
+    // The dedup must NOT suppress — hashPrevBlock has changed.
+    dedup.cur_unified = 101;
+    // (cur_channel would still be 50 in the old code — but it's no longer tracked here)
+    bool cross_channel_allowed = dedup.would_send();
+    print_test_result("Unified advances to 101 (Hash/Stake block) → allowed (hashPrevBlock changed)", cross_channel_allowed);
+
+    // Now at unified=101, same height again → suppressed.
+    bool suppressed_after_refresh = !dedup.would_send();
+    print_test_result("Same unified=101 after refresh → suppressed again", suppressed_after_refresh);
+
+    // Another non-Prime block: unified→102, Prime channel still same.
+    dedup.cur_unified = 102;
+    bool second_cross_channel = dedup.would_send();
+    print_test_result("Unified advances to 102 (another cross-channel block) → allowed", second_cross_channel);
 }
 
 // ============================================================================
@@ -609,6 +647,7 @@ int main() {
     test_new_recovery_epoch_does_not_inherit_stale_dedup();
     test_anti_flood_preserved_within_same_epoch();
     test_height_dedup_bypassed_when_no_valid_template();
+    test_unified_only_dedup_allows_cross_channel_refresh();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";
