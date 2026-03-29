@@ -1107,7 +1107,7 @@ int main()
         print_test_result("Unified advance with unchanged Prime height resets polling to minimum",
             solo.get_current_poll_interval_ms() == protocol::Solo::POLL_INTERVAL_MIN_MS);
         print_test_result("Unified advance is reflected in last round status",
-            solo.get_last_round_status().height == 201);
+            solo.get_last_round_status().height == 200);  // 201 raw → 200 tip (target-to-tip normalization)
     }
 
     // ====================================================================
