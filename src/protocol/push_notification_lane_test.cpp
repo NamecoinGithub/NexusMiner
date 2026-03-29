@@ -165,6 +165,26 @@ network::Payload create_template_delivery_payload(uint32_t unified_height,
     return payload;
 }
 
+network::Payload create_get_round_height_payload(uint32_t unified_height,
+                                                 uint32_t prime_height,
+                                                 uint32_t hash_height,
+                                                 uint32_t stake_height)
+{
+    network::Payload payload(16, 0);
+    auto write_u32_be = [&](size_t offset, uint32_t value) {
+        payload[offset + 0] = static_cast<uint8_t>((value >> 24) & 0xFF);
+        payload[offset + 1] = static_cast<uint8_t>((value >> 16) & 0xFF);
+        payload[offset + 2] = static_cast<uint8_t>((value >> 8) & 0xFF);
+        payload[offset + 3] = static_cast<uint8_t>(value & 0xFF);
+    };
+
+    write_u32_be(0, unified_height);
+    write_u32_be(4, prime_height);
+    write_u32_be(8, hash_height);
+    write_u32_be(12, stake_height);
+    return payload;
+}
+
 
 int main()
 {
@@ -1079,6 +1099,35 @@ int main()
         on_push_reestablished();
         bool second_trigger = on_get_round_parity(0, 101, 101);
         print_test_result("First PUSH after silence disarms fallback mode", !fallback_mode_armed && !second_trigger);
+    }
+
+    // ====================================================================
+    // Test 24: NEW_ROUND remains authoritative when unified advances even if
+    //          the active channel height is unchanged
+    // ====================================================================
+    std::cout << "\nTest 24: NEW_ROUND resets polling when unified advances with unchanged Prime height" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        session_manager->start_session(0x13572468);
+
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_PRIME), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::STATELESS);
+
+        network::Payload old_round_payload = create_get_round_height_payload(200, 50, 75, 10);
+        Packet old_round_packet(MinerLLP::MirrorOpcode(static_cast<uint8_t>(Packet::OLD_ROUND)), old_round_payload);
+        solo.process_messages(old_round_packet, nullptr);
+        print_test_result("OLD_ROUND backs off the poll interval before regression case",
+            solo.get_current_poll_interval_ms() > protocol::Solo::POLL_INTERVAL_MIN_MS);
+
+        network::Payload new_round_payload = create_get_round_height_payload(201, 50, 76, 10);
+        Packet new_round_packet(MinerLLP::MirrorOpcode(static_cast<uint8_t>(Packet::NEW_ROUND)), new_round_payload);
+        solo.process_messages(new_round_packet, nullptr);
+
+        print_test_result("Unified advance with unchanged Prime height resets polling to minimum",
+            solo.get_current_poll_interval_ms() == protocol::Solo::POLL_INTERVAL_MIN_MS);
+        print_test_result("Unified advance is reflected in last round status",
+            solo.get_last_round_status().height == 201);
     }
 
     std::cout << "\n========================================" << std::endl;

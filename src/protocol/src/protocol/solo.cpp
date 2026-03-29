@@ -2377,6 +2377,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             return;
         }
         
+        uint32_t previous_unified_height = m_last_round_status.height;
         uint32_t previous_channel_height = m_last_round_channel_height;
 
         // Determine channel name for logging
@@ -2541,16 +2542,19 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             }
         }
 
-        // Update intelligent polling state
-        if (channel_height == 0 || channel_height == previous_channel_height) {
-            m_logger->info("[Solo GET_ROUND] NEW_ROUND received but channel height unchanged; treating as OLD_ROUND/backoff");
+        // Update intelligent polling state. Treat NEW_ROUND as authoritative when
+        // the unified tip advanced, even if this miner's channel height did not.
+        if (unified_height == 0 || unified_height == previous_unified_height) {
+            m_logger->info("[Solo GET_ROUND] NEW_ROUND received but unified height unchanged; "
+                           "treating as OLD_ROUND/backoff (unified={} previous_unified={} channel={} previous_channel={})",
+                           unified_height, previous_unified_height, channel_height, previous_channel_height);
             on_old_round_received();
         } else {
             on_new_round_received(unified_height);
         }
 
-        // Update the dedicated dedup field AFTER the comparison so it captures
-        // the channel height from this GET_ROUND response for the next dedup check.
+        // Record the current channel height after the NEW_ROUND polling decision so
+        // diagnostic logging can report the previous channel value next time.
         m_last_round_channel_height = channel_height;
     }
     else if (matches_opcode(packet, Packet::OLD_ROUND))
