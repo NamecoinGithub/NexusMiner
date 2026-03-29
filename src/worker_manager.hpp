@@ -14,6 +14,7 @@
 #include "Util/include/exponential_backoff.h"
 #include "protocol/inc/protocol/protocol_constants.hpp"
 #include "protocol/inc/protocol/epoch_coordinator.hpp"
+#include "protocol/inc/protocol/get_block_reason.hpp"
 #include "node_session/inc/node_session/node_session.hpp"
 #include <asio/steady_timer.hpp>
 
@@ -113,12 +114,14 @@ private:
     // Worker control methods for degraded mode
     void stop_all_workers();
     /**
-     * @param bForce When true, bypasses local GET_BLOCK gating/dedup so callers can
-     *               force an immediate fresh work request on a live primary session.
+     * @param reason Semantic reason for the GET_BLOCK request.
+     *               The dedup bypass policy is derived from the reason via
+     *               should_bypass_height_dedup() / should_bypass_all_dedup()
+     *               in get_block_reason.hpp.
      *               This helper is request-only: it does not mutate recovery state
      *               or reconnect.
      */
-    void retry_template_request(bool bForce = false);
+    void retry_template_request(protocol::GetBlockReason reason);
     void restart_recovery_window(const char* reason);
 
     /// Mark that a hard GET_BLOCK recovery is now in progress.

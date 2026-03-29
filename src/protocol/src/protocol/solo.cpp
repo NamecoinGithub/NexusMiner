@@ -131,6 +131,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_needs_initial_round_check{false}  // No template yet
 , m_template_unified_height{0}  // No template yet
 , m_protocol_lane{ProtocolLane::UNKNOWN}  // Will be determined from connection port
+, m_dedup_guard{spdlog::get("logger")}
 {
     if (!m_logger) {
         m_logger = spdlog::default_logger();
@@ -1078,10 +1079,10 @@ network::Shared_payload Solo::login(Login_handler handler)
 
 network::Shared_payload Solo::get_work()
 {
-    return get_work(false);
+    return get_work(GetBlockReason::INITIAL_REQUEST);
 }
 
-network::Shared_payload Solo::get_work(bool bypass_dedup)
+network::Shared_payload Solo::get_work(GetBlockReason reason)
 {
     /// Request a fresh mining template via GET_BLOCK.
     /// Authentication-guarded; returns null if not authenticated or reward not bound.
@@ -1117,59 +1118,16 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
     }
 
     // ── GET_BLOCK deduplication guard ────────────────────────────────────────
-    // Height-based dedup: suppress GET_BLOCK when requesting the exact same
-    // (unified_height, channel_height) pair we last transmitted AND a valid
-    // template is already in hand.  Prevents duplicate requests from
-    // push_notification_handler and Worker_manager when both independently
-    // respond to the same staleness event.
-    //
-    // The guard is intentionally skipped when no valid template exists: in that
-    // state we must always attempt a fresh fetch regardless of whether the
-    // heights match the previous request, because the prior request may have
-    // returned nothing or a discarded template.
-    //
-    // Unlike the old 100ms time-based guard, height-based dedup does NOT prevent
-    // retries when the chain has actually advanced — any height change unblocks
-    // the guard automatically.  bypass_dedup (set for forced degraded-mode
-    // retries) skips this check so the escape ladder can always make progress.
-    //
-    // A 100ms rapid-burst guard is kept alongside to prevent two code paths from
-    // transmitting simultaneously in the same scheduler tick.
-    auto now_tp = std::chrono::steady_clock::now();
-    if (bypass_dedup) {
-        m_logger->info("[Solo] GET_BLOCK deduplication bypass active for degraded recovery retry");
-    }
-    if (!bypass_dedup) {
-        // Rapid-burst guard: suppress within 100ms (two code paths racing)
-        if (m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
-            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                now_tp - m_last_get_block_transmitted_tp).count();
-            if (elapsed_ms < GET_BLOCK_DEDUP_MS) {
-                m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
-                m_logger->info("[Solo] GET_BLOCK rapid-burst dedup: suppressing request "
-                              "({}ms since last transmission, threshold {}ms)",
-                              elapsed_ms, GET_BLOCK_DEDUP_MS);
-                return nullptr;
-            }
-        }
-        // Height-based dedup: suppress only when unified_height is unchanged and
-        // a valid template already exists.  Channel height is intentionally NOT
-        // included: hashPrevBlock changes on every unified-height advance regardless
-        // of which channel (Hash, Stake, or Prime) mined the block, so suppressing
-        // based on channel height would cause Prime miners to mine on a stale
-        // hashPrevBlock whenever a non-Prime block advances the chain.
+    // Delegated to the centralized GetBlockDedupGuard.
+    {
         auto snap = m_height_tracker.GetSnapshot();
         uint32_t cur_unified = snap.unified_height;
         bool have_valid_template = m_template_interface &&
                                    m_template_interface->has_valid_template();
-        if (m_last_get_block_unified_height > 0 &&
-            cur_unified == m_last_get_block_unified_height &&
-            have_valid_template)
-        {
+
+        auto verdict = m_dedup_guard.check(reason, cur_unified, have_valid_template);
+        if (verdict != GetBlockDedupGuard::Verdict::ALLOW) {
             m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
-            m_logger->info("[Solo] GET_BLOCK height-based dedup: suppressing request "
-                          "(unified={} unchanged since last GET_BLOCK, template valid)",
-                          cur_unified);
             return nullptr;
         }
     }
@@ -1188,11 +1146,10 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
 
     if (payload && !payload->empty()) {
         m_last_get_block_request_owner = capture_session_ownership();
-        // Record transmission timestamp and unified height for deduplication
-        m_last_get_block_transmitted_tp = now_tp;
+        // Record transmission for dedup guard
         {
             auto snap = m_height_tracker.GetSnapshot();
-            m_last_get_block_unified_height = snap.unified_height;
+            m_dedup_guard.record_transmission(snap.unified_height);
         }
         m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
 
@@ -1210,13 +1167,7 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
 
 void Solo::reset_get_block_dedup_state()
 {
-    // Clear all deduplication state so the next get_work() call is not suppressed.
-    // This must be called when the canonical tip-anchor changes (same-height chain reorg)
-    // or a new degraded-recovery epoch begins — the prior outstanding request was for the
-    // old canonical state and is no longer a valid duplicate guard.
-    m_last_get_block_transmitted_tp = {};
-    m_last_get_block_unified_height = 0;
-    m_logger->info("[Solo] \u26a1 GET_BLOCK dedup state reset — tip-anchor or recovery epoch changed; next request will not be suppressed");
+    m_dedup_guard.reset();
 }
 
 network::Shared_payload Solo::send_get_round()
@@ -2430,7 +2381,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         get_channel_name(m_channel));
                     m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
                     if (connection) {
-                        auto work_payload = get_work();
+                        auto work_payload = get_work(GetBlockReason::GET_ROUND_STALE);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                             get_block_sent_in_handler = true;
@@ -2472,7 +2423,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             
             // Request template via legacy GET_BLOCK
             if (connection) {
-                auto work_payload = get_work();
+                auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
                     get_block_sent_in_handler = true;
@@ -2521,7 +2472,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     m_template_interface->discard_template(
                         "GET_ROUND height parity: node tip met template target");
                     if (connection) {
-                        auto work_payload = get_work();
+                        auto work_payload = get_work(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                             get_block_sent_in_handler = true;
@@ -2635,7 +2586,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         get_channel_name(m_channel));
                     m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
                     if (connection) {
-                        auto work_payload = get_work();
+                        auto work_payload = get_work(GetBlockReason::GET_ROUND_STALE);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                             get_block_sent_in_handler = true;
@@ -2664,7 +2615,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             
             // Request fresh template
             if (connection) {
-                auto work_payload = get_work();
+                auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
                     get_block_sent_in_handler = true;
@@ -2709,7 +2660,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     m_template_interface->discard_template(
                         "GET_ROUND height parity: node tip met template target");
                     if (connection) {
-                        auto work_payload = get_work();
+                        auto work_payload = get_work(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                             get_block_sent_in_handler = true;
@@ -3403,45 +3354,35 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
 {
     disarm_get_round_fallback("PUSH re-established");
 
+    // Reset dedup state unconditionally before processing the push.
+    // PUSH is the authoritative liveness signal from the node — any work request
+    // triggered by this push must not be blocked by stale cached heights.
+    // PUSH reasons also bypass height dedup in GetBlockDedupGuard, but resetting
+    // here handles cross-channel cases where the handler returns early without
+    // requesting work (the reset still unblocks future age-based retries).
+    reset_get_block_dedup_state();
+
     const char* push_opcode_name = (channel == mining::CHANNEL_PRIME) ? "PRIME_BLOCK_AVAILABLE" : "HASH_BLOCK_AVAILABLE";
         m_push_handler->handle_push_notification(
             packet, channel, m_protocol_lane,
             m_template_interface.get(),
             &m_height_tracker,
+            // CALLBACK 1: update_height_fn — Updates cached height state
             [this](uint32_t u, uint32_t c, uint32_t d) {
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
+            // CALLBACK 2: request_work_fn — Issues GET_BLOCK with PUSH_STALE reason
+            // PUSH reasons bypass height dedup in GetBlockDedupGuard so this
+            // is never suppressed by stale cached heights.
             [connection, this, push_opcode_name]() {
-                // Push notifications are the authoritative liveness signal.
-                // ALWAYS request work when a push arrives — session gate only applies to SUBMIT.
-                // A transient !authoritative_authenticated state must never suppress GET_BLOCK.
                 if (connection) {
-                    auto work_payload = get_work();
+                    auto work_payload = get_work(GetBlockReason::PUSH_STALE);
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
                     } else {
                         m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
                     }
-                    // NOTE: Do NOT send MINER_READY here. MINER_READY is a one-time subscription
-                    // handshake sent only during initial login. The node keeps the miner subscribed
-                    // for the lifetime of the session. GET_BLOCK (0xD081) is the correct recovery
-                    // request — it asks for a fresh template without resetting the subscription state.
                 }
-            },
-            [this]() {
-                if (m_recovery_handler) {
-                    mark_authoritative_recovery_required("push_channel_stale_recovery");
-                    m_logger->info("[Solo] ⚡ Unified Tip-Anchor Changed — recovery initiated (push-triggered template replacement), resetting dedup state and notifying Worker_manager");
-                    // Reset dedup state so the recovery GET_BLOCK is not blocked by stale
-                    // timestamp from the prior request that targeted the old canonical tip.
-                    reset_get_block_dedup_state();
-                    m_recovery_handler();
-                }
-            },
-            [this]() {
-                // Reset height-based dedup before recovery GET_BLOCK so the stale push
-                // path can always issue a fresh GET_BLOCK regardless of cached heights.
-                reset_get_block_dedup_state();
             });
 }
 

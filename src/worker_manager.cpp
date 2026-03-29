@@ -24,6 +24,7 @@
 #include "protocol/solo.hpp"
 #include "protocol/protocol_constants.hpp"
 #include "protocol/session_status_policy.hpp"
+#include "protocol/get_block_reason.hpp"
 #include <asio/steady_timer.hpp>
 #include <variant>
 #include <algorithm>
@@ -309,7 +310,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                                 // Request fresh work/GET_BLOCK via NodeSession
                                 m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK via NodeSession");
-                                auto work_payload = m_primary_node_session->request_work(true);
+                                auto work_payload = m_primary_node_session->request_work(protocol::GetBlockReason::HEALTH_CHANNEL_STALE);
                                 if (work_payload && !work_payload->empty()) {
                                     m_primary_node_session->transmit(work_payload);
                                 }
@@ -450,7 +451,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // Recovery state transition is explicit (domain-isolation rule).
                     mark_recovery_initiated("template_distribution_failed");
                     stop_all_workers();
-                    retry_template_request(true);
+                    retry_template_request(protocol::GetBlockReason::TEMPLATE_FEED_FAILURE);
                 }
             }
         );
@@ -482,7 +483,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     
                     // Request fresh work/GET_BLOCK
                     mark_recovery_initiated("template_validation_failed");
-                    retry_template_request(true);
+                    retry_template_request(protocol::GetBlockReason::VALIDATION_FAILURE);
                 }
             );
             m_logger->info("[Worker_manager] Validation failure handler registered");
@@ -501,7 +502,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             [this]() {
                 mark_recovery_initiated("push_staleness");
                 // Workers keep running while we request fresh work/GET_BLOCK.
-                retry_template_request(true);
+                retry_template_request(protocol::GetBlockReason::RECOVERY_FORCED);
             }
         );
         m_logger->info("[Worker_manager] Recovery handler registered");
@@ -678,7 +679,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // for this new authenticated session (avoids Stage 3 immediately firing).
                     m_recovery.degraded_since = {};
                     restart_recovery_window("session_reauthenticated");
-                    retry_template_request(true);
+                    retry_template_request(protocol::GetBlockReason::SESSION_REAUTH);
                 }
             }
         );
@@ -1114,7 +1115,7 @@ void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
             return;
         }
         self->m_forced_retry_timer_pending = false;
-        self->retry_template_request(true);
+        self->retry_template_request(protocol::GetBlockReason::RECOVERY_TIMER);
     });
 }
 
@@ -1689,10 +1690,10 @@ void Worker_manager::stop_all_workers()
 }
 
 
-void Worker_manager::retry_template_request(bool bForce)
+void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
 {
     auto now = std::chrono::steady_clock::now();
-    m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK... (force={})", bForce ? "true" : "false");
+    m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK... (reason={})", reason_name(reason));
 
     // Domain-isolation contract:
     //   - retry_template_request(): fresh work/GET_BLOCK request semantics only
@@ -1715,7 +1716,7 @@ void Worker_manager::retry_template_request(bool bForce)
     // If validate_current_template() has discarded the last several templates due to
     // hashPrevBlock mismatch (consecutive > 0), a rapid-fire GET_BLOCK ↔ discard loop
     // is forming.  Apply an exponential delay before the next request so we don't
-    // hammer a node that is already under load.  Forced recovery calls (bForce=true)
+    // hammer a node that is already under load.  Forced recovery calls (should_bypass_all_dedup)
     // coming from the health-monitor still respect the backoff; the health-monitor's
     // own tick period (~5 s) already provides a natural floor delay.
     {
@@ -1754,7 +1755,7 @@ void Worker_manager::retry_template_request(bool bForce)
         // Suppress this GET_BLOCK if we are still within the backoff window.
         // Forced live-session refresh requests bypass this guard so stalled/waiting
         // recovery can always attempt a fresh BLOCK_DATA pull immediately.
-        if (!bForce &&
+        if (!should_bypass_all_dedup(reason) &&
             m_get_block_backoff_until != std::chrono::steady_clock::time_point{} &&
             now < m_get_block_backoff_until)
         {
@@ -1763,7 +1764,7 @@ void Worker_manager::retry_template_request(bool bForce)
             m_logger->info("[Worker_manager] GET_BLOCK suppressed: context=hashprev_mismatch_backoff "
                            "({}ms remaining)", remaining_ms);
             return;
-        } else if (bForce &&
+        } else if (should_bypass_all_dedup(reason) &&
                    m_get_block_backoff_until != std::chrono::steady_clock::time_point{} &&
                    now < m_get_block_backoff_until) {
             auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1794,14 +1795,14 @@ void Worker_manager::retry_template_request(bool bForce)
     }
 
     bool no_valid_template = !has_valid_template_available(solo_protocol);
-    bool forced_lane = bForce && (is_recovery_active() || no_valid_template) && solo_protocol->is_authenticated();
+    bool is_forced = should_bypass_height_dedup(reason) && (is_recovery_active() || no_valid_template) && solo_protocol->is_authenticated();
 
     // Gate: SessionManager::can_request_get_block() must be true before transmitting GET_BLOCK.
-    // This guard is bypassed when this is a forced recovery request (bForce && is_recovery_active())
+    // This guard is bypassed when the reason bypasses height dedup (e.g. recovery, validation failure)
     // so the recovery ladder can always make progress even when push notifications are absent
     // (no PUSH subscription, post-reorg push silence, or initial connection before first push).
     if (!solo_protocol->can_request_get_block()) {
-        if (bForce) {
+        if (should_bypass_height_dedup(reason)) {
             m_logger->info("[Worker_manager] GET_BLOCK can_request_get_block=false bypassed by forced live-session request");
         } else {
             m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=session_not_ready_for_get_block");
@@ -1812,15 +1813,15 @@ void Worker_manager::retry_template_request(bool bForce)
     }
 
     // Request fresh work via NodeSession (wire-level GET_BLOCK)
-    m_logger->info("[Worker_manager] Requesting fresh work via NodeSession (forced_lane={})",
-                   forced_lane ? "true" : "false");
-    auto work_payload = m_primary_node_session->request_work(forced_lane);
+    m_logger->info("[Worker_manager] Requesting fresh work via NodeSession (reason={}, forced={})",
+                   reason_name(reason), is_forced ? "true" : "false");
+    auto work_payload = m_primary_node_session->request_work(reason);
     if (work_payload && !work_payload->empty()) {
         m_primary_node_session->transmit(work_payload);
         m_recovery.last_get_block_at = std::chrono::steady_clock::now();
         m_recovery.get_block_confirmed = true;
         ++m_get_block_sent_total;
-        if (forced_lane) {
+        if (is_forced) {
             ++m_get_block_forced_retry_total;
         }
         m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_epoch_coordinator->recovery_epoch());
@@ -1912,7 +1913,7 @@ void Worker_manager::check_template_health()
         }
 
         // Retry GET_BLOCK on every health check tick (forced: bypass local gates)
-        retry_template_request(true);
+        retry_template_request(protocol::GetBlockReason::RECOVERY_FORCED);
 
         /* ── Reorg Resubscription Guard ──────────────────────────────────────────
          * After 60s in WAITING_TEMPLATE with a live authenticated session but no
@@ -1962,7 +1963,7 @@ void Worker_manager::check_template_health()
     if (!has_valid_template) {
         // No template in HEALTHY state — force fresh work/GET_BLOCK so local gates
         // do not stall BLOCK_DATA delivery while the primary session is alive.
-        retry_template_request(true);
+        retry_template_request(protocol::GetBlockReason::HEALTH_NO_TEMPLATE);
         return;
     }
 
@@ -1984,7 +1985,7 @@ void Worker_manager::check_template_health()
                     channel_name,
                     std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
                     std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
-                retry_template_request(false);
+                retry_template_request(protocol::GetBlockReason::HEALTH_STALE_SUPPRESSED);
                 return;
             }
 
@@ -1994,7 +1995,7 @@ void Worker_manager::check_template_health()
                     ht_snap.channel_height,
                     ht_snap.expected_template_target(),
                     ht_snap.channel_target);
-                retry_template_request(false);
+                retry_template_request(protocol::GetBlockReason::HEALTH_CHANNEL_ADVANCE);
                 return;
             }
 
@@ -2003,7 +2004,7 @@ void Worker_manager::check_template_health()
                     channel_name,
                     ht_snap.channel_height,
                     ht_snap.channel_target);
-                retry_template_request(false);
+                retry_template_request(protocol::GetBlockReason::HEALTH_CHANNEL_ADVANCE);
                 return;
             }
 
@@ -2017,7 +2018,7 @@ void Worker_manager::check_template_health()
             // Session-preserving staleness handling:
             // even for multi-block lag, keep workers/session alive and force fresh work.
             // Hard recovery should only be used for explicit connection/session failures.
-            retry_template_request(true);
+            retry_template_request(protocol::GetBlockReason::HEALTH_CHANNEL_STALE);
             return;
         }
     }
@@ -2026,7 +2027,7 @@ void Worker_manager::check_template_health()
     if (ht_snap.is_tip_moved()) {
         m_logger->debug("[Worker_manager] Unified tip moved (template_unified_height {} → unified_height {}) — requesting fresh work; workers continue on valid channel template",
                        ht_snap.template_unified_height, ht_snap.unified_height);
-        retry_template_request(false);
+        retry_template_request(protocol::GetBlockReason::HEALTH_TIP_MOVED);
         return;
     }
 
@@ -2045,7 +2046,7 @@ void Worker_manager::check_template_health()
             template_interface->discard_template("Unified height drift: " +
                 std::to_string(drift) + " blocks behind");
             mark_recovery_initiated("height_drift");
-            retry_template_request(true);
+            retry_template_request(protocol::GetBlockReason::HEIGHT_DRIFT);
             return;
         }
     }
@@ -2074,7 +2075,7 @@ void Worker_manager::check_template_health()
     // is unusual for either channel.
     // Proactively request fresh work at the warning threshold so the age clock resets
     // before the 600s emergency fires.  Workers continue mining on the same height in the
-    // meantime; only the timestamp is refreshed.  retry_template_request(false) is non-forced
+    // meantime; only the timestamp is refreshed.  TEMPLATE_AGE_WARNING does not bypass
     // so it respects the can_request_get_block() session gate and hashPrevBlock mismatch backoff.
     if (template_age > protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS &&
         template_age <= protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
@@ -2083,7 +2084,7 @@ void Worker_manager::check_template_health()
             protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS,
             protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
         m_logger->warn("[Worker_manager]    No push received for {}s — requesting proactive fresh work/GET_BLOCK", template_age);
-        retry_template_request(false);
+        retry_template_request(protocol::GetBlockReason::TEMPLATE_AGE_WARNING);
     }
 
     // BLOCK_DATA timeout trigger (600s) — dead-connection detector for both channels.
@@ -2108,7 +2109,7 @@ void Worker_manager::check_template_health()
                             template_age, m_epoch_coordinator->recovery_epoch());
             // Resend GET_BLOCK (non-force: respects RECOVERY_RESEND_INTERVAL_SECONDS rate-limit)
             // so recovery keeps making progress without escalating to hard stop/restart.
-            retry_template_request(false);
+            retry_template_request(protocol::GetBlockReason::TEMPLATE_AGE_DEFERRED);
             return;
         }
 
@@ -2128,7 +2129,7 @@ void Worker_manager::check_template_health()
             m_logger->warn("[Worker_manager] BLOCK_DATA timeout deferred: push notification is recent ({}s ago) — "
                            "connection alive, awaiting fresh BLOCK_DATA",
                            since_push_s);
-            retry_template_request(false);
+            retry_template_request(protocol::GetBlockReason::TEMPLATE_AGE_DEFERRED);
             return;
         }
 
@@ -2142,7 +2143,7 @@ void Worker_manager::check_template_health()
                 channel_name,
                 std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
                 std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
-            retry_template_request(false);
+            retry_template_request(protocol::GetBlockReason::TEMPLATE_AGE_DEFERRED);
             return;
         }
 
@@ -2165,7 +2166,7 @@ void Worker_manager::check_template_health()
         // Escalate orchestration only (reconnect + forced GET_BLOCK lane).
         mark_recovery_initiated(BLOCK_DATA_TIMEOUT_TRIGGER_REASON);
         retry_connect(m_primary_endpoint);
-        retry_template_request(true);
+        retry_template_request(protocol::GetBlockReason::TEMPLATE_AGE_EMERGENCY);
     }
 }
 

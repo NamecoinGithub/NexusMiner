@@ -389,19 +389,19 @@ int main()
     }
 
     // ====================================================================
-    // Test 9: blocks_behind decision logic (regression: PR fix)
+    // Test 9: Unified-height-driven push handler decision logic
     //
-    // Verifies the corrected push handler decision tree:
-    //   STEP 1 - stale (blocks_behind == 1): normal anchor update, no recovery
-    //   STEP 1 - stale (blocks_behind >= 2): session-preserving refresh (no discard, no hard recovery)
-    //   STEP 2 - not stale + hash mismatch:  same-height tip replacement, discard, soft refresh
-    //   STEP 2 - not stale + hashes match:   healthy, no action
+    // Verifies the simplified push handler decision tree:
+    //   - Channel stale: advance target for doom-loop prevention (informational)
+    //   - Not stale + hash mismatch: same-height tip replacement (discard)
+    //   - ALWAYS: request fresh template (every PUSH = unified tip moved)
     //
-    // Key invariant: hash check (step 2) ONLY runs when height says not stale (step 1).
-    // For stale templates hashPrevBlock ALWAYS differs from the notification — that is
-    // expected after any block advance.  Height alone is authoritative.
+    // Key principle: every PUSH from the node means the unified tip moved,
+    // which changes hashPrevBlock.  The miner ALWAYS needs a fresh template.
+    // Channel heights are tracked informationally for doom-loop prevention
+    // but do NOT gate the template refresh decision.
     // ====================================================================
-    std::cout << "\nTest 9: blocks_behind decision logic (push handler ordering fix)" << std::endl;
+    std::cout << "\nTest 9: Unified-height-driven push handler decision logic" << std::endl;
     {
         struct HandlerDecision {
             bool request_work_called{false};
@@ -409,41 +409,30 @@ int main()
             bool recovery_triggered{false};
         };
 
-        // Simulate the corrected handler decision tree.
-        // IMPORTANT: hash parameter is ignored for stale templates — height is authoritative.
+        // Simulate the unified-height-driven handler decision tree.
+        // Every PUSH requests work.  Channel staleness is informational only.
+        // Same-height hash check (reorg) only runs when channel is NOT stale.
         auto simulate_handler = [](bool stale, uint32_t blocks_behind,
                                     bool has_hash, bool hash_matches,
                                     bool burst_grace_active,
                                     bool tip_moved) -> HandlerDecision
         {
+            (void)blocks_behind;       // Informational only — logged but no behavioral difference
+            (void)burst_grace_active;  // Removed — unified model doesn't need burst tiers
+            (void)tip_moved;           // Subsumed — every PUSH means unified tip moved
+
             HandlerDecision d;
-            if (stale) {
-                if (blocks_behind == 1) {
-                    // Normal anchor update — refresh without stopping workers
-                    d.request_work_called = true;
-                    // No discard, no recovery signal
-                    return d;
-                }
-                if (blocks_behind == 2 && burst_grace_active) {
-                    d.request_work_called = true;
-                    return d;
-                }
-                // blocks_behind >= 2: keep session/workers alive and refresh.
-                // Hash is NOT checked for stale templates (it will always differ anyway).
-                d.request_work_called = true;
-                return d;
-            }
-            // Not stale — STEP 2: check hash for same-height tip replacement
-            if (has_hash && !hash_matches) {
+
+            // Channel staleness: informational + doom-loop prevention (AdvanceChannelTarget)
+            // Does NOT gate the work request.
+
+            // Same-height tip replacement (only when channel is NOT stale)
+            if (!stale && has_hash && !hash_matches) {
                 d.discard_template_called = true;
-                d.request_work_called = true;
-                return d;
             }
-            if (tip_moved) {
-                d.request_work_called = true;
-                // Recovery is NOT triggered for cross-channel tip advances.
-                // The current channel template is still valid; workers keep submitting.
-            }
+
+            // Every PUSH means unified tip moved → ALWAYS request fresh template
+            d.request_work_called = true;
             return d;
         };
 
@@ -478,7 +467,7 @@ int main()
         }
 
         // Scenario C: 2-block burst within grace window
-        // Expected: request fresh work, keep template/session live — NOT hard recovery
+        // Expected: request fresh work (burst_grace is irrelevant in unified model)
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
                                        /*has_hash=*/true, /*hash_matches=*/true,
@@ -493,7 +482,7 @@ int main()
         }
 
         // Scenario D: 2-block lag after grace expires
-        // Expected: refresh request only (no discard, no hard recovery)
+        // Expected: request work (no behavioral difference from C in unified model)
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
                                        /*has_hash=*/true, /*hash_matches=*/true,
@@ -508,7 +497,7 @@ int main()
         }
 
         // Scenario E: Compact payload (no hashPrevBlock) — multi-block lag
-        // Expected: request refresh (hash data unavailable but irrelevant)
+        // Expected: request refresh (hash data unavailable but always request work)
         {
             auto d = simulate_handler(/*stale=*/true, /*blocks_behind=*/2,
                                        /*has_hash=*/false, /*hash_matches=*/false,
@@ -521,7 +510,7 @@ int main()
         }
 
         // Scenario F: Same-height tip replacement (blocks_behind == 0, hash changed)
-        // Expected: discard template, request work, stay on soft refresh
+        // Expected: discard template + request work
         {
             auto d = simulate_handler(/*stale=*/false, /*blocks_behind=*/0,
                                        /*has_hash=*/true, /*hash_matches=*/false,
@@ -536,20 +525,21 @@ int main()
         }
 
         // Scenario G: Healthy template (not stale, hashes match)
-        // Expected: no action
+        // Expected: STILL request work — every PUSH means unified tip moved.
+        // GetBlockDedupGuard handles true duplicates (unified height unchanged).
         {
             auto d = simulate_handler(/*stale=*/false, /*blocks_behind=*/0,
                                        /*has_hash=*/true, /*hash_matches=*/true,
                                        /*burst_grace_active=*/false,
                                        /*tip_moved=*/false);
-            print_test_result("Scenario G1: Healthy template → request_work NOT called",
-                !d.request_work_called);
+            print_test_result("Scenario G1: Healthy template → request_work called (PUSH = unified tip moved)",
+                d.request_work_called);
             print_test_result("Scenario G2: Healthy template → discard NOT called",
                 !d.discard_template_called);
         }
 
         // Scenario H: Unified tip moved on another channel
-        // Expected: keep template valid, request work opportunistically, do NOT withhold submissions
+        // Expected: request work (same as all other cases — every PUSH requests work)
         {
             auto d = simulate_handler(/*stale=*/false, /*blocks_behind=*/0,
                                        /*has_hash=*/true, /*hash_matches=*/true,
@@ -615,7 +605,6 @@ int main()
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
-        bool recovery_called = false;
 
         network::Payload payload = create_extended_push_payload(5000, 100, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -627,18 +616,20 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; });
+            [&request_work_called]() { request_work_called = true; });
 
         print_test_result("Same-height tip replacement requests fresh work", request_work_called);
         print_test_result("Same-height tip replacement discards active template", !tmpl_interface.has_valid_template());
-        print_test_result("Same-height tip replacement does not notify hard recovery path", !recovery_called);
     }
 
     // ====================================================================
     // Test 11b: Out-of-order push hash hint must not hot-swap a live template
+    //
+    // An out-of-order push (lower unified height) still requests work in the
+    // unified model (every PUSH = request fresh template), but must NOT discard
+    // the current valid template via the same-height hash check.
     // ====================================================================
-    std::cout << "\nTest 11b: Stale push hash hint does not override current template" << std::endl;
+    std::cout << "\nTest 11b: Out-of-order push does not discard current template" << std::endl;
     {
         protocol::HeightTracker tracker;
         protocol::MiningTemplateInterface tmpl_interface(2, 0);
@@ -653,7 +644,6 @@ int main()
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
-        bool recovery_called = false;
 
         network::Payload payload = create_extended_push_payload(5049, 99, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -665,12 +655,12 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; });
+            [&request_work_called]() { request_work_called = true; });
 
-        print_test_result("Stale push does not request fresh work", !request_work_called);
-        print_test_result("Stale push keeps active template valid", tmpl_interface.has_valid_template());
-        print_test_result("Stale push does not notify hard recovery path", !recovery_called);
+        print_test_result("Out-of-order push requests work (every PUSH = unified tip moved)",
+            request_work_called);
+        print_test_result("Out-of-order push keeps active template valid (no discard)",
+            tmpl_interface.has_valid_template());
     }
 
     // ====================================================================
@@ -693,8 +683,7 @@ int main()
             nullptr,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; },
-            nullptr);
+            [&request_work_called]() { request_work_called = true; });
 
         protocol::MiningTemplateInterface stale_template(2, 0);
         stale_template.set_height_tracker(&tracker);
@@ -746,7 +735,6 @@ int main()
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
-        bool recovery_called = false;
 
         network::Payload payload = create_extended_push_payload(6002, 102, 0x1d00ffff, 0x00);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -758,18 +746,16 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; });
+            [&request_work_called]() { request_work_called = true; });
 
         print_test_result("2-block burst within grace requests fresh work", request_work_called);
         print_test_result("2-block burst within grace keeps active template valid", tmpl_interface.has_valid_template());
-        print_test_result("2-block burst within grace does not enter recovery", !recovery_called);
     }
 
     // ====================================================================
     // Summary
     // ====================================================================
-    std::cout << "\nTest 14: Tip movement on another channel is informational only" << std::endl;
+    std::cout << "\nTest 14: Tip movement on another channel requests fresh work" << std::endl;
     {
         protocol::HeightTracker tracker;
         protocol::MiningTemplateInterface tmpl_interface(2, 0);
@@ -784,8 +770,6 @@ int main()
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
-        bool recovery_called = false;
-        bool reset_dedup_called = false;
 
         network::Payload payload = create_extended_push_payload(8002, 100, 0x1d00ffff, 0x00);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -797,14 +781,10 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; },
-            [&reset_dedup_called]() { reset_dedup_called = true; });
+            [&request_work_called]() { request_work_called = true; });
 
         print_test_result("Tip moved requests fresh work", request_work_called);
         print_test_result("Tip moved keeps active template valid", tmpl_interface.has_valid_template());
-        print_test_result("Tip moved does not notify hard recovery path", !recovery_called);
-        print_test_result("Tip moved resets GET_BLOCK dedup guard before refresh", reset_dedup_called);
     }
 
     // ====================================================================
@@ -1070,10 +1050,10 @@ int main()
     // ====================================================================
     std::cout << "\nTest 22: PUSH-silent fallback enables GET_ROUND-triggered GET_BLOCK" << std::endl;
     {
-        print_test_result("PUSH active (<600s) blocks GET_ROUND fallback trigger",
-            !should_trigger_get_round_fallback_get_block(true, 101, 101, 599));
-        print_test_result("PUSH silent (>=600s) enables GET_ROUND fallback trigger",
-            should_trigger_get_round_fallback_get_block(true, 101, 101, 600));
+        print_test_result("PUSH active (<480s) blocks GET_ROUND fallback trigger",
+            !should_trigger_get_round_fallback_get_block(true, 101, 101, 479));
+        print_test_result("PUSH silent (>=480s) enables GET_ROUND fallback trigger",
+            should_trigger_get_round_fallback_get_block(true, 101, 101, 480));
     }
 
     // ====================================================================
@@ -1131,14 +1111,14 @@ int main()
     }
 
     // ====================================================================
-    // Test 25: Cross-channel (Hash) PUSH resets GET_BLOCK dedup for Prime miner
+    // Test 25: Cross-channel (Hash) PUSH requests fresh template for Prime miner
     //          when unified tip advances on the other channel
     // ====================================================================
-    std::cout << "\nTest 25: Cross-channel Hash PUSH resets dedup for Prime miner when unified advances" << std::endl;
+    std::cout << "\nTest 25: Cross-channel Hash PUSH requests work for Prime miner when unified advances" << std::endl;
     {
         // Prime miner receives a Hash block PUSH.  The handler must detect that the
-        // unified tip advanced and call reset_dedup_fn() so the next work retry
-        // (from the template-age timer) is not suppressed by stale cached heights.
+        // unified tip advanced and request a fresh template — every unified height
+        // movement changes hashPrevBlock, which must be embedded in the next mined block.
         protocol::HeightTracker tracker;
         protocol::MiningTemplateInterface tmpl_interface(1 /* PRIME */, 0);
         tmpl_interface.set_height_tracker(&tracker);
@@ -1152,7 +1132,6 @@ int main()
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_PRIME);
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
-        bool reset_dedup_called  = false;
 
         // Hash block found: unified advances to 6650429, Prime channel stays at 2347879.
         // This PUSH arrives on the Hash channel (expected_channel=HASH), so it is
@@ -1167,15 +1146,11 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; },
-            [](){ /* recovery */ },
-            [&reset_dedup_called]() { reset_dedup_called = true; });
+            [&request_work_called]() { request_work_called = true; });
 
-        print_test_result("Cross-channel Hash PUSH does NOT request work for Prime miner (informational only)",
-            !request_work_called);
-        print_test_result("Cross-channel Hash PUSH resets GET_BLOCK dedup when unified advances",
-            reset_dedup_called);
-        print_test_result("Cross-channel Hash PUSH keeps Prime template valid",
+        print_test_result("Cross-channel Hash PUSH requests work for Prime miner (hashPrevBlock changed)",
+            request_work_called);
+        print_test_result("Cross-channel Hash PUSH keeps Prime template valid (no discard)",
             tmpl_interface.has_valid_template());
     }
 

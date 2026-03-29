@@ -49,15 +49,11 @@ public:
      * @param update_height_fn  Callback invoked with (unified_height, channel_height, difficulty_nbits)
      *                          to update both HeightTracker and ClientChannelManager atomically.
      *                          If null, the update is skipped.
-     * @param request_work_fn   Callback to request a fresh mining template
-     * @param recovery_initiated_fn Callback invoked when the push requires a hard recovery
-     *                              path (e.g. multi-block lag after the burst-grace
-     *                              window has expired).
-     * @param reset_dedup_fn    Optional callback invoked before request_work_fn() on every
-     *                          stale-template recovery path.  Must clear the GET_BLOCK
-     *                          height-based dedup state so the recovery GET_BLOCK is not
-     *                          suppressed by cached heights that match the stale template.
-     *                          Defaults to a no-op if not provided.
+     * @param request_work_fn   Callback to request a fresh mining template.
+     *                          PUSH is the authoritative liveness signal — the handler will
+     *                          always invoke this when staleness is detected.  The callback
+     *                          is responsible for providing a GetBlockReason to get_work()
+     *                          that bypasses height-based dedup (PUSH_STALE, PUSH_TIP_MOVED, etc.).
      */
     void handle_push_notification(
         const Packet& packet,
@@ -66,9 +62,7 @@ public:
         MiningTemplateInterface* template_interface,
         HeightTracker* height_tracker,
         std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
-        std::function<void()> request_work_fn,
-        std::function<void()> recovery_initiated_fn = {},
-        std::function<void()> reset_dedup_fn = {}
+        std::function<void()> request_work_fn
     );
 
 private:
@@ -88,7 +82,6 @@ private:
     static constexpr std::size_t HASH_PREV_BLOCK_OFFSET      = 20;  // hashBestChain offset in 148-byte payload
     static constexpr std::size_t HASH_BEST_CHAIN_SIZE_BYTES  = 128; // uint1024_t serialised size
     static constexpr std::size_t HASH_LOG_PREVIEW_BYTES      = 8;   // how many bytes to log for preview
-    static constexpr int64_t BURST_RECOVERY_GRACE_SECONDS    = 5;
 
     static const char* channel_name(std::uint32_t channel);
 };

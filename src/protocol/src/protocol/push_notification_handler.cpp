@@ -25,9 +25,7 @@ void PushNotificationHandler::handle_push_notification(
     MiningTemplateInterface* template_interface,
     HeightTracker* height_tracker,
     std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
-    std::function<void()> request_work_fn,
-    std::function<void()> recovery_initiated_fn,
-    std::function<void()> reset_dedup_fn)
+    std::function<void()> request_work_fn)
 {
     const char* ch_name = channel_name(expected_channel);
 
@@ -58,32 +56,33 @@ void PushNotificationHandler::handle_push_notification(
     uint32_t notification_unified_height = bytes2uint(*packet.m_data, UNIFIED_HEIGHT_OFFSET);
 
     /* Validate channel — since node now broadcasts BOTH channels on every push update,
-     * receiving a push for the non-subscribed channel is expected and informational.
-     * Treat it as a no-op for mining decisions, but still record push liveness so
-     * degraded-mode recovery knows the node is actively communicating. */
+     * receiving a push for the non-subscribed channel is expected.  Record push liveness
+     * so degraded-mode recovery knows the node is actively communicating.
+     *
+     * IMPORTANT: Every unified height advance changes the canonical tip anchor
+     * (hashPrevBlock).  Cross-channel blocks (Hash/Stake for a Prime miner) advance
+     * unified height just like same-channel blocks, so we MUST request a fresh
+     * template to embed the correct hashPrevBlock in the next mined block. */
     if (m_current_channel != expected_channel)
     {
         if (height_tracker) {
             height_tracker->OnPushLiveness();
         }
 
-        // If the unified tip advanced on another channel, reset the GET_BLOCK dedup
-        // state so the next work request (from a template-age timer or manual retry)
-        // is not suppressed by cached heights that predate this block.  Without this
-        // reset a Prime miner that relies on Hash blocks to advance the chain would
-        // never refresh its template during long Prime blocks — every age-based retry
-        // would be silently suppressed by the height-based dedup guard.
+        // If the unified tip advanced on another channel, request a fresh template.
+        // Every unified height movement changes hashPrevBlock — the mined block
+        // template must contain the updated hash to be valid.
         if (notification_unified_height > 0 && height_tracker) {
             auto snap = height_tracker->GetSnapshot();
             if (notification_unified_height > snap.unified_height) {
-                if (reset_dedup_fn) { reset_dedup_fn(); }
                 m_logger->info("[Solo Push] Cross-channel tip advance: unified {} → {} — "
-                               "resetting GET_BLOCK dedup to unblock fresh-work retries",
+                               "requesting fresh template (hashPrevBlock changed)",
                                snap.unified_height, notification_unified_height);
+                request_work_fn();
             }
         }
 
-        m_logger->info("[Solo Push] ℹ️  {} push received on {} lane (mining {} channel) — informational only, refreshed push liveness",
+        m_logger->info("[Solo Push] ℹ️  {} push received on {} lane (mining {} channel) — refreshed push liveness",
                        ch_name,
                        (lane == ProtocolLane::STATELESS) ? "stateless" : "legacy",
                        (m_current_channel == mining::CHANNEL_PRIME) ? "Prime" :
@@ -189,170 +188,67 @@ void PushNotificationHandler::handle_push_notification(
         }
     }
 
-    /* Check if current template is stale using HeightTracker snapshot */
+    /* ═══════════════════════════════════════════════════════════════════════
+     * TEMPLATE REFRESH — unified-height-driven model
+     * ═══════════════════════════════════════════════════════════════════════
+     * Every PUSH from the node signifies a unified tip advance (a new block
+     * was found on some channel).  Every unified height movement changes
+     * hashPrevBlock, so the mining template MUST be refreshed to embed the
+     * correct parent hash in the next mined block.
+     *
+     * Channel heights are tracked informationally (doom-loop prevention,
+     * diagnostics) but do NOT drive the template refresh decision.
+     * Same-height dedup is unified-height-only via GetBlockDedupGuard.
+     * ═════════════════════════════════════════════════════════════════════ */
     if (template_interface && template_interface->has_valid_template())
     {
-        // Take one snapshot for all decisions in this block.
         auto snap = height_tracker ? height_tracker->GetSnapshot() : HeightTracker::Snapshot{};
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // STEP 1: HEIGHT-BASED STALENESS — authoritative, checked first
-        // ═══════════════════════════════════════════════════════════════════════
-        // Height is the single source of truth for staleness.  The hash check
-        // (step 2) is irrelevant for stale templates: hashPrevBlock WILL differ
-        // after any block advance — that is normal, not a reorg.
-        bool stale = height_tracker && snap.is_template_stale();
-
-        if (stale)
+        // ─── Channel staleness: informational + doom-loop prevention ─────────
+        // If the channel tip has reached or passed the template target, advance
+        // channel_target so subsequent pushes at the same height don't re-trigger.
+        // This is purely a bookkeeping step — it does NOT gate the work request.
+        bool channel_stale = height_tracker && snap.is_template_stale();
+        if (channel_stale)
         {
             uint32_t blocks_behind = snap.blocks_behind();
-
-            if (blocks_behind == 1)
-            {
-                // Normal case: exactly one block behind after a fresh block was found.
-                // Just request fresh work; workers keep mining the current one.
-                m_logger->info("[Solo Push] ℹ️  Normal anchor update (blocks_behind=1) — requesting fresh {} template",
-                               ch_name);
-                // Reset height-based dedup so the recovery GET_BLOCK is not suppressed.
-                // The current dedup state reflects the heights when the last GET_BLOCK was
-                // sent — but we need a new template because the current one is stale.
-                // The heights seen by the push notification are the same as the last
-                // GET_BLOCK, so without this reset the dedup would suppress the recovery
-                // request entirely.
-                if (reset_dedup_fn) { reset_dedup_fn(); }
-                request_work_fn();
-
-                // Advance channel_target so subsequent pushes at the same height
-                // do not re-trigger this path (doom-loop prevention).
-                if (height_tracker) {
-                    height_tracker->AdvanceChannelTarget(snap.channel_height + 1);
-                }
-                return;  // Early exit — hash check is irrelevant for stale templates
-            }
-
-            if (blocks_behind == 2)
-            {
-                const auto now = std::chrono::steady_clock::now();
-                const bool has_recent_template = (
-                    snap.last_template_update != std::chrono::steady_clock::time_point{} &&
-                    std::chrono::duration_cast<std::chrono::seconds>(
-                        now - snap.last_template_update).count() < BURST_RECOVERY_GRACE_SECONDS);
-                if (has_recent_template) {
-                    const auto template_age_s = std::chrono::duration_cast<std::chrono::seconds>(
-                        now - snap.last_template_update).count();
-                    m_logger->info("[Solo Push] ℹ️  Burst: 2 blocks behind (template {}s old) — requesting fresh {} template (session-preserving refresh)",
-                                   template_age_s, ch_name);
-                    if (reset_dedup_fn) { reset_dedup_fn(); }
-                    request_work_fn();
-                    // Burst-only target advance: keep repeated burst pushes at the same
-                    // channel height from retriggering this branch.
-                    if (height_tracker) {
-                        height_tracker->AdvanceChannelTarget(snap.channel_height + 1);
-                    }
-                    return;
-                }
-            }
-
-            // blocks_behind >= 2: keep session/workers alive and refresh aggressively.
-            // Do NOT discard or escalate hard recovery from push staleness alone.
-            m_logger->warn("[Solo Push] ⚠️  Template {} block(s) behind (channel_height {} >= channel_target {}) — requesting fresh work/GET_BLOCK (no discard, no hard recovery)",
+            m_logger->info("[Solo Push] ℹ️  Channel {} block(s) behind (channel_height {} ≥ channel_target {}) — advancing target",
                            blocks_behind, snap.channel_height, snap.channel_target);
-            if (reset_dedup_fn) { reset_dedup_fn(); }
-            request_work_fn();
-
-            // Advance channel_target to prevent doom-loop.
             if (height_tracker) {
                 height_tracker->AdvanceChannelTarget(snap.channel_height + 1);
             }
-            return;  // Early exit — hash check is irrelevant for stale templates
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // STEP 2: HASH VALIDATION — only for templates that passed height check
-        // ═══════════════════════════════════════════════════════════════════════
-        // Height says the template is current (blocks_behind == 0).  A hash
-        // mismatch at the same height means the tip anchor has been replaced at
-        // equal height — normal same-height tip update, not a fault condition.
-        if (has_hash_prev_block)
+        // ─── Same-height tip replacement (reorg at same channel height) ──────
+        // Only relevant when channel is NOT stale: a hash mismatch at the same
+        // channel height means the tip anchor was replaced (same-height reorg).
+        // Discard the template so the fresh one from GET_BLOCK replaces it.
+        if (!channel_stale && has_hash_prev_block)
         {
             auto const* tmpl = template_interface->get_current_template();
-            // Only let PUSH hot-swap a template when it proves the current target
-            // height already has a different canonical tip anchor. Older PUSH
-            // hints must not override a live template on their own.
             if (tmpl &&
                 snap.has_same_height_push_tip_replacement(tmpl->block.hashPrevBlock,
                                                           tmpl->nChannelHeight))
             {
-                // Same-height tip update: a newer canonical tip anchor is available
-                // for this height — refresh the template to mine on the current tip.
-                m_logger->info("[Solo Push] Same-height tip update — refreshing template for current target");
+                m_logger->info("[Solo Push] Same-height tip update — discarding template for replacement");
                 template_interface->discard_template("same_height_tip_update");
-                // Reset dedup before requesting work: the cached heights match the
-                // same-height template being discarded, so without this reset the
-                // fresh GET_BLOCK would be suppressed by the height-based dedup guard.
-                if (reset_dedup_fn) { reset_dedup_fn(); }
-                request_work_fn();
-                return;
-            }
-            else if (tmpl)
-            {
-                m_logger->debug("[Solo Push] ✓ Extended push hash hint does not invalidate current template");
             }
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // STEP 3: CROSS-CHANNEL TIP ADVANCE — informational only
-        // ═══════════════════════════════════════════════════════════════════════
-        // Template is current (channel not stale) and hash validates.  Check if
-        // the unified tip has advanced because another channel found a block.
-        //
-        // KEY DESIGN DECISION: a cross-channel tip advance does NOT invalidate
-        // the current mining template.  For a Prime miner, stake/hash blocks
-        // advancing the unified height leave the Prime channel_target unchanged;
-        // the Prime template is still valid and workers should keep mining it.
-        //
-        // We do NOT trigger recovery here — doing so would suppress all block submissions
-        // and create a recovery cycle that never resolves because:
-        //   1. The current template is perfectly valid (channel not stale)
-        //   2. The node responds to GET_BLOCK with the same target height
-        //   3. validate_template() rejects the response if >100 unified blocks
-        //      have advanced (height sanity check), looping indefinitely
-        //
-        // Workers keep mining and submitting on the current template.  A fresh
-        // template is requested opportunistically so that the hashPrevBlock can
-        // be updated for the next submission cycle.
-        bool tip_moved = height_tracker && snap.is_tip_moved();
-
-        if (tip_moved)
-        {
-            m_logger->info("[Solo Push] ℹ️  Tip moved (unified {} → {}) on {} channel — informational; workers continue on current valid template",
-                          snap.template_unified_height, snap.unified_height, ch_name);
-            if (reset_dedup_fn) { reset_dedup_fn(); }
-            request_work_fn();  // Opportunistic GET_BLOCK to refresh hashPrevBlock — no recovery state changes
-        }
-        else
-        {
-            // Template is fully current — log diagnostic and continue mining.
-            auto const* tmpl = template_interface->get_current_template();
-            if (tmpl)
-            {
-                if (channel_height == tmpl->nChannelHeight)
-                {
-                    uint32_t snap_unified = height_tracker ? snap.unified_height : unified_height;
-                    m_logger->info("[Solo Push] ✓ {} channel_target={} unchanged, unified_height={}",
-                                  ch_name, tmpl->nChannelHeight, snap_unified);
-                }
-                else
-                {
-                    m_logger->debug("[Solo Push] ✓ Template still valid");
-                }
-            }
-        }
+        // ─── ALWAYS request fresh template ───────────────────────────────────
+        // The Nexus node sends PUSH when a new block is found on ANY channel.
+        // Every unified height movement changes hashPrevBlock, so the mining
+        // template must be refreshed to embed the correct parent hash.
+        // PUSH reasons bypass height dedup in GetBlockDedupGuard; the 100ms
+        // rapid-burst guard still applies to prevent two identical pushes racing.
+        m_logger->info("[Solo Push] Requesting fresh {} template (PUSH → unified tip moved → hashPrevBlock changed)",
+                       ch_name);
+        request_work_fn();
     }
     else
     {
-        /* No template yet - request one */
-        m_logger->info("[Solo Push] No template - requesting initial {} template", ch_name);
+        /* No template yet — request one */
+        m_logger->info("[Solo Push] No template — requesting initial {} template", ch_name);
         request_work_fn();
     }
 }

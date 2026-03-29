@@ -119,63 +119,38 @@ The guard works in two layers:
 
 ---
 
-### Reason: `channel_advanced`
+### Unified-Height-Driven Refresh (Current Model)
 
-**When**: The node's `channel_height` has reached or passed the template's
-`channel_target` (i.e. `channel_height >= channel_target`, both non-zero).
+> **Note:** The old two-reason model (`channel_advanced` vs `tip_moved`) has been
+> replaced by the unified-height-driven model.  Every PUSH means unified height
+> moved, so the mining template is **always** refreshed.
 
-**Meaning**: Another miner found the block this template was targeting.  The
-channel has moved on; the template is obsolete.
+**Channel staleness** (`channel_height >= channel_target`) is now **informational
+only**.  When detected, `AdvanceChannelTarget` is called for doom-loop prevention,
+but it does not gate the template refresh decision.
 
-**Action**: Discard current template, request fresh work (`GET_BLOCK`).
+**Same-height tip replacement** (hash mismatch at same channel height) is still
+detected and triggers a template `discard_template()` to force replacement.
 
-```
-HeightTracker::Snapshot::is_template_stale() → true
-```
+**Every PUSH always requests fresh work** — the 100ms rapid-burst guard in
+`GetBlockDedupGuard` prevents two identical pushes from racing.
 
-Log signature:
-```
-[Solo Push] ✗ Stale (channel_height N >= channel_target M) [reason: channel_advanced]
-[Solo Push] Requesting fresh Prime template...
-```
-
-### Reason: `tip_moved`
-
-**When**: `unified_height > template_unified_height` but `channel_height < channel_target`
-(i.e. the miner's channel has **not** found a block, but another channel has).
-
-**Meaning**: A Stake or opposite-channel block advanced the unified tip.
-`hashBestChain` changed, so `hashPrevBlock` in the current template is stale.
-Submitting this template would be rejected as a fork/orphan even though the
-channel height appears valid.
-
-**Action**: Request a fresh template (`GET_BLOCK`) so the template's
-`hashPrevBlock` anchors to the new best chain tip.
+### Decision Summary (Unified Model)
 
 ```
-HeightTracker::Snapshot::is_tip_moved() → true
-```
-
-Log signature:
-```
-[Solo Push] ↑ Tip moved (unified A → B) — requesting fresh Prime template [reason: tip_moved]
-```
-
-### Decision Summary
-
-```
-On every push notification:
+On every same-channel push notification:
   1. Update HeightTracker (unified_height, channel_height, difficulty)
-  2. If extended push carries hashPrevBlock, store it as the authoritative node-side
-     new-tip hash hint for this push event
-  3. Take snapshot: snap = height_tracker.GetSnapshot()
-  4. if snap.is_template_stale()  → request_work()   [reason: channel_advanced]
-  5. elif same-height push hashPrevBlock changed
-       → discard current template
-       → request replacement immediately
-       → keep miner on soft template-swap path (withheld submissions, no hard degraded-mode entry yet)
-  6. elif snap.is_tip_moved()     → request_work()   [reason: tip_moved]
-  7. else                         → continue mining current template
+  2. If extended push carries hashPrevBlock, store as tip anchor hint
+  3. Channel staleness (informational — doom-loop prevention):
+       if channel_height >= channel_target → AdvanceChannelTarget(channel_height + 1)
+  4. Same-height tip replacement (only when NOT channel-stale):
+       if hash mismatch at same channel height → discard_template("same_height_tip_update")
+  5. ALWAYS → request_work_fn()
+       Every PUSH = unified tip moved = hashPrevBlock changed
+
+On cross-channel push (different channel than miner's subscription):
+  1. Record push liveness
+  2. If notification_unified_height > snap.unified_height → request_work_fn()
 
 Before any freshly validated template is fed live (validate_current_template):
   A. finalize channel target metadata
@@ -238,8 +213,7 @@ miners whenever **any** channel advances the unified tip:
 | Hash block accepted  | All Hash-subscribed miners  |
 | Stake block accepted | All Prime miners **and** all Hash miners |
 
-This ensures miners always learn about `tip_moved` conditions in time to avoid
-submitting on a stale `hashPrevBlock`.
+This ensures miners always refresh their template when `hashPrevBlock` changes.
 
 ---
 
@@ -297,23 +271,25 @@ Use these terms consistently across all documentation:
 
 | Scenario | Log line to look for |
 |----------|----------------------|
-| Channel advanced, stale template | `[reason: channel_advanced]` |
-| Other channel found block, tip moved | `[reason: tip_moved]` |
-| Same-height reorg, hashPrevBlock changed | `hashPrevBlock mismatch (canonical=..., template=...) — discarding stale template` |
-| Template still valid | `✓ {channel} channel_target=N unchanged, unified_height=M` |
-| No template yet | `No template - requesting initial {channel} template` |
-| Drift mismatch detected | `HeightTracker: drift delta …` |
+| Channel stale (informational) | `Channel N block(s) behind … — advancing target` |
+| Same-height reorg (discard) | `Same-height tip update — discarding template for replacement` |
+| Normal PUSH refresh | `Requesting fresh {channel} template (PUSH → unified tip moved → hashPrevBlock changed)` |
+| Cross-channel tip advance | `Cross-channel tip advance: unified X → Y — requesting fresh template` |
+| hashPrevBlock reorg discard | `hashPrevBlock mismatch (canonical=..., template=...) — discarding stale template` |
+| No template yet | `No template — requesting initial {channel} template` |
+| Dedup suppressed | `[DedupGuard] height-match: suppressing` or `[DedupGuard] rapid-burst: suppressing` |
+| Dedup bypass | `[DedupGuard] bypass_height — reason: push_stale` |
 
 ### 8.2 Diagnostic Checklist
 
 | Symptom | Likely cause | Check |
 |---------|-------------|-------|
-| Template refreshed even though own channel didn't advance | Correct — `tip_moved` | Look for `[reason: tip_moved]` in logs |
-| Template **not** refreshed after another channel's block | Bug — missing `tip_moved` logic | Ensure miner version includes PR #164+ |
-| Template submitted and rejected as STALE | Push missed; submitted on old `hashPrevBlock` | Check for missed `tip_moved` refresh |
-| Mining stops after a Stake block | Expected if push subscription covers Stake events | Verify `MINER_READY` subscription active |
+| Template refreshed on every PUSH | Correct — unified model | Every PUSH requests fresh work |
+| Cross-channel push requests fresh template | Correct — `hashPrevBlock` changed | Look for `Cross-channel tip advance` in logs |
+| Template **not** refreshed after push | Bug or dedup suppression | Check `[DedupGuard]` logs for suppression |
+| Template submitted and rejected as STALE | Push missed; submitted on old `hashPrevBlock` | Check for missed push notifications |
 | Template discarded with `hashPrevBlock_mismatch_reorg` | Same-height chain reorg detected | Correct — canonical tip moved without height change; miner requests fresh work |
-| 20+ minutes of fermat chains with no new template after reorg | `validate_current_template()` allowing stale template | Ensure miner version includes the hashPrevBlock discard-and-refresh fix |
+| Rapid GET_BLOCK suppressed | 100ms rapid-burst guard | Expected — prevents push races; check `[DedupGuard] rapid-burst` |
 
 ### 8.3 Verifying Push Subscription
 
