@@ -546,7 +546,6 @@ struct HeightDeduplicator {
     // the next would_send() call is never suppressed regardless of heights.
     void reset() {
         last_unified = 0;
-        last_channel = 0;
     }
 
     // Returns true when the GET_BLOCK would be transmitted (not suppressed).
@@ -660,7 +659,6 @@ void test_cross_channel_unified_advance_resets_dedup() {
 
     // Initial GET_BLOCK after a Prime block (unified=100, prime_channel=50).
     dedup.cur_unified = 100;
-    dedup.cur_channel = 50;
     dedup.has_valid_template = false;
     bool first_ok = dedup.would_send();
     print_test_result("Initial GET_BLOCK succeeds (no prior heights recorded)", first_ok);
