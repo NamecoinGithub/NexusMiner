@@ -441,8 +441,8 @@ int main()
             }
             if (tip_moved) {
                 d.request_work_called = true;
-                // Recovery is NOT triggered for cross-channel tip advances.
-                // The current channel template is still valid; workers keep submitting.
+                // A fresh template is needed because hashPrevBlock changed.
+                // Workers keep mining the current template while the fresh one arrives.
             }
             return d;
         };
@@ -1115,14 +1115,14 @@ int main()
     }
 
     // ====================================================================
-    // Test 25: Cross-channel (Hash) PUSH resets GET_BLOCK dedup for Prime miner
+    // Test 25: Cross-channel (Hash) PUSH requests fresh template for Prime miner
     //          when unified tip advances on the other channel
     // ====================================================================
-    std::cout << "\nTest 25: Cross-channel Hash PUSH resets dedup for Prime miner when unified advances" << std::endl;
+    std::cout << "\nTest 25: Cross-channel Hash PUSH requests work for Prime miner when unified advances" << std::endl;
     {
         // Prime miner receives a Hash block PUSH.  The handler must detect that the
-        // unified tip advanced.  PUSH reasons bypass height dedup in
-        // GetBlockDedupGuard so the next work retry is never suppressed.
+        // unified tip advanced and request a fresh template — every unified height
+        // movement changes hashPrevBlock, which must be embedded in the next mined block.
         protocol::HeightTracker tracker;
         protocol::MiningTemplateInterface tmpl_interface(1 /* PRIME */, 0);
         tmpl_interface.set_height_tracker(&tracker);
@@ -1152,9 +1152,9 @@ int main()
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
             [&request_work_called]() { request_work_called = true; });
 
-        print_test_result("Cross-channel Hash PUSH does NOT request work for Prime miner (informational only)",
-            !request_work_called);
-        print_test_result("Cross-channel Hash PUSH keeps Prime template valid",
+        print_test_result("Cross-channel Hash PUSH requests work for Prime miner (hashPrevBlock changed)",
+            request_work_called);
+        print_test_result("Cross-channel Hash PUSH keeps Prime template valid (no discard)",
             tmpl_interface.has_valid_template());
     }
 
