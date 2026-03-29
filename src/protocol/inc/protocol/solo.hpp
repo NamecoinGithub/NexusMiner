@@ -125,6 +125,7 @@ public:
     /// Use this method — not send_get_round() — for template recovery actions.
     network::Shared_payload send_recovery_work_request();
     RoundStatus get_last_round_status() const { return m_last_round_status; }
+    uint32_t get_current_poll_interval_ms() const { return m_current_poll_interval_ms; }
     
     // Intelligent polling: Check if GET_ROUND should be sent now
     // Note: This modifies internal timing state, so cannot be truly const
@@ -580,11 +581,9 @@ private:
     
     // GET_ROUND status tracking (Template Staleness Prevention - LLL-TAO PR #131)
     RoundStatus m_last_round_status;  // Last received round status
-    // Dedicated dedup field: channel height from the last GET_ROUND response only.
-    // Unlike m_last_round_status (updated by both NEW_ROUND and OLD_ROUND branches),
-    // this field is updated at the END of on_get_round_response() after the dedup
-    // decision, ensuring the NEW_ROUND dedup comparison is isolated from interleaved
-    // OLD_ROUND/push-driven updates.
+    // Channel height from the last GET_ROUND response. Updated after the NEW_ROUND
+    // polling-state decision so logs can show how the active channel changed (or
+    // stayed flat) when the authoritative unified height advanced.
     uint32_t m_last_round_channel_height{0};
     
     // Client-side fork-aware channel managers (mirrors NODE's PR #136)
