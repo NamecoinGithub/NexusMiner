@@ -19,9 +19,12 @@
  * 14. Height-based dedup bypassed when no valid template exists
  * 15. Cross-channel (Hash/Stake) block advancing unified but not channel height → dedup reset
  *     unblocks age-based GET_BLOCK retry
+ * 16. Unified-only dedup allows cross-channel refresh
+ * 17. GetBlockReason dedup bypass policy validation (three-tier: bypass_all, bypass_height, full)
  */
 
 #include "protocol/packet_builder.hpp"
+#include "protocol/get_block_reason.hpp"
 #include "miner_opcodes.hpp"
 #include <iostream>
 #include <cassert>
@@ -697,6 +700,89 @@ void test_cross_channel_unified_advance_resets_dedup() {
 }
 
 // ============================================================================
+// Test: GetBlockReason dedup bypass policy validation
+// ============================================================================
+// Validates the three-tier dedup policy defined in get_block_reason.hpp:
+//   1. bypass_all:    RECOVERY_FORCED, RECOVERY_TIMER → skip everything
+//   2. bypass_height: TEMPLATE_AGE_WARNING, VALIDATION_FAILURE, etc. → skip height guard
+//   3. full dedup:    PUSH_STALE, HEALTH_CHANNEL_ADVANCE, etc. → all guards active
+//
+// This is the core bug fix: TEMPLATE_AGE_WARNING must bypass height-based dedup
+// so the 480s proactive refresh is not suppressed when heights are stagnant.
+void test_get_block_reason_dedup_policy() {
+    std::cout << "\nTest 17: GetBlockReason dedup bypass policy" << std::endl;
+
+    // Tier 1: bypass_all — recovery retries skip everything
+    print_test_result("RECOVERY_FORCED bypasses all dedup",
+        should_bypass_all_dedup(GetBlockReason::RECOVERY_FORCED));
+    print_test_result("RECOVERY_TIMER bypasses all dedup",
+        should_bypass_all_dedup(GetBlockReason::RECOVERY_TIMER));
+    print_test_result("RECOVERY_FORCED also bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::RECOVERY_FORCED));
+
+    // Tier 2: bypass_height — age-based refresh and forced scenarios
+    // THE KEY BUG FIX: TEMPLATE_AGE_WARNING bypasses height dedup
+    print_test_result("TEMPLATE_AGE_WARNING bypasses height dedup (key bug fix)",
+        should_bypass_height_dedup(GetBlockReason::TEMPLATE_AGE_WARNING));
+    print_test_result("TEMPLATE_AGE_WARNING does NOT bypass all dedup (rapid-burst still active)",
+        !should_bypass_all_dedup(GetBlockReason::TEMPLATE_AGE_WARNING));
+    print_test_result("TEMPLATE_AGE_EMERGENCY bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::TEMPLATE_AGE_EMERGENCY));
+    print_test_result("VALIDATION_FAILURE bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::VALIDATION_FAILURE));
+    print_test_result("HEIGHT_DRIFT bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::HEIGHT_DRIFT));
+    print_test_result("HEALTH_CHANNEL_STALE bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::HEALTH_CHANNEL_STALE));
+    print_test_result("HEALTH_NO_TEMPLATE bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
+    print_test_result("SESSION_REAUTH bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::SESSION_REAUTH));
+    print_test_result("GET_ROUND_HEIGHT_PARITY bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::GET_ROUND_HEIGHT_PARITY));
+    print_test_result("GET_ROUND_STALE bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::GET_ROUND_STALE));
+    print_test_result("GET_ROUND_NO_TEMPLATE bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::GET_ROUND_NO_TEMPLATE));
+    print_test_result("TEMPLATE_FEED_FAILURE bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::TEMPLATE_FEED_FAILURE));
+    print_test_result("TEMPLATE_AGE_DEFERRED bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::TEMPLATE_AGE_DEFERRED));
+
+    // Tier 3: full dedup — normal requests respect all guards
+    print_test_result("PUSH_STALE does NOT bypass height dedup",
+        !should_bypass_height_dedup(GetBlockReason::PUSH_STALE));
+    print_test_result("PUSH_TIP_MOVED does NOT bypass height dedup",
+        !should_bypass_height_dedup(GetBlockReason::PUSH_TIP_MOVED));
+    print_test_result("PUSH_SAME_HEIGHT_TIP does NOT bypass height dedup",
+        !should_bypass_height_dedup(GetBlockReason::PUSH_SAME_HEIGHT_TIP));
+    print_test_result("PUSH_NO_TEMPLATE does NOT bypass height dedup",
+        !should_bypass_height_dedup(GetBlockReason::PUSH_NO_TEMPLATE));
+    print_test_result("HEALTH_CHANNEL_ADVANCE does NOT bypass height dedup",
+        !should_bypass_height_dedup(GetBlockReason::HEALTH_CHANNEL_ADVANCE));
+    print_test_result("HEALTH_TIP_MOVED does NOT bypass height dedup",
+        !should_bypass_height_dedup(GetBlockReason::HEALTH_TIP_MOVED));
+    print_test_result("HEALTH_STALE_SUPPRESSED does NOT bypass height dedup",
+        !should_bypass_height_dedup(GetBlockReason::HEALTH_STALE_SUPPRESSED));
+    print_test_result("INITIAL_REQUEST does NOT bypass height dedup",
+        !should_bypass_height_dedup(GetBlockReason::INITIAL_REQUEST));
+
+    // Tier 3 must also NOT bypass all dedup
+    print_test_result("PUSH_STALE does NOT bypass all dedup",
+        !should_bypass_all_dedup(GetBlockReason::PUSH_STALE));
+    print_test_result("INITIAL_REQUEST does NOT bypass all dedup",
+        !should_bypass_all_dedup(GetBlockReason::INITIAL_REQUEST));
+
+    // reason_name() coverage — must not return "unknown" for any defined reason
+    print_test_result("reason_name(TEMPLATE_AGE_WARNING) returns expected name",
+        std::string(reason_name(GetBlockReason::TEMPLATE_AGE_WARNING)) == "template_age_warning");
+    print_test_result("reason_name(RECOVERY_FORCED) returns expected name",
+        std::string(reason_name(GetBlockReason::RECOVERY_FORCED)) == "recovery_forced");
+    print_test_result("reason_name(GET_ROUND_HEIGHT_PARITY) returns expected name",
+        std::string(reason_name(GetBlockReason::GET_ROUND_HEIGHT_PARITY)) == "get_round_height_parity");
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 int main() {
@@ -720,6 +806,7 @@ int main() {
     test_height_dedup_bypassed_when_no_valid_template();
     test_cross_channel_unified_advance_resets_dedup();
     test_unified_only_dedup_allows_cross_channel_refresh();
+    test_get_block_reason_dedup_policy();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";

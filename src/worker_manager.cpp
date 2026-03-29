@@ -1813,12 +1813,9 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
     }
 
     // Request fresh work via NodeSession (wire-level GET_BLOCK)
-    // When is_forced, pass the original reason (which carries bypass policy);
-    // otherwise pass the reason as-is (normal dedup applies).
-    auto effective_reason = is_forced ? reason : reason;
     m_logger->info("[Worker_manager] Requesting fresh work via NodeSession (reason={}, forced={})",
                    reason_name(reason), is_forced ? "true" : "false");
-    auto work_payload = m_primary_node_session->request_work(effective_reason);
+    auto work_payload = m_primary_node_session->request_work(reason);
     if (work_payload && !work_payload->empty()) {
         m_primary_node_session->transmit(work_payload);
         m_recovery.last_get_block_at = std::chrono::steady_clock::now();
