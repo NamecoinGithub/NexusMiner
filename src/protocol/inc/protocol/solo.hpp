@@ -675,7 +675,6 @@ private:
     // bypass_height, full dedup).  See get_block_dedup_guard.hpp.
     GetBlockDedupGuard m_dedup_guard;
     std::atomic<GetBlockRequestStatus> m_last_get_block_request_status{GetBlockRequestStatus::NONE};
-    static constexpr int64_t GET_BLOCK_DEDUP_MS = 100;  // retained for reference; guard owns the window
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION

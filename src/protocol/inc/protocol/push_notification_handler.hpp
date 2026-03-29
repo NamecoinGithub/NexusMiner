@@ -82,7 +82,6 @@ private:
     static constexpr std::size_t HASH_PREV_BLOCK_OFFSET      = 20;  // hashBestChain offset in 148-byte payload
     static constexpr std::size_t HASH_BEST_CHAIN_SIZE_BYTES  = 128; // uint1024_t serialised size
     static constexpr std::size_t HASH_LOG_PREVIEW_BYTES      = 8;   // how many bytes to log for preview
-    static constexpr int64_t BURST_RECOVERY_GRACE_SECONDS    = 5;
 
     static const char* channel_name(std::uint32_t channel);
 };

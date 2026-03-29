@@ -2,16 +2,46 @@
 
 ## Overview
 
-The GET_BLOCK height-based deduplication guard in `Solo::get_work()` suppresses
-redundant template requests when the miner already holds a valid template for the
-current chain tip.  As of this fix, the guard compares **only `unified_height`** —
-channel height is intentionally excluded.
+The GET_BLOCK deduplication logic is centralized in `GetBlockDedupGuard` (header-only
+class in `get_block_dedup_guard.hpp`).  The guard suppresses redundant template requests
+using a two-tier system:
+
+1. **Rapid-burst guard (100ms)**: Prevents two code paths racing on the same event.
+2. **Height-based guard**: Prevents redundant GET_BLOCK when unified height hasn't
+   changed and a valid template already exists.
+
+The guard compares **only `unified_height`** — channel height is intentionally excluded
+because `hashPrevBlock` changes on every unified-height advance regardless of which
+channel (Hash, Stake, Prime) mined the block.
+
+## GetBlockReason Enum
+
+Each `GET_BLOCK` request carries a `GetBlockReason` that expresses the *intent* of
+the request.  The dedup policy is derived from the reason rather than hardcoded at
+each call site.
+
+```
+Tier 1: bypass_all    → RECOVERY_FORCED, RECOVERY_TIMER
+         Skip all guards; degraded-mode retries must always make progress.
+
+Tier 2: bypass_height → PUSH_STALE, PUSH_TIP_MOVED, PUSH_SAME_HEIGHT_TIP,
+                         PUSH_NO_TEMPLATE, TEMPLATE_AGE_*, VALIDATION_FAILURE,
+                         GET_ROUND_*, SESSION_REAUTH, HEIGHT_DRIFT, etc.
+         Skip height guard, keep rapid-burst guard.
+
+Tier 3: full dedup    → INITIAL_REQUEST, HEALTH_CHANNEL_ADVANCE,
+                         HEALTH_STALE_SUPPRESSED
+         Both guards active.
+```
+
+See `src/protocol/inc/protocol/get_block_reason.hpp` for the complete enum and
+`should_bypass_all_dedup()` / `should_bypass_height_dedup()` policy functions.
 
 ---
 
 ## The False Assumption (Old Behavior)
 
-Prior to this fix, the guard compared the **(unified_height, channel_height)** pair:
+The original guard compared the **(unified_height, channel_height)** pair:
 
 ```cpp
 // OLD — INCORRECT
@@ -94,32 +124,33 @@ The `m_last_get_block_channel_height` member variable has been removed entirely.
 ## Flow Diagram
 
 ```
-PUSH notification arrives (STATELESS_Prime_BLOCK_AVAILABLE)
+PUSH notification arrives
          │
          ▼
-  is_template_stale()?
-  ├── unified_height changed?  ──YES──► reset dedup → GET_BLOCK ✅
+  PushNotificationHandler (unified-height-driven model)
+  ├── Cross-channel? → unified advanced? → request_work_fn() ✅
   │
-  └── unified_height same, hashPrevBlock same → "Template fully current" ✅
-                                               (no spurious GET_BLOCK)
+  └── Same-channel:
+      1. Channel stale? → AdvanceChannelTarget (informational)
+      2. Same-height hash mismatch? → discard_template
+      3. ALWAYS → request_work_fn()  (PUSH = unified tip moved)
+                │
+                ▼
+         Solo::get_work(PUSH_STALE / PUSH_TIP_MOVED / ...)
+                │
+                ▼
+         GetBlockDedupGuard::check(reason, unified, have_template)
+         ├── bypass_all? (RECOVERY_FORCED) → ALLOW ✅
+         ├── rapid-burst (<100ms)? → SUPPRESS_RAPID_BURST ❌
+         ├── bypass_height? (all PUSH_* reasons) → ALLOW ✅
+         └── same unified + valid template? → SUPPRESS_HEIGHT_MATCH ❌
+                                            └── else → ALLOW ✅
 
 GET_ROUND response (NEW_ROUND)
          │
          ▼
-  unified_height changed since last GET_BLOCK?
-  ├── YES → dedup passes → GET_BLOCK ✅
-  └── NO  → dedup suppresses → skip (template already fresh) ✅
-
-Non-Prime block advances unified chain:
-  unified_height: N → N+1
-  channel_height: C → C   (unchanged — different channel mined)
-  hashPrevBlock:  changed!
-         │
-         ▼
-  Dedup guard (unified-only): N+1 ≠ N → GET_BLOCK allowed ✅
-  Old guard (unified+channel): N+1 != N → allowed too, BUT
-    if already fetched template for N+1 at same channel C:
-    N+1 == N+1 AND C == C → SUPPRESSED ❌ (old bug)
+  unified_height changed? → get_work(GET_ROUND_STALE) → guard allows ✅
+  unchanged?              → get_work(GET_ROUND_HEIGHT_PARITY) → bypass_height ✅
 ```
 
 ---
@@ -128,7 +159,8 @@ Non-Prime block advances unified chain:
 
 Channel height is still tracked in `HeightTracker` and used for:
 - `OnTemplateReceived()` — feeding the channel target for worker threads
-- `GetSnapshot().channel_height` — diagnostic logging and GET_ROUND comparison
+- `GetSnapshot().channel_height` — diagnostic logging, doom-loop prevention
+- `is_template_stale()` — channel-level staleness check (informational in push handler)
 
 Channel height is **not** used as a dedup key for GET_BLOCK requests.
 
@@ -144,11 +176,16 @@ channel mined the most recent block.
 
 ---
 
-## Files Changed
+## Files Changed (Current State)
 
-| File | Change |
-|------|--------|
-| `src/protocol/src/protocol/solo.cpp` | Remove `cur_channel` / `m_last_get_block_channel_height` from dedup guard and recording |
-| `src/protocol/inc/protocol/solo.hpp` | Remove `m_last_get_block_channel_height` member variable |
-| `src/protocol/src/protocol/solo.cpp` | Remove `m_last_get_block_channel_height = 0` from `reset_get_block_dedup_state()` |
-| `src/protocol/get_block_dedup_recovery_test.cpp` | Update `HeightDeduplicator` mock; add `test_unified_only_dedup_allows_cross_channel_refresh()` |
+| File | Description |
+|------|-------------|
+| `src/protocol/inc/protocol/get_block_reason.hpp` | `GetBlockReason` enum — 22 named reasons replacing `bool bForce/bypass_dedup` |
+| `src/protocol/inc/protocol/get_block_dedup_guard.hpp` | `GetBlockDedupGuard` — centralized two-tier dedup state machine (header-only) |
+| `src/protocol/inc/protocol/push_notification_handler.hpp` | Simplified to 7 params (removed `recovery_initiated_fn`, `reset_dedup_fn`) |
+| `src/protocol/src/protocol/push_notification_handler.cpp` | Unified-height-driven model: every PUSH always requests work |
+| `src/protocol/inc/protocol/solo.hpp` | `get_work(GetBlockReason)` replaces `get_work(bool)`; `m_dedup_guard` replaces raw fields |
+| `src/protocol/src/protocol/solo.cpp` | Dedup delegated to `m_dedup_guard`; `reset_get_block_dedup_state()` delegates to `m_dedup_guard.reset()` |
+| `src/worker_manager.cpp` | All `retry_template_request()` calls use `GetBlockReason` |
+| `src/protocol/get_block_dedup_recovery_test.cpp` | 71 tests including GetBlockReason dedup policy (Test 17, 29 assertions) |
+| `src/protocol/push_notification_lane_test.cpp` | 109 tests covering unified-height-driven push handler |

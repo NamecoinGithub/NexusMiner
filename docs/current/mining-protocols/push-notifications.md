@@ -121,7 +121,7 @@ This document describes the implementation of the push notification protocol (LL
 7. Start mining
 ```
 
-### Event-Driven Mining
+### Event-Driven Mining (Unified-Height-Driven Model)
 ```
 Mining Loop:
   - Mine current template
@@ -129,14 +129,17 @@ Mining Loop:
 On notification (PRIME/HASH_BLOCK_AVAILABLE):
   - Parse unified_height, channel_height, difficulty
   - Update HeightTracker with new heights
-  - Take HeightTracker snapshot
   - Treat the push as a lifeline opening event; it must not be stale-dropped by
     active-session ownership/debug guards
-  - If channel_advanced (channel_height >= channel_target):
-      Request new template via GET_BLOCK  [reason: channel_advanced]
-  - Elif tip_moved (unified_height > template_unified_height):
-      Request new template via GET_BLOCK  [reason: tip_moved]
-  - Else: Continue mining current template
+  - Channel staleness check (informational only — doom-loop prevention):
+      If channel_height >= channel_target:
+        AdvanceChannelTarget(channel_height + 1)  — bookkeeping only
+  - Same-height tip replacement (only when NOT channel-stale):
+      If hash mismatch at same channel height:
+        Discard template (same-height reorg)
+  - ALWAYS request fresh template via GET_BLOCK
+      Every PUSH = unified tip moved = hashPrevBlock changed
+      GetBlockDedupGuard handles true duplicates (100ms burst + unified height match)
 
 No polling needed! (GET_ROUND is backup only)
 ```
@@ -194,44 +197,50 @@ constexpr size_t PUSH_NOTIFICATION_PAYLOAD_SIZE = 12;
 - Hex dumps for debugging (training wheels mode)
 - Error diagnostics
 
-## Template Staleness Logic
+## Template Refresh Logic (Unified-Height-Driven Model)
 
-Two distinct conditions trigger a template refresh (see
-[unified-tip-vs-channel-height.md](../mining/unified-tip-vs-channel-height.md)
-for full definitions):
+Every PUSH from the node signifies a unified tip advance.  The mining template
+**must** be refreshed on every push because `hashPrevBlock` changes with each
+unified height movement.
 
-**Reason: `channel_advanced`** — the node's channel height reached the template's
-channel target, meaning another miner already found this block:
-```
-channel_height >= channel_target  →  request new template
-```
+Channel heights are tracked **informationally** for doom-loop prevention and
+diagnostics, but do **not** drive the template refresh decision.  Same-height
+dedup is unified-height-only via `GetBlockDedupGuard` (see
+[get-block-dedup-unified-height.md](get-block-dedup-unified-height.md)).
 
-**Reason: `tip_moved`** — the unified tip advanced (a different channel found a
-block) while the miner's channel height is unchanged.  The template's
-`hashPrevBlock` now points to a stale ancestor, so submitting it would result in
-a fork/orphan rejection:
+### Push Handler Decision Tree (Simplified)
 ```
-unified_height > template_unified_height  →  request new template
-```
+On same-channel PUSH (matching miner's subscribed channel):
+  1. Update HeightTracker (unified_height, channel_height, difficulty)
+  2. Channel staleness check (informational — doom-loop prevention only):
+       if (channel_height >= channel_target) → AdvanceChannelTarget
+  3. Same-height tip replacement (only when NOT channel-stale):
+       if (hash mismatch at same channel height) → discard_template
+  4. ALWAYS request fresh template via request_work_fn()
+       (PUSH = unified tip moved = hashPrevBlock changed)
 
-Both checks use `HeightTracker::Snapshot` as the single source of truth:
-```cpp
-auto snap = height_tracker->GetSnapshot();
-if (snap.is_template_stale()) {
-    // [reason: channel_advanced] — own channel found block
-    request_work_fn();
-} else if (snap.is_tip_moved()) {
-    // [reason: tip_moved] — another channel found block; hashPrevBlock stale
-    request_work_fn();
-} else {
-    // Neither condition: template still anchored to best tip, continue mining
-}
+On cross-channel PUSH (Hash/Stake block for Prime miner):
+  - Record push liveness
+  - If unified_height advanced → request_work_fn() (hashPrevBlock changed)
 ```
 
-> **Important**: When another channel (e.g. Hash) finds a block while a Prime
-> miner is working, the Prime miner's `channel_height` is unchanged but the
-> unified tip moved.  The miner **must** refresh its template to anchor to the
-> new `hashBestChain` even though no `channel_advanced` condition fired.
+### GetBlockDedupGuard Three-Tier Policy
+
+PUSH-triggered `GET_BLOCK` requests use `GetBlockReason` (e.g., `PUSH_STALE`,
+`PUSH_TIP_MOVED`) which **bypasses** the height-based dedup guard but still
+respects the 100ms rapid-burst guard to prevent two identical pushes from racing.
+
+Recovery retries (`RECOVERY_FORCED`, `RECOVERY_TIMER`) bypass **all** guards.
+
+```
+Tier 1: bypass_all   → RECOVERY_FORCED, RECOVERY_TIMER (skip all guards)
+Tier 2: bypass_height → PUSH_*, TEMPLATE_AGE_*, GET_ROUND_*, etc. (skip height, keep burst)
+Tier 3: full dedup   → INITIAL_REQUEST, HEALTH_CHANNEL_ADVANCE (both guards active)
+```
+
+> **Note**: The old two-reason model (`channel_advanced` vs `tip_moved`) has been
+> replaced by the unified model where **every** PUSH requests work.  The
+> `blocks_behind` severity tiers and burst-grace logic have been removed.
 
 ## Performance Benefits
 
@@ -295,34 +304,28 @@ If MINER_READY fails, the miner falls back to:
 [Solo Push]   Unified height: 6541700
 [Solo Push]   Prime height:   2302709
 [Solo Push]   Difficulty:     0x0422e6fc
-[Solo Push] No template - requesting initial Prime template
+[Solo Push] No template — requesting initial Prime template
 [Solo] GET_BLOCK sent
 [Solo] BLOCK_DATA received (216 bytes)
 [Solo] ✓ Template valid (Prime height 2302710)
 [Solo] Mining...
 
-# A Prime block is found — channel advanced (blocks_behind=1):
+# A Prime block is found — unified tip moved, every PUSH requests fresh template:
 [Solo Push] ✉️  PRIME_BLOCK_AVAILABLE received
 [Solo Push]   Unified: 6541701, Prime: 2302710, Diff: 0x0422e6fc
-[Solo Push] ℹ️  Normal anchor update (blocks_behind=1) — requesting fresh Prime template
+[Solo Push] ℹ️  Channel 1 block(s) behind (channel_height 2302710 ≥ channel_target 2302710) — advancing target
+[Solo Push] Requesting fresh Prime template (PUSH → unified tip moved → hashPrevBlock changed)
 [Solo] GET_BLOCK sent
 
-# Two rapid Prime blocks arrive in burst (blocks_behind=2, within grace window):
-[Solo Push] ✉️  PRIME_BLOCK_AVAILABLE received
-[Solo Push]   Unified: 6541702, Prime: 2302711, Diff: 0x0422e6fc
-[Solo Push] ℹ️  Burst: 2 blocks behind (template 1s old) — discarding stale template and requesting fresh Prime template (soft refresh)
-[Worker_manager] Template refresh requested — epoch 1 (reason: soft refresh requested)
-[Worker_manager]   Workers keep running; only submissions are withheld during the replacement-template window
+# A Hash block is found — cross-channel tip advance for Prime miner:
+[Solo Push] ℹ️  Hash push received on stateless lane (mining Prime channel) — refreshed push liveness
+[Solo Push] Cross-channel tip advance: unified 6541701 → 6541702 — requesting fresh template (hashPrevBlock changed)
 [Solo] GET_BLOCK sent
-[Solo] BLOCK_DATA received (216 bytes)
-[Solo] ✓ Template valid (Prime height 2302712)
-[Worker_manager] ✅ RECOVERY COMPLETE — workers_fed=N
 
-# A Hash block is found — unified tip moved, Prime channel unchanged:
+# Same-height tip replacement (reorg detected):
 [Solo Push] ✉️  PRIME_BLOCK_AVAILABLE received
-[Solo Push]   Unified: 6541703, Prime: 2302712, Diff: 0x0422e6fc
-[Solo Push] ↑ Tip moved (unified 6541702 → 6541703) — requesting fresh Prime template [reason: tip_moved]
-[Solo Push] Requesting fresh Prime template...
+[Solo Push] Same-height tip update — discarding template for replacement
+[Solo Push] Requesting fresh Prime template (PUSH → unified tip moved → hashPrevBlock changed)
 ```
 
 ## Security Considerations
