@@ -1152,23 +1152,24 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
                 return nullptr;
             }
         }
-        // Height-based dedup: suppress when (unified, channel) heights unchanged
-        // and a valid template already exists (guard only suppresses redundant
-        // refreshes of an already-valid template).
+        // Height-based dedup: suppress only when unified_height is unchanged and
+        // a valid template already exists.  Channel height is intentionally NOT
+        // included: hashPrevBlock changes on every unified-height advance regardless
+        // of which channel (Hash, Stake, or Prime) mined the block, so suppressing
+        // based on channel height would cause Prime miners to mine on a stale
+        // hashPrevBlock whenever a non-Prime block advances the chain.
         auto snap = m_height_tracker.GetSnapshot();
         uint32_t cur_unified = snap.unified_height;
-        uint32_t cur_channel = snap.channel_height;
         bool have_valid_template = m_template_interface &&
                                    m_template_interface->has_valid_template();
         if (m_last_get_block_unified_height > 0 &&
             cur_unified == m_last_get_block_unified_height &&
-            cur_channel == m_last_get_block_channel_height &&
             have_valid_template)
         {
             m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
             m_logger->info("[Solo] GET_BLOCK height-based dedup: suppressing request "
-                          "(unified={} channel={} unchanged since last GET_BLOCK, template valid)",
-                          cur_unified, cur_channel);
+                          "(unified={} unchanged since last GET_BLOCK, template valid)",
+                          cur_unified);
             return nullptr;
         }
     }
@@ -1187,12 +1188,11 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
 
     if (payload && !payload->empty()) {
         m_last_get_block_request_owner = capture_session_ownership();
-        // Record transmission timestamp and heights for deduplication
+        // Record transmission timestamp and unified height for deduplication
         m_last_get_block_transmitted_tp = now_tp;
         {
             auto snap = m_height_tracker.GetSnapshot();
             m_last_get_block_unified_height = snap.unified_height;
-            m_last_get_block_channel_height = snap.channel_height;
         }
         m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
 
@@ -1216,7 +1216,6 @@ void Solo::reset_get_block_dedup_state()
     // old canonical state and is no longer a valid duplicate guard.
     m_last_get_block_transmitted_tp = {};
     m_last_get_block_unified_height = 0;
-    m_last_get_block_channel_height = 0;
     m_logger->info("[Solo] \u26a1 GET_BLOCK dedup state reset — tip-anchor or recovery epoch changed; next request will not be suppressed");
 }
 
