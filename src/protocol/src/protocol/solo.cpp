@@ -2358,21 +2358,11 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             return;
         }
         
-        // Parse 16-byte full-height-picture response (all big-endian).
-        // The node sends ROUND heights (targets = tip + 1), consistent with
-        // GET_HEIGHT which sends nBestHeight + 1.  Normalize to chain tips
-        // so that the HeightTracker snapshot composes tips uniformly with
-        // PUSH (which sends tips) and canonical BLOCK_DATA metadata (tips).
-        uint32_t unified_height_raw = bytes2uint(*packet.m_data, 0);
-        uint32_t prime_height_raw   = bytes2uint(*packet.m_data, 4);
-        uint32_t hash_height_raw    = bytes2uint(*packet.m_data, 8);
-        uint32_t stake_height_raw   = bytes2uint(*packet.m_data, 12);
-
-        // TARGET → TIP conversion (guard against 0 to avoid underflow)
-        uint32_t unified_height = (unified_height_raw > 0) ? (unified_height_raw - 1) : 0;
-        uint32_t prime_height   = (prime_height_raw   > 0) ? (prime_height_raw   - 1) : 0;
-        uint32_t hash_height    = (hash_height_raw    > 0) ? (hash_height_raw    - 1) : 0;
-        uint32_t stake_height   = (stake_height_raw   > 0) ? (stake_height_raw   - 1) : 0;
+        // Parse 16-byte full-height-picture response (all big-endian)
+        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
+        uint32_t prime_height   = bytes2uint(*packet.m_data, 4);
+        uint32_t hash_height    = bytes2uint(*packet.m_data, 8);
+        uint32_t stake_height   = bytes2uint(*packet.m_data, 12);
         
         // Derive active-channel height from full picture
         uint32_t channel_height = 0;
@@ -2392,13 +2382,13 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // Determine channel name for logging
         std::string channel_name = get_channel_name(m_channel);
         
-        // Log response details (show both raw round heights and normalized tips)
+        // Log response details
         m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (16-byte full height picture, lane={}):", lane_label);
-        m_logger->info("[Solo GET_ROUND]   Unified height:  tip={} (round={})", unified_height, unified_height_raw);
-        m_logger->info("[Solo GET_ROUND]   Prime height:    tip={} (round={})", prime_height, prime_height_raw);
-        m_logger->info("[Solo GET_ROUND]   Hash height:     tip={} (round={})", hash_height, hash_height_raw);
-        m_logger->info("[Solo GET_ROUND]   Stake height:    tip={} (round={})", stake_height, stake_height_raw);
-        m_logger->info("[Solo GET_ROUND]   {} height:      tip={} (derived)", channel_name, channel_height);
+        m_logger->info("[Solo GET_ROUND]   Unified height:  {} (reference)", unified_height);
+        m_logger->info("[Solo GET_ROUND]   Prime height:    {}", prime_height);
+        m_logger->info("[Solo GET_ROUND]   Hash height:     {}", hash_height);
+        m_logger->info("[Solo GET_ROUND]   Stake height:    {}", stake_height);
+        m_logger->info("[Solo GET_ROUND]   {} height:      {} (derived)", channel_name, channel_height);
         m_logger->info("[Solo GET_ROUND]   Difficulty:      (unchanged; not in 16-byte payload)");
         
         // Update RoundStatus
@@ -2582,20 +2572,11 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             return;
         }
         
-        // Parse 16-byte full-height-picture response (all big-endian).
-        // The node sends ROUND heights (targets = tip + 1), consistent with
-        // GET_HEIGHT which sends nBestHeight + 1.  Normalize to chain tips
-        // so that the HeightTracker snapshot composes tips uniformly.
-        uint32_t unified_height_raw = bytes2uint(*packet.m_data, 0);
-        uint32_t prime_height_raw   = bytes2uint(*packet.m_data, 4);
-        uint32_t hash_height_raw    = bytes2uint(*packet.m_data, 8);
-        uint32_t stake_height_raw   = bytes2uint(*packet.m_data, 12);
-
-        // TARGET → TIP conversion (guard against 0 to avoid underflow)
-        uint32_t unified_height = (unified_height_raw > 0) ? (unified_height_raw - 1) : 0;
-        uint32_t prime_height   = (prime_height_raw   > 0) ? (prime_height_raw   - 1) : 0;
-        uint32_t hash_height    = (hash_height_raw    > 0) ? (hash_height_raw    - 1) : 0;
-        uint32_t stake_height   = (stake_height_raw   > 0) ? (stake_height_raw   - 1) : 0;
+        // Parse 16-byte full-height-picture response (all big-endian)
+        uint32_t unified_height = bytes2uint(*packet.m_data, 0);
+        uint32_t prime_height   = bytes2uint(*packet.m_data, 4);
+        uint32_t hash_height    = bytes2uint(*packet.m_data, 8);
+        uint32_t stake_height   = bytes2uint(*packet.m_data, 12);
         
         // Derive active-channel height from full picture
         uint32_t channel_height = 0;
@@ -2612,11 +2593,11 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         std::string channel_name = get_channel_name(m_channel);
         
         m_logger->info("[Solo GET_ROUND] ✓ OLD_ROUND (16-byte full height picture, lane={}):", lane_label);
-        m_logger->info("[Solo GET_ROUND]   Unified:       tip={} (round={})", unified_height, unified_height_raw);
-        m_logger->info("[Solo GET_ROUND]   Prime height:  tip={} (round={})", prime_height, prime_height_raw);
-        m_logger->info("[Solo GET_ROUND]   Hash height:   tip={} (round={})", hash_height, hash_height_raw);
-        m_logger->info("[Solo GET_ROUND]   Stake height:  tip={} (round={})", stake_height, stake_height_raw);
-        m_logger->info("[Solo GET_ROUND]   {} height:   tip={} (derived)", channel_name, channel_height);
+        m_logger->info("[Solo GET_ROUND]   Unified:       {}", unified_height);
+        m_logger->info("[Solo GET_ROUND]   Prime height:  {}", prime_height);
+        m_logger->info("[Solo GET_ROUND]   Hash height:   {}", hash_height);
+        m_logger->info("[Solo GET_ROUND]   Stake height:  {}", stake_height);
+        m_logger->info("[Solo GET_ROUND]   {} height:   {} (derived)", channel_name, channel_height);
         m_logger->info("[Solo GET_ROUND]   Difficulty:    (unchanged; not in 16-byte payload)");
         
         // Update RoundStatus
