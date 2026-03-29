@@ -668,13 +668,13 @@ private:
     std::chrono::steady_clock::time_point m_last_session_status_ack_time{};
 
     // ── GET_BLOCK deduplication ──────────────────────────────────────────────
-    // Height-based dedup: suppress GET_BLOCK only when the (unified_height,
-    // channel_height) pair is identical to the last transmitted request.
-    // This replaces the old 100ms time-based guard which incorrectly suppressed
-    // retries during degraded-mode recovery when heights hadn't changed.
+    // Height-based dedup: suppress GET_BLOCK only when unified_height is
+    // identical to the last transmitted request AND a valid template exists.
+    // Channel height is intentionally excluded: hashPrevBlock changes on every
+    // unified-height advance regardless of which channel (Hash, Stake, Prime)
+    // mined the block, so channel height is irrelevant to template freshness.
     // bypass_dedup (true during forced degraded-mode retries) skips this check.
     uint32_t m_last_get_block_unified_height{0};
-    uint32_t m_last_get_block_channel_height{0};
     std::chrono::steady_clock::time_point m_last_get_block_transmitted_tp{};
     std::atomic<GetBlockRequestStatus> m_last_get_block_request_status{GetBlockRequestStatus::NONE};
     static constexpr int64_t GET_BLOCK_DEDUP_MS = 100;  // 100ms deduplication window (retained for rapid-burst guard)
