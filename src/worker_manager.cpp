@@ -310,7 +310,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                                 // Request fresh work/GET_BLOCK via NodeSession
                                 m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK via NodeSession");
-                                auto work_payload = m_primary_node_session->request_work(true);
+                                auto work_payload = m_primary_node_session->request_work(protocol::GetBlockReason::HEALTH_CHANNEL_STALE);
                                 if (work_payload && !work_payload->empty()) {
                                     m_primary_node_session->transmit(work_payload);
                                 }
@@ -1795,7 +1795,7 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
     }
 
     bool no_valid_template = !has_valid_template_available(solo_protocol);
-    bool forced_lane = should_bypass_height_dedup(reason) && (is_recovery_active() || no_valid_template) && solo_protocol->is_authenticated();
+    bool is_forced = should_bypass_height_dedup(reason) && (is_recovery_active() || no_valid_template) && solo_protocol->is_authenticated();
 
     // Gate: SessionManager::can_request_get_block() must be true before transmitting GET_BLOCK.
     // This guard is bypassed when the reason bypasses height dedup (e.g. recovery, validation failure)
@@ -1813,15 +1813,18 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
     }
 
     // Request fresh work via NodeSession (wire-level GET_BLOCK)
-    m_logger->info("[Worker_manager] Requesting fresh work via NodeSession (forced_lane={})",
-                   forced_lane ? "true" : "false");
-    auto work_payload = m_primary_node_session->request_work(forced_lane);
+    // When is_forced, pass the original reason (which carries bypass policy);
+    // otherwise pass the reason as-is (normal dedup applies).
+    auto effective_reason = is_forced ? reason : reason;
+    m_logger->info("[Worker_manager] Requesting fresh work via NodeSession (reason={}, forced={})",
+                   reason_name(reason), is_forced ? "true" : "false");
+    auto work_payload = m_primary_node_session->request_work(effective_reason);
     if (work_payload && !work_payload->empty()) {
         m_primary_node_session->transmit(work_payload);
         m_recovery.last_get_block_at = std::chrono::steady_clock::now();
         m_recovery.get_block_confirmed = true;
         ++m_get_block_sent_total;
-        if (forced_lane) {
+        if (is_forced) {
             ++m_get_block_forced_retry_total;
         }
         m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_epoch_coordinator->recovery_epoch());

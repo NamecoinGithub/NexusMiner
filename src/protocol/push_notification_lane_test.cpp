@@ -1070,10 +1070,10 @@ int main()
     // ====================================================================
     std::cout << "\nTest 22: PUSH-silent fallback enables GET_ROUND-triggered GET_BLOCK" << std::endl;
     {
-        print_test_result("PUSH active (<600s) blocks GET_ROUND fallback trigger",
-            !should_trigger_get_round_fallback_get_block(true, 101, 101, 599));
-        print_test_result("PUSH silent (>=600s) enables GET_ROUND fallback trigger",
-            should_trigger_get_round_fallback_get_block(true, 101, 101, 600));
+        print_test_result("PUSH active (<480s) blocks GET_ROUND fallback trigger",
+            !should_trigger_get_round_fallback_get_block(true, 101, 101, 479));
+        print_test_result("PUSH silent (>=480s) enables GET_ROUND fallback trigger",
+            should_trigger_get_round_fallback_get_block(true, 101, 101, 480));
     }
 
     // ====================================================================
