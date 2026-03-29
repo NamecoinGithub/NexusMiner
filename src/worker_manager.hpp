@@ -139,7 +139,6 @@ private:
     void clear_recovery_state();
 
     void retry_connect(network::Endpoint const& wallet_endpoint);
-    void handle_authenticated_session_loss(const char* reason);
 
     // ── State machine transition API ───────────────────────────────────────────
     /// Transition to a new RecoveryPhase.  Logs the transition, validates legality
@@ -219,7 +218,6 @@ private:
     bool              m_using_failover{false}; // currently retrying on failover?
     uint32_t          m_primary_fail_count{0}; // consecutive failures on the active side
     std::chrono::steady_clock::time_point m_failover_activated_at{}; // when failover last became active
-    bool m_auth_loss_handoff_in_progress{false}; // true while auth-loss failover handoff connect is in-flight
 
     // Node-advertised keepalive interval (hours), updated from SESSION_START on primary lane.
     // Used to seed secondary/failover Solo instances instead of the static config value.
