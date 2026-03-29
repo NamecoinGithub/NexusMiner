@@ -51,6 +51,12 @@ void PushNotificationHandler::handle_push_notification(
         return;
     }
 
+    /* Parse unified height early — needed before the channel check to detect
+     * cross-channel tip advances and reset the GET_BLOCK dedup state.  A block
+     * on ANY channel (Prime, Hash, or Stake) advances the canonical unified tip,
+     * which means all miners need a fresh template with the new hashPrevBlock. */
+    uint32_t notification_unified_height = bytes2uint(*packet.m_data, UNIFIED_HEIGHT_OFFSET);
+
     /* Validate channel — since node now broadcasts BOTH channels on every push update,
      * receiving a push for the non-subscribed channel is expected and informational.
      * Treat it as a no-op for mining decisions, but still record push liveness so
@@ -60,6 +66,23 @@ void PushNotificationHandler::handle_push_notification(
         if (height_tracker) {
             height_tracker->OnPushLiveness();
         }
+
+        // If the unified tip advanced on another channel, reset the GET_BLOCK dedup
+        // state so the next work request (from a template-age timer or manual retry)
+        // is not suppressed by cached heights that predate this block.  Without this
+        // reset a Prime miner that relies on Hash blocks to advance the chain would
+        // never refresh its template during long Prime blocks — every age-based retry
+        // would be silently suppressed by the height-based dedup guard.
+        if (notification_unified_height > 0 && height_tracker) {
+            auto snap = height_tracker->GetSnapshot();
+            if (notification_unified_height > snap.unified_height) {
+                if (reset_dedup_fn) { reset_dedup_fn(); }
+                m_logger->info("[Solo Push] Cross-channel tip advance: unified {} → {} — "
+                               "resetting GET_BLOCK dedup to unblock fresh-work retries",
+                               snap.unified_height, notification_unified_height);
+            }
+        }
+
         m_logger->info("[Solo Push] ℹ️  {} push received on {} lane (mining {} channel) — informational only, refreshed push liveness",
                        ch_name,
                        (lane == ProtocolLane::STATELESS) ? "stateless" : "legacy",
@@ -264,6 +287,10 @@ void PushNotificationHandler::handle_push_notification(
                 // for this height — refresh the template to mine on the current tip.
                 m_logger->info("[Solo Push] Same-height tip update — refreshing template for current target");
                 template_interface->discard_template("same_height_tip_update");
+                // Reset dedup before requesting work: the cached heights match the
+                // same-height template being discarded, so without this reset the
+                // fresh GET_BLOCK would be suppressed by the height-based dedup guard.
+                if (reset_dedup_fn) { reset_dedup_fn(); }
                 request_work_fn();
                 return;
             }

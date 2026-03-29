@@ -2377,7 +2377,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             return;
         }
         
-        uint32_t previous_unified_height = m_last_round_status.height;
+        uint32_t previous_unified_height = m_last_round_unified_height;
         uint32_t previous_channel_height = m_last_round_channel_height;
 
         // Determine channel name for logging
@@ -2553,9 +2553,11 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             on_new_round_received(unified_height);
         }
 
-        // Record the current channel height after the NEW_ROUND polling decision so
-        // diagnostic logging can report the previous channel value next time.
+        // Record the current channel and unified heights after the NEW_ROUND polling
+        // decision so diagnostic logging can show how heights changed (or stayed flat)
+        // when the authoritative unified height advanced on another channel.
         m_last_round_channel_height = channel_height;
+        m_last_round_unified_height = unified_height;
     }
     else if (matches_opcode(packet, Packet::OLD_ROUND))
     {
@@ -2731,9 +2733,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // Update intelligent polling state
         on_old_round_received();
 
-        // Update the dedicated dedup field so the next NEW_ROUND compares against
-        // the most recent GET_ROUND channel height (regardless of NEW/OLD opcode).
+        // Update the dedicated dedup fields so the next NEW_ROUND compares against
+        // the most recent GET_ROUND heights (regardless of NEW/OLD opcode).
         m_last_round_channel_height = channel_height;
+        m_last_round_unified_height = unified_height;
     }
 }
 
