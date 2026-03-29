@@ -259,9 +259,10 @@ public:
 
     /**
      * @brief Request fresh mining template
+     * @param reason The semantic reason for the request (controls dedup bypass policy)
      * @return Payload to transmit (null if not authenticated)
      */
-    network::Shared_payload request_work(bool bypass_dedup = false);
+    network::Shared_payload request_work(protocol::GetBlockReason reason = protocol::GetBlockReason::INITIAL_REQUEST);
 
     /**
      * @brief Submit a solved block

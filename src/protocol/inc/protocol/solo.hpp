@@ -13,6 +13,7 @@
 #include "protocol/session_recovery_policy.hpp"
 #include "protocol/submit_context.hpp"
 #include "protocol/epoch_coordinator.hpp"
+#include "protocol/get_block_reason.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "LLP/colin_ping_handler.h"
@@ -56,7 +57,7 @@ public:
     /// Authentication-guarded; returns null if not authenticated or reward not bound.
     /// No miner-side rate limiting — the node's 2-second AutoCoolDown enforces the server-side floor.
     network::Shared_payload get_work() override;
-    network::Shared_payload get_work(bool bypass_dedup);
+    network::Shared_payload get_work(GetBlockReason reason);
     GetBlockRequestStatus get_last_get_block_request_status() const { return m_last_get_block_request_status.load(); }
 
     /// Returns the number of consecutive hashPrevBlock mismatches detected by
@@ -116,9 +117,10 @@ public:
     static constexpr uint32_t POLL_INTERVAL_MAX_MS = 60000;    // 60 seconds maximum
     // Minimum push-silence duration before GET_ROUND fallback may trigger GET_BLOCK.
     // Policy: while PUSH is active, GET_ROUND is informational only. Once PUSH has
-    // been silent for 600s, each GET_ROUND poll (POLL_INTERVAL_MIN_MS minimum cadence)
-    // may request GET_BLOCK.
-    static constexpr int64_t PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS = 600;
+    // been silent for this threshold, each GET_ROUND poll (POLL_INTERVAL_MIN_MS minimum
+    // cadence) may request GET_BLOCK.  Set to match TEMPLATE_AGE_WARNING_SECONDS so
+    // the GET_ROUND fallback arms BEFORE the 600s emergency timeout fires.
+    static constexpr int64_t PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS = 480;
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work().
     /// Returns null/empty if not yet authenticated — callers must guard for this.
