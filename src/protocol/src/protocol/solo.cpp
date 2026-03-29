@@ -3354,45 +3354,35 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
 {
     disarm_get_round_fallback("PUSH re-established");
 
+    // Reset dedup state unconditionally before processing the push.
+    // PUSH is the authoritative liveness signal from the node — any work request
+    // triggered by this push must not be blocked by stale cached heights.
+    // PUSH reasons also bypass height dedup in GetBlockDedupGuard, but resetting
+    // here handles cross-channel cases where the handler returns early without
+    // requesting work (the reset still unblocks future age-based retries).
+    reset_get_block_dedup_state();
+
     const char* push_opcode_name = (channel == mining::CHANNEL_PRIME) ? "PRIME_BLOCK_AVAILABLE" : "HASH_BLOCK_AVAILABLE";
         m_push_handler->handle_push_notification(
             packet, channel, m_protocol_lane,
             m_template_interface.get(),
             &m_height_tracker,
+            // CALLBACK 1: update_height_fn — Updates cached height state
             [this](uint32_t u, uint32_t c, uint32_t d) {
                 update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
             },
+            // CALLBACK 2: request_work_fn — Issues GET_BLOCK with PUSH_STALE reason
+            // PUSH reasons bypass height dedup in GetBlockDedupGuard so this
+            // is never suppressed by stale cached heights.
             [connection, this, push_opcode_name]() {
-                // Push notifications are the authoritative liveness signal.
-                // ALWAYS request work when a push arrives — session gate only applies to SUBMIT.
-                // A transient !authoritative_authenticated state must never suppress GET_BLOCK.
                 if (connection) {
-                    auto work_payload = get_work();
+                    auto work_payload = get_work(GetBlockReason::PUSH_STALE);
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
                     } else {
                         m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
                     }
-                    // NOTE: Do NOT send MINER_READY here. MINER_READY is a one-time subscription
-                    // handshake sent only during initial login. The node keeps the miner subscribed
-                    // for the lifetime of the session. GET_BLOCK (0xD081) is the correct recovery
-                    // request — it asks for a fresh template without resetting the subscription state.
                 }
-            },
-            [this]() {
-                if (m_recovery_handler) {
-                    mark_authoritative_recovery_required("push_channel_stale_recovery");
-                    m_logger->info("[Solo] ⚡ Unified Tip-Anchor Changed — recovery initiated (push-triggered template replacement), resetting dedup state and notifying Worker_manager");
-                    // Reset dedup state so the recovery GET_BLOCK is not blocked by stale
-                    // timestamp from the prior request that targeted the old canonical tip.
-                    reset_get_block_dedup_state();
-                    m_recovery_handler();
-                }
-            },
-            [this]() {
-                // Reset height-based dedup before recovery GET_BLOCK so the stale push
-                // path can always issue a fresh GET_BLOCK regardless of cached heights.
-                reset_get_block_dedup_state();
             });
 }
 

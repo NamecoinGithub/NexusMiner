@@ -105,6 +105,15 @@ inline bool should_bypass_height_dedup(GetBlockReason reason)
         case GetBlockReason::GET_ROUND_STALE:
         case GetBlockReason::GET_ROUND_NO_TEMPLATE:
 
+        // Push-driven requests: PUSH is the authoritative liveness signal
+        // from the node.  If the node says "new block available", we must
+        // request it regardless of cached heights.  The 100ms rapid-burst
+        // guard still applies to prevent two identical pushes racing.
+        case GetBlockReason::PUSH_STALE:
+        case GetBlockReason::PUSH_TIP_MOVED:
+        case GetBlockReason::PUSH_SAME_HEIGHT_TIP:
+        case GetBlockReason::PUSH_NO_TEMPLATE:
+
             return true;
 
         default:

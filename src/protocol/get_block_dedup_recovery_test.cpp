@@ -749,15 +749,18 @@ void test_get_block_reason_dedup_policy() {
     print_test_result("TEMPLATE_AGE_DEFERRED bypasses height dedup",
         should_bypass_height_dedup(GetBlockReason::TEMPLATE_AGE_DEFERRED));
 
-    // Tier 3: full dedup — normal requests respect all guards
-    print_test_result("PUSH_STALE does NOT bypass height dedup",
-        !should_bypass_height_dedup(GetBlockReason::PUSH_STALE));
-    print_test_result("PUSH_TIP_MOVED does NOT bypass height dedup",
-        !should_bypass_height_dedup(GetBlockReason::PUSH_TIP_MOVED));
-    print_test_result("PUSH_SAME_HEIGHT_TIP does NOT bypass height dedup",
-        !should_bypass_height_dedup(GetBlockReason::PUSH_SAME_HEIGHT_TIP));
-    print_test_result("PUSH_NO_TEMPLATE does NOT bypass height dedup",
-        !should_bypass_height_dedup(GetBlockReason::PUSH_NO_TEMPLATE));
+    // PUSH reasons: bypass height dedup (PUSH is authoritative) but NOT all dedup
+    // (100ms rapid-burst guard still applies).
+    print_test_result("PUSH_STALE bypasses height dedup (authoritative push)",
+        should_bypass_height_dedup(GetBlockReason::PUSH_STALE));
+    print_test_result("PUSH_TIP_MOVED bypasses height dedup (authoritative push)",
+        should_bypass_height_dedup(GetBlockReason::PUSH_TIP_MOVED));
+    print_test_result("PUSH_SAME_HEIGHT_TIP bypasses height dedup (authoritative push)",
+        should_bypass_height_dedup(GetBlockReason::PUSH_SAME_HEIGHT_TIP));
+    print_test_result("PUSH_NO_TEMPLATE bypasses height dedup (authoritative push)",
+        should_bypass_height_dedup(GetBlockReason::PUSH_NO_TEMPLATE));
+
+    // Tier 3: full dedup — non-push normal requests respect all guards
     print_test_result("HEALTH_CHANNEL_ADVANCE does NOT bypass height dedup",
         !should_bypass_height_dedup(GetBlockReason::HEALTH_CHANNEL_ADVANCE));
     print_test_result("HEALTH_TIP_MOVED does NOT bypass height dedup",
@@ -767,7 +770,7 @@ void test_get_block_reason_dedup_policy() {
     print_test_result("INITIAL_REQUEST does NOT bypass height dedup",
         !should_bypass_height_dedup(GetBlockReason::INITIAL_REQUEST));
 
-    // Tier 3 must also NOT bypass all dedup
+    // PUSH bypasses height but NOT all dedup (burst guard still applies)
     print_test_result("PUSH_STALE does NOT bypass all dedup",
         !should_bypass_all_dedup(GetBlockReason::PUSH_STALE));
     print_test_result("INITIAL_REQUEST does NOT bypass all dedup",

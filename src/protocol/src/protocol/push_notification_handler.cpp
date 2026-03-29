@@ -25,9 +25,7 @@ void PushNotificationHandler::handle_push_notification(
     MiningTemplateInterface* template_interface,
     HeightTracker* height_tracker,
     std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
-    std::function<void()> request_work_fn,
-    std::function<void()> recovery_initiated_fn,
-    std::function<void()> reset_dedup_fn)
+    std::function<void()> request_work_fn)
 {
     const char* ch_name = channel_name(expected_channel);
 
@@ -67,18 +65,14 @@ void PushNotificationHandler::handle_push_notification(
             height_tracker->OnPushLiveness();
         }
 
-        // If the unified tip advanced on another channel, reset the GET_BLOCK dedup
-        // state so the next work request (from a template-age timer or manual retry)
-        // is not suppressed by cached heights that predate this block.  Without this
-        // reset a Prime miner that relies on Hash blocks to advance the chain would
-        // never refresh its template during long Prime blocks — every age-based retry
-        // would be silently suppressed by the height-based dedup guard.
+        // If the unified tip advanced on another channel, log it.
+        // Dedup reset for cross-channel advances is handled by the caller (Solo)
+        // who resets dedup state before invoking this handler.
         if (notification_unified_height > 0 && height_tracker) {
             auto snap = height_tracker->GetSnapshot();
             if (notification_unified_height > snap.unified_height) {
-                if (reset_dedup_fn) { reset_dedup_fn(); }
                 m_logger->info("[Solo Push] Cross-channel tip advance: unified {} → {} — "
-                               "resetting GET_BLOCK dedup to unblock fresh-work retries",
+                               "caller is responsible for dedup reset",
                                snap.unified_height, notification_unified_height);
             }
         }
@@ -213,13 +207,8 @@ void PushNotificationHandler::handle_push_notification(
                 // Just request fresh work; workers keep mining the current one.
                 m_logger->info("[Solo Push] ℹ️  Normal anchor update (blocks_behind=1) — requesting fresh {} template",
                                ch_name);
-                // Reset height-based dedup so the recovery GET_BLOCK is not suppressed.
-                // The current dedup state reflects the heights when the last GET_BLOCK was
-                // sent — but we need a new template because the current one is stale.
-                // The heights seen by the push notification are the same as the last
-                // GET_BLOCK, so without this reset the dedup would suppress the recovery
-                // request entirely.
-                if (reset_dedup_fn) { reset_dedup_fn(); }
+                // PUSH reasons bypass height dedup in the GetBlockDedupGuard,
+                // so no explicit dedup reset is needed here.
                 request_work_fn();
 
                 // Advance channel_target so subsequent pushes at the same height
@@ -242,7 +231,6 @@ void PushNotificationHandler::handle_push_notification(
                         now - snap.last_template_update).count();
                     m_logger->info("[Solo Push] ℹ️  Burst: 2 blocks behind (template {}s old) — requesting fresh {} template (session-preserving refresh)",
                                    template_age_s, ch_name);
-                    if (reset_dedup_fn) { reset_dedup_fn(); }
                     request_work_fn();
                     // Burst-only target advance: keep repeated burst pushes at the same
                     // channel height from retriggering this branch.
@@ -257,7 +245,6 @@ void PushNotificationHandler::handle_push_notification(
             // Do NOT discard or escalate hard recovery from push staleness alone.
             m_logger->warn("[Solo Push] ⚠️  Template {} block(s) behind (channel_height {} >= channel_target {}) — requesting fresh work/GET_BLOCK (no discard, no hard recovery)",
                            blocks_behind, snap.channel_height, snap.channel_target);
-            if (reset_dedup_fn) { reset_dedup_fn(); }
             request_work_fn();
 
             // Advance channel_target to prevent doom-loop.
@@ -287,10 +274,8 @@ void PushNotificationHandler::handle_push_notification(
                 // for this height — refresh the template to mine on the current tip.
                 m_logger->info("[Solo Push] Same-height tip update — refreshing template for current target");
                 template_interface->discard_template("same_height_tip_update");
-                // Reset dedup before requesting work: the cached heights match the
-                // same-height template being discarded, so without this reset the
-                // fresh GET_BLOCK would be suppressed by the height-based dedup guard.
-                if (reset_dedup_fn) { reset_dedup_fn(); }
+                // PUSH_SAME_HEIGHT_TIP bypasses height dedup in the guard,
+                // so no explicit reset is needed.
                 request_work_fn();
                 return;
             }
@@ -327,7 +312,6 @@ void PushNotificationHandler::handle_push_notification(
         {
             m_logger->info("[Solo Push] ℹ️  Tip moved (unified {} → {}) on {} channel — informational; workers continue on current valid template",
                           snap.template_unified_height, snap.unified_height, ch_name);
-            if (reset_dedup_fn) { reset_dedup_fn(); }
             request_work_fn();  // Opportunistic GET_BLOCK to refresh hashPrevBlock — no recovery state changes
         }
         else
