@@ -14,6 +14,7 @@
 #include "protocol/submit_context.hpp"
 #include "protocol/epoch_coordinator.hpp"
 #include "protocol/get_block_reason.hpp"
+#include "protocol/get_block_dedup_guard.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "LLP/colin_ping_handler.h"
@@ -670,16 +671,11 @@ private:
     std::chrono::steady_clock::time_point m_last_session_status_ack_time{};
 
     // ── GET_BLOCK deduplication ──────────────────────────────────────────────
-    // Height-based dedup: suppress GET_BLOCK only when unified_height is
-    // identical to the last transmitted request AND a valid template exists.
-    // Channel height is intentionally excluded: hashPrevBlock changes on every
-    // unified-height advance regardless of which channel (Hash, Stake, Prime)
-    // mined the block, so channel height is irrelevant to template freshness.
-    // bypass_dedup (true during forced degraded-mode retries) skips this check.
-    uint32_t m_last_get_block_unified_height{0};
-    std::chrono::steady_clock::time_point m_last_get_block_transmitted_tp{};
+    // Centralized dedup guard: reason-aware three-tier policy (bypass_all,
+    // bypass_height, full dedup).  See get_block_dedup_guard.hpp.
+    GetBlockDedupGuard m_dedup_guard;
     std::atomic<GetBlockRequestStatus> m_last_get_block_request_status{GetBlockRequestStatus::NONE};
-    static constexpr int64_t GET_BLOCK_DEDUP_MS = 100;  // 100ms deduplication window (retained for rapid-burst guard)
+    static constexpr int64_t GET_BLOCK_DEDUP_MS = 100;  // retained for reference; guard owns the window
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION

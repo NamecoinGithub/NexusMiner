@@ -131,6 +131,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_needs_initial_round_check{false}  // No template yet
 , m_template_unified_height{0}  // No template yet
 , m_protocol_lane{ProtocolLane::UNKNOWN}  // Will be determined from connection port
+, m_dedup_guard{spdlog::get("logger")}
 {
     if (!m_logger) {
         m_logger = spdlog::default_logger();
@@ -1117,52 +1118,17 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
     }
 
     // ── GET_BLOCK deduplication guard ────────────────────────────────────────
-    // Reason-aware dedup: the bypass policy is derived from the GetBlockReason
-    // rather than a bare boolean.  Three tiers:
-    //   1. bypass_all:    skip both rapid-burst AND height guards (recovery retries)
-    //   2. bypass_height: skip height guard, keep rapid-burst (age-based refresh)
-    //   3. full dedup:    both guards active (normal push/health requests)
-    auto now_tp = std::chrono::steady_clock::now();
-    bool bypass_all    = should_bypass_all_dedup(reason);
-    bool bypass_height = should_bypass_height_dedup(reason);
+    // Delegated to the centralized GetBlockDedupGuard.
+    {
+        auto snap = m_height_tracker.GetSnapshot();
+        uint32_t cur_unified = snap.unified_height;
+        bool have_valid_template = m_template_interface &&
+                                   m_template_interface->has_valid_template();
 
-    if (bypass_all) {
-        m_logger->info("[Solo] GET_BLOCK dedup bypass (all) — reason: {}", reason_name(reason));
-    } else if (bypass_height) {
-        m_logger->info("[Solo] GET_BLOCK dedup bypass (height) — reason: {}", reason_name(reason));
-    }
-    if (!bypass_all) {
-        // Rapid-burst guard: suppress within 100ms (two code paths racing)
-        if (m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
-            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                now_tp - m_last_get_block_transmitted_tp).count();
-            if (elapsed_ms < GET_BLOCK_DEDUP_MS) {
-                m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
-                m_logger->info("[Solo] GET_BLOCK rapid-burst dedup: suppressing request "
-                              "({}ms since last transmission, threshold {}ms, reason={})",
-                              elapsed_ms, GET_BLOCK_DEDUP_MS, reason_name(reason));
-                return nullptr;
-            }
-        }
-        if (!bypass_height) {
-            // Height-based dedup: suppress only when unified_height is unchanged and
-            // a valid template already exists.  Channel height is intentionally NOT
-            // included: hashPrevBlock changes on every unified-height advance regardless
-            // of which channel (Hash, Stake, or Prime) mined the block.
-            auto snap = m_height_tracker.GetSnapshot();
-            uint32_t cur_unified = snap.unified_height;
-            bool have_valid_template = m_template_interface &&
-                                       m_template_interface->has_valid_template();
-            if (m_last_get_block_unified_height > 0 &&
-                cur_unified == m_last_get_block_unified_height &&
-                have_valid_template)
-            {
-                m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
-                m_logger->info("[Solo] GET_BLOCK height-based dedup: suppressing request "
-                              "(unified={} unchanged since last GET_BLOCK, template valid, reason={})",
-                              cur_unified, reason_name(reason));
-                return nullptr;
-            }
+        auto verdict = m_dedup_guard.check(reason, cur_unified, have_valid_template);
+        if (verdict != GetBlockDedupGuard::Verdict::ALLOW) {
+            m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
+            return nullptr;
         }
     }
 
@@ -1180,11 +1146,10 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
 
     if (payload && !payload->empty()) {
         m_last_get_block_request_owner = capture_session_ownership();
-        // Record transmission timestamp and unified height for deduplication
-        m_last_get_block_transmitted_tp = now_tp;
+        // Record transmission for dedup guard
         {
             auto snap = m_height_tracker.GetSnapshot();
-            m_last_get_block_unified_height = snap.unified_height;
+            m_dedup_guard.record_transmission(snap.unified_height);
         }
         m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
 
@@ -1202,13 +1167,7 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
 
 void Solo::reset_get_block_dedup_state()
 {
-    // Clear all deduplication state so the next get_work() call is not suppressed.
-    // This must be called when the canonical tip-anchor changes (same-height chain reorg)
-    // or a new degraded-recovery epoch begins — the prior outstanding request was for the
-    // old canonical state and is no longer a valid duplicate guard.
-    m_last_get_block_transmitted_tp = {};
-    m_last_get_block_unified_height = 0;
-    m_logger->info("[Solo] \u26a1 GET_BLOCK dedup state reset — tip-anchor or recovery epoch changed; next request will not be suppressed");
+    m_dedup_guard.reset();
 }
 
 network::Shared_payload Solo::send_get_round()
