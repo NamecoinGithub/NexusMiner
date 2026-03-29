@@ -47,6 +47,8 @@
  * 36. OnTemplateReceived() sets template_unified_height from canonical
  * 37. Cross-channel block (Hash/Stake) advances unified but not Prime channel →
  *     is_tip_moved() == true, is_template_stale() == false
+ * 38. OnTemplateReceived +1 target does NOT contaminate snapshot channel_height
+ *     (regression: raw blockchain height must not be overwritten by mining target)
  */
 
 #include "protocol/height_tracker.hpp"
@@ -1820,6 +1822,53 @@ void test_cross_channel_block_tip_moved_not_stale() {
 }
 
 // ============================================================================
+// Test 38: OnTemplateReceived +1 target does NOT contaminate snapshot channel_height
+//
+// Regression test for the GET_BLOCK dedup asymmetry bug:
+//   - OnBlockDataReceived(unified=100, channel=50) sets canonical_channel_height=50
+//   - OnTemplateReceived(1, 51) sets m_channel_target=51 (the mining target = tip+1)
+//   - The snapshot's channel_height must still reflect the raw blockchain height (50),
+//     NOT the +1 mining target (51).
+//
+// If channel_height were 51 instead of 50, the GET_BLOCK dedup key recorded at
+// template-receipt time would be 51, but GET_ROUND would later report 50 —
+// causing an asymmetric mismatch where new-round detection fails or
+// dedup-suppression fires incorrectly on the next GET_BLOCK.
+// ============================================================================
+void test_template_received_plus1_does_not_contaminate_channel_height() {
+    std::cout << "\nTest 38: OnTemplateReceived +1 target does NOT contaminate snap.channel_height\n";
+    HeightTracker tracker;
+
+    // Canonical BLOCK_DATA sets unified=100, channel=50 (raw blockchain heights)
+    tracker.OnBlockDataReceived(100, 50, 0x1d00ffff, uint1024_t{});
+
+    // Template received: the miner will mine toward channel target = 51 (= 50 + 1).
+    // This +1 value must NOT leak into snap.channel_height.
+    tracker.OnTemplateReceived(1 /* CHANNEL_PRIME */, 51);
+
+    auto snap = tracker.GetSnapshot();
+
+    // channel_height must be the raw blockchain tip (50), not the mining target (51)
+    print_test_result("channel_height == 50 (raw blockchain height, not +1 target)",
+                      snap.channel_height == 50);
+
+    // channel_target must be the mining target (51)
+    print_test_result("channel_target == 51 (mining target = tip+1)",
+                      snap.channel_target == 51);
+
+    // unified_height must be correct
+    print_test_result("unified_height == 100",
+                      snap.unified_height == 100);
+
+    // Verify the canonical snapshot directly — canonical_channel_height must also be 50
+    auto canon = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical_channel_height == 50 (raw, not contaminated by +1)",
+                      canon.canonical_channel_height == 50);
+    print_test_result("canonical_channel_target == 51 (correctly set to tip+1)",
+                      canon.canonical_channel_target == 51);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -1878,6 +1927,7 @@ int main() {
     test_burst_recovery_template_ahead_of_tracker();
     test_on_get_round_monotonic_guard();
     test_cross_channel_block_tip_moved_not_stale();
+    test_template_received_plus1_does_not_contaminate_channel_height();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
