@@ -1078,10 +1078,10 @@ network::Shared_payload Solo::login(Login_handler handler)
 
 network::Shared_payload Solo::get_work()
 {
-    return get_work(false);
+    return get_work(GetBlockReason::INITIAL_REQUEST);
 }
 
-network::Shared_payload Solo::get_work(bool bypass_dedup)
+network::Shared_payload Solo::get_work(GetBlockReason reason)
 {
     /// Request a fresh mining template via GET_BLOCK.
     /// Authentication-guarded; returns null if not authenticated or reward not bound.
@@ -1117,29 +1117,21 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
     }
 
     // ── GET_BLOCK deduplication guard ────────────────────────────────────────
-    // Height-based dedup: suppress GET_BLOCK when requesting the exact same
-    // (unified_height, channel_height) pair we last transmitted AND a valid
-    // template is already in hand.  Prevents duplicate requests from
-    // push_notification_handler and Worker_manager when both independently
-    // respond to the same staleness event.
-    //
-    // The guard is intentionally skipped when no valid template exists: in that
-    // state we must always attempt a fresh fetch regardless of whether the
-    // heights match the previous request, because the prior request may have
-    // returned nothing or a discarded template.
-    //
-    // Unlike the old 100ms time-based guard, height-based dedup does NOT prevent
-    // retries when the chain has actually advanced — any height change unblocks
-    // the guard automatically.  bypass_dedup (set for forced degraded-mode
-    // retries) skips this check so the escape ladder can always make progress.
-    //
-    // A 100ms rapid-burst guard is kept alongside to prevent two code paths from
-    // transmitting simultaneously in the same scheduler tick.
+    // Reason-aware dedup: the bypass policy is derived from the GetBlockReason
+    // rather than a bare boolean.  Three tiers:
+    //   1. bypass_all:    skip both rapid-burst AND height guards (recovery retries)
+    //   2. bypass_height: skip height guard, keep rapid-burst (age-based refresh)
+    //   3. full dedup:    both guards active (normal push/health requests)
     auto now_tp = std::chrono::steady_clock::now();
-    if (bypass_dedup) {
-        m_logger->info("[Solo] GET_BLOCK deduplication bypass active for degraded recovery retry");
+    bool bypass_all    = should_bypass_all_dedup(reason);
+    bool bypass_height = should_bypass_height_dedup(reason);
+
+    if (bypass_all) {
+        m_logger->info("[Solo] GET_BLOCK dedup bypass (all) — reason: {}", reason_name(reason));
+    } else if (bypass_height) {
+        m_logger->info("[Solo] GET_BLOCK dedup bypass (height) — reason: {}", reason_name(reason));
     }
-    if (!bypass_dedup) {
+    if (!bypass_all) {
         // Rapid-burst guard: suppress within 100ms (two code paths racing)
         if (m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
             auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1147,30 +1139,30 @@ network::Shared_payload Solo::get_work(bool bypass_dedup)
             if (elapsed_ms < GET_BLOCK_DEDUP_MS) {
                 m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
                 m_logger->info("[Solo] GET_BLOCK rapid-burst dedup: suppressing request "
-                              "({}ms since last transmission, threshold {}ms)",
-                              elapsed_ms, GET_BLOCK_DEDUP_MS);
+                              "({}ms since last transmission, threshold {}ms, reason={})",
+                              elapsed_ms, GET_BLOCK_DEDUP_MS, reason_name(reason));
                 return nullptr;
             }
         }
-        // Height-based dedup: suppress only when unified_height is unchanged and
-        // a valid template already exists.  Channel height is intentionally NOT
-        // included: hashPrevBlock changes on every unified-height advance regardless
-        // of which channel (Hash, Stake, or Prime) mined the block, so suppressing
-        // based on channel height would cause Prime miners to mine on a stale
-        // hashPrevBlock whenever a non-Prime block advances the chain.
-        auto snap = m_height_tracker.GetSnapshot();
-        uint32_t cur_unified = snap.unified_height;
-        bool have_valid_template = m_template_interface &&
-                                   m_template_interface->has_valid_template();
-        if (m_last_get_block_unified_height > 0 &&
-            cur_unified == m_last_get_block_unified_height &&
-            have_valid_template)
-        {
-            m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
-            m_logger->info("[Solo] GET_BLOCK height-based dedup: suppressing request "
-                          "(unified={} unchanged since last GET_BLOCK, template valid)",
-                          cur_unified);
-            return nullptr;
+        if (!bypass_height) {
+            // Height-based dedup: suppress only when unified_height is unchanged and
+            // a valid template already exists.  Channel height is intentionally NOT
+            // included: hashPrevBlock changes on every unified-height advance regardless
+            // of which channel (Hash, Stake, or Prime) mined the block.
+            auto snap = m_height_tracker.GetSnapshot();
+            uint32_t cur_unified = snap.unified_height;
+            bool have_valid_template = m_template_interface &&
+                                       m_template_interface->has_valid_template();
+            if (m_last_get_block_unified_height > 0 &&
+                cur_unified == m_last_get_block_unified_height &&
+                have_valid_template)
+            {
+                m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
+                m_logger->info("[Solo] GET_BLOCK height-based dedup: suppressing request "
+                              "(unified={} unchanged since last GET_BLOCK, template valid, reason={})",
+                              cur_unified, reason_name(reason));
+                return nullptr;
+            }
         }
     }
 
@@ -2430,7 +2422,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         get_channel_name(m_channel));
                     m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
                     if (connection) {
-                        auto work_payload = get_work();
+                        auto work_payload = get_work(GetBlockReason::GET_ROUND_STALE);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                             get_block_sent_in_handler = true;
@@ -2472,7 +2464,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             
             // Request template via legacy GET_BLOCK
             if (connection) {
-                auto work_payload = get_work();
+                auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
                     get_block_sent_in_handler = true;
@@ -2521,7 +2513,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     m_template_interface->discard_template(
                         "GET_ROUND height parity: node tip met template target");
                     if (connection) {
-                        auto work_payload = get_work();
+                        auto work_payload = get_work(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                             get_block_sent_in_handler = true;
@@ -2635,7 +2627,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         get_channel_name(m_channel));
                     m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
                     if (connection) {
-                        auto work_payload = get_work();
+                        auto work_payload = get_work(GetBlockReason::GET_ROUND_STALE);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                             get_block_sent_in_handler = true;
@@ -2664,7 +2656,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             
             // Request fresh template
             if (connection) {
-                auto work_payload = get_work();
+                auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
                     get_block_sent_in_handler = true;
@@ -2709,7 +2701,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     m_template_interface->discard_template(
                         "GET_ROUND height parity: node tip met template target");
                     if (connection) {
-                        auto work_payload = get_work();
+                        auto work_payload = get_work(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                             get_block_sent_in_handler = true;
