@@ -615,7 +615,6 @@ int main()
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
-        bool recovery_called = false;
 
         network::Payload payload = create_extended_push_payload(5000, 100, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -627,12 +626,10 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; });
+            [&request_work_called]() { request_work_called = true; });
 
         print_test_result("Same-height tip replacement requests fresh work", request_work_called);
         print_test_result("Same-height tip replacement discards active template", !tmpl_interface.has_valid_template());
-        print_test_result("Same-height tip replacement does not notify hard recovery path", !recovery_called);
     }
 
     // ====================================================================
@@ -653,7 +650,6 @@ int main()
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
-        bool recovery_called = false;
 
         network::Payload payload = create_extended_push_payload(5049, 99, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -665,12 +661,10 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; });
+            [&request_work_called]() { request_work_called = true; });
 
         print_test_result("Stale push does not request fresh work", !request_work_called);
         print_test_result("Stale push keeps active template valid", tmpl_interface.has_valid_template());
-        print_test_result("Stale push does not notify hard recovery path", !recovery_called);
     }
 
     // ====================================================================
@@ -693,8 +687,7 @@ int main()
             nullptr,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; },
-            nullptr);
+            [&request_work_called]() { request_work_called = true; });
 
         protocol::MiningTemplateInterface stale_template(2, 0);
         stale_template.set_height_tracker(&tracker);
@@ -746,7 +739,6 @@ int main()
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
-        bool recovery_called = false;
 
         network::Payload payload = create_extended_push_payload(6002, 102, 0x1d00ffff, 0x00);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -758,12 +750,10 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; });
+            [&request_work_called]() { request_work_called = true; });
 
         print_test_result("2-block burst within grace requests fresh work", request_work_called);
         print_test_result("2-block burst within grace keeps active template valid", tmpl_interface.has_valid_template());
-        print_test_result("2-block burst within grace does not enter recovery", !recovery_called);
     }
 
     // ====================================================================
@@ -784,8 +774,6 @@ int main()
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
-        bool recovery_called = false;
-        bool reset_dedup_called = false;
 
         network::Payload payload = create_extended_push_payload(8002, 100, 0x1d00ffff, 0x00);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -797,14 +785,10 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; },
-            [&recovery_called]() { recovery_called = true; },
-            [&reset_dedup_called]() { reset_dedup_called = true; });
+            [&request_work_called]() { request_work_called = true; });
 
         print_test_result("Tip moved requests fresh work", request_work_called);
         print_test_result("Tip moved keeps active template valid", tmpl_interface.has_valid_template());
-        print_test_result("Tip moved does not notify hard recovery path", !recovery_called);
-        print_test_result("Tip moved resets GET_BLOCK dedup guard before refresh", reset_dedup_called);
     }
 
     // ====================================================================
@@ -1137,8 +1121,8 @@ int main()
     std::cout << "\nTest 25: Cross-channel Hash PUSH resets dedup for Prime miner when unified advances" << std::endl;
     {
         // Prime miner receives a Hash block PUSH.  The handler must detect that the
-        // unified tip advanced and call reset_dedup_fn() so the next work retry
-        // (from the template-age timer) is not suppressed by stale cached heights.
+        // unified tip advanced.  PUSH reasons bypass height dedup in
+        // GetBlockDedupGuard so the next work retry is never suppressed.
         protocol::HeightTracker tracker;
         protocol::MiningTemplateInterface tmpl_interface(1 /* PRIME */, 0);
         tmpl_interface.set_height_tracker(&tracker);
@@ -1152,7 +1136,6 @@ int main()
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_PRIME);
         protocol::PushNotificationHandler handler(logger, current_channel);
         bool request_work_called = false;
-        bool reset_dedup_called  = false;
 
         // Hash block found: unified advances to 6650429, Prime channel stays at 2347879.
         // This PUSH arrives on the Hash channel (expected_channel=HASH), so it is
@@ -1167,14 +1150,10 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; },
-            [](){ /* recovery */ },
-            [&reset_dedup_called]() { reset_dedup_called = true; });
+            [&request_work_called]() { request_work_called = true; });
 
         print_test_result("Cross-channel Hash PUSH does NOT request work for Prime miner (informational only)",
             !request_work_called);
-        print_test_result("Cross-channel Hash PUSH resets GET_BLOCK dedup when unified advances",
-            reset_dedup_called);
         print_test_result("Cross-channel Hash PUSH keeps Prime template valid",
             tmpl_interface.has_valid_template());
     }
