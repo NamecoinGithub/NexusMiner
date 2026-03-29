@@ -17,6 +17,8 @@
  * 12. New recovery epoch does not inherit stale GET_BLOCK suppression state; anti-flood preserved within epoch
  * 13. Anti-flood preserved — true duplicates in same epoch/state still suppressed
  * 14. Height-based dedup bypassed when no valid template exists
+ * 15. Cross-channel (Hash/Stake) block advancing unified but not channel height → dedup reset
+ *     unblocks age-based GET_BLOCK retry
  */
 
 #include "protocol/packet_builder.hpp"
@@ -540,6 +542,13 @@ struct HeightDeduplicator {
     uint32_t last_unified{0};
     uint32_t cur_unified{100};
 
+    // Simulates reset_get_block_dedup_state() — clears all dedup tracking so
+    // the next would_send() call is never suppressed regardless of heights.
+    void reset() {
+        last_unified = 0;
+        last_channel = 0;
+    }
+
     // Returns true when the GET_BLOCK would be transmitted (not suppressed).
     // Mirrors the solo.cpp height-based dedup condition exactly:
     //   suppress only when unified height unchanged AND a valid template exists.
@@ -626,6 +635,70 @@ void test_unified_only_dedup_allows_cross_channel_refresh() {
 }
 
 // ============================================================================
+// Test 15: Cross-channel (Hash/Stake) block advancing unified but not channel
+//           height → dedup reset unblocks age-based GET_BLOCK retry
+//
+// Scenario (Prime miner, Hash blocks advancing the chain every ~18s):
+//   1. Prime block found → PUSH(unified=100, prime=50) → GET_BLOCK → m_last=100/50
+//   2. Template received, valid
+//   3. Hash block found → PUSH(unified=101, prime=50) arrives on Hash channel
+//      → push_notification_handler detects cross-channel unified advance
+//      → calls reset_dedup_fn() → m_last reset to 0/0
+//   4. Template-age warning fires (480s+ old template) → retry GET_BLOCK
+//      → cur_unified=100 (HeightTracker still at old value), m_last_unified=0
+//      → Condition "m_last_unified > 0" is FALSE → NOT suppressed → GET_BLOCK sent ✓
+//
+// Without the cross-channel dedup reset in push_notification_handler.cpp the
+// template-age retry would be stuck: both unified=100 and channel=50 match
+// m_last_unified=100 / m_last_channel=50, so the guard fires and suppresses
+// the request indefinitely — the miner can never refresh a stale template.
+// ============================================================================
+void test_cross_channel_unified_advance_resets_dedup() {
+    std::cout << "\nTest 15: Cross-channel unified advance resets dedup, unblocking age-based retry\n";
+
+    HeightDeduplicator dedup;
+
+    // Initial GET_BLOCK after a Prime block (unified=100, prime_channel=50).
+    dedup.cur_unified = 100;
+    dedup.cur_channel = 50;
+    dedup.has_valid_template = false;
+    bool first_ok = dedup.would_send();
+    print_test_result("Initial GET_BLOCK succeeds (no prior heights recorded)", first_ok);
+
+    // Template received → now valid.
+    dedup.has_valid_template = true;
+
+    // Template-age warning fires (heights unchanged) — should be suppressed.
+    bool age_retry_suppressed = !dedup.would_send();
+    print_test_result("Age-based retry suppressed at same heights with valid template", age_retry_suppressed);
+
+    // Hash block found: unified advances to 101 but prime_channel stays at 50.
+    // push_notification_handler detects unified advance (101 > HeightTracker=100)
+    // and calls reset_dedup_fn().  HeightTracker still reports unified=100 because
+    // cross-channel pushes do not update the tracker via update_height_fn.
+    dedup.reset();  // Simulates reset_get_block_dedup_state()
+
+    // Template-age warning fires again after dedup reset.
+    // HeightTracker still reports unified=100 (old value), so cur_unified=100.
+    // But m_last_unified=0 after reset → condition "m_last_unified > 0" is FALSE
+    // → dedup does NOT fire → GET_BLOCK is sent.
+    bool retry_after_reset_ok = dedup.would_send();
+    print_test_result("Age-based retry succeeds after cross-channel dedup reset", retry_after_reset_ok);
+
+    // GET_BLOCK records m_last=100/50 (HeightTracker still at 100).
+    // Immediate second retry is suppressed (same heights, valid template).
+    dedup.has_valid_template = true;
+    bool immediate_retry_suppressed = !dedup.would_send();
+    print_test_result("Immediate second retry suppressed (normal dedup protection)", immediate_retry_suppressed);
+
+    // Another Hash block at unified=102: cross-channel push resets dedup again.
+    // Next GET_BLOCK (from timer) should be unblocked.
+    dedup.reset();
+    bool third_retry_ok = dedup.would_send();
+    print_test_result("Third retry allowed after second cross-channel dedup reset", third_retry_ok);
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 int main() {
@@ -647,6 +720,7 @@ int main() {
     test_new_recovery_epoch_does_not_inherit_stale_dedup();
     test_anti_flood_preserved_within_same_epoch();
     test_height_dedup_bypassed_when_no_valid_template();
+    test_cross_channel_unified_advance_resets_dedup();
     test_unified_only_dedup_allows_cross_channel_refresh();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";

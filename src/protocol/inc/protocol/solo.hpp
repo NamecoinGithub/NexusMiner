@@ -585,6 +585,11 @@ private:
     // polling-state decision so logs can show how the active channel changed (or
     // stayed flat) when the authoritative unified height advanced.
     uint32_t m_last_round_channel_height{0};
+    // Unified height from the last GET_ROUND response. Used as the primary
+    // NEW_ROUND/OLD_ROUND discriminator: a new block on ANY channel (Prime, Hash,
+    // or Stake) advances unified height and means all miners need fresh templates.
+    // Stored separately from m_last_round_status.height for clarity.
+    uint32_t m_last_round_unified_height{0};
     
     // Client-side fork-aware channel managers (mirrors NODE's PR #136)
     // INTEGRATION PATTERN:

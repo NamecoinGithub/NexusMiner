@@ -1130,6 +1130,55 @@ int main()
             solo.get_last_round_status().height == 201);
     }
 
+    // ====================================================================
+    // Test 25: Cross-channel (Hash) PUSH resets GET_BLOCK dedup for Prime miner
+    //          when unified tip advances on the other channel
+    // ====================================================================
+    std::cout << "\nTest 25: Cross-channel Hash PUSH resets dedup for Prime miner when unified advances" << std::endl;
+    {
+        // Prime miner receives a Hash block PUSH.  The handler must detect that the
+        // unified tip advanced and call reset_dedup_fn() so the next work retry
+        // (from the template-age timer) is not suppressed by stale cached heights.
+        protocol::HeightTracker tracker;
+        protocol::MiningTemplateInterface tmpl_interface(1 /* PRIME */, 0);
+        tmpl_interface.set_height_tracker(&tracker);
+
+        // Initial Prime block: unified=6650428, prime_channel=2347879, target=2347880
+        tracker.OnPushNotification(6650428, 2347879, 0x1d00ffff);
+        auto template_data = create_mock_template(6650429, 0x1d00ffff, 1);
+        tmpl_interface.read_template(template_data, "test_node");
+        tmpl_interface.set_channel_height(2347880);
+
+        uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_PRIME);
+        protocol::PushNotificationHandler handler(logger, current_channel);
+        bool request_work_called = false;
+        bool reset_dedup_called  = false;
+
+        // Hash block found: unified advances to 6650429, Prime channel stays at 2347879.
+        // This PUSH arrives on the Hash channel (expected_channel=HASH), so it is
+        // cross-channel for the Prime miner.
+        network::Payload hash_push_payload = create_extended_push_payload(6650429, 2347879, 0x1d00ffff, 0x00);
+        Packet hash_push_packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), hash_push_payload);
+
+        handler.handle_push_notification(
+            hash_push_packet,
+            mining::CHANNEL_HASH,  // expected_channel = Hash (cross-channel for Prime miner)
+            ProtocolLane::STATELESS,
+            &tmpl_interface,
+            &tracker,
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
+            [&request_work_called]() { request_work_called = true; },
+            [](){ /* recovery */ },
+            [&reset_dedup_called]() { reset_dedup_called = true; });
+
+        print_test_result("Cross-channel Hash PUSH does NOT request work for Prime miner (informational only)",
+            !request_work_called);
+        print_test_result("Cross-channel Hash PUSH resets GET_BLOCK dedup when unified advances",
+            reset_dedup_called);
+        print_test_result("Cross-channel Hash PUSH keeps Prime template valid",
+            tmpl_interface.has_valid_template());
+    }
+
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Summary" << std::endl;
     std::cout << "========================================" << std::endl;

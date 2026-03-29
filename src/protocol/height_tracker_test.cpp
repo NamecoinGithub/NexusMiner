@@ -45,6 +45,8 @@
  * 34. DiagnosticObserverState::latest_received_at() — diagnostic equivalent of canonical_received_at
  * 35. AdvanceChannelTarget() also updates canonical_channel_target
  * 36. OnTemplateReceived() sets template_unified_height from canonical
+ * 37. Cross-channel block (Hash/Stake) advances unified but not Prime channel →
+ *     is_tip_moved() == true, is_template_stale() == false
  */
 
 #include "protocol/height_tracker.hpp"
@@ -1773,6 +1775,51 @@ void test_on_get_round_monotonic_guard() {
 }
 
 // ============================================================================
+// Test 37: Cross-channel block (Hash/Stake) advances unified but not Prime
+//          channel height — is_tip_moved() == true, is_template_stale() == false
+//
+// This verifies that HeightTracker correctly distinguishes between:
+//   - Tip movement (unified height advanced on another channel) → need fresh template
+//   - Channel staleness (channel_height >= channel_target) → template is stale
+//
+// A Prime miner receiving Hash/Stake blocks should see is_tip_moved()==true
+// (prompting an opportunistic template refresh for the new hashPrevBlock)
+// but is_template_stale()==false (the channel_target hasn't been reached, so
+// the current template is still valid for submission).
+// ============================================================================
+void test_cross_channel_block_tip_moved_not_stale() {
+    std::cout << "\nTest 37: Cross-channel block advances unified but not Prime channel → is_tip_moved=true, is_template_stale=false\n";
+    HeightTracker tracker;
+
+    // Simulate a Prime template at unified=100, prime_channel=50 → target=51
+    tracker.OnPushNotification(100, 50, 0x1d00ffff);
+    tracker.OnTemplateReceived(1 /* CHANNEL_PRIME */, 51);
+
+    auto snap_base = tracker.GetSnapshot();
+    print_test_result("is_template_stale() == false before any advance",
+                      !snap_base.is_template_stale());
+    print_test_result("is_tip_moved() == false before any advance",
+                      !snap_base.is_tip_moved());
+
+    // Hash block found: unified advances to 101 but prime_channel stays at 50.
+    // HeightTracker receives this via OnGetRound (which fires every ~20-30s and
+    // includes the full height picture from the node).
+    tracker.OnGetRound(101, 50, 30, 5);
+
+    auto snap_after = tracker.GetSnapshot();
+    // Template is still valid: Prime channel has NOT advanced past channel_target=51.
+    print_test_result("is_template_stale() == false after cross-channel block (Prime channel unchanged)",
+                      !snap_after.is_template_stale());
+    // Unified tip DID advance: the miner should opportunistically refresh hashPrevBlock.
+    print_test_result("is_tip_moved() == true after cross-channel block advances unified",
+                      snap_after.is_tip_moved());
+    print_test_result("unified_height == 101 in snapshot",
+                      snap_after.unified_height == 101);
+    print_test_result("channel_height == 50 in snapshot (Prime channel unchanged)",
+                      snap_after.channel_height == 50);
+}
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
@@ -1830,6 +1877,7 @@ int main() {
     test_on_push_full_picture();
     test_burst_recovery_template_ahead_of_tracker();
     test_on_get_round_monotonic_guard();
+    test_cross_channel_block_tip_moved_not_stale();
 
     std::cout << "\n========================================\n";
     std::cout << "Test Summary\n";
