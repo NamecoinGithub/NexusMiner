@@ -107,8 +107,9 @@ public:
         uint32_t nPrevUnified = m_nNodeUnifiedHeight.load();
         uint32_t nPrevChannel = m_nNodeChannelHeight.load();
         
-        // FORK DETECTION: Unified height regressed (same algorithm as NODE)
-        if (nPrevUnified > 0 && nUnified < nPrevUnified)
+        // FORK DETECTION: Unified height regressed by MORE THAN 1
+        // (regression of exactly 1 is expected when normalizing round→tip)
+        if (nPrevUnified > 0 && nUnified + 1 < nPrevUnified)
         {
             // Height regression detected - blockchain rollback
             uint32_t nRollback = nPrevUnified - nUnified;

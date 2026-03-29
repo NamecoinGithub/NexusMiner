@@ -69,15 +69,21 @@ void test_fork_detection()
     assert(heights1.first == 6535680);
     assert(heights1.second == 2301903);
     
-    // Simulate fork (rollback)
+    // Regression of exactly 1: normalization tolerance — NOT a fork
+    mgr.UpdateFromGetRound(6535679, 2301903);
+    assert(!mgr.IsForkDetected());
+    std::cout << "  ✓ Regression of exactly 1 tolerated (normalization)" << std::endl;
+    
+    // Simulate fork (rollback > 1)
     mgr.UpdateFromGetRound(6535650, 2301890);
     auto heights2 = mgr.GetNodeHeights();
     assert(heights2.first == 6535650);
     assert(heights2.second == 2301890);
     
     // Fork should have been detected (template would have been cleared)
+    assert(mgr.IsForkDetected());
     std::cout << "  ✓ Fork detection triggered (height regressed from " 
-              << heights1.first << " to " << heights2.first << ")" << std::endl;
+              << 6535679 << " to " << heights2.first << ")" << std::endl;
     std::cout << "  ✓ Test 3 PASSED\n" << std::endl;
 }
 

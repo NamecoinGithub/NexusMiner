@@ -260,9 +260,13 @@ static void test_fork_detection_via_update_callback()
     mgr.UpdateFromGetRound(5000, 200);
     print_test_result("No fork on first update", !mgr.IsForkDetected());
 
-    // Second update: unified regresses (fork)
+    // Second update: unified regresses by exactly 1 (normalization tolerance — no fork)
     mgr.UpdateFromGetRound(4999, 200);
-    print_test_result("Fork detected after height regression", mgr.IsForkDetected());
+    print_test_result("No fork on regression of exactly 1 (normalization)", !mgr.IsForkDetected());
+
+    // Third update: unified regresses by MORE than 1 (real fork)
+    mgr.UpdateFromGetRound(4997, 200);
+    print_test_result("Fork detected after regression > 1", mgr.IsForkDetected());
 
     mgr.ClearForkFlag();
     print_test_result("Fork flag cleared after ClearForkFlag()", !mgr.IsForkDetected());
