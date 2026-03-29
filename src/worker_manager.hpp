@@ -86,6 +86,11 @@ public:
     // SIM Link: send SESSION_STATUS on each live lane if 300-second interval has elapsed
     void send_session_status_if_due();
 
+    // GET_ROUND polling: called by Timer_manager on every tick (1s).
+    // Fetches the current connection and protocol from NodeSession, avoiding
+    // stale weak_ptr captures that killed the timer after reconnection.
+    void poll_get_round();
+
     // ── Failover state accessor ────────────────────────────────────────────────
     struct FailoverStatus {
         bool has_failover_configured{false};
@@ -209,7 +214,10 @@ private:
         protocol::ProtocolConstants::MAX_SESSION_RETRY_MS
     };
 
-    // ── Timer guards: start timers once only (prevent restart on reconnect) ───
+    // ── Timer guards: start timers once only ────────────────────────────────
+    // All timers use weak_ptr<Worker_manager> (which persists for application
+    // lifetime) so they survive connection replacements.  GET_ROUND timer
+    // fetches the current connection on every tick via poll_get_round().
     bool m_stats_timers_started{false};
     bool m_template_health_timer_started{false};
     bool m_get_round_timer_started{false};

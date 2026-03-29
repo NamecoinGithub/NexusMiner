@@ -12,11 +12,6 @@ namespace nexusminer
 namespace network
 {
     class Endpoint;
-    class Connection;
-}
-namespace protocol
-{
-    class Solo;
 }
 namespace stats
 {
@@ -45,8 +40,11 @@ public:
     void start_stats_printer_timer(std::uint16_t timer_interval, std::vector<std::shared_ptr<stats::Printer>> stats_printers);
     
     // Template Staleness Prevention (LLL-TAO PR #131 Client-Side Integration)
-    void start_get_round_timer(std::uint16_t timer_interval, std::weak_ptr<network::Connection> connection,
-        std::weak_ptr<protocol::Solo> solo_protocol);
+    // Uses weak_ptr<Worker_manager> (same pattern as other timers) so the timer
+    // survives connection replacements.  Worker_manager::poll_get_round() fetches
+    // the current connection and protocol on every tick, avoiding stale weak_ptr
+    // captures that silently kill the timer after reconnection.
+    void start_get_round_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager);
     
     // Template Health Monitoring (Template Validation & Worker Protection)
     void start_template_health_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager);
@@ -69,8 +67,8 @@ private:
     chrono::Timer::Handler stats_collector_handler(std::uint16_t stats_collector_interval, std::vector<std::shared_ptr<Worker>> workers, 
         std::shared_ptr<stats::Collector> stats_collector);
     chrono::Timer::Handler stats_printer_handler(std::uint16_t stats_printer_interval, std::vector<std::shared_ptr<stats::Printer>> stats_printers);
-    chrono::Timer::Handler get_round_handler(std::uint16_t get_round_interval, std::weak_ptr<network::Connection> connection,
-        std::weak_ptr<protocol::Solo> solo_protocol);
+    chrono::Timer::Handler get_round_handler(std::uint16_t get_round_interval,
+        std::weak_ptr<Worker_manager> worker_manager);
     chrono::Timer::Handler template_health_handler(std::uint16_t health_check_interval, 
         std::weak_ptr<Worker_manager> worker_manager);
 

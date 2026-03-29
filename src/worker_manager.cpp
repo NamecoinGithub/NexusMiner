@@ -1190,23 +1190,18 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
             self->m_logger->info("[Worker_manager] Template health monitor started (30s interval)");
         }
 
-        // Start GET_ROUND timer (access primary protocol through NodeSession)
+        // Start GET_ROUND timer (uses Worker_manager to fetch current connection on each tick)
         constexpr uint16_t GET_ROUND_TIMER_INTERVAL = 1;
         if (!self->m_get_round_timer_started)
         {
             self->m_get_round_timer_started = true;
-            auto solo_protocol_ptr = self->m_primary_node_session->get_primary_protocol();
-            auto connection_shared = self->m_primary_node_session->get_primary_connection();
-            if (solo_protocol_ptr && connection_shared) {
-                self->m_timer_manager.start_get_round_timer(
-                    GET_ROUND_TIMER_INTERVAL,
-                    connection_shared,
-                    solo_protocol_ptr);
-                self->m_logger->info("[Solo Poll] GET_ROUND polling timer started ({}s tick, {}--{}s adaptive interval, both lanes)",
-                    GET_ROUND_TIMER_INTERVAL,
-                    protocol::Solo::POLL_INTERVAL_MIN_MS / 1000,
-                    protocol::Solo::POLL_INTERVAL_MAX_MS / 1000);
-            }
+            self->m_timer_manager.start_get_round_timer(
+                GET_ROUND_TIMER_INTERVAL,
+                self);
+            self->m_logger->info("[Solo Poll] GET_ROUND polling timer started ({}s tick, {}--{}s adaptive interval, both lanes)",
+                GET_ROUND_TIMER_INTERVAL,
+                protocol::Solo::POLL_INTERVAL_MIN_MS / 1000,
+                protocol::Solo::POLL_INTERVAL_MAX_MS / 1000);
         }
 
         // Start lane health check timer
@@ -1381,6 +1376,29 @@ void Worker_manager::log_lane_health()
     m_logger->info("[NodeSession] Session health — Authenticated: {}", primary_alive ? "YES" : "NO");
 
     send_session_status_if_due();
+}
+
+void Worker_manager::poll_get_round()
+{
+    if (!m_primary_node_session)
+        return;
+
+    auto solo_protocol = m_primary_node_session->get_primary_protocol();
+    if (!solo_protocol)
+        return;
+
+    // Intelligent polling: only send if protocol says it's time
+    if (!solo_protocol->should_send_get_round())
+        return;
+
+    // send_get_round() sends GET_ROUND on all lanes (legacy: 0x85,
+    // stateless: 0xD085) as a pure height/difficulty sanity probe.
+    // Template recovery is handled separately by Worker_manager via
+    // send_recovery_work_request() (GET_BLOCK).
+    auto payload = solo_protocol->send_get_round();
+    if (payload && !payload->empty()) {
+        m_primary_node_session->transmit(payload);
+    }
 }
 
 void Worker_manager::send_session_status_if_due()
