@@ -52,6 +52,7 @@ enum class GetBlockReason : uint8_t {
     // ── Misc ─────────────────────────────────────────────────────────────────
     INITIAL_REQUEST,           ///< First template after connect/auth
     TEMPLATE_FEED_FAILURE,     ///< Template distribution to workers failed
+    BLOCK_REJECTED,            ///< Block was rejected by the node; need a fresh template immediately
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -66,6 +67,12 @@ inline bool should_bypass_all_dedup(GetBlockReason reason)
     switch (reason) {
         case GetBlockReason::RECOVERY_FORCED:
         case GetBlockReason::RECOVERY_TIMER:
+        // When there is genuinely no valid template the height-based guard can
+        // never fire (no template → guard passes), but the 100ms rapid-burst
+        // guard can still suppress legitimate retries from the 30s health timer
+        // if a push-triggered GET_BLOCK fired moments before.  Bypass all dedup
+        // so the health timer always makes progress when the miner has no work.
+        case GetBlockReason::HEALTH_NO_TEMPLATE:
             return true;
         default:
             return false;
@@ -114,6 +121,11 @@ inline bool should_bypass_height_dedup(GetBlockReason reason)
         case GetBlockReason::PUSH_SAME_HEIGHT_TIP:
         case GetBlockReason::PUSH_NO_TEMPLATE:
 
+        // Block rejected by node: template is stale; need a fresh one immediately.
+        // Dedup state is reset before calling get_work() in these paths, so only
+        // the height guard needs bypassing (burst guard won't fire on first call).
+        case GetBlockReason::BLOCK_REJECTED:
+
             return true;
 
         default:
@@ -147,6 +159,7 @@ inline const char* reason_name(GetBlockReason reason)
         case GetBlockReason::GET_ROUND_HEIGHT_PARITY: return "get_round_height_parity";
         case GetBlockReason::INITIAL_REQUEST:         return "initial_request";
         case GetBlockReason::TEMPLATE_FEED_FAILURE:   return "template_feed_failure";
+        case GetBlockReason::BLOCK_REJECTED:          return "block_rejected";
     }
     return "unknown";
 }

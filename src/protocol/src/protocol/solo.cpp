@@ -824,7 +824,7 @@ void Solo::flush_pending_push_after_auth(const std::shared_ptr<network::Connecti
 
     m_logger->info("[{}] Push arrived during auth handshake — sending queued GET_BLOCK now", log_scope);
 
-    auto work_payload = get_work();
+    auto work_payload = get_work(GetBlockReason::PUSH_NO_TEMPLATE);
     if (work_payload && !work_payload->empty()) {
         m_pending_push_after_auth = false;
         connection->transmit(work_payload);
@@ -1216,7 +1216,7 @@ network::Shared_payload Solo::send_recovery_work_request()
 
     m_logger->debug("[Solo Recovery] Requesting fresh template via GET_BLOCK ({} lane)",
         m_protocol_lane == ProtocolLane::STATELESS ? "stateless 0xD081" : "legacy 0x81");
-    return get_work();
+    return get_work(GetBlockReason::RECOVERY_FORCED);
 }
 
 network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& block_data, std::uint64_t nonce)
@@ -1606,7 +1606,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             
             // After receiving height, request actual work via GET_BLOCK
             m_logger->info("[Solo] Height updated, requesting work via GET_BLOCK");
-            auto work_payload = get_work();
+            auto work_payload = get_work(GetBlockReason::INITIAL_REQUEST);
             if (work_payload && !work_payload->empty()) {
                 connection->transmit(work_payload);
             } else {
@@ -1774,7 +1774,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
 
             // Immediate retry after notifying recovery handler
             if (connection) {
-                auto work_payload = get_work();
+                auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
                 } else {
@@ -1822,7 +1822,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
 
             // Immediate retry after notifying recovery handler
             if (connection) {
-                auto work_payload = get_work();
+                auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
                 } else {
@@ -1900,7 +1900,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 }
                 
                 if (connection) {
-                    auto work_payload = get_work();
+                    auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
                     }
@@ -1916,7 +1916,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                                                     true)) {
                 m_logger->error("[Solo FEED] Recovery: Block will be discarded, requesting new work");
                 if (connection) {
-                    auto work_payload = get_work();
+                    auto work_payload = get_work(GetBlockReason::TEMPLATE_FEED_FAILURE);
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
                     }
@@ -1956,7 +1956,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                         m_logger->error("[Solo]   - This indicates an initialization failure");
                         m_logger->error("[Solo] Recovery: Block will be discarded, requesting new work");
                         if (connection) {
-                            auto work_payload = get_work();
+                            auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                             if (work_payload && !work_payload->empty()) {
                                 connection->transmit(work_payload);
                             }
@@ -1976,7 +1976,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                     m_logger->warn("[Solo]   - Current height: {}", m_current_height);
                     m_logger->info("[Solo] Recovery: Requesting new work at current height");
                     if (connection) {
-                        auto work_payload = get_work();
+                        auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
                         } else {
@@ -1991,7 +1991,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 m_logger->error("[Solo]   - This may indicate protocol mismatch or data corruption");
                 m_logger->error("[Solo] Recovery: Requesting new work to recover from deserialization failure");
                 if (connection) {
-                    auto work_payload = get_work();
+                    auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
                     } else {
@@ -2069,12 +2069,15 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         reset_get_block_dedup_state();
 
         // Request new work with recovery logic
-        auto work_payload = get_work();
+        // Use VALIDATION_FAILURE to bypass height dedup: the accepted-block template is now
+        // spent at the previous height; we need a fresh template even if unified_height
+        // hasn't advanced yet (push notification not received yet).
+        auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
         if (!work_payload || work_payload->empty()) {
             m_logger->error("[Solo] CRITICAL: GET_BLOCK request after ACCEPT returned empty payload!");
             m_logger->error("[Solo] Recovery: Retrying work request");
             // Retry once
-            work_payload = get_work();
+            work_payload = get_work(GetBlockReason::RECOVERY_FORCED);
             if (!work_payload || work_payload->empty()) {
                 m_logger->error("[Solo] CRITICAL: GET_BLOCK retry also failed - mining may stall");
             } else {
@@ -2124,7 +2127,8 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         }
 
         reset_get_block_dedup_state();
-        auto work_payload = get_work();
+        // VALIDATION_FAILURE bypasses height dedup: the accepted template is spent.
+        auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
         if (work_payload && !work_payload->empty()) {
             connection->transmit(work_payload);
         }
@@ -2232,12 +2236,12 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
         reset_get_block_dedup_state();
 
         // Request new work with recovery logic (REJECT path)
-        auto work_payload = get_work();
+        auto work_payload = get_work(GetBlockReason::BLOCK_REJECTED);
         if (!work_payload || work_payload->empty()) {
             m_logger->error("[Solo] CRITICAL: GET_BLOCK request after REJECT returned empty payload!");
             m_logger->error("[Solo] Recovery: Retrying work request");
             // Retry once
-            work_payload = get_work();
+            work_payload = get_work(GetBlockReason::RECOVERY_FORCED);
             if (!work_payload || work_payload->empty()) {
                 m_logger->error("[Solo] CRITICAL: GET_BLOCK retry also failed - will wait for next node push");
                 // NOTE: Do NOT send MINER_READY here. MINER_READY is a one-time subscription
@@ -2272,7 +2276,7 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
             rejected_height, rejected_channel);
 
         reset_get_block_dedup_state();
-        auto work_payload = get_work();
+        auto work_payload = get_work(GetBlockReason::BLOCK_REJECTED);
         if (work_payload && !work_payload->empty()) {
             connection->transmit(work_payload);
         }
@@ -3433,7 +3437,7 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
 
             // Immediate retry after notifying recovery handler
             if (connection) {
-                auto work_payload = get_work();
+                auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
                 } else {
@@ -3457,7 +3461,7 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
 
             // Immediate retry after notifying recovery handler
             if (connection) {
-                auto work_payload = get_work();
+                auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
                 } else {
@@ -3609,7 +3613,7 @@ void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Conne
                 // Node's 2-second AutoCoolDown is the sole rate limiter.
                 if(connection)
                 {
-                    auto work_payload = get_work();
+                    auto work_payload = get_work(GetBlockReason::BLOCK_REJECTED);
                     if(work_payload && !work_payload->empty())
                     {
                         connection->transmit(work_payload);
@@ -4886,7 +4890,7 @@ void Solo::check_unified_height_delta(uint32_t current_unified_height)
 
         // Request fresh template via GET_BLOCK (rate-limited)
         if (m_connection) {
-            auto work = get_work();
+            auto work = get_work(GetBlockReason::HEALTH_TIP_MOVED);
             if (work && !work->empty()) {
                 m_connection->transmit(work);
                 m_logger->info("[Solo Poll] ✓ GET_BLOCK sent for tip refresh");

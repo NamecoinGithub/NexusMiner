@@ -66,17 +66,22 @@ public:
         , m_get_block_call_count(0)
     {}
 
-    // Simulates Solo::get_work() with deduplication logic
-    network::Shared_payload get_work(bool bypass_dedup = false) {
+    // Simulates Solo::get_work() with deduplication logic.
+    // Uses GetBlockReason (mirrors the real Solo::get_work(GetBlockReason)) instead
+    // of the old bool bypass_dedup parameter.
+    network::Shared_payload get_work(GetBlockReason reason = GetBlockReason::INITIAL_REQUEST) {
         m_get_block_call_count++;
 
         if (!m_authenticated || !m_reward_bound) {
             return nullptr;
         }
 
-        // GET_BLOCK deduplication guard (mirrors solo.cpp lines 546-556)
+        // GET_BLOCK rapid-burst guard (mirrors get_block_dedup_guard.hpp DEDUP_WINDOW_MS).
+        // bypass_all reasons (RECOVERY_FORCED, RECOVERY_TIMER, HEALTH_NO_TEMPLATE) skip
+        // this check entirely; bypass_height reasons still respect it.
         auto now_tp = std::chrono::steady_clock::now();
-        if (!bypass_dedup && m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
+        if (!should_bypass_all_dedup(reason) &&
+            m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
             auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now_tp - m_last_get_block_transmitted_tp).count();
             if (elapsed_ms < 100) {  // GET_BLOCK_DEDUP_MS = 100
@@ -150,7 +155,7 @@ public:
             return false;
         }
 
-        auto payload = dedup.get_work(true);
+        auto payload = dedup.get_work(GetBlockReason::RECOVERY_FORCED);
         if (payload && !payload->empty()) {
             ++sent_count;
             forced_send_timestamps.push_back(now);
@@ -703,9 +708,9 @@ void test_cross_channel_unified_advance_resets_dedup() {
 // Test: GetBlockReason dedup bypass policy validation
 // ============================================================================
 // Validates the three-tier dedup policy defined in get_block_reason.hpp:
-//   1. bypass_all:    RECOVERY_FORCED, RECOVERY_TIMER → skip everything
-//   2. bypass_height: TEMPLATE_AGE_WARNING, VALIDATION_FAILURE, etc. → skip height guard
-//   3. full dedup:    PUSH_STALE, HEALTH_CHANNEL_ADVANCE, etc. → all guards active
+//   1. bypass_all:    RECOVERY_FORCED, RECOVERY_TIMER, HEALTH_NO_TEMPLATE → skip everything
+//   2. bypass_height: TEMPLATE_AGE_WARNING, VALIDATION_FAILURE, BLOCK_REJECTED, etc. → skip height guard
+//   3. full dedup:    HEALTH_CHANNEL_ADVANCE, INITIAL_REQUEST, etc. → all guards active
 //
 // This is the core bug fix: TEMPLATE_AGE_WARNING must bypass height-based dedup
 // so the 480s proactive refresh is not suppressed when heights are stagnant.
@@ -719,6 +724,13 @@ void test_get_block_reason_dedup_policy() {
         should_bypass_all_dedup(GetBlockReason::RECOVERY_TIMER));
     print_test_result("RECOVERY_FORCED also bypasses height dedup",
         should_bypass_height_dedup(GetBlockReason::RECOVERY_FORCED));
+
+    // HEALTH_NO_TEMPLATE: bypass_all so the health timer always gets through even
+    // when a push-triggered GET_BLOCK fired within the last 100ms.
+    print_test_result("HEALTH_NO_TEMPLATE bypasses all dedup (no template → burst guard counterproductive)",
+        should_bypass_all_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
+    print_test_result("HEALTH_NO_TEMPLATE also bypasses height dedup (implied by bypass_all)",
+        should_bypass_height_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
 
     // Tier 2: bypass_height — age-based refresh and forced scenarios
     // THE KEY BUG FIX: TEMPLATE_AGE_WARNING bypasses height dedup
@@ -734,8 +746,6 @@ void test_get_block_reason_dedup_policy() {
         should_bypass_height_dedup(GetBlockReason::HEIGHT_DRIFT));
     print_test_result("HEALTH_CHANNEL_STALE bypasses height dedup",
         should_bypass_height_dedup(GetBlockReason::HEALTH_CHANNEL_STALE));
-    print_test_result("HEALTH_NO_TEMPLATE bypasses height dedup",
-        should_bypass_height_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
     print_test_result("SESSION_REAUTH bypasses height dedup",
         should_bypass_height_dedup(GetBlockReason::SESSION_REAUTH));
     print_test_result("GET_ROUND_HEIGHT_PARITY bypasses height dedup",
@@ -748,6 +758,14 @@ void test_get_block_reason_dedup_policy() {
         should_bypass_height_dedup(GetBlockReason::TEMPLATE_FEED_FAILURE));
     print_test_result("TEMPLATE_AGE_DEFERRED bypasses height dedup",
         should_bypass_height_dedup(GetBlockReason::TEMPLATE_AGE_DEFERRED));
+
+    // BLOCK_REJECTED: node rejected our block; fresh template needed immediately.
+    // Height-based guard bypassed; dedup state is reset before these calls so the
+    // burst guard does not fire on the first post-rejection request.
+    print_test_result("BLOCK_REJECTED bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::BLOCK_REJECTED));
+    print_test_result("BLOCK_REJECTED does NOT bypass all dedup (burst guard still active on retry)",
+        !should_bypass_all_dedup(GetBlockReason::BLOCK_REJECTED));
 
     // PUSH reasons: bypass height dedup (PUSH is authoritative) but NOT all dedup
     // (100ms rapid-burst guard still applies).
@@ -783,6 +801,8 @@ void test_get_block_reason_dedup_policy() {
         std::string(reason_name(GetBlockReason::RECOVERY_FORCED)) == "recovery_forced");
     print_test_result("reason_name(GET_ROUND_HEIGHT_PARITY) returns expected name",
         std::string(reason_name(GetBlockReason::GET_ROUND_HEIGHT_PARITY)) == "get_round_height_parity");
+    print_test_result("reason_name(BLOCK_REJECTED) returns expected name",
+        std::string(reason_name(GetBlockReason::BLOCK_REJECTED)) == "block_rejected");
 }
 
 // ============================================================================

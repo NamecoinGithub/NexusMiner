@@ -21,12 +21,14 @@ the request.  The dedup policy is derived from the reason rather than hardcoded 
 each call site.
 
 ```
-Tier 1: bypass_all    → RECOVERY_FORCED, RECOVERY_TIMER
-         Skip all guards; degraded-mode retries must always make progress.
+Tier 1: bypass_all    → RECOVERY_FORCED, RECOVERY_TIMER, HEALTH_NO_TEMPLATE
+         Skip all guards; degraded-mode retries and no-template health checks
+         must always make progress.
 
 Tier 2: bypass_height → PUSH_STALE, PUSH_TIP_MOVED, PUSH_SAME_HEIGHT_TIP,
                          PUSH_NO_TEMPLATE, TEMPLATE_AGE_*, VALIDATION_FAILURE,
-                         GET_ROUND_*, SESSION_REAUTH, HEIGHT_DRIFT, etc.
+                         BLOCK_REJECTED, GET_ROUND_*, SESSION_REAUTH,
+                         HEIGHT_DRIFT, etc.
          Skip height guard, keep rapid-burst guard.
 
 Tier 3: full dedup    → INITIAL_REQUEST, HEALTH_CHANNEL_ADVANCE,
