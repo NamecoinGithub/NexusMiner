@@ -61,6 +61,9 @@ protected:
     
     // Fork detection
     std::atomic<bool> m_fForkDetected;
+    // Phantom Stake regression: 1-block unified height decrease caused by
+    // cross-channel tip normalisation (NOT a real fork — no template discard).
+    std::atomic<bool> m_fPhantomStakeRegression;
     
     // Current template (protected by mutex)
     std::unique_ptr<ClientBlockState> m_pCurrentTemplate;
@@ -78,6 +81,7 @@ public:
         , m_nPrevUnifiedHeight(0)
         , m_nPrevChannelHeight(0)
         , m_fForkDetected(false)
+        , m_fPhantomStakeRegression(false)
         , m_pCurrentTemplate(nullptr)
     {
     }
@@ -107,13 +111,25 @@ public:
         uint32_t nPrevUnified = m_nNodeUnifiedHeight.load();
         uint32_t nPrevChannel = m_nNodeChannelHeight.load();
         
-        // FORK DETECTION: Unified height regressed (same algorithm as NODE)
+        // FORK DETECTION: Only a 2+ block rollback is a genuine fork.
+        // A 1-block regression is a "Phantom Stake regression" caused by
+        // cross-channel tip normalisation (Stake block advances unified by 1,
+        // then GET_ROUND returns the same normalised tip — not a real fork).
         if (nPrevUnified > 0 && nUnified < nPrevUnified)
         {
-            // Height regression detected - blockchain rollback
             uint32_t nRollback = nPrevUnified - nUnified;
-            m_fForkDetected.store(true);
-            OnForkDetected(nPrevUnified, nUnified, nRollback);
+            if (nRollback > 1)
+            {
+                // TRUE FORK: 2+ block rollback
+                m_fForkDetected.store(true);
+                OnForkDetected(nPrevUnified, nUnified, nRollback);
+            }
+            else
+            {
+                // PHANTOM STAKE: 1-block cross-channel tip oscillation — not a fork
+                m_fPhantomStakeRegression.store(true);
+                OnPhantomStakeRegression(nPrevUnified, nUnified);
+            }
         }
         
         // Update previous heights (for next comparison)
@@ -285,13 +301,27 @@ public:
     {
         return m_fForkDetected.load();
     }
+
+    /**
+     * @brief Check if a Phantom Stake regression was detected (1-block unified
+     *        height decrease due to cross-channel tip normalisation — NOT a fork)
+     * @return true if phantom stake regression detected
+     */
+    bool IsPhantomStakeRegression() const
+    {
+        return m_fPhantomStakeRegression.load();
+    }
     
     /**
-     * @brief Clear fork flag
+     * @brief Clear fork flag and phantom stake regression flag
+     *
+     * Both detection flags are cleared together since they are mutually
+     * exclusive states that represent distinct outcomes of UpdateFromGetRound.
      */
     void ClearForkFlag()
     {
         m_fForkDetected.store(false);
+        m_fPhantomStakeRegression.store(false);
     }
     
 protected:
@@ -313,6 +343,22 @@ protected:
         
         // Clear invalid template
         ClearTemplate();
+    }
+
+    /**
+     * @brief Phantom Stake regression callback (virtual for subclass customization)
+     *
+     * Called when a 1-block unified height decrease is detected due to
+     * cross-channel tip normalisation timing (Phantom Stake).  This is NOT a
+     * real fork — the template should be preserved.  Subclasses (e.g. Solo) can
+     * override to add debug/info logging.
+     *
+     * @param nPrevHeight Previous unified height
+     * @param nNewHeight  New (slightly lower) unified height
+     */
+    virtual void OnPhantomStakeRegression(uint32_t /*nPrevHeight*/, uint32_t /*nNewHeight*/)
+    {
+        // Default: no action — template is preserved.
     }
 };
 

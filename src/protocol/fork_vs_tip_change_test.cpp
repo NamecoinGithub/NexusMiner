@@ -15,13 +15,14 @@
  *  6. Multiple sequential advances never trigger fork detection
  *  7. Regression after advance triggers fork detection
  *  8. Zero-height initial update does NOT trigger fork detection
- *  9. Single-block regression triggers fork detection
+ *  9. Single-block regression = Phantom Stake (NOT fork — cross-channel tip oscillation)
  * 10. Channel height regression alone does NOT trigger fork detection
  *     (only unified height regression triggers fork)
  * 11. GetBlockReason GET_ROUND variants bypass height dedup (tip change support)
  * 12. GetBlockReason PUSH variants bypass height dedup
  * 13. Only RECOVERY reasons bypass ALL dedup (not tip changes)
  * 14. HeightTracker tip advance is distinct from fork
+ * 15. 2-block regression IS a real fork
  */
 
 #include "mining/client_channel_manager.h"
@@ -150,7 +151,7 @@ static void test_fork_flag_clear()
     TestPrimeManager mgr;
 
     mgr.UpdateFromGetRound(5000, 200);
-    mgr.UpdateFromGetRound(4999, 199);  // Trigger fork
+    mgr.UpdateFromGetRound(4998, 198);  // 2-block regression = genuine fork
     print_test_result("Fork detected", mgr.IsForkDetected());
 
     mgr.ClearForkFlag();
@@ -218,17 +219,22 @@ static void test_zero_height_no_fork()
 }
 
 // ============================================================================
-// Test 9: Single-block regression triggers fork detection
+// Test 9: Single-block regression = Phantom Stake (NOT a fork)
 // ============================================================================
 static void test_single_block_regression()
 {
-    std::cout << "\nTest 9: Single-block regression triggers fork detection\n";
+    std::cout << "\nTest 9: Single-block regression = Phantom Stake (NOT fork)\n";
 
     TestPrimeManager mgr;
 
     mgr.UpdateFromGetRound(5000, 200);
-    mgr.UpdateFromGetRound(4999, 200);  // Just 1 block back
-    print_test_result("Fork detected on 1-block regression", mgr.IsForkDetected());
+    mgr.UpdateFromGetRound(4999, 200);  // 1-block regression = Phantom Stake
+
+    print_test_result("IsForkDetected == false (phantom stake, not real fork)", !mgr.IsForkDetected());
+    print_test_result("IsPhantomStakeRegression == true", mgr.IsPhantomStakeRegression());
+
+    mgr.ClearForkFlag();
+    print_test_result("Phantom flag cleared after ClearForkFlag()", !mgr.IsPhantomStakeRegression());
 }
 
 // ============================================================================
@@ -354,6 +360,22 @@ static void test_height_tracker_tip_advance_not_fork()
 }
 
 // ============================================================================
+// Test 15: 2-block regression IS a real fork
+// ============================================================================
+static void test_two_block_regression_is_real_fork()
+{
+    std::cout << "\nTest 15: 2-block regression IS a real fork\n";
+
+    TestPrimeManager mgr;
+
+    mgr.UpdateFromGetRound(5000, 200);
+    mgr.UpdateFromGetRound(4998, 198);  // 2-block rollback
+
+    print_test_result("IsForkDetected == true (real fork)", mgr.IsForkDetected());
+    print_test_result("IsPhantomStakeRegression == false", !mgr.IsPhantomStakeRegression());
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 int main()
@@ -378,6 +400,7 @@ int main()
     test_push_reasons_bypass_height_dedup();
     test_recovery_bypasses_all_dedup();
     test_height_tracker_tip_advance_not_fork();
+    test_two_block_regression_is_real_fork();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed\n";
