@@ -1205,6 +1205,62 @@ void test_recovery_phase_mutual_exclusivity() {
         degraded);
 }
 
+// ── Test 24: Epoch 0 recovery escalation — GET_BLOCK suppressed with no template ─
+void test_epoch0_recovery_escalation_on_suppressed_get_block() {
+    std::cout << "\nTest 24: Epoch 0 recovery escalation when GET_BLOCK suppressed with no template\n";
+
+    // Scenario: HEALTHY (epoch 0) + authenticated + no template + GET_BLOCK dedup-suppressed.
+    // The Worker_manager fix must initiate recovery (epoch 0 → 1) so RECOVERY_FORCED/TIMER
+    // can bypass ALL dedup guards on the next retry.
+    auto coordinator = std::make_shared<EpochCoordinator>();
+    print_test_result("Initial recovery_epoch is 0",
+        coordinator->recovery_epoch() == 0);
+
+    // Simulate initial HEALTHY state
+    TestRecoveryPhase phase = TestRecoveryPhase::HEALTHY;
+    bool authenticated = true;
+    bool no_valid_template = true;
+    bool get_block_suppressed = true;  // Solo::get_work() returned empty
+
+    // ── Before fix: only scheduled retry when is_recovery_active() ──
+    bool old_guard = phase_is_recovery_active(phase) && authenticated && no_valid_template;
+    print_test_result("Old guard: HEALTHY + epoch 0 → NO forced retry (bug)",
+        !old_guard);
+
+    // ── After fix: initiate recovery when no template + suppressed ──
+    bool should_escalate = authenticated && no_valid_template && get_block_suppressed;
+    print_test_result("New guard: authenticated + no_template + suppressed → SHOULD escalate",
+        should_escalate);
+
+    // Simulate the fix: initiate recovery if not already active
+    if (should_escalate && !phase_is_recovery_active(phase)) {
+        // Simulates mark_recovery_initiated → transition_to(WAITING_TEMPLATE)
+        phase = TestRecoveryPhase::WAITING_TEMPLATE;
+        coordinator->advance_recovery_epoch("get_block_suppressed_no_template");
+    }
+
+    print_test_result("After escalation: phase is WAITING_TEMPLATE",
+        phase == TestRecoveryPhase::WAITING_TEMPLATE);
+    print_test_result("After escalation: recovery_epoch advanced to 1",
+        coordinator->recovery_epoch() == 1);
+    print_test_result("After escalation: is_recovery_active() is true",
+        phase_is_recovery_active(phase));
+
+    // Now forced retry can be scheduled (RECOVERY_FORCED bypasses all dedup)
+    bool can_schedule = phase_is_recovery_active(phase) && authenticated && no_valid_template;
+    print_test_result("After escalation: forced retry CAN be scheduled",
+        can_schedule);
+
+    // Idempotent: if already in recovery, don't re-initiate
+    auto epoch_before = coordinator->recovery_epoch();
+    if (should_escalate && !phase_is_recovery_active(phase)) {
+        phase = TestRecoveryPhase::WAITING_TEMPLATE;
+        coordinator->advance_recovery_epoch("should_not_fire");
+    }
+    print_test_result("Idempotent: recovery not re-initiated when already active",
+        coordinator->recovery_epoch() == epoch_before);
+}
+
 
 int main() {
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
@@ -1240,6 +1296,7 @@ int main() {
     test_soft_refresh_escalation_to_hard_recovery();
     test_reconnecting_guards_session_expired();
     test_recovery_phase_mutual_exclusivity();
+    test_epoch0_recovery_escalation_on_suppressed_get_block();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";

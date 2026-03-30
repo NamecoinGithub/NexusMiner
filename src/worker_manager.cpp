@@ -1865,7 +1865,17 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
                        "(authenticated={}, primary_connected={}, see Solo logs for specific suppression reason)",
                        solo_protocol->is_authenticated(),
                        m_primary_node_session->is_primary_connected());
-        if (is_recovery_active() && solo_protocol->is_authenticated() && no_valid_template) {
+        if (solo_protocol->is_authenticated() && no_valid_template) {
+            // Epoch 0 fix: when HEALTHY (recovery_epoch == 0) but no valid template
+            // and GET_BLOCK was just suppressed by the dedup guard, the miner is stuck:
+            // the health monitor retries with non-bypassing reasons (HEALTH_TIP_MOVED,
+            // HEALTH_CHANNEL_ADVANCE) which the dedup guard blocks at the same height,
+            // and no forced retry is scheduled because is_recovery_active() is false.
+            // Initiate recovery so the epoch advances (0 → 1), enabling
+            // RECOVERY_FORCED/RECOVERY_TIMER which bypass ALL dedup guards.
+            if (!is_recovery_active()) {
+                mark_recovery_initiated("get_block_suppressed_no_template");
+            }
             schedule_forced_recovery_retry("request_work_empty");
         }
     }
