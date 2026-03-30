@@ -21,16 +21,19 @@ const char* PushNotificationHandler::channel_name(std::uint32_t channel)
          : "Unknown";
 }
 
-void PushNotificationHandler::handle_push_notification(
+bool PushNotificationHandler::handle_push_notification(
     const Packet& packet,
     std::uint32_t expected_channel,
     ProtocolLane lane,
     MiningTemplateInterface* template_interface,
     HeightTracker* height_tracker,
     std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
-    std::function<void()> request_work_fn)
+    std::function<void()> request_work_fn,
+    std::function<void()> cross_channel_request_fn)
 {
     const char* ch_name = channel_name(expected_channel);
+
+    bool work_requested = false;
 
     // Log reception with opcode
     if (lane == ProtocolLane::STATELESS) {
@@ -49,7 +52,7 @@ void PushNotificationHandler::handle_push_notification(
     {
         m_logger->error("[Solo Push] Invalid payload: {} bytes (expected {}, {}, or {})",
                        packet.m_length, PAYLOAD_SIZE_COMPACT, PAYLOAD_SIZE_EXTENDED_V1, PAYLOAD_SIZE_EXTENDED);
-        return;
+        return false;
     }
 
     /* Parse unified height early — needed before the channel check to detect
@@ -116,7 +119,14 @@ void PushNotificationHandler::handle_push_notification(
                     }
                 }
 
-                request_work_fn();
+                // Use cross_channel_request_fn if provided (PUSH_CROSS_CHANNEL reason),
+                // otherwise fall back to request_work_fn.
+                if (cross_channel_request_fn) {
+                    cross_channel_request_fn();
+                } else {
+                    request_work_fn();
+                }
+                work_requested = true;
             }
         }
 
@@ -130,7 +140,7 @@ void PushNotificationHandler::handle_push_notification(
                            (m_current_channel == mining::CHANNEL_PRIME) ? "Prime" :
                            (m_current_channel == mining::CHANNEL_HASH)  ? "Hash"  : "Unknown");
         }
-        return;
+        return work_requested;
     }
 
     m_logger->info("[Solo Push] {} payload received ({} bytes)",
@@ -288,13 +298,17 @@ void PushNotificationHandler::handle_push_notification(
         m_logger->info("[Solo Push] Requesting fresh {} template (PUSH → unified tip moved → hashPrevBlock changed)",
                        ch_name);
         request_work_fn();
+        work_requested = true;
     }
     else
     {
         /* No template yet — request one */
         m_logger->info("[Solo Push] No template — requesting initial {} template", ch_name);
         request_work_fn();
+        work_requested = true;
     }
+
+    return work_requested;
 }
 
 } // namespace protocol
