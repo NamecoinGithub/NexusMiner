@@ -119,6 +119,13 @@ packet.m_data == nullptr  // Null data
    - Node reports: Channel height = N
    - Template uses: Channel height = N + 1
 
+> ⚠️ **Superseded:** The two-axis `channel_advanced` / `tip_moved` decision model
+> described below reflects the *initial* implementation.  It is **no longer the active
+> push-handling logic**.  See **Current Model** immediately below for what the code
+> actually does today.
+
+#### Old Model (Two-Axis Staleness — superseded)
+
 2. **Freshness Check** (every 5 seconds via GET_ROUND, or immediately on push):
    - Get current `unified_height` and `channel_height` from node
    - **`channel_advanced`**: `channel_height >= channel_target` → STALE, request new work
@@ -130,23 +137,71 @@ packet.m_data == nullptr  // Null data
    - `unified_height` tracks staleness of `hashPrevBlock` anchor (`tip_moved`)
    - See [unified-tip-vs-channel-height.md](../mining/unified-tip-vs-channel-height.md)
 
+#### Current Model (Unified-Height-Driven Push)
+
+The push notification handler (`push_notification_handler.cpp`) uses a simplified
+unified-height-driven model:
+
+- **Every PUSH unconditionally triggers a template refresh** — `request_work_fn()` is
+  always called.  A PUSH means the node found a block on *some* channel, which advances
+  the unified tip and therefore changes `hashPrevBlock`.  The mined block must embed the
+  correct parent hash, so the template must always be replaced.
+
+- **Channel height is tracked for bookkeeping purposes only**: `is_template_stale()` triggers
+  `AdvanceChannelTarget()` for doom-loop bookkeeping, but does **not** gate whether a
+  work request is issued.
+
+- **Same-height tip replacement**: when `channel_height` has NOT advanced but the node
+  reports a different `hashBestChain` at the same height (same-height reorg), the current
+  template is discarded via `discard_template()` before calling `request_work_fn()`.
+
+- **Cross-channel PUSH** (wrong channel arrives): if `notification_unified_height >
+  snap.unified_height`, `request_work_fn()` (or `cross_channel_request_fn()`) is called
+  even for cross-channel pushes — the unified tip moved and `hashPrevBlock` is stale
+  regardless of which channel mined.
+
+The `GetBlockReason` enum (`get_block_reason.hpp`) labels each request semantically:
+
+| Reason | When emitted |
+|---|---|
+| `PUSH_TIP_MOVED` | Unified tip moved on own channel (normal advance) |
+| `PUSH_STALE` | Own-channel PUSH with channel target already met |
+| `PUSH_SAME_HEIGHT_TIP` | Hash mismatch at equal channel height (same-height reorg) |
+| `PUSH_NO_TEMPLATE` | PUSH arrived but no template exists yet |
+| `PUSH_CROSS_CHANNEL` | Cross-channel PUSH with unified tip advance |
+
+See also: [get-block-dedup-unified-height.md](../mining-protocols/get-block-dedup-unified-height.md)
+for the dedup guard that prevents redundant back-to-back requests.
+
 ### Example Scenarios
 
-**Scenario 1: Tip Moved — Other Channel Mines (tip_moved refresh)**
+**Scenario 1: Tip Moved — Other Channel Mines (PUSH_TIP_MOVED refresh)**
 ```
 T0: Template for Prime height 2301207 (node: unified=6533548, prime=2301206)
 T1: Hash block mined → unified advances, Prime unchanged
     Push received:  unified=6533549, prime=2301206
-    Snapshot:       is_template_stale()=false, is_tip_moved()=true
-    Action: Request fresh Prime template [reason: tip_moved]
+    Snapshot:       is_template_stale()=false (channel_height < channel_target)
+    Action: request_work_fn() called unconditionally [reason: PUSH_TIP_MOVED]
     (hashPrevBlock in old template now points to a stale ancestor)
 ```
 
-**Scenario 2: Template Becomes Stale — Own Channel Mines (channel_advanced)**
+**Scenario 2: Own Channel Mines — Channel Target Met (PUSH_STALE)**
 ```
 T0: Template for Prime height 2301207 (node: unified=6533548, prime=2301206)
 T1: Prime block mined → channel advances
     Push received:  unified=6533549, prime=2301207
-    Snapshot:       is_template_stale()=true  (channel_height 2301207 >= channel_target 2301207)
-    Action: Discard template, request fresh work [reason: channel_advanced]
+    Snapshot:       is_template_stale()=true (channel_height 2301207 >= channel_target 2301207)
+    Action: AdvanceChannelTarget() called for bookkeeping,
+            then request_work_fn() called unconditionally [reason: PUSH_STALE]
+    (result is identical to Scenario 1 — work is always requested)
+```
+
+**Scenario 3: Cross-Channel PUSH — Unified Tip Advanced (PUSH_CROSS_CHANNEL)**
+```
+T0: Prime miner has template for Prime height 2301207 (unified=6533548)
+T1: Stake block mined → Hash/Stake PUSH received on Prime miner
+    Push received:  channel=Stake, unified=6533549
+    Snapshot:       notification_unified_height (6533549) > snap.unified_height (6533548)
+    Action: cross_channel_request_fn() (or request_work_fn()) called [reason: PUSH_CROSS_CHANNEL]
+    (hashPrevBlock changed — Prime template must be refreshed even though Prime height unchanged)
 ```

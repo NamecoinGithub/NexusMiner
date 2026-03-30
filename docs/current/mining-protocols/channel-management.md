@@ -90,6 +90,9 @@ if (nUnified < nPrevUnified) {
 }
 ```
 
+> ⚠️ **Superseded:** The code below reflects the initial implementation.
+> See the banner at the top of this document for the current model.
+
 **Template Validation** (mirrors NODE's Block::Accept):
 ```cpp
 bool ValidateTemplate(const ClientBlockState* pTemplate) const
@@ -210,6 +213,12 @@ m_hash_manager->UpdateFromGetRound(new_height, hash_height);
 9. If valid → mine, if stale → discard
 ```
 
+> ⚠️ **Historical data flow:** Steps 8–9 above reflect the initial implementation.
+> `ClientChannelManager::ValidateTemplate()` is no longer the authoritative staleness
+> check — staleness decisions now use `HeightTracker::Snapshot` (single source of truth).
+> See the banner at the top of this document and
+> [unified-tip-vs-channel-height.md](../mining/unified-tip-vs-channel-height.md).
+
 ## ✨ Key Features
 
 ### 1. Fork Detection
@@ -218,7 +227,9 @@ m_hash_manager->UpdateFromGetRound(new_height, hash_height);
 - **Logging**: Reports rollback depth and heights
 - **Same as NODE**: Identical fork detection logic
 
-### 2. Dual Height Validation
+### 2. Dual Height Validation *(Historical — superseded)*
+> Channel height is now tracked informationally. See [unified-tip-vs-channel-height.md](../mining/unified-tip-vs-channel-height.md) for the current model.
+
 Validates BOTH heights (mirrors NODE's Block::Accept):
 - ✅ Unified height: `template.nHeight == nodeHeight + 1`
 - ✅ Channel height: `template.nChannelHeight == nodeChannelHeight + 1`
