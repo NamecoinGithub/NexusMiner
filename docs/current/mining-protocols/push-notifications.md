@@ -221,8 +221,22 @@ On same-channel PUSH (matching miner's subscribed channel):
 
 On cross-channel PUSH (Hash/Stake block for Prime miner):
   - Record push liveness
-  - If unified_height advanced → request_work_fn() (hashPrevBlock changed)
+  - If unified_height advanced:
+      → call update_height_fn(unified, channel, difficulty) to update HeightTracker
+      → if 148-byte payload, store hashBestChain via UpdatePushTipAnchor()
+      → request_work_fn() (hashPrevBlock changed)
+  - If unified_height unchanged (liveness-only):
+      → no update_height_fn call, no request_work_fn call
+      → log at debug level (not info) to avoid console noise
 ```
+
+> **Note on opcode naming:** `PRIME_BLOCK_AVAILABLE` and `HASH_BLOCK_AVAILABLE` describe
+> the *subscriber's channel*, not the channel that mined the triggering block.  A Prime
+> miner receives `PRIME_BLOCK_AVAILABLE` when a Hash, Stake, or Prime block advances the
+> unified chain tip.  The opcode is a routing label — the `unified_height` field in the
+> payload is the authoritative tip-advance signal.  There will never be a
+> `STAKE_BLOCK_AVAILABLE` opcode; Stake block tip advances are delivered via the
+> subscribed miner's own channel opcode.
 
 ### GetBlockDedupGuard Three-Tier Policy
 

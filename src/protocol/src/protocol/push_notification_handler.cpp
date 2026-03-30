@@ -15,7 +15,10 @@ PushNotificationHandler::PushNotificationHandler(
 
 const char* PushNotificationHandler::channel_name(std::uint32_t channel)
 {
-    return (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
+    return (channel == mining::CHANNEL_PRIME) ? "Prime"
+         : (channel == mining::CHANNEL_HASH)  ? "Hash"
+         : (channel == mining::CHANNEL_STAKE) ? "Stake"
+         : "Unknown";
 }
 
 void PushNotificationHandler::handle_push_notification(
@@ -55,6 +58,14 @@ void PushNotificationHandler::handle_push_notification(
      * which means all miners need a fresh template with the new hashPrevBlock. */
     uint32_t notification_unified_height = bytes2uint(*packet.m_data, UNIFIED_HEIGHT_OFFSET);
 
+    /* Parse channel_height and difficulty early — needed in both same-channel and
+     * cross-channel paths.  Bug 1 fix: cross-channel path must call update_height_fn
+     * so HeightTracker/ClientChannelManager are updated on every push, not just
+     * same-channel ones.  Without this, repeated cross-channel pushes at the same
+     * unified height silently skip request_work_fn due to stale snapshot. */
+    uint32_t notification_channel_height = bytes2uint(*packet.m_data, CHANNEL_HEIGHT_OFFSET);
+    uint32_t notification_difficulty     = bytes2uint(*packet.m_data, DIFFICULTY_OFFSET);
+
     /* Validate channel — since node now broadcasts BOTH channels on every push update,
      * receiving a push for the non-subscribed channel is expected.  Record push liveness
      * so degraded-mode recovery knows the node is actively communicating.
@@ -72,21 +83,53 @@ void PushNotificationHandler::handle_push_notification(
         // If the unified tip advanced on another channel, request a fresh template.
         // Every unified height movement changes hashPrevBlock — the mined block
         // template must contain the updated hash to be valid.
+        bool tip_advanced = false;
         if (notification_unified_height > 0 && height_tracker) {
             auto snap = height_tracker->GetSnapshot();
             if (notification_unified_height > snap.unified_height) {
-                m_logger->info("[Solo Push] Cross-channel tip advance: unified {} → {} — "
+                tip_advanced = true;
+                m_logger->info("[Solo Push] ⚡ Cross-channel tip advance: unified {} → {} — "
                                "requesting fresh template (hashPrevBlock changed)",
                                snap.unified_height, notification_unified_height);
+
+                // Bug 1 fix: update height state so next cross-channel push at the same
+                // unified height does not see a stale snapshot and miss request_work_fn.
+                if (update_height_fn) {
+                    update_height_fn(notification_unified_height,
+                                     notification_channel_height,
+                                     notification_difficulty);
+                }
+
+                // Bug 2 fix: store hashBestChain from 148-byte payloads so tip-anchor
+                // tracking works correctly for cross-channel extended pushes.
+                if (is_extended && height_tracker)
+                {
+                    std::size_t hash_end = HASH_PREV_BLOCK_OFFSET + HASH_BEST_CHAIN_SIZE_BYTES;
+                    if (packet.m_data->size() >= hash_end)
+                    {
+                        std::vector<uint8_t> hash_bytes(
+                            packet.m_data->begin() + HASH_PREV_BLOCK_OFFSET,
+                            packet.m_data->begin() + hash_end);
+                        uint1024_t cross_hash{};
+                        cross_hash.SetBytes(hash_bytes);
+                        height_tracker->UpdatePushTipAnchor(cross_hash);
+                    }
+                }
+
                 request_work_fn();
             }
         }
 
-        m_logger->info("[Solo Push] ℹ️  {} push received on {} lane (mining {} channel) — refreshed push liveness",
-                       ch_name,
-                       (lane == ProtocolLane::STATELESS) ? "stateless" : "legacy",
-                       (m_current_channel == mining::CHANNEL_PRIME) ? "Prime" :
-                       (m_current_channel == mining::CHANNEL_HASH)  ? "Hash"  : "Unknown");
+        // Bug 3 fix: log at info only when tip advanced; liveness-only is debug.
+        if (tip_advanced) {
+            // tip-advance log already emitted above
+        } else {
+            m_logger->debug("[Solo Push] ℹ️  {} push received on {} lane (mining {} channel) — refreshed push liveness",
+                           ch_name,
+                           (lane == ProtocolLane::STATELESS) ? "stateless" : "legacy",
+                           (m_current_channel == mining::CHANNEL_PRIME) ? "Prime" :
+                           (m_current_channel == mining::CHANNEL_HASH)  ? "Hash"  : "Unknown");
+        }
         return;
     }
 
@@ -94,10 +137,11 @@ void PushNotificationHandler::handle_push_notification(
                    is_extended ? "Extended v2 full-picture" : (is_extended_v1 ? "Extended v1 stateless" : "Compact legacy"),
                    packet.m_length);
 
-    /* Parse notification (big-endian) */
-    uint32_t unified_height  = bytes2uint(*packet.m_data, UNIFIED_HEIGHT_OFFSET);
-    uint32_t channel_height  = bytes2uint(*packet.m_data, CHANNEL_HEIGHT_OFFSET);
-    uint32_t difficulty      = bytes2uint(*packet.m_data, DIFFICULTY_OFFSET);
+    /* Parse notification (big-endian) — already parsed before the channel check;
+     * alias for readability in the same-channel path. */
+    const uint32_t unified_height  = notification_unified_height;
+    const uint32_t channel_height  = notification_channel_height;
+    const uint32_t difficulty      = notification_difficulty;
 
     if (lane == ProtocolLane::STATELESS) {
         m_logger->info("[Solo Push]   Unified: {}, {}: {}, Diff: 0x{:08x}",

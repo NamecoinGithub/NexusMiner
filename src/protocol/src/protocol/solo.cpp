@@ -3468,15 +3468,17 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
 {
     disarm_get_round_fallback("PUSH re-established");
 
-    // Reset dedup state unconditionally before processing the push.
-    // PUSH is the authoritative liveness signal from the node — any work request
-    // triggered by this push must not be blocked by stale cached heights.
-    // PUSH reasons also bypass height dedup in GetBlockDedupGuard, but resetting
-    // here handles cross-channel cases where the handler returns early without
-    // requesting work (the reset still unblocks future age-based retries).
-    reset_get_block_dedup_state();
+    // Same-channel: every PUSH is a tip advance by definition → always reset dedup state.
+    // Cross-channel: only reset inside request_work_fn when tip advance is confirmed;
+    // a liveness-only cross-channel push (unified height unchanged) must NOT unblock
+    // the dedup guard, as no new tip anchor has been established.
+    if (channel == m_channel) {
+        reset_get_block_dedup_state();
+    }
 
-    const char* push_opcode_name = (channel == mining::CHANNEL_PRIME) ? "PRIME_BLOCK_AVAILABLE" : "HASH_BLOCK_AVAILABLE";
+    const char* push_opcode_name = (channel == mining::CHANNEL_PRIME) ? "PRIME_BLOCK_AVAILABLE"
+                                 : (channel == mining::CHANNEL_HASH)  ? "HASH_BLOCK_AVAILABLE"
+                                 : "STAKE_BLOCK_AVAILABLE";
         m_push_handler->handle_push_notification(
             packet, channel, m_protocol_lane,
             m_template_interface.get(),
@@ -3488,7 +3490,12 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
             // CALLBACK 2: request_work_fn — Issues GET_BLOCK with PUSH_STALE reason
             // PUSH reasons bypass height dedup in GetBlockDedupGuard so this
             // is never suppressed by stale cached heights.
-            [connection, this, push_opcode_name]() {
+            // Cross-channel tip advance: reset dedup here (not unconditionally above)
+            // so liveness-only cross-channel pushes do not silently unblock GET_BLOCK.
+            [connection, this, push_opcode_name, channel]() {
+                if (channel != m_channel) {
+                    reset_get_block_dedup_state();
+                }
                 if (connection) {
                     auto work_payload = get_work(GetBlockReason::PUSH_STALE);
                     if (work_payload && !work_payload->empty()) {

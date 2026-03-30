@@ -1154,6 +1154,181 @@ int main()
             tmpl_interface.has_valid_template());
     }
 
+    // ====================================================================
+    // Test 26: Cross-channel push with tip advance — update_height_fn called,
+    //          request_work_fn called, height state updated (Bug 1 regression)
+    // ====================================================================
+    std::cout << "\nTest 26: Cross-channel tip advance updates height state via update_height_fn" << std::endl;
+    {
+        // Prime miner receives a Hash block PUSH at a higher unified height.
+        // After the fix, update_height_fn must be called inside the cross-channel branch
+        // so that HeightTracker reflects the new unified height.
+        protocol::HeightTracker tracker;
+
+        // Seed tracker with initial state: unified=100, prime=50
+        tracker.OnPushNotification(100, 50, 0x1d00ffff);
+
+        uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_PRIME);
+        protocol::PushNotificationHandler handler(logger, current_channel);
+
+        bool update_height_called = false;
+        bool request_work_called  = false;
+        uint32_t updated_unified  = 0;
+
+        // Hash block found: unified advances to 101
+        network::Payload payload = create_extended_push_payload(101, 50, 0x1d00ffff, 0x00);
+        Packet pkt(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+
+        handler.handle_push_notification(
+            pkt,
+            mining::CHANNEL_HASH,
+            ProtocolLane::STATELESS,
+            nullptr,          // no template_interface needed
+            &tracker,
+            [&](uint32_t u, uint32_t c, uint32_t d) {
+                update_height_called = true;
+                updated_unified = u;
+                tracker.OnPushNotification(u, c, d);
+            },
+            [&]() { request_work_called = true; });
+
+        print_test_result("Cross-channel tip advance: update_height_fn called",
+            update_height_called);
+        print_test_result("Cross-channel tip advance: request_work_fn called",
+            request_work_called);
+        print_test_result("Cross-channel tip advance: update_height_fn received correct unified height",
+            updated_unified == 101);
+        // After update, tracker snapshot must reflect the new height
+        auto snap = tracker.GetSnapshot();
+        print_test_result("Cross-channel tip advance: HeightTracker snapshot updated to new unified height",
+            snap.unified_height == 101);
+    }
+
+    // ====================================================================
+    // Test 27: Cross-channel push with same height (liveness) — update_height_fn
+    //          NOT called, request_work_fn NOT called (Bug 1 — dedup working)
+    // ====================================================================
+    std::cout << "\nTest 27: Cross-channel liveness push (same height) does not call update_height_fn or request_work_fn" << std::endl;
+    {
+        protocol::HeightTracker tracker;
+        tracker.OnPushNotification(100, 50, 0x1d00ffff);
+
+        uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_PRIME);
+        protocol::PushNotificationHandler handler(logger, current_channel);
+
+        bool update_height_called = false;
+        bool request_work_called  = false;
+
+        // Liveness push: unified height is the same (100), no tip advance
+        network::Payload payload = create_extended_push_payload(100, 50, 0x1d00ffff, 0x00);
+        Packet pkt(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+
+        handler.handle_push_notification(
+            pkt,
+            mining::CHANNEL_HASH,
+            ProtocolLane::STATELESS,
+            nullptr,
+            &tracker,
+            [&](uint32_t, uint32_t, uint32_t) { update_height_called = true; },
+            [&]() { request_work_called = true; });
+
+        print_test_result("Liveness cross-channel push: update_height_fn NOT called",
+            !update_height_called);
+        print_test_result("Liveness cross-channel push: request_work_fn NOT called",
+            !request_work_called);
+    }
+
+    // ====================================================================
+    // Test 28: Cross-channel 148-byte push — hashBestChain stored via
+    //          UpdatePushTipAnchor (Bug 2 regression test)
+    // ====================================================================
+    std::cout << "\nTest 28: Cross-channel 148-byte push stores hashBestChain in HeightTracker" << std::endl;
+    {
+        protocol::HeightTracker tracker;
+        tracker.OnPushNotification(100, 50, 0x1d00ffff);
+
+        uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_PRIME);
+        protocol::PushNotificationHandler handler(logger, current_channel);
+
+        // Build a 148-byte full-picture payload:
+        //   [0-3]   unified_height   = 101
+        //   [4-7]   channel_height   = 50
+        //   [8-11]  difficulty       = 0x1d00ffff
+        //   [12-15] other_channel    = 30   (prime height for hash miner)
+        //   [16-19] stake_height     = 10
+        //   [20-147] hashBestChain   = filled with 0xAB (128 bytes)
+        network::Payload payload(148, 0);
+        auto write_u32_be = [&](size_t off, uint32_t v) {
+            payload[off+0] = (v >> 24) & 0xFF;
+            payload[off+1] = (v >> 16) & 0xFF;
+            payload[off+2] = (v >>  8) & 0xFF;
+            payload[off+3] =  v        & 0xFF;
+        };
+        write_u32_be(0,  101);
+        write_u32_be(4,  50);
+        write_u32_be(8,  0x1d00ffff);
+        write_u32_be(12, 30);   // other channel height
+        write_u32_be(16, 10);   // stake height
+        std::fill(payload.begin() + 20, payload.end(), uint8_t(0xAB));  // hashBestChain
+
+        Packet pkt(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+
+        handler.handle_push_notification(
+            pkt,
+            mining::CHANNEL_HASH,
+            ProtocolLane::STATELESS,
+            nullptr,
+            &tracker,
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
+            [&]() {});
+
+        // Verify the hash was stored in the diagnostic state
+        auto diag = tracker.GetDiagnosticSnapshot();
+        // The stored push_hash_prev_block must be non-zero (filled with 0xAB pattern)
+        print_test_result("Cross-channel 148-byte push stores hashBestChain via UpdatePushTipAnchor",
+            diag.push_hash_prev_block != uint1024_t{});
+    }
+
+    // ====================================================================
+    // Test 29: Two sequential cross-channel pushes at same height — second
+    //          push does NOT call request_work_fn (dedup working after Bug 1 fix)
+    // ====================================================================
+    std::cout << "\nTest 29: Two sequential cross-channel pushes at same height — second does NOT request work" << std::endl;
+    {
+        // After Bug 1 fix, update_height_fn is called on the first cross-channel push,
+        // so HeightTracker records unified=101.  The second push at unified=101 must
+        // see snap.unified_height == notification_unified_height and skip request_work_fn.
+        protocol::HeightTracker tracker;
+        tracker.OnPushNotification(100, 50, 0x1d00ffff);
+
+        uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_PRIME);
+        protocol::PushNotificationHandler handler(logger, current_channel);
+
+        int request_work_count = 0;
+
+        network::Payload payload = create_extended_push_payload(101, 50, 0x1d00ffff, 0x00);
+        Packet pkt(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+
+        auto update_fn     = [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); };
+        auto request_fn    = [&request_work_count]() { request_work_count++; };
+
+        // First push at unified=101: tip advance, request_work_fn called once
+        handler.handle_push_notification(
+            pkt, mining::CHANNEL_HASH, ProtocolLane::STATELESS,
+            nullptr, &tracker, update_fn, request_fn);
+
+        print_test_result("First cross-channel push at unified=101 calls request_work_fn",
+            request_work_count == 1);
+
+        // Second push at same unified=101: liveness only, no request_work_fn
+        handler.handle_push_notification(
+            pkt, mining::CHANNEL_HASH, ProtocolLane::STATELESS,
+            nullptr, &tracker, update_fn, request_fn);
+
+        print_test_result("Second cross-channel push at same unified=101 does NOT call request_work_fn",
+            request_work_count == 1);
+    }
+
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Summary" << std::endl;
     std::cout << "========================================" << std::endl;
