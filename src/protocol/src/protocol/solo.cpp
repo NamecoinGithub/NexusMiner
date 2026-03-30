@@ -2417,6 +2417,62 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 channel_height, get_channel_name(m_channel));
         }
 
+        // ── WHY GET_ROUND IS THE PRIMARY STAKE-BLOCK DETECTOR ─────────────────────────
+        //
+        // The Nexus node currently sends PUSH notifications (PRIME/HASH_BLOCK_AVAILABLE)
+        // only when Prime or Hash channel blocks are found. Stake blocks DO advance the
+        // unified blockchain height (and change hashPrevBlock), but they do NOT trigger
+        // a PUSH to mining channels.
+        //
+        // GET_ROUND is therefore the ONLY reliable mechanism for a PoW miner to learn
+        // about Stake block tip advances. The 15-second fixed polling interval (no backoff)
+        // is intentional: Stake blocks appear more frequently than Hash/Prime blocks and
+        // each one stales the current template.
+        //
+        // Future improvement: Add node-side PUSH subscription that fires on ANY unified
+        // height change (including Stake), eliminating the need for polling entirely.
+        // Until then, GET_ROUND is the backstop for cross-channel tip detection.
+        // ────────────────────────────────────────────────────────────────────────────────
+
+        // ── Stake/cross-channel unified tip detection ──────────────────────────────
+        // Detect when unified height advanced but our channel height did NOT change.
+        // This happens when a Stake block or the opposite PoW channel finds a block.
+        // PUSH does not currently fire for Stake blocks, so GET_ROUND is the ONLY
+        // mechanism to detect these tip advances.
+        // When this occurs, hashPrevBlock in the current template is stale — we must
+        // discard and request a fresh template.
+        {
+            bool unified_advanced = (unified_height > m_last_round_unified_height) &&
+                                    (m_last_round_unified_height > 0);
+            bool channel_unchanged = (channel_height == m_last_round_channel_height);
+
+            if (unified_advanced && channel_unchanged && !get_block_sent_in_handler) {
+                m_logger->info("[Solo GET_ROUND] ⚡ STAKE/CROSS-CHANNEL TIP ADVANCE — unified {} → {} "
+                               "(channel {} unchanged — Stake or cross-channel block)",
+                               m_last_round_unified_height, unified_height,
+                               get_channel_name(m_channel));
+                m_logger->info("[Solo GET_ROUND]   hashPrevBlock is stale — discarding template and requesting fresh work");
+
+                // Discard template: hashPrevBlock is now stale (different tip)
+                if (m_template_interface && m_template_interface->has_valid_template()) {
+                    m_template_interface->discard_template("Stake/cross-channel tip advance detected via GET_ROUND");
+                    m_logger->info("[Solo GET_ROUND] ✗ Template discarded (Stake-advance stale hashPrevBlock)");
+                }
+
+                // Reset dedup guard so this GET_BLOCK is not suppressed
+                reset_get_block_dedup_state();
+
+                if (connection) {
+                    auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
+                    if (work_payload && !work_payload->empty()) {
+                        connection->transmit(work_payload);
+                        get_block_sent_in_handler = true;
+                        m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
+                    }
+                }
+            }
+        }
+
         // Use sync_template_state to handle: channel manager updates, fork detection,
         // template finalization, and template validation.
         // This must always run — even when a GET_BLOCK was already requested above —
@@ -2514,13 +2570,12 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // Update intelligent polling state. Treat NEW_ROUND as authoritative when
         // the unified tip advanced, even if this miner's channel height did not.
         if (unified_height == 0 || unified_height == previous_unified_height) {
-            m_logger->info("[Solo GET_ROUND] NEW_ROUND received but unified height unchanged; "
-                           "treating as OLD_ROUND/backoff (unified={} previous_unified={} channel={} previous_channel={})",
-                           unified_height, previous_unified_height, channel_height, previous_channel_height);
-            on_old_round_received();
-        } else {
-            on_new_round_received(unified_height);
+            m_logger->info("[Solo GET_ROUND] NEW_ROUND received but unified height unchanged "
+                           "(unified={} previous_unified={} channel={}) — polling continues at fixed {}ms interval",
+                           unified_height, previous_unified_height, channel_height, POLL_INTERVAL_MIN_MS);
         }
+        // Always reset to fixed interval (backoff disabled)
+        on_new_round_received(unified_height);
 
         // Record the current channel and unified heights after the NEW_ROUND polling
         // decision so diagnostic logging can show how heights changed (or stayed flat)
@@ -2624,7 +2679,44 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             m_logger->debug("[Solo] Channel height for staleness validation: {} ({})",
                 channel_height, get_channel_name(m_channel));
         }
-        
+
+        // ── Stake/cross-channel unified tip detection ──────────────────────────────
+        // (see NEW_ROUND handler for the full explanation comment)
+        // Detect when unified height advanced but our channel height did NOT change.
+        // Even on OLD_ROUND responses, the unified height can advance if a Stake
+        // block was mined — hashPrevBlock is now stale and a fresh template is needed.
+        {
+            bool unified_advanced = (unified_height > m_last_round_unified_height) &&
+                                    (m_last_round_unified_height > 0);
+            bool channel_unchanged = (channel_height == m_last_round_channel_height);
+
+            if (unified_advanced && channel_unchanged && !get_block_sent_in_handler) {
+                m_logger->info("[Solo GET_ROUND] ⚡ STAKE/CROSS-CHANNEL TIP ADVANCE — unified {} → {} "
+                               "(channel {} unchanged — Stake or cross-channel block)",
+                               m_last_round_unified_height, unified_height,
+                               get_channel_name(m_channel));
+                m_logger->info("[Solo GET_ROUND]   hashPrevBlock is stale — discarding template and requesting fresh work");
+
+                // Discard template: hashPrevBlock is now stale (different tip)
+                if (m_template_interface && m_template_interface->has_valid_template()) {
+                    m_template_interface->discard_template("Stake/cross-channel tip advance detected via GET_ROUND");
+                    m_logger->info("[Solo GET_ROUND] ✗ Template discarded (Stake-advance stale hashPrevBlock)");
+                }
+
+                // Reset dedup guard so this GET_BLOCK is not suppressed
+                reset_get_block_dedup_state();
+
+                if (connection) {
+                    auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
+                    if (work_payload && !work_payload->empty()) {
+                        connection->transmit(work_payload);
+                        get_block_sent_in_handler = true;
+                        m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
+                    }
+                }
+            }
+        }
+
         // Use sync_template_state to handle: channel manager updates, fork detection,
         // template finalization, and template validation
         bool template_valid = sync_template_state(unified_height, channel_height);
@@ -4597,18 +4689,30 @@ void Solo::handle_fork_detected(mining::ClientChannelManager* pManager, uint32_t
     uint32_t nPrevHeight = prevHeights.first;
     uint32_t nRollback = (nPrevHeight > current_height) ? (nPrevHeight - current_height) : 0;
     
-    m_logger->warn("[Solo Fork] ⚠ FORK DETECTED on {} channel!", pManager->GetChannelName());
-    m_logger->warn("[Solo Fork]    Previous unified height: {}", nPrevHeight);
-    m_logger->warn("[Solo Fork]    Current unified height:  {}", current_height);
-    m_logger->warn("[Solo Fork]    Blocks rolled back:      {}", nRollback);
-    
-    // Auto-invalidate template in MiningTemplateInterface
-    if (m_template_interface && m_template_interface->has_valid_template()) {
-        m_template_interface->discard_template("Fork detected - blockchain rollback");
-        m_logger->info("[Solo Fork] ✗ Template invalidated due to fork");
+    if (nRollback <= 1) {
+        // 1-block regression: likely Phantom Stake (GET_ROUND normalization artifact)
+        // Log at INFO with ⚡ (tip change semantic) not ⚠ (genuine fork)
+        m_logger->info("[Solo Fork] ⚡ PHANTOM STAKE — unified {}→{} "
+                       "(1-block GET_ROUND normalization, NOT a real fork — template refresh)",
+                       nPrevHeight, current_height);
+    } else {
+        // 2+ block regression: genuine blockchain rollback
+        m_logger->warn("[Solo Fork] ⚠ FORK DETECTED on {} channel!", pManager->GetChannelName());
+        m_logger->warn("[Solo Fork]    Previous unified height: {}", nPrevHeight);
+        m_logger->warn("[Solo Fork]    Current unified height:  {}", current_height);
+        m_logger->warn("[Solo Fork]    Blocks rolled back:      {}", nRollback);
     }
     
-    // Clear fork flag
+    // Template discard applies to BOTH cases — hashPrevBlock is stale either way
+    if (m_template_interface && m_template_interface->has_valid_template()) {
+        m_template_interface->discard_template(
+            nRollback <= 1
+                ? "Phantom Stake tip oscillation — template refresh"
+                : "Fork detected - blockchain rollback");
+        m_logger->info("[Solo Fork] ✗ Template invalidated due to {}",
+                       nRollback <= 1 ? "Phantom Stake tip refresh" : "fork");
+    }
+    
     pManager->ClearForkFlag();
 }
 
@@ -4866,11 +4970,9 @@ void Solo::disarm_get_round_fallback(const char* reason, int64_t push_age_second
 
 void Solo::on_new_round_received(uint32_t new_unified_height)
 {
-    // NEW_ROUND = block was found, reset to fast polling
+    // NEW_ROUND = block was found, fixed polling interval (backoff disabled)
     m_current_poll_interval_ms = POLL_INTERVAL_MIN_MS;
-    // Hard clamp: never allow polling below configured minimum
-    m_current_poll_interval_ms = std::max(m_current_poll_interval_ms, POLL_INTERVAL_MIN_MS);
-    m_logger->info("[Solo Poll] 🔔 NEW_ROUND received! Reset poll interval to {}ms", 
+    m_logger->info("[Solo Poll] 🔔 NEW_ROUND received! Poll interval: {}ms (fixed)", 
         m_current_poll_interval_ms);
     
     // Check unified height delta
@@ -4879,19 +4981,11 @@ void Solo::on_new_round_received(uint32_t new_unified_height)
 
 void Solo::on_old_round_received()
 {
-    // OLD_ROUND = nothing changed, back off polling
-    uint32_t old_interval = m_current_poll_interval_ms;
-    // Integer arithmetic for 1.5x: interval + (interval / 2)
-    // This avoids floating-point precision issues
-    uint32_t new_interval = m_current_poll_interval_ms + (m_current_poll_interval_ms >> 1);
-    m_current_poll_interval_ms = std::min(new_interval, POLL_INTERVAL_MAX_MS);
-    // Hard clamp: never allow polling below configured minimum
-    m_current_poll_interval_ms = std::max(m_current_poll_interval_ms, POLL_INTERVAL_MIN_MS);
-    
-    if (m_current_poll_interval_ms != old_interval) {
-        m_logger->debug("[Solo Poll] OLD_ROUND: backing off interval {}ms → {}ms",
-            old_interval, m_current_poll_interval_ms);
-    }
+    // Backoff disabled: GET_ROUND is the primary mechanism for detecting Stake
+    // block tip advances, which do NOT trigger PUSH notifications. A fixed
+    // interval ensures the miner polls for template freshness consistently.
+    // m_current_poll_interval_ms stays at POLL_INTERVAL_MIN_MS always.
+    m_current_poll_interval_ms = POLL_INTERVAL_MIN_MS;
 }
 
 void Solo::on_template_received(uint32_t template_height)

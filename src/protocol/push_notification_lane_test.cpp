@@ -1097,8 +1097,8 @@ int main()
         network::Payload old_round_payload = create_get_round_height_payload(200, 50, 75, 10);
         Packet old_round_packet(MinerLLP::MirrorOpcode(static_cast<uint8_t>(Packet::OLD_ROUND)), old_round_payload);
         solo.process_messages(old_round_packet, nullptr);
-        print_test_result("OLD_ROUND backs off the poll interval before regression case",
-            solo.get_current_poll_interval_ms() > protocol::Solo::POLL_INTERVAL_MIN_MS);
+        print_test_result("OLD_ROUND keeps poll interval at fixed minimum (backoff disabled)",
+            solo.get_current_poll_interval_ms() == protocol::Solo::POLL_INTERVAL_MIN_MS);
 
         network::Payload new_round_payload = create_get_round_height_payload(201, 50, 76, 10);
         Packet new_round_packet(MinerLLP::MirrorOpcode(static_cast<uint8_t>(Packet::NEW_ROUND)), new_round_payload);
