@@ -49,20 +49,29 @@ public:
      * @param update_height_fn  Callback invoked with (unified_height, channel_height, difficulty_nbits)
      *                          to update both HeightTracker and ClientChannelManager atomically.
      *                          If null, the update is skipped.
-     * @param request_work_fn   Callback to request a fresh mining template.
+     * @param request_work_fn   Callback to request a fresh mining template (same-channel path).
      *                          PUSH is the authoritative liveness signal — the handler will
      *                          always invoke this when staleness is detected.  The callback
      *                          is responsible for providing a GetBlockReason to get_work()
      *                          that bypasses height-based dedup (PUSH_STALE, PUSH_TIP_MOVED, etc.).
+     * @param cross_channel_request_fn  Optional callback for cross-channel tip-advance path.
+     *                          When provided, this is called instead of request_work_fn for
+     *                          cross-channel tip advances (e.g. PUSH_CROSS_CHANNEL reason).
+     *                          If null/empty, falls back to request_work_fn.
+     * @return true  if request_work_fn (or cross_channel_request_fn) was invoked
+     *               (tip advance detected or template refresh needed)
+     *         false if only push liveness was recorded (cross-channel, no height change)
+     *               or the payload was invalid
      */
-    void handle_push_notification(
+    bool handle_push_notification(
         const Packet& packet,
         std::uint32_t expected_channel,
         ProtocolLane lane,
         MiningTemplateInterface* template_interface,
         HeightTracker* height_tracker,
         std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
-        std::function<void()> request_work_fn
+        std::function<void()> request_work_fn,
+        std::function<void()> cross_channel_request_fn = {}
     );
 
 private:

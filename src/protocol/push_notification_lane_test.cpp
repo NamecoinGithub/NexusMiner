@@ -1139,7 +1139,7 @@ int main()
         network::Payload hash_push_payload = create_extended_push_payload(6650429, 2347879, 0x1d00ffff, 0x00);
         Packet hash_push_packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), hash_push_payload);
 
-        handler.handle_push_notification(
+        bool work_requested_25 = handler.handle_push_notification(
             hash_push_packet,
             mining::CHANNEL_HASH,  // expected_channel = Hash (cross-channel for Prime miner)
             ProtocolLane::STATELESS,
@@ -1150,6 +1150,8 @@ int main()
 
         print_test_result("Cross-channel Hash PUSH requests work for Prime miner (hashPrevBlock changed)",
             request_work_called);
+        print_test_result("Cross-channel Hash PUSH returns true (work was requested)",
+            work_requested_25);
         print_test_result("Cross-channel Hash PUSH keeps Prime template valid (no discard)",
             tmpl_interface.has_valid_template());
     }
@@ -1179,7 +1181,7 @@ int main()
         network::Payload payload = create_extended_push_payload(101, 50, 0x1d00ffff, 0x00);
         Packet pkt(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
 
-        handler.handle_push_notification(
+        bool work_requested_26 = handler.handle_push_notification(
             pkt,
             mining::CHANNEL_HASH,
             ProtocolLane::STATELESS,
@@ -1196,6 +1198,8 @@ int main()
             update_height_called);
         print_test_result("Cross-channel tip advance: request_work_fn called",
             request_work_called);
+        print_test_result("Cross-channel tip advance: returns true (work was requested)",
+            work_requested_26);
         print_test_result("Cross-channel tip advance: update_height_fn received correct unified height",
             updated_unified == 101);
         // After update, tracker snapshot must reflect the new height
@@ -1223,7 +1227,7 @@ int main()
         network::Payload payload = create_extended_push_payload(100, 50, 0x1d00ffff, 0x00);
         Packet pkt(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
 
-        handler.handle_push_notification(
+        bool work_requested_27 = handler.handle_push_notification(
             pkt,
             mining::CHANNEL_HASH,
             ProtocolLane::STATELESS,
@@ -1236,6 +1240,8 @@ int main()
             !update_height_called);
         print_test_result("Liveness cross-channel push: request_work_fn NOT called",
             !request_work_called);
+        print_test_result("Liveness cross-channel push: returns false (no work requested)",
+            !work_requested_27);
     }
 
     // ====================================================================
@@ -1313,20 +1319,24 @@ int main()
         auto request_fn    = [&request_work_count]() { request_work_count++; };
 
         // First push at unified=101: tip advance, request_work_fn called once
-        handler.handle_push_notification(
+        bool work_29_first = handler.handle_push_notification(
             pkt, mining::CHANNEL_HASH, ProtocolLane::STATELESS,
             nullptr, &tracker, update_fn, request_fn);
 
         print_test_result("First cross-channel push at unified=101 calls request_work_fn",
             request_work_count == 1);
+        print_test_result("First cross-channel push at unified=101 returns true",
+            work_29_first);
 
         // Second push at same unified=101: liveness only, no request_work_fn
-        handler.handle_push_notification(
+        bool work_29_second = handler.handle_push_notification(
             pkt, mining::CHANNEL_HASH, ProtocolLane::STATELESS,
             nullptr, &tracker, update_fn, request_fn);
 
         print_test_result("Second cross-channel push at same unified=101 does NOT call request_work_fn",
             request_work_count == 1);
+        print_test_result("Second cross-channel push at same unified=101 returns false",
+            !work_29_second);
     }
 
     std::cout << "\n========================================" << std::endl;

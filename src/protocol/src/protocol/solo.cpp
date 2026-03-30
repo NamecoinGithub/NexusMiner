@@ -2392,9 +2392,8 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             if (m_template_interface->needs_channel_height_finalization()) {
                 bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
                 if (is_stale) {
-                    m_logger->info("[Solo GET_ROUND] ⚡ TIP CHANGE (pending-finalization): {} channel advanced",
+                    m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced (awaiting finalization → GET_BLOCK)",
                         get_channel_name(m_channel));
-                    m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
                     if (connection) {
                         auto work_payload = get_work(GetBlockReason::GET_ROUND_STALE);
                         if (work_payload && !work_payload->empty()) {
@@ -2447,11 +2446,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             bool channel_unchanged = (channel_height == m_last_round_channel_height);
 
             if (unified_advanced && channel_unchanged && !get_block_sent_in_handler) {
-                m_logger->info("[Solo GET_ROUND] ⚡ STAKE/CROSS-CHANNEL TIP ADVANCE — unified {} → {} "
-                               "(channel {} unchanged — Stake or cross-channel block)",
+                m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance unified {} → {} "
+                               "({} channel height unchanged — discarding stale template)",
                                m_last_round_unified_height, unified_height,
                                get_channel_name(m_channel));
-                m_logger->info("[Solo GET_ROUND]   hashPrevBlock is stale — discarding template and requesting fresh work");
 
                 // Discard template: hashPrevBlock is now stale (different tip)
                 if (m_template_interface && m_template_interface->has_valid_template()) {
@@ -2488,7 +2486,8 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         
         if (needs_template && !get_block_sent_in_handler) {
             if (!template_valid && m_template_interface) {
-                m_logger->info("[Solo GET_ROUND] ⚡ TIP CHANGE — template stale, requesting fresh template via GET_BLOCK...");
+                m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced (template stale → GET_BLOCK)",
+                    get_channel_name(m_channel));
             } else {
                 m_logger->info("[Solo GET_ROUND] ℹ️  NEW_ROUND received but no template - requesting work");
                 m_logger->info("[Solo GET_ROUND]   This handles legacy nodes that send NEW_ROUND without BLOCK_DATA");
@@ -2657,9 +2656,8 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             if (m_template_interface->needs_channel_height_finalization()) {
                 bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
                 if (is_stale) {
-                    m_logger->info("[Solo GET_ROUND] ⚡ TIP CHANGE (pending-finalization): {} channel advanced",
+                    m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced (awaiting finalization → GET_BLOCK)",
                         get_channel_name(m_channel));
-                    m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
                     if (connection) {
                         auto work_payload = get_work(GetBlockReason::GET_ROUND_STALE);
                         if (work_payload && !work_payload->empty()) {
@@ -2691,11 +2689,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             bool channel_unchanged = (channel_height == m_last_round_channel_height);
 
             if (unified_advanced && channel_unchanged && !get_block_sent_in_handler) {
-                m_logger->info("[Solo GET_ROUND] ⚡ STAKE/CROSS-CHANNEL TIP ADVANCE — unified {} → {} "
-                               "(channel {} unchanged — Stake or cross-channel block)",
+                m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance unified {} → {} "
+                               "({} channel height unchanged — discarding stale template)",
                                m_last_round_unified_height, unified_height,
                                get_channel_name(m_channel));
-                m_logger->info("[Solo GET_ROUND]   hashPrevBlock is stale — discarding template and requesting fresh work");
 
                 // Discard template: hashPrevBlock is now stale (different tip)
                 if (m_template_interface && m_template_interface->has_valid_template()) {
@@ -2722,8 +2719,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         bool template_valid = sync_template_state(unified_height, channel_height);
         
         if (!template_valid && m_template_interface && !get_block_sent_in_handler) {
-            m_logger->info("[Solo GET_ROUND] ⚡ TIP CHANGE — template invalidated on OLD_ROUND");
-            m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
+            m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: template invalidated on OLD_ROUND → GET_BLOCK");
             
             // Request fresh template
             if (connection) {
@@ -3468,43 +3464,58 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
 {
     disarm_get_round_fallback("PUSH re-established");
 
-    // Same-channel: every PUSH is a tip advance by definition → always reset dedup state.
-    // Cross-channel: only reset inside request_work_fn when tip advance is confirmed;
-    // a liveness-only cross-channel push (unified height unchanged) must NOT unblock
-    // the dedup guard, as no new tip anchor has been established.
-    if (channel == m_channel) {
-        reset_get_block_dedup_state();
-    }
-
     const char* push_opcode_name = (channel == mining::CHANNEL_PRIME) ? "PRIME_BLOCK_AVAILABLE"
                                  : (channel == mining::CHANNEL_HASH)  ? "HASH_BLOCK_AVAILABLE"
                                  : "STAKE_BLOCK_AVAILABLE";
-        m_push_handler->handle_push_notification(
-            packet, channel, m_protocol_lane,
-            m_template_interface.get(),
-            &m_height_tracker,
-            // CALLBACK 1: update_height_fn — Updates cached height state
-            [this](uint32_t u, uint32_t c, uint32_t d) {
-                update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
-            },
-            // CALLBACK 2: request_work_fn — Issues GET_BLOCK with PUSH_STALE reason
-            // PUSH reasons bypass height dedup in GetBlockDedupGuard so this
-            // is never suppressed by stale cached heights.
-            // Cross-channel tip advance: reset dedup here (not unconditionally above)
-            // so liveness-only cross-channel pushes do not silently unblock GET_BLOCK.
-            [connection, this, push_opcode_name, channel]() {
-                if (channel != m_channel) {
-                    reset_get_block_dedup_state();
+
+    // Capture whether the handler actually requested work.
+    // Same-channel: always true (every same-channel PUSH is a tip advance).
+    // Cross-channel tip advance: true (unified height moved → hashPrevBlock changed).
+    // Cross-channel liveness-only (same unified height): false — no tip anchor change,
+    //   so the dedup guard must NOT be reset.
+    bool work_requested = m_push_handler->handle_push_notification(
+        packet, channel, m_protocol_lane,
+        m_template_interface.get(),
+        &m_height_tracker,
+        // CALLBACK 1: update_height_fn — Updates cached height state
+        [this](uint32_t u, uint32_t c, uint32_t d) {
+            update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
+        },
+        // CALLBACK 2: request_work_fn — Same-channel path: GET_BLOCK with PUSH_STALE reason.
+        // PUSH reasons bypass height dedup in GetBlockDedupGuard so this
+        // is never suppressed by stale cached heights.
+        [connection, this, push_opcode_name]() {
+            if (connection) {
+                auto work_payload = get_work(GetBlockReason::PUSH_STALE);
+                if (work_payload && !work_payload->empty()) {
+                    connection->transmit(work_payload);
+                } else {
+                    m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
                 }
-                if (connection) {
-                    auto work_payload = get_work(GetBlockReason::PUSH_STALE);
-                    if (work_payload && !work_payload->empty()) {
-                        connection->transmit(work_payload);
-                    } else {
-                        m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
-                    }
+            }
+        },
+        // CALLBACK 3: cross_channel_request_fn — Cross-channel tip advance: GET_BLOCK with
+        // PUSH_CROSS_CHANNEL reason (same dedup tier as PUSH_STALE, semantically distinct).
+        [connection, this]() {
+            if (connection) {
+                auto work_payload = get_work(GetBlockReason::PUSH_CROSS_CHANNEL);
+                if (work_payload && !work_payload->empty()) {
+                    connection->transmit(work_payload);
+                } else {
+                    m_logger->warn("[Solo] GET_BLOCK (cross-channel) unavailable — will wait for next node push");
                 }
-            });
+            }
+        });
+
+    // Only reset dedup state when work was actually requested.
+    // Liveness-only cross-channel pushes (unified height unchanged) must NOT
+    // reset dedup state — there is no canonical tip change to justify it.
+    // GET_ROUND and other paths manage their own dedup reset independently.
+    if (work_requested) {
+        reset_get_block_dedup_state();
+        m_logger->debug("[Solo Push] Dedup state reset ({} channel tip advance confirmed)",
+            (channel == m_channel) ? "same" : "cross");
+    }
 }
 
 void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network::Connection> connection)
@@ -4979,7 +4990,7 @@ void Solo::on_new_round_received(uint32_t new_unified_height)
 {
     // NEW_ROUND = block was found, fixed polling interval (backoff disabled)
     m_current_poll_interval_ms = POLL_INTERVAL_MIN_MS;
-    m_logger->info("[Solo Poll] 🔔 NEW_ROUND received! Poll interval: {}ms (fixed)", 
+    m_logger->info("[Solo Poll] ⚡ NEW_ROUND: chain tip changed — poll interval reset to {}ms",
         m_current_poll_interval_ms);
     
     // Check unified height delta

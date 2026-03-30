@@ -293,12 +293,16 @@ static void test_push_reasons_bypass_height_dedup()
         should_bypass_height_dedup(GetBlockReason::PUSH_SAME_HEIGHT_TIP));
     print_test_result("PUSH_NO_TEMPLATE bypasses height dedup",
         should_bypass_height_dedup(GetBlockReason::PUSH_NO_TEMPLATE));
+    print_test_result("PUSH_CROSS_CHANNEL bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::PUSH_CROSS_CHANNEL));
 
     // PUSH reasons should NOT bypass ALL dedup
     print_test_result("PUSH_STALE does NOT bypass all dedup",
         !should_bypass_all_dedup(GetBlockReason::PUSH_STALE));
     print_test_result("PUSH_TIP_MOVED does NOT bypass all dedup",
         !should_bypass_all_dedup(GetBlockReason::PUSH_TIP_MOVED));
+    print_test_result("PUSH_CROSS_CHANNEL does NOT bypass all dedup",
+        !should_bypass_all_dedup(GetBlockReason::PUSH_CROSS_CHANNEL));
 }
 
 // ============================================================================

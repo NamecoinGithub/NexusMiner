@@ -777,6 +777,10 @@ void test_get_block_reason_dedup_policy() {
         should_bypass_height_dedup(GetBlockReason::PUSH_SAME_HEIGHT_TIP));
     print_test_result("PUSH_NO_TEMPLATE bypasses height dedup (authoritative push)",
         should_bypass_height_dedup(GetBlockReason::PUSH_NO_TEMPLATE));
+    print_test_result("PUSH_CROSS_CHANNEL bypasses height dedup (cross-channel tip advance)",
+        should_bypass_height_dedup(GetBlockReason::PUSH_CROSS_CHANNEL));
+    print_test_result("PUSH_CROSS_CHANNEL does NOT bypass all dedup (burst guard still active)",
+        !should_bypass_all_dedup(GetBlockReason::PUSH_CROSS_CHANNEL));
 
     // Tier 3: full dedup — non-push normal requests respect all guards
     print_test_result("HEALTH_CHANNEL_ADVANCE does NOT bypass height dedup",
@@ -803,6 +807,8 @@ void test_get_block_reason_dedup_policy() {
         std::string(reason_name(GetBlockReason::GET_ROUND_HEIGHT_PARITY)) == "get_round_height_parity");
     print_test_result("reason_name(BLOCK_REJECTED) returns expected name",
         std::string(reason_name(GetBlockReason::BLOCK_REJECTED)) == "block_rejected");
+    print_test_result("reason_name(PUSH_CROSS_CHANNEL) returns expected name",
+        std::string(reason_name(GetBlockReason::PUSH_CROSS_CHANNEL)) == "push_cross_channel");
 }
 
 // ============================================================================

@@ -22,6 +22,9 @@ enum class GetBlockReason : uint8_t {
     PUSH_TIP_MOVED,            ///< Unified tip moved cross-channel (opportunistic refresh)
     PUSH_SAME_HEIGHT_TIP,      ///< Same-height tip update (hash mismatch at equal height)
     PUSH_NO_TEMPLATE,          ///< Push arrived but no template exists yet
+    PUSH_CROSS_CHANNEL,        ///< Cross-channel push: unified tip advanced (Stake/opposite PoW block)
+                               ///< hashPrevBlock is stale even though our channel height did not advance.
+                               ///< No template discard needed — just request a fresh one.
 
     // ── Health monitor (Worker_manager layer) ────────────────────────────────
     HEALTH_CHANNEL_STALE,      ///< Health timer detected channel staleness (blocks_behind >= 2)
@@ -120,6 +123,7 @@ inline bool should_bypass_height_dedup(GetBlockReason reason)
         case GetBlockReason::PUSH_TIP_MOVED:
         case GetBlockReason::PUSH_SAME_HEIGHT_TIP:
         case GetBlockReason::PUSH_NO_TEMPLATE:
+        case GetBlockReason::PUSH_CROSS_CHANNEL:
 
         // Block rejected by node: template is stale; need a fresh one immediately.
         // Dedup state is reset before calling get_work() in these paths, so only
@@ -141,6 +145,7 @@ inline const char* reason_name(GetBlockReason reason)
         case GetBlockReason::PUSH_TIP_MOVED:          return "push_tip_moved";
         case GetBlockReason::PUSH_SAME_HEIGHT_TIP:    return "push_same_height_tip";
         case GetBlockReason::PUSH_NO_TEMPLATE:        return "push_no_template";
+        case GetBlockReason::PUSH_CROSS_CHANNEL:      return "push_cross_channel";
         case GetBlockReason::HEALTH_CHANNEL_STALE:    return "health_channel_stale";
         case GetBlockReason::HEALTH_CHANNEL_ADVANCE:  return "health_channel_advance";
         case GetBlockReason::HEALTH_TIP_MOVED:        return "health_tip_moved";
