@@ -157,6 +157,12 @@ public:
     bool is_primary_connected() const;
 
     /**
+     * @brief Check if the secondary TCP connection is currently established
+     * @return True if the secondary connection is up (may be authenticated or pending auth)
+     */
+    bool is_secondary_connected() const;
+
+    /**
      * @brief Check if session is active
      * @return True if session is active
      */
@@ -248,8 +254,9 @@ public:
     /**
      * @brief Get the protocol instance matching the connection transmit() would use.
      *
-     * Mirrors transmit()'s primary→secondary fallback logic so that callers
-     * can build payloads with the correct lane framing.
+     * Mirrors transmit()'s primary→secondary fallback logic — including the
+     * m_primary_connection / m_secondary_connection presence checks — so that
+     * callers can build payloads with the correct lane framing.
      *
      * @return Protocol instance matching the active connection, or nullptr if none available
      */
@@ -293,6 +300,20 @@ public:
      * @return Payload to transmit
      */
     network::Shared_payload send_session_keepalive();
+
+    /**
+     * @brief Perform in-band re-authentication on the active connection.
+     *
+     * Selects the protocol+connection pairing that transmit() would use,
+     * calls login() on that protocol, and transmits the resulting auth payload
+     * on the matching connection.  This avoids the lane mismatch that occurs
+     * when callers use get_primary_protocol()->login() + transmit() separately,
+     * since transmit() may fall back to the secondary connection.
+     *
+     * @param login_callback  Callback invoked by Solo::login() with the result
+     * @return True if the auth payload was generated and transmitted successfully
+     */
+    bool login_on_active_connection(std::function<void(bool)> login_callback);
 
     /**
      * @brief Wire the shared EpochCoordinator to the session manager.

@@ -574,29 +574,21 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                         self->m_logger->info("[Session] Executing in-band re-authentication (calling login() on existing connection)");
 
-                        // Call login() on the existing connection via the primary protocol
-                        auto primary_protocol = self->m_primary_node_session->get_primary_protocol();
-                        if (!primary_protocol) {
-                            self->m_logger->error("[Session] Primary protocol not available for re-authentication");
-                            return;
-                        }
+                        // Use login_on_active_connection() to ensure the auth payload
+                        // is framed for the same lane that will carry it (avoids the
+                        // STATELESS-on-LEGACY mismatch when primary is down).
+                        bool sent = self->m_primary_node_session->login_on_active_connection(
+                            [self](bool login_result) {
+                                if (!login_result) {
+                                    self->m_logger->error("[Session] In-band re-authentication login() call failed");
+                                    // The session_authenticated_handler will handle retry logic
+                                } else {
+                                    self->m_logger->info("[Session] In-band re-authentication login() call succeeded, awaiting MINER_AUTH_RESULT");
+                                }
+                            });
 
-                        // The login callback result is not critical here - the session_authenticated_handler
-                        // will be invoked after MINER_AUTH_RESULT is received and will handle
-                        // success/failure and further retry logic if needed
-                        auto auth_payload = primary_protocol->login([self](bool login_result) {
-                            if (!login_result) {
-                                self->m_logger->error("[Session] In-band re-authentication login() call failed");
-                                // The session_authenticated_handler will handle retry logic
-                            } else {
-                                self->m_logger->info("[Session] In-band re-authentication login() call succeeded, awaiting MINER_AUTH_RESULT");
-                            }
-                        });
-
-                        if (auth_payload && !auth_payload->empty()) {
-                            self->m_primary_node_session->transmit(auth_payload);
-                        } else {
-                            self->m_logger->error("[Session] Failed to generate re-authentication payload");
+                        if (!sent) {
+                            self->m_logger->error("[Session] Failed to generate or transmit re-authentication payload");
                         }
                     });
                 }
@@ -933,24 +925,28 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                     // Reset auth state so login() starts from a clean NOT_AUTHENTICATED state.
                     // This clears any stale WAITING_FOR_CHALLENGE / WAITING_FOR_RESULT left
                     // over from a previous attempt on a now-dead TCP connection.
-                    push_protocol->reset_auth_state();
+                    // Reset on the active protocol (which login_on_active_connection will use).
+                    auto active_protocol = m_primary_node_session->get_active_protocol();
+                    if (active_protocol) {
+                        active_protocol->reset_auth_state();
+                    }
                     m_logger->warn("[Worker_manager] retry_connect() suppressed — push received {}s ago "
                                   "(TCP alive). Triggering in-band re-auth instead.", since_push_s);
-                    // Attempt in-band re-authentication on the existing TCP connection
-                    auto auth_payload = push_protocol->login([weak_self = weak_from_this()](bool login_result) {
-                        auto self = weak_self.lock();
-                        if (!self) return;
-                        if (!login_result) {
-                            self->m_logger->error("[Worker_manager] In-band re-auth (retry_connect guard) login() failed");
-                        } else {
-                            self->m_logger->info("[Worker_manager] In-band re-auth (retry_connect guard) login() sent, "
-                                                 "awaiting MINER_AUTH_RESULT");
-                        }
-                    });
-                    if (auth_payload && !auth_payload->empty()) {
-                        m_primary_node_session->transmit(auth_payload);
-                    } else {
-                        m_logger->error("[Worker_manager] retry_connect guard: failed to generate re-auth payload");
+                    // Use login_on_active_connection() to ensure the auth payload
+                    // is framed for the same lane that will carry it.
+                    bool sent = m_primary_node_session->login_on_active_connection(
+                        [weak_self = weak_from_this()](bool login_result) {
+                            auto self = weak_self.lock();
+                            if (!self) return;
+                            if (!login_result) {
+                                self->m_logger->error("[Worker_manager] In-band re-auth (retry_connect guard) login() failed");
+                            } else {
+                                self->m_logger->info("[Worker_manager] In-band re-auth (retry_connect guard) login() sent, "
+                                                     "awaiting MINER_AUTH_RESULT");
+                            }
+                        });
+                    if (!sent) {
+                        m_logger->error("[Worker_manager] retry_connect guard: failed to generate or transmit re-auth payload");
                     }
                     return;
                 } else {
