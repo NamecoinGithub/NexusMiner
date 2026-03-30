@@ -61,13 +61,6 @@ public:
     uint32_t GetNodeChannelHeight() const { return m_nNodeChannelHeight.load(); }
 };
 
-// Concrete subclass for testing (Hash channel = 2)
-class TestHashManager : public ClientChannelManager
-{
-public:
-    TestHashManager() : ClientChannelManager(2) {}
-};
-
 // ============================================================================
 // Test 1: Normal tip advance does NOT trigger fork detection
 // ============================================================================
