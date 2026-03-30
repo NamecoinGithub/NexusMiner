@@ -4729,6 +4729,15 @@ void Solo::handle_fork_detected(mining::ClientChannelManager* pManager, uint32_t
                 : "Fork detected - blockchain rollback");
         m_logger->info("[Solo Fork] ✗ Template invalidated due to {}",
                        nRollback <= 1 ? "Phantom Stake tip refresh" : "fork");
+        // Reset the dedup guard so the immediate replacement GET_BLOCK from the caller
+        // (on_get_round_response → sync_template_state → needs_template path) is never
+        // suppressed by the 100ms rapid-burst guard.  Without this reset, a PUSH or
+        // prior GET_ROUND poll that fired a GET_BLOCK within the last 100ms will block
+        // the replacement request, leaving the miner at NO VALID TEMPLATE for up to 30s
+        // until HEALTH_NO_TEMPLATE fires with bypass_all.  Every other discard site that
+        // is immediately followed by a GET_BLOCK (BLOCK_REJECTED, Stake-advance path,
+        // finalize_and_feed_current_template validation gate) already calls this reset.
+        reset_get_block_dedup_state();
     }
     
     pManager->ClearForkFlag();
