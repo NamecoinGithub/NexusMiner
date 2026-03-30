@@ -52,7 +52,7 @@ void print_test_result(const char* name, bool passed)
     }
 }
 
-// Concrete subclass for testing (Prime channel = 1)
+// Concrete subclass for testing — uses Prime channel (1) which is the primary mining channel
 class TestPrimeManager : public ClientChannelManager
 {
 public:
