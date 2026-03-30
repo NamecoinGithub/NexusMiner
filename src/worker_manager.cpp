@@ -1383,7 +1383,7 @@ void Worker_manager::poll_get_round()
     if (!m_primary_node_session)
         return;
 
-    auto solo_protocol = m_primary_node_session->get_primary_protocol();
+    auto solo_protocol = m_primary_node_session->get_active_protocol();
     if (!solo_protocol)
         return;
 
@@ -1416,7 +1416,7 @@ void Worker_manager::send_session_status_if_due()
     // Send session status via NodeSession (handles both lanes internally)
     if (m_primary_node_session && m_primary_node_session->is_authenticated())
     {
-        auto solo_protocol = m_primary_node_session->get_primary_protocol();
+        auto solo_protocol = m_primary_node_session->get_active_protocol();
         if (solo_protocol)
         {
             // NodeSession handles SIM Link internally, so we don't need to track secondary separately
