@@ -260,3 +260,14 @@ target_include_directories(epoch_coordinator_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 add_test(NAME epoch_coordinator_test COMMAND $<TARGET_FILE:epoch_coordinator_test>)
+
+# Fork vs Tip Change semantics unit tests
+add_executable(fork_vs_tip_change_test fork_vs_tip_change_test.cpp)
+target_link_libraries(fork_vs_tip_change_test PRIVATE protocol LLP LLC spdlog)
+target_include_directories(fork_vs_tip_change_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP/inc
+    ${CMAKE_SOURCE_DIR}/src/LLP
+    ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME fork_vs_tip_change_test COMMAND $<TARGET_FILE:fork_vs_tip_change_test>)
