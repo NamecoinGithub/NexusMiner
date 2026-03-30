@@ -2371,16 +2371,8 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // Update HeightTracker with full height picture (direct call — bypasses
         // update_height_state so all 4 heights reach the diagnostic state).
         m_height_tracker.OnGetRound(unified_height, prime_height, hash_height, stake_height);
-        // Also update ClientChannelManager for fork detection.
-        {
-            auto* pManager = get_channel_manager();
-            if (pManager) {
-                pManager->UpdateFromGetRound(unified_height, channel_height);
-                if (pManager->IsForkDetected()) {
-                    handle_fork_detected(pManager, unified_height);
-                }
-            }
-        }
+        // Update ClientChannelManager for fork/phantom-stake detection (exactly once).
+        apply_channel_manager_update(unified_height, channel_height);
 
         // NEW_ROUND means the tip changed — reset dedup guard so any GET_BLOCK
         // request within this handler is not suppressed by stale cached state
@@ -2598,16 +2590,8 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // Update HeightTracker with full height picture (direct call — bypasses
         // update_height_state so all 4 heights reach the diagnostic state).
         m_height_tracker.OnGetRound(unified_height, prime_height, hash_height, stake_height);
-        // Also update ClientChannelManager for fork detection.
-        {
-            auto* pManager = get_channel_manager();
-            if (pManager) {
-                pManager->UpdateFromGetRound(unified_height, channel_height);
-                if (pManager->IsForkDetected()) {
-                    handle_fork_detected(pManager, unified_height);
-                }
-            }
-        }
+        // Update ClientChannelManager for fork/phantom-stake detection (exactly once).
+        apply_channel_manager_update(unified_height, channel_height);
         
         // Pass channel height to template interface for staleness validation.
         // Same invariant as NEW_ROUND: snapshot-based delta check only while pending finalization.
@@ -4580,6 +4564,31 @@ bool Solo::validate_current_template()
     return true;
 }
 
+bool Solo::apply_channel_manager_update(uint32_t unified_height, uint32_t channel_height)
+{
+    auto* pManager = get_channel_manager();
+    if (!pManager) return false;
+
+    pManager->UpdateFromGetRound(unified_height, channel_height);
+
+    if (pManager->IsForkDetected())
+    {
+        handle_fork_detected(pManager, unified_height);
+        return true;
+    }
+
+    if (pManager->IsPhantomStakeRegression())
+    {
+        auto prevHeights = pManager->GetPreviousHeights();
+        m_logger->info("[Solo GET_ROUND] ⚡ PHANTOM STAKE REGRESSION — unified {}→{}",
+                       prevHeights.first, unified_height);
+        m_logger->info("[Solo GET_ROUND]   (cross-channel Stake tip oscillation — template preserved)");
+        pManager->ClearForkFlag();
+    }
+
+    return false;
+}
+
 void Solo::handle_fork_detected(mining::ClientChannelManager* pManager, uint32_t current_height)
 {
     if (!pManager) return;
@@ -4629,16 +4638,6 @@ void Solo::update_height_state(uint32_t unified_height, uint32_t channel_height,
         m_logger->warn("[Solo] update_height_state: unexpected source {}, defaulting to GET_ROUND",
                        static_cast<int>(source));
         m_height_tracker.OnGetRound(unified_height, channel_height, 0, 0);
-    }
-
-    // Update active ClientChannelManager with the same parsed values so that
-    // fork detection reflects both GET_ROUND and push-notification events.
-    auto* pManager = get_channel_manager();
-    if (pManager) {
-        pManager->UpdateFromGetRound(unified_height, channel_height);
-        if (pManager->IsForkDetected()) {
-            handle_fork_detected(pManager, unified_height);
-        }
     }
 }
 

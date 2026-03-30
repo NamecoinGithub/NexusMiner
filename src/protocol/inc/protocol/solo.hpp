@@ -426,6 +426,24 @@ private:
     void handle_fork_detected(mining::ClientChannelManager* pManager, uint32_t current_height);
 
     /**
+     * @brief Shared helper: update ClientChannelManager exactly once and dispatch
+     *        fork or phantom-stake handling as appropriate.
+     *
+     * Calls pManager->UpdateFromGetRound(unified, channel), then:
+     * - If IsForkDetected(): calls handle_fork_detected() and returns true
+     *   (template discarded)
+     * - If IsPhantomStakeRegression(): logs ⚡ PHANTOM STAKE info, clears both
+     *   detection flags, returns false (template preserved — NOT a fork)
+     * - Otherwise (normal advance or same-height): returns false
+     *
+     * @param unified_height  Unified blockchain height (tip-normalised)
+     * @param channel_height  Channel-specific height
+     * @return true if a genuine fork was detected and handled (template discarded),
+     *         false for phantom stake regressions and normal advances
+     */
+    bool apply_channel_manager_update(uint32_t unified_height, uint32_t channel_height);
+
+    /**
      * @brief Unified height-state updater (single source of truth for both HeightTracker and ClientChannelManager)
      *
      * Called from push notification handlers and GET_ROUND handlers to ensure

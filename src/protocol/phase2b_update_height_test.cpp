@@ -252,7 +252,7 @@ static void test_channel_manager_same_data_as_height_tracker()
 // ============================================================================
 static void test_fork_detection_via_update_callback()
 {
-    std::cout << "\nTest 4: Fork detection fires when heights regress\n";
+    std::cout << "\nTest 4: Fork detection fires when heights regress by 2+ blocks\n";
 
     PrimeClientManager mgr;
 
@@ -260,9 +260,9 @@ static void test_fork_detection_via_update_callback()
     mgr.UpdateFromGetRound(5000, 200);
     print_test_result("No fork on first update", !mgr.IsForkDetected());
 
-    // Second update: unified regresses (fork)
-    mgr.UpdateFromGetRound(4999, 200);
-    print_test_result("Fork detected after height regression", mgr.IsForkDetected());
+    // Second update: unified regresses by 2 blocks (genuine fork)
+    mgr.UpdateFromGetRound(4998, 200);
+    print_test_result("Fork detected after 2-block height regression", mgr.IsForkDetected());
 
     mgr.ClearForkFlag();
     print_test_result("Fork flag cleared after ClearForkFlag()", !mgr.IsForkDetected());
