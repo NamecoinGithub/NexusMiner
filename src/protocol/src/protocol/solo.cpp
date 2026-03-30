@@ -2395,7 +2395,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             if (m_template_interface->needs_channel_height_finalization()) {
                 bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
                 if (is_stale) {
-                    m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE (pending-finalization): {} channel advanced",
+                    m_logger->info("[Solo GET_ROUND] ⚡ TIP CHANGE (pending-finalization): {} channel advanced",
                         get_channel_name(m_channel));
                     m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
                     if (connection) {
@@ -2433,7 +2433,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         
         if (needs_template) {
             if (!template_valid && m_template_interface) {
-                m_logger->info("[Solo GET_ROUND] ⚠️  Template stale, requesting fresh template via GET_BLOCK...");
+                m_logger->info("[Solo GET_ROUND] ⚡ TIP CHANGE — template stale, requesting fresh template via GET_BLOCK...");
             } else {
                 m_logger->info("[Solo GET_ROUND] ℹ️  NEW_ROUND received but no template - requesting work");
                 m_logger->info("[Solo GET_ROUND]   This handles legacy nodes that send NEW_ROUND without BLOCK_DATA");
@@ -2484,7 +2484,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         ? -1
                         : std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count();
                     arm_get_round_fallback(elapsed);
-                    m_logger->warn("[Solo GET_ROUND] ⚠️  Fallback parity: node tip {} >= template target {} "
+                    m_logger->info("[Solo GET_ROUND] ⚡ TIP CHANGE — fallback parity: node tip {} >= template target {} "
                         "(push silent {}s) — GET_ROUND triggering GET_BLOCK",
                         channel_height, tmpl->nChannelHeight, elapsed);
                     m_template_interface->discard_template(
@@ -2609,7 +2609,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             if (m_template_interface->needs_channel_height_finalization()) {
                 bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
                 if (is_stale) {
-                    m_logger->warn("[Solo GET_ROUND] ⚠️  Template STALE (pending-finalization): {} channel advanced",
+                    m_logger->info("[Solo GET_ROUND] ⚡ TIP CHANGE (pending-finalization): {} channel advanced",
                         get_channel_name(m_channel));
                     m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
                     if (connection) {
@@ -2637,7 +2637,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         bool template_valid = sync_template_state(unified_height, channel_height);
         
         if (!template_valid && m_template_interface) {
-            m_logger->warn("[Solo GET_ROUND] Unexpected: Template invalidated on OLD_ROUND");
+            m_logger->info("[Solo GET_ROUND] ⚡ TIP CHANGE — template invalidated on OLD_ROUND");
             m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
             
             // Request fresh template
@@ -2681,7 +2681,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         ? -1
                         : std::chrono::duration_cast<std::chrono::seconds>(now - last_push).count();
                     arm_get_round_fallback(elapsed);
-                    m_logger->warn("[Solo GET_ROUND] ⚠️  Fallback parity: node tip {} >= template target {} "
+                    m_logger->info("[Solo GET_ROUND] ⚡ TIP CHANGE — fallback parity: node tip {} >= template target {} "
                         "(push silent {}s) — GET_ROUND triggering GET_BLOCK",
                         channel_height, tmpl->nChannelHeight, elapsed);
                     m_template_interface->discard_template(
