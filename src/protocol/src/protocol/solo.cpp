@@ -2381,7 +2381,12 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 }
             }
         }
-        
+
+        // NEW_ROUND means the tip changed — reset dedup guard so any GET_BLOCK
+        // request within this handler is not suppressed by stale cached state
+        // from a prior PUSH or GET_ROUND.  Same pattern as PUSH handler (line 3390).
+        reset_get_block_dedup_state();
+
         // Pass channel height to template interface for staleness validation.
         // update_channel_height() is the primary staleness gate (uses nChannelHeight).
         // check_staleness_by_channel_delta() is a secondary snapshot-based check used ONLY
@@ -2405,7 +2410,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                             get_block_sent_in_handler = true;
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                         } else {
-                            m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
+                            m_logger->debug("[Solo GET_ROUND] GET_BLOCK suppressed by dedup guard (staleness path)");
                         }
                     } else {
                         m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
@@ -2427,11 +2432,13 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         bool template_valid = sync_template_state(unified_height, channel_height);
 
         // CRITICAL FIX: After NEW_ROUND, check if we have a valid template
-        // If not, request one via GET_BLOCK (legacy fallback behavior)
+        // If not, request one via GET_BLOCK (legacy fallback behavior).
+        // Skip if a GET_BLOCK was already sent in this handler (staleness check above)
+        // — the in-flight response will provide the replacement template.
         bool needs_template = !template_valid || 
                              (m_template_interface && !m_template_interface->has_valid_template());
         
-        if (needs_template) {
+        if (needs_template && !get_block_sent_in_handler) {
             if (!template_valid && m_template_interface) {
                 m_logger->info("[Solo GET_ROUND] ⚡ TIP CHANGE — template stale, requesting fresh template via GET_BLOCK...");
             } else {
@@ -2447,9 +2454,11 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     get_block_sent_in_handler = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 } else {
-                    m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
+                    m_logger->debug("[Solo GET_ROUND] GET_BLOCK request suppressed by dedup guard (expected if recent request pending)");
                 }
             }
+        } else if (needs_template && get_block_sent_in_handler) {
+            m_logger->debug("[Solo GET_ROUND] Template needed but GET_BLOCK already sent in this handler — waiting for response");
         } else {
             m_logger->debug("[Solo GET_ROUND] ✓ Template valid, continuing to mine");
         }
@@ -2619,7 +2628,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                             get_block_sent_in_handler = true;
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                         } else {
-                            m_logger->error("[Solo GET_ROUND] Failed to generate GET_BLOCK request");
+                            m_logger->debug("[Solo GET_ROUND] GET_BLOCK suppressed by dedup guard (OLD_ROUND staleness path)");
                         }
                     } else {
                         m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
@@ -2636,7 +2645,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // template finalization, and template validation
         bool template_valid = sync_template_state(unified_height, channel_height);
         
-        if (!template_valid && m_template_interface) {
+        if (!template_valid && m_template_interface && !get_block_sent_in_handler) {
             m_logger->info("[Solo GET_ROUND] ⚡ TIP CHANGE — template invalidated on OLD_ROUND");
             m_logger->info("[Solo GET_ROUND] Requesting fresh template via GET_BLOCK...");
             
@@ -2647,6 +2656,8 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     connection->transmit(work_payload);
                     get_block_sent_in_handler = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
+                } else {
+                    m_logger->debug("[Solo GET_ROUND] GET_BLOCK suppressed by dedup guard (OLD_ROUND template path)");
                 }
             }
         }
