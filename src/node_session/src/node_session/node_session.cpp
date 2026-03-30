@@ -816,8 +816,10 @@ bool NodeSession::login_on_active_connection(std::function<void(bool)> login_cal
 
     // Select the protocol+connection pairing that transmit() would use.
     // This guarantees the auth payload is framed for the correct lane.
+    // Note: Solo::login() always invokes the callback synchronously before
+    // returning (true on success, false on error), so the callback is never lost.
     if (m_primary_connection && m_primary_protocol && m_primary_connected) {
-        auto auth_payload = m_primary_protocol->login(std::move(login_callback));
+        auto auth_payload = m_primary_protocol->login(login_callback);
         if (auth_payload && !auth_payload->empty()) {
             m_primary_connection->transmit(auth_payload);
             return true;
@@ -826,7 +828,7 @@ bool NodeSession::login_on_active_connection(std::function<void(bool)> login_cal
     }
 
     if (m_secondary_connection && m_secondary_protocol && m_secondary_connected) {
-        auto auth_payload = m_secondary_protocol->login(std::move(login_callback));
+        auto auth_payload = m_secondary_protocol->login(login_callback);
         if (auth_payload && !auth_payload->empty()) {
             m_secondary_connection->transmit(auth_payload);
             return true;
