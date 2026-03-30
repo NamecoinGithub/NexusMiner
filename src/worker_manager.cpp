@@ -1190,23 +1190,18 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
             self->m_logger->info("[Worker_manager] Template health monitor started (30s interval)");
         }
 
-        // Start GET_ROUND timer (access primary protocol through NodeSession)
+        // Start GET_ROUND timer (uses Worker_manager to fetch current connection on each tick)
         constexpr uint16_t GET_ROUND_TIMER_INTERVAL = 1;
         if (!self->m_get_round_timer_started)
         {
             self->m_get_round_timer_started = true;
-            auto solo_protocol_ptr = self->m_primary_node_session->get_primary_protocol();
-            auto connection_shared = self->m_primary_node_session->get_primary_connection();
-            if (solo_protocol_ptr && connection_shared) {
-                self->m_timer_manager.start_get_round_timer(
-                    GET_ROUND_TIMER_INTERVAL,
-                    connection_shared,
-                    solo_protocol_ptr);
-                self->m_logger->info("[Solo Poll] GET_ROUND polling timer started ({}s tick, {}--{}s adaptive interval, both lanes)",
-                    GET_ROUND_TIMER_INTERVAL,
-                    protocol::Solo::POLL_INTERVAL_MIN_MS / 1000,
-                    protocol::Solo::POLL_INTERVAL_MAX_MS / 1000);
-            }
+            self->m_timer_manager.start_get_round_timer(
+                GET_ROUND_TIMER_INTERVAL,
+                self);
+            self->m_logger->info("[Solo Poll] GET_ROUND polling timer started ({}s tick, {}--{}s adaptive interval, both lanes)",
+                GET_ROUND_TIMER_INTERVAL,
+                protocol::Solo::POLL_INTERVAL_MIN_MS / 1000,
+                protocol::Solo::POLL_INTERVAL_MAX_MS / 1000);
         }
 
         // Start lane health check timer
@@ -1381,6 +1376,29 @@ void Worker_manager::log_lane_health()
     m_logger->info("[NodeSession] Session health — Authenticated: {}", primary_alive ? "YES" : "NO");
 
     send_session_status_if_due();
+}
+
+void Worker_manager::poll_get_round()
+{
+    if (!m_primary_node_session)
+        return;
+
+    auto solo_protocol = m_primary_node_session->get_primary_protocol();
+    if (!solo_protocol)
+        return;
+
+    // Intelligent polling: only send if protocol says it's time
+    if (!solo_protocol->should_send_get_round())
+        return;
+
+    // send_get_round() sends GET_ROUND on all lanes (legacy: 0x85,
+    // stateless: 0xD085) as a pure height/difficulty sanity probe.
+    // Template recovery is handled separately by Worker_manager via
+    // send_recovery_work_request() (GET_BLOCK).
+    auto payload = solo_protocol->send_get_round();
+    if (payload && !payload->empty()) {
+        m_primary_node_session->transmit(payload);
+    }
 }
 
 void Worker_manager::send_session_status_if_due()
@@ -1847,7 +1865,17 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
                        "(authenticated={}, primary_connected={}, see Solo logs for specific suppression reason)",
                        solo_protocol->is_authenticated(),
                        m_primary_node_session->is_primary_connected());
-        if (is_recovery_active() && solo_protocol->is_authenticated() && no_valid_template) {
+        if (solo_protocol->is_authenticated() && no_valid_template) {
+            // Epoch 0 fix: when HEALTHY (recovery_epoch == 0) but no valid template
+            // and GET_BLOCK was just suppressed by the dedup guard, the miner is stuck:
+            // the health monitor retries with non-bypassing reasons (HEALTH_TIP_MOVED,
+            // HEALTH_CHANNEL_ADVANCE) which the dedup guard blocks at the same height,
+            // and no forced retry is scheduled because is_recovery_active() is false.
+            // Initiate recovery so the epoch advances (0 → 1), enabling
+            // RECOVERY_FORCED/RECOVERY_TIMER which bypass ALL dedup guards.
+            if (!is_recovery_active()) {
+                mark_recovery_initiated("get_block_suppressed_no_template");
+            }
             schedule_forced_recovery_retry("request_work_empty");
         }
     }

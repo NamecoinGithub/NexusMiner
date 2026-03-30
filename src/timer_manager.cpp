@@ -1,11 +1,9 @@
 #include "timer_manager.hpp"
 #include "network/endpoint.hpp"
-#include "network/connection.hpp"
 #include "worker_manager.hpp"
 #include "stats/stats_collector.hpp"
 #include "stats/stats_printer.hpp"
 #include "worker.hpp"
-#include "protocol/solo.hpp"
 
 namespace nexusminer
 {
@@ -40,10 +38,9 @@ void Timer_manager::start_stats_printer_timer(std::uint16_t timer_interval, std:
     m_stats_printer_timer->start(chrono::Seconds(timer_interval), stats_printer_handler(timer_interval, std::move(stats_printers)));
 }
 
-void Timer_manager::start_get_round_timer(std::uint16_t timer_interval, std::weak_ptr<network::Connection> connection,
-    std::weak_ptr<protocol::Solo> solo_protocol)
+void Timer_manager::start_get_round_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager)
 {
-    m_get_round_timer->start(chrono::Seconds(timer_interval), get_round_handler(timer_interval, std::move(connection), std::move(solo_protocol)));
+    m_get_round_timer->start(chrono::Seconds(timer_interval), get_round_handler(timer_interval, std::move(worker_manager)));
 }
 
 void Timer_manager::stop()
@@ -116,38 +113,27 @@ chrono::Timer::Handler Timer_manager::stats_printer_handler(std::uint16_t stats_
     }; 
 }
 
-chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_interval, std::weak_ptr<network::Connection> connection,
-    std::weak_ptr<protocol::Solo> solo_protocol)
+chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_interval,
+    std::weak_ptr<Worker_manager> worker_manager)
 {
-    return [this, connection, solo_protocol, get_round_interval](bool canceled)
+    return [this, worker_manager, get_round_interval](bool canceled)
     {
         if (canceled)	// don't do anything if the timer has been canceled
         {
             return;
         }
 
-        auto connection_shared = connection.lock();
-        auto protocol_shared = solo_protocol.lock();
-        
-        if(connection_shared && protocol_shared)
+        auto wm = worker_manager.lock();
+        if (wm)
         {
-            // Intelligent polling: only send if protocol says it's time
-            if (protocol_shared->should_send_get_round())
-            {
-                // send_get_round() sends GET_ROUND on all lanes (legacy: 0x85,
-                // stateless: 0xD085) as a pure height/difficulty sanity probe.
-                // Template recovery is handled separately by Worker_manager via
-                // send_recovery_work_request() (GET_BLOCK).
-                auto payload = protocol_shared->send_get_round();
-                if (payload && !payload->empty()) {
-                    connection_shared->transmit(payload);
-                }
-            }
+            // Delegate to Worker_manager which fetches the current connection
+            // and protocol on every tick — no stale weak_ptr captures.
+            wm->poll_get_round();
 
-            // Restart timer - use weak_ptr to avoid move invalidation
-            // Timer wakes up frequently (1s) but protocol controls actual sending
-            m_get_round_timer->start(chrono::Seconds(get_round_interval), 
-                get_round_handler(get_round_interval, connection, solo_protocol));
+            // Always restart timer — Worker_manager persists for application
+            // lifetime so this timer never silently dies.
+            m_get_round_timer->start(chrono::Seconds(get_round_interval),
+                get_round_handler(get_round_interval, worker_manager));
         }
     }; 
 }

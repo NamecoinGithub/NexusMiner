@@ -2319,6 +2319,20 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         uint32_t hash_height    = bytes2uint(*packet.m_data, 8);
         uint32_t stake_height   = bytes2uint(*packet.m_data, 12);
         
+        // ── Normalize GET_ROUND heights: target (tip+1) → tip ──────────────
+        // The Nexus node GET_ROUND returns target heights (current tip + 1),
+        // consistent with GET_HEIGHT sending nBestHeight + 1.  All internal
+        // tracking (HeightTracker, template validation, height parity) uses
+        // TIP semantics.  Without this normalization, the inflated target
+        // values cause validate_current_template() to wrongly discard every
+        // valid template (target <= inflated_target = TRUE → doom loop).
+        m_logger->debug("[Solo GET_ROUND] Raw heights (target/round): unified={} prime={} hash={} stake={}",
+            unified_height, prime_height, hash_height, stake_height);
+        if (unified_height > 0) --unified_height;
+        if (prime_height   > 0) --prime_height;
+        if (hash_height    > 0) --hash_height;
+        if (stake_height   > 0) --stake_height;
+
         // Derive active-channel height from full picture
         uint32_t channel_height = 0;
         if (m_channel == mining::CHANNEL_PRIME) {
@@ -2337,13 +2351,13 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // Determine channel name for logging
         std::string channel_name = get_channel_name(m_channel);
         
-        // Log response details
+        // Log response details (normalized to tip semantics)
         m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (16-byte full height picture, lane={}):", lane_label);
-        m_logger->info("[Solo GET_ROUND]   Unified height:  {} (reference)", unified_height);
-        m_logger->info("[Solo GET_ROUND]   Prime height:    {}", prime_height);
-        m_logger->info("[Solo GET_ROUND]   Hash height:     {}", hash_height);
-        m_logger->info("[Solo GET_ROUND]   Stake height:    {}", stake_height);
-        m_logger->info("[Solo GET_ROUND]   {} height:      {} (derived)", channel_name, channel_height);
+        m_logger->info("[Solo GET_ROUND]   Unified height:  {} (tip, normalized from target)", unified_height);
+        m_logger->info("[Solo GET_ROUND]   Prime height:    {} (tip)", prime_height);
+        m_logger->info("[Solo GET_ROUND]   Hash height:     {} (tip)", hash_height);
+        m_logger->info("[Solo GET_ROUND]   Stake height:    {} (tip)", stake_height);
+        m_logger->info("[Solo GET_ROUND]   {} height:      {} (derived tip)", channel_name, channel_height);
         m_logger->info("[Solo GET_ROUND]   Difficulty:      (unchanged; not in 16-byte payload)");
         
         // Update RoundStatus
@@ -2533,6 +2547,15 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         uint32_t hash_height    = bytes2uint(*packet.m_data, 8);
         uint32_t stake_height   = bytes2uint(*packet.m_data, 12);
         
+        // ── Normalize GET_ROUND heights: target (tip+1) → tip ──────────────
+        // (see NEW_ROUND handler for rationale)
+        m_logger->debug("[Solo GET_ROUND] Raw heights (target/round): unified={} prime={} hash={} stake={}",
+            unified_height, prime_height, hash_height, stake_height);
+        if (unified_height > 0) --unified_height;
+        if (prime_height   > 0) --prime_height;
+        if (hash_height    > 0) --hash_height;
+        if (stake_height   > 0) --stake_height;
+
         // Derive active-channel height from full picture
         uint32_t channel_height = 0;
         if (m_channel == mining::CHANNEL_PRIME) {
@@ -2548,11 +2571,11 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         std::string channel_name = get_channel_name(m_channel);
         
         m_logger->info("[Solo GET_ROUND] ✓ OLD_ROUND (16-byte full height picture, lane={}):", lane_label);
-        m_logger->info("[Solo GET_ROUND]   Unified:       {}", unified_height);
-        m_logger->info("[Solo GET_ROUND]   Prime height:  {}", prime_height);
-        m_logger->info("[Solo GET_ROUND]   Hash height:   {}", hash_height);
-        m_logger->info("[Solo GET_ROUND]   Stake height:  {}", stake_height);
-        m_logger->info("[Solo GET_ROUND]   {} height:   {} (derived)", channel_name, channel_height);
+        m_logger->info("[Solo GET_ROUND]   Unified:       {} (tip)", unified_height);
+        m_logger->info("[Solo GET_ROUND]   Prime height:  {} (tip)", prime_height);
+        m_logger->info("[Solo GET_ROUND]   Hash height:   {} (tip)", hash_height);
+        m_logger->info("[Solo GET_ROUND]   Stake height:  {} (tip)", stake_height);
+        m_logger->info("[Solo GET_ROUND]   {} height:   {} (derived tip)", channel_name, channel_height);
         m_logger->info("[Solo GET_ROUND]   Difficulty:    (unchanged; not in 16-byte payload)");
         
         // Update RoundStatus
