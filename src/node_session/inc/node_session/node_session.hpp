@@ -246,6 +246,16 @@ public:
     std::shared_ptr<protocol::Solo> get_primary_protocol() const { return m_primary_protocol; }
 
     /**
+     * @brief Get the protocol instance matching the connection transmit() would use.
+     *
+     * Mirrors transmit()'s primary→secondary fallback logic so that callers
+     * can build payloads with the correct lane framing.
+     *
+     * @return Protocol instance matching the active connection, or nullptr if none available
+     */
+    std::shared_ptr<protocol::Solo> get_active_protocol() const;
+
+    /**
      * @brief Get the primary TCP connection (for timer wiring)
      * @return Shared pointer to primary network connection (may be null)
      */

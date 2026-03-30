@@ -488,6 +488,17 @@ bool NodeSession::transmit(network::Shared_payload data)
     return false;
 }
 
+std::shared_ptr<protocol::Solo> NodeSession::get_active_protocol() const
+{
+    if (m_primary_protocol && m_primary_connected) {
+        return m_primary_protocol;
+    }
+    if (m_secondary_protocol && m_secondary_connected) {
+        return m_secondary_protocol;
+    }
+    return nullptr;
+}
+
 uint32_t NodeSession::session_id() const
 {
     // Query the authoritative session context
@@ -768,16 +779,22 @@ network::Shared_payload NodeSession::submit_block(const std::vector<uint8_t>& bl
 
 network::Shared_payload NodeSession::send_get_round()
 {
-    if (m_primary_protocol) {
+    if (m_primary_protocol && m_primary_connected) {
         return m_primary_protocol->send_get_round();
+    }
+    if (m_secondary_protocol && m_secondary_connected) {
+        return m_secondary_protocol->send_get_round();
     }
     return nullptr;
 }
 
 network::Shared_payload NodeSession::send_session_keepalive()
 {
-    if (m_primary_protocol) {
+    if (m_primary_protocol && m_primary_connected) {
         return m_primary_protocol->send_session_keepalive();
+    }
+    if (m_secondary_protocol && m_secondary_connected) {
+        return m_secondary_protocol->send_session_keepalive();
     }
     return nullptr;
 }
