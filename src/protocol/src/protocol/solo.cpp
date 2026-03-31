@@ -3449,9 +3449,8 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
         }
 
         // Adjust keepalive interval based on timeout (ping at 1/N of timeout)
-        // Using KEEPALIVE_SAFETY_DIVISOR=2 ensures 2 keepalives per node timeout window.
-        // Division by 2 is safer: less timer load, larger per-ping safety margin.
-        // Example: 24h node timeout → keepalive every 12h (2 pings/window)
+        // Using KEEPALIVE_SAFETY_DIVISOR=4 ensures 4 keepalives per node timeout window.
+        // Example: 24h node timeout → keepalive every 6h (4 pings/window)
         if (parsed->timeout_seconds > 0 && get_session_manager()) {
             uint16_t keepalive_hours = calculate_keepalive_hours(
                 parsed->timeout_seconds, ProtocolConstants::KEEPALIVE_SAFETY_DIVISOR);
