@@ -710,7 +710,10 @@ void test_cross_channel_unified_advance_resets_dedup() {
 // Validates the three-tier dedup policy defined in get_block_reason.hpp:
 //   1. bypass_all:    RECOVERY_FORCED, RECOVERY_TIMER, HEALTH_NO_TEMPLATE → skip everything
 //   2. bypass_height: TEMPLATE_AGE_WARNING, VALIDATION_FAILURE, BLOCK_REJECTED, etc. → skip height guard
-//   3. full dedup:    HEALTH_CHANNEL_ADVANCE, INITIAL_REQUEST, etc. → all guards active
+//   3. full dedup:    INITIAL_REQUEST, HEALTH_STALE_SUPPRESSED, etc. → all guards active
+//   Note: HEALTH_TIP_MOVED and HEALTH_CHANNEL_ADVANCE are in tier 2 (bypass_height)
+//   because when the unified tip moves the template's hashPrevBlock is stale even
+//   though the DedupGuard has the same unified height recorded.
 //
 // This is the core bug fix: TEMPLATE_AGE_WARNING must bypass height-based dedup
 // so the 480s proactive refresh is not suppressed when heights are stagnant.
@@ -783,10 +786,19 @@ void test_get_block_reason_dedup_policy() {
         !should_bypass_all_dedup(GetBlockReason::PUSH_CROSS_CHANNEL));
 
     // Tier 3: full dedup — non-push normal requests respect all guards
-    print_test_result("HEALTH_CHANNEL_ADVANCE does NOT bypass height dedup",
-        !should_bypass_height_dedup(GetBlockReason::HEALTH_CHANNEL_ADVANCE));
-    print_test_result("HEALTH_TIP_MOVED does NOT bypass height dedup",
-        !should_bypass_height_dedup(GetBlockReason::HEALTH_TIP_MOVED));
+    // Note: HEALTH_TIP_MOVED and HEALTH_CHANNEL_ADVANCE BYPASS height dedup because
+    // when the unified tip moves (e.g. Stake block on another channel), the current
+    // template's hashPrevBlock becomes stale even though the DedupGuard already recorded
+    // a GET_BLOCK at the same unified height.  Without the bypass, the height-match
+    // guard suppresses the refresh and the miner gets stuck on a stale tip.
+    print_test_result("HEALTH_CHANNEL_ADVANCE bypasses height dedup (template stale at same unified height)",
+        should_bypass_height_dedup(GetBlockReason::HEALTH_CHANNEL_ADVANCE));
+    print_test_result("HEALTH_TIP_MOVED bypasses height dedup (unified tip moved, template stale)",
+        should_bypass_height_dedup(GetBlockReason::HEALTH_TIP_MOVED));
+    print_test_result("HEALTH_CHANNEL_ADVANCE does NOT bypass all dedup (burst guard still active)",
+        !should_bypass_all_dedup(GetBlockReason::HEALTH_CHANNEL_ADVANCE));
+    print_test_result("HEALTH_TIP_MOVED does NOT bypass all dedup (burst guard still active)",
+        !should_bypass_all_dedup(GetBlockReason::HEALTH_TIP_MOVED));
     print_test_result("HEALTH_STALE_SUPPRESSED does NOT bypass height dedup",
         !should_bypass_height_dedup(GetBlockReason::HEALTH_STALE_SUPPRESSED));
     print_test_result("INITIAL_REQUEST does NOT bypass height dedup",

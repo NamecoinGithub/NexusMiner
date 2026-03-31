@@ -216,13 +216,30 @@ void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
         }
     });
 
-    // Set up authentication handler for secondary lane
+    // Set up authentication handler for secondary lane.
+    // Wire the full m_session_authenticated_handler callback (set by Worker_manager)
+    // so that in-band re-auth via login_on_active_connection() on the secondary
+    // protocol still triggers timers, recovery transitions, and template requests.
+    // Without this, secondary re-auth only updated DualConnectionManager — the
+    // Worker_manager never knew auth succeeded and the miner would stall.
     m_secondary_protocol->set_session_authenticated_handler([this](uint32_t sid) {
         // Update DualConnectionManager: secondary (legacy) lane is now authenticated and alive
         if (m_dcm && sid != 0) {
             m_dcm->set_legacy_alive(true);
             m_logger->info("[NodeSession:{}] Secondary lane (LEGACY) authenticated → DualConnectionManager updated",
                           m_node_label);
+        }
+
+        if (m_session_authenticated_handler) {
+            m_session_authenticated_handler(sid);
+        }
+    });
+
+    // Wire session expired handler to secondary protocol (same as primary)
+    // so SESSION_EXPIRED on the secondary lane triggers Worker_manager recovery.
+    m_secondary_protocol->set_session_expired_handler([this]() {
+        if (m_session_expired_handler) {
+            m_session_expired_handler();
         }
     });
 
@@ -658,6 +675,17 @@ void NodeSession::set_session_expired_handler(Session_expired_handler handler)
             }
         });
     }
+
+    // Also wire to secondary protocol if it exists already.
+    // This ensures SESSION_EXPIRED on the secondary lane also triggers the
+    // Worker_manager's recovery path (in-band re-auth / reconnect).
+    if (m_secondary_protocol) {
+        m_secondary_protocol->set_session_expired_handler([this]() {
+            if (m_session_expired_handler) {
+                m_session_expired_handler();
+            }
+        });
+    }
 }
 
 void NodeSession::set_session_authenticated_handler(Session_authenticated_handler handler)
@@ -674,6 +702,24 @@ void NodeSession::set_session_authenticated_handler(Session_authenticated_handle
             if (m_dcm && sid != 0) {
                 m_dcm->set_stateless_alive(true);
                 m_logger->info("[NodeSession:{}] Primary lane (STATELESS) authenticated → DualConnectionManager updated",
+                              m_node_label);
+            }
+
+            if (m_session_authenticated_handler) {
+                m_session_authenticated_handler(sid);
+            }
+        });
+    }
+
+    // Also wire to secondary protocol if it exists already.
+    // This ensures in-band re-auth via login_on_active_connection() on the
+    // secondary lane still triggers the full Worker_manager callback chain
+    // (timers, recovery transitions, template requests).
+    if (m_secondary_protocol) {
+        m_secondary_protocol->set_session_authenticated_handler([this](uint32_t sid) {
+            if (m_dcm && sid != 0) {
+                m_dcm->set_legacy_alive(true);
+                m_logger->info("[NodeSession:{}] Secondary lane (LEGACY) authenticated → DualConnectionManager updated",
                               m_node_label);
             }
 
