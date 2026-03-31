@@ -855,7 +855,7 @@ int main()
 
         // Verify UpdateWithHashPrevBlock() is a no-op for staleness decisions
         // (it only updates hash_prev_block, not height or channel_target).
-        tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+        tracker.OnBlockDataReceived(5000, 100, 0x1d00ffff, uint1024_t{});
         tracker.UpdateWithHashPrevBlock(known_hash);
         auto snap2 = tracker.GetSnapshot();
         print_test_result("UpdateWithHashPrevBlock() does not disturb unified_height",
