@@ -3,7 +3,7 @@
 ## Eliminate Composite Height Mixing — Single-Source Height Architecture
 
 **Status:** Implementation Plan  
-**Problem:** Too many Height conflictions from various sources. The `max(canonical, push, round)` composition in `HeightTracker::Snapshot` conflates different height sources, making troubleshooting impossible and causing false-stale/false-advance decisions.
+**Problem:** Too many Height conflicts from various sources. The `max(canonical, push, round)` composition in `HeightTracker::Snapshot` conflates different height sources, making troubleshooting impossible and causing false-stale/false-advance decisions.
 
 **Goal:** HeightTracker and ClientChannelManager use **only 1 height** in their sources. GET ROUND heights become a real GET BLOCK trigger (like PUSH). Block DATA canonical heights are kept **alone** as their own verifier. No more composite max() mixing.
 

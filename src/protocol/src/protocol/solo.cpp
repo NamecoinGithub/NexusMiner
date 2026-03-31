@@ -1138,11 +1138,11 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
     // Using composite caused inconsistent dedup decisions when push/round raced ahead.
     {
         auto snap = m_height_tracker.GetSnapshot();
-        uint32_t cur_unified = snap.canonical_unified_height;
+        uint32_t canonical_unified = snap.canonical_unified_height;
         bool have_valid_template = m_template_interface &&
                                    m_template_interface->has_valid_template();
 
-        auto verdict = m_dedup_guard.check(reason, cur_unified, have_valid_template);
+        auto verdict = m_dedup_guard.check(reason, canonical_unified, have_valid_template);
         if (verdict != GetBlockDedupGuard::Verdict::ALLOW) {
             m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
             return nullptr;

@@ -267,7 +267,7 @@ bool PushNotificationHandler::handle_push_notification(
         if (channel_stale)
         {
             uint32_t blocks_behind = snap.blocks_behind();
-            m_logger->info("[Solo Push] ℹ️  Channel {} block(s) behind (channel_height {} ≥ channel_target {}) — informational",
+            m_logger->info("[Solo Push] ℹ️  Channel {} block(s) behind (channel_height {} ≥ channel_target {}) — expected during burst recovery, no action needed",
                            blocks_behind, snap.channel_height, snap.channel_target);
         }
 
