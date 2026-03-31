@@ -168,8 +168,9 @@ void test_channel_advance_stale_template_transition() {
                       snap3.channel_height == 101);
 
     // New template from GET_BLOCK response — staleness resolved
+    // AdvanceChannelTarget() removed — Bug #6 fix. OnTemplateReceived() now
+    // writes directly to canonical_channel_target.
     tracker.OnTemplateReceived(2, 102);
-    tracker.AdvanceChannelTarget(102);
     auto snap4 = tracker.GetSnapshot();
     print_test_result("After new template: is_template_stale() == false",
                       !snap4.is_template_stale());

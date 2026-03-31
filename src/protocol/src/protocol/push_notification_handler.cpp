@@ -259,18 +259,16 @@ bool PushNotificationHandler::handle_push_notification(
         auto snap = height_tracker ? height_tracker->GetSnapshot() : HeightTracker::Snapshot{};
 
         // ─── Channel staleness: informational + doom-loop prevention ─────────
-        // If the channel tip has reached or passed the template target, advance
-        // channel_target so subsequent pushes at the same height don't re-trigger.
-        // This is purely a bookkeeping step — it does NOT gate the work request.
+        // If the channel tip has reached or passed the template target, log it.
+        // AdvanceChannelTarget() REMOVED (Bug #6 fix) — the doom-loop it prevented
+        // cannot occur because is_template_stale() now uses canonical-only heights
+        // which PUSH cannot inflate. Channel staleness is purely diagnostic.
         bool channel_stale = height_tracker && snap.is_template_stale();
         if (channel_stale)
         {
             uint32_t blocks_behind = snap.blocks_behind();
-            m_logger->info("[Solo Push] ℹ️  Channel {} block(s) behind (channel_height {} ≥ channel_target {}) — advancing target",
+            m_logger->info("[Solo Push] ℹ️  Channel {} block(s) behind (channel_height {} ≥ channel_target {}) — informational",
                            blocks_behind, snap.channel_height, snap.channel_target);
-            if (height_tracker) {
-                height_tracker->AdvanceChannelTarget(snap.channel_height + 1);
-            }
         }
 
         // ─── Same-height tip replacement (reorg at same channel height) ──────

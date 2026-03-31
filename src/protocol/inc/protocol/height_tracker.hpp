@@ -540,9 +540,9 @@ public:
     /**
      * @brief Record that a new mining template has been received
      *
-     * channel_target is only advanced, never regressed — a stale GET_BLOCK
-     * response must not undo a push-derived advancement set by
-     * AdvanceChannelTarget().
+     * Updates canonical_channel_target — only advanced, never regressed.
+     * A stale GET_BLOCK response cannot regress the target below what a
+     * prior OnBlockDataReceived() has established.
      *
      * @param channel                Mining channel (1=Prime, 2=Hash)
      * @param template_channel_target Block nHeight from the template header
@@ -551,17 +551,13 @@ public:
      */
     void OnTemplateReceived(uint32_t channel, uint32_t template_channel_target);
 
-    /**
-     * @brief Advance channel_target without a full template update
-     *
-     * Called by the push handler after detecting staleness so that
-     * subsequent pushes with the same channel_height do not
-     * re-trigger the recovery/doom-loop.  Only advances — never
-     * regresses channel_target below its current value.
-     *
-     * @param new_target  New channel target (typically channel_height + 1)
-     */
-    void AdvanceChannelTarget(uint32_t new_target);
+    // AdvanceChannelTarget() REMOVED — Bug #6 fix.
+    // Push-driven advancement of channel_target corrupted the canonical invariant
+    // (canonical_channel_target = canonical_channel_height + 1) by allowing PUSH
+    // data to inflate canonical_channel_target beyond canonical_channel_height.
+    // Post-refactor, canonical_channel_target is set ONLY by OnBlockDataReceived()
+    // and OnTemplateReceived().  The doom-loop that AdvanceChannelTarget() prevented
+    // cannot occur when is_template_stale() uses canonical-only heights.
 
     /**
      * @brief Record the hashPrevBlock from the most recently received template
@@ -658,7 +654,10 @@ private:
     DiagnosticObserverState m_diagnostic;
 
     // ── Template / shared state ────────────────────────────────────────────
-    uint32_t m_channel_target{0};
+    // m_channel_target REMOVED — Bug #1 fix.
+    // Was a legacy field written by OnTemplateReceived() independently of
+    // canonical_channel_target.  Now all channel_target writes go through
+    // canonical_channel_target exclusively.
     uint32_t m_channel{0};
     uint32_t m_template_unified_height{0};
     UpdateSource m_last_update_source{UpdateSource::NONE};

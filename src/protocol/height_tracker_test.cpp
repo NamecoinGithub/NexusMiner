@@ -29,9 +29,9 @@
  * 18. Push updates channel_height; prime_height is keepalive-only (diagnostic)
  * 19. Push updates channel_height; hash_height is keepalive-only (diagnostic)
  * 20. Production regression: push advances channel_height; prime_height from keepalive
- * 21. AdvanceChannelTarget only advances, never regresses
+ * 21. OnTemplateReceived writes canonical_channel_target (only advances)
  * 22. OnTemplateReceived does not regress channel_target
- * 23. Doom-loop prevention — staleness fires once per advance
+ * 23. Doom-loop impossible with canonical-only channel_target
  * 24. Stale GET_BLOCK response does not cause regression
  * 25. OnTemplateMetadata does NOT regress channel_height
  * 26. OnTemplateMetadata per-channel heights — canonical is monotonic
@@ -43,7 +43,7 @@
  * 32. canonical_hash_prev_block anchored to BLOCK_DATA (Tritium block)
  * 33. DiagnosticObserverState::is_initialized() — diagnostic equivalent of canonical
  * 34. DiagnosticObserverState::latest_received_at() — diagnostic equivalent of canonical_received_at
- * 35. AdvanceChannelTarget() also updates canonical_channel_target
+ * 35. OnTemplateReceived() writes canonical_channel_target (Bug #1 fix)
  * 36. OnTemplateReceived() sets template_unified_height from canonical
  * 37. Cross-channel block (Hash/Stake) advances unified but not Prime channel →
  *     is_tip_moved() == true, is_template_stale() == false
@@ -306,13 +306,15 @@ void test_is_tip_moved_detected() {
     std::cout << "\nTest 9: is_tip_moved() — unified tip advance triggers refresh\n";
     HeightTracker tracker;
 
-    // Initial state: channel at 100, template for 101, unified at 5000
-    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    // Initial state: set CANONICAL state via OnBlockDataReceived, then template
+    // Bug #2 fix: OnTemplateReceived captures template_unified_height from canonical,
+    // so canonical must be set first.
+    tracker.OnBlockDataReceived(5000, 100, 0x1d00ffff, uint1024_t{});
     tracker.OnTemplateReceived(1, 101);
 
     auto snap_initial = tracker.GetSnapshot();
 
-    // template_unified_height should be captured as 5000
+    // template_unified_height should be captured as 5000 (canonical)
     print_test_result("template_unified_height == 5000 after template received",
                       snap_initial.template_unified_height == 5000);
 
@@ -320,11 +322,12 @@ void test_is_tip_moved_detected() {
     print_test_result("is_tip_moved() == false before unified advance",
                       !snap_initial.is_tip_moved());
 
-    // Another channel finds a block: unified advances to 5005, channel stays at 100
+    // Another channel finds a block: push says unified=5005, channel stays at 100
+    // Push writes to diagnostic; canonical still at 5000
     tracker.OnPushNotification(5005, 100, 0x1d00ffff);
     auto snap = tracker.GetSnapshot();
 
-    // Tip has moved: unified (5005) > template_unified (5000)
+    // Tip has moved in composite: unified (max(canonical=5000, push=5005)) = 5005 > template_unified (5000)
     print_test_result("is_tip_moved() == true after unified advance",
                       snap.is_tip_moved());
 
@@ -336,7 +339,7 @@ void test_is_tip_moved_detected() {
     print_test_result("template_unified_height still == 5000 (template not refreshed)",
                       snap.template_unified_height == 5000);
 
-    // unified_height updated to new value
+    // unified_height updated to new value (composite)
     print_test_result("unified_height updated to 5005",
                       snap.unified_height == 5005);
 }
@@ -348,16 +351,18 @@ void test_is_tip_moved_resets_on_new_template() {
     std::cout << "\nTest 10: is_tip_moved() resets when new template received\n";
     HeightTracker tracker;
 
-    // Template at unified=5000, channel=100
-    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    // Bug #2 fix: canonical must be set before OnTemplateReceived captures
+    tracker.OnBlockDataReceived(5000, 100, 0x1d00ffff, uint1024_t{});
     tracker.OnTemplateReceived(1, 101);
 
-    // Unified tip moves to 5005
+    // Unified tip moves to 5005 via push (diagnostic)
     tracker.OnPushNotification(5005, 100, 0x1d00ffff);
     print_test_result("is_tip_moved() == true before fresh template",
                       tracker.GetSnapshot().is_tip_moved());
 
-    // Fresh template received (now template_unified_height == 5005)
+    // BLOCK_DATA arrives at the new tip (canonical catches up)
+    tracker.OnBlockDataReceived(5005, 100, 0x1d00ffff, uint1024_t{});
+    // Fresh template received (template_unified_height == 5005 from canonical)
     tracker.OnTemplateReceived(1, 101);
     auto snap = tracker.GetSnapshot();
 
@@ -365,7 +370,7 @@ void test_is_tip_moved_resets_on_new_template() {
     print_test_result("is_tip_moved() == false after fresh template received",
                       !snap.is_tip_moved());
 
-    // template_unified_height updated to current unified height
+    // template_unified_height updated to current canonical unified height
     print_test_result("template_unified_height == 5005 (new template at new tip)",
                       snap.template_unified_height == 5005);
 }
@@ -515,8 +520,9 @@ void test_blocks_behind_distinguishes_normal_vs_severe_lag() {
                       two_blocks.blocks_behind() == 2);
 
     HeightTracker tip_move_tracker;
-    tip_move_tracker.OnPushNotification(6000, 200, 0x1d00ffff);
+    tip_move_tracker.OnBlockDataReceived(6000, 200, 0x1d00ffff, uint1024_t{});
     tip_move_tracker.OnTemplateReceived(2, 201);
+    // Push advances unified beyond canonical (6001 > 6000)
     tip_move_tracker.OnPushNotification(6001, 200, 0x1d00ffff);
     auto tip_move = tip_move_tracker.GetSnapshot();
     print_test_result("blocks_behind() == 0 when only unified tip moves",
@@ -687,10 +693,10 @@ void test_push_keepalive_no_regression() {
 }
 
 // ============================================================================
-// Test 21: AdvanceChannelTarget only advances, never regresses
+// Test 21: OnTemplateReceived writes to canonical_channel_target (Bug #1 fix)
 // ============================================================================
 void test_advance_channel_target_only_advances() {
-    std::cout << "\nTest 21: AdvanceChannelTarget only advances, never regresses\n";
+    std::cout << "\nTest 21: OnTemplateReceived writes canonical_channel_target (only advances)\n";
     HeightTracker tracker;
 
     // Set initial channel_target via OnTemplateReceived
@@ -700,28 +706,33 @@ void test_advance_channel_target_only_advances() {
     print_test_result("channel_target == 101 after OnTemplateReceived",
                       snap.channel_target == 101);
 
-    // Advance to 105 via AdvanceChannelTarget
-    tracker.AdvanceChannelTarget(105);
+    // Canonical also confirms
+    auto canonical = tracker.GetCanonicalSnapshot();
+    print_test_result("canonical_channel_target == 101",
+                      canonical.canonical_channel_target == 101);
+
+    // Advance to 105 via OnTemplateReceived
+    tracker.OnTemplateReceived(1, 105);
     snap = tracker.GetSnapshot();
-    print_test_result("channel_target == 105 after AdvanceChannelTarget(105)",
+    print_test_result("channel_target == 105 after OnTemplateReceived(105)",
                       snap.channel_target == 105);
 
-    // Attempting to set a lower value via AdvanceChannelTarget is a no-op
-    tracker.AdvanceChannelTarget(102);
+    // Attempting to set a lower value via OnTemplateReceived is a no-op
+    tracker.OnTemplateReceived(1, 102);
     snap = tracker.GetSnapshot();
-    print_test_result("channel_target still 105 after AdvanceChannelTarget(102)",
+    print_test_result("channel_target still 105 after OnTemplateReceived(102)",
                       snap.channel_target == 105);
 
     // Attempting to set the same value is a no-op
-    tracker.AdvanceChannelTarget(105);
+    tracker.OnTemplateReceived(1, 105);
     snap = tracker.GetSnapshot();
-    print_test_result("channel_target still 105 after AdvanceChannelTarget(105)",
+    print_test_result("channel_target still 105 after OnTemplateReceived(105)",
                       snap.channel_target == 105);
 
     // Advancing beyond current value works
-    tracker.AdvanceChannelTarget(110);
+    tracker.OnTemplateReceived(1, 110);
     snap = tracker.GetSnapshot();
-    print_test_result("channel_target == 110 after AdvanceChannelTarget(110)",
+    print_test_result("channel_target == 110 after OnTemplateReceived(110)",
                       snap.channel_target == 110);
 }
 
@@ -737,17 +748,17 @@ void test_on_template_received_no_regress() {
     auto snap = tracker.GetSnapshot();
     print_test_result("channel_target == 101 initially", snap.channel_target == 101);
 
-    // Push advances channel_target (simulating push-detected staleness)
-    tracker.AdvanceChannelTarget(105);
+    // OnBlockDataReceived advances canonical_channel_target to 106
+    tracker.OnBlockDataReceived(5005, 105, 0x1d00ffff, uint1024_t{});
     snap = tracker.GetSnapshot();
-    print_test_result("channel_target == 105 after AdvanceChannelTarget",
-                      snap.channel_target == 105);
+    print_test_result("channel_target == 106 after OnBlockDataReceived(channel=105)",
+                      snap.channel_target == 106);
 
     // Stale GET_BLOCK response arrives with a lower channel_target
     tracker.OnTemplateReceived(1, 102);
     snap = tracker.GetSnapshot();
-    print_test_result("channel_target still 105 after stale OnTemplateReceived(102)",
-                      snap.channel_target == 105);
+    print_test_result("channel_target still 106 after stale OnTemplateReceived(102)",
+                      snap.channel_target == 106);
 
     // But template_unified_height and timestamps are still updated
     print_test_result("last_update_source == TEMPLATE",
@@ -761,37 +772,46 @@ void test_on_template_received_no_regress() {
 }
 
 // ============================================================================
-// Test 23: Doom-loop prevention — push staleness detection fires once per
-//          chain advance, not on every subsequent push with same height
+// Test 23: Doom-loop prevention — with canonical-only channel_target, push
+//          cannot create a doom loop (Bug #6 fix confirmation)
 // ============================================================================
 void test_doom_loop_prevention() {
-    std::cout << "\nTest 23: Doom-loop prevention — staleness fires once per advance\n";
+    std::cout << "\nTest 23: Doom-loop impossible with canonical-only channel_target\n";
     HeightTracker tracker;
 
-    // Initial: template targeting block 101
-    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    // Initial: template targeting block 101 (canonical channel=100)
+    tracker.OnBlockDataReceived(5000, 100, 0x1d00ffff, uint1024_t{});
     tracker.OnTemplateReceived(1, 101);
 
-    // Push₁: channel advances to 101 → stale
+    // Push₁: says channel=101 → but canonical channel_height is still 100
+    // because push only writes to diagnostic state, not canonical.
     tracker.OnPushNotification(5001, 101, 0x1d00ffff);
     auto snap = tracker.GetSnapshot();
-    print_test_result("Push₁: is_template_stale() true (101 >= 101)",
+    // is_template_stale() uses composite channel_height = max(canonical=100, push=101) = 101
+    // channel_target = 101 (canonical)
+    // 101 >= 101 → stale in composite view
+    print_test_result("Push₁: composite is_template_stale() true (push=101 >= target=101)",
                       snap.is_template_stale());
 
-    // Simulate push handler advancing channel_target after detecting staleness
-    tracker.AdvanceChannelTarget(102);
+    // But canonical staleness is different: canonical_channel_height=100 < target=101
+    auto canonical = tracker.GetCanonicalSnapshot();
+    print_test_result("Canonical NOT stale: 100 < 101",
+                      !canonical.is_canonically_stale());
 
-    // Push₂: same channel_height 101 → should NOT be stale anymore
+    // Push₂: same channel_height 101 → composite still shows stale
     tracker.OnPushNotification(5002, 101, 0x1d00ffff);
     snap = tracker.GetSnapshot();
-    print_test_result("Push₂: is_template_stale() false (101 < 102)",
-                      !snap.is_template_stale());
-
-    // Push₃: channel advances again to 102 → stale again (correct!)
-    tracker.OnPushNotification(5003, 102, 0x1d00ffff);
-    snap = tracker.GetSnapshot();
-    print_test_result("Push₃: is_template_stale() true (102 >= 102)",
+    print_test_result("Push₂: composite still stale (no doom loop: push doesn't inflate canonical target)",
                       snap.is_template_stale());
+
+    // When BLOCK_DATA arrives with channel=101, canonical catches up and
+    // OnBlockDataReceived sets canonical_channel_target=102
+    tracker.OnBlockDataReceived(5001, 101, 0x1d00ffff, uint1024_t{});
+    snap = tracker.GetSnapshot();
+    print_test_result("After BLOCK_DATA: canonical target advanced to 102",
+                      snap.channel_target == 102);
+    // Now composite: channel_height=max(canonical=101, push=101)=101, target=102
+    print_test_result("Not stale: 101 < 102", !snap.is_template_stale());
 }
 
 // ============================================================================
@@ -801,30 +821,30 @@ void test_stale_get_block_no_regression() {
     std::cout << "\nTest 24: Stale GET_BLOCK response does not regress channel_target\n";
     HeightTracker tracker;
 
-    // Push says chain is at channel_height 105
-    tracker.OnPushNotification(5010, 105, 0x1d00ffff);
-    tracker.OnTemplateReceived(1, 101);  // old template target
+    // BLOCK_DATA says chain is at channel_height 105 → target = 106
+    tracker.OnBlockDataReceived(5010, 105, 0x1d00ffff, uint1024_t{});
+    tracker.OnTemplateReceived(1, 106);
 
-    // Push-handler detects stale (105 >= 101) and advances target
-    tracker.AdvanceChannelTarget(106);
+    auto snap = tracker.GetSnapshot();
+    print_test_result("channel_target == 106 after BLOCK_DATA(channel=105)",
+                      snap.channel_target == 106);
 
-    // Stale GET_BLOCK response has channel_height=99 (3 blocks behind)
-    // 16-byte: prime=99, hash=99, stake=0 (stale picture for channel 1/prime)
+    // Stale GET_BLOCK response has channel_height=99 (old data)
     tracker.OnGetRound(5007, 99, 99, 0);
     tracker.OnTemplateReceived(1, 100);  // stale template target
 
-    auto snap = tracker.GetSnapshot();
+    snap = tracker.GetSnapshot();
     // channel_target should NOT have regressed to 100
     print_test_result("channel_target still 106 after stale GET_BLOCK (not regressed to 100)",
                       snap.channel_target == 106);
 
-    // channel_height remains 105 because max(canonical=0, push=105, round=99) = 105;
-    // the push value still dominates the stale GET_ROUND response.
+    // Push does NOT inflate canonical channel_target — it's diagnostic only
     tracker.OnPushNotification(5011, 105, 0x1d00ffff);
     snap = tracker.GetSnapshot();
-    print_test_result("channel_height restored to 105 from push",
-                      snap.channel_height == 105);
-    print_test_result("Not stale: 105 < 106", !snap.is_template_stale());
+    // channel_height composite includes push, but channel_target remains canonical
+    print_test_result("channel_target still 106 (canonical, not inflated by push)",
+                      snap.channel_target == 106);
+    print_test_result("Not stale: canonical channel=105 < target=106", !snap.is_template_stale());
 }
 
 // ============================================================================
@@ -1373,10 +1393,10 @@ void test_diagnostic_latest_received_at() {
 }
 
 // ============================================================================
-// Test 34: AdvanceChannelTarget() also updates canonical_channel_target
+// Test 34: OnTemplateReceived() writes to canonical_channel_target (Bug #1 fix)
 // ============================================================================
 void test_advance_channel_target_updates_canonical() {
-    std::cout << "\nTest 34: AdvanceChannelTarget updates canonical_channel_target\n";
+    std::cout << "\nTest 34: OnTemplateReceived writes canonical_channel_target\n";
     HeightTracker tracker;
 
     // Give it a canonical base via OnBlockDataReceived
@@ -1385,10 +1405,10 @@ void test_advance_channel_target_updates_canonical() {
     print_test_result("canonical_channel_target == 2001 after BLOCK_DATA",
                       canon.canonical_channel_target == 2001);
 
-    // AdvanceChannelTarget beyond canonical
-    tracker.AdvanceChannelTarget(2010);
+    // OnTemplateReceived advances canonical_channel_target beyond BLOCK_DATA
+    tracker.OnTemplateReceived(1, 2010);
     canon = tracker.GetCanonicalSnapshot();
-    print_test_result("canonical_channel_target == 2010 after AdvanceChannelTarget(2010)",
+    print_test_result("canonical_channel_target == 2010 after OnTemplateReceived(2010)",
                       canon.canonical_channel_target == 2010);
 
     // Snapshot channel_target should also reflect the advance
@@ -1397,9 +1417,9 @@ void test_advance_channel_target_updates_canonical() {
                       snap.channel_target == 2010);
 
     // Attempting to regress is a no-op on canonical too
-    tracker.AdvanceChannelTarget(2005);
+    tracker.OnTemplateReceived(1, 2005);
     canon = tracker.GetCanonicalSnapshot();
-    print_test_result("canonical_channel_target still 2010 after lower AdvanceChannelTarget(2005)",
+    print_test_result("canonical_channel_target still 2010 after lower OnTemplateReceived(2005)",
                       canon.canonical_channel_target == 2010);
 }
 
@@ -1817,8 +1837,8 @@ void test_cross_channel_block_tip_moved_not_stale() {
     std::cout << "\nTest 37: Cross-channel block advances unified but not Prime channel → is_tip_moved=true, is_template_stale=false\n";
     HeightTracker tracker;
 
-    // Simulate a Prime template at unified=100, prime_channel=50 → target=51
-    tracker.OnPushNotification(100, 50, 0x1d00ffff);
+    // Bug #2 fix: Set canonical state first so OnTemplateReceived captures properly
+    tracker.OnBlockDataReceived(100, 50, 0x1d00ffff, uint1024_t{});
     tracker.OnTemplateReceived(1 /* CHANNEL_PRIME */, 51);
 
     auto snap_base = tracker.GetSnapshot();
@@ -1850,7 +1870,7 @@ void test_cross_channel_block_tip_moved_not_stale() {
 //
 // Regression test for the GET_BLOCK dedup asymmetry bug:
 //   - OnBlockDataReceived(unified=100, channel=50) sets canonical_channel_height=50
-//   - OnTemplateReceived(1, 51) sets m_channel_target=51 (the mining target = tip+1)
+//   - OnTemplateReceived(1, 51) sets canonical_channel_target=51 (the mining target = tip+1)
 //   - The snapshot's channel_height must still reflect the raw blockchain height (50),
 //     NOT the +1 mining target (51).
 //
