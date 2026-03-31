@@ -588,7 +588,15 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             });
 
                         if (!sent) {
-                            self->m_logger->error("[Session] Failed to generate or transmit re-authentication payload");
+                            // In-band re-auth failed — no active connection to send on.
+                            // Schedule a full TCP reconnect instead of silently stalling.
+                            self->m_logger->warn("[Session] In-band re-auth failed (no active connection) — "
+                                                  "scheduling TCP reconnect as fallback");
+                            if (self->m_primary_endpoint.is_valid()) {
+                                self->retry_connect(self->m_primary_endpoint);
+                            } else {
+                                self->m_logger->error("[Session] No endpoint available for reconnect fallback");
+                            }
                         }
                     });
                 }
@@ -898,9 +906,14 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
     // connection is demonstrably alive from the node's perspective. Tearing it
     // down here would destroy a valid node session. Use in-band re-auth instead.
     if (m_primary_node_session) {
-        auto push_protocol = m_primary_node_session->get_primary_protocol();
-        if (push_protocol) {
-            auto ht_snap = push_protocol->get_height_tracker_snapshot();
+        // Use get_active_protocol() so push liveness and auth state are read from
+        // the SAME protocol instance that login_on_active_connection() will use.
+        // Before this fix, get_primary_protocol() could read stale push/auth data
+        // from the primary protocol while get_active_protocol() returned the secondary
+        // (or nullptr), causing protocol mismatch and stuck states.
+        auto active_protocol = m_primary_node_session->get_active_protocol();
+        if (active_protocol) {
+            auto ht_snap = active_protocol->get_height_tracker_snapshot();
             bool push_received = (ht_snap.last_push_notification_at != std::chrono::steady_clock::time_point{});
             if (push_received) {
                 auto now = std::chrono::steady_clock::now();
@@ -910,7 +923,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                     // Conditional auth guard: suppress duplicate login() only if auth is recent.
                     // If auth has been in-flight longer than 10s it is likely stuck from a dead
                     // TCP mid-handshake — reset and retry rather than silently blocking.
-                    double in_flight_s = push_protocol->auth_in_flight_seconds();
+                    double in_flight_s = active_protocol->auth_in_flight_seconds();
                     constexpr double AUTH_STALE_THRESHOLD_S = 10.0;
 
                     if (in_flight_s > 0.0 && in_flight_s <= AUTH_STALE_THRESHOLD_S) {
@@ -925,11 +938,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                     // Reset auth state so login() starts from a clean NOT_AUTHENTICATED state.
                     // This clears any stale WAITING_FOR_CHALLENGE / WAITING_FOR_RESULT left
                     // over from a previous attempt on a now-dead TCP connection.
-                    // Reset on the active protocol (which login_on_active_connection will use).
-                    auto active_protocol = m_primary_node_session->get_active_protocol();
-                    if (active_protocol) {
-                        active_protocol->reset_auth_state();
-                    }
+                    active_protocol->reset_auth_state();
                     m_logger->warn("[Worker_manager] retry_connect() suppressed — push received {}s ago "
                                   "(TCP alive). Triggering in-band re-auth instead.", since_push_s);
                     // Use login_on_active_connection() to ensure the auth payload
@@ -945,10 +954,14 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                                                      "awaiting MINER_AUTH_RESULT");
                             }
                         });
-                    if (!sent) {
-                        m_logger->error("[Worker_manager] retry_connect guard: failed to generate or transmit re-auth payload");
+                    if (sent) {
+                        return;  // Re-auth dispatched — wait for MINER_AUTH_RESULT
                     }
-                    return;
+                    // In-band re-auth failed (connection died between push guard check
+                    // and login attempt). Fall through to full TCP reconnect rather than
+                    // returning with no recovery action — that would leave the miner stuck.
+                    m_logger->warn("[Worker_manager] retry_connect guard: in-band re-auth failed "
+                                   "(connection lost) — falling through to TCP reconnect");
                 } else {
                     m_logger->warn("[Worker_manager] retry_connect() push guard expired "
                                    "(push {}s ago > {}s threshold) — proceeding with TCP reconnect",
