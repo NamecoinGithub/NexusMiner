@@ -2663,10 +2663,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         
         m_logger->info("[Solo GET_ROUND] ✓ OLD_ROUND (16-byte full height picture, lane={}):", lane_label);
         {
-            auto canonical_snap_old = m_height_tracker.GetCanonicalSnapshot();
+            auto canonical_snap = m_height_tracker.GetCanonicalSnapshot();
             m_logger->info("[Solo GET_ROUND]   Unified:       {} (tip{})", unified_height,
-                canonical_snap_old.is_initialized()
-                    ? fmt::format("; canonical={}", canonical_snap_old.canonical_unified_height)
+                canonical_snap.is_initialized()
+                    ? fmt::format("; canonical={}", canonical_snap.canonical_unified_height)
                     : std::string{});
         }
         m_logger->info("[Solo GET_ROUND]   Prime height:  {} (tip)", prime_height);
