@@ -307,7 +307,7 @@ private:
     std::deque<SessionEvent> m_session_event_journal;
 
     uint16_t m_keepalive_interval_hours{12};
-    uint32_t m_keepalive_v2_sequence{0};  // Monotonic counter for KEEPALIVE_V2 frames
+    std::atomic<uint32_t> m_keepalive_v2_sequence{0};  // Monotonic counter for KEEPALIVE_V2 frames
     bool m_preserve_genesis_on_disconnect{true};
     ProtocolLane m_protocol_lane{ProtocolLane::UNKNOWN};
 
