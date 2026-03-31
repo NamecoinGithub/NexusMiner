@@ -46,7 +46,7 @@
  * 35. OnTemplateReceived() writes canonical_channel_target (Bug #1 fix)
  * 36. OnTemplateReceived() sets template_unified_height from canonical
  * 37. Cross-channel block (Hash/Stake) advances unified but not Prime channel →
- *     is_tip_moved() == true, is_template_stale() == false
+ *     is_tip_moved() == true (template still valid for submission)
  * 38. OnTemplateReceived +1 target does NOT contaminate snapshot channel_height
  *     (regression: raw blockchain height must not be overwritten by mining target)
  */
@@ -100,8 +100,7 @@ void test_push_then_template_no_drift() {
     print_test_result("drift_delta() has value", delta.has_value());
     print_test_result("drift_delta() == 0", delta.has_value() && *delta == 0);
 
-    // Template is not stale (channel_height 100 < channel_target 101)
-    print_test_result("is_template_stale() == false", !snap.is_template_stale());
+    // is_template_stale() removed (structurally false under canonical-only semantics)
 
     // ExplainMismatch returns empty (heights are consistent)
     std::string msg = tracker.ExplainMismatch();
@@ -109,10 +108,10 @@ void test_push_then_template_no_drift() {
 }
 
 // ============================================================================
-// Test 2: Channel height advanced makes IsTemplateStale true
+// Test 2: Channel height advanced — canonical auto-advance prevents staleness
 // ============================================================================
 void test_channel_height_advance_makes_stale() {
-    std::cout << "\nTest 2: Channel height advance → IsTemplateStale true\n";
+    std::cout << "\nTest 2: Channel height advance → canonical auto-advances target\n";
     HeightTracker tracker;
 
     // Template was for height 101
@@ -125,10 +124,8 @@ void test_channel_height_advance_makes_stale() {
     auto snap = tracker.GetSnapshot();
 
     // channel_height (101) but channel_target auto-advanced to 102 by OnBlockDataReceived
-    // With canonical-only heights, OnBlockDataReceived always sets target = channel + 1,
-    // so is_template_stale() cannot return true from canonical state alone.
-    print_test_result("is_template_stale() == false (canonical auto-advances target to 102)",
-                      !snap.is_template_stale());
+    // With canonical-only heights, OnBlockDataReceived always sets target = channel + 1.
+    // is_template_stale() removed (structurally false under canonical-only semantics)
 
     // ExplainMismatch returns empty (canonical state is self-consistent)
     std::string msg = tracker.ExplainMismatch();
@@ -231,8 +228,7 @@ void test_zero_heights_safe() {
     auto snap = tracker.GetSnapshot();
     print_test_result("expected_template_target() == 0 when channel_height == 0",
                       snap.expected_template_target() == 0);
-    print_test_result("is_template_stale() == false when all zeros",
-                      !snap.is_template_stale());
+    // is_template_stale() removed (structurally false under canonical-only semantics)
     print_test_result("drift_delta() has no value when both are 0",
                       !snap.drift_delta().has_value());
     std::string msg = tracker.ExplainMismatch();
@@ -258,8 +254,7 @@ void test_unified_advance_does_not_make_stale() {
     auto snap = tracker.GetSnapshot();
 
     // Template should still be valid: channel_height (100) < channel_target (101)
-    print_test_result("is_template_stale() == false after unified-only advance",
-                      !snap.is_template_stale());
+    // is_template_stale() removed (structurally false under canonical-only semantics)
 
     // Channel target unchanged
     print_test_result("channel_target still == 101", snap.channel_target == 101);
@@ -292,9 +287,7 @@ void test_channel_advance_makes_stale() {
     auto snap = tracker.GetSnapshot();
 
     // With canonical-only heights, OnBlockDataReceived auto-advances target to 102.
-    // is_template_stale() cannot return true from canonical state alone.
-    print_test_result("is_template_stale() == false (canonical auto-advances target to channel+1)",
-                      !snap.is_template_stale());
+    // is_template_stale() removed (structurally false under canonical-only semantics)
 
     // ExplainMismatch returns empty (canonical state is self-consistent)
     std::string msg = tracker.ExplainMismatch();
@@ -335,8 +328,7 @@ void test_is_tip_moved_detected() {
                       snap.is_tip_moved());
 
     // But template is NOT channel-stale: channel_height (100) < channel_target (101)
-    print_test_result("is_template_stale() == false (channel height unchanged)",
-                      !snap.is_template_stale());
+    // is_template_stale() removed (structurally false under canonical-only semantics)
 
     // template_unified_height unchanged (only updates on OnTemplateReceived)
     print_test_result("template_unified_height still == 5000 (template not refreshed)",
@@ -449,8 +441,7 @@ void test_post_push_timestamps_ordered_correctly() {
                       snap_after_push.last_template_update < snap_after_push.last_height_update);
 
     // channel_height = 100, channel_target still 0 (no template) → not stale.
-    print_test_result("Not stale (no channel_target yet)",
-                      !snap_after_push.is_template_stale());
+    // is_template_stale() removed (structurally false under canonical-only semantics)
 
     // Step 2: Recovery GET_BLOCK returns a template targeting Y+1 = 101.
     // Small sleep to ensure measurable time difference between push and template.
@@ -462,9 +453,7 @@ void test_post_push_timestamps_ordered_correctly() {
     print_test_result("last_template_update >= last_height_update after template (post-push)",
                       snap_after_tmpl.last_template_update >= snap_after_tmpl.last_height_update);
 
-    // is_template_stale() must be false: channel_height (100) < channel_target (101).
-    print_test_result("Not stale after template for 101 (channel_height=100 < target=101)",
-                      !snap_after_tmpl.is_template_stale());
+    // is_template_stale() removed (structurally false under canonical-only semantics)
 }
 
 // ============================================================================
@@ -492,10 +481,8 @@ void test_pre_push_template_identified_correctly() {
     print_test_result("last_template_update < last_height_update (pre-push template)",
                       snap.last_template_update < snap.last_height_update);
 
-    // is_template_stale() is false: OnBlockDataReceived auto-advances target to 102.
+    // is_template_stale() removed (structurally false under canonical-only semantics)
     // Canonical auto-advance prevents staleness even when channel catches up.
-    print_test_result("is_template_stale() == false (canonical auto-advances target)",
-                      !snap.is_template_stale());
 }
 
 // ============================================================================
@@ -698,9 +685,8 @@ void test_push_keepalive_no_regression() {
     print_test_result("channel_height == 2331126", snap.channel_height == 2331126);
     // prime_height is canonical-only (not set without OnBlockDataReceived)
     print_test_result("prime_height == 0 (canonical only, not set yet)", snap.prime_height == 0);
-    // is_template_stale: OnBlockDataReceived auto-advanced target to 2331127
-    // so 2331126 < 2331127 = false (canonical auto-advance prevents staleness)
-    print_test_result("is_template_stale == false (canonical auto-advances target)", !snap.is_template_stale());
+    // is_template_stale() removed (structurally false under canonical-only semantics)
+    // OnBlockDataReceived auto-advanced target to 2331127, so 2331126 < 2331127.
 }
 
 // ============================================================================
@@ -798,10 +784,8 @@ void test_doom_loop_prevention() {
     // because push only writes to diagnostic state, not canonical.
     tracker.OnPushNotification(5001, 101, 0x1d00ffff);
     auto snap = tracker.GetSnapshot();
-    // is_template_stale() uses canonical-only channel_height (100) < channel_target (101)
+    // is_template_stale() removed (structurally false under canonical-only semantics)
     // Push cannot trigger staleness — both sides are canonical-only
-    print_test_result("Push₁: NOT stale (push is diagnostic only, canonical channel=100 < target=101)",
-                      !snap.is_template_stale());
 
     // But canonical staleness is different: canonical_channel_height=100 < target=101
     auto canonical = tracker.GetCanonicalSnapshot();
@@ -811,8 +795,7 @@ void test_doom_loop_prevention() {
     // Push₂: same channel_height 101 → still not stale (push is diagnostic only)
     tracker.OnPushNotification(5002, 101, 0x1d00ffff);
     snap = tracker.GetSnapshot();
-    print_test_result("Push₂: still NOT stale (push doesn't affect canonical staleness)",
-                      !snap.is_template_stale());
+    // is_template_stale() removed (structurally false under canonical-only semantics)
 
     // When BLOCK_DATA arrives with channel=101, canonical catches up and
     // OnBlockDataReceived sets canonical_channel_target=102
@@ -821,7 +804,7 @@ void test_doom_loop_prevention() {
     print_test_result("After BLOCK_DATA: canonical target advanced to 102",
                       snap.channel_target == 102);
     // Now composite: channel_height=max(canonical=101, push=101)=101, target=102
-    print_test_result("Not stale: 101 < 102", !snap.is_template_stale());
+    // is_template_stale() removed (structurally false under canonical-only semantics)
 }
 
 // ============================================================================
@@ -854,7 +837,8 @@ void test_stale_get_block_no_regression() {
     // channel_height composite includes push, but channel_target remains canonical
     print_test_result("channel_target still 106 (canonical, not inflated by push)",
                       snap.channel_target == 106);
-    print_test_result("Not stale: canonical channel=105 < target=106", !snap.is_template_stale());
+    print_test_result("Not stale: canonical channel=105 < target=106",
+                      snap.channel_height < snap.channel_target);
 }
 
 // ============================================================================
@@ -1725,8 +1709,8 @@ void test_on_push_full_picture() {
 // ============================================================================
 // Test 35 (RC7-D): Burst recovery — nChannelHeight 4 blocks ahead of tracker
 //   push_channel_height=2344737 (burst lag), template.nChannelHeight=2344741.
-//   expected_template_target() = 2344738, but is_template_stale() uses
-//   channel_height >= channel_target (2344737 >= 2344741 = false).
+//   expected_template_target() = 2344738, and channel_height < channel_target
+//   (2344737 < 2344741) confirms the template is valid.
 //   The directional guard must accept this template as VALID.
 // ============================================================================
 void test_burst_recovery_template_ahead_of_tracker() {
@@ -1753,9 +1737,8 @@ void test_burst_recovery_template_ahead_of_tracker() {
     print_test_result("RC7-D: channel_target == 2344741 after OnTemplateReceived",
                       snap.channel_target == 2344741);
 
-    // Directional guard: 2344737 >= 2344741 is false → template is VALID.
-    print_test_result("RC7-D: is_template_stale() == false when 4 blocks ahead of push tracker",
-                      !snap.is_template_stale());
+    // Directional guard: 2344737 < 2344741 → template is VALID.
+    // is_template_stale() removed (structurally false under canonical-only semantics)
 
     // Drift is positive (template is 3 ahead of expected) but NOT stale.
     auto delta = snap.drift_delta();
@@ -1835,7 +1818,7 @@ void test_on_get_round_monotonic_guard() {
 
 // ============================================================================
 // Test 37: Cross-channel block (Hash/Stake) advances unified but not Prime
-//          channel height — is_tip_moved() == true, is_template_stale() == false
+//          channel height — is_tip_moved() == true (template still valid)
 //
 // This verifies that HeightTracker correctly distinguishes between:
 //   - Tip movement (unified height advanced on another channel) → need fresh template
@@ -1843,11 +1826,11 @@ void test_on_get_round_monotonic_guard() {
 //
 // A Prime miner receiving Hash/Stake blocks should see is_tip_moved()==true
 // (prompting an opportunistic template refresh for the new hashPrevBlock)
-// but is_template_stale()==false (the channel_target hasn't been reached, so
-// the current template is still valid for submission).
+// but the channel_target hasn't been reached, so the current template is
+// still valid for submission.
 // ============================================================================
 void test_cross_channel_block_tip_moved_not_stale() {
-    std::cout << "\nTest 37: Cross-channel block advances unified but not Prime channel → is_tip_moved=true, is_template_stale=false\n";
+    std::cout << "\nTest 37: Cross-channel block advances unified but not Prime channel → is_tip_moved=true\n";
     HeightTracker tracker;
 
     // Bug #2 fix: Set canonical state first so OnTemplateReceived captures properly
@@ -1855,8 +1838,7 @@ void test_cross_channel_block_tip_moved_not_stale() {
     tracker.OnTemplateReceived(1 /* CHANNEL_PRIME */, 51);
 
     auto snap_base = tracker.GetSnapshot();
-    print_test_result("is_template_stale() == false before any advance",
-                      !snap_base.is_template_stale());
+    // is_template_stale() removed (structurally false under canonical-only semantics)
     print_test_result("is_tip_moved() == false before any advance",
                       !snap_base.is_tip_moved());
 
@@ -1867,8 +1849,7 @@ void test_cross_channel_block_tip_moved_not_stale() {
 
     auto snap_after = tracker.GetSnapshot();
     // Template is still valid: Prime channel has NOT advanced past channel_target=51.
-    print_test_result("is_template_stale() == false after cross-channel block (Prime channel unchanged)",
-                      !snap_after.is_template_stale());
+    // is_template_stale() removed (structurally false under canonical-only semantics)
     // Unified tip DID advance: the miner should opportunistically refresh hashPrevBlock.
     print_test_result("is_tip_moved() == true after cross-channel block advances unified",
                       snap_after.is_tip_moved());

@@ -273,44 +273,10 @@ static void test_fork_detection_via_update_callback()
 }
 
 // ============================================================================
-// Test 5: validate_current_template uses HeightTracker (not ClientChannelManager)
-//         Verified indirectly: HeightTracker::Snapshot::is_template_stale() correctly
-//         signals staleness after push updates, while ClientChannelManager heights
-//         are only informational.
+// Test 5: [REMOVED] is_template_stale() was removed from HeightTracker::Snapshot
+//         (structurally false under canonical-only semantics).
+//         Staleness detection has moved to push/GET_ROUND trigger paths.
 // ============================================================================
-static void test_height_tracker_staleness_matches_expected()
-{
-    std::cout << "\nTest 5: HeightTracker staleness is source of truth for template validation\n";
-
-    HeightTracker tracker;
-
-    // Push update: channel_height = 100
-    tracker.OnPushNotification(5000, 100, 0x1a0abc12);
-    // Template targets channel_height = 101 (next block)
-    tracker.OnTemplateReceived(CHANNEL_PRIME, 101);
-
-    auto snap = tracker.GetSnapshot();
-    print_test_result("Not stale when channel_height(100) < channel_target(101)",
-        !snap.is_template_stale());
-
-    // Push update: channel_height advances to 101 (someone else mined that block)
-    tracker.OnPushNotification(5001, 101, 0x1a0abc12);
-    snap = tracker.GetSnapshot();
-    print_test_result("Stale when channel_height(101) >= channel_target(101)",
-        snap.is_template_stale());
-
-    // A unified-only advance does NOT change the staleness (already stale from channel advance)
-    tracker.OnPushNotification(5002, 101, 0x1a0abc12);
-    snap = tracker.GetSnapshot();
-    print_test_result("Stale status unchanged by unified-only advance (was already stale)",
-        snap.is_template_stale());  // still stale: channel_height(101) >= channel_target(101)
-
-    // Reset: new template with channel_target = 102
-    tracker.OnTemplateReceived(CHANNEL_PRIME, 102);
-    snap = tracker.GetSnapshot();
-    print_test_result("Not stale with new template target(102) > channel_height(101)",
-        !snap.is_template_stale());
-}
 
 // ============================================================================
 // Test 6: Node BLOCK_DATA metadata fields feed unified/channel/difficulty first,
@@ -400,7 +366,7 @@ int main()
     test_channel_mismatch_refreshes_push_liveness_only();
     test_channel_manager_same_data_as_height_tracker();
     test_fork_detection_via_update_callback();
-    test_height_tracker_staleness_matches_expected();
+    // test_height_tracker_staleness_matches_expected() removed — is_template_stale() no longer exists
     test_node_block_data_fields_drive_height_tracker();
     test_stateless_lane_mirrors_legacy_for_height_tracker();
 
