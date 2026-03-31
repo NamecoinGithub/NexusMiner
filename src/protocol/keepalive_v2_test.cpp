@@ -4,7 +4,7 @@
  *
  * Tests:
  *  1. SessionManager::build_keepalive_packet() produces 8-byte payload
- *  2. SessionManager payload: session_id encoded big-endian in bytes [0..3]
+ *  2. SessionManager payload: session_id encoded little-endian in bytes [0..3]
  *  3. SessionManager payload: suffix zeros when set_prevblock_suffix not called
  *  4. SessionManager payload: suffix bytes [4..7] match set_prevblock_suffix()
  *  5. prevblock_suffix extraction: last 4 bytes of 128-byte GetBytes() are bytes[124..127]
@@ -102,11 +102,11 @@ void test_keepalive_payload_size_legacy() {
 }
 
 // ============================================================================
-// Test 2: session_id encoded big-endian in payload bytes [0..3]
-// For a legacy packet: bytes[0]=opcode, bytes[1..4]=length, bytes[5..8]=session_id BE
+// Test 2: session_id encoded little-endian in payload bytes [0..3]
+// For a legacy packet: bytes[0]=opcode, bytes[1..4]=length, bytes[5..8]=session_id LE
 // ============================================================================
-void test_keepalive_session_id_be() {
-    std::cout << "\nTest 2: session_id is big-endian in bytes [payload+0..3]\n";
+void test_keepalive_session_id_le() {
+    std::cout << "\nTest 2: session_id is little-endian in bytes [payload+0..3]\n";
     uint32_t session_id = 0x12345678;
     auto bytes = make_keepalive_bytes(session_id, ProtocolLane::LEGACY);
     if (bytes.size() < 13) {
@@ -114,13 +114,13 @@ void test_keepalive_session_id_be() {
         return;
     }
     // payload starts at offset 5 (opcode[0] + length[1..4])
-    uint32_t got = read_be32(bytes, 5);
-    print_test_result("session_id BE == 0x12345678", got == 0x12345678);
-    // Verify individual bytes: 0x12, 0x34, 0x56, 0x78
-    print_test_result("byte[5] == 0x12", bytes[5] == 0x12);
-    print_test_result("byte[6] == 0x34", bytes[6] == 0x34);
-    print_test_result("byte[7] == 0x56", bytes[7] == 0x56);
-    print_test_result("byte[8] == 0x78", bytes[8] == 0x78);
+    uint32_t got = read_le32(bytes, 5);
+    print_test_result("session_id LE == 0x12345678", got == 0x12345678);
+    // Verify individual bytes: 0x78, 0x56, 0x34, 0x12 (LE)
+    print_test_result("byte[5] == 0x78", bytes[5] == 0x78);
+    print_test_result("byte[6] == 0x56", bytes[6] == 0x56);
+    print_test_result("byte[7] == 0x34", bytes[7] == 0x34);
+    print_test_result("byte[8] == 0x12", bytes[8] == 0x12);
 }
 
 // ============================================================================
@@ -338,9 +338,9 @@ void test_single_keepalive_packet_stateless() {
     auto bytes = make_keepalive_bytes(0xDEADBEEF, ProtocolLane::STATELESS);
     // Stateless: 2-byte opcode + 4-byte BE length + 8-byte payload = 14 bytes
     print_test_result("Stateless wire size == 14 (2+4+8)", bytes.size() == 14);
-    // Verify session_id in BE at payload offset [6..9] (2-byte header + 4-byte length = offset 6)
-    uint32_t got = read_be32(bytes, 6);
-    print_test_result("session_id BE == 0xDEADBEEF", got == 0xDEADBEEF);
+    // Verify session_id in LE at payload offset [6..9] (2-byte header + 4-byte length = offset 6)
+    uint32_t got = read_le32(bytes, 6);
+    print_test_result("session_id LE == 0xDEADBEEF", got == 0xDEADBEEF);
 }
 
 // ============================================================================
@@ -357,7 +357,7 @@ int main() {
     std::cout << "========================================\n";
 
     test_keepalive_payload_size_legacy();
-    test_keepalive_session_id_be();
+    test_keepalive_session_id_le();
     test_keepalive_suffix_zeros_default();
     test_keepalive_suffix_set();
     test_prevblock_suffix_extraction_logic();

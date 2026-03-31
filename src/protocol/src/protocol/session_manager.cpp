@@ -1047,15 +1047,15 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
         return {};
     }
 
-    // 8-byte payload, all big-endian:
-    //   [0-3] session_id          (BE)
-    //   [4-7] hashPrevBlock_lo32  (BE — raw prevblock_suffix bytes are already in network order)
+    // 8-byte payload:
+    //   [0-3] session_id          (LE — matches all other session_id fields in protocol)
+    //   [4-7] hashPrevBlock_lo32  (raw prevblock_suffix bytes)
     std::vector<uint8_t> payload;
     payload.reserve(8);
-    payload.push_back(static_cast<uint8_t>((session_id >> 24) & 0xFF));
-    payload.push_back(static_cast<uint8_t>((session_id >> 16) & 0xFF));
-    payload.push_back(static_cast<uint8_t>((session_id >>  8) & 0xFF));
     payload.push_back(static_cast<uint8_t>( session_id        & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id >>  8) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id >> 16) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id >> 24) & 0xFF));
     payload.insert(payload.end(), prevblock_suffix.begin(), prevblock_suffix.end());
 
     Packet packet = (lane == ProtocolLane::STATELESS)

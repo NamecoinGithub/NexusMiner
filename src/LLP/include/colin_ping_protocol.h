@@ -32,9 +32,9 @@ namespace LLP
     /** SESSION_KEEPALIVE — unified keepalive (replaces former KEEPALIVE_V2 0xD100)
      *
      *  Miner → node: SESSION_KEEPALIVE (0xD0D4 stateless / 212 legacy)
-     *  8-byte payload, all big-endian:
-     *    [0-3]  uint32_t  session_id           BE — session validation
-     *    [4-7]  uint32_t  hashPrevBlock_lo32   BE — fork canary (low 32 bits of prevHash)
+     *  8-byte payload:
+     *    [0-3]  uint32_t  session_id           LE — session validation (matches all other session_id fields)
+     *    [4-7]  uint32_t  hashPrevBlock_lo32   raw bytes — fork canary (low 32 bits of prevHash)
      *
      *  Node → miner: SESSION_KEEPALIVE reply, 32-byte payload (KeepaliveAckFrame).
      *
