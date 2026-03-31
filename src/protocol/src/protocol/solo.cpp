@@ -1164,6 +1164,11 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
         {
             auto snap = m_height_tracker.GetSnapshot();
             m_dedup_guard.record_transmission(snap.unified_height);
+            // Mark in-flight so cross-handler dedup (GET_ROUND after PUSH) can
+            // detect that a response is already expected for this height.
+            m_pending_get_block.mark_pending(snap.unified_height, reason);
+            m_logger->debug("[Solo] GET_BLOCK in-flight marked: unified={} reason={}",
+                            snap.unified_height, reason_name(reason));
         }
         m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
 
@@ -1804,6 +1809,11 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
         // Node sends BLOCK_DATA (opcode 0) instead of STATELESS_GET_BLOCK (0xD081)
         // This fixes the 5-second timeout that causes 0.00 GIPS (no mining work)
         handle_initial_template_response("BLOCK_DATA (0x00)");
+
+        // Clear in-flight GET_BLOCK state — the response has arrived.
+        // This prevents stale pending state from suppressing legitimate future
+        // GET_BLOCK requests across handler boundaries.
+        m_pending_get_block.clear();
         
         // ═══════════════════════════════════════════════════════════════════
         // ENHANCED DIAGNOSTICS: Template delivery tracking
@@ -2517,10 +2527,15 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // If not, request one via GET_BLOCK (legacy fallback behavior).
         // Skip if a GET_BLOCK was already sent in this handler (staleness check above)
         // — the in-flight response will provide the replacement template.
+        // Also skip if another handler (e.g. PUSH) already has a GET_BLOCK in-flight
+        // for the same or higher height — prevents the duplicate-request race condition
+        // where PUSH sends GET_BLOCK, resets dedup, then GET_ROUND fires 0.5-3s later
+        // and sends a second GET_BLOCK before the first response arrives.
         bool needs_template = !template_valid || 
                              (m_template_interface && !m_template_interface->has_valid_template());
+        bool get_block_already_in_flight = m_pending_get_block.is_pending_for(unified_height);
         
-        if (needs_template && !get_block_sent_in_handler) {
+        if (needs_template && !get_block_sent_in_handler && !get_block_already_in_flight) {
             if (!template_valid && m_template_interface) {
                 m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced (template stale → GET_BLOCK)",
                     get_channel_name(m_channel));
@@ -2542,6 +2557,13 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             }
         } else if (needs_template && get_block_sent_in_handler) {
             m_logger->debug("[Solo GET_ROUND] Template needed but GET_BLOCK already sent in this handler — waiting for response");
+        } else if (needs_template && get_block_already_in_flight) {
+            m_logger->debug("[Solo GET_ROUND] Template needed but GET_BLOCK already in-flight "
+                            "(unified={}, reason={}, age={}ms) — suppressing duplicate",
+                            m_pending_get_block.unified_height,
+                            reason_name(m_pending_get_block.reason),
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - m_pending_get_block.sent_at).count());
         } else {
             m_logger->debug("[Solo GET_ROUND] ✓ Template valid, continuing to mine");
         }
@@ -2771,7 +2793,8 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // template finalization, and template validation
         bool template_valid = sync_template_state(unified_height, channel_height);
         
-        if (!template_valid && m_template_interface && !get_block_sent_in_handler) {
+        if (!template_valid && m_template_interface && !get_block_sent_in_handler &&
+            !m_pending_get_block.is_pending_for(unified_height)) {
             m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: template invalidated on OLD_ROUND → GET_BLOCK");
             
             // Request fresh template
@@ -3579,6 +3602,9 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
     
     // Unified handler for initial template response
     handle_initial_template_response("STATELESS_GET_BLOCK (0xD081)");
+
+    // Clear in-flight GET_BLOCK state — the response has arrived.
+    m_pending_get_block.clear();
     
     // ═══════════════════════════════════════════════════════════════════
     // ENHANCED DIAGNOSTICS: Template delivery tracking
