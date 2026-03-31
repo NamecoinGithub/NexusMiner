@@ -2364,19 +2364,18 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         uint32_t hash_height    = bytes2uint(*packet.m_data, 8);
         uint32_t stake_height   = bytes2uint(*packet.m_data, 12);
         
-        // ── Normalize GET_ROUND heights: target (tip+1) → tip ──────────────
-        // The Nexus node GET_ROUND returns target heights (current tip + 1),
-        // consistent with GET_HEIGHT sending nBestHeight + 1.  All internal
-        // tracking (HeightTracker, template validation, height parity) uses
-        // TIP semantics.  Without this normalization, the inflated target
-        // values cause validate_current_template() to wrongly discard every
-        // valid template (target <= inflated_target = TRUE → doom loop).
-        m_logger->debug("[Solo GET_ROUND] Raw heights (target/round): unified={} prime={} hash={} stake={}",
+        // ── GET_ROUND heights are already TIP semantics — no normalization ──
+        // The NamecoinGithub/LLL-TAO node GET_ROUND (handle_get_round_stateless)
+        // sends tStateBest.nHeight for unified and stateChannel.nChannelHeight
+        // for per-channel values.  These are the current chain TIP — NOT target
+        // (tip+1).  No subtraction needed.
+        //
+        // Note: GET_HEIGHT sends nBestHeight + 1 (target), but GET_ROUND does
+        // NOT follow that convention.  BLOCK_DATA metadata bytes [0-3] and [4-7]
+        // also use TIP semantics.  block.nHeight inside the 216-byte block is
+        // TARGET (tStateBest.nHeight + 1).
+        m_logger->debug("[Solo GET_ROUND] Parsed heights (TIP): unified={} prime={} hash={} stake={}",
             unified_height, prime_height, hash_height, stake_height);
-        if (unified_height > 0) --unified_height;
-        if (prime_height   > 0) --prime_height;
-        if (hash_height    > 0) --hash_height;
-        if (stake_height   > 0) --stake_height;
 
         // Derive active-channel height from full picture
         uint32_t channel_height = 0;
@@ -2401,7 +2400,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // block production GET_ROUND may lag behind BLOCK_DATA by several blocks.
         auto canonical_snap = m_height_tracker.GetCanonicalSnapshot();
         m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (16-byte full height picture, lane={}):", lane_label);
-        m_logger->info("[Solo GET_ROUND]   Unified height:  {} (tip, normalized from target{})",
+        m_logger->info("[Solo GET_ROUND]   Unified height:  {} (tip{})",
             unified_height,
             canonical_snap.is_initialized()
                 ? fmt::format("; canonical={}", canonical_snap.canonical_unified_height)
