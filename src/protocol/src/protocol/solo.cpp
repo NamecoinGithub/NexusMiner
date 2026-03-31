@@ -202,10 +202,9 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             
             // Show best-known unified TIP from all sources (canonical, push, round).
             // During rapid block production, GET_ROUND may lag behind BLOCK_DATA by
-            // several blocks. The snapshot's max() composition gives the most accurate
-            // picture.  Template height = tip + 1 in normal operation.
+            // Log unified tip from canonical BLOCK_DATA. Template height = tip + 1.
             auto feed_snap = m_height_tracker.GetSnapshot();
-            m_logger->info("[Solo]   Unified tip:     {} (best known from all sources)", feed_snap.unified_height);
+            m_logger->info("[Solo]   Unified tip:     {} (BLOCK_DATA canonical)", feed_snap.unified_height);
             if (m_last_round_status.height > 0 && m_last_round_status.height < feed_snap.unified_height) {
                 m_logger->debug("[Solo]   GET_ROUND tip:   {} (lagging — polled data, not authoritative)",
                     m_last_round_status.height);
@@ -215,13 +214,12 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
                 m_logger->info("[Solo]   Channel height:  {} (channel target from BLOCK_DATA metadata)", tmpl.nChannelHeight);
             } else {
                 // nChannelHeight == 0: the node did not provide channel height in BLOCK_DATA
-                // metadata, or this is a genesis/startup edge case. Show HeightTracker
-                // estimate for operator visibility.
+                // metadata, or this is a genesis/startup edge case.
                 if (feed_snap.channel_height > 0) {
-                    m_logger->info("[Solo]   Channel height:  ~{} (estimated from tracker, pending node confirmation)",
+                    m_logger->info("[Solo]   Channel height:  ~{} (BLOCK_DATA canonical, pending node confirmation)",
                         feed_snap.channel_height);
                 } else {
-                    m_logger->info("[Solo]   Channel height:  (pending — awaiting first GET_ROUND)");
+                    m_logger->info("[Solo]   Channel height:  (pending — awaiting first BLOCK_DATA)");
                 }
             }
             m_logger->info("[Solo]   Difficulty:      0x{:08x}", nBits);

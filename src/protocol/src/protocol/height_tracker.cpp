@@ -16,8 +16,10 @@ const char* HeightTracker::source_name(UpdateSource src) {
 }
 
 // ── OnPushNotification: updates DiagnosticObserverState push fields ONLY ──────
-// Does NOT touch canonical state. Push-derived channel_height is reflected in
-// GetSnapshot() via the max(canonical, push) composition in build_snapshot_locked().
+// Does NOT touch canonical state. Push-derived heights are diagnostic-only and
+// appear in Snapshot via push_channel_height, push_unified_height fields for
+// drift computation and Colin diagnostics. They are NOT included in
+// Snapshot::unified_height / channel_height (which are canonical-only).
 void HeightTracker::OnPushNotification(uint32_t unified_height,
                                         uint32_t channel_height,
                                         uint32_t nbits)
@@ -235,16 +237,13 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
 
     s.session_epoch = m_session_epoch;
 
-    // Compose unified/channel heights: max(canonical, push, round)
-    // GET_ROUND heights are included so that fresh round data can break the
-    // height-based GET_BLOCK dedup key, preventing the miner from getting stuck
-    // with an aging template when only round data has advanced.
-    s.unified_height = std::max({m_canonical.canonical_unified_height,
-                                 m_diagnostic.push_unified_height,
-                                 m_diagnostic.round_unified_height});
-    s.channel_height = std::max({m_canonical.canonical_channel_height,
-                                 m_diagnostic.push_channel_height,
-                                 m_diagnostic.round_channel_height});
+    // Canonical-only unified/channel heights (BLOCK_DATA TIP).
+    // Previously composed as max(canonical, push, round) — this caused
+    // is_template_stale() false positives when PUSH raced ahead of BLOCK_DATA,
+    // and made HEIGHT_DRIFT diagnostics unreliable. Now strictly canonical.
+    // Push/round heights are kept in diagnostic fields for operator visibility.
+    s.unified_height = m_canonical.canonical_unified_height;     // Source: BLOCK_DATA (TIP)
+    s.channel_height = m_canonical.canonical_channel_height;     // Source: BLOCK_DATA (TIP)
     s.push_channel_height = m_diagnostic.push_channel_height;
     s.unified_block_height = UnifiedHeight{s.unified_height};
     s.channel_tip_height = ChannelHeight{s.channel_height};
@@ -283,6 +282,12 @@ HeightTracker::Snapshot HeightTracker::build_snapshot_locked() const {
     s.push_prime_height = m_diagnostic.push_prime_height;
     s.push_hash_height  = m_diagnostic.push_hash_height;
     s.push_stake_height = m_diagnostic.push_stake_height;
+
+    // Diagnostic unified/channel heights from non-canonical sources
+    // (for height_drift_from_canonical() and Colin Height Source Dashboard)
+    s.push_unified_height  = m_diagnostic.push_unified_height;   // Source: PUSH (TIP)
+    s.round_unified_height = m_diagnostic.round_unified_height;  // Source: GET_ROUND (TIP)
+    s.round_channel_height = m_diagnostic.round_channel_height;  // Source: GET_ROUND (TIP)
 
     // Fork detection fields — diagnostic only
     s.hash_tip_lo32 = m_diagnostic.keepalive_hash_tip_lo32;
@@ -346,9 +351,9 @@ std::string HeightTracker::ExplainMismatch() const {
 
     std::ostringstream oss;
 
-    // Check template staleness
+    // Check template staleness (both channel_height and channel_target are canonical-only)
     if (s.is_template_stale()) {
-        oss << "[HeightTracker] STALE: channel_height=" << s.channel_height
+        oss << "[HeightTracker] STALE: canonical_channel_tip=" << s.channel_height
             << " >= channel_target=" << s.channel_target
             << " (template should have been discarded)";
         return oss.str();
@@ -362,7 +367,7 @@ std::string HeightTracker::ExplainMismatch() const {
         oss << "[HeightTracker] DRIFT: channel_target=" << s.channel_target
             << " expected=" << expected
             << " delta=" << delta
-            << " (channel_height=" << s.channel_height << ")"
+            << " (canonical_channel_tip=" << s.channel_height << ")"
             << " source=" << source_name(s.last_update_source);
         return oss.str();
     }

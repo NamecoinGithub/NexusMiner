@@ -219,40 +219,51 @@ public:
     /**
      * @brief Immutable snapshot of tracker state (thread-safe to copy)
      *
-     * Composed from CanonicalChainState and DiagnosticObserverState:
-     *   unified_height = max(canonical, push)
-     *   channel_height = max(canonical, push)
-     * Fork detection fields come from DiagnosticObserverState only.
+     * All mining-decision heights (unified_height, channel_height, channel_target)
+     * are sourced exclusively from BLOCK_DATA (canonical). Push, GET_ROUND, and
+     * keepalive heights are kept in separate diagnostic fields for operator
+     * visibility but are never used for staleness or validation decisions.
+     *
+     * Height semantics key:
+     *   TIP    = current chain state (last completed block)
+     *   TARGET = next block to mine (tip + 1)
      */
     struct Snapshot {
         uint64_t session_epoch{0};           ///< Authoritative session epoch captured with this snapshot
-        uint32_t unified_height{0};           ///< Unified blockchain height (max of canonical and push)
-        uint32_t channel_height{0};           ///< Channel-specific height (max of canonical and push)
-        uint32_t push_channel_height{0};      ///< Raw channel height from latest push notification
-        uint32_t difficulty_nbits{0};         ///< Compact nBits difficulty
-        uint32_t channel_target{0};           ///< Template channel target (0 = unset)
-        uint32_t channel{0};                  ///< Mining channel (1=Prime, 2=Hash)
-        uint32_t template_unified_height{0}; ///< Unified height at time of last template receipt
-        UnifiedHeight unified_block_height{};       ///< Typed alias of unified_height for submission-path guards
-        ChannelHeight channel_tip_height{};         ///< Typed alias of channel_height (current channel tip)
-        ChannelHeight template_channel_target{};    ///< Typed alias of channel_target (tip + 1)
+        uint32_t unified_height{0};          ///< Unified blockchain TIP — Source: BLOCK_DATA (canonical only)
+        uint32_t channel_height{0};          ///< Channel-specific TIP — Source: BLOCK_DATA (canonical only)
+        uint32_t push_channel_height{0};     ///< Channel TIP from latest push notification — Source: PUSH (diagnostic)
+        uint32_t difficulty_nbits{0};        ///< Compact nBits difficulty
+        uint32_t channel_target{0};          ///< Channel TARGET (tip+1) — Source: BLOCK_DATA/OnTemplateReceived (canonical only)
+        uint32_t channel{0};                 ///< Mining channel (1=Prime, 2=Hash)
+        uint32_t template_unified_height{0}; ///< Unified TIP at time of last template receipt — Source: BLOCK_DATA (canonical)
+        UnifiedHeight unified_block_height{};       ///< Typed alias of unified_height (BLOCK_DATA TIP)
+        ChannelHeight channel_tip_height{};         ///< Typed alias of channel_height (BLOCK_DATA TIP)
+        ChannelHeight template_channel_target{};    ///< Typed alias of channel_target (BLOCK_DATA TARGET = tip + 1)
         UnifiedHeight template_block_height{};      ///< Typed alias of template_unified_height
         uint1024_t hash_prev_block{};         ///< hashPrevBlock captured at template parse time (tip anchor)
         uint1024_t push_hash_prev_block{};    ///< hashPrevBlock from latest extended push (pre-adoption tip hint)
         UpdateSource last_update_source{UpdateSource::NONE};
 
-        // ── All three channel heights, kept independently ──────────────────────
-        uint32_t prime_height{0};   ///< Prime channel height (max of canonical and push/GET_ROUND/keepalive)
-        uint32_t hash_height{0};    ///< Hash channel height  (max of canonical and push/GET_ROUND/keepalive)
-        uint32_t stake_height{0};   ///< Stake channel height (max of GET_ROUND/keepalive/push full-picture)
-        ChannelHeight prime_channel_height{}; ///< Typed alias of prime_height
-        ChannelHeight hash_channel_height{};  ///< Typed alias of hash_height
-        ChannelHeight stake_channel_height{}; ///< Typed alias of stake_height
+        // ── Per-channel heights (diagnostic only — from PUSH/GET_ROUND/keepalive) ──
+        uint32_t prime_height{0};   ///< Prime channel TIP — Source: max(GET_ROUND, keepalive, PUSH) (diagnostic)
+        uint32_t hash_height{0};    ///< Hash channel TIP  — Source: max(GET_ROUND, keepalive, PUSH) (diagnostic)
+        uint32_t stake_height{0};   ///< Stake channel TIP — Source: max(GET_ROUND, keepalive, PUSH) (diagnostic)
+        ChannelHeight prime_channel_height{}; ///< Typed alias of prime_height (diagnostic TIP)
+        ChannelHeight hash_channel_height{};  ///< Typed alias of hash_height (diagnostic TIP)
+        ChannelHeight stake_channel_height{}; ///< Typed alias of stake_height (diagnostic TIP)
 
         // ── Push-derived cross-channel heights (from 148-byte full-picture push) ─
-        uint32_t push_prime_height{0};  ///< Prime height from latest 148-byte push payload
-        uint32_t push_hash_height{0};   ///< Hash height from latest 148-byte push payload
-        uint32_t push_stake_height{0};  ///< Stake height from latest 148-byte push payload
+        uint32_t push_prime_height{0};  ///< Prime TIP from latest 148-byte push payload — Source: PUSH (diagnostic)
+        uint32_t push_hash_height{0};   ///< Hash TIP from latest 148-byte push payload — Source: PUSH (diagnostic)
+        uint32_t push_stake_height{0};  ///< Stake TIP from latest 148-byte push payload — Source: PUSH (diagnostic)
+
+        // ── Diagnostic unified/channel heights from non-canonical sources ────
+        // These are NEVER used for mining decisions — only for drift computation
+        // and operator diagnostics (Colin Height Source Dashboard).
+        uint32_t push_unified_height{0};   ///< Unified TIP — Source: PUSH (diagnostic)
+        uint32_t round_unified_height{0};  ///< Unified TIP — Source: GET_ROUND (diagnostic)
+        uint32_t round_channel_height{0};  ///< Channel TIP — Source: GET_ROUND (diagnostic)
 
         // ── Fork detection (diagnostic only — from keepalive ACKs) ─────────────
         uint32_t hash_tip_lo32{0};   ///< Lo32 of node's hashBestChain from last keepalive response
@@ -279,10 +290,11 @@ public:
         std::chrono::steady_clock::time_point last_template_update{};
 
         /**
-         * @brief Expected channel height that the next template should target
+         * @brief Expected channel TARGET that the next template should target
          *
          * Returns channel_height + 1 when channel_height > 0 (the next block
          * to be mined on this channel). Returns 0 if no chain data is available.
+         * Source: BLOCK_DATA (canonical TIP + 1 = TARGET)
          */
         uint32_t expected_template_target() const {
             return (channel_height > 0) ? (channel_height + 1) : 0;
@@ -291,8 +303,10 @@ public:
         /**
          * @brief True when the current template target is already met by the chain
          *
-         * Template is stale when the node's channel height has reached or passed
+         * Template is stale when the canonical channel TIP has reached or passed
          * the height the template was built to mine (both must be non-zero).
+         * Both sides are canonical-only — PUSH cannot trigger false staleness.
+         * Source: BLOCK_DATA channel TIP vs BLOCK_DATA channel TARGET
          */
         bool is_template_stale() const {
             return (channel_height > 0 && channel_target > 0 &&
@@ -350,6 +364,7 @@ public:
          * i.e. another channel found a block after this template was received.
          * This does NOT imply channel staleness — the channel may still be valid.
          * Both values must be non-zero to avoid false positives at startup.
+         * Source: both sides are BLOCK_DATA canonical TIP.
          */
         bool is_tip_moved() const {
             return (template_unified_height > 0 && unified_height > template_unified_height);
@@ -407,18 +422,22 @@ public:
         bool is_fork_active() const { return peak_fork_score > 0; }
 
         /**
-         * @brief Compute how far the composed snapshot heights have drifted from
-         *        canonical heights.
+         * @brief Compute how far the diagnostic push/round height has drifted
+         *        ahead of canonical BLOCK_DATA height.
          *
-         * Returns the signed difference (unified_height − canonical_unified_height),
-         * where unified_height is max(canonical, push, round).
-         * Callers can use this to assess push/round freshness relative to the
-         * canonical block-data path.  A large positive value means push/round
-         * data is ahead (normal during slow BLOCK_DATA); zero means canonical
-         * is caught up.
+         * Returns the signed difference between the best diagnostic unified TIP
+         * (max of push, round) and the canonical BLOCK_DATA unified TIP.
+         * A large positive value means push/round data is ahead (BLOCK_DATA
+         * hasn't caught up yet — normal during slow BLOCK_DATA latency);
+         * zero means canonical is caught up.
+         *
+         * Source: max(PUSH, GET_ROUND) diagnostic TIP − BLOCK_DATA canonical TIP
          */
         int32_t height_drift_from_canonical() const {
-            return static_cast<int32_t>(unified_height) -
+            // Use diagnostic push/round heights for drift — unified_height is now canonical-only
+            uint32_t diagnostic_unified = std::max({push_unified_height,
+                                                     round_unified_height});
+            return static_cast<int32_t>(diagnostic_unified) -
                    static_cast<int32_t>(canonical_unified_height);
         }
 

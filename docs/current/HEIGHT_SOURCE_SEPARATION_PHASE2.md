@@ -490,23 +490,14 @@ Per answer #2: "Only if GET_ROUND is the source Trigger for GET_BLOCK, same as P
 
 ### Q4: MAX_TEMPLATE_HEIGHT_LAG_BLOCKS Grace Buffer
 
-In `get_work()` (~line 1150), there's a grace buffer:
-```cpp
-if (template_block_height + MAX_TEMPLATE_HEIGHT_LAG_BLOCKS < snap.unified_height) {
-    have_valid_template = false;  // Override: template is too far behind
-}
-```
+**RESOLVED: REMOVED.** This constant was a workaround for composite height inflation.
+With `snap.unified_height` now canonical-only, the template comes FROM canonical (BLOCK_DATA)
+and can never be more than 0-1 blocks behind. The grace buffer was never needed with accurate
+canonical-only height tracking.
 
-This exists because the composite `snap.unified_height` can be ahead of the template's `block.nHeight`.
-
-**Question:** After the refactor, `snap.unified_height` = canonical only. Since the template comes FROM canonical (BLOCK_DATA), the template should never be more than 0-1 blocks behind canonical.
-
-**Should the MAX_TEMPLATE_HEIGHT_LAG_BLOCKS grace buffer be:**
-- **(A)** Reduced from 2 to 1 or 0?
-- **(B)** Removed entirely?
-- **(C)** Kept as-is for safety?
-
-**My recommendation:** Option C initially (keep for safety), then remove if testing proves it never triggers after the refactor.
+Note: This constant was referenced in design docs but was never implemented in source code.
+The concept it addressed — preventing dedup guard suppression when composite heights raced
+ahead of BLOCK_DATA — is moot now that both sides are canonical.
 
 ### Q5: Implementation Ordering — What First?
 
