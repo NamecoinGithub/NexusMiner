@@ -693,6 +693,43 @@ private:
     // bypass_height, full dedup).  See get_block_dedup_guard.hpp.
     GetBlockDedupGuard m_dedup_guard;
     std::atomic<GetBlockRequestStatus> m_last_get_block_request_status{GetBlockRequestStatus::NONE};
+
+    // ── In-flight GET_BLOCK awareness (cross-handler dedup tier) ────────────
+    // Bridges the gap between PUSH and GET_ROUND handlers: when PUSH sends a
+    // GET_BLOCK, the pending state tells GET_ROUND (arriving 0.5-3s later) that
+    // a response is already expected, preventing a duplicate request that would
+    // cause workers to restart and waste ~5 seconds of mining work.
+    struct PendingGetBlock {
+        bool                                     active{false};
+        uint32_t                                 unified_height{0};
+        std::chrono::steady_clock::time_point    sent_at{};
+        GetBlockReason                           reason{GetBlockReason::INITIAL_REQUEST};
+
+        static constexpr int64_t TIMEOUT_SECONDS = 10;  // Auto-expire if no response
+
+        /// Returns true if a GET_BLOCK is already in-flight for the given height
+        /// (or a higher height).  Auto-expires after TIMEOUT_SECONDS.
+        bool is_pending_for(uint32_t height) const {
+            if (!active) return false;
+            // Pending at same or higher height — a response for unified_height
+            // will produce a template valid for 'height' as well.
+            if (unified_height < height) return false;
+            // Timeout check: auto-expire stale pending state
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - sent_at).count();
+            return elapsed < TIMEOUT_SECONDS;
+        }
+
+        void mark_pending(uint32_t height, GetBlockReason r) {
+            active         = true;
+            unified_height = height;
+            sent_at        = std::chrono::steady_clock::now();
+            reason         = r;
+        }
+
+        void clear() { active = false; }
+    };
+    PendingGetBlock m_pending_get_block;
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION
