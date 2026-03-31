@@ -304,13 +304,17 @@ public:
     /**
      * @brief Perform in-band re-authentication on the active connection.
      *
-     * Selects the protocol+connection pairing that transmit() would use,
-     * calls login() on that protocol, and transmits the resulting auth payload
-     * on the matching connection.  This avoids the lane mismatch that occurs
-     * when callers use get_primary_protocol()->login() + transmit() separately,
+     * Selects the protocol+connection pairing via select_active_pair(), calls
+     * login() on that protocol, and transmits the resulting auth payload on the
+     * matching connection.  This avoids the lane mismatch that occurs when
+     * callers use get_primary_protocol()->login() + transmit() separately,
      * since transmit() may fall back to the secondary connection.
      *
-     * @param login_callback  Callback invoked by Solo::login() with the result
+     * IMPORTANT: Solo::login() may return an empty payload if PacketBuilder::build()
+     * fails without invoking the callback.  When this happens login_on_active_connection()
+     * invokes login_callback(false) itself so callers are always notified.
+     *
+     * @param login_callback  Invoked with true when auth payload is queued, false on error
      * @return True if the auth payload was generated and transmitted successfully
      */
     bool login_on_active_connection(std::function<void(bool)> login_callback);
@@ -323,6 +327,19 @@ public:
     void set_epoch_coordinator(std::shared_ptr<protocol::EpochCoordinator> coordinator);
 
 private:
+    /**
+     * @brief Select the active connection+protocol pair using the same logic as transmit().
+     *
+     * Returns {primary_connection, primary_protocol} if the primary lane is up, else
+     * {secondary_connection, secondary_protocol} if the secondary lane is up, else
+     * {nullptr, nullptr}.  All three guards (connection, protocol, connected flag) are
+     * checked atomically in one place so that transmit(), get_active_protocol(), and
+     * login_on_active_connection() can never diverge.
+     *
+     * @return Pair of (connection, protocol); both are nullptr when no lane is active.
+     */
+    std::pair<network::Connection::Sptr, std::shared_ptr<protocol::Solo>> select_active_pair() const;
+
     /**
      * @brief Initialize primary connection (stateless port 9323)
      * @param node_endpoint Node endpoint

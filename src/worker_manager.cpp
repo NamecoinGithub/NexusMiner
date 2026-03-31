@@ -312,7 +312,10 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                 m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK via NodeSession");
                                 auto work_payload = m_primary_node_session->request_work(protocol::GetBlockReason::HEALTH_CHANNEL_STALE);
                                 if (work_payload && !work_payload->empty()) {
-                                    m_primary_node_session->transmit(work_payload);
+                                    if (m_primary_node_session->transmit(work_payload)) {
+                                        auto proto = m_primary_node_session->get_active_protocol();
+                                        if (proto) proto->mark_get_block_pending(protocol::GetBlockReason::HEALTH_CHANNEL_STALE);
+                                    }
                                 }
                                 return;
                             }
@@ -1732,7 +1735,7 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
         return;
     }
 
-    auto solo_protocol = m_primary_node_session->get_primary_protocol();
+    auto solo_protocol = m_primary_node_session->get_active_protocol();
     if (!solo_protocol) {
         m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=no_protocol");
         m_logger->error("[Worker_manager] Failed to get protocol from NodeSession");
@@ -1844,7 +1847,12 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
                    reason_name(reason), is_forced ? "true" : "false");
     auto work_payload = m_primary_node_session->request_work(reason);
     if (work_payload && !work_payload->empty()) {
-        m_primary_node_session->transmit(work_payload);
+        if (m_primary_node_session->transmit(work_payload)) {
+            // Mark the GET_BLOCK as in-flight AFTER confirmed transmission so that
+            // PendingGetBlock.active is never set when the packet wasn't actually sent
+            // (e.g. socket closed between request_work() and transmit()).
+            solo_protocol->mark_get_block_pending(reason);
+        }
         m_recovery.last_get_block_at = std::chrono::steady_clock::now();
         m_recovery.get_block_confirmed = true;
         ++m_get_block_sent_total;

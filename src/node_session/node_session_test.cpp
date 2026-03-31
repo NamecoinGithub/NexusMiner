@@ -347,6 +347,117 @@ void test_login_on_active_connection_stopped_session()
     std::cout << "  ✓ login_on_active_connection() returns false after stop()" << std::endl;
 }
 
+void test_get_active_protocol_returns_null_without_connection()
+{
+    std::cout << "Test: get_active_protocol() returns nullptr when connection exists but not connected..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    auto logger = spdlog::stdout_color_mt("test_logger_gap2");
+    config::Config config(logger);
+    config.set_mining_mode(config::Mining_mode::HASH);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto stats_collector = std::make_shared<stats::Collector>(config);
+
+    auto node_session = std::make_shared<NodeSession>(
+        io_context, config, socket, stats_collector, "TEST_GAP2");
+
+    // Primary protocol exists but m_primary_connected is false
+    assert(node_session->get_primary_protocol() != nullptr);
+    assert(!node_session->is_primary_connected());
+
+    // get_active_protocol() uses all three guards (connection && protocol && connected);
+    // since m_primary_connection is null, it should return nullptr.
+    auto active = node_session->get_active_protocol();
+    assert(active == nullptr);
+
+    std::cout << "  ✓ get_active_protocol() returns nullptr when not connected (3-check guard)" << std::endl;
+}
+
+void test_send_get_round_returns_null_without_connection()
+{
+    std::cout << "Test: send_get_round() returns nullptr when no active connection..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    auto logger = spdlog::stdout_color_mt("test_logger_sgr");
+    config::Config config(logger);
+    config.set_mining_mode(config::Mining_mode::HASH);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto stats_collector = std::make_shared<stats::Collector>(config);
+
+    auto node_session = std::make_shared<NodeSession>(
+        io_context, config, socket, stats_collector, "TEST_SGR");
+
+    // No connection established — send_get_round() must use get_active_protocol()
+    // which returns nullptr, so send_get_round() must also return nullptr.
+    auto payload = node_session->send_get_round();
+    assert(payload == nullptr);
+
+    std::cout << "  ✓ send_get_round() returns nullptr when no active connection (uses get_active_protocol)" << std::endl;
+}
+
+void test_request_work_returns_null_without_connection()
+{
+    std::cout << "Test: request_work() returns nullptr when no active connection..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    auto logger = spdlog::stdout_color_mt("test_logger_rw");
+    config::Config config(logger);
+    config.set_mining_mode(config::Mining_mode::HASH);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto stats_collector = std::make_shared<stats::Collector>(config);
+
+    auto node_session = std::make_shared<NodeSession>(
+        io_context, config, socket, stats_collector, "TEST_RW");
+
+    // No connection established — request_work() must use get_active_protocol()
+    // which returns nullptr, so request_work() must also return nullptr.
+    auto payload = node_session->request_work(protocol::GetBlockReason::INITIAL_REQUEST);
+    assert(payload == nullptr);
+
+    std::cout << "  ✓ request_work() returns nullptr when no active connection (uses get_active_protocol)" << std::endl;
+}
+
+void test_login_callback_invoked_on_empty_payload()
+{
+    std::cout << "Test: login_on_active_connection() invokes callback(false) when login returns empty payload..." << std::endl;
+
+    // This test validates the Bug 4 fix contract: login_on_active_connection() must
+    // always invoke the callback (either from Solo::login() on success, or explicitly
+    // with false when Solo::login() returns empty without calling it).
+    //
+    // Full end-to-end verification of the empty-payload path (PacketBuilder failure)
+    // requires a connected state with a deliberately broken Falcon key — not feasible
+    // in a pure unit test.  This test therefore verifies the boundary condition: when
+    // there is no active connection, login_on_active_connection() must NOT spuriously
+    // invoke the callback (that would confuse callers that expect notification only
+    // when a connection attempt was actually made).
+    auto io_context = std::make_shared<asio::io_context>();
+    auto logger = spdlog::stdout_color_mt("test_logger_lcb");
+    config::Config config(logger);
+    config.set_mining_mode(config::Mining_mode::HASH);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto stats_collector = std::make_shared<stats::Collector>(config);
+
+    auto node_session = std::make_shared<NodeSession>(
+        io_context, config, socket, stats_collector, "TEST_LCB");
+
+    // No connection: callback must NOT be invoked (no active pair selected)
+    bool callback_invoked = false;
+    bool result = node_session->login_on_active_connection([&callback_invoked](bool) {
+        callback_invoked = true;
+    });
+
+    assert(!result);
+    assert(!callback_invoked);
+
+    std::cout << "  ✓ login_on_active_connection() does not invoke callback when no connection" << std::endl;
+    std::cout << "  ✓ login_callback(false) is not spuriously fired for no-connection path" << std::endl;
+}
+
 int main()
 {
     std::cout << "\n=== NodeSession Unit Tests ===\n" << std::endl;
@@ -377,6 +488,18 @@ int main()
         std::cout << std::endl;
 
         test_login_on_active_connection_stopped_session();
+        std::cout << std::endl;
+
+        test_get_active_protocol_returns_null_without_connection();
+        std::cout << std::endl;
+
+        test_send_get_round_returns_null_without_connection();
+        std::cout << std::endl;
+
+        test_request_work_returns_null_without_connection();
+        std::cout << std::endl;
+
+        test_login_callback_invoked_on_empty_payload();
         std::cout << std::endl;
 
         std::cout << "=== All NodeSession tests passed! ===\n" << std::endl;

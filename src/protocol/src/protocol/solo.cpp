@@ -842,6 +842,7 @@ void Solo::flush_pending_push_after_auth(const std::shared_ptr<network::Connecti
     if (work_payload && !work_payload->empty()) {
         m_pending_push_after_auth = false;
         connection->transmit(work_payload);
+        mark_get_block_pending(GetBlockReason::PUSH_NO_TEMPLATE);
         return;
     }
 
@@ -1160,15 +1161,15 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
 
     if (payload && !payload->empty()) {
         m_last_get_block_request_owner = capture_session_ownership();
-        // Record transmission for dedup guard
+        // Record transmission for dedup guard (prevents rapid duplicate requests).
+        // NOTE: m_pending_get_block is NOT marked here — the caller must call
+        // mark_get_block_pending() AFTER the payload has been handed to
+        // Connection::transmit().  This prevents a 10-second stall when transmit
+        // fails (socket closed, null handler, etc.) from keeping the pending flag
+        // set without being cleared (clear() only fires in on_block_data / on_stateless_get_block).
         {
             auto snap = m_height_tracker.GetSnapshot();
             m_dedup_guard.record_transmission(snap.unified_height);
-            // Mark in-flight so cross-handler dedup (GET_ROUND after PUSH) can
-            // detect that a response is already expected for this height.
-            m_pending_get_block.mark_pending(snap.unified_height, reason);
-            m_logger->debug("[Solo] GET_BLOCK in-flight marked: unified={} reason={}",
-                            snap.unified_height, reason_name(reason));
         }
         m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
 
@@ -1187,6 +1188,14 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
 void Solo::reset_get_block_dedup_state()
 {
     m_dedup_guard.reset();
+}
+
+void Solo::mark_get_block_pending(GetBlockReason reason)
+{
+    auto snap = m_height_tracker.GetSnapshot();
+    m_pending_get_block.mark_pending(snap.unified_height, reason);
+    m_logger->debug("[Solo] GET_BLOCK in-flight marked: unified={} reason={}",
+                    snap.unified_height, reason_name(reason));
 }
 
 network::Shared_payload Solo::send_get_round()
@@ -1628,6 +1637,7 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             auto work_payload = get_work(GetBlockReason::INITIAL_REQUEST);
             if (work_payload && !work_payload->empty()) {
                 connection->transmit(work_payload);
+                mark_get_block_pending(GetBlockReason::INITIAL_REQUEST);
             } else {
                 m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
             }
@@ -1796,6 +1806,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                 } else {
                     m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
                 }
@@ -1849,6 +1860,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                 } else {
                     m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
                 }
@@ -1927,6 +1939,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                     auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
+                        mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                     }
                 }
                 return;
@@ -1943,6 +1956,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                     auto work_payload = get_work(GetBlockReason::TEMPLATE_FEED_FAILURE);
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
+                        mark_get_block_pending(GetBlockReason::TEMPLATE_FEED_FAILURE);
                     }
                 }
                 return;
@@ -1983,6 +1997,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                             auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                             if (work_payload && !work_payload->empty()) {
                                 connection->transmit(work_payload);
+                                mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                             }
                         }
                         return;
@@ -2003,6 +2018,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                         auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
+                            mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                         } else {
                             m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK returned empty payload");
                         }
@@ -2018,6 +2034,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                     auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
+                        mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                     } else {
                         m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
                     }
@@ -2106,9 +2123,11 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
                 m_logger->error("[Solo] CRITICAL: GET_BLOCK retry also failed - mining may stall");
             } else {
                 connection->transmit(work_payload);
+                mark_get_block_pending(GetBlockReason::RECOVERY_FORCED);
             }
         } else {
             connection->transmit(work_payload);
+            mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
         }
     }
     // Handle legacy GOOD_BLOCK (opcode 6): some legacy nodes send this for valid-but-not-best blocks.
@@ -2155,6 +2174,7 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
         if (work_payload && !work_payload->empty()) {
             connection->transmit(work_payload);
+            mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
         }
     }
 }
@@ -2273,9 +2293,11 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
                 // The next push from the node will trigger a fresh GET_BLOCK request.
             } else {
                 connection->transmit(work_payload);
+                mark_get_block_pending(GetBlockReason::RECOVERY_FORCED);
             }
         } else {
             connection->transmit(work_payload);
+            mark_get_block_pending(GetBlockReason::BLOCK_REJECTED);
         }
     }
     // Handle legacy ORPHAN_BLOCK (opcode 7): some legacy nodes send this for orphaned blocks.
@@ -2303,6 +2325,7 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
         auto work_payload = get_work(GetBlockReason::BLOCK_REJECTED);
         if (work_payload && !work_payload->empty()) {
             connection->transmit(work_payload);
+            mark_get_block_pending(GetBlockReason::BLOCK_REJECTED);
         }
     }
 }
@@ -2429,6 +2452,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         auto work_payload = get_work(GetBlockReason::GET_ROUND_STALE);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
+                            mark_get_block_pending(GetBlockReason::GET_ROUND_STALE);
                             get_block_sent_in_handler = true;
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                         } else {
@@ -2505,6 +2529,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
+                        mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                         get_block_sent_in_handler = true;
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
                     }
@@ -2549,6 +2574,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                     get_block_sent_in_handler = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 } else {
@@ -2607,6 +2633,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         auto work_payload = get_work(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
+                            mark_get_block_pending(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
                             get_block_sent_in_handler = true;
                             mark_authoritative_recovery_required("get_round_height_parity");
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent (height parity backup)");
@@ -2726,6 +2753,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         auto work_payload = get_work(GetBlockReason::GET_ROUND_STALE);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
+                            mark_get_block_pending(GetBlockReason::GET_ROUND_STALE);
                             get_block_sent_in_handler = true;
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                         } else {
@@ -2777,6 +2805,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                     if (work_payload && !work_payload->empty()) {
                         connection->transmit(work_payload);
+                        mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                         get_block_sent_in_handler = true;
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
                     }
@@ -2802,6 +2831,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                     get_block_sent_in_handler = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 } else {
@@ -2849,6 +2879,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         auto work_payload = get_work(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
                         if (work_payload && !work_payload->empty()) {
                             connection->transmit(work_payload);
+                            mark_get_block_pending(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
                             get_block_sent_in_handler = true;
                             mark_authoritative_recovery_required("get_round_height_parity");
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent (height parity backup)");
@@ -3565,6 +3596,7 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                 auto work_payload = get_work(GetBlockReason::PUSH_STALE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::PUSH_STALE);
                 } else {
                     m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
                 }
@@ -3577,6 +3609,7 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                 auto work_payload = get_work(GetBlockReason::PUSH_CROSS_CHANNEL);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::PUSH_CROSS_CHANNEL);
                 } else {
                     m_logger->warn("[Solo] GET_BLOCK (cross-channel) unavailable — will wait for next node push");
                 }
@@ -3647,6 +3680,7 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
                 auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                 } else {
                     m_logger->error("[Solo Stateless] Recovery failed - GET_BLOCK returned empty payload");
                 }
@@ -3671,6 +3705,7 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
                 auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
                 if (work_payload && !work_payload->empty()) {
                     connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                 } else {
                     m_logger->error("[Solo Stateless] Recovery failed - GET_BLOCK returned empty payload");
                 }
@@ -3824,6 +3859,7 @@ void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Conne
                     if(work_payload && !work_payload->empty())
                     {
                         connection->transmit(work_payload);
+                        mark_get_block_pending(GetBlockReason::BLOCK_REJECTED);
                         m_logger->info("[KEEPALIVE_V2] Fresh template requested for fork recovery");
                     }
                 }
@@ -5126,6 +5162,7 @@ void Solo::check_unified_height_delta(uint32_t current_unified_height)
             auto work = get_work(GetBlockReason::HEALTH_TIP_MOVED);
             if (work && !work->empty()) {
                 m_connection->transmit(work);
+                mark_get_block_pending(GetBlockReason::HEALTH_TIP_MOVED);
                 m_logger->info("[Solo Poll] ✓ GET_BLOCK sent for tip refresh");
             } else {
                 m_logger->debug("[Solo Poll] GET_BLOCK rate-limited — tip refresh deferred");

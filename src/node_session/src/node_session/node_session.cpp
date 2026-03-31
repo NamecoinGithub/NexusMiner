@@ -500,21 +500,31 @@ void NodeSession::handle_secondary_connection_result(network::Result::Code resul
     }
 }
 
+std::pair<network::Connection::Sptr, std::shared_ptr<protocol::Solo>>
+NodeSession::select_active_pair() const
+{
+    // Single authoritative source for primary→secondary fallback logic.
+    // All three guards are required: connection object must exist, protocol must
+    // exist, and the connected flag must be set.  This mirrors the invariants that
+    // Connection::transmit() expects (non-null handler, open socket).
+    if (m_primary_connection && m_primary_protocol && m_primary_connected) {
+        return {m_primary_connection, m_primary_protocol};
+    }
+    if (m_secondary_connection && m_secondary_protocol && m_secondary_connected) {
+        return {m_secondary_connection, m_secondary_protocol};
+    }
+    return {nullptr, nullptr};
+}
+
 bool NodeSession::transmit(network::Shared_payload data)
 {
     if (m_stopped || !data || data->empty()) {
         return false;
     }
 
-    // Try primary connection first
-    if (m_primary_connection && m_primary_connected) {
-        m_primary_connection->transmit(data);
-        return true;
-    }
-
-    // Fallback to secondary
-    if (m_secondary_connection && m_secondary_connected) {
-        m_secondary_connection->transmit(data);
+    auto [conn, proto] = select_active_pair();
+    if (conn) {
+        conn->transmit(data);
         return true;
     }
 
@@ -524,16 +534,7 @@ bool NodeSession::transmit(network::Shared_payload data)
 
 std::shared_ptr<protocol::Solo> NodeSession::get_active_protocol() const
 {
-    // Mirror transmit()'s exact fallback logic, including connection-object
-    // presence checks, so the returned protocol always matches the connection
-    // that transmit() would actually select.
-    if (m_primary_connection && m_primary_protocol && m_primary_connected) {
-        return m_primary_protocol;
-    }
-    if (m_secondary_connection && m_secondary_protocol && m_secondary_connected) {
-        return m_secondary_protocol;
-    }
-    return nullptr;
+    return select_active_pair().second;
 }
 
 uint32_t NodeSession::session_id() const
@@ -824,50 +825,30 @@ void NodeSession::set_keepalive_interval(uint16_t hours)
 
 network::Shared_payload NodeSession::request_work(protocol::GetBlockReason reason)
 {
-    if (m_primary_protocol && m_primary_connected) {
-        return m_primary_protocol->get_work(reason);
-    }
-    if (m_secondary_protocol && m_secondary_connected) {
-        return m_secondary_protocol->get_work(reason);
-    }
-    return nullptr;
+    auto protocol = get_active_protocol();
+    if (!protocol) return nullptr;
+    return protocol->get_work(reason);
 }
 
 network::Shared_payload NodeSession::submit_block(const std::vector<uint8_t>& block_data, uint64_t nonce)
 {
-    // Try primary first
-    if (m_primary_protocol && m_primary_connected && m_primary_protocol->is_authenticated()) {
-        return m_primary_protocol->submit_block(block_data, nonce);
-    }
-
-    // Fallback to secondary
-    if (m_secondary_protocol && m_secondary_connected && m_secondary_protocol->is_authenticated()) {
-        return m_secondary_protocol->submit_block(block_data, nonce);
-    }
-
-    return nullptr;
+    auto protocol = get_active_protocol();
+    if (!protocol || !protocol->is_authenticated()) return nullptr;
+    return protocol->submit_block(block_data, nonce);
 }
 
 network::Shared_payload NodeSession::send_get_round()
 {
-    if (m_primary_protocol && m_primary_connected) {
-        return m_primary_protocol->send_get_round();
-    }
-    if (m_secondary_protocol && m_secondary_connected) {
-        return m_secondary_protocol->send_get_round();
-    }
-    return nullptr;
+    auto protocol = get_active_protocol();
+    if (!protocol) return nullptr;
+    return protocol->send_get_round();
 }
 
 network::Shared_payload NodeSession::send_session_keepalive()
 {
-    if (m_primary_protocol && m_primary_connected) {
-        return m_primary_protocol->send_session_keepalive();
-    }
-    if (m_secondary_protocol && m_secondary_connected) {
-        return m_secondary_protocol->send_session_keepalive();
-    }
-    return nullptr;
+    auto protocol = get_active_protocol();
+    if (!protocol) return nullptr;
+    return protocol->send_session_keepalive();
 }
 
 bool NodeSession::login_on_active_connection(std::function<void(bool)> login_callback)
@@ -877,25 +858,21 @@ bool NodeSession::login_on_active_connection(std::function<void(bool)> login_cal
         return false;
     }
 
-    // Select the protocol+connection pairing that transmit() would use.
-    // This guarantees the auth payload is framed for the correct lane.
-    // Note: Solo::login() always invokes the callback synchronously before
-    // returning (true on success, false on error), so the callback is never lost.
-    if (m_primary_connection && m_primary_protocol && m_primary_connected) {
-        auto auth_payload = m_primary_protocol->login(login_callback);
+    // Use select_active_pair() for atomic connection+protocol selection.
+    // Both are checked together so the auth payload is always framed for
+    // the correct lane (no TOCTOU between protocol selection and transmit).
+    auto [conn, proto] = select_active_pair();
+    if (conn && proto) {
+        auto auth_payload = proto->login(login_callback);
         if (auth_payload && !auth_payload->empty()) {
-            m_primary_connection->transmit(auth_payload);
+            conn->transmit(auth_payload);
             return true;
         }
-        return false;
-    }
-
-    if (m_secondary_connection && m_secondary_protocol && m_secondary_connected) {
-        auto auth_payload = m_secondary_protocol->login(login_callback);
-        if (auth_payload && !auth_payload->empty()) {
-            m_secondary_connection->transmit(auth_payload);
-            return true;
-        }
+        // Solo::login() can return empty (without invoking the callback) when
+        // PacketBuilder::build() fails — e.g. if the Falcon keys are not yet
+        // configured or the session state is inconsistent.  Fire the callback
+        // ourselves so callers always receive notification and can schedule a retry.
+        if (login_callback) login_callback(false);
         return false;
     }
 
