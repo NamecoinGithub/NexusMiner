@@ -424,13 +424,16 @@ void test_login_callback_invoked_on_empty_payload()
 {
     std::cout << "Test: login_on_active_connection() invokes callback(false) when login returns empty payload..." << std::endl;
 
-    // This test validates Bug 4 fix: Solo::login() may fail to build a packet
-    // without calling the callback; login_on_active_connection() must fire
-    // the callback itself so callers are always notified.
+    // This test validates the Bug 4 fix contract: login_on_active_connection() must
+    // always invoke the callback (either from Solo::login() on success, or explicitly
+    // with false when Solo::login() returns empty without calling it).
     //
-    // Since we can't fake a connected state in unit tests without a real socket,
-    // we verify the no-connection path: callback must NOT be invoked when there
-    // is no active connection (only the caller's fallback logic should fire).
+    // Full end-to-end verification of the empty-payload path (PacketBuilder failure)
+    // requires a connected state with a deliberately broken Falcon key — not feasible
+    // in a pure unit test.  This test therefore verifies the boundary condition: when
+    // there is no active connection, login_on_active_connection() must NOT spuriously
+    // invoke the callback (that would confuse callers that expect notification only
+    // when a connection attempt was actually made).
     auto io_context = std::make_shared<asio::io_context>();
     auto logger = spdlog::stdout_color_mt("test_logger_lcb");
     config::Config config(logger);

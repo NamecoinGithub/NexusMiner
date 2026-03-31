@@ -851,9 +851,10 @@ bool NodeSession::login_on_active_connection(std::function<void(bool)> login_cal
             conn->transmit(auth_payload);
             return true;
         }
-        // Solo::login() can return empty if PacketBuilder::build() fails without
-        // invoking the callback.  Fire the callback ourselves so callers always
-        // get notified and can schedule a retry.
+        // Solo::login() can return empty (without invoking the callback) when
+        // PacketBuilder::build() fails — e.g. if the Falcon keys are not yet
+        // configured or the session state is inconsistent.  Fire the callback
+        // ourselves so callers always receive notification and can schedule a retry.
         if (login_callback) login_callback(false);
         return false;
     }

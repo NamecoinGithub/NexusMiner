@@ -1166,7 +1166,7 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
         // mark_get_block_pending() AFTER the payload has been handed to
         // Connection::transmit().  This prevents a 10-second stall when transmit
         // fails (socket closed, null handler, etc.) from keeping the pending flag
-        // set with no clear path.
+        // set without being cleared (clear() only fires in on_block_data / on_stateless_get_block).
         {
             auto snap = m_height_tracker.GetSnapshot();
             m_dedup_guard.record_transmission(snap.unified_height);
