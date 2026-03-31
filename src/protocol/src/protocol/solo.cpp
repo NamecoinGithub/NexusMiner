@@ -532,6 +532,17 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
 
     if (effective_channel_height > 0) {
         m_template_interface->set_channel_height(effective_channel_height + 1);
+    } else if (m_last_round_channel_height > 0) {
+        // ── Fast-path channel height finalization (Item 2) ────────────────────
+        // When BLOCK_DATA metadata doesn't include channel height (effective_channel_height == 0),
+        // use the most recent GET_ROUND channel height to finalize synchronously.
+        // This closes the "Channel height: pending" vulnerability window where rapid
+        // Stake blocks can trigger unnecessary template churn before the channel
+        // metadata is set (which otherwise waits for sync_template_state via GET_ROUND).
+        m_template_interface->set_channel_height(m_last_round_channel_height + 1);
+        m_logger->info("[{}] Fast-path channel finalization: metadata absent, using last "
+                       "GET_ROUND channel_height={} → nChannelHeight={}",
+                       log_scope, m_last_round_channel_height, m_last_round_channel_height + 1);
     }
 
     auto const* tmpl = m_template_interface->get_current_template();
@@ -1124,6 +1135,31 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
         uint32_t cur_unified = snap.unified_height;
         bool have_valid_template = m_template_interface &&
                                    m_template_interface->has_valid_template();
+
+        // ── Height drift grace buffer ────────────────────────────────────────
+        // The dedup guard's height-match check suppresses GET_BLOCK when the
+        // unified height hasn't changed AND a valid template exists.  But if
+        // the node returned a BLOCK_DATA response whose unified height (block.nHeight)
+        // is significantly behind the tracker's unified height (advanced by
+        // push/keepalive/GET_ROUND), the template is effectively stale even
+        // though has_valid_template() returns true.
+        //
+        // A drift of 2+ blocks between tracker and template means the template
+        // was built for an older chain state.  Override have_valid_template so
+        // the dedup guard does not suppress the refresh attempt.
+        static constexpr uint32_t DEDUP_HEIGHT_GRACE_BUFFER = 2;
+        if (have_valid_template) {
+            auto const* tmpl = m_template_interface->get_current_template();
+            if (tmpl && cur_unified > 0 && tmpl->block.nHeight > 0 &&
+                cur_unified > tmpl->block.nHeight &&
+                (cur_unified - tmpl->block.nHeight) > DEDUP_HEIGHT_GRACE_BUFFER) {
+                m_logger->info("[Solo] Dedup height-drift grace: template unified {} is {} blocks behind "
+                               "tracker {} — allowing GET_BLOCK despite height match (reason={})",
+                               tmpl->block.nHeight, cur_unified - tmpl->block.nHeight,
+                               cur_unified, reason_name(reason));
+                have_valid_template = false;
+            }
+        }
 
         auto verdict = m_dedup_guard.check(reason, cur_unified, have_valid_template);
         if (verdict != GetBlockDedupGuard::Verdict::ALLOW) {
@@ -2440,32 +2476,50 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // mechanism to detect these tip advances.
         // When this occurs, hashPrevBlock in the current template is stale — we must
         // discard and request a fresh template.
+        //
+        // GUARD: If the canonical state (from BLOCK_DATA) is already ahead of the
+        // GET_ROUND unified height, this GET_ROUND is reporting stale data from the
+        // node — do NOT discard a fresher template we already have.
         {
             bool unified_advanced = (unified_height > m_last_round_unified_height) &&
                                     (m_last_round_unified_height > 0);
             bool channel_unchanged = (channel_height == m_last_round_channel_height);
 
             if (unified_advanced && channel_unchanged && !get_block_sent_in_handler) {
-                m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance unified {} → {} "
-                               "({} channel height unchanged — discarding stale template)",
-                               m_last_round_unified_height, unified_height,
-                               get_channel_name(m_channel));
+                // Item 1: Check if canonical state is already ahead of this GET_ROUND.
+                // GetCanonicalSnapshot() returns the authoritative state from BLOCK_DATA,
+                // which may be fresher than what GET_ROUND reports.
+                auto canonical = m_height_tracker.GetCanonicalSnapshot();
+                if (canonical.is_initialized() &&
+                    canonical.canonical_unified_height > unified_height) {
+                    m_logger->info("[Solo GET_ROUND] ℹ️  Stake/cross-channel advance {} → {} SKIPPED: "
+                                   "canonical unified height {} is already ahead — GET_ROUND is stale",
+                                   m_last_round_unified_height, unified_height,
+                                   canonical.canonical_unified_height);
+                } else {
+                    m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance unified {} → {} "
+                                   "({} channel height unchanged — discarding stale template)",
+                                   m_last_round_unified_height, unified_height,
+                                   get_channel_name(m_channel));
 
-                // Discard template: hashPrevBlock is now stale (different tip)
-                if (m_template_interface && m_template_interface->has_valid_template()) {
-                    m_template_interface->discard_template("Stake/cross-channel tip advance detected via GET_ROUND");
-                    m_logger->info("[Solo GET_ROUND] ✗ Template discarded (Stake-advance stale hashPrevBlock)");
-                }
+                    // Discard template: hashPrevBlock is now stale (different tip)
+                    if (m_template_interface && m_template_interface->has_valid_template()) {
+                        m_template_interface->discard_template("Stake/cross-channel tip advance detected via GET_ROUND");
+                        m_logger->info("[Solo GET_ROUND] ✗ Template discarded (Stake-advance stale hashPrevBlock)");
+                    }
 
-                // Reset dedup guard so this GET_BLOCK is not suppressed
-                reset_get_block_dedup_state();
+                    // Item 3: Reset only height-based dedup guard, preserving
+                    // the 100ms rapid-burst guard to prevent duplicate GET_BLOCK
+                    // when two GET_ROUND responses arrive within the burst window.
+                    m_dedup_guard.reset_height_guard();
 
-                if (connection) {
-                    auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
-                    if (work_payload && !work_payload->empty()) {
-                        connection->transmit(work_payload);
-                        get_block_sent_in_handler = true;
-                        m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
+                    if (connection) {
+                        auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
+                        if (work_payload && !work_payload->empty()) {
+                            connection->transmit(work_payload);
+                            get_block_sent_in_handler = true;
+                            m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
+                        }
                     }
                 }
             }
@@ -2683,32 +2737,47 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // Detect when unified height advanced but our channel height did NOT change.
         // Even on OLD_ROUND responses, the unified height can advance if a Stake
         // block was mined — hashPrevBlock is now stale and a fresh template is needed.
+        //
+        // GUARD: If the canonical state (from BLOCK_DATA) is already ahead of the
+        // GET_ROUND unified height, this GET_ROUND is reporting stale data from the
+        // node — do NOT discard a fresher template we already have.
         {
             bool unified_advanced = (unified_height > m_last_round_unified_height) &&
                                     (m_last_round_unified_height > 0);
             bool channel_unchanged = (channel_height == m_last_round_channel_height);
 
             if (unified_advanced && channel_unchanged && !get_block_sent_in_handler) {
-                m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance unified {} → {} "
-                               "({} channel height unchanged — discarding stale template)",
-                               m_last_round_unified_height, unified_height,
-                               get_channel_name(m_channel));
+                // Item 1: Check if canonical state is already ahead of this GET_ROUND.
+                auto canonical = m_height_tracker.GetCanonicalSnapshot();
+                if (canonical.is_initialized() &&
+                    canonical.canonical_unified_height > unified_height) {
+                    m_logger->info("[Solo GET_ROUND] ℹ️  Stake/cross-channel advance {} → {} SKIPPED: "
+                                   "canonical unified height {} is already ahead — GET_ROUND is stale",
+                                   m_last_round_unified_height, unified_height,
+                                   canonical.canonical_unified_height);
+                } else {
+                    m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance unified {} → {} "
+                                   "({} channel height unchanged — discarding stale template)",
+                                   m_last_round_unified_height, unified_height,
+                                   get_channel_name(m_channel));
 
-                // Discard template: hashPrevBlock is now stale (different tip)
-                if (m_template_interface && m_template_interface->has_valid_template()) {
-                    m_template_interface->discard_template("Stake/cross-channel tip advance detected via GET_ROUND");
-                    m_logger->info("[Solo GET_ROUND] ✗ Template discarded (Stake-advance stale hashPrevBlock)");
-                }
+                    // Discard template: hashPrevBlock is now stale (different tip)
+                    if (m_template_interface && m_template_interface->has_valid_template()) {
+                        m_template_interface->discard_template("Stake/cross-channel tip advance detected via GET_ROUND");
+                        m_logger->info("[Solo GET_ROUND] ✗ Template discarded (Stake-advance stale hashPrevBlock)");
+                    }
 
-                // Reset dedup guard so this GET_BLOCK is not suppressed
-                reset_get_block_dedup_state();
+                    // Item 3: Reset only height-based dedup guard, preserving
+                    // the 100ms rapid-burst guard to prevent duplicate GET_BLOCK.
+                    m_dedup_guard.reset_height_guard();
 
-                if (connection) {
-                    auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
-                    if (work_payload && !work_payload->empty()) {
-                        connection->transmit(work_payload);
-                        get_block_sent_in_handler = true;
-                        m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
+                    if (connection) {
+                        auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
+                        if (work_payload && !work_payload->empty()) {
+                            connection->transmit(work_payload);
+                            get_block_sent_in_handler = true;
+                            m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
+                        }
                     }
                 }
             }

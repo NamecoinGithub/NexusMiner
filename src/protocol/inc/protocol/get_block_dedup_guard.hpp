@@ -125,6 +125,19 @@ public:
         }
     }
 
+    /// Reset only the height-based dedup guard, preserving the 100ms rapid-burst
+    /// timestamp.  Use in the Stake/cross-channel path where we need a fresh
+    /// GET_BLOCK for the new unified height epoch but still want the rapid-burst
+    /// guard to protect against duplicate requests when two GET_ROUND responses
+    /// arrive within 100ms during block bursts.
+    void reset_height_guard()
+    {
+        m_last_unified_height = 0;
+        if (m_logger) {
+            m_logger->info("[DedupGuard] height-guard reset (rapid-burst guard preserved)");
+        }
+    }
+
     /// Read-only access for diagnostics/logging.
     uint32_t last_unified_height() const { return m_last_unified_height; }
     std::chrono::steady_clock::time_point last_transmitted_tp() const { return m_last_transmitted_tp; }

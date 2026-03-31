@@ -105,6 +105,7 @@ inline bool should_bypass_height_dedup(GetBlockReason reason)
         case GetBlockReason::HEIGHT_DRIFT:
         case GetBlockReason::HEALTH_CHANNEL_STALE:
         case GetBlockReason::HEALTH_NO_TEMPLATE:
+        case GetBlockReason::HEALTH_TIP_MOVED:
         case GetBlockReason::TEMPLATE_FEED_FAILURE:
         case GetBlockReason::SESSION_REAUTH:
 

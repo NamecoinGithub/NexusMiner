@@ -785,8 +785,8 @@ void test_get_block_reason_dedup_policy() {
     // Tier 3: full dedup — non-push normal requests respect all guards
     print_test_result("HEALTH_CHANNEL_ADVANCE does NOT bypass height dedup",
         !should_bypass_height_dedup(GetBlockReason::HEALTH_CHANNEL_ADVANCE));
-    print_test_result("HEALTH_TIP_MOVED does NOT bypass height dedup",
-        !should_bypass_height_dedup(GetBlockReason::HEALTH_TIP_MOVED));
+    print_test_result("HEALTH_TIP_MOVED bypasses height dedup",
+        should_bypass_height_dedup(GetBlockReason::HEALTH_TIP_MOVED));
     print_test_result("HEALTH_STALE_SUPPRESSED does NOT bypass height dedup",
         !should_bypass_height_dedup(GetBlockReason::HEALTH_STALE_SUPPRESSED));
     print_test_result("INITIAL_REQUEST does NOT bypass height dedup",
