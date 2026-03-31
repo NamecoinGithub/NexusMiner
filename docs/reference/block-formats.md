@@ -48,6 +48,41 @@ must NOT attempt to set or parse `nTime` from the template.
 block.nTime = 0; // nTime not in Tritium template; set by node at sign_block() time
 ```
 
+## BLOCK_DATA Metadata Prefix (12 bytes)
+
+Every `BLOCK_DATA` response (from both GET_BLOCK and push-triggered template sends)
+prepends a **12-byte metadata prefix** before the 216-byte Tritium block payload.
+Total wire size: 228 bytes (12 + 216).
+
+```
+Offset  Size  Field           Semantics
+------  ----  -----           ---------
+0       4     nUnifiedHeight  Unified chain **TIP** (tStateBest.nHeight)
+4       4     nChannelHeight  Channel **TIP** (stateChannel.nChannelHeight)
+8       4     nBits           Difficulty target (compact format)
+─────────────────────────────────────────────────────
+TOTAL   12    bytes (all big-endian)
+```
+
+### Height semantics: TIP vs TARGET
+
+| Wire field | Semantics | Value relative to chain state |
+|-----------|-----------|-------------------------------|
+| Metadata `nUnifiedHeight` [0–3] | **TIP** | `tStateBest.nHeight` |
+| Metadata `nChannelHeight` [4–7] | **TIP** | `stateChannel.nChannelHeight` |
+| Block `nHeight` [200–203] | **TARGET** | `tStateBest.nHeight + 1` |
+
+**Critical**: `block.nHeight` (inside the 216-byte block at offset 200) is always
+**one higher** than the metadata `nUnifiedHeight`.  The metadata is the current chain
+state (TIP); the block header contains the height of the block being *mined* (TARGET).
+
+NexusMiner uses metadata heights for HeightTracker (staleness detection) and
+`block.nHeight` for ProofHash computation.  They must never be confused.
+
+> **Node**: Only the [NamecoinGithub/LLL-TAO](https://github.com/NamecoinGithub/LLL-TAO)
+> fork (branch `NODE`) sends this 12-byte metadata prefix.  The standard Nexusoft/LLL-TAO
+> node sends raw 216-byte blocks without metadata.
+
 ## Legacy Block Format (220 bytes) — Historical Reference
 
 > ⚠️ This format is **not used** in active mining. It is documented here for historical

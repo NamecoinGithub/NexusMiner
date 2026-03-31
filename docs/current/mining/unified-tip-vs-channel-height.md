@@ -244,6 +244,32 @@ Use these terms consistently across all documentation:
 | `[reason: channel_advanced]` | channel_height reached channel_target | "stale" (unqualified) |
 | `[reason: tip_moved]` | unified_height passed template_unified_height | "stale" (unqualified) |
 
+### 6.1 Wire Protocol Height Semantics (TIP vs TARGET)
+
+All height values in the mining protocol use one of two semantics:
+
+| Source | Format | Bytes | Semantics | Value |
+|--------|--------|-------|-----------|-------|
+| BLOCK_DATA metadata | 12-byte prefix | [0–3] unified | **TIP** | `tStateBest.nHeight` |
+| BLOCK_DATA metadata | 12-byte prefix | [4–7] channel | **TIP** | `stateChannel.nChannelHeight` |
+| BLOCK_DATA metadata | 12-byte prefix | [8–11] nBits | Difficulty | compact target |
+| Block header | 216-byte block | [200–203] nHeight | **TARGET** | `tStateBest.nHeight + 1` |
+| GET_ROUND / NEW_ROUND | 16-byte response | [0–3] unified | **TIP** | `tStateBest.nHeight` |
+| GET_ROUND / NEW_ROUND | 16-byte response | [4–7] prime | **TIP** | `stateChannel.nChannelHeight` (ch 1) |
+| GET_ROUND / NEW_ROUND | 16-byte response | [8–11] hash | **TIP** | `stateChannel.nChannelHeight` (ch 2) |
+| GET_ROUND / NEW_ROUND | 16-byte response | [12–15] stake | **TIP** | `stateChannel.nChannelHeight` (ch 0) |
+| GET_HEIGHT response | 4-byte | [0–3] | **TARGET** | `nBestHeight + 1` |
+| PUSH notification | 12-byte payload | [0–3] unified | **TIP** | `tStateBest.nHeight` |
+| PUSH notification | 12-byte payload | [4–7] channel | **TIP** | `stateChannel.nChannelHeight` |
+
+> **Key rule**: GET_ROUND sends TIP heights.  GET_HEIGHT sends TARGET (TIP + 1).
+> They are inconsistent — GET_ROUND does **not** follow GET_HEIGHT's convention.
+> NexusMiner applies **no normalization** to GET_ROUND values.
+
+> **Node compatibility**: The 16-byte GET_ROUND format is specific to the
+> [NamecoinGithub/LLL-TAO](https://github.com/NamecoinGithub/LLL-TAO) fork
+> (branch `NODE`).  Standard Nexusoft/LLL-TAO sends NEW_ROUND with 0-byte payload.
+
 ---
 
 ## 7. HeightTracker Snapshot Fields

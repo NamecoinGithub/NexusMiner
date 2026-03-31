@@ -92,7 +92,7 @@ keepalive polluted `check_template_health()`, producing:
 | `AdvanceChannelTarget()` | `m_canonical.canonical_channel_target` | Push staleness prevention |
 | `UpdateWithHashPrevBlock()` | `m_canonical.canonical_hash_prev_block` | hashPrevBlock anchor |
 | `OnPushNotification()` | `m_diagnostic.push_*` | Colin height display |
-| `OnGetRound()` | `m_diagnostic.round_*` | Colin round display |
+| `OnGetRound()` | `m_diagnostic.round_*` | Colin round display (TIP heights — no normalization) |
 | `OnKeepaliveResponse()` | `m_diagnostic.keepalive_*` | Colin telemetry display |
 
 ---

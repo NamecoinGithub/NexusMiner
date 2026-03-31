@@ -28,6 +28,11 @@ Total: 12 bytes (preferred)
 Legacy: 16 bytes (unified + prime + hash + stake) in legacy lane; miner derives channel height from the active channel.
 ```
 
+> **Height semantics**: All heights in GET_ROUND/NEW_ROUND responses use **TIP** semantics
+> (current chain state).  No normalization is needed — the node sends `tStateBest.nHeight`
+> and `stateChannel.nChannelHeight` directly.  This differs from GET_HEIGHT which sends
+> `nBestHeight + 1` (TARGET).
+
 ### Example (Prime Miner)
 
 **Request:**
@@ -47,8 +52,9 @@ Node → Miner:  NEW_ROUND (opcode 204)
 **Miner Action:**
 ```
 1. Parse: unified=6533548, channel=2301206, difficulty=0x1D00FFFF
-2. Finalize template: nChannelHeight = 2301207 (channel + 1)
-3. Check staleness: Is 2301206 == (2301207 - 1)? YES → Continue mining
+   (all values are TIP — no normalization needed)
+2. Finalize template: nChannelHeight = 2301207 (channel_tip + 1 = channel_target)
+3. Check staleness: is_template_stale() = (2301206 >= 2301207)? NO → not stale, continue mining
 ```
 
 ## Benefits of 12-Byte Format
