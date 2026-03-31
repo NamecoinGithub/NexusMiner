@@ -575,6 +575,37 @@ void ColinAgent::emit_report(
                 warnings.push_back(w);
             }
         }
+
+        // ── Per-Source Height Dashboard (TIP/TARGET taxonomy) ──────────────
+        // Shows each height source independently so operators can identify
+        // which source is lagging or racing ahead.  This is the primary
+        // troubleshooting tool for height regression tracking.
+        m_logger->info("[Colin]  🗂️  ── Height Source Dashboard (TIP / TARGET) ──────────");
+        m_logger->info("[Colin]    CANONICAL (BLOCK_DATA) │ unified_tip={}  channel_tip={}  channel_target={}",
+            canonical.canonical_unified_height, canonical.canonical_channel_height,
+            canonical.canonical_channel_target);
+        m_logger->info("[Colin]    PUSH (BLOCK_AVAILABLE)  │ unified_tip={}  channel_tip={}",
+            diag.push_unified_height, diag.push_channel_height);
+        m_logger->info("[Colin]    GET_ROUND               │ unified_tip={}  channel_tip={}  prime={}  hash={}  stake={}",
+            diag.round_unified_height, diag.round_channel_height,
+            diag.round_prime_height, diag.round_hash_height, diag.round_stake_height);
+        m_logger->info("[Colin]    KEEPALIVE               │ unified_tip={}  prime={}  hash={}  stake={}",
+            diag.keepalive_unified_height,
+            diag.keepalive_prime_height, diag.keepalive_hash_height, diag.keepalive_stake_height);
+
+        // Trigger analysis: which sources are ahead of canonical?
+        if (canonical.is_initialized() && diag.is_initialized()) {
+            int32_t push_ahead = static_cast<int32_t>(diag.push_unified_height) -
+                                  static_cast<int32_t>(canonical.canonical_unified_height);
+            int32_t round_ahead = static_cast<int32_t>(diag.round_unified_height) -
+                                   static_cast<int32_t>(canonical.canonical_unified_height);
+            if (push_ahead > 0 || round_ahead > 0) {
+                m_logger->info("[Colin]    TRIGGER DRIFT │ push_ahead={} round_ahead={} (waiting for BLOCK_DATA)",
+                    push_ahead > 0 ? push_ahead : 0, round_ahead > 0 ? round_ahead : 0);
+            } else {
+                m_logger->info("[Colin]    TRIGGER DRIFT │ 0 (all sources in sync)");
+            }
+        }
     }
 
     if (!warnings.empty())

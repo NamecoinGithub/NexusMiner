@@ -1132,10 +1132,13 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
     }
 
     // ── GET_BLOCK deduplication guard ────────────────────────────────────────
-    // Delegated to the centralized GetBlockDedupGuard.
+    // Bug #3 fix: use canonical_unified_height for the height key (not composite).
+    // Push/GET_ROUND reasons already bypass height dedup via should_bypass_height_dedup(),
+    // so the height key only matters for same-height BLOCK_DATA responses.
+    // Using composite caused inconsistent dedup decisions when push/round raced ahead.
     {
         auto snap = m_height_tracker.GetSnapshot();
-        uint32_t cur_unified = snap.unified_height;
+        uint32_t cur_unified = snap.canonical_unified_height;
         bool have_valid_template = m_template_interface &&
                                    m_template_interface->has_valid_template();
 
@@ -1163,12 +1166,12 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
         // Record transmission for dedup guard
         {
             auto snap = m_height_tracker.GetSnapshot();
-            m_dedup_guard.record_transmission(snap.unified_height);
+            m_dedup_guard.record_transmission(snap.canonical_unified_height);
             // Mark in-flight so cross-handler dedup (GET_ROUND after PUSH) can
             // detect that a response is already expected for this height.
-            m_pending_get_block.mark_pending(snap.unified_height, reason);
-            m_logger->debug("[Solo] GET_BLOCK in-flight marked: unified={} reason={}",
-                            snap.unified_height, reason_name(reason));
+            m_pending_get_block.mark_pending(snap.canonical_unified_height, reason);
+            m_logger->debug("[Solo] GET_BLOCK in-flight marked: canonical_unified={} reason={}",
+                            snap.canonical_unified_height, reason_name(reason));
         }
         m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
 
@@ -4614,26 +4617,29 @@ bool Solo::validate_current_template()
     uint32_t expectedChannel = snap.expected_template_target();
     
     // Validation: template must target a block still in the future.
-    // During bursts, push lag can cause channel_height to trail nChannelHeight by
-    // multiple blocks. nChannelHeight > channel_height means we are still valid.
-    // Only discard when the chain tip has ALREADY MET OR PASSED our target.
-    // The node is the authoritative source of nChannelHeight; if it gave us
-    // nChannelHeight=N, that IS the right target regardless of our local tracker state.
+    // Bug #4 fix: use CANONICAL channel_height for this comparison (not composite).
+    // Previously used snap.channel_height which is max(canonical, push, round).
+    // This caused false template rejection when PUSH was ahead of BLOCK_DATA:
+    // e.g., PUSH says channel=150 but BLOCK_DATA template targets 146 —
+    // composite check (146 <= 150) falsely rejected a valid template.
+    // Now uses canonical only: BLOCK_DATA says channel=140, template targets 146,
+    // check (146 <= 140) = false → template accepted ✓
+    uint32_t authoritative_channel_height = snap.canonical_channel_height;
     if (expectedChannel != 0 && tmpl->nChannelHeight != 0) {
-        if (tmpl->nChannelHeight <= snap.channel_height) {
-            m_logger->warn("[Solo Validate] Template target {} already surpassed by chain tip {} — discarding",
-                tmpl->nChannelHeight, snap.channel_height);
+        if (tmpl->nChannelHeight <= authoritative_channel_height) {
+            m_logger->warn("[Solo Validate] Template target {} already surpassed by canonical chain tip {} — discarding",
+                tmpl->nChannelHeight, authoritative_channel_height);
             m_template_interface->discard_template("Channel height stale");
             return false;
         }
         // Note: nChannelHeight > expectedChannel (more than 1 ahead) is VALID during burst
         // recovery — log informationally so operators can observe burst lag without alarming.
         if (tmpl->nChannelHeight != expectedChannel) {
-            m_logger->info("[Solo Validate] ℹ️  nChannelHeight={} is {} blocks ahead of local tracker tip={} "
+            m_logger->info("[Solo Validate] ℹ️  nChannelHeight={} is {} blocks ahead of canonical channel tip={} "
                            "(normal during burst recovery — template is valid)",
                            tmpl->nChannelHeight,
-                           tmpl->nChannelHeight - snap.channel_height,
-                           snap.channel_height);
+                           tmpl->nChannelHeight - authoritative_channel_height,
+                           authoritative_channel_height);
         }
     }
 
