@@ -60,6 +60,25 @@ startup.
 The authoritative source for `channel_height` is the 12-byte BLOCK_DATA
 metadata prefix, **not** any field in the block header.
 
+### TIP vs TARGET in BLOCK_DATA
+
+The 228-byte BLOCK_DATA response contains two different height semantics:
+
+| Component | Field | Semantics | Example (chain at height 6652588) |
+|-----------|-------|-----------|-----------------------------------|
+| 12-byte metadata prefix | `nUnifiedHeight` [0–3] | **TIP** | 6652588 |
+| 12-byte metadata prefix | `nChannelHeight` [4–7] | **TIP** | 2348878 |
+| 216-byte block body | `block.nHeight` [200–203] | **TARGET** | 6652589 (= TIP + 1) |
+
+NexusMiner uses metadata TIP heights for `HeightTracker` (staleness detection,
+template validation) and `block.nHeight` for ProofHash computation.  The
+`channel_target` is derived as `metadata_channel_height + 1`, which matches
+`block.nHeight`'s TARGET semantics for the channel dimension.
+
+> **Node source**: See `NamecoinGithub/LLL-TAO:src/LLP/miner.cpp`
+> `handle_get_round_stateless()` and `SharedGetBlockHandler()` for the
+> authoritative metadata construction.
+
 ---
 
 ## 3. Authoritative Source Hierarchy (Post-Canonical Refactor)

@@ -319,6 +319,22 @@ The following opcodes were removed in the mirror-mapped protocol as they are now
 - Miner polls periodically (typically every 1-5 seconds)
 - Node responds with BLOCK_DATA
 
+**NEW_ROUND Response Format (16 bytes — NamecoinGithub/LLL-TAO fork only):**
+```
+Offset  Size  Field           Semantics
+------  ----  -----           ---------
+0       4     nUnifiedHeight  Unified chain TIP (tStateBest.nHeight)
+4       4     nPrimeHeight    Prime channel TIP (GetLastState channel 1)
+8       4     nHashHeight     Hash channel TIP (GetLastState channel 2)
+12      4     nStakeHeight    Stake channel TIP (GetLastState channel 0)
+─────────────────────────────────────────────────────
+TOTAL   16    bytes (all big-endian, all TIP semantics)
+```
+
+> **Height semantics**: All values are **TIP** (current chain state).  No `-1`
+> normalization is needed.  This differs from GET_HEIGHT which sends TARGET (TIP + 1).
+> Standard Nexusoft/LLL-TAO sends NEW_ROUND with empty payload (0 bytes).
+
 **Limitations:**
 - Introduces 1-5 second latency for new blocks
 - Continuous network traffic from polling
