@@ -1099,7 +1099,7 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
 {
     /// Request a fresh mining template via GET_BLOCK.
     /// Authentication-guarded; returns null if not authenticated or reward not bound.
-    /// No miner-side rate limiting — the node's 2-second AutoCoolDown enforces the server-side floor.
+    /// Node rate limit: 25 GET_BLOCK per 60 seconds (with 1-second per-request cooldown).
 
     refresh_cached_session_state("Solo GET_BLOCK");
 

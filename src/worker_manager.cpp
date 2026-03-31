@@ -278,35 +278,24 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             }
 
                             // ✅ NEW: Final staleness check before submission (Template Staleness Prevention)
-                            // Use HeightTracker snapshot as single source of truth for both channel and age checks
+                            // Use HeightTracker snapshot as single source of truth for age check.
+                            // Channel-height staleness (is_template_stale) was removed: structurally
+                            // false under canonical-only semantics.  Age check is the sole guard.
                             auto ht_snap = solo_protocol->get_height_tracker_snapshot();
 
-                            // Check 1 — Channel Height (PRIMARY: has another miner found this block?)
-                            bool channel_stale = ht_snap.is_template_stale();
-
-                            // Check 2 — Age (SECONDARY: safety net for missed push notifications)
+                            // Age-based staleness (safety net for missed push notifications)
                             // 600s matches the push-driven era MAX_TEMPLATE_AGE
                             bool age_stale = ht_snap.is_template_age_stale();
                             uint64_t template_age = ht_snap.get_template_age_seconds();
 
-                            if (channel_stale || age_stale)
+                            if (age_stale)
                             {
-                                const char* soft_refresh_reason = channel_stale
-                                    ? "submit_side_channel_stale"
-                                    : "submit_side_age_stale";
-                                if (channel_stale) {
-                                    m_logger->error("[Worker_manager] ❌ Solution found but channel height ADVANCED!");
-                                    m_logger->error("[Worker_manager]    channel_height {} >= channel_target {}",
-                                                   ht_snap.channel_height, ht_snap.channel_target);
-                                    m_logger->error("[Worker_manager]    Another miner found this block first - discarding");
-                                } else {
-                                    m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: 600s)",
-                                                   template_age);
-                                    m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
-                                }
+                                const char* soft_refresh_reason = "submit_side_age_stale";
+                                m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: 600s)",
+                                               template_age);
+                                m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
                                 mark_soft_refresh_requested(soft_refresh_reason);
-                                template_interface->discard_template(channel_stale ? "Channel height advanced before submission"
-                                                                                   : "Age exceeded 600s before submission");
+                                template_interface->discard_template("Age exceeded 600s before submission");
 
                                 // Request fresh work/GET_BLOCK via NodeSession
                                 m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK via NodeSession");
@@ -2016,57 +2005,10 @@ void Worker_manager::check_template_health()
     auto ht_snap = solo_protocol->get_height_tracker_snapshot();
     uint64_t template_age = ht_snap.get_template_age_seconds();
 
-    // Channel height-based staleness detection (primary check — HeightTracker is the single
-    // source of truth).  Template is stale when channel_height >= channel_target (both non-zero).
-    {
-        if (ht_snap.is_template_stale()) {
-            uint32_t blocks_behind = ht_snap.blocks_behind();
-
-            bool template_never_received = (ht_snap.last_template_update == std::chrono::steady_clock::time_point{});
-            bool template_is_newer_than_push = (!template_never_received &&
-                                                ht_snap.last_template_update >= ht_snap.last_height_update);
-            if (template_is_newer_than_push) {
-                m_logger->debug("[Worker_manager] {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive stop",
-                    channel_name,
-                    std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
-                    std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
-                retry_template_request(protocol::GetBlockReason::HEALTH_STALE_SUPPRESSED);
-                return;
-            }
-
-            if (blocks_behind == 1) {
-                m_logger->info("[Worker_manager] {} template anchor advanced normally: channel_height {} -> next target {} (template target {}, 1 block behind) — requesting fresh work without recovery",
-                    channel_name,
-                    ht_snap.channel_height,
-                    ht_snap.expected_template_target(),
-                    ht_snap.channel_target);
-                retry_template_request(protocol::GetBlockReason::HEALTH_CHANNEL_ADVANCE);
-                return;
-            }
-
-            if (blocks_behind == 0) {
-                m_logger->debug("[Worker_manager] {} stale snapshot reported with zero block lag (channel_height {}, channel_target {}) — requesting fresh work without recovery",
-                    channel_name,
-                    ht_snap.channel_height,
-                    ht_snap.channel_target);
-                retry_template_request(protocol::GetBlockReason::HEALTH_CHANNEL_ADVANCE);
-                return;
-            }
-
-            m_logger->warn("[Worker_manager] ⚠️  {} channel advanced: channel_height {} >= channel_target {} — age {}s",
-                channel_name, ht_snap.channel_height, ht_snap.channel_target, template_age);
-            m_logger->info("[Worker_manager]    Template (t={}) predates last push (t={}) — true staleness ({} blocks behind)",
-                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
-                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count(),
-                blocks_behind);
-
-            // Session-preserving staleness handling:
-            // even for multi-block lag, keep workers/session alive and force fresh work.
-            // Hard recovery should only be used for explicit connection/session failures.
-            retry_template_request(protocol::GetBlockReason::HEALTH_CHANNEL_STALE);
-            return;
-        }
-    }
+    // Channel height-based staleness detection removed: is_template_stale() was
+    // structurally false under canonical-only semantics (OnBlockDataReceived auto-
+    // advances target = channel + 1, so channel_height >= channel_target never holds).
+    // Staleness detection lives in PUSH, GET_ROUND, and Health Monitor trigger paths.
 
     // Unified tip moved on another channel — request fresh work opportunistically
     if (ht_snap.is_tip_moved()) {
@@ -2159,7 +2101,8 @@ void Worker_manager::check_template_health()
         }
 
         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
-        bool chain_advanced = ht_snap.is_template_stale();
+        // is_template_stale() removed (structurally false under canonical-only semantics).
+        // Use recent_push as the sole signal for deferring recovery.
 
         // If a push notification was received recently, the TCP session is
         // demonstrably alive — defer the hard recovery to avoid spurious stops
@@ -2168,7 +2111,7 @@ void Worker_manager::check_template_health()
         bool recent_push = (ht_snap.last_push_notification_at != std::chrono::steady_clock::time_point{}) &&
             (std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - ht_snap.last_push_notification_at).count() < PUSH_ALIVE_THRESHOLD_SECONDS);
-        if (recent_push && !chain_advanced) {
+        if (recent_push) {
             auto since_push_s = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - ht_snap.last_push_notification_at).count();
             m_logger->warn("[Worker_manager] BLOCK_DATA timeout deferred: push notification is recent ({}s ago) — "
@@ -2178,34 +2121,14 @@ void Worker_manager::check_template_health()
             return;
         }
 
-        // Apply the same temporal guard as the primary staleness check.
-        // Even in this emergency path, if template is newer than last push, staleness is false-positive.
-        bool template_never_received = (ht_snap.last_template_update == std::chrono::steady_clock::time_point{});
-        bool template_is_newer_than_push = (!template_never_received &&
-                                            ht_snap.last_template_update >= ht_snap.last_height_update);
-        if (chain_advanced && template_is_newer_than_push) {
-            m_logger->debug("[Worker_manager] BLOCK_DATA timeout {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive escalation",
-                channel_name,
-                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
-                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
-            retry_template_request(protocol::GetBlockReason::TEMPLATE_AGE_DEFERRED);
-            return;
+        m_logger->error("[Worker_manager] ⚠️  BLOCK_DATA TIMEOUT TRIGGER ({} channel): template {}s old with no recent push — escalating recovery",
+                        channel_name, template_age);
+        m_logger->error("[Worker_manager]    channel_height {} / channel_target {}",
+                        ht_snap.channel_height, ht_snap.channel_target);
+        if (channel == mining::CHANNEL_PRIME) {
+            m_logger->error("[Worker_manager]    Prime blocks may be long; treating this as recovery signal only");
         }
 
-        if (chain_advanced) {
-            m_logger->error("[Worker_manager] ⚠️  BLOCK_DATA TIMEOUT TRIGGER ({} channel): template {}s old and chain advanced — escalating recovery",
-                            channel_name, template_age);
-            m_logger->error("[Worker_manager]    channel_height {} >= channel_target {}",
-                            ht_snap.channel_height, ht_snap.channel_target);
-        } else {
-            m_logger->error("[Worker_manager] ⚠️  BLOCK_DATA TIMEOUT TRIGGER ({} channel): template {}s old with no recent push — escalating recovery",
-                            channel_name, template_age);
-            m_logger->error("[Worker_manager]    channel_height {} / channel_target {}",
-                            ht_snap.channel_height, ht_snap.channel_target);
-            if (channel == mining::CHANNEL_PRIME) {
-                m_logger->error("[Worker_manager]    Prime blocks may be long; treating this as recovery signal only");
-            }
-        }
 
         // Non-authoritative path: do NOT discard valid template and do NOT halt workers here.
         // Escalate orchestration only (reconnect + forced GET_BLOCK lane).

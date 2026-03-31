@@ -177,15 +177,7 @@ SubmitResult StatelessBlockUtility::encode_submit(
         return result;
     }
 
-    // ── Pre-check 5: Staleness (informational -- node is authoritative) ────────
-    if (ht.is_template_stale()) {
-        if (logger)
-            logger->warn("[StatelessBlockUtility::encode_submit] "
-                         "template appears stale (channel_height={} >= "
-                         "channel_target={}) -- submitting anyway; "
-                         "node is authoritative",
-                         ht.channel_height, ht.channel_target);
-    }
+    // ── Pre-check 5: Staleness — removed (is_template_stale structurally false) ──
 
     // ── Pre-check 6: Tip-moved (informational) ────────────────────────────────
     if (ht.is_tip_moved()) {
