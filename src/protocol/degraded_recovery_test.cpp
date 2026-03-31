@@ -9,7 +9,7 @@
  *  3.  Recovery pending debouncing — mark_recovery_initiated() is idempotent for same event
  *  4.  Recovery GET_BLOCK can dispatch after debounce window — no permanent starvation
  *  5.  Keepalive epoch isolation — new epoch starts with clean ack timestamp
- *  6.  Stale template after channel advance triggers is_template_stale()
+ *  6.  Stale template after channel advance — canonical auto-advance invariant
  *  7.  set_session_epoch() with a higher epoch suppresses the old keepalive signal
  *  8.  Multiple rapid epoch changes produce clean keepalive state
  *  9.  Push notification does not reset keepalive timestamp on epoch change
@@ -147,36 +147,37 @@ void test_channel_advance_stale_template_transition() {
     tracker.OnBlockDataReceived(5000, 100, 0x1d00ffff, uint1024_t{});
     tracker.OnTemplateReceived(2, 101);
     auto snap = tracker.GetSnapshot();
-    print_test_result("Initial: is_template_stale() == false (channel_height=100 < target=101)",
-                      !snap.is_template_stale());
+    print_test_result("Initial: channel_height=100 < target=101 (not stale)",
+                      snap.channel_height < snap.channel_target);
     print_test_result("Initial: channel_height == 100", snap.channel_height == 100);
     print_test_result("Initial: channel_target == 101", snap.channel_target == 101);
 
     // Channel advances — node found a block.
     // Under canonical-only semantics, OnBlockDataReceived auto-advances target to
-    // channel+1, so is_template_stale() can NEVER return true — canonical staleness
-    // is structurally impossible. Staleness detection has moved to push/GET_ROUND
-    // trigger paths. This test verifies the auto-advance behavior.
+    // channel+1, so staleness is structurally impossible from canonical state alone.
+    // is_template_stale() removed (structurally false under canonical-only semantics).
+    // Staleness detection has moved to push/GET_ROUND trigger paths.
+    // This test verifies the auto-advance behavior.
     tracker.OnBlockDataReceived(5001, 101, 0x1d00ffff, uint1024_t{});
     auto snap2 = tracker.GetSnapshot();
-    print_test_result("After channel advance: is_template_stale() == false (canonical auto-advance: target=102 > channel=101)",
-                      !snap2.is_template_stale());
+    print_test_result("After channel advance: canonical auto-advance: target=102 > channel=101",
+                      snap2.channel_height < snap2.channel_target);
     print_test_result("After channel advance: channel_height == 101", snap2.channel_height == 101);
     print_test_result("After channel advance: channel_target auto-advanced to 102", snap2.channel_target == 102);
 
     // Simulate keepalive arriving from OLD session — should not affect canonical state
     tracker.OnKeepaliveResponse(5001, 300, 101, 900, 0xDEADBEEFu, 0);
     auto snap3 = tracker.GetSnapshot();
-    print_test_result("After old keepalive: is_template_stale() still false (canonical unchanged)",
-                      !snap3.is_template_stale());
+    print_test_result("After old keepalive: canonical state unchanged (channel < target)",
+                      snap3.channel_height < snap3.channel_target);
     print_test_result("After old keepalive: channel_height unchanged at 101",
                       snap3.channel_height == 101);
 
     // New template from GET_BLOCK response — target advances further
     tracker.OnTemplateReceived(2, 103);
     auto snap4 = tracker.GetSnapshot();
-    print_test_result("After new template: is_template_stale() == false",
-                      !snap4.is_template_stale());
+    print_test_result("After new template: channel_height < channel_target",
+                      snap4.channel_height < snap4.channel_target);
     print_test_result("After new template: channel_target == 103", snap4.channel_target == 103);
 }
 
@@ -679,11 +680,12 @@ void test_keepalive_epoch_isolation_clean_start() {
 }
 
 // ============================================================================
-// Test 6: Stale template after channel advance triggers is_template_stale()
-// (Validates the push-staleness detection that feeds the recovery path)
+// Test 6: Stale template after channel advance — canonical auto-advance invariant
+// (Validates that canonical auto-advance prevents staleness; real staleness detection
+//  has moved to push/GET_ROUND trigger paths)
 // ============================================================================
 void test_stale_template_after_channel_advance() {
-    std::cout << "\nTest 6: Stale template detection after channel advance\n";
+    std::cout << "\nTest 6: Stale template detection after channel advance (canonical auto-advance)\n";
     HeightTracker tracker;
 
     // Template targeting channel_height=101
@@ -692,14 +694,15 @@ void test_stale_template_after_channel_advance() {
 
     // Confirm not stale before advance
     auto snap_before = tracker.GetSnapshot();
-    print_test_result("Before advance: is_template_stale() == false", !snap_before.is_template_stale());
+    print_test_result("Before advance: channel_height < channel_target", snap_before.channel_height < snap_before.channel_target);
 
     // Channel advances (block found) — OnBlockDataReceived auto-advances target to 102.
-    // Under canonical-only semantics, is_template_stale() is structurally false
+    // Under canonical-only semantics, is_template_stale() was structurally false
     // because OnBlockDataReceived always ensures target >= channel + 1.
+    // is_template_stale() removed (structurally false under canonical-only semantics)
     tracker.OnBlockDataReceived(5001, 101, 0x1d00ffff, uint1024_t{});
     auto snap_after = tracker.GetSnapshot();
-    print_test_result("After advance: is_template_stale() == false (canonical auto-advance)", !snap_after.is_template_stale());
+    print_test_result("After advance: canonical auto-advance (channel < target)", snap_after.channel_height < snap_after.channel_target);
     print_test_result("After advance: channel_height == 101", snap_after.channel_height == 101);
     print_test_result("After advance: channel_target == 102 (auto-advanced)", snap_after.channel_target == 102);
 
@@ -990,26 +993,13 @@ void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
     auto decide = [](const HeightTracker::Snapshot& snap, bool template_is_newer_than_push) {
         HealthDecision decision;
 
-        if (!snap.is_template_stale()) {
-            return decision;
-        }
-
-        if (template_is_newer_than_push) {
-            decision.request_refresh = true;
-            return decision;
-        }
-
-        uint32_t blocks_behind = snap.blocks_behind();
-        if (blocks_behind <= 1) {
-            decision.request_refresh = true;
-            return decision;
-        }
-
-        decision.request_refresh = true;
+        // is_template_stale() removed (structurally false under canonical-only semantics).
+        // Under canonical semantics the condition was always true, so the early return
+        // always executes — no refresh action is ever triggered from this path.
         return decision;
     };
 
-    // Under canonical-only semantics, is_template_stale() is structurally false
+    // Under canonical-only semantics, is_template_stale() was structurally false
     // because OnBlockDataReceived auto-advances target to channel+1. The health
     // policy returns early with no action — real staleness detection has moved
     // to the push/GET_ROUND trigger paths.
@@ -1032,11 +1022,13 @@ void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
     print_test_result("Two-block lag does not initiate recovery", !two_block.recovery_initiated);
     print_test_result("Two-block lag does not stop workers", !two_block.stop_workers);
 
+    // Post-push scenario: under canonical-only semantics, decide() always returns
+    // early with no action (is_template_stale was structurally false), so no refresh.
     HeightTracker::Snapshot post_push_snap;
     post_push_snap.channel_height = 300;
     post_push_snap.channel_target = 300;
     auto post_push = decide(post_push_snap, true);
-    print_test_result("Post-push template freshness still stays soft", post_push.request_refresh);
+    print_test_result("Post-push: canonical policy returns no-action (staleness moved to trigger paths)", !post_push.request_refresh);
     print_test_result("Post-push template freshness does not initiate recovery", !post_push.recovery_initiated);
 }
 

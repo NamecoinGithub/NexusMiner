@@ -5,6 +5,10 @@
 #include "stats/stats_printer.hpp"
 #include "worker.hpp"
 
+#include <spdlog/spdlog.h>
+
+#include <exception>
+
 namespace nexusminer
 {
 Timer_manager::Timer_manager(chrono::Timer_factory::Sptr timer_factory)
@@ -67,7 +71,13 @@ chrono::Timer::Handler Timer_manager::connection_retry_handler(std::weak_ptr<Wor
         auto worker_manager_shared = worker_manager.lock();
         if(worker_manager_shared)
         {
-            worker_manager_shared->connect(wallet_endpoint);
+            try {
+                worker_manager_shared->connect(wallet_endpoint);
+            } catch (const std::exception& e) {
+                spdlog::error("[Timer_manager] connection_retry_handler threw: {}", e.what());
+            } catch (...) {
+                spdlog::error("[Timer_manager] connection_retry_handler threw unknown exception");
+            }
         }
     }; 
 }
@@ -82,11 +92,18 @@ chrono::Timer::Handler Timer_manager::stats_collector_handler(std::uint16_t stat
             return;
         }
 
-        for(auto& worker : workers)
-        {
-            worker->update_statistics(*stats_collector);
+        try {
+            for(auto& worker : workers)
+            {
+                worker->update_statistics(*stats_collector);
+            }
+        } catch (const std::exception& e) {
+            spdlog::error("[Timer_manager] stats_collector_handler threw: {} — timer will restart", e.what());
+        } catch (...) {
+            spdlog::error("[Timer_manager] stats_collector_handler threw unknown exception — timer will restart");
         }
-        // restart timer
+
+        // restart timer (always, even after exception)
         m_stats_collector_timer->start(chrono::Seconds(stats_collector_interval), 
             stats_collector_handler(stats_collector_interval, workers, std::move(stats_collector)));
     }; 
@@ -102,12 +119,18 @@ chrono::Timer::Handler Timer_manager::stats_printer_handler(std::uint16_t stats_
             return;
         }
 
-        for(auto& stats_printer : stats_printers)
-        {
-            stats_printer->print();
+        try {
+            for(auto& stats_printer : stats_printers)
+            {
+                stats_printer->print();
+            }
+        } catch (const std::exception& e) {
+            spdlog::error("[Timer_manager] stats_printer_handler threw: {} — timer will restart", e.what());
+        } catch (...) {
+            spdlog::error("[Timer_manager] stats_printer_handler threw unknown exception — timer will restart");
         }
 
-        // restart timer
+        // restart timer (always, even after exception)
          m_stats_printer_timer->start(chrono::Seconds(stats_printer_interval), stats_printer_handler(stats_printer_interval, 
             std::move(stats_printers)));
     }; 
@@ -124,17 +147,23 @@ chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_
         }
 
         auto wm = worker_manager.lock();
-        if (wm)
+        if (!wm)
         {
-            // Delegate to Worker_manager which fetches the current connection
-            // and protocol on every tick — no stale weak_ptr captures.
-            wm->poll_get_round();
-
-            // Always restart timer — Worker_manager persists for application
-            // lifetime so this timer never silently dies.
-            m_get_round_timer->start(chrono::Seconds(get_round_interval),
-                get_round_handler(get_round_interval, worker_manager));
+            return;  // Worker_manager destroyed (shutdown), don't restart
         }
+
+        try {
+            wm->poll_get_round();
+        } catch (const std::exception& e) {
+            spdlog::error("[Timer_manager] get_round_handler threw: {} — timer will restart", e.what());
+        } catch (...) {
+            spdlog::error("[Timer_manager] get_round_handler threw unknown exception — timer will restart");
+        }
+
+        // Always restart timer after callback completes (even if callback threw).
+        // This prevents silent timer death that kills GET_ROUND polling permanently.
+        m_get_round_timer->start(chrono::Seconds(get_round_interval),
+            get_round_handler(get_round_interval, worker_manager));
     }; 
 }
 
@@ -155,16 +184,22 @@ chrono::Timer::Handler Timer_manager::template_health_handler(std::uint16_t heal
         }
 
         auto worker_manager_shared = worker_manager.lock();
-        
-        if (worker_manager_shared)
+        if (!worker_manager_shared)
         {
-            // Check template health
-            worker_manager_shared->check_template_health();
-
-            // Restart timer
-            m_template_health_timer->start(chrono::Seconds(health_check_interval), 
-                template_health_handler(health_check_interval, worker_manager));
+            return;  // Worker_manager destroyed (shutdown), don't restart
         }
+
+        try {
+            worker_manager_shared->check_template_health();
+        } catch (const std::exception& e) {
+            spdlog::error("[Timer_manager] template_health_handler threw: {} — timer will restart", e.what());
+        } catch (...) {
+            spdlog::error("[Timer_manager] template_health_handler threw unknown exception — timer will restart");
+        }
+
+        // Always restart timer after callback completes (even if callback threw).
+        m_template_health_timer->start(chrono::Seconds(health_check_interval), 
+            template_health_handler(health_check_interval, worker_manager));
     }; 
 }
 
@@ -186,13 +221,22 @@ chrono::Timer::Handler Timer_manager::lane_health_check_handler(std::uint16_t he
         }
 
         auto wm = worker_manager.lock();
-        if (wm)
+        if (!wm)
         {
-            wm->log_lane_health();
-
-            m_lane_health_check_timer->start(chrono::Seconds(health_check_interval),
-                lane_health_check_handler(health_check_interval, worker_manager));
+            return;  // Worker_manager destroyed (shutdown), don't restart
         }
+
+        try {
+            wm->log_lane_health();
+        } catch (const std::exception& e) {
+            spdlog::error("[Timer_manager] lane_health_check_handler threw: {} — timer will restart", e.what());
+        } catch (...) {
+            spdlog::error("[Timer_manager] lane_health_check_handler threw unknown exception — timer will restart");
+        }
+
+        // Always restart timer after callback completes (even if callback threw).
+        m_lane_health_check_timer->start(chrono::Seconds(health_check_interval),
+            lane_health_check_handler(health_check_interval, worker_manager));
     };
 }
 

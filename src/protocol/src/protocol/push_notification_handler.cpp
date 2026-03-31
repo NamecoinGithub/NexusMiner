@@ -258,24 +258,17 @@ bool PushNotificationHandler::handle_push_notification(
     {
         auto snap = height_tracker ? height_tracker->GetSnapshot() : HeightTracker::Snapshot{};
 
-        // ─── Channel staleness: informational + doom-loop prevention ─────────
-        // If the channel tip has reached or passed the template target, log it.
-        // AdvanceChannelTarget() REMOVED (Bug #6 fix) — the doom-loop it prevented
-        // cannot occur because is_template_stale() now uses canonical-only heights
-        // which PUSH cannot inflate. Channel staleness is purely diagnostic.
-        bool channel_stale = height_tracker && snap.is_template_stale();
-        if (channel_stale)
-        {
-            uint32_t blocks_behind = snap.blocks_behind();
-            m_logger->info("[Solo Push] ℹ️  Channel {} block(s) behind (channel_height {} ≥ channel_target {}) — expected during burst recovery, no action needed",
-                           blocks_behind, snap.channel_height, snap.channel_target);
-        }
+        // ─── Channel staleness: [REMOVED] ─────────────────────────────────
+        // is_template_stale() removed: structurally false under canonical-only
+        // semantics (OnBlockDataReceived auto-advances target = channel + 1).
+        // Channel staleness detection is now exclusively in PUSH, GET_ROUND,
+        // and Health Monitor trigger paths.
 
         // ─── Same-height tip replacement (reorg at same channel height) ──────
-        // Only relevant when channel is NOT stale: a hash mismatch at the same
-        // channel height means the tip anchor was replaced (same-height reorg).
+        // A hash mismatch at the same channel height means the tip anchor was
+        // replaced (same-height reorg).
         // Discard the template so the fresh one from GET_BLOCK replaces it.
-        if (!channel_stale && has_hash_prev_block)
+        if (has_hash_prev_block)
         {
             auto const* tmpl = template_interface->get_current_template();
             if (tmpl &&

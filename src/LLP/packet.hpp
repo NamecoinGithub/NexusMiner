@@ -58,6 +58,13 @@ namespace nexusminer
 		inline bool is_stateless_opcode(uint16_t opcode) {
 			return LLP::IsStatelessOpcode(opcode);
 		}
+
+		// Helper function to check if a uint16_t opcode needs 2-byte wire framing.
+		// Covers mirror-mapped stateless opcodes (0xD000-0xD0FF) AND un-mirrored
+		// data opcodes such as KEEPALIVE_V2 (0xD100) and KEEPALIVE_V2_ACK (0xD101).
+		inline bool is_uint16_wire_opcode(uint16_t opcode) {
+			return LLP::IsStatelessOpcode(opcode) || ::LLP::IsUnmirroredDataOpcode(opcode);
+		}
 		
 		// Helper function to check if a single byte is a legacy auth/session opcode
 		// These are always single-byte format (206-255), never part of uint16_t stateless opcodes
@@ -247,7 +254,7 @@ namespace nexusminer
 		Packet(std::uint16_t header, network::Payload const& data)
 			: m_header{ header }
 			, m_is_valid{ true }
-			, m_is_uint16_opcode{ PacketConstants::is_stateless_opcode(header) }
+			, m_is_uint16_opcode{ PacketConstants::is_uint16_wire_opcode(header) }
 		{
 			m_data = std::make_shared<network::Payload>(data);
 			m_length = m_data->size();
@@ -270,7 +277,7 @@ namespace nexusminer
 			: m_header{ header }
 			, m_length{ 0 }
 			, m_is_valid{ true }
-			, m_is_uint16_opcode{ PacketConstants::is_stateless_opcode(header) }
+			, m_is_uint16_opcode{ PacketConstants::is_uint16_wire_opcode(header) }
 		{
 			if (data)
 			{
@@ -291,7 +298,7 @@ namespace nexusminer
 			: m_header{ header }
 			, m_length{ 0 }
 			, m_is_valid{ true }
-			, m_is_uint16_opcode{ PacketConstants::is_stateless_opcode(header) }
+			, m_is_uint16_opcode{ PacketConstants::is_uint16_wire_opcode(header) }
 		{
 		}
 

@@ -91,6 +91,11 @@ public:
     // stale weak_ptr captures that killed the timer after reconnection.
     void poll_get_round();
 
+    /// Session generation: monotonically increasing counter that increments on
+    /// every session transition.  Timer callbacks capture this at entry to detect
+    /// stale-session dispatches mid-flight.
+    uint64_t session_generation() const { return m_session_generation.load(std::memory_order_acquire); }
+
     // ── Failover state accessor ────────────────────────────────────────────────
     struct FailoverStatus {
         bool has_failover_configured{false};
@@ -213,6 +218,18 @@ private:
         protocol::ProtocolConstants::BASE_SESSION_RETRY_MS,
         protocol::ProtocolConstants::MAX_SESSION_RETRY_MS
     };
+
+    // ── Session generation counter ──────────────────────────────────────────
+    // Monotonically increasing counter that increments on every session
+    // transition (connect, disconnect, re-auth, session expired).  Timer
+    // callbacks (GET_ROUND, template health, lane health) capture the
+    // generation at entry and abort if it changed mid-flight — preventing
+    // wasted packets during session transitions that the node would reject.
+    //
+    // This mirrors SessionManager::m_keepalive_generation (which guards the
+    // keepalive timer) but at the Worker_manager level for the Timer_manager-
+    // owned timers.
+    std::atomic<uint64_t> m_session_generation{0};
 
     // ── Timer guards: start timers once only ────────────────────────────────
     // All timers use weak_ptr<Worker_manager> (which persists for application

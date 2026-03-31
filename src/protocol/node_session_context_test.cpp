@@ -44,7 +44,7 @@ void test_session_lifecycle() {
 void test_session_constants() {
     std::cout << "Testing session constants accessors..." << std::endl;
 
-    assert(NodeSessionContext::get_keepalive_safety_divisor() == 2);
+    assert(NodeSessionContext::get_keepalive_safety_divisor() == 4);
     assert(NodeSessionContext::get_max_session_auth_retries() == 10);
     assert(NodeSessionContext::get_base_session_retry_ms() == 1000);
     assert(NodeSessionContext::get_max_session_retry_ms() == 60000);

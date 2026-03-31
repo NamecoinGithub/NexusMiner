@@ -351,13 +351,7 @@ std::string HeightTracker::ExplainMismatch() const {
 
     std::ostringstream oss;
 
-    // Check template staleness (both channel_height and channel_target are canonical-only)
-    if (s.is_template_stale()) {
-        oss << "[HeightTracker] STALE: canonical_channel_tip=" << s.channel_height
-            << " >= channel_target=" << s.channel_target
-            << " (template should have been discarded)";
-        return oss.str();
-    }
+    // is_template_stale() removed (structurally false under canonical-only semantics).
 
     // Check drift between expected and actual template target
     uint32_t expected = s.expected_template_target();

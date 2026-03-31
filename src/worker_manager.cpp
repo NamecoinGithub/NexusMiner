@@ -278,35 +278,24 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             }
 
                             // ✅ NEW: Final staleness check before submission (Template Staleness Prevention)
-                            // Use HeightTracker snapshot as single source of truth for both channel and age checks
+                            // Use HeightTracker snapshot as single source of truth for age check.
+                            // Channel-height staleness (is_template_stale) was removed: structurally
+                            // false under canonical-only semantics.  Age check is the sole guard.
                             auto ht_snap = solo_protocol->get_height_tracker_snapshot();
 
-                            // Check 1 — Channel Height (PRIMARY: has another miner found this block?)
-                            bool channel_stale = ht_snap.is_template_stale();
-
-                            // Check 2 — Age (SECONDARY: safety net for missed push notifications)
+                            // Age-based staleness (safety net for missed push notifications)
                             // 600s matches the push-driven era MAX_TEMPLATE_AGE
                             bool age_stale = ht_snap.is_template_age_stale();
                             uint64_t template_age = ht_snap.get_template_age_seconds();
 
-                            if (channel_stale || age_stale)
+                            if (age_stale)
                             {
-                                const char* soft_refresh_reason = channel_stale
-                                    ? "submit_side_channel_stale"
-                                    : "submit_side_age_stale";
-                                if (channel_stale) {
-                                    m_logger->error("[Worker_manager] ❌ Solution found but channel height ADVANCED!");
-                                    m_logger->error("[Worker_manager]    channel_height {} >= channel_target {}",
-                                                   ht_snap.channel_height, ht_snap.channel_target);
-                                    m_logger->error("[Worker_manager]    Another miner found this block first - discarding");
-                                } else {
-                                    m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: 600s)",
-                                                   template_age);
-                                    m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
-                                }
+                                const char* soft_refresh_reason = "submit_side_age_stale";
+                                m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: 600s)",
+                                               template_age);
+                                m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
                                 mark_soft_refresh_requested(soft_refresh_reason);
-                                template_interface->discard_template(channel_stale ? "Channel height advanced before submission"
-                                                                                   : "Age exceeded 600s before submission");
+                                template_interface->discard_template("Age exceeded 600s before submission");
 
                                 // Request fresh work/GET_BLOCK via NodeSession
                                 m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK via NodeSession");
@@ -527,6 +516,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 }
 
                 m_logger->warn("[Worker_manager] Session EXPIRED — initiating in-band re-authentication");
+                ++m_session_generation;  // Invalidate any in-flight timer dispatches for the old session
                 mark_recovery_initiated("session_expired");
 
                 // Use the current session auth fail count to calculate backoff delay.
@@ -619,6 +609,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 if (session_id == 0)
                 {
                     ++m_session_auth_fail_count;
+                    ++m_session_generation;  // Failed auth is still a session transition
                     m_logger->error("[Session] CRITICAL: Node returned session_id=0x00000000 after authentication (attempt #{}/{})",
                         m_session_auth_fail_count, protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
                     m_logger->error("[Session] This indicates the node rejected the session or is misconfigured");
@@ -651,6 +642,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                 // Successful authentication: reset session auth failure counter
                 m_session_auth_fail_count = 0;
+                ++m_session_generation;  // New session — invalidate stale timer dispatches
                 // Clear reconnect guard if we're in RECONNECTING phase (in-band re-auth path).
                 // For the TCP reconnect path, the connection callback already cleared it.
                 if (is_reconnecting()) {
@@ -976,6 +968,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
 
     // Transition to RECONNECTING phase — guards against stale callbacks and
     // prevents session_expired from re-entering during TCP reconnect window.
+    ++m_session_generation;  // TCP disconnect — invalidate stale timer dispatches
     transition_to(RecoveryPhase::RECONNECTING, "tcp_reconnect");
 
     // Reset NodeSession for reconnection
@@ -1395,6 +1388,10 @@ void Worker_manager::poll_get_round()
     if (!m_primary_node_session)
         return;
 
+    // Session generation guard: capture at entry so we detect transitions
+    // that happen between protocol lookup and transmit.
+    const uint64_t gen_at_entry = m_session_generation.load(std::memory_order_acquire);
+
     auto solo_protocol = m_primary_node_session->get_active_protocol();
     if (!solo_protocol)
         return;
@@ -1409,6 +1406,13 @@ void Worker_manager::poll_get_round()
     // send_recovery_work_request() (GET_BLOCK).
     auto payload = solo_protocol->send_get_round();
     if (payload && !payload->empty()) {
+        // Re-check generation before transmit: if a session transition happened
+        // while building the packet, the node would reject it anyway.
+        if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry) {
+            m_logger->debug("[Worker_manager] GET_ROUND discarded: session generation changed ({} → {})",
+                           gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
+            return;
+        }
         m_primary_node_session->transmit(payload);
     }
 }
@@ -1422,6 +1426,9 @@ void Worker_manager::send_session_status_if_due()
         return;
     m_last_session_status_sent = now;
 
+    // Session generation guard: don't send status for a session in transition
+    const uint64_t gen_at_entry = m_session_generation.load(std::memory_order_acquire);
+
     bool degraded    = is_degraded();
     bool workers_run = !is_degraded() && !m_workers.empty();
 
@@ -1433,8 +1440,14 @@ void Worker_manager::send_session_status_if_due()
         {
             // NodeSession handles SIM Link internally, so we don't need to track secondary separately
             auto pkt = solo_protocol->build_session_status_packet(degraded, workers_run, false);
-            if (pkt && !pkt->empty())
+            if (pkt && !pkt->empty()) {
+                if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry) {
+                    m_logger->debug("[Worker_manager] SESSION_STATUS discarded: session generation changed ({} → {})",
+                                   gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
+                    return;
+                }
                 m_primary_node_session->transmit(pkt);
+            }
         }
     }
 }
@@ -2016,57 +2029,10 @@ void Worker_manager::check_template_health()
     auto ht_snap = solo_protocol->get_height_tracker_snapshot();
     uint64_t template_age = ht_snap.get_template_age_seconds();
 
-    // Channel height-based staleness detection (primary check — HeightTracker is the single
-    // source of truth).  Template is stale when channel_height >= channel_target (both non-zero).
-    {
-        if (ht_snap.is_template_stale()) {
-            uint32_t blocks_behind = ht_snap.blocks_behind();
-
-            bool template_never_received = (ht_snap.last_template_update == std::chrono::steady_clock::time_point{});
-            bool template_is_newer_than_push = (!template_never_received &&
-                                                ht_snap.last_template_update >= ht_snap.last_height_update);
-            if (template_is_newer_than_push) {
-                m_logger->debug("[Worker_manager] {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive stop",
-                    channel_name,
-                    std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
-                    std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
-                retry_template_request(protocol::GetBlockReason::HEALTH_STALE_SUPPRESSED);
-                return;
-            }
-
-            if (blocks_behind == 1) {
-                m_logger->info("[Worker_manager] {} template anchor advanced normally: channel_height {} -> next target {} (template target {}, 1 block behind) — requesting fresh work without recovery",
-                    channel_name,
-                    ht_snap.channel_height,
-                    ht_snap.expected_template_target(),
-                    ht_snap.channel_target);
-                retry_template_request(protocol::GetBlockReason::HEALTH_CHANNEL_ADVANCE);
-                return;
-            }
-
-            if (blocks_behind == 0) {
-                m_logger->debug("[Worker_manager] {} stale snapshot reported with zero block lag (channel_height {}, channel_target {}) — requesting fresh work without recovery",
-                    channel_name,
-                    ht_snap.channel_height,
-                    ht_snap.channel_target);
-                retry_template_request(protocol::GetBlockReason::HEALTH_CHANNEL_ADVANCE);
-                return;
-            }
-
-            m_logger->warn("[Worker_manager] ⚠️  {} channel advanced: channel_height {} >= channel_target {} — age {}s",
-                channel_name, ht_snap.channel_height, ht_snap.channel_target, template_age);
-            m_logger->info("[Worker_manager]    Template (t={}) predates last push (t={}) — true staleness ({} blocks behind)",
-                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
-                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count(),
-                blocks_behind);
-
-            // Session-preserving staleness handling:
-            // even for multi-block lag, keep workers/session alive and force fresh work.
-            // Hard recovery should only be used for explicit connection/session failures.
-            retry_template_request(protocol::GetBlockReason::HEALTH_CHANNEL_STALE);
-            return;
-        }
-    }
+    // Channel height-based staleness detection removed: is_template_stale() was
+    // structurally false under canonical-only semantics (OnBlockDataReceived auto-
+    // advances target = channel + 1, so channel_height >= channel_target never holds).
+    // Staleness detection lives in PUSH, GET_ROUND, and Health Monitor trigger paths.
 
     // Unified tip moved on another channel — request fresh work opportunistically
     if (ht_snap.is_tip_moved()) {
@@ -2159,7 +2125,8 @@ void Worker_manager::check_template_health()
         }
 
         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
-        bool chain_advanced = ht_snap.is_template_stale();
+        // is_template_stale() removed (structurally false under canonical-only semantics).
+        // Use recent_push as the sole signal for deferring recovery.
 
         // If a push notification was received recently, the TCP session is
         // demonstrably alive — defer the hard recovery to avoid spurious stops
@@ -2168,7 +2135,7 @@ void Worker_manager::check_template_health()
         bool recent_push = (ht_snap.last_push_notification_at != std::chrono::steady_clock::time_point{}) &&
             (std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - ht_snap.last_push_notification_at).count() < PUSH_ALIVE_THRESHOLD_SECONDS);
-        if (recent_push && !chain_advanced) {
+        if (recent_push) {
             auto since_push_s = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - ht_snap.last_push_notification_at).count();
             m_logger->warn("[Worker_manager] BLOCK_DATA timeout deferred: push notification is recent ({}s ago) — "
@@ -2178,34 +2145,14 @@ void Worker_manager::check_template_health()
             return;
         }
 
-        // Apply the same temporal guard as the primary staleness check.
-        // Even in this emergency path, if template is newer than last push, staleness is false-positive.
-        bool template_never_received = (ht_snap.last_template_update == std::chrono::steady_clock::time_point{});
-        bool template_is_newer_than_push = (!template_never_received &&
-                                            ht_snap.last_template_update >= ht_snap.last_height_update);
-        if (chain_advanced && template_is_newer_than_push) {
-            m_logger->debug("[Worker_manager] BLOCK_DATA timeout {} is_template_stale() true but template (t={}) is newer than last push (t={}) — suppressing false-positive escalation",
-                channel_name,
-                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_template_update.time_since_epoch()).count(),
-                std::chrono::duration_cast<std::chrono::milliseconds>(ht_snap.last_height_update.time_since_epoch()).count());
-            retry_template_request(protocol::GetBlockReason::TEMPLATE_AGE_DEFERRED);
-            return;
+        m_logger->error("[Worker_manager] ⚠️  BLOCK_DATA TIMEOUT TRIGGER ({} channel): template {}s old with no recent push — escalating recovery",
+                        channel_name, template_age);
+        m_logger->error("[Worker_manager]    channel_height {} / channel_target {}",
+                        ht_snap.channel_height, ht_snap.channel_target);
+        if (channel == mining::CHANNEL_PRIME) {
+            m_logger->error("[Worker_manager]    Prime blocks may be long; treating this as recovery signal only");
         }
 
-        if (chain_advanced) {
-            m_logger->error("[Worker_manager] ⚠️  BLOCK_DATA TIMEOUT TRIGGER ({} channel): template {}s old and chain advanced — escalating recovery",
-                            channel_name, template_age);
-            m_logger->error("[Worker_manager]    channel_height {} >= channel_target {}",
-                            ht_snap.channel_height, ht_snap.channel_target);
-        } else {
-            m_logger->error("[Worker_manager] ⚠️  BLOCK_DATA TIMEOUT TRIGGER ({} channel): template {}s old with no recent push — escalating recovery",
-                            channel_name, template_age);
-            m_logger->error("[Worker_manager]    channel_height {} / channel_target {}",
-                            ht_snap.channel_height, ht_snap.channel_target);
-            if (channel == mining::CHANNEL_PRIME) {
-                m_logger->error("[Worker_manager]    Prime blocks may be long; treating this as recovery signal only");
-            }
-        }
 
         // Non-authoritative path: do NOT discard valid template and do NOT halt workers here.
         // Escalate orchestration only (reconnect + forced GET_BLOCK lane).

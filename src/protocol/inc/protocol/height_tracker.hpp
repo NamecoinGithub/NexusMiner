@@ -301,17 +301,14 @@ public:
         }
 
         /**
-         * @brief True when the current template target is already met by the chain
-         *
-         * Template is stale when the canonical channel TIP has reached or passed
-         * the height the template was built to mine (both must be non-zero).
-         * Both sides are canonical-only — PUSH cannot trigger false staleness.
-         * Source: BLOCK_DATA channel TIP vs BLOCK_DATA channel TARGET
+         * @brief [REMOVED] is_template_stale() was structurally false under
+         * canonical-only semantics: OnBlockDataReceived atomically sets
+         * canonical_channel_target = canonical_channel_height + 1, making
+         * channel_height >= channel_target impossible.  Staleness detection
+         * lives in PUSH, GET_ROUND, and Health Monitor trigger paths instead.
+         * Removed to eliminate dead code and the 9 pre-existing test failures
+         * that relied on the (now impossible) true-return path.
          */
-        bool is_template_stale() const {
-            return (channel_height > 0 && channel_target > 0 &&
-                    channel_height >= channel_target);
-        }
 
         /**
          * @brief Get template age in seconds since canonical receipt

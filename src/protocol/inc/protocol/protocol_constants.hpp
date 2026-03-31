@@ -22,15 +22,13 @@ namespace ProtocolConstants {
      * Keepalive safety divisor: controls keepalive frequency relative to node session timeout
      *
      * The miner pings at 1/N of the node's session timeout window:
-     * - N=2 → 2 pings per session window (recommended — survives one dropped ping)
-     * - N=3 → 3 pings per session window (more conservative, more network traffic)
+     * - N=4 → 4 pings per session window (survives up to 3 dropped pings)
      *
-     * Division by 2 is safer with less timer load and larger per-ping safety margin.
-     * Example: 24-hour node timeout → keepalive every 12 hours (2 pings/window)
+     * Example: 24-hour node timeout → keepalive every 6 hours (4 pings/window)
      *
      * Used in Solo::handle_session_start() to calculate keepalive_hours from session_timeout.
      */
-    constexpr uint32_t KEEPALIVE_SAFETY_DIVISOR = 2;
+    constexpr uint32_t KEEPALIVE_SAFETY_DIVISOR = 4;
 
     //==========================================================================
     // Session Authentication Retry Constants
