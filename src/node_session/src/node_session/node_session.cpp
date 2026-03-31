@@ -490,10 +490,13 @@ bool NodeSession::transmit(network::Shared_payload data)
 
 std::shared_ptr<protocol::Solo> NodeSession::get_active_protocol() const
 {
-    if (m_primary_protocol && m_primary_connected) {
+    // Mirror transmit()'s exact fallback logic, including connection-object
+    // presence checks, so the returned protocol always matches the connection
+    // that transmit() would actually select.
+    if (m_primary_connection && m_primary_protocol && m_primary_connected) {
         return m_primary_protocol;
     }
-    if (m_secondary_protocol && m_secondary_connected) {
+    if (m_secondary_connection && m_secondary_protocol && m_secondary_connected) {
         return m_secondary_protocol;
     }
     return nullptr;
@@ -514,6 +517,11 @@ bool NodeSession::is_authenticated() const
 bool NodeSession::is_primary_connected() const
 {
     return m_primary_connected.load();
+}
+
+bool NodeSession::is_secondary_connected() const
+{
+    return m_secondary_connected.load();
 }
 
 bool NodeSession::is_session_active() const
@@ -797,6 +805,39 @@ network::Shared_payload NodeSession::send_session_keepalive()
         return m_secondary_protocol->send_session_keepalive();
     }
     return nullptr;
+}
+
+bool NodeSession::login_on_active_connection(std::function<void(bool)> login_callback)
+{
+    if (m_stopped) {
+        m_logger->warn("[NodeSession:{}] Cannot login - session is stopped", m_node_label);
+        return false;
+    }
+
+    // Select the protocol+connection pairing that transmit() would use.
+    // This guarantees the auth payload is framed for the correct lane.
+    // Note: Solo::login() always invokes the callback synchronously before
+    // returning (true on success, false on error), so the callback is never lost.
+    if (m_primary_connection && m_primary_protocol && m_primary_connected) {
+        auto auth_payload = m_primary_protocol->login(login_callback);
+        if (auth_payload && !auth_payload->empty()) {
+            m_primary_connection->transmit(auth_payload);
+            return true;
+        }
+        return false;
+    }
+
+    if (m_secondary_connection && m_secondary_protocol && m_secondary_connected) {
+        auto auth_payload = m_secondary_protocol->login(login_callback);
+        if (auth_payload && !auth_payload->empty()) {
+            m_secondary_connection->transmit(auth_payload);
+            return true;
+        }
+        return false;
+    }
+
+    m_logger->warn("[NodeSession:{}] No active connection for login", m_node_label);
+    return false;
 }
 
 void NodeSession::set_epoch_coordinator(std::shared_ptr<protocol::EpochCoordinator> coordinator)

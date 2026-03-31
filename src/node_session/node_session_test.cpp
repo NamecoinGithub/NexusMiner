@@ -247,6 +247,106 @@ void test_node_session_stop_and_reset()
     std::cout << "  ✓ Stop closes connections and resets state" << std::endl;
 }
 
+void test_get_active_protocol_no_connection()
+{
+    std::cout << "Test: get_active_protocol() returns nullptr when no connections exist..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    auto logger = spdlog::stdout_color_mt("test_logger_active_proto");
+    config::Config config(logger);
+    config.set_mining_mode(config::Mining_mode::HASH);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto stats_collector = std::make_shared<stats::Collector>(config);
+
+    auto node_session = std::make_shared<NodeSession>(
+        io_context, config, socket, stats_collector, "TEST_ACTIVE");
+
+    // Primary protocol exists but no connection is established
+    assert(node_session->get_primary_protocol() != nullptr);
+
+    // get_active_protocol() should return nullptr because no connection is up
+    auto active = node_session->get_active_protocol();
+    assert(active == nullptr);
+
+    std::cout << "  ✓ get_active_protocol() returns nullptr when no connection is established" << std::endl;
+    std::cout << "  ✓ get_primary_protocol() still returns non-null (protocol exists, just not connected)" << std::endl;
+}
+
+void test_is_secondary_connected_initial_state()
+{
+    std::cout << "Test: is_secondary_connected() initial state..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    auto logger = spdlog::stdout_color_mt("test_logger_sec_conn");
+    config::Config config(logger);
+    config.set_mining_mode(config::Mining_mode::HASH);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto stats_collector = std::make_shared<stats::Collector>(config);
+
+    auto node_session = std::make_shared<NodeSession>(
+        io_context, config, socket, stats_collector, "TEST_SEC");
+
+    // Initially neither connection is established
+    assert(!node_session->is_primary_connected());
+    assert(!node_session->is_secondary_connected());
+
+    std::cout << "  ✓ is_primary_connected() returns false initially" << std::endl;
+    std::cout << "  ✓ is_secondary_connected() returns false initially" << std::endl;
+}
+
+void test_login_on_active_connection_no_connection()
+{
+    std::cout << "Test: login_on_active_connection() returns false when no connection..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    auto logger = spdlog::stdout_color_mt("test_logger_login_active");
+    config::Config config(logger);
+    config.set_mining_mode(config::Mining_mode::HASH);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto stats_collector = std::make_shared<stats::Collector>(config);
+
+    auto node_session = std::make_shared<NodeSession>(
+        io_context, config, socket, stats_collector, "TEST_LOGIN");
+
+    // Should return false — no active connection
+    bool callback_invoked = false;
+    bool result = node_session->login_on_active_connection([&callback_invoked](bool) {
+        callback_invoked = true;
+    });
+
+    assert(!result);
+    assert(!callback_invoked);
+
+    std::cout << "  ✓ login_on_active_connection() returns false when no connection is up" << std::endl;
+    std::cout << "  ✓ Login callback was not invoked" << std::endl;
+}
+
+void test_login_on_active_connection_stopped_session()
+{
+    std::cout << "Test: login_on_active_connection() returns false after stop()..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    auto logger = spdlog::stdout_color_mt("test_logger_login_stop");
+    config::Config config(logger);
+    config.set_mining_mode(config::Mining_mode::HASH);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto stats_collector = std::make_shared<stats::Collector>(config);
+
+    auto node_session = std::make_shared<NodeSession>(
+        io_context, config, socket, stats_collector, "TEST_LOGIN_STOP");
+
+    node_session->stop();
+
+    bool result = node_session->login_on_active_connection([](bool) {});
+    assert(!result);
+
+    std::cout << "  ✓ login_on_active_connection() returns false after stop()" << std::endl;
+}
+
 int main()
 {
     std::cout << "\n=== NodeSession Unit Tests ===\n" << std::endl;
@@ -265,6 +365,18 @@ int main()
         std::cout << std::endl;
 
         test_node_session_stop_and_reset();
+        std::cout << std::endl;
+
+        test_get_active_protocol_no_connection();
+        std::cout << std::endl;
+
+        test_is_secondary_connected_initial_state();
+        std::cout << std::endl;
+
+        test_login_on_active_connection_no_connection();
+        std::cout << std::endl;
+
+        test_login_on_active_connection_stopped_session();
         std::cout << std::endl;
 
         std::cout << "=== All NodeSession tests passed! ===\n" << std::endl;
