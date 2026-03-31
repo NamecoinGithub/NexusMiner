@@ -1147,17 +1147,19 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
         // A drift of 2+ blocks between tracker and template means the template
         // was built for an older chain state.  Override have_valid_template so
         // the dedup guard does not suppress the refresh attempt.
-        static constexpr uint32_t DEDUP_HEIGHT_GRACE_BUFFER = 2;
+        static constexpr uint32_t MAX_TEMPLATE_HEIGHT_LAG_BLOCKS = 2;
         if (have_valid_template) {
             auto const* tmpl = m_template_interface->get_current_template();
             if (tmpl && cur_unified > 0 && tmpl->block.nHeight > 0 &&
-                cur_unified > tmpl->block.nHeight &&
-                (cur_unified - tmpl->block.nHeight) > DEDUP_HEIGHT_GRACE_BUFFER) {
-                m_logger->info("[Solo] Dedup height-drift grace: template unified {} is {} blocks behind "
-                               "tracker {} — allowing GET_BLOCK despite height match (reason={})",
-                               tmpl->block.nHeight, cur_unified - tmpl->block.nHeight,
-                               cur_unified, reason_name(reason));
-                have_valid_template = false;
+                cur_unified > tmpl->block.nHeight) {
+                uint32_t template_drift = cur_unified - tmpl->block.nHeight;
+                if (template_drift > MAX_TEMPLATE_HEIGHT_LAG_BLOCKS) {
+                    m_logger->info("[Solo] Dedup height-drift grace: template unified {} is {} blocks behind "
+                                   "tracker {} — allowing GET_BLOCK despite height match (reason={})",
+                                   tmpl->block.nHeight, template_drift,
+                                   cur_unified, reason_name(reason));
+                    have_valid_template = false;
+                }
             }
         }
 
