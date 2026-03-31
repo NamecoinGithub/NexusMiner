@@ -471,7 +471,6 @@ private:
     void on_block_rejected(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_block_data(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_push_notification(Packet const& packet, std::shared_ptr<network::Connection> connection, uint32_t channel);
-    void on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_ping_diag(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_session_status_ack(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_get_round_response(Packet const& packet, std::shared_ptr<network::Connection> connection);

@@ -29,40 +29,21 @@ namespace LLP
     // ALL carry DATA payloads — never header-only.
     //=========================================================================
 
-    /** KeepAlive V2 — stateless-only session keepalive with data payload **/
-    namespace KeepAliveV2Opcodes
+    /** SESSION_KEEPALIVE — unified keepalive (replaces former KEEPALIVE_V2 0xD100)
+     *
+     *  Miner → node: SESSION_KEEPALIVE (0xD0D4 stateless / 212 legacy)
+     *  8-byte payload, all big-endian:
+     *    [0-3]  uint32_t  session_id           BE — session validation
+     *    [4-7]  uint32_t  hashPrevBlock_lo32   BE — fork canary (low 32 bits of prevHash)
+     *
+     *  Node → miner: SESSION_KEEPALIVE reply, 32-byte payload (KeepaliveAckFrame).
+     *
+     *  KEEPALIVE_V2 (0xD100) and KEEPALIVE_V2_ACK (0xD101) are retired.
+     **/
+    namespace KeepaliveConstants
     {
-        /** KEEPALIVE_V2 (0xD100)
-         *
-         *  Sent by miner → node to keep authenticated stateless session alive.
-         *  DATA-bearing: 8-byte payload (big-endian):
-         *    [0-3]  uint32_t  sequence            Monotonic miner keepalive counter
-         *    [4-7]  uint32_t  hashPrevBlock_lo32  Low 32 bits of miner's current prevHash (fork canary)
-         *
-         *  NOT a mirror of legacy PING (0xFD). Completely independent opcode.
-         *  Legacy port: use bare PING (0xFD, header-only).
-         **/
-        static constexpr uint16_t KEEPALIVE_V2     = 0xD100;
-
-        /** KEEPALIVE_V2_ACK (0xD101)
-         *
-         *  Sent by node → miner in response to KEEPALIVE_V2 AND as the unified
-         *  SESSION_KEEPALIVE reply (both paths share the same 32-byte wire format).
-         *  DATA-bearing: 32-byte payload:
-         *    [0-3]   uint32_t  session_id          LE — session validation
-         *    [4-7]   uint32_t  hashPrevBlock_lo32  BE — echo of miner's fork canary (0 on legacy path)
-         *    [8-11]  uint32_t  unified_height      BE — node's unified block height
-         *    [12-15] uint32_t  hash_tip_lo32       BE — node's live tip lo32 (fork cross-check)
-         *    [16-19] uint32_t  prime_height        BE — node's Prime channel height
-         *    [20-23] uint32_t  hash_height         BE — node's Hash channel height
-         *    [24-27] uint32_t  stake_height        BE — node's Stake channel height
-         *    [28-31] uint32_t  fork_score          BE — 0=healthy, >0=divergence magnitude (0 on legacy path)
-         **/
-        static constexpr uint16_t KEEPALIVE_V2_ACK = 0xD101;
-
-        /** Payload sizes (different for each direction) **/
-        static constexpr uint32_t KEEPALIVE_V2_PAYLOAD_SIZE     = 8;   // miner → node
-        static constexpr uint32_t KEEPALIVE_V2_ACK_PAYLOAD_SIZE = 32;  // node → miner
+        static constexpr uint32_t KEEPALIVE_PAYLOAD_SIZE     = 8;   // miner → node
+        static constexpr uint32_t KEEPALIVE_ACK_PAYLOAD_SIZE = 32;  // node → miner
     }
 
     /** Colin AI Diagnostic PING/PONG Opcodes
@@ -326,12 +307,11 @@ namespace LLP
      **/
     inline bool IsUnmirroredDataOpcode(uint16_t opcode)
     {
-        return opcode == KeepAliveV2Opcodes::KEEPALIVE_V2
-            || opcode == KeepAliveV2Opcodes::KEEPALIVE_V2_ACK
-            || opcode == ColinDiagOpcodes::PING_DIAG
+        return opcode == ColinDiagOpcodes::PING_DIAG
             || opcode == ColinDiagOpcodes::PONG_DIAG;
         // Note: SESSION_STATUS / SESSION_STATUS_ACK are mirror-mapped opcodes
         // (not un-mirrored) — they are intentionally NOT listed here.
+        // KEEPALIVE_V2 (0xD100) and KEEPALIVE_V2_ACK (0xD101) have been retired.
     }
 
     /** GetExpectedPayloadSize
@@ -342,12 +322,6 @@ namespace LLP
      **/
     inline uint32_t GetExpectedPayloadSize(uint16_t opcode)
     {
-        if(opcode == KeepAliveV2Opcodes::KEEPALIVE_V2)
-            return KeepAliveV2Opcodes::KEEPALIVE_V2_PAYLOAD_SIZE;     // 8
-
-        if(opcode == KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
-            return KeepAliveV2Opcodes::KEEPALIVE_V2_ACK_PAYLOAD_SIZE; // 28
-
         if(opcode == ColinDiagOpcodes::PING_DIAG
         || opcode == ColinDiagOpcodes::PONG_DIAG)
             return ColinDiagOpcodes::PAYLOAD_SIZE;     // 64
@@ -371,8 +345,6 @@ namespace LLP
     {
         switch(opcode)
         {
-            case KeepAliveV2Opcodes::KEEPALIVE_V2:      return "KEEPALIVE_V2";
-            case KeepAliveV2Opcodes::KEEPALIVE_V2_ACK:  return "KEEPALIVE_V2_ACK";
             case ColinDiagOpcodes::PING_DIAG:            return "PING_DIAG";
             case ColinDiagOpcodes::PONG_DIAG:            return "PONG_DIAG";
             default:                                      return "UNKNOWN_UNMIRRORED";
@@ -380,58 +352,18 @@ namespace LLP
     }
 
     //=========================================================================
-    // KeepAliveV2Frame — 8-byte payload for KEEPALIVE_V2 (miner → node, send side)
+    // KeepaliveAckFrame — 32-byte payload for SESSION_KEEPALIVE response (node → miner)
     //=========================================================================
 
-    /** KeepAliveV2Frame — 8-byte miner → node payload for KEEPALIVE_V2 **/
-    struct KeepAliveV2Frame
-    {
-        uint32_t sequence{0};
-        uint32_t hashPrevBlock_lo32{0};  // low 32 bits of miner's current prevHash (fork canary)
-
-        static constexpr uint32_t PAYLOAD_SIZE = 8;
-
-        /** Serialize — 8-byte big-endian wire format **/
-        std::vector<uint8_t> Serialize() const
-        {
-            std::vector<uint8_t> v;
-            v.reserve(8);
-            v.push_back((sequence           >> 24) & 0xFF);
-            v.push_back((sequence           >> 16) & 0xFF);
-            v.push_back((sequence           >>  8) & 0xFF);
-            v.push_back( sequence                  & 0xFF);
-            v.push_back((hashPrevBlock_lo32  >> 24) & 0xFF);
-            v.push_back((hashPrevBlock_lo32  >> 16) & 0xFF);
-            v.push_back((hashPrevBlock_lo32  >>  8) & 0xFF);
-            v.push_back( hashPrevBlock_lo32         & 0xFF);
-            return v;
-        }
-
-        /** Parse — deserialize 8-byte wire buffer **/
-        bool Parse(const std::vector<uint8_t>& data)
-        {
-            if(data.size() < 8) return false;
-            sequence           = (uint32_t(data[0])<<24)|(uint32_t(data[1])<<16)
-                               |(uint32_t(data[2])<<8)  | uint32_t(data[3]);
-            hashPrevBlock_lo32 = (uint32_t(data[4])<<24)|(uint32_t(data[5])<<16)
-                               |(uint32_t(data[6])<<8)  | uint32_t(data[7]);
-            return true;
-        }
-    };
-
-    //=========================================================================
-    // KeepAliveV2AckFrame — 32-byte payload for KEEPALIVE_V2_ACK (node → miner)
-    //=========================================================================
-
-    /** KeepAliveV2AckFrame — 32-byte node → miner payload (receive side)
+    /** KeepaliveAckFrame — 32-byte node → miner payload (receive side)
      *
-     *  Unified 32-byte wire format used on BOTH KEEPALIVE_V2_ACK (stateless port)
-     *  and SESSION_KEEPALIVE (legacy port) paths.
+     *  Unified 32-byte wire format sent by node in response to SESSION_KEEPALIVE.
+     *  (Formerly also used on the now-retired KEEPALIVE_V2_ACK 0xD101 path.)
      *  After parsing, call IsForkDetected() to check for chain divergence.
      *  Feed unified_height / prime_height / hash_height / stake_height to
      *  HeightTracker::OnKeepaliveResponse().
      **/
-    struct KeepAliveV2AckFrame
+    struct KeepaliveAckFrame
     {
         uint32_t session_id{0};          // [0-3]  LE — session validation
         uint32_t hashPrevBlock_lo32{0};  // [4-7]  BE — echo of miner's fork canary (0 on legacy path)
@@ -459,7 +391,7 @@ namespace LLP
             return (fork_score > 0) && (hash_tip_lo32 != myHashPrevBlock_lo32);
         }
 
-        /** Parse — unified 32-byte wire format, used on BOTH SESSION_KEEPALIVE and KEEPALIVE_V2_ACK paths **/
+        /** Parse — unified 32-byte wire format for SESSION_KEEPALIVE response **/
         bool Parse(const std::vector<uint8_t>& data)
         {
             if(data.size() < 32) return false;
@@ -485,6 +417,9 @@ namespace LLP
             return true;
         }
     };
+
+    /// Backward-compatibility alias (code that still references the old name compiles).
+    using KeepAliveV2AckFrame = KeepaliveAckFrame;
 
     //=========================================================================
     // SessionStatusFrame — 8-byte miner → node payload for SESSION_STATUS
