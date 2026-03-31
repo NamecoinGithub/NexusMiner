@@ -216,13 +216,30 @@ void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
         }
     });
 
-    // Set up authentication handler for secondary lane
+    // Set up authentication handler for secondary lane.
+    // Wire the full m_session_authenticated_handler callback (set by Worker_manager)
+    // so that in-band re-auth via login_on_active_connection() on the secondary
+    // protocol still triggers timers, recovery transitions, and template requests.
+    // Without this, secondary re-auth only updated DualConnectionManager — the
+    // Worker_manager never knew auth succeeded and the miner would stall.
     m_secondary_protocol->set_session_authenticated_handler([this](uint32_t sid) {
         // Update DualConnectionManager: secondary (legacy) lane is now authenticated and alive
         if (m_dcm && sid != 0) {
             m_dcm->set_legacy_alive(true);
             m_logger->info("[NodeSession:{}] Secondary lane (LEGACY) authenticated → DualConnectionManager updated",
                           m_node_label);
+        }
+
+        if (m_session_authenticated_handler) {
+            m_session_authenticated_handler(sid);
+        }
+    });
+
+    // Wire session expired handler to secondary protocol (same as primary)
+    // so SESSION_EXPIRED on the secondary lane triggers Worker_manager recovery.
+    m_secondary_protocol->set_session_expired_handler([this]() {
+        if (m_session_expired_handler) {
+            m_session_expired_handler();
         }
     });
 
@@ -450,7 +467,12 @@ void NodeSession::handle_secondary_connection_result(network::Result::Code resul
                       m_node_label,
                       (lane == ProtocolLane::STATELESS ? "STATELESS" : "LEGACY"));
 
-        // Start authentication
+        // Invariant: This lambda MUST call m_session_authenticated_handler on success.
+        // Without it, Worker_manager never resets timers, never triggers recovery
+        // transitions, and never requests the initial GET_BLOCK — leaving workers
+        // stuck at "NO VALID TEMPLATE" even though the node considers the session
+        // fully authenticated. This mirrors the pattern in set_session_authenticated_handler()
+        // and the deferred path in connect_secondary().
         auto auth_payload = m_secondary_protocol->login([this](bool login_result) {
             if (!login_result) {
                 m_logger->error("[NodeSession:{}] Secondary authentication failed", m_node_label);
@@ -458,6 +480,18 @@ void NodeSession::handle_secondary_connection_result(network::Result::Code resul
             }
 
             m_logger->info("[NodeSession:{}] Secondary authentication succeeded", m_node_label);
+
+            // Update DualConnectionManager: secondary lane is now alive
+            if (m_dcm) {
+                m_dcm->set_legacy_alive(true);
+                m_logger->info("[NodeSession:{}] Secondary lane (LEGACY) authenticated → DualConnectionManager updated",
+                              m_node_label);
+            }
+
+            // Notify Worker_manager so it resets timers and requests initial GET_BLOCK
+            if (m_session_authenticated_handler) {
+                m_session_authenticated_handler(m_secondary_protocol->get_session_id());
+            }
         });
 
         if (auth_payload && !auth_payload->empty()) {
@@ -466,21 +500,31 @@ void NodeSession::handle_secondary_connection_result(network::Result::Code resul
     }
 }
 
+std::pair<network::Connection::Sptr, std::shared_ptr<protocol::Solo>>
+NodeSession::select_active_pair() const
+{
+    // Single authoritative source for primary→secondary fallback logic.
+    // All three guards are required: connection object must exist, protocol must
+    // exist, and the connected flag must be set.  This mirrors the invariants that
+    // Connection::transmit() expects (non-null handler, open socket).
+    if (m_primary_connection && m_primary_protocol && m_primary_connected) {
+        return {m_primary_connection, m_primary_protocol};
+    }
+    if (m_secondary_connection && m_secondary_protocol && m_secondary_connected) {
+        return {m_secondary_connection, m_secondary_protocol};
+    }
+    return {nullptr, nullptr};
+}
+
 bool NodeSession::transmit(network::Shared_payload data)
 {
     if (m_stopped || !data || data->empty()) {
         return false;
     }
 
-    // Try primary connection first
-    if (m_primary_connection && m_primary_connected) {
-        m_primary_connection->transmit(data);
-        return true;
-    }
-
-    // Fallback to secondary
-    if (m_secondary_connection && m_secondary_connected) {
-        m_secondary_connection->transmit(data);
+    auto [conn, proto] = select_active_pair();
+    if (conn) {
+        conn->transmit(data);
         return true;
     }
 
@@ -490,16 +534,7 @@ bool NodeSession::transmit(network::Shared_payload data)
 
 std::shared_ptr<protocol::Solo> NodeSession::get_active_protocol() const
 {
-    // Mirror transmit()'s exact fallback logic, including connection-object
-    // presence checks, so the returned protocol always matches the connection
-    // that transmit() would actually select.
-    if (m_primary_connection && m_primary_protocol && m_primary_connected) {
-        return m_primary_protocol;
-    }
-    if (m_secondary_connection && m_secondary_protocol && m_secondary_connected) {
-        return m_secondary_protocol;
-    }
-    return nullptr;
+    return select_active_pair().second;
 }
 
 uint32_t NodeSession::session_id() const
@@ -658,6 +693,17 @@ void NodeSession::set_session_expired_handler(Session_expired_handler handler)
             }
         });
     }
+
+    // Also wire to secondary protocol if it exists already.
+    // This ensures SESSION_EXPIRED on the secondary lane also triggers the
+    // Worker_manager's recovery path (in-band re-auth / reconnect).
+    if (m_secondary_protocol) {
+        m_secondary_protocol->set_session_expired_handler([this]() {
+            if (m_session_expired_handler) {
+                m_session_expired_handler();
+            }
+        });
+    }
 }
 
 void NodeSession::set_session_authenticated_handler(Session_authenticated_handler handler)
@@ -674,6 +720,24 @@ void NodeSession::set_session_authenticated_handler(Session_authenticated_handle
             if (m_dcm && sid != 0) {
                 m_dcm->set_stateless_alive(true);
                 m_logger->info("[NodeSession:{}] Primary lane (STATELESS) authenticated → DualConnectionManager updated",
+                              m_node_label);
+            }
+
+            if (m_session_authenticated_handler) {
+                m_session_authenticated_handler(sid);
+            }
+        });
+    }
+
+    // Also wire to secondary protocol if it exists already.
+    // This ensures in-band re-auth via login_on_active_connection() on the
+    // secondary lane still triggers the full Worker_manager callback chain
+    // (timers, recovery transitions, template requests).
+    if (m_secondary_protocol) {
+        m_secondary_protocol->set_session_authenticated_handler([this](uint32_t sid) {
+            if (m_dcm && sid != 0) {
+                m_dcm->set_legacy_alive(true);
+                m_logger->info("[NodeSession:{}] Secondary lane (LEGACY) authenticated → DualConnectionManager updated",
                               m_node_label);
             }
 
@@ -761,50 +825,30 @@ void NodeSession::set_keepalive_interval(uint16_t hours)
 
 network::Shared_payload NodeSession::request_work(protocol::GetBlockReason reason)
 {
-    if (m_primary_protocol && m_primary_connected) {
-        return m_primary_protocol->get_work(reason);
-    }
-    if (m_secondary_protocol && m_secondary_connected) {
-        return m_secondary_protocol->get_work(reason);
-    }
-    return nullptr;
+    auto protocol = get_active_protocol();
+    if (!protocol) return nullptr;
+    return protocol->get_work(reason);
 }
 
 network::Shared_payload NodeSession::submit_block(const std::vector<uint8_t>& block_data, uint64_t nonce)
 {
-    // Try primary first
-    if (m_primary_protocol && m_primary_connected && m_primary_protocol->is_authenticated()) {
-        return m_primary_protocol->submit_block(block_data, nonce);
-    }
-
-    // Fallback to secondary
-    if (m_secondary_protocol && m_secondary_connected && m_secondary_protocol->is_authenticated()) {
-        return m_secondary_protocol->submit_block(block_data, nonce);
-    }
-
-    return nullptr;
+    auto protocol = get_active_protocol();
+    if (!protocol || !protocol->is_authenticated()) return nullptr;
+    return protocol->submit_block(block_data, nonce);
 }
 
 network::Shared_payload NodeSession::send_get_round()
 {
-    if (m_primary_protocol && m_primary_connected) {
-        return m_primary_protocol->send_get_round();
-    }
-    if (m_secondary_protocol && m_secondary_connected) {
-        return m_secondary_protocol->send_get_round();
-    }
-    return nullptr;
+    auto protocol = get_active_protocol();
+    if (!protocol) return nullptr;
+    return protocol->send_get_round();
 }
 
 network::Shared_payload NodeSession::send_session_keepalive()
 {
-    if (m_primary_protocol && m_primary_connected) {
-        return m_primary_protocol->send_session_keepalive();
-    }
-    if (m_secondary_protocol && m_secondary_connected) {
-        return m_secondary_protocol->send_session_keepalive();
-    }
-    return nullptr;
+    auto protocol = get_active_protocol();
+    if (!protocol) return nullptr;
+    return protocol->send_session_keepalive();
 }
 
 bool NodeSession::login_on_active_connection(std::function<void(bool)> login_callback)
@@ -814,25 +858,21 @@ bool NodeSession::login_on_active_connection(std::function<void(bool)> login_cal
         return false;
     }
 
-    // Select the protocol+connection pairing that transmit() would use.
-    // This guarantees the auth payload is framed for the correct lane.
-    // Note: Solo::login() always invokes the callback synchronously before
-    // returning (true on success, false on error), so the callback is never lost.
-    if (m_primary_connection && m_primary_protocol && m_primary_connected) {
-        auto auth_payload = m_primary_protocol->login(login_callback);
+    // Use select_active_pair() for atomic connection+protocol selection.
+    // Both are checked together so the auth payload is always framed for
+    // the correct lane (no TOCTOU between protocol selection and transmit).
+    auto [conn, proto] = select_active_pair();
+    if (conn && proto) {
+        auto auth_payload = proto->login(login_callback);
         if (auth_payload && !auth_payload->empty()) {
-            m_primary_connection->transmit(auth_payload);
+            conn->transmit(auth_payload);
             return true;
         }
-        return false;
-    }
-
-    if (m_secondary_connection && m_secondary_protocol && m_secondary_connected) {
-        auto auth_payload = m_secondary_protocol->login(login_callback);
-        if (auth_payload && !auth_payload->empty()) {
-            m_secondary_connection->transmit(auth_payload);
-            return true;
-        }
+        // Solo::login() can return empty (without invoking the callback) when
+        // PacketBuilder::build() fails — e.g. if the Falcon keys are not yet
+        // configured or the session state is inconsistent.  Fire the callback
+        // ourselves so callers always receive notification and can schedule a retry.
+        if (login_callback) login_callback(false);
         return false;
     }
 
