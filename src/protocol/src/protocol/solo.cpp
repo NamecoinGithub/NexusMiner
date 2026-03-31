@@ -1720,11 +1720,6 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
     {
         on_ping_diag(packet, connection);
     }
-    else if (packet.m_is_uint16_opcode &&
-             packet.m_header == ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK)
-    {
-        on_keepalive_ack(packet, connection);
-    }
     else if (packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK)
           || packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY))
     {
@@ -1786,8 +1781,6 @@ bool Solo::requires_active_session_packet(Packet const& packet)
            matches_opcode(packet, Packet::NEW_ROUND) ||
            matches_opcode(packet, Packet::OLD_ROUND) ||
            matches_opcode(packet, Packet::MINER_REWARD_RESULT) ||
-           (packet.m_is_uint16_opcode &&
-            packet.m_header == ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK) ||
            packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK) ||
            packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY);
 }
@@ -3470,16 +3463,13 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
     }
     else if (matches_opcode(packet, Packet::SESSION_KEEPALIVE))
     {
-        // KEEPALIVE receive handler: branch by payload length
-        //   32 bytes → unified keepalive reply (v2): KeepAliveV2AckFrame; provides
-        //              unified_height / prime_height / hash_height / stake_height / fork_score
-        //   4 bytes  → v1 reply (legacy nodes only): remaining session timeout (LE u32)
-        //              heights NOT updated — HeightTracker must rely on push notifications instead
+        // KEEPALIVE receive handler: unified 32-byte response
+        //   Provides unified_height / prime_height / hash_height / stake_height / fork_score
         m_logger->debug("[Solo Session] Received SESSION_KEEPALIVE response ({} bytes)", packet.m_length);
 
         if (packet.m_data && packet.m_length == 32) {
-            // ── Unified 32-byte keepalive reply — parse using KeepAliveV2AckFrame ──
-            ::LLP::KeepAliveV2AckFrame unified;
+            // ── Unified 32-byte keepalive reply — parse using KeepaliveAckFrame ──
+            ::LLP::KeepaliveAckFrame unified;
             if (unified.Parse(*packet.m_data))
             {
                 PacketIngressPreflightOptions preflight;
@@ -3507,7 +3497,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
 
                 finalize_keepalive_ack("keepalive ack accepted");
 
-                // Fork canary cross-check (legacy path: hash_tip_lo32 and fork_score will be 0)
+                // Fork canary cross-check
                 // Diagnostic-only: PUSH notification system handles real chain tip advances.
                 if (unified.IsForkDetected(m_last_keepalive_prevhash_lo32))
                 {
@@ -3517,12 +3507,6 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 }
 
             }
-        } else if (packet.m_data && packet.m_length == 4) {
-            // ── KEEPALIVE v1: remaining timeout (4 bytes LE) ─────────────────────
-            uint32_t remaining_timeout = serialization::read_uint32_le(*packet.m_data);
-            m_logger->debug("[Solo Session] Session keepalive acknowledged - {} seconds remaining", remaining_timeout);
-
-            finalize_keepalive_ack("keepalive ack accepted");
         } else if (packet.m_length != 0) {
             // Unexpected payload length — ignore gracefully
             m_logger->debug("[Solo Session] Unexpected KEEPALIVE payload length {} — ignored", packet.m_length);
@@ -3782,75 +3766,6 @@ void Solo::on_ping_diag(Packet const& packet, std::shared_ptr<network::Connectio
             connection->transmit(PacketBuilder::build(m_protocol_lane, 0xE1, pong_bytes));
             m_logger->debug("[Colin PING] PongFrame transmitted (seq #{})",
                 m_colin_ping_handler.last_received_ping().sequence);
-        }
-}
-
-void Solo::on_keepalive_ack(Packet const& packet, std::shared_ptr<network::Connection> connection)
-{
-        /* Exact payload size enforcement for KEEPALIVE_V2_ACK (32 bytes) */
-        std::vector<uint8_t> payload = packet.m_data ? *packet.m_data : std::vector<uint8_t>{};
-        uint32_t nExpected = ::LLP::GetExpectedPayloadSize(::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2_ACK);
-        if(payload.size() != nExpected)
-        {
-            m_logger->warn("[KEEPALIVE_V2] ACK payload size mismatch:"
-                           " expected {} bytes, got {} — discarding",
-                nExpected, payload.size());
-            return;
-        }
-        ::LLP::KeepAliveV2AckFrame ack;
-        if(ack.Parse(payload))
-        {
-            PacketIngressPreflightOptions preflight;
-            preflight.owner = &m_last_keepalive_request_owner;
-            preflight.packet_session_id = ack.session_id;
-            if (!run_packet_ingress_preflight("Solo KeepaliveAck", preflight)) {
-                return;
-            }
-
-            m_logger->debug("[KEEPALIVE_V2] ACK received: session_id=0x{:08x}"
-                            " unified_height={} prime_height={} hash_height={} stake_height={}"
-                            " hashPrevBlock_lo32=0x{:08x} hash_tip_lo32=0x{:08x} fork_score={}",
-                ack.session_id,
-                ack.unified_height, ack.prime_height, ack.hash_height, ack.stake_height,
-                ack.hashPrevBlock_lo32, ack.hash_tip_lo32, ack.fork_score);
-
-            // Session ID validation (Gap 1): detect stale ACKs from a previous session.
-            // session_id == 0 means legacy / unset — skip check.
-            if (handle_session_id_mismatch(ack.session_id))
-                return;
-
-            finalize_keepalive_ack("keepalive ack accepted");
-
-            // Update HeightTracker with ACK chain-state heights.
-            m_height_tracker.OnKeepaliveResponse(ack.unified_height,
-                                                   ack.prime_height,
-                                                  ack.hash_height,
-                                                  ack.stake_height,
-                                                  ack.hash_tip_lo32,
-                                                  ack.fork_score);
-
-            // Fork detection: compare node's chain tip against the miner's own locally
-            // stored prevHash lo32 (NOT the echoed value from the ACK, which could be
-            // tampered to mask a real fork).
-            if(ack.IsForkDetected(m_last_keepalive_prevhash_lo32))
-            {
-                m_logger->warn("[KEEPALIVE_V2] Fork detected!"
-                               " miner_prevHash_lo32=0x{:08x} node_tip_lo32=0x{:08x} fork_score={}",
-                    m_last_keepalive_prevhash_lo32, ack.hash_tip_lo32, ack.fork_score);
-
-                // Request a fresh template immediately to resolve the fork.
-                // Node's 2-second AutoCoolDown is the sole rate limiter.
-                if(connection)
-                {
-                    auto work_payload = get_work(GetBlockReason::BLOCK_REJECTED);
-                    if(work_payload && !work_payload->empty())
-                    {
-                        connection->transmit(work_payload);
-                        mark_get_block_pending(GetBlockReason::BLOCK_REJECTED);
-                        m_logger->info("[KEEPALIVE_V2] Fresh template requested for fork recovery");
-                    }
-                }
-            }
         }
 }
 

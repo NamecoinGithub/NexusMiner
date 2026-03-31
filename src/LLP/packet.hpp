@@ -61,7 +61,7 @@ namespace nexusminer
 
 		// Helper function to check if a uint16_t opcode needs 2-byte wire framing.
 		// Covers mirror-mapped stateless opcodes (0xD000-0xD0FF) AND un-mirrored
-		// data opcodes such as KEEPALIVE_V2 (0xD100) and KEEPALIVE_V2_ACK (0xD101).
+		// data opcodes such as PING_DIAG (0xD0E0) and PONG_DIAG (0xD0E1).
 		inline bool is_uint16_wire_opcode(uint16_t opcode) {
 			return LLP::IsStatelessOpcode(opcode) || ::LLP::IsUnmirroredDataOpcode(opcode);
 		}
@@ -1078,7 +1078,7 @@ namespace nexusminer
 			// Validate that this is a valid opcode for stateless lane
 			// Accept properly mirrored stateless opcodes (0xD0xx) OR
 			// Accept un-mirrored push notification opcodes (217, 218) due to node bug OR
-			// Accept un-mirrored data opcodes (KEEPALIVE_V2=0xD100, KEEPALIVE_V2_ACK=0xD101)
+			// Accept un-mirrored data opcodes (PING_DIAG=0xD0E0, PONG_DIAG=0xD0E1)
 			bool is_valid_stateless = PacketConstants::is_stateless_opcode(header16);
 			bool is_unmirrored_push_notification = (header16 == LLP::PRIME_BLOCK_AVAILABLE || 
 			                                        header16 == LLP::HASH_BLOCK_AVAILABLE);

@@ -263,9 +263,6 @@ public:
     void start_keepalive_timer();
     void stop_keepalive_timer();
     network::Shared_payload build_keepalive_packet() const;
-    /// Build a KEEPALIVE_V2 (0xD100) packet with sequence counter and hashPrevBlock fork canary.
-    /// Stateless lane only — returns empty on legacy lane.
-    network::Shared_payload build_keepalive_v2_packet();
     network::Shared_payload build_session_status_packet(bool degraded, bool has_template,
                                                         bool workers_running,
                                                         bool secondary_up) const;
@@ -307,7 +304,6 @@ private:
     std::deque<SessionEvent> m_session_event_journal;
 
     uint16_t m_keepalive_interval_hours{12};
-    std::atomic<uint32_t> m_keepalive_v2_sequence{0};  // Monotonic counter for KEEPALIVE_V2 frames
     bool m_preserve_genesis_on_disconnect{true};
     ProtocolLane m_protocol_lane{ProtocolLane::UNKNOWN};
 

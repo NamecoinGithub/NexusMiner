@@ -1028,16 +1028,6 @@ void SessionManager::send_keepalive(const char* cadence)
     connection->transmit(payload);
     m_logger->info("[SessionManager] SESSION_KEEPALIVE sent ({}) for session 0x{:08X}",
                   cadence, session_id);
-
-    // Also send KEEPALIVE_V2 (0xD100) on stateless lane — this is the opcode the
-    // node uses to extend the 24-hour session window.  SESSION_KEEPALIVE is sent
-    // first (above) for backward compatibility; KEEPALIVE_V2 carries the fork canary.
-    auto v2_payload = build_keepalive_v2_packet();
-    if (v2_payload && !v2_payload->empty()) {
-        connection->transmit(v2_payload);
-        m_logger->info("[SessionManager] KEEPALIVE_V2 sent ({}, seq={}) for session 0x{:08X}",
-                      cadence, m_keepalive_v2_sequence - 1, session_id);
-    }
 }
 
 network::Shared_payload SessionManager::build_keepalive_packet() const
@@ -1057,8 +1047,15 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
         return {};
     }
 
+    // 8-byte payload:
+    //   [0-3] session_id          (LE — matches all other session_id fields in protocol)
+    //   [4-7] hashPrevBlock_lo32  (raw prevblock_suffix bytes)
     std::vector<uint8_t> payload;
-    serialization::append_uint32_le(payload, session_id);
+    payload.reserve(8);
+    payload.push_back(static_cast<uint8_t>( session_id        & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id >>  8) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id >> 16) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id >> 24) & 0xFF));
     payload.insert(payload.end(), prevblock_suffix.begin(), prevblock_suffix.end());
 
     Packet packet = (lane == ProtocolLane::STATELESS)
@@ -1067,40 +1064,6 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
         : Packet{ static_cast<uint8_t>(Packet::SESSION_KEEPALIVE),
                   std::make_shared<network::Payload>(payload) };
 
-    return packet.get_bytes();
-}
-
-network::Shared_payload SessionManager::build_keepalive_v2_packet()
-{
-    uint32_t session_id;
-    ProtocolLane lane;
-    std::array<uint8_t, 4> prevblock_suffix;
-    {
-        std::lock_guard<std::mutex> lock(m_session_mutex);
-        session_id = m_session.session_id;
-        lane = m_protocol_lane;
-        prevblock_suffix = m_session.prevblock_suffix;
-    }
-    if (session_id == 0) return {};
-    // KEEPALIVE_V2 (0xD100) is stateless-only — not available on legacy lane
-    if (lane != ProtocolLane::STATELESS) return {};
-
-    // Build the 8-byte big-endian KeepAliveV2Frame:
-    //   [0-3] sequence           (monotonic counter)
-    //   [4-7] hashPrevBlock_lo32 (fork canary from prevblock_suffix)
-    uint32_t seq = ++m_keepalive_v2_sequence;
-    uint32_t prevhash_lo32 = (static_cast<uint32_t>(prevblock_suffix[0]) << 24)
-                           | (static_cast<uint32_t>(prevblock_suffix[1]) << 16)
-                           | (static_cast<uint32_t>(prevblock_suffix[2]) <<  8)
-                           |  static_cast<uint32_t>(prevblock_suffix[3]);
-
-    ::LLP::KeepAliveV2Frame frame;
-    frame.sequence           = seq;
-    frame.hashPrevBlock_lo32 = prevhash_lo32;
-    auto v2_payload = frame.Serialize();
-
-    Packet packet{ ::LLP::KeepAliveV2Opcodes::KEEPALIVE_V2,
-                   std::make_shared<network::Payload>(v2_payload) };
     return packet.get_bytes();
 }
 
