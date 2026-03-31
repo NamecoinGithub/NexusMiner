@@ -335,8 +335,8 @@ static void test_height_tracker_tip_advance_not_fork()
 
     HeightTracker tracker;
 
-    // Simulate push at height 5000
-    tracker.OnPushNotification(5000, 200, 0x1d00ffff);
+    // Bug #2 fix: Set canonical state so OnTemplateReceived captures properly
+    tracker.OnBlockDataReceived(5000, 200, 0x1d00ffff, uint1024_t{});
     auto snap1 = tracker.GetSnapshot();
     print_test_result("Initial unified_height = 5000", snap1.unified_height == 5000);
 
@@ -346,17 +346,14 @@ static void test_height_tracker_tip_advance_not_fork()
     print_test_result("template_unified_height set to 5000",
                       snap1b.template_unified_height == 5000);
 
-    // Simulate GET_ROUND advancing tip to 5001
-    tracker.OnGetRound(5001, 201, 100, 50);
+    // Simulate canonical advance to 5001 (BLOCK_DATA is the canonical source)
+    tracker.OnBlockDataReceived(5001, 201, 0x1d00ffff, uint1024_t{});
     auto snap2 = tracker.GetSnapshot();
     print_test_result("Unified advanced to 5001 via GET_ROUND",
                       snap2.unified_height == 5001);
     // is_tip_moved() checks unified_height > template_unified_height
     print_test_result("is_tip_moved() after GET_ROUND advance (tip > template)",
                       snap2.is_tip_moved());
-
-    // Tip move is informational (⚡), not a fork (⚠)
-    // Verify template received resets tip_moved
     tracker.OnTemplateReceived(1, 202);
     auto snap3 = tracker.GetSnapshot();
     print_test_result("is_tip_moved() reset after template received",

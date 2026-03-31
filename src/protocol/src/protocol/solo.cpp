@@ -202,10 +202,9 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             
             // Show best-known unified TIP from all sources (canonical, push, round).
             // During rapid block production, GET_ROUND may lag behind BLOCK_DATA by
-            // several blocks. The snapshot's max() composition gives the most accurate
-            // picture.  Template height = tip + 1 in normal operation.
+            // Log unified tip from canonical BLOCK_DATA. Template height = tip + 1.
             auto feed_snap = m_height_tracker.GetSnapshot();
-            m_logger->info("[Solo]   Unified tip:     {} (best known from all sources)", feed_snap.unified_height);
+            m_logger->info("[Solo]   Unified tip:     {} (BLOCK_DATA canonical)", feed_snap.unified_height);
             if (m_last_round_status.height > 0 && m_last_round_status.height < feed_snap.unified_height) {
                 m_logger->debug("[Solo]   GET_ROUND tip:   {} (lagging — polled data, not authoritative)",
                     m_last_round_status.height);
@@ -215,13 +214,12 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
                 m_logger->info("[Solo]   Channel height:  {} (channel target from BLOCK_DATA metadata)", tmpl.nChannelHeight);
             } else {
                 // nChannelHeight == 0: the node did not provide channel height in BLOCK_DATA
-                // metadata, or this is a genesis/startup edge case. Show HeightTracker
-                // estimate for operator visibility.
+                // metadata, or this is a genesis/startup edge case.
                 if (feed_snap.channel_height > 0) {
-                    m_logger->info("[Solo]   Channel height:  ~{} (estimated from tracker, pending node confirmation)",
+                    m_logger->info("[Solo]   Channel height:  ~{} (BLOCK_DATA canonical, pending node confirmation)",
                         feed_snap.channel_height);
                 } else {
-                    m_logger->info("[Solo]   Channel height:  (pending — awaiting first GET_ROUND)");
+                    m_logger->info("[Solo]   Channel height:  (pending — awaiting first BLOCK_DATA)");
                 }
             }
             m_logger->info("[Solo]   Difficulty:      0x{:08x}", nBits);
@@ -1133,14 +1131,17 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
     }
 
     // ── GET_BLOCK deduplication guard ────────────────────────────────────────
-    // Delegated to the centralized GetBlockDedupGuard.
+    // Bug #3 fix: use canonical_unified_height for the height key (not composite).
+    // Push/GET_ROUND reasons already bypass height dedup via should_bypass_height_dedup(),
+    // so the height key only matters for same-height BLOCK_DATA responses.
+    // Using composite caused inconsistent dedup decisions when push/round raced ahead.
     {
         auto snap = m_height_tracker.GetSnapshot();
-        uint32_t cur_unified = snap.unified_height;
+        uint32_t canonical_unified = snap.canonical_unified_height;
         bool have_valid_template = m_template_interface &&
                                    m_template_interface->has_valid_template();
 
-        auto verdict = m_dedup_guard.check(reason, cur_unified, have_valid_template);
+        auto verdict = m_dedup_guard.check(reason, canonical_unified, have_valid_template);
         if (verdict != GetBlockDedupGuard::Verdict::ALLOW) {
             m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
             return nullptr;
@@ -1169,7 +1170,12 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
         // set without being cleared (clear() only fires in on_block_data / on_stateless_get_block).
         {
             auto snap = m_height_tracker.GetSnapshot();
-            m_dedup_guard.record_transmission(snap.unified_height);
+            m_dedup_guard.record_transmission(snap.canonical_unified_height);
+            // Mark in-flight so cross-handler dedup (GET_ROUND after PUSH) can
+            // detect that a response is already expected for this height.
+            m_pending_get_block.mark_pending(snap.canonical_unified_height, reason);
+            m_logger->debug("[Solo] GET_BLOCK in-flight marked: canonical_unified={} reason={}",
+                            snap.canonical_unified_height, reason_name(reason));
         }
         m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
 
@@ -1901,22 +1907,14 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
         // detect when the node's channel tip reaches or passes this template's target.
         // Skip genesis (channel_height == 0) to avoid false-positive staleness at startup.
         //
-        // Use the effective channel height (max of metadata and tracker) to prevent
-        // a stale GET_BLOCK response from setting a channel_target below what push
-        // notifications have already established.
-        uint32_t effectiveChannelHeight = nChannelHeight;
-        {
-            auto ht_snap = m_height_tracker.GetSnapshot();
-            if (ht_snap.channel_height > effectiveChannelHeight) {
-                m_logger->info("[Solo BLOCK_DATA] Metadata channel_height={} stale vs tracker={} — using tracker value",
-                    nChannelHeight, ht_snap.channel_height);
-                effectiveChannelHeight = ht_snap.channel_height;
-            }
-        }
-        if (effectiveChannelHeight > 0) {
-            m_height_tracker.OnTemplateReceived(m_channel, effectiveChannelHeight + 1);
+        // Bug #5 fix: use raw BLOCK_DATA metadata channel_height directly.
+        // Previously used max(metadata, composite tracker) which allowed stale
+        // push data to inflate the channel_target beyond what BLOCK_DATA reported.
+        // BLOCK_DATA metadata is authoritative — trust the node.
+        if (nChannelHeight > 0) {
+            m_height_tracker.OnTemplateReceived(m_channel, nChannelHeight + 1);
             m_logger->info("[Solo BLOCK_DATA] HeightTracker fed: unified={} channel={} nBits=0x{:08x} → channel_target={}",
-                nUnifiedHeight, effectiveChannelHeight, nBitsMeta, effectiveChannelHeight + 1);
+                nUnifiedHeight, nChannelHeight, nBitsMeta, nChannelHeight + 1);
         }
 
         // Strip the 12-byte prefix; pass only the 216-byte Block::Serialize() output to read_template
@@ -1948,7 +1946,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
             m_logger->info("[Solo READ] Template validated successfully in {} μs",
                 validation_result.validation_time.count());
             if (!finalize_and_feed_current_template(nUnifiedHeight,
-                                                    effectiveChannelHeight,
+                                                    nChannelHeight,
                                                     "Solo FEED",
                                                     true)) {
                 m_logger->error("[Solo FEED] Recovery: Block will be discarded, requesting new work");
@@ -3737,26 +3735,17 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
         update_height_state(unified_height, channel_height, difficulty,
                             HeightTracker::UpdateSource::TEMPLATE);
 
-        // ── channel_target: use effective channel height (max of metadata + tracker) ─
-        // Prevents a stale GET_BLOCK response from setting channel_target below what
-        // push notifications have already established.
-        uint32_t effectiveChannelHeight = channel_height;
-        {
-            auto ht_snap = m_height_tracker.GetSnapshot();
-            if (ht_snap.channel_height > effectiveChannelHeight) {
-                m_logger->info("[Solo Stateless] Metadata channel_height={} stale vs tracker={} — using tracker value",
-                    channel_height, ht_snap.channel_height);
-                effectiveChannelHeight = ht_snap.channel_height;
-            }
-        }
-        if (effectiveChannelHeight > 0) {
-            m_height_tracker.OnTemplateReceived(m_channel, effectiveChannelHeight + 1);
+        // ── channel_target: use raw BLOCK_DATA metadata channel_height (Bug #5 fix) ─
+        // Previously used max(metadata, composite tracker) which allowed stale push
+        // data to inflate the channel_target. BLOCK_DATA metadata is authoritative.
+        if (channel_height > 0) {
+            m_height_tracker.OnTemplateReceived(m_channel, channel_height + 1);
             m_logger->info("[Solo Stateless] HeightTracker fed: unified={} channel={} nBits=0x{:08x} → channel_target={}",
-                unified_height, effectiveChannelHeight, difficulty, effectiveChannelHeight + 1);
+                unified_height, channel_height, difficulty, channel_height + 1);
         }
 
         if (!finalize_and_feed_current_template(unified_height,
-                                                effectiveChannelHeight,
+                                                channel_height,
                                                 "Solo Stateless",
                                                 false)) {
             m_logger->error("[Solo Stateless] Failed to finalize decoded template");
@@ -4667,26 +4656,29 @@ bool Solo::validate_current_template()
     uint32_t expectedChannel = snap.expected_template_target();
     
     // Validation: template must target a block still in the future.
-    // During bursts, push lag can cause channel_height to trail nChannelHeight by
-    // multiple blocks. nChannelHeight > channel_height means we are still valid.
-    // Only discard when the chain tip has ALREADY MET OR PASSED our target.
-    // The node is the authoritative source of nChannelHeight; if it gave us
-    // nChannelHeight=N, that IS the right target regardless of our local tracker state.
+    // Bug #4 fix: use CANONICAL channel_height for this comparison (not composite).
+    // Previously used snap.channel_height which is max(canonical, push, round).
+    // This caused false template rejection when PUSH was ahead of BLOCK_DATA:
+    // e.g., PUSH says channel=150 but BLOCK_DATA template targets 146 —
+    // composite check (146 <= 150) falsely rejected a valid template.
+    // Now uses canonical only: BLOCK_DATA says channel=140, template targets 146,
+    // check (146 <= 140) = false → template accepted ✓
+    uint32_t authoritative_channel_height = snap.canonical_channel_height;
     if (expectedChannel != 0 && tmpl->nChannelHeight != 0) {
-        if (tmpl->nChannelHeight <= snap.channel_height) {
-            m_logger->warn("[Solo Validate] Template target {} already surpassed by chain tip {} — discarding",
-                tmpl->nChannelHeight, snap.channel_height);
+        if (tmpl->nChannelHeight <= authoritative_channel_height) {
+            m_logger->warn("[Solo Validate] Template target {} already surpassed by canonical chain tip {} — discarding",
+                tmpl->nChannelHeight, authoritative_channel_height);
             m_template_interface->discard_template("Channel height stale");
             return false;
         }
         // Note: nChannelHeight > expectedChannel (more than 1 ahead) is VALID during burst
         // recovery — log informationally so operators can observe burst lag without alarming.
         if (tmpl->nChannelHeight != expectedChannel) {
-            m_logger->info("[Solo Validate] ℹ️  nChannelHeight={} is {} blocks ahead of local tracker tip={} "
+            m_logger->info("[Solo Validate] ℹ️  nChannelHeight={} is {} blocks ahead of canonical channel tip={} "
                            "(normal during burst recovery — template is valid)",
                            tmpl->nChannelHeight,
-                           tmpl->nChannelHeight - snap.channel_height,
-                           snap.channel_height);
+                           tmpl->nChannelHeight - authoritative_channel_height,
+                           authoritative_channel_height);
         }
     }
 

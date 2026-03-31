@@ -869,8 +869,8 @@ int main()
         auto push_snapshot = solo.get_height_tracker_snapshot();
 
         print_test_result("Disconnected-session push does not trigger hard recovery handler", !recovery_called);
-        print_test_result("Disconnected-session push updates unified height", push_snapshot.unified_height == 9200);
-        print_test_result("Disconnected-session push updates channel height", push_snapshot.channel_height == 100);
+        print_test_result("Disconnected-session push updates unified height", push_snapshot.push_unified_height == 9200);
+        print_test_result("Disconnected-session push updates channel height", push_snapshot.push_channel_height == 100);
         print_test_result("Disconnected-session push discards template when disconnected",
             !solo.get_template_interface()->has_valid_template());
     }
@@ -1167,8 +1167,8 @@ int main()
         // so that HeightTracker reflects the new unified height.
         protocol::HeightTracker tracker;
 
-        // Seed tracker with initial state: unified=100, prime=50
-        tracker.OnPushNotification(100, 50, 0x1d00ffff);
+        // Seed tracker with initial canonical state: unified=100, prime=50
+        tracker.OnBlockDataReceived(100, 50, 0x1d00ffff, uint1024_t{});
 
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_PRIME);
         protocol::PushNotificationHandler handler(logger, current_channel);
@@ -1202,10 +1202,10 @@ int main()
             work_requested_26);
         print_test_result("Cross-channel tip advance: update_height_fn received correct unified height",
             updated_unified == 101);
-        // After update, tracker snapshot must reflect the new height
+        // After update, tracker snapshot must reflect the new push height
         auto snap = tracker.GetSnapshot();
         print_test_result("Cross-channel tip advance: HeightTracker snapshot updated to new unified height",
-            snap.unified_height == 101);
+            snap.push_unified_height == 101);
     }
 
     // ====================================================================
@@ -1215,7 +1215,8 @@ int main()
     std::cout << "\nTest 27: Cross-channel liveness push (same height) does not call update_height_fn or request_work_fn" << std::endl;
     {
         protocol::HeightTracker tracker;
-        tracker.OnPushNotification(100, 50, 0x1d00ffff);
+        // Seed canonical state so push at same height is treated as liveness
+        tracker.OnBlockDataReceived(100, 50, 0x1d00ffff, uint1024_t{});
 
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_PRIME);
         protocol::PushNotificationHandler handler(logger, current_channel);
@@ -1305,7 +1306,8 @@ int main()
         // so HeightTracker records unified=101.  The second push at unified=101 must
         // see snap.unified_height == notification_unified_height and skip request_work_fn.
         protocol::HeightTracker tracker;
-        tracker.OnPushNotification(100, 50, 0x1d00ffff);
+        // Seed canonical state so cross-channel dedup works against canonical unified_height
+        tracker.OnBlockDataReceived(100, 50, 0x1d00ffff, uint1024_t{});
 
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_PRIME);
         protocol::PushNotificationHandler handler(logger, current_channel);
@@ -1315,7 +1317,10 @@ int main()
         network::Payload payload = create_extended_push_payload(101, 50, 0x1d00ffff, 0x00);
         Packet pkt(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
 
-        auto update_fn     = [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); };
+        auto update_fn     = [&tracker](uint32_t u, uint32_t c, uint32_t d) {
+            tracker.OnPushNotification(u, c, d);
+            tracker.OnBlockDataReceived(u, c, d, uint1024_t{});
+        };
         auto request_fn    = [&request_work_count]() { request_work_count++; };
 
         // First push at unified=101: tip advance, request_work_fn called once

@@ -385,10 +385,11 @@ void ColinAgent::emit_report(
         m_logger->warn("[Colin]  ❌ MINING STOPPED — workers in degraded mode");
     if (m_height_tracker)
     {
-        m_logger->info("[Colin]  📊 Heights │ unified={} prime={} hash={} stake={}  (channel_height={})",
-            ht_snap.unified_height, ht_snap.prime_height,
-            ht_snap.hash_height,    ht_snap.stake_height,
-            ht_snap.channel_height);
+        m_logger->info("[Colin]  📊 Heights │ unified_tip={} channel_tip={}  (BLOCK_DATA canonical)  prime={} hash={} stake={} (diagnostic)",
+            ht_snap.unified_height,
+            ht_snap.channel_height,
+            ht_snap.prime_height,
+            ht_snap.hash_height,    ht_snap.stake_height);
         if (ht_snap.push_prime_height > 0 || ht_snap.push_hash_height > 0) {
             m_logger->info("[Colin]  📡 Push Heights │ prime={} hash={} stake={}  (from 148-byte BLOCK_AVAILABLE)",
                 ht_snap.push_prime_height, ht_snap.push_hash_height, ht_snap.push_stake_height);
@@ -575,6 +576,37 @@ void ColinAgent::emit_report(
                 warnings.push_back(w);
             }
         }
+
+        // ── Per-Source Height Dashboard (TIP/TARGET taxonomy) ──────────────
+        // Shows each height source independently so operators can identify
+        // which source is lagging or racing ahead.  This is the primary
+        // troubleshooting tool for height regression tracking.
+        m_logger->info("[Colin]  🗂️  ── Height Source Dashboard (TIP / TARGET) ──────────");
+        m_logger->info("[Colin]    CANONICAL (BLOCK_DATA) │ unified_tip={}  channel_tip={}  channel_target={}",
+            canonical.canonical_unified_height, canonical.canonical_channel_height,
+            canonical.canonical_channel_target);
+        m_logger->info("[Colin]    PUSH (BLOCK_AVAILABLE)  │ unified_tip={}  channel_tip={}",
+            diag.push_unified_height, diag.push_channel_height);
+        m_logger->info("[Colin]    GET_ROUND               │ unified_tip={}  channel_tip={}  prime={}  hash={}  stake={}",
+            diag.round_unified_height, diag.round_channel_height,
+            diag.round_prime_height, diag.round_hash_height, diag.round_stake_height);
+        m_logger->info("[Colin]    KEEPALIVE               │ unified_tip={}  prime={}  hash={}  stake={}",
+            diag.keepalive_unified_height,
+            diag.keepalive_prime_height, diag.keepalive_hash_height, diag.keepalive_stake_height);
+
+        // Trigger analysis: which sources are ahead of canonical?
+        if (canonical.is_initialized() && diag.is_initialized()) {
+            int32_t push_ahead = static_cast<int32_t>(diag.push_unified_height) -
+                                  static_cast<int32_t>(canonical.canonical_unified_height);
+            int32_t round_ahead = static_cast<int32_t>(diag.round_unified_height) -
+                                   static_cast<int32_t>(canonical.canonical_unified_height);
+            if (push_ahead > 0 || round_ahead > 0) {
+                m_logger->info("[Colin]    TRIGGER DRIFT │ push_ahead={} round_ahead={} (waiting for BLOCK_DATA)",
+                    push_ahead > 0 ? push_ahead : 0, round_ahead > 0 ? round_ahead : 0);
+            } else {
+                m_logger->info("[Colin]    TRIGGER DRIFT │ 0 (all sources in sync)");
+            }
+        }
     }
 
     if (!warnings.empty())
@@ -684,21 +716,23 @@ void ColinAgent::emit_report(
             {
                 if (ht_snap.unified_height != 0 && ts.unified_height != 0)
                 {
+                    // Compare template.block.nHeight (TARGET) against canonical unified TIP + 1.
+                    // Both sides are BLOCK_DATA canonical — drift should be 0 when in sync.
                     int64_t height_drift = static_cast<int64_t>(ts.unified_height)
                                          - static_cast<int64_t>(ht_snap.unified_height + 1);
                     if (height_drift == 0)
                     {
-                        m_logger->debug("[Colin]    HEIGHT_DRIFT: none (unified={} + 1 == template.nHeight={})",
+                        m_logger->debug("[Colin]    HEIGHT_DRIFT: none (canonical_unified_tip={} + 1 == template.nHeight={})",
                             ht_snap.unified_height, ts.unified_height);
                     }
                     else if (height_drift == -1)
                     {
-                        m_logger->info("[Colin]    HEIGHT_DRIFT: -1 (HeightTracker.unified={} vs template.block.nHeight={} — template slightly behind push, normal during inter-push interval)",
+                        m_logger->info("[Colin]    HEIGHT_DRIFT: -1 (canonical_unified_tip={} vs template.block.nHeight={} — BLOCK_DATA pending, normal inter-push interval)",
                             ht_snap.unified_height, ts.unified_height);
                     }
                     else
                     {
-                        m_logger->warn("[Colin]    ⚠ HEIGHT_DRIFT: HeightTracker.unified={} vs template.block.nHeight={} (drift={}; expected 0 or -1)",
+                        m_logger->warn("[Colin]    ⚠ HEIGHT_DRIFT: canonical_unified_tip={} vs template.block.nHeight={} (drift={}; expected 0 or -1)",
                             ht_snap.unified_height, ts.unified_height, height_drift);
                     }
                 }

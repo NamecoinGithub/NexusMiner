@@ -144,7 +144,7 @@ void test_channel_advance_stale_template_transition() {
     HeightTracker tracker;
 
     // Initial state: template for channel_target=101 while channel_height=100
-    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnBlockDataReceived(5000, 100, 0x1d00ffff, uint1024_t{});
     tracker.OnTemplateReceived(2, 101);
     auto snap = tracker.GetSnapshot();
     print_test_result("Initial: is_template_stale() == false (channel_height=100 < target=101)",
@@ -152,28 +152,32 @@ void test_channel_advance_stale_template_transition() {
     print_test_result("Initial: channel_height == 100", snap.channel_height == 100);
     print_test_result("Initial: channel_target == 101", snap.channel_target == 101);
 
-    // Channel advances — node found a block
-    tracker.OnPushNotification(5001, 101, 0x1d00ffff);
+    // Channel advances — node found a block.
+    // Under canonical-only semantics, OnBlockDataReceived auto-advances target to
+    // channel+1, so is_template_stale() can NEVER return true — canonical staleness
+    // is structurally impossible. Staleness detection has moved to push/GET_ROUND
+    // trigger paths. This test verifies the auto-advance behavior.
+    tracker.OnBlockDataReceived(5001, 101, 0x1d00ffff, uint1024_t{});
     auto snap2 = tracker.GetSnapshot();
-    print_test_result("After channel advance: is_template_stale() == true (height=101 >= target=101)",
-                      snap2.is_template_stale());
+    print_test_result("After channel advance: is_template_stale() == false (canonical auto-advance: target=102 > channel=101)",
+                      !snap2.is_template_stale());
     print_test_result("After channel advance: channel_height == 101", snap2.channel_height == 101);
+    print_test_result("After channel advance: channel_target auto-advanced to 102", snap2.channel_target == 102);
 
-    // Simulate keepalive arriving from OLD session — should not affect staleness
+    // Simulate keepalive arriving from OLD session — should not affect canonical state
     tracker.OnKeepaliveResponse(5001, 300, 101, 900, 0xDEADBEEFu, 0);
     auto snap3 = tracker.GetSnapshot();
-    print_test_result("After old keepalive: is_template_stale() still true",
-                      snap3.is_template_stale());
+    print_test_result("After old keepalive: is_template_stale() still false (canonical unchanged)",
+                      !snap3.is_template_stale());
     print_test_result("After old keepalive: channel_height unchanged at 101",
                       snap3.channel_height == 101);
 
-    // New template from GET_BLOCK response — staleness resolved
-    tracker.OnTemplateReceived(2, 102);
-    tracker.AdvanceChannelTarget(102);
+    // New template from GET_BLOCK response — target advances further
+    tracker.OnTemplateReceived(2, 103);
     auto snap4 = tracker.GetSnapshot();
     print_test_result("After new template: is_template_stale() == false",
                       !snap4.is_template_stale());
-    print_test_result("After new template: channel_target == 102", snap4.channel_target == 102);
+    print_test_result("After new template: channel_target == 103", snap4.channel_target == 103);
 }
 
 // ============================================================================
@@ -683,23 +687,25 @@ void test_stale_template_after_channel_advance() {
     HeightTracker tracker;
 
     // Template targeting channel_height=101
-    tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    tracker.OnBlockDataReceived(5000, 100, 0x1d00ffff, uint1024_t{});
     tracker.OnTemplateReceived(1, 101);
 
     // Confirm not stale before advance
     auto snap_before = tracker.GetSnapshot();
     print_test_result("Before advance: is_template_stale() == false", !snap_before.is_template_stale());
 
-    // Channel advances (block found)
-    tracker.OnPushNotification(5001, 101, 0x1d00ffff);
+    // Channel advances (block found) — OnBlockDataReceived auto-advances target to 102.
+    // Under canonical-only semantics, is_template_stale() is structurally false
+    // because OnBlockDataReceived always ensures target >= channel + 1.
+    tracker.OnBlockDataReceived(5001, 101, 0x1d00ffff, uint1024_t{});
     auto snap_after = tracker.GetSnapshot();
-    print_test_result("After advance: is_template_stale() == true", snap_after.is_template_stale());
+    print_test_result("After advance: is_template_stale() == false (canonical auto-advance)", !snap_after.is_template_stale());
     print_test_result("After advance: channel_height == 101", snap_after.channel_height == 101);
-    print_test_result("After advance: channel_target == 101", snap_after.channel_target == 101);
+    print_test_result("After advance: channel_target == 102 (auto-advanced)", snap_after.channel_target == 102);
 
-    // is_template_stale condition: channel_height >= channel_target
-    print_test_result("is_template_stale() satisfies: channel_height >= channel_target",
-                      snap_after.channel_height >= snap_after.channel_target);
+    // Under canonical-only: channel_height < channel_target always holds after OnBlockDataReceived
+    print_test_result("channel_height < channel_target (canonical auto-advance invariant)",
+                      snap_after.channel_height < snap_after.channel_target);
 }
 
 // ============================================================================
@@ -1003,22 +1009,26 @@ void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
         return decision;
     };
 
+    // Under canonical-only semantics, is_template_stale() is structurally false
+    // because OnBlockDataReceived auto-advances target to channel+1. The health
+    // policy returns early with no action — real staleness detection has moved
+    // to the push/GET_ROUND trigger paths.
     HeightTracker one_block_tracker;
-    one_block_tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    one_block_tracker.OnBlockDataReceived(5000, 100, 0x1d00ffff, uint1024_t{});
     one_block_tracker.OnTemplateReceived(2, 101);
-    one_block_tracker.OnPushNotification(5001, 101, 0x1d00ffff);
+    one_block_tracker.OnBlockDataReceived(5001, 101, 0x1d00ffff, uint1024_t{});
     auto one_block = decide(one_block_tracker.GetSnapshot(), false);
-    print_test_result("One-block lag requests refresh", one_block.request_refresh);
+    print_test_result("One-block lag: canonical not stale (auto-advance), no refresh needed", !one_block.request_refresh);
     print_test_result("One-block lag does not initiate recovery", !one_block.recovery_initiated);
     print_test_result("One-block lag does not stop workers", !one_block.stop_workers);
 
     HeightTracker two_block_tracker;
-    two_block_tracker.OnPushNotification(5000, 100, 0x1d00ffff);
+    two_block_tracker.OnBlockDataReceived(5000, 100, 0x1d00ffff, uint1024_t{});
     two_block_tracker.OnTemplateReceived(2, 101);
-    two_block_tracker.OnPushNotification(5001, 101, 0x1d00ffff);
-    two_block_tracker.OnPushNotification(5002, 102, 0x1d00ffff);
+    two_block_tracker.OnBlockDataReceived(5001, 101, 0x1d00ffff, uint1024_t{});
+    two_block_tracker.OnBlockDataReceived(5002, 102, 0x1d00ffff, uint1024_t{});
     auto two_block = decide(two_block_tracker.GetSnapshot(), false);
-    print_test_result("Two-block lag requests refresh", two_block.request_refresh);
+    print_test_result("Two-block lag: canonical not stale (auto-advance), no refresh needed", !two_block.request_refresh);
     print_test_result("Two-block lag does not initiate recovery", !two_block.recovery_initiated);
     print_test_result("Two-block lag does not stop workers", !two_block.stop_workers);
 
