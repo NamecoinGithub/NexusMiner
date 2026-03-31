@@ -1408,8 +1408,11 @@ void Worker_manager::poll_get_round()
     if (payload && !payload->empty()) {
         // Re-check generation before transmit: if a session transition happened
         // while building the packet, the node would reject it anyway.
-        if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry)
+        if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry) {
+            m_logger->debug("[Worker_manager] GET_ROUND discarded: session generation changed ({} → {})",
+                           gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
             return;
+        }
         m_primary_node_session->transmit(payload);
     }
 }
@@ -1438,8 +1441,11 @@ void Worker_manager::send_session_status_if_due()
             // NodeSession handles SIM Link internally, so we don't need to track secondary separately
             auto pkt = solo_protocol->build_session_status_packet(degraded, workers_run, false);
             if (pkt && !pkt->empty()) {
-                if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry)
-                    return;  // Session changed while building — discard
+                if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry) {
+                    m_logger->debug("[Worker_manager] SESSION_STATUS discarded: session generation changed ({} → {})",
+                                   gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
+                    return;
+                }
                 m_primary_node_session->transmit(pkt);
             }
         }
