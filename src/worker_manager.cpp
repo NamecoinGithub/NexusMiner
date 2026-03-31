@@ -516,6 +516,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 }
 
                 m_logger->warn("[Worker_manager] Session EXPIRED — initiating in-band re-authentication");
+                ++m_session_generation;  // Invalidate any in-flight timer dispatches for the old session
                 mark_recovery_initiated("session_expired");
 
                 // Use the current session auth fail count to calculate backoff delay.
@@ -608,6 +609,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 if (session_id == 0)
                 {
                     ++m_session_auth_fail_count;
+                    ++m_session_generation;  // Failed auth is still a session transition
                     m_logger->error("[Session] CRITICAL: Node returned session_id=0x00000000 after authentication (attempt #{}/{})",
                         m_session_auth_fail_count, protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
                     m_logger->error("[Session] This indicates the node rejected the session or is misconfigured");
@@ -640,6 +642,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                 // Successful authentication: reset session auth failure counter
                 m_session_auth_fail_count = 0;
+                ++m_session_generation;  // New session — invalidate stale timer dispatches
                 // Clear reconnect guard if we're in RECONNECTING phase (in-band re-auth path).
                 // For the TCP reconnect path, the connection callback already cleared it.
                 if (is_reconnecting()) {
@@ -965,6 +968,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
 
     // Transition to RECONNECTING phase — guards against stale callbacks and
     // prevents session_expired from re-entering during TCP reconnect window.
+    ++m_session_generation;  // TCP disconnect — invalidate stale timer dispatches
     transition_to(RecoveryPhase::RECONNECTING, "tcp_reconnect");
 
     // Reset NodeSession for reconnection
@@ -1384,6 +1388,10 @@ void Worker_manager::poll_get_round()
     if (!m_primary_node_session)
         return;
 
+    // Session generation guard: capture at entry so we detect transitions
+    // that happen between protocol lookup and transmit.
+    const uint64_t gen_at_entry = m_session_generation.load(std::memory_order_acquire);
+
     auto solo_protocol = m_primary_node_session->get_active_protocol();
     if (!solo_protocol)
         return;
@@ -1398,6 +1406,10 @@ void Worker_manager::poll_get_round()
     // send_recovery_work_request() (GET_BLOCK).
     auto payload = solo_protocol->send_get_round();
     if (payload && !payload->empty()) {
+        // Re-check generation before transmit: if a session transition happened
+        // while building the packet, the node would reject it anyway.
+        if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry)
+            return;
         m_primary_node_session->transmit(payload);
     }
 }
@@ -1411,6 +1423,9 @@ void Worker_manager::send_session_status_if_due()
         return;
     m_last_session_status_sent = now;
 
+    // Session generation guard: don't send status for a session in transition
+    const uint64_t gen_at_entry = m_session_generation.load(std::memory_order_acquire);
+
     bool degraded    = is_degraded();
     bool workers_run = !is_degraded() && !m_workers.empty();
 
@@ -1422,8 +1437,11 @@ void Worker_manager::send_session_status_if_due()
         {
             // NodeSession handles SIM Link internally, so we don't need to track secondary separately
             auto pkt = solo_protocol->build_session_status_packet(degraded, workers_run, false);
-            if (pkt && !pkt->empty())
+            if (pkt && !pkt->empty()) {
+                if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry)
+                    return;  // Session changed while building — discard
                 m_primary_node_session->transmit(pkt);
+            }
         }
     }
 }
