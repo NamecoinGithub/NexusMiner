@@ -730,6 +730,18 @@ private:
         void clear() { active = false; }
     };
     PendingGetBlock m_pending_get_block;
+
+public:
+    /// Mark a GET_BLOCK request as in-flight using the current height-tracker snapshot.
+    /// Must be called immediately after the GET_BLOCK payload has been successfully
+    /// handed to Connection::transmit() (fire-and-forget) so that the cross-handler
+    /// dedup guard knows a response is already expected.
+    void mark_get_block_pending(GetBlockReason reason);
+
+    /// Clear the in-flight GET_BLOCK marker (exposed for testing / forced reset).
+    void clear_get_block_pending() { m_pending_get_block.clear(); }
+
+private:
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION
