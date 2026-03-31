@@ -108,6 +108,16 @@ inline bool should_bypass_height_dedup(GetBlockReason reason)
         case GetBlockReason::TEMPLATE_FEED_FAILURE:
         case GetBlockReason::SESSION_REAUTH:
 
+        // Tip/advance detection from health monitor and Solo height-delta check.
+        // When the unified tip moves (e.g., Stake block on another channel), the
+        // current template's hashPrevBlock becomes stale even though the DedupGuard
+        // already recorded a GET_BLOCK at the same unified height.  Without this
+        // bypass the height-match guard suppresses the refresh and the miner gets
+        // stuck mining on a stale tip for 10+ minutes until the template age
+        // emergency fires.  The 100ms rapid-burst guard still prevents storms.
+        case GetBlockReason::HEALTH_TIP_MOVED:
+        case GetBlockReason::HEALTH_CHANNEL_ADVANCE:
+
         // GET_ROUND fallback: push is dead, GET_ROUND detected staleness.
         // Template was just discarded so has_valid_template() is false,
         // but bypass height dedup as belt-and-suspenders.
