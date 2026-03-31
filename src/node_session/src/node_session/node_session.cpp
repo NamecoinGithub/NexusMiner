@@ -467,7 +467,12 @@ void NodeSession::handle_secondary_connection_result(network::Result::Code resul
                       m_node_label,
                       (lane == ProtocolLane::STATELESS ? "STATELESS" : "LEGACY"));
 
-        // Start authentication
+        // Invariant: This lambda MUST call m_session_authenticated_handler on success.
+        // Without it, Worker_manager never resets timers, never triggers recovery
+        // transitions, and never requests the initial GET_BLOCK — leaving workers
+        // stuck at "NO VALID TEMPLATE" even though the node considers the session
+        // fully authenticated. This mirrors the pattern in set_session_authenticated_handler()
+        // and the deferred path in connect_secondary().
         auto auth_payload = m_secondary_protocol->login([this](bool login_result) {
             if (!login_result) {
                 m_logger->error("[NodeSession:{}] Secondary authentication failed", m_node_label);
@@ -475,6 +480,18 @@ void NodeSession::handle_secondary_connection_result(network::Result::Code resul
             }
 
             m_logger->info("[NodeSession:{}] Secondary authentication succeeded", m_node_label);
+
+            // Update DualConnectionManager: secondary lane is now alive
+            if (m_dcm) {
+                m_dcm->set_legacy_alive(true);
+                m_logger->info("[NodeSession:{}] Secondary lane (LEGACY) authenticated → DualConnectionManager updated",
+                              m_node_label);
+            }
+
+            // Notify Worker_manager so it resets timers and requests initial GET_BLOCK
+            if (m_session_authenticated_handler) {
+                m_session_authenticated_handler(m_secondary_protocol->get_session_id());
+            }
         });
 
         if (auth_payload && !auth_payload->empty()) {
