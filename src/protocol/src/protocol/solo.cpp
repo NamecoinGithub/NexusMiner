@@ -197,18 +197,32 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
                 get_channel_name(tmpl.block.nChannel));
             
             // block.nHeight is the UNIFIED blockchain height (tStateBest.nHeight + 1).
-            // After the node fix, this is correct — do NOT treat it as channel-specific height.
-            m_logger->info("[Solo]   Template height: {} (unified blockchain height)", tmpl.block.nHeight);
+            // This is a TARGET (the block we are trying to mine). Displayed as-is.
+            m_logger->info("[Solo]   Template height: {} (unified target — block being mined)", tmpl.block.nHeight);
             
-            // Show unified height from last GET_ROUND (reference only - other channels may differ)
-            if (m_last_round_status.height > 0) {
-                m_logger->info("[Solo]   Unified height:  {} (reference only)", m_last_round_status.height);
+            // Show best-known unified TIP from all sources (canonical, push, round).
+            // During rapid block production, GET_ROUND may lag behind BLOCK_DATA by
+            // several blocks. The snapshot's max() composition gives the most accurate
+            // picture.  Template height = tip + 1 in normal operation.
+            auto feed_snap = m_height_tracker.GetSnapshot();
+            m_logger->info("[Solo]   Unified tip:     {} (best known from all sources)", feed_snap.unified_height);
+            if (m_last_round_status.height > 0 && m_last_round_status.height < feed_snap.unified_height) {
+                m_logger->debug("[Solo]   GET_ROUND tip:   {} (lagging — polled data, not authoritative)",
+                    m_last_round_status.height);
             }
             
             if (tmpl.nChannelHeight > 0) {
-                m_logger->info("[Solo]   Channel height:  {} (current chain tip)", tmpl.nChannelHeight);
+                m_logger->info("[Solo]   Channel height:  {} (channel target from BLOCK_DATA metadata)", tmpl.nChannelHeight);
             } else {
-                m_logger->info("[Solo]   Channel height:  (pending finalization via GET_ROUND)");
+                // nChannelHeight == 0: the node did not provide channel height in BLOCK_DATA
+                // metadata, or this is a genesis/startup edge case. Show HeightTracker
+                // estimate for operator visibility.
+                if (feed_snap.channel_height > 0) {
+                    m_logger->info("[Solo]   Channel height:  ~{} (estimated from tracker, pending node confirmation)",
+                        feed_snap.channel_height);
+                } else {
+                    m_logger->info("[Solo]   Channel height:  (pending — awaiting first GET_ROUND)");
+                }
             }
             m_logger->info("[Solo]   Difficulty:      0x{:08x}", nBits);
             m_logger->info("[Solo] ═══════════════════════════════════════");
@@ -2352,8 +2366,15 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         std::string channel_name = get_channel_name(m_channel);
         
         // Log response details (normalized to tip semantics)
+        // Show canonical (BLOCK_DATA) height alongside for context — during rapid
+        // block production GET_ROUND may lag behind BLOCK_DATA by several blocks.
+        auto canonical_snap = m_height_tracker.GetCanonicalSnapshot();
         m_logger->info("[Solo GET_ROUND] 🔔 NEW_ROUND (16-byte full height picture, lane={}):", lane_label);
-        m_logger->info("[Solo GET_ROUND]   Unified height:  {} (tip, normalized from target)", unified_height);
+        m_logger->info("[Solo GET_ROUND]   Unified height:  {} (tip, normalized from target{})",
+            unified_height,
+            canonical_snap.is_initialized()
+                ? fmt::format("; canonical={}", canonical_snap.canonical_unified_height)
+                : std::string{});
         m_logger->info("[Solo GET_ROUND]   Prime height:    {} (tip)", prime_height);
         m_logger->info("[Solo GET_ROUND]   Hash height:     {} (tip)", hash_height);
         m_logger->info("[Solo GET_ROUND]   Stake height:    {} (tip)", stake_height);
@@ -2440,12 +2461,22 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // mechanism to detect these tip advances.
         // When this occurs, hashPrevBlock in the current template is stale — we must
         // discard and request a fresh template.
+        //
+        // CANONICAL GUARD: GET_ROUND polls every 15s and can lag behind BLOCK_DATA
+        // arrivals during rapid block production. If the canonical path (BLOCK_DATA)
+        // already knows about a unified height >= what GET_ROUND reports, the template
+        // is NOT stale — GET_ROUND is simply lagging. Skip the discard to avoid
+        // unnecessary template churn and wasted work.
         {
             bool unified_advanced = (unified_height > m_last_round_unified_height) &&
                                     (m_last_round_unified_height > 0);
             bool channel_unchanged = (channel_height == m_last_round_channel_height);
 
-            if (unified_advanced && channel_unchanged && !get_block_sent_in_handler) {
+            auto canonical = m_height_tracker.GetCanonicalSnapshot();
+            bool canonical_already_ahead = canonical.is_initialized() &&
+                                           canonical.canonical_unified_height >= unified_height;
+
+            if (unified_advanced && channel_unchanged && !get_block_sent_in_handler && !canonical_already_ahead) {
                 m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance unified {} → {} "
                                "({} channel height unchanged — discarding stale template)",
                                m_last_round_unified_height, unified_height,
@@ -2468,6 +2499,11 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
                     }
                 }
+            } else if (unified_advanced && channel_unchanged && canonical_already_ahead) {
+                m_logger->debug("[Solo GET_ROUND] Stake/cross-channel advance unified {} → {} "
+                                "suppressed: canonical already at {} (BLOCK_DATA ahead of GET_ROUND)",
+                                m_last_round_unified_height, unified_height,
+                                canonical.canonical_unified_height);
             }
         }
 
@@ -2626,7 +2662,13 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         std::string channel_name = get_channel_name(m_channel);
         
         m_logger->info("[Solo GET_ROUND] ✓ OLD_ROUND (16-byte full height picture, lane={}):", lane_label);
-        m_logger->info("[Solo GET_ROUND]   Unified:       {} (tip)", unified_height);
+        {
+            auto canonical_snap_old = m_height_tracker.GetCanonicalSnapshot();
+            m_logger->info("[Solo GET_ROUND]   Unified:       {} (tip{})", unified_height,
+                canonical_snap_old.is_initialized()
+                    ? fmt::format("; canonical={}", canonical_snap_old.canonical_unified_height)
+                    : std::string{});
+        }
         m_logger->info("[Solo GET_ROUND]   Prime height:  {} (tip)", prime_height);
         m_logger->info("[Solo GET_ROUND]   Hash height:   {} (tip)", hash_height);
         m_logger->info("[Solo GET_ROUND]   Stake height:  {} (tip)", stake_height);
@@ -2683,12 +2725,18 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // Detect when unified height advanced but our channel height did NOT change.
         // Even on OLD_ROUND responses, the unified height can advance if a Stake
         // block was mined — hashPrevBlock is now stale and a fresh template is needed.
+        //
+        // CANONICAL GUARD: same as NEW_ROUND — skip discard when BLOCK_DATA is ahead.
         {
             bool unified_advanced = (unified_height > m_last_round_unified_height) &&
                                     (m_last_round_unified_height > 0);
             bool channel_unchanged = (channel_height == m_last_round_channel_height);
 
-            if (unified_advanced && channel_unchanged && !get_block_sent_in_handler) {
+            auto canonical = m_height_tracker.GetCanonicalSnapshot();
+            bool canonical_already_ahead = canonical.is_initialized() &&
+                                           canonical.canonical_unified_height >= unified_height;
+
+            if (unified_advanced && channel_unchanged && !get_block_sent_in_handler && !canonical_already_ahead) {
                 m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance unified {} → {} "
                                "({} channel height unchanged — discarding stale template)",
                                m_last_round_unified_height, unified_height,
@@ -2711,6 +2759,11 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
                     }
                 }
+            } else if (unified_advanced && channel_unchanged && canonical_already_ahead) {
+                m_logger->debug("[Solo GET_ROUND] Stake/cross-channel advance unified {} → {} "
+                                "suppressed: canonical already at {} (BLOCK_DATA ahead of GET_ROUND)",
+                                m_last_round_unified_height, unified_height,
+                                canonical.canonical_unified_height);
             }
         }
 

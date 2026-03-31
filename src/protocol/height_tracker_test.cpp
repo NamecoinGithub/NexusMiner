@@ -1736,7 +1736,7 @@ void test_burst_recovery_template_ahead_of_tracker() {
 // Test: OnGetRound monotonic guard — stale round does not regress prime/hash heights
 // ============================================================================
 void test_on_get_round_monotonic_guard() {
-    std::cout << "\nTest (Bug #1): OnGetRound monotonic guard for round heights\n";
+    std::cout << "\nTest (Bug #1): OnGetRound monotonic guard for ALL round heights (including unified)\n";
     HeightTracker tracker;
 
     // Set channel to Prime (1) via OnTemplateReceived so m_channel is initialized
@@ -1746,6 +1746,8 @@ void test_on_get_round_monotonic_guard() {
     // First GET_ROUND with higher per-channel heights
     tracker.OnGetRound(5100, 120, 200, 300);
     auto diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("round_unified_height == 5100 after first GET_ROUND",
+                      diag.round_unified_height == 5100);
     print_test_result("round_prime_height == 120 after first GET_ROUND",
                       diag.round_prime_height == 120);
     print_test_result("round_hash_height == 200 after first GET_ROUND",
@@ -1753,21 +1755,43 @@ void test_on_get_round_monotonic_guard() {
     print_test_result("round_channel_height == 120 (Prime channel)",
                       diag.round_channel_height == 120);
 
-    // Stale GET_ROUND with LOWER prime/hash — monotonic guard must prevent regression
-    tracker.OnGetRound(5101, 110, 190, 310);
+    // Stale GET_ROUND with LOWER unified AND lower prime/hash — monotonic guard
+    // must prevent regression on ALL heights (including unified)
+    tracker.OnGetRound(5099, 110, 190, 310);
     diag = tracker.GetDiagnosticSnapshot();
-    print_test_result("round_unified_height == 5101 (unified always updates)",
-                      diag.round_unified_height == 5101);
+    print_test_result("round_unified_height still 5100 (monotonic: 5099 < 5100)",
+                      diag.round_unified_height == 5100);
     print_test_result("round_prime_height still 120 (monotonic: 110 < 120)",
                       diag.round_prime_height == 120);
     print_test_result("round_hash_height still 200 (monotonic: 190 < 200)",
                       diag.round_hash_height == 200);
     print_test_result("round_channel_height still 120 (derived from prime, monotonic)",
                       diag.round_channel_height == 120);
+    // stake_height can advance independently (310 > 300)
+    print_test_result("round_stake_height advanced to 310 (310 > 300)",
+                      diag.round_stake_height == 310);
+
+    // GET_ROUND with unified advancing but per-channel still lower — unified advances,
+    // per-channel heights stay
+    tracker.OnGetRound(5101, 110, 190, 305);
+    diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("round_unified_height advanced to 5101 (5101 > 5100)",
+                      diag.round_unified_height == 5101);
+    print_test_result("round_prime_height still 120 (monotonic: 110 < 120)",
+                      diag.round_prime_height == 120);
+    print_test_result("round_hash_height still 200 (monotonic: 190 < 200)",
+                      diag.round_hash_height == 200);
+
+    // Verify snapshot composition: unified_height = max(canonical, push, round)
+    auto snap = tracker.GetSnapshot();
+    print_test_result("snapshot unified_height >= 5101 (max composition includes round)",
+                      snap.unified_height >= 5101);
 
     // Fresh GET_ROUND with HIGHER prime/hash — must advance
     tracker.OnGetRound(5102, 125, 210, 305);
     diag = tracker.GetDiagnosticSnapshot();
+    print_test_result("round_unified_height advanced to 5102",
+                      diag.round_unified_height == 5102);
     print_test_result("round_prime_height advanced to 125",
                       diag.round_prime_height == 125);
     print_test_result("round_hash_height advanced to 210",

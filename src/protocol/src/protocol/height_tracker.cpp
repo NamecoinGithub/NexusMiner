@@ -81,7 +81,14 @@ void HeightTracker::OnGetRound(uint32_t unified_height,
                                 uint32_t stake_height)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_diagnostic.round_unified_height = unified_height;
+    // ✅ MONOTONIC GUARD: Only advance round_unified_height — a stale or
+    // out-of-order GET_ROUND response must NOT regress the composed snapshot's
+    // unified_height (which uses max(canonical, push, round)).  Without this
+    // guard, a lagging GET_ROUND can overwrite a higher value from a prior
+    // response, causing the Stake/cross-channel detection to see a false
+    // regression and triggering unnecessary template discard + GET_BLOCK.
+    if (unified_height > m_diagnostic.round_unified_height)
+        m_diagnostic.round_unified_height = unified_height;
     // ✅ MONOTONIC GUARD: Only advance per-channel round heights — a stale or
     // out-of-order GET_ROUND response must NOT regress diagnostic state, matching
     // the pattern used by OnTemplateReceived() for channel_target.
