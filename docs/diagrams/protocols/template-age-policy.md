@@ -1,6 +1,6 @@
 # Template Age Policy — Push-Driven Era
 
-Reference: LLL-TAO PR #278 + NexusMiner PR #173
+Reference: LLL-TAO PR #278 + NexusMiner PRs #173, #605, #606, #607
 
 In the push-driven protocol the node sends a fresh 228-byte template on every unified
 tip advance (every new block on any channel) via `SendStatelessTemplate()` +
@@ -44,7 +44,7 @@ hard dead-connection detector — both thresholds must be above any realistic bl
 
 ---
 
-## Diagram 3 — hashPrevBlock detector flow
+## Diagram 3 — hashPrevBlock detector flow (advisory-only, PR #607)
 
 ```
 Template push arrives
@@ -52,15 +52,24 @@ Template push arrives
        ▼
 read_template() → extract hashPrevBlock
        │
-       ├─ First template?  → store as m_last_known_hash_prev_block, log [TEMPLATE ANCHOR]
+       ├─ First template?     → store anchor in HashCheckpointGuard + m_last_known_hash_prev_block; log [TEMPLATE ANCHOR]
        │
-       ├─ Same hashPrevBlock? → tip unchanged; [TEMPLATE DELTA] debug log; continue
+       ├─ Matches checkpoint? → known-good canonical tip; [TEMPLATE DELTA] advisory; continue
        │
-       └─ Different hashPrevBlock? → tip moved; [TEMPLATE DELTA] info log; old work discarded
+       ├─ Same as last seen?  → tip unchanged; [TEMPLATE DELTA] debug; continue
+       │
+       ├─ Mismatch count = 1  → info: "hashPrevBlock differs from canonical – node may be processing reorg"
+       ├─ Mismatch count ≤ MAX_CONSECUTIVE_HASHPREV_MISMATCHES
+       │                      → warn: "Consecutive hashPrevBlock drift – chain tip churning"
+       └─ Mismatch count > MAX_CONSECUTIVE_HASHPREV_MISMATCHES
+                             → warn: "Sustained chain flux – N consecutive mismatches – node authoritative, accepting"
+                               ⚠️  Template is NEVER discarded for hashPrevBlock mismatch alone.
+                               ⚠️  return false / discard_template() paths removed in PR #607.
 ```
 
-Implemented in `Solo::process_messages()` STATELESS_GET_BLOCK handler.
+Implemented in `Solo::validate_current_template()` (see also `HashCheckpointGuard`).
 Gives operators immediate confirmation that each push reflects an actual tip advance.
+hashPrevBlock mismatches emit tiered advisory logs but never discard or reject a template.
 
 ---
 
@@ -68,6 +77,11 @@ Gives operators immediate confirmation that each push reflects an actual tip adv
 
 The miner has NO client-side GET_BLOCK rate limiter.
 All rate limiting is enforced by the node's 2-second AutoCoolDown (server-side).
+
+The `m_pending_get_block` atomic flag (PR #605) acts as a one-in-flight gate — the
+miner will not send a second GET_BLOCK while one is outstanding — but this is not a
+rate limiter; it is a deduplication guard.  The pending flag self-clears on BLOCK_DATA
+receipt or on timeout (PR #606).
 
 Miner sends GET_BLOCK whenever recovery logic determines a template is needed.
 Node returns:
@@ -95,3 +109,29 @@ Files changed in **this PR** (raising client-validation gate above 275 s drought
 Previously changed (for reference):
 - `src/protocol/inc/protocol/mining_template_interface.hpp` — `MAX_TEMPLATE_AGE` (600), `WARNING_TEMPLATE_AGE` (300)
 - `src/protocol/src/protocol/solo.cpp` — hashPrevBlock delta log
+
+---
+
+## Diagram 6 — HashCheckpointGuard (PR #607)
+
+```
+HashCheckpointGuard (ring buffer, capacity = 10)
+  ┌──────────────────────────────────────────────────────┐
+  │ Stores last N canonical tip hashes (hashPrevBlock)   │
+  │ populated from every BLOCK_DATA / STATELESS_GET_BLOCK│
+  │ Queried by validate_current_template() before any    │
+  │ mismatch counter logic                               │
+  └──────────────────────────────────────────────────────┘
+  contains(h) → true if h is a recently-seen canonical hash
+  add(h)      → appends; evicts oldest when full
+```
+
+**File**: `src/protocol/inc/protocol/hash_checkpoint_guard.hpp`  
+**Capacity**: `HASH_CHECKPOINT_CAPACITY = 10`  
+**Integration**: `Solo` holds `m_hash_checkpoint_guard`; populated on every
+STATELESS_GET_BLOCK / BLOCK_DATA delivery; queried in `validate_current_template()`.
+
+If `contains(hashPrevBlock)` returns true the incoming template is treated as
+known-canonical regardless of how many mismatches `m_hashprev_mismatch_consecutive`
+has accumulated — the counter logic is bypassed entirely. This prevents the doom loop
+that the old 3-strike discard path caused during rapid multi-channel tip churn.

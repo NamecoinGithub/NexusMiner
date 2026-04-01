@@ -155,7 +155,10 @@ unified-height-driven model:
 
 - **Channel height is tracked for bookkeeping purposes only**: `is_template_stale()` triggers
   `AdvanceChannelTarget()` for doom-loop bookkeeping, but does **not** gate whether a
-  work request is issued.
+  work request is issued.  Similarly, `validate_current_template()` uses `unified_height`
+  (block.nHeight vs canonical_unified_height) as the **primary staleness gate** (PR #606);
+  channel_height from the push payload is informational only and is not used in stale
+  detection within that function.
 
 - **Same-height tip replacement**: when `channel_height` has NOT advanced but the node
   reports a different `hashBestChain` at the same height (same-height reorg), the current
