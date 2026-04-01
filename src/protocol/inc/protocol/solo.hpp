@@ -729,6 +729,22 @@ private:
         }
 
         void clear() { active = false; }
+
+        /// Returns elapsed milliseconds since the request was sent, or -1 if not active.
+        /// Useful for timeout diagnostics at call sites.
+        int64_t elapsed_ms() const {
+            if (!active) return -1;
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - sent_at).count();
+        }
+
+        /// Returns true if a request was marked active but has expired (timed out
+        /// without a BLOCK_DATA response clearing it).  Does NOT clear the flag —
+        /// that happens in on_block_data() / on_stateless_get_block() or via is_pending_for().
+        bool has_timed_out() const {
+            if (!active) return false;
+            return elapsed_ms() >= TIMEOUT_SECONDS * 1000;
+        }
     };
     PendingGetBlock m_pending_get_block;
 
