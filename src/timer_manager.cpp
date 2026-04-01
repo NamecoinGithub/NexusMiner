@@ -139,7 +139,16 @@ chrono::Timer::Handler Timer_manager::stats_printer_handler(std::uint16_t stats_
 chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_interval,
     std::weak_ptr<Worker_manager> worker_manager)
 {
-    return [this, worker_manager, get_round_interval](bool canceled)
+    // Capture session generation at timer-schedule time as a cancellation token.
+    // When the handler fires, if the generation changed the session died and
+    // reconnected — discard the stale callback to avoid sending GET_ROUND on a
+    // dead session.
+    uint64_t gen_at_schedule = 0;
+    if (auto wm = worker_manager.lock()) {
+        gen_at_schedule = wm->session_generation();
+    }
+
+    return [this, worker_manager, get_round_interval, gen_at_schedule](bool canceled)
     {
         if (canceled)	// don't do anything if the timer has been canceled
         {
@@ -150,6 +159,18 @@ chrono::Timer::Handler Timer_manager::get_round_handler(std::uint16_t get_round_
         if (!wm)
         {
             return;  // Worker_manager destroyed (shutdown), don't restart
+        }
+
+        // Session generation guard: if the session changed since this timer tick
+        // was scheduled, skip the work — it belongs to a dead session.
+        const auto gen_now = wm->session_generation();
+        if (gen_now != gen_at_schedule) {
+            spdlog::debug("[Timer_manager] get_round_handler: stale session (gen {} → {}), skipping",
+                          gen_at_schedule, gen_now);
+            // Still restart timer with current generation
+            m_get_round_timer->start(chrono::Seconds(get_round_interval),
+                get_round_handler(get_round_interval, worker_manager));
+            return;
         }
 
         try {
@@ -176,7 +197,16 @@ void Timer_manager::start_template_health_timer(std::uint16_t timer_interval, st
 chrono::Timer::Handler Timer_manager::template_health_handler(std::uint16_t health_check_interval, 
     std::weak_ptr<Worker_manager> worker_manager)
 {
-    return [this, health_check_interval, worker_manager](bool canceled)
+    // Capture session generation at timer-schedule time as a cancellation token.
+    // When the handler fires, if the generation changed the session died and
+    // reconnected — discard the stale callback to avoid health-checking a dead
+    // session.
+    uint64_t gen_at_schedule = 0;
+    if (auto wm = worker_manager.lock()) {
+        gen_at_schedule = wm->session_generation();
+    }
+
+    return [this, health_check_interval, worker_manager, gen_at_schedule](bool canceled)
     {
         if (canceled)  // don't do anything if the timer has been canceled
         {
@@ -187,6 +217,18 @@ chrono::Timer::Handler Timer_manager::template_health_handler(std::uint16_t heal
         if (!worker_manager_shared)
         {
             return;  // Worker_manager destroyed (shutdown), don't restart
+        }
+
+        // Session generation guard: if the session changed since this timer tick
+        // was scheduled, skip the work — it belongs to a dead session.
+        const auto gen_now = worker_manager_shared->session_generation();
+        if (gen_now != gen_at_schedule) {
+            spdlog::debug("[Timer_manager] template_health_handler: stale session (gen {} → {}), skipping",
+                          gen_at_schedule, gen_now);
+            // Still restart timer with current generation
+            m_template_health_timer->start(chrono::Seconds(health_check_interval), 
+                template_health_handler(health_check_interval, worker_manager));
+            return;
         }
 
         try {
@@ -213,7 +255,16 @@ void Timer_manager::start_lane_health_check_timer(std::uint16_t timer_interval,
 chrono::Timer::Handler Timer_manager::lane_health_check_handler(std::uint16_t health_check_interval,
     std::weak_ptr<Worker_manager> worker_manager)
 {
-    return [this, health_check_interval, worker_manager](bool canceled)
+    // Capture session generation at timer-schedule time as a cancellation token.
+    // When the handler fires, if the generation changed the session died and
+    // reconnected — discard the stale callback to avoid lane health-checking a
+    // dead session.
+    uint64_t gen_at_schedule = 0;
+    if (auto wm = worker_manager.lock()) {
+        gen_at_schedule = wm->session_generation();
+    }
+
+    return [this, health_check_interval, worker_manager, gen_at_schedule](bool canceled)
     {
         if (canceled)
         {
@@ -224,6 +275,18 @@ chrono::Timer::Handler Timer_manager::lane_health_check_handler(std::uint16_t he
         if (!wm)
         {
             return;  // Worker_manager destroyed (shutdown), don't restart
+        }
+
+        // Session generation guard: if the session changed since this timer tick
+        // was scheduled, skip the work — it belongs to a dead session.
+        const auto gen_now = wm->session_generation();
+        if (gen_now != gen_at_schedule) {
+            spdlog::debug("[Timer_manager] lane_health_check_handler: stale session (gen {} → {}), skipping",
+                          gen_at_schedule, gen_now);
+            // Still restart timer with current generation
+            m_lane_health_check_timer->start(chrono::Seconds(health_check_interval),
+                lane_health_check_handler(health_check_interval, worker_manager));
+            return;
         }
 
         try {
