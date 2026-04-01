@@ -337,6 +337,9 @@ void Solo::reset()
     m_subscribed_to_notifications = false;  // Reset push notification subscription
     m_pending_push_after_auth = false;
 
+    // Reset HashCheckpoint Guard state for new session
+    m_hash_checkpoint_guard.reset();
+
     // Note: m_chacha20_wrapper is intentionally NOT cleared here — the wrapper object
     // is stateless (no per-session state) and can be reused across reconnects.
 
@@ -554,15 +557,20 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
 
     // Update the canonical tip anchor BEFORE validate_current_template() so that
     // the freshly decoded BLOCK_DATA's hashPrevBlock becomes the canonical value
-    // against which validate checks.  If this call were placed AFTER validate (as
-    // it was before this fix), a legitimate chain-tip advance would leave the
-    // canonical anchor holding the previous tip's hash.  validate_current_template()
-    // would then fire the hashPrevBlock_mismatch_reorg guard, discard the new
-    // template, and return false — so UpdateWithHashPrevBlock would never be
-    // reached.  Every subsequent GET_BLOCK response brings the same new-tip
-    // template, which fails the same stale-anchor check, producing an infinite
-    // doom loop (workers stuck at NO VALID TEMPLATE).
+    // against which validate checks.  This ordering is critical: if placed AFTER
+    // validate, the canonical anchor would still hold the previous tip's hash,
+    // and the advisory mismatch logging in validate_current_template() would
+    // fire on every legitimate chain-tip advance.  With the softened policy
+    // (1B: always-accept), this wouldn't cause a doom loop, but it would
+    // produce spurious advisory warnings on every normal tip change.
     m_height_tracker.UpdateWithHashPrevBlock(tmpl->block.hashPrevBlock);
+
+    // *** 1C: Record HashCheckpoint unconditionally on every BLOCK_DATA ***
+    // The checkpoint guard tracks reality during reorgs. Unlike the canonical
+    // anchor (which is a single value), checkpoints form an immutable rolling
+    // window that cannot be reorged away. This enables shallow-vs-deep reorg
+    // classification in validate_current_template() and Colin diagnostics.
+    m_hash_checkpoint_guard.record_checkpoint(tmpl->block.hashPrevBlock);
 
     // Clear the push tip anchor now that a fresh BLOCK_DATA template is in hand.
     // This must happen BEFORE validate_current_template() so that any residual
@@ -583,6 +591,7 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     // Template passed validation — reset the consecutive hashPrevBlock mismatch counter
     // so the chain-in-flux guard doesn't carry over stale state to the next validate cycle.
     m_hashprev_mismatch_consecutive.store(0, std::memory_order_relaxed);
+    m_hash_checkpoint_guard.reset_consecutive();
 
     m_current_height = unified_height;
 
@@ -4679,61 +4688,70 @@ bool Solo::validate_current_template()
         // after successful adoption, preventing this informational log from repeating.
     }
 
+    // *** 1B: SOFTENED hashPrevBlock Mismatch Policy ***
     // hashPrevBlock staleness check (primary anchor, StakeMinter pattern).
     // Only active when HeightTracker has a known hashPrevBlock (non-zero).
     //
-    // UPGRADED from warn-and-continue to discard-and-refresh:
-    // If the canonical hashPrevBlock (from the last adopted BLOCK_DATA) differs from
-    // the live template's hashPrevBlock, this template is building on a fork tip that
-    // the node has already moved past. Any block found would be rejected by the node's
-    // Guard 2 check (hashPrevBlock != hashBestChain). Discard immediately to stop
-    // wasting worker cycles.
+    // POLICY CHANGE: Accept ALL templates from the node immediately.
+    // The NODE already validates hashPrevBlock; the miner should trust node data
+    // during reorgs. We shouldn't make hashPrevBlock a make-or-break to accept
+    // new Block Data — the node is authoritative.
     //
-    // This closes the same-height reorg blind spot: height-based staleness
-    // (channel_height >= channel_target) doesn't catch reorgs that replace blocks at
-    // the same height, and is_tip_moved() only fires when unified_height advances.
-    // The hashPrevBlock anchor is the only reliable indicator in this scenario.
+    // The HashCheckpointGuard provides advisory diagnostics:
+    //   - Shallow reorg: new hashPrevBlock matches a recent checkpoint (depth 1-9)
+    //   - Deep reorg: new hashPrevBlock is unknown (not in checkpoint history)
+    // HashCheckpoints are immutable once recorded and cannot go through the same
+    // reorg process as hashPrevBlock, making them reliable reference points.
     //
-    // Note: push_hash_prev_block is NOT used as a discard trigger here to avoid the
-    // infinite soft-refresh loop documented in the has_same_height_push_tip_replacement
-    // removal comment above. Only the canonical hash_prev_block (set by
-    // OnBlockDataReceived/UpdateWithHashPrevBlock from actual BLOCK_DATA responses)
-    // is authoritative for this check.
+    // Tiered advisory logging:
+    //   Mismatch count 1:   INFO  — node may be processing reorg
+    //   Mismatch count 2-3: WARN  — consecutive hashPrevBlock drift; chain tip churning
+    //   Mismatch count 4+:  WARN  — sustained chain flux; node authoritative, accepting
+    //   ALL cases:          ACCEPT — the NODE is authoritative
     if (snap.hash_prev_block != uint1024_t(0) &&
         tmpl->block.hashPrevBlock != snap.hash_prev_block) {
 
         ++m_hashprev_mismatch_consecutive;
 
+        // Use HashCheckpointGuard for reorg depth classification
+        auto cp_result = m_hash_checkpoint_guard.evaluate(tmpl->block.hashPrevBlock);
+
         auto mismatch_count = m_hashprev_mismatch_consecutive.load(std::memory_order_relaxed);
-        if (mismatch_count <= MAX_CONSECUTIVE_HASHPREV_MISMATCHES) {
-            m_logger->warn("[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch "
-                           "(canonical={}, template={}) — discarding stale template "
-                           "[consecutive mismatch #{}/{}]",
+
+        const char* reorg_type = cp_result.is_shallow_reorg ? "shallow" : "deep/unknown";
+
+        if (mismatch_count == 1) {
+            m_logger->info("[ValidateTemplate] ℹ️  hashPrevBlock differs from canonical — "
+                           "node may be processing reorg (type={}, depth_est={}) "
+                           "(canonical={}, template={}) [mismatch #1]",
+                           reorg_type, cp_result.reorg_depth,
+                           snap.hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString());
+        } else if (mismatch_count <= MAX_CONSECUTIVE_HASHPREV_MISMATCHES) {
+            m_logger->warn("[ValidateTemplate] ⚡ Consecutive hashPrevBlock drift — "
+                           "chain tip churning (type={}, depth_est={}) "
+                           "(canonical={}, template={}) [consecutive mismatch #{}/{}]",
+                           reorg_type, cp_result.reorg_depth,
                            snap.hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString(),
                            mismatch_count, MAX_CONSECUTIVE_HASHPREV_MISMATCHES);
-            m_template_interface->discard_template("hashPrevBlock_mismatch_reorg");
-            return false;
         } else {
-            // Chain in flux (e.g. node under DDoS attack / orphan-limit storm):
-            // more than MAX_CONSECUTIVE_HASHPREV_MISMATCHES consecutive mismatches have
-            // occurred without a successful adoption.  Accepting the template here breaks
-            // the doom loop — workers will mine and submit; the node will reject any
-            // block built on the wrong tip, but the miner stays active rather than spinning
-            // in NO VALID TEMPLATE indefinitely.
-            m_logger->warn("[ValidateTemplate] ⚠️  Chain in flux: {} consecutive hashPrevBlock mismatches "
-                           "(canonical={}, template={}) — accepting template to avoid doom loop "
-                           "(chain may be under attack / reorg storm)",
-                           mismatch_count,
+            m_logger->warn("[ValidateTemplate] ⚠️  Sustained chain flux — "
+                           "{} consecutive hashPrevBlock mismatches (type={}, depth_est={}) "
+                           "(canonical={}, template={}) — node authoritative, accepting",
+                           mismatch_count, reorg_type, cp_result.reorg_depth,
                            snap.hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString());
-            // DO NOT discard — fall through to return true
         }
+        // *** ALWAYS ACCEPT — the NODE is authoritative ***
+        // The node already validates hashPrevBlock against hashBestChain.
+        // During reorgs the node may temporarily serve templates with a different
+        // hashPrevBlock; rejecting these causes the doom-loop. Trust the node.
     } else {
         // Hashes match (or canonical is zero): reset the consecutive counter.
         // Note: finalize_and_feed_current_template() also resets the counter after a
-        // successful validation to cover the chain-in-flux acceptance path (where the if
+        // successful validation to cover the mismatch acceptance path (where the if
         // condition above was true but we fell through without discarding).  The reset
         // here handles all other validate callers and the normal (no-mismatch) path.
         m_hashprev_mismatch_consecutive.store(0, std::memory_order_relaxed);
+        m_hash_checkpoint_guard.reset_consecutive();
     }
 
     // Advisory: log if push_hash_prev_block differs (informational only, not a discard trigger)

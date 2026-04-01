@@ -142,6 +142,17 @@ public:
     using FailoverSource = std::function<FailoverSnapshot()>;
     void set_failover_source(FailoverSource fn) { m_failover_source = std::move(fn); }
 
+    // ── HashCheckpoint Guard Source ──────────────────────────────────────────
+    // Optional: supplies reorg depth estimate and checkpoint guard state from Solo.
+    // Used to display reorg activity in the diagnostic report.
+    struct CheckpointGuardSnapshot {
+        uint32_t reorg_depth_estimate{0};       ///< 0 = no reorg, 1-9 = shallow, 10+ = deep
+        uint32_t consecutive_mismatch{0};       ///< Running count of consecutive hashPrevBlock mismatches
+        std::size_t checkpoint_count{0};        ///< Number of checkpoints in the rolling window
+    };
+    using CheckpointGuardSource = std::function<CheckpointGuardSnapshot()>;
+    void set_checkpoint_guard_source(CheckpointGuardSource fn) { m_checkpoint_guard_source = std::move(fn); }
+
     // ── Warning catalog ────────────────────────────────────────────────────
     // Returns a non-empty string if the pattern matches, empty string otherwise.
     // Used by tests to verify each warning pattern triggers the right text.
@@ -214,6 +225,7 @@ private:
     PongTelemetrySource m_pong_telemetry_source; // Optional: supplies PongTelemetrySnapshot from ColinPingHandler
     MinedBlockCacheSource m_mined_block_cache_source; // Optional: supplies Top 5 mined blocks from MinedBlockCache
     FailoverSource      m_failover_source;       // Optional: supplies FailoverSnapshot from Worker_manager
+    CheckpointGuardSource m_checkpoint_guard_source; // Optional: supplies CheckpointGuardSnapshot from Solo
 
     std::chrono::steady_clock::time_point m_start_time{std::chrono::steady_clock::now()};
 

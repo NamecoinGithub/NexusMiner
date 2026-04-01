@@ -361,6 +361,24 @@ void ColinAgent::emit_report(
         }
     }
 
+    /* HashCheckpoint Guard — reorg depth diagnostics */
+    if (m_checkpoint_guard_source)
+    {
+        auto cpg = m_checkpoint_guard_source();
+        m_logger->info("[Colin]  🛡️ ── HashCheckpoint Guard (checkpoints={}) ──────", cpg.checkpoint_count);
+        if (cpg.consecutive_mismatch > 0) {
+            const char* reorg_label = (cpg.reorg_depth_estimate > 0 && cpg.reorg_depth_estimate < 10)
+                ? "shallow" : (cpg.reorg_depth_estimate >= 10 ? "deep" : "unknown");
+            m_logger->warn("[Colin]    ⚠️  Active reorg: depth_est={} type={} consecutive_mismatch={}",
+                cpg.reorg_depth_estimate, reorg_label, cpg.consecutive_mismatch);
+            warnings.push_back("HashCheckpoint Guard: active reorg (depth=" +
+                std::to_string(cpg.reorg_depth_estimate) + ", mismatches=" +
+                std::to_string(cpg.consecutive_mismatch) + ")");
+        } else {
+            m_logger->info("[Colin]    ✅ No active reorg (chain tip stable)");
+        }
+    }
+
     /* SESSION_STATUS_ACK section — node lane-health report */
     if (m_status_source)
     {

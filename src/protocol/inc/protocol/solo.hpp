@@ -15,6 +15,7 @@
 #include "protocol/epoch_coordinator.hpp"
 #include "protocol/get_block_reason.hpp"
 #include "protocol/get_block_dedup_guard.hpp"
+#include "protocol/hash_checkpoint_guard.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "LLP/colin_ping_handler.h"
@@ -67,6 +68,11 @@ public:
     /// node-attack / chain-flux scenarios that would otherwise cause a rapid-fire
     /// discard-and-retry doom loop.
     uint32_t get_hashprev_mismatch_consecutive() const { return m_hashprev_mismatch_consecutive.load(std::memory_order_relaxed); }
+
+    /// Returns a const reference to the HashCheckpointGuard for diagnostic queries.
+    /// The guard maintains a rolling window of recent canonical hashPrevBlock values
+    /// and provides reorg depth estimation for Colin diagnostics.
+    const HashCheckpointGuard& get_hash_checkpoint_guard() const { return m_hash_checkpoint_guard; }
 
     /// Reset the GET_BLOCK deduplication timestamp so the next get_work() call will
     /// not be suppressed.  Must be called whenever the canonical tip-anchor changes
@@ -524,6 +530,14 @@ private:
     // from its own thread while Solo modifies it on the io_context thread.
     std::atomic<uint32_t> m_hashprev_mismatch_consecutive{0};
     static constexpr uint32_t MAX_CONSECUTIVE_HASHPREV_MISMATCHES = 3;
+
+    // HashCheckpoint Guard: rolling window of recent canonical hashPrevBlock values.
+    // Advisory-only — NEVER blocks template acceptance. The NODE is authoritative.
+    // Provides reorg depth estimation and shallow-vs-deep reorg classification
+    // for Colin diagnostics. HashCheckpoints are immutable once recorded; unlike
+    // hashPrevBlock (which can change during node reorgs), checkpoints represent
+    // confirmed chain tips that the node has built on.
+    HashCheckpointGuard m_hash_checkpoint_guard;
     
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
