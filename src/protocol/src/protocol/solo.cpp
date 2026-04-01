@@ -4637,7 +4637,7 @@ bool Solo::validate_current_template()
         if (tmpl->nChannelHeight <= authoritative_channel_height) {
             // Informational only — do NOT discard.  The unified height gate above
             // is the authoritative rejection mechanism.
-            m_logger->info("[Solo Validate] ℹ️  Channel height note: template target {} ≤ canonical "
+            m_logger->info("[Solo Validate] Channel height note: template target {} <= canonical "
                            "channel tip {} (non-blocking — unified height gate is authoritative)",
                            tmpl->nChannelHeight, authoritative_channel_height);
         }
