@@ -66,7 +66,7 @@ public:
     /// Worker_manager uses this to apply exponential GET_BLOCK backoff during
     /// node-attack / chain-flux scenarios that would otherwise cause a rapid-fire
     /// discard-and-retry doom loop.
-    uint32_t get_hashprev_mismatch_consecutive() const { return m_hashprev_mismatch_consecutive; }
+    uint32_t get_hashprev_mismatch_consecutive() const { return m_hashprev_mismatch_consecutive.load(std::memory_order_relaxed); }
 
     /// Reset the GET_BLOCK deduplication timestamp so the next get_work() call will
     /// not be suppressed.  Must be called whenever the canonical tip-anchor changes
@@ -520,7 +520,9 @@ private:
     // NO VALID TEMPLATE doom loop that occurs when the node is under attack or its chain
     // tip is churning rapidly (e.g. orphan limit exceeded by DDoS peer).
     // Reset to zero whenever a template is successfully validated and fed to workers.
-    uint32_t m_hashprev_mismatch_consecutive{0};
+    // std::atomic because Worker_manager reads via get_hashprev_mismatch_consecutive()
+    // from its own thread while Solo modifies it on the io_context thread.
+    std::atomic<uint32_t> m_hashprev_mismatch_consecutive{0};
     static constexpr uint32_t MAX_CONSECUTIVE_HASHPREV_MISMATCHES = 3;
     
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
