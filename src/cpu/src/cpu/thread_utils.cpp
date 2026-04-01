@@ -286,11 +286,15 @@ enumerate_hybrid_cores()
     #endif
 
     std::uint32_t logical_cpus = std::thread::hardware_concurrency();
+    // Cap at 64 — affinity masks are uint64_t so we cannot address higher CPUs.
     if (logical_cpus == 0 || logical_cpus > 64)
         return {p_cores, e_cores};
 
     #ifdef _WIN32
-    DWORD_PTR original_mask = SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD_PTR>((1ULL << logical_cpus) - 1));
+    // Build all-cores mask without UB: (1<<64)-1 is undefined, use ~0 instead.
+    DWORD_PTR all_cores_mask = (logical_cpus == 64) ? ~static_cast<DWORD_PTR>(0)
+                                                     : static_cast<DWORD_PTR>((1ULL << logical_cpus) - 1);
+    DWORD_PTR original_mask = SetThreadAffinityMask(GetCurrentThread(), all_cores_mask);
     if (original_mask == 0)
     {
         // Get current affinity another way; use process affinity as reference
@@ -345,7 +349,7 @@ enumerate_hybrid_cores()
         else if (core_type == 0x20)
             e_cores.push_back(cpu);
         else
-            p_cores.push_back(cpu);
+            p_cores.push_back(cpu);  // Unknown/non-hybrid → treat as P-core
     }
     // Restore original affinity
     pthread_setaffinity_np(pthread_self(), sizeof(original_set), &original_set);
