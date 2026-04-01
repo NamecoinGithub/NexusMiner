@@ -1144,6 +1144,11 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
         auto verdict = m_dedup_guard.check(reason, canonical_unified, have_valid_template);
         if (verdict != GetBlockDedupGuard::Verdict::ALLOW) {
             m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
+            m_logger->warn("[Solo] GET_BLOCK suppressed by dedup guard: verdict={}, reason={}, "
+                           "unified={}, have_template={}",
+                           verdict == GetBlockDedupGuard::Verdict::SUPPRESS_RAPID_BURST
+                               ? "RAPID_BURST" : "HEIGHT_MATCH",
+                           reason_name(reason), canonical_unified, have_valid_template);
             return nullptr;
         }
     }
@@ -3571,12 +3576,17 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
         // PUSH reasons bypass height dedup in GetBlockDedupGuard so this
         // is never suppressed by stale cached heights.
         // Returns true only when GET_BLOCK was actually transmitted (not suppressed
-        // by dedup guard), so that the caller only resets dedup state on real sends.
+        // by dedup guard), so that the caller knows a real send occurred.
         [connection, this, push_opcode_name]() -> bool {
             if (connection) {
                 auto work_payload = get_work(GetBlockReason::PUSH_STALE);
                 if (work_payload && !work_payload->empty()) {
-                    connection->transmit(work_payload);
+                    try {
+                        connection->transmit(work_payload);
+                    } catch (const std::exception& e) {
+                        m_logger->error("[Solo] GET_BLOCK transmit failed: {}", e.what());
+                        return false;
+                    }
                     mark_get_block_pending(GetBlockReason::PUSH_STALE);
                     return true;
                 } else {
@@ -3591,7 +3601,12 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
             if (connection) {
                 auto work_payload = get_work(GetBlockReason::PUSH_CROSS_CHANNEL);
                 if (work_payload && !work_payload->empty()) {
-                    connection->transmit(work_payload);
+                    try {
+                        connection->transmit(work_payload);
+                    } catch (const std::exception& e) {
+                        m_logger->error("[Solo] GET_BLOCK (cross-channel) transmit failed: {}", e.what());
+                        return false;
+                    }
                     mark_get_block_pending(GetBlockReason::PUSH_CROSS_CHANNEL);
                     return true;
                 } else {
@@ -3601,16 +3616,27 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
             return false;
         });
 
-    // Only reset dedup state when GET_BLOCK was actually transmitted.
-    // work_requested is now true only when the callback successfully transmitted
-    // a GET_BLOCK (not merely invoked).  This prevents premature dedup reset
-    // when the burst guard suppresses the send — a second PUSH arriving within
-    // the 100ms window would incorrectly bypass the guard if we reset here.
-    // Liveness-only cross-channel pushes (unified height unchanged) also keep
-    // work_requested == false, preserving dedup state.
+    // Do NOT reset dedup state here.  record_transmission() inside get_work()
+    // already armed the 100ms rapid-burst guard; resetting it immediately after
+    // the callback returns clears m_last_transmitted_tp, allowing a second PUSH
+    // arriving <100ms later to bypass the burst guard entirely.  When the node's
+    // 1-second per-request cooldown silently drops that second GET_BLOCK, the
+    // m_pending_get_block flag strands for up to TIMEOUT_SECONDS with no
+    // BLOCK_DATA response, suppressing GET_ROUND-driven retries.
+    //
+    // PUSH reasons already bypass the height-based guard via
+    // should_bypass_height_dedup(), so removing this reset does not block
+    // legitimate subsequent PUSH-triggered requests — only the rapid-burst
+    // guard remains active, which is exactly the protection we need.
+    //
+    // The dedup state is properly reset when the canonical tip actually changes:
+    //   - on_block_data() / on_stateless_get_block() response handlers
+    //   - on_block_accepted() / on_block_rejected()
+    //   - on_new_round_received() (GET_ROUND detects tip change)
+    //   - Stake-advance and template-discard paths
     if (work_requested) {
-        reset_get_block_dedup_state();
-        m_logger->debug("[Solo Push] Dedup state reset ({} channel tip advance confirmed)",
+        m_logger->debug("[Solo Push] GET_BLOCK transmitted ({} channel tip advance) — "
+                        "burst guard remains armed to protect against rapid duplicate pushes",
             (channel == m_channel) ? "same" : "cross");
     }
 }
