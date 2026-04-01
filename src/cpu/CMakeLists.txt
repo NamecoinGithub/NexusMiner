@@ -14,14 +14,14 @@ target_include_directories(cpu
 # TODO reduce dependencies
 target_link_libraries(cpu hash worker LLP LLC stats config spdlog::spdlog)
 
-add_executable(worker_hash_shutdown_test worker_hash_shutdown_test.cpp)
-target_link_libraries(worker_hash_shutdown_test PRIVATE cpu spdlog::spdlog)
-target_include_directories(worker_hash_shutdown_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/config/inc
-    ${CMAKE_SOURCE_DIR}/src
+add_nexusminer_test(
+    NAME     worker_hash_shutdown_test
+    SOURCES  worker_hash_shutdown_test.cpp
+    LIBS     cpu spdlog::spdlog
+    INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/inc
+             ${CMAKE_SOURCE_DIR}/src/config/inc
+             ${CMAKE_SOURCE_DIR}/src
 )
-add_test(NAME worker_hash_shutdown_test COMMAND $<TARGET_FILE:worker_hash_shutdown_test>)
 
 if(WITH_PRIME)
     target_link_libraries(cpu libprimesieve-static)
@@ -31,7 +31,9 @@ if(WITH_PRIME)
        target_link_libraries(cpu gmp) # OpenSSL::Crypto OpenSSL::applink)
     endif()
 
-    add_executable(prime_validation_test prime_validation_test.cpp)
-    target_link_libraries(prime_validation_test PRIVATE cpu LLC spdlog::spdlog)
-    add_test(NAME prime_validation_test COMMAND $<TARGET_FILE:prime_validation_test>)
+    add_nexusminer_test(
+        NAME     prime_validation_test
+        SOURCES  prime_validation_test.cpp
+        LIBS     cpu LLC spdlog::spdlog
+    )
 endif()
