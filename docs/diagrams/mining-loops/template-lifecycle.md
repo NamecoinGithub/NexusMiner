@@ -19,6 +19,8 @@ sequenceDiagram
 
     Note over Miner: Two reasons to request new template:<br/>1. channel_advanced: channel_height ≥ channel_target<br/>2. tip_moved: unified_height > template_unified_height<br/>(another channel found a block — hashPrevBlock stale)
 
+    Note over Miner: GET_BLOCK pending lifecycle (PR #605 / #606):<br/>mark_pending() sets m_pending_get_block = true (atomic)<br/>Cleared unconditionally at top of on_block_data() / on_stateless_get_block()<br/>Auto-clears with logged timeout if BLOCK_DATA not received within timeout window<br/>Dedup guard is NOT reset on every template receive — only on fork detection
+
     Miner->>Worker: Distribute template to worker threads
 
     loop Mining
@@ -56,7 +58,10 @@ flowchart TD
     J -- No --> H
     J -- Yes --> K{channel_valid?}
     K -- No --> H
-    K -- Yes --> L[Template Ready for Mining]
+    K -- Yes --> P{hashPrevBlock in CheckpointGuard OR mismatch <= MAX?}
+    P -- Yes --> L[Template Ready for Mining]
+    P -- No  --> Q[Warn: sustained flux — accept anyway]
+    Q --> L
     L --> M[Feed to Worker Threads]
 ```
 

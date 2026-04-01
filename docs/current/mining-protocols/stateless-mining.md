@@ -11,6 +11,16 @@
 > [unified-tip-vs-channel-height.md](../mining/unified-tip-vs-channel-height.md)
 > for the authoritative description.
 
+> **Update (PRs #605–#607, 2026-04):** The `hashPrevBlock` 3-strike discard
+> mechanism described in earlier revisions has been **removed**. hashPrevBlock
+> mismatches are now advisory-only; the miner logs tiered warnings but never
+> discards or returns false for mismatch alone. A `HashCheckpointGuard` ring
+> buffer of the last 10 canonical tip hashes is used to distinguish expected
+> tip-churn from genuine drift. Additionally, `validate_current_template()` now
+> uses `unified_height` (not `channel_height`) as the staleness gate, and the
+> GET_BLOCK pending flag (`m_pending_get_block`) is now atomic and self-clearing
+> on timeout.
+
 ## Overview
 
 The stateless mining protocol is a modern push-notification based protocol that eliminates polling overhead and provides instant block updates. It represents a significant improvement over the legacy GET_ROUND polling protocol.

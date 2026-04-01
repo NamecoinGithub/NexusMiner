@@ -68,7 +68,7 @@ The READ operation processes incoming mining templates (BLOCK_DATA packets) from
 
 3. **Validate Template**
    - Verify channel matches expected (1=Prime, 2=Hash)
-   - Check height is not stale (< current height)
+   - Check unified height is not stale (block.nHeight vs canonical_unified_height) — this is the primary staleness gate (PR #606); `validate_current_template()` uses `unified_height`, **not** `channel_height`, as the authoritative stale-detection threshold. Channel height from the push payload is tracked for informational / channel-advance detection purposes only and does not gate template acceptance.
    - Validate nBits (difficulty) is non-zero
    - Verify merkle root is not all zeros
 
@@ -225,10 +225,11 @@ The interface provides detailed logging at multiple levels:
 ### Template Rejection Scenarios
 
 1. **Invalid channel**: Template's nChannel doesn't match expected mining mode
-2. **Stale height**: Template height is less than current tracked height (marked invalid)
+2. **Stale height**: Template unified height is less than the current canonical unified height (marked invalid); `validate_current_template()` uses `unified_height` as the primary gate — channel_height is informational only (PR #606)
 3. **Invalid nBits**: Difficulty bits are zero
 4. **Invalid merkle root**: Merkle root is all zeros
 5. **Parse failure**: Block header deserialization failed
+6. **hashPrevBlock mismatch**: Advisory-only. Mismatches emit tiered log messages (info/warn/sustained-warn) but the template is **never discarded** solely for hashPrevBlock mismatch. The `HashCheckpointGuard` ring buffer tracks recent canonical hashes to distinguish expected tip-churn from genuine drift. `discard_template()` is not called for hashPrevBlock mismatches (PR #607).
 
 ### Recovery Actions
 
@@ -238,6 +239,9 @@ The interface provides detailed logging at multiple levels:
 - Freshness protection is applied after ingress by `HeightTracker` and template validation,
   so stale responses cannot regress the canonical template feed even though delivery packets
   remain open.
+- If `pending_get_block` times out (no BLOCK_DATA received within the timeout window), the
+  pending flag is automatically cleared and the timeout is logged. The miner then issues a
+  fresh GET_BLOCK on the next push notification (PR #606).
 
 ## Files
 
