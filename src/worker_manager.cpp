@@ -950,6 +950,10 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
                             }
                         });
                     if (sent) {
+                        // Invalidate stale timer dispatches so that a concurrent
+                        // timer callback for the old (failed) session does not
+                        // fire a duplicate login() while this one is in-flight.
+                        ++m_session_generation;
                         return;  // Re-auth dispatched — wait for MINER_AUTH_RESULT
                     }
                     // In-band re-auth failed (connection died between push guard check

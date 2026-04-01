@@ -1,5 +1,6 @@
 #include "cpu/thread_utils.hpp"
 #include <spdlog/spdlog.h>
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -7,6 +8,7 @@
 #elif defined(__linux__)
 #include <unistd.h>
 #include <pthread.h>
+#include <sched.h>
 #include <sys/resource.h>
 #include <fstream>
 #include <sstream>
@@ -255,61 +257,137 @@ bool is_efficiency_core()
 #endif
 }
 
-std::vector<std::uint32_t> get_performance_cores()
+// Helper: classify each logical CPU as P-core or E-core using CPUID leaf 0x1A.
+// Temporarily pins the calling thread to each CPU, probes CPUID, then restores
+// the original affinity.  Returns a pair of vectors: (p_cores, e_cores).
+// Both vectors are empty when the CPU does not support hybrid detection.
+static std::pair<std::vector<std::uint32_t>, std::vector<std::uint32_t>>
+enumerate_hybrid_cores()
 {
     std::vector<std::uint32_t> p_cores;
-    
-    // This is a simplified implementation that makes assumptions about core ordering
-    // NOTE: Proper hybrid CPU detection requires platform-specific APIs:
-    // - Windows: GetLogicalProcessorInformationEx with RelationProcessorCore
-    // - Linux: Reading /sys/devices/system/cpu/cpu*/topology/core_cpus_list
-    // For now, we use a heuristic that may not be accurate on all systems.
-    // TODO: Implement proper hybrid CPU core enumeration using platform APIs
-    
-    // Simple heuristic: Check if this appears to be a hybrid system
-    // and assume P-cores come first (common on Intel 12th+ gen)
-    if (is_smt_enabled())
+    std::vector<std::uint32_t> e_cores;
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    // Verify CPUID leaf 0x1A (hybrid information) is supported
+    #ifdef _WIN32
     {
-        std::uint32_t total_cores = std::thread::hardware_concurrency();
-        std::uint32_t physical_cores = get_physical_core_count();
-        
-        // Simplified heuristic: assume first half are P-cores
-        // This is NOT reliable and should be replaced with proper detection
-        for (std::uint32_t i = 0; i < physical_cores / 2; i++)
-        {
-            p_cores.push_back(i);
-        }
+        int cpuid_info[4];
+        __cpuid(cpuid_info, 0);
+        if (cpuid_info[0] < 0x1A)
+            return {p_cores, e_cores};
     }
-    
+    #else
+    {
+        std::uint32_t eax, ebx, ecx, edx;
+        __get_cpuid(0, &eax, &ebx, &ecx, &edx);
+        if (eax < 0x1A)
+            return {p_cores, e_cores};
+    }
+    #endif
+
+    std::uint32_t logical_cpus = std::thread::hardware_concurrency();
+    if (logical_cpus == 0 || logical_cpus > 64)
+        return {p_cores, e_cores};
+
+    #ifdef _WIN32
+    DWORD_PTR original_mask = SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD_PTR>((1ULL << logical_cpus) - 1));
+    if (original_mask == 0)
+    {
+        // Get current affinity another way; use process affinity as reference
+        DWORD_PTR proc_mask, sys_mask;
+        GetProcessAffinityMask(GetCurrentProcess(), &proc_mask, &sys_mask);
+        original_mask = proc_mask;
+    }
+
+    for (std::uint32_t cpu = 0; cpu < logical_cpus; ++cpu)
+    {
+        DWORD_PTR pin = SetThreadAffinityMask(GetCurrentThread(), 1ULL << cpu);
+        if (pin == 0)
+            continue;  // CPU not available in process affinity
+        // Force reschedule so we actually run on the target CPU
+        SwitchToThread();
+
+        int cpuid_info[4];
+        __cpuid(cpuid_info, 0x1A);
+        std::uint32_t core_type = (cpuid_info[0] >> 24) & 0xFF;
+
+        if (core_type == 0x40)       // Intel Core (P-core)
+            p_cores.push_back(cpu);
+        else if (core_type == 0x20)  // Intel Atom (E-core)
+            e_cores.push_back(cpu);
+        else
+            p_cores.push_back(cpu);  // Unknown/non-hybrid → treat as P-core
+    }
+    // Restore original affinity
+    SetThreadAffinityMask(GetCurrentThread(), original_mask);
+
+    #elif defined(__linux__)
+    cpu_set_t original_set;
+    CPU_ZERO(&original_set);
+    pthread_getaffinity_np(pthread_self(), sizeof(original_set), &original_set);
+
+    for (std::uint32_t cpu = 0; cpu < logical_cpus; ++cpu)
+    {
+        cpu_set_t pin;
+        CPU_ZERO(&pin);
+        CPU_SET(cpu, &pin);
+        if (pthread_setaffinity_np(pthread_self(), sizeof(pin), &pin) != 0)
+            continue;  // CPU not available
+        // Yield to migrate onto the target CPU
+        sched_yield();
+
+        std::uint32_t eax, ebx, ecx, edx;
+        __get_cpuid(0x1A, &eax, &ebx, &ecx, &edx);
+        std::uint32_t core_type = (eax >> 24) & 0xFF;
+
+        if (core_type == 0x40)
+            p_cores.push_back(cpu);
+        else if (core_type == 0x20)
+            e_cores.push_back(cpu);
+        else
+            p_cores.push_back(cpu);
+    }
+    // Restore original affinity
+    pthread_setaffinity_np(pthread_self(), sizeof(original_set), &original_set);
+    #endif
+#endif  // x86
+
+    return {p_cores, e_cores};
+}
+
+std::vector<std::uint32_t> get_performance_cores()
+{
+    auto [p_cores, e_cores] = enumerate_hybrid_cores();
+
+    if (p_cores.empty() && e_cores.empty())
+    {
+        // Not a hybrid CPU or detection unsupported — return empty to let caller
+        // fall back to using all cores.
+        if (s_logger) s_logger->debug("Hybrid core detection: not a hybrid CPU or platform unsupported");
+    }
+    else
+    {
+        if (s_logger) s_logger->info("Hybrid core detection: {} P-cores, {} E-cores",
+                                     p_cores.size(), e_cores.size());
+    }
+
     return p_cores;
 }
 
 std::vector<std::uint32_t> get_efficiency_cores()
 {
-    std::vector<std::uint32_t> e_cores;
-    
-    // This is a simplified implementation that makes assumptions about core ordering
-    // NOTE: Proper hybrid CPU detection requires platform-specific APIs:
-    // - Windows: GetLogicalProcessorInformationEx with RelationProcessorCore
-    // - Linux: Reading /sys/devices/system/cpu/cpu*/topology/core_cpus_list
-    // For now, we use a heuristic that may not be accurate on all systems.
-    // TODO: Implement proper hybrid CPU core enumeration using platform APIs
-    
-    // Simple heuristic: Check if this appears to be a hybrid system
-    // and assume E-cores come after P-cores (common on Intel 12th+ gen)
-    if (is_smt_enabled())
+    auto [p_cores, e_cores] = enumerate_hybrid_cores();
+
+    if (p_cores.empty() && e_cores.empty())
     {
-        std::uint32_t total_cores = std::thread::hardware_concurrency();
-        std::uint32_t physical_cores = get_physical_core_count();
-        
-        // Simplified heuristic: assume second half are E-cores
-        // This is NOT reliable and should be replaced with proper detection
-        for (std::uint32_t i = physical_cores / 2; i < physical_cores; i++)
-        {
-            e_cores.push_back(i);
-        }
+        if (s_logger) s_logger->debug("Hybrid core detection: not a hybrid CPU or platform unsupported");
     }
-    
+    else
+    {
+        if (s_logger) s_logger->info("Hybrid core detection: {} P-cores, {} E-cores",
+                                     p_cores.size(), e_cores.size());
+    }
+
     return e_cores;
 }
 

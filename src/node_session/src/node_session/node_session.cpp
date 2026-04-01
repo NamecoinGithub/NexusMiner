@@ -148,6 +148,10 @@ void NodeSession::connect_primary(const network::Endpoint& node_endpoint, Connec
                                  self->m_node_label, static_cast<int>(result));
             self->m_primary_connected = false;
 
+            // Discard stale bytes from the dead connection so they are never
+            // prepended to data from a subsequent reconnection.
+            self->m_primary_rx_accumulator.clear();
+
             // Update DualConnectionManager: primary (stateless) lane has failed
             if (self->m_dcm) {
                 self->m_dcm->on_lane_failed(ProtocolLane::STATELESS);
@@ -303,6 +307,10 @@ void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
             self->m_logger->warn("[NodeSession:{}] Secondary connection failed: {}",
                                 self->m_node_label, static_cast<int>(result));
             self->m_secondary_connected = false;
+
+            // Discard stale bytes from the dead connection so they are never
+            // prepended to data from a subsequent reconnection.
+            self->m_secondary_rx_accumulator.clear();
 
             // Update DualConnectionManager: secondary (legacy) lane has failed
             if (self->m_dcm) {
