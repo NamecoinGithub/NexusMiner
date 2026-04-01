@@ -28,8 +28,8 @@ bool PushNotificationHandler::handle_push_notification(
     MiningTemplateInterface* template_interface,
     HeightTracker* height_tracker,
     std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
-    std::function<void()> request_work_fn,
-    std::function<void()> cross_channel_request_fn)
+    std::function<bool()> request_work_fn,
+    std::function<bool()> cross_channel_request_fn)
 {
     const char* ch_name = channel_name(expected_channel);
 
@@ -122,11 +122,10 @@ bool PushNotificationHandler::handle_push_notification(
                 // Use cross_channel_request_fn if provided (PUSH_CROSS_CHANNEL reason),
                 // otherwise fall back to request_work_fn.
                 if (cross_channel_request_fn) {
-                    cross_channel_request_fn();
+                    work_requested = cross_channel_request_fn();
                 } else {
-                    request_work_fn();
+                    work_requested = request_work_fn();
                 }
-                work_requested = true;
             }
         }
 
@@ -288,15 +287,13 @@ bool PushNotificationHandler::handle_push_notification(
         // rapid-burst guard still applies to prevent two identical pushes racing.
         m_logger->info("[Solo Push] Requesting fresh {} template (PUSH → unified tip moved → hashPrevBlock changed)",
                        ch_name);
-        request_work_fn();
-        work_requested = true;
+        work_requested = request_work_fn();
     }
     else
     {
         /* No template yet — request one */
         m_logger->info("[Solo Push] No template — requesting initial {} template", ch_name);
-        request_work_fn();
-        work_requested = true;
+        work_requested = request_work_fn();
     }
 
     return work_requested;

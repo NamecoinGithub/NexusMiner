@@ -616,7 +616,7 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; });
+            [&request_work_called]() -> bool { request_work_called = true; return true; });
 
         print_test_result("Same-height tip replacement requests fresh work", request_work_called);
         print_test_result("Same-height tip replacement discards active template", !tmpl_interface.has_valid_template());
@@ -655,7 +655,7 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; });
+            [&request_work_called]() -> bool { request_work_called = true; return true; });
 
         print_test_result("Out-of-order push requests work (every PUSH = unified tip moved)",
             request_work_called);
@@ -683,7 +683,7 @@ int main()
             nullptr,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; });
+            [&request_work_called]() -> bool { request_work_called = true; return true; });
 
         protocol::MiningTemplateInterface stale_template(2, 0);
         stale_template.set_height_tracker(&tracker);
@@ -746,7 +746,7 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; });
+            [&request_work_called]() -> bool { request_work_called = true; return true; });
 
         print_test_result("2-block burst within grace requests fresh work", request_work_called);
         print_test_result("2-block burst within grace keeps active template valid", tmpl_interface.has_valid_template());
@@ -781,7 +781,7 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; });
+            [&request_work_called]() -> bool { request_work_called = true; return true; });
 
         print_test_result("Tip moved requests fresh work", request_work_called);
         print_test_result("Tip moved keeps active template valid", tmpl_interface.has_valid_template());
@@ -1146,7 +1146,7 @@ int main()
             &tmpl_interface,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() { request_work_called = true; });
+            [&request_work_called]() -> bool { request_work_called = true; return true; });
 
         print_test_result("Cross-channel Hash PUSH requests work for Prime miner (hashPrevBlock changed)",
             request_work_called);
@@ -1192,7 +1192,7 @@ int main()
                 updated_unified = u;
                 tracker.OnPushNotification(u, c, d);
             },
-            [&]() { request_work_called = true; });
+            [&]() -> bool { request_work_called = true; return true; });
 
         print_test_result("Cross-channel tip advance: update_height_fn called",
             update_height_called);
@@ -1235,7 +1235,7 @@ int main()
             nullptr,
             &tracker,
             [&](uint32_t, uint32_t, uint32_t) { update_height_called = true; },
-            [&]() { request_work_called = true; });
+            [&]() -> bool { request_work_called = true; return true; });
 
         print_test_result("Liveness cross-channel push: update_height_fn NOT called",
             !update_height_called);
@@ -1287,7 +1287,7 @@ int main()
             nullptr,
             &tracker,
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&]() {});
+            [&]() -> bool { return true; });
 
         // Verify the hash was stored in the diagnostic state
         auto diag = tracker.GetDiagnosticSnapshot();
@@ -1321,7 +1321,7 @@ int main()
             tracker.OnPushNotification(u, c, d);
             tracker.OnBlockDataReceived(u, c, d, uint1024_t{});
         };
-        auto request_fn    = [&request_work_count]() { request_work_count++; };
+        auto request_fn    = [&request_work_count]() -> bool { request_work_count++; return true; };
 
         // First push at unified=101: tip advance, request_work_fn called once
         bool work_29_first = handler.handle_push_notification(

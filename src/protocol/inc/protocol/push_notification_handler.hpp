@@ -54,14 +54,17 @@ public:
      *                          always invoke this when staleness is detected.  The callback
      *                          is responsible for providing a GetBlockReason to get_work()
      *                          that bypasses height-based dedup (PUSH_STALE, PUSH_TIP_MOVED, etc.).
+     *                          Returns true if GET_BLOCK was actually transmitted, false if
+     *                          suppressed (e.g. by the dedup guard).
      * @param cross_channel_request_fn  Optional callback for cross-channel tip-advance path.
      *                          When provided, this is called instead of request_work_fn for
      *                          cross-channel tip advances (e.g. PUSH_CROSS_CHANNEL reason).
      *                          If null/empty, falls back to request_work_fn.
-     * @return true  if request_work_fn (or cross_channel_request_fn) was invoked
-     *               (tip advance detected or template refresh needed)
-     *         false if only push liveness was recorded (cross-channel, no height change)
-     *               or the payload was invalid
+     *                          Returns true if GET_BLOCK was actually transmitted.
+     * @return true  if request_work_fn (or cross_channel_request_fn) was invoked AND
+     *               GET_BLOCK was actually transmitted
+     *         false if only push liveness was recorded (cross-channel, no height change),
+     *               the payload was invalid, or the callback was suppressed by dedup
      */
     bool handle_push_notification(
         const Packet& packet,
@@ -70,8 +73,8 @@ public:
         MiningTemplateInterface* template_interface,
         HeightTracker* height_tracker,
         std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
-        std::function<void()> request_work_fn,
-        std::function<void()> cross_channel_request_fn = {}
+        std::function<bool()> request_work_fn,
+        std::function<bool()> cross_channel_request_fn = {}
     );
 
 private:
