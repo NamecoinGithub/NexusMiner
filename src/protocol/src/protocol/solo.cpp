@@ -4657,7 +4657,7 @@ bool Solo::validate_current_template()
     //   - Shallow reorg: new hashPrevBlock matches a recent checkpoint (depth 1-9)
     //   - Deep reorg: new hashPrevBlock is unknown (not in checkpoint history)
     // HashCheckpoints are immutable once recorded and cannot go through the same
-    // RE-ORG process as hashPrevBlock, making them reliable reference points.
+    // reorg process as hashPrevBlock, making them reliable reference points.
     //
     // Tiered advisory logging:
     //   Mismatch count 1:   INFO  — node may be processing reorg

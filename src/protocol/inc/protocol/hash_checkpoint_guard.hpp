@@ -13,7 +13,7 @@
  *     2. Provide reorg_depth_estimate() for Colin diagnostics.
  *     3. Log tiered advisory warnings (INFO/WARN) based on consecutive mismatch count.
  *
- *   HashCheckpoints cannot go through the same RE-ORG process as hashPrevBlock —
+ *   HashCheckpoints cannot go through the same reorg process as hashPrevBlock —
  *   they are immutable once recorded. The guard uses these checkpoints to detect
  *   when the node is processing a reorg vs normal chain tip advancement.
  *
