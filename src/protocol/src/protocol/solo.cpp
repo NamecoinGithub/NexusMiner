@@ -2547,6 +2547,18 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // and sends a second GET_BLOCK before the first response arrives.
         bool needs_template = !template_valid || 
                              (m_template_interface && !m_template_interface->has_valid_template());
+
+        // BUG #5 fix: Log when a previous GET_BLOCK request timed out without a
+        // BLOCK_DATA response.  Previously this expired silently, leaving operators
+        // with no diagnostic trail for lost requests.
+        if (m_pending_get_block.has_timed_out()) {
+            m_logger->warn("[Solo GET_ROUND] ⏱️  Previous GET_BLOCK timed out after {}ms "
+                           "(reason={}, height={}) — allowing new request",
+                           m_pending_get_block.elapsed_ms(),
+                           reason_name(m_pending_get_block.reason),
+                           m_pending_get_block.unified_height);
+        }
+
         bool get_block_already_in_flight = m_pending_get_block.is_pending_for(unified_height);
         
         if (needs_template && !get_block_sent_in_handler && !get_block_already_in_flight) {
@@ -2811,6 +2823,15 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // template finalization, and template validation
         bool template_valid = sync_template_state(unified_height, channel_height);
         
+        // BUG #5 fix: Log timeout on the OLD_ROUND path as well
+        if (m_pending_get_block.has_timed_out()) {
+            m_logger->warn("[Solo GET_ROUND] ⏱️  Previous GET_BLOCK timed out after {}ms "
+                           "(reason={}, height={}) — allowing new request (OLD_ROUND path)",
+                           m_pending_get_block.elapsed_ms(),
+                           reason_name(m_pending_get_block.reason),
+                           m_pending_get_block.unified_height);
+        }
+
         if (!template_valid && m_template_interface && !get_block_sent_in_handler &&
             !m_pending_get_block.is_pending_for(unified_height)) {
             m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: template invalidated on OLD_ROUND → GET_BLOCK");
@@ -4581,21 +4602,44 @@ bool Solo::validate_current_template()
     auto snap = m_height_tracker.GetSnapshot();
     uint32_t expectedChannel = snap.expected_template_target();
     
-    // Validation: template must target a block still in the future.
-    // Bug #4 fix: use CANONICAL channel_height for this comparison (not composite).
-    // Previously used snap.channel_height which is max(canonical, push, round).
-    // This caused false template rejection when PUSH was ahead of BLOCK_DATA:
-    // e.g., PUSH says channel=150 but BLOCK_DATA template targets 146 —
-    // composite check (146 <= 150) falsely rejected a valid template.
-    // Now uses canonical only: BLOCK_DATA says channel=140, template targets 146,
-    // check (146 <= 140) = false → template accepted ✓
+    // ── PRIMARY GATE: Unified Height regression guard ─────────────────────
+    // BUG #6 fix: Unified Height from BLOCK_DATA is the essential gate for
+    // template swap decisions.  Channel height is secondary and non-blocking
+    // because we must allow same-channel-height template refresh when
+    // hashPrevBlock changes (e.g., PRIME/HASH channel templates swapped for
+    // fresh ones with a new tip).
+    //
+    // block.nHeight = TARGET (TIP + 1).  canonical_unified_height = TIP.
+    // A template is stale if its TARGET ≤ the canonical TIP (the block it
+    // targets has already been mined or is at the current tip level).
+    if (snap.canonical_unified_height > 0 && tmpl->block.nHeight > 0) {
+        if (tmpl->block.nHeight <= snap.canonical_unified_height) {
+            m_logger->warn("[Solo Validate] Template unified height {} (TARGET) already at or below "
+                           "canonical tip {} — discarding (unified height regression)",
+                           tmpl->block.nHeight, snap.canonical_unified_height);
+            m_template_interface->discard_template("Unified height regression");
+            return false;
+        }
+    }
+
+    // ── SECONDARY: Channel height check (INFORMATIONAL ONLY, not a rejection gate) ──
+    // BUG #6 fix: Previously this was a hard rejection gate using canonical_channel_height.
+    // This caused false rejections when canonical_channel_height was inflated by a
+    // partially-processed BLOCK_DATA (metadata extracted but template rejected).
+    // Same-height channel templates with a new hashPrevBlock were incorrectly rejected
+    // as "already surpassed."
+    //
+    // Now: Unified Height is the primary gate (above).  Channel height is logged
+    // for operator diagnostics but never blocks template adoption.  The hashPrevBlock
+    // guard (below) handles fork/reorg detection.
     uint32_t authoritative_channel_height = snap.canonical_channel_height;
     if (expectedChannel != 0 && tmpl->nChannelHeight != 0) {
         if (tmpl->nChannelHeight <= authoritative_channel_height) {
-            m_logger->warn("[Solo Validate] Template target {} already surpassed by canonical chain tip {} — discarding",
-                tmpl->nChannelHeight, authoritative_channel_height);
-            m_template_interface->discard_template("Channel height stale");
-            return false;
+            // Informational only — do NOT discard.  The unified height gate above
+            // is the authoritative rejection mechanism.
+            m_logger->info("[Solo Validate] Channel height note: template target {} <= canonical "
+                           "channel tip {} (non-blocking — unified height gate is authoritative)",
+                           tmpl->nChannelHeight, authoritative_channel_height);
         }
         // Note: nChannelHeight > expectedChannel (more than 1 ahead) is VALID during burst
         // recovery — log informationally so operators can observe burst lag without alarming.
