@@ -1253,6 +1253,19 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
                 // Wire up HeightTracker
                 self->m_colin_agent->set_height_tracker(&solo_protocol_ptr->get_height_tracker());
 
+                // Wire up HashCheckpointGuard for reorg diagnostics
+                self->m_colin_agent->set_checkpoint_guard_source(
+                    [weak_proto]() -> ColinAgent::CheckpointGuardSnapshot {
+                        ColinAgent::CheckpointGuardSnapshot snap;
+                        auto proto = weak_proto.lock();
+                        if (!proto) return snap;
+                        const auto& guard = proto->get_hash_checkpoint_guard();
+                        snap.reorg_depth_estimate = guard.reorg_depth_estimate();
+                        snap.consecutive_mismatch = guard.consecutive_mismatch_count();
+                        snap.checkpoint_count     = guard.checkpoint_count();
+                        return snap;
+                    });
+
                 // Wire up MiningTemplateInterface
                 if (auto* tmpl_iface = solo_protocol_ptr->get_template_interface())
                 {
