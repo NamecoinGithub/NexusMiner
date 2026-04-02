@@ -38,6 +38,9 @@ endif()
 # Enable testing early so subdirectories can register tests
 enable_testing()
 
+# DRY helper for test executables (used by subdirectories)
+include(${CMAKE_SOURCE_DIR}/cmake/AddTest.cmake)
+
 # Create platform INTERFACE library for scoped compile definitions
 add_library(NexusMiner_platform INTERFACE)
 if(UNIX)
@@ -245,9 +248,11 @@ target_link_libraries(NexusMiner ${OPENSSL_LIBRARIES})
 target_link_libraries(NexusMiner Threads::Threads)
 
 # SIM Link DualConnectionManager unit test
-add_executable(dual_connection_manager_test src/dual_connection_manager_test.cpp src/dual_connection_manager.cpp)
-target_include_directories(dual_connection_manager_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-add_test(NAME dual_connection_manager_test COMMAND $<TARGET_FILE:dual_connection_manager_test>)
+add_nexusminer_test(
+    NAME        dual_connection_manager_test
+    SOURCES     src/dual_connection_manager_test.cpp src/dual_connection_manager.cpp
+    LINK_LIBS   # (none required — header-only)
+)
 
 # ============================================================================
 # Installation and packaging

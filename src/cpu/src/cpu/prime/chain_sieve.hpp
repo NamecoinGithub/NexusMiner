@@ -9,6 +9,7 @@
 #include <boost/multiprecision/cpp_int.hpp>
 #include <boost/multiprecision/gmp.hpp>
 #include "sieve_utils.hpp"
+#include "mining/mining_constants.hpp"
 
 namespace nexusminer {
 	namespace cpu
@@ -127,20 +128,20 @@ namespace nexusminer {
 			static constexpr int sieve30_offsets[]{ 1,7,11,13,17,19,23,29 };  // each bit in the sieve30 represets an offset from the base mod 30
 			static constexpr int sieve30_gaps[]{ 6,4,2,4,2,4,6,2 };
 			static constexpr int sieve30_index[]{ -1,0,-1,-1,-1,-1,-1, 1, -1, -1, -1, 2, -1, 3, -1, -1, -1, 4, -1, 5, -1, -1, -1, 6, -1, -1, -1, -1, -1, 7 };  //reverse lookup table (offset mod 30 to index)
-			static constexpr int L1_CACHE_SIZE = 32768;
-			static constexpr int L2_CACHE_SIZE = 262144;
+			static constexpr int L1_CACHE_SIZE = mining::L1_CACHE_BYTES;
+			static constexpr int L2_CACHE_SIZE = mining::L2_CACHE_BYTES;
 			//upper limit of the sieving range
 			//static constexpr uint64_t sieve_range = 3e9;//3e9;
 			//upper limit of the sieving primes. 
-			static constexpr uint32_t sieving_prime_limit = 3e8; //3e8;
+			static constexpr uint32_t sieving_prime_limit = mining::CPU_SIEVING_PRIME_LIMIT;
 			static constexpr uint32_t sieve_size = L2_CACHE_SIZE * 16;
 			//each segment byte covers a range of 30 sieving primes 
 			static constexpr uint32_t m_segment_size = sieve_size * 30;
 			//number of segments needed to cover the sieving range
 			//static constexpr int segments = sieve_range / m_segment_size + (sieve_range % m_segment_size != 0);
 			//we start sieving at 7
-			static constexpr int sieving_start_prime = 7;
-			static constexpr int m_min_chain_length = 8;
+			static constexpr int sieving_start_prime = mining::SIEVING_START_PRIME;
+			static constexpr int m_min_chain_length = mining::MIN_CHAIN_LENGTH;
 
 			/// Bitmasks used to unset bits
 			static constexpr uint8_t unset_bit_mask[30] =

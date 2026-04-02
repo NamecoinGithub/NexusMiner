@@ -27,9 +27,12 @@ class ClientBlockState : public ClientBlock
 {
 public:
     // Channel state (NOT in serialized block, from GET_ROUND/push metadata — defensive staleness only)
-    uint32_t nChannelHeight;        // Per-channel height for secondary staleness detection.
+    uint32_t nChannelHeight;        // Per-channel block count (alias: channel_height).
+                                    // This is HOW MANY BLOCKS this specific channel has produced,
+                                    // NOT the unified blockchain height.  For example, Prime channel
+                                    // might be at channel_height 450,000 while unified height is 6,500,000.
+                                    // Used for secondary staleness detection ONLY.
                                     // NEVER written into block header bytes.
-                                    // Primary stale guard: template.block.hashPrevBlock != hashBestChain.
     
     // Timestamp tracking
     uint64_t nCreationTime;         // Template creation timestamp (set by node or client)

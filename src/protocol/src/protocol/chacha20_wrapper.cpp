@@ -6,6 +6,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <memory>
 
 namespace nexusminer {
 namespace protocol {
@@ -14,6 +15,15 @@ namespace protocol {
 constexpr size_t CHACHA20_KEY_SIZE = 32;    // 256 bits
 constexpr size_t CHACHA20_NONCE_SIZE = 12;  // 96 bits
 constexpr size_t CHACHA20_TAG_SIZE = 16;    // 128 bits
+
+// RAII deleter for EVP_CIPHER_CTX — guarantees cleanup on all exit paths,
+// including exceptions thrown by std::vector::resize().
+struct EvpCipherCtxDeleter {
+    void operator()(EVP_CIPHER_CTX* ctx) const noexcept {
+        if (ctx) EVP_CIPHER_CTX_free(ctx);
+    }
+};
+using EvpCipherCtxPtr = std::unique_ptr<EVP_CIPHER_CTX, EvpCipherCtxDeleter>;
 
 ChaCha20Wrapper::ChaCha20Wrapper()
     : m_logger(spdlog::get("logger"))
@@ -34,13 +44,12 @@ bool ChaCha20Wrapper::is_available()
     return true;
 #else
     // OpenSSL 1.1.1 also has ChaCha20-Poly1305
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    EvpCipherCtxPtr ctx(EVP_CIPHER_CTX_new());
     if (!ctx) return false;
     
     const EVP_CIPHER* cipher = EVP_chacha20_poly1305();
     bool available = (cipher != nullptr);
     
-    EVP_CIPHER_CTX_free(ctx);
     return available;
 #endif
 }
@@ -91,8 +100,8 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::encrypt(
         return result;
     }
     
-    // Create and initialize context
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    // Create and initialize context (RAII — freed automatically on any exit path)
+    EvpCipherCtxPtr ctx(EVP_CIPHER_CTX_new());
     if (!ctx) {
         result.error_message = "Failed to create cipher context";
         m_logger->error("[ChaCha20] {}", result.error_message);
@@ -104,25 +113,22 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::encrypt(
     if (!cipher) {
         result.error_message = "ChaCha20-Poly1305 not available";
         m_logger->error("[ChaCha20] {}", result.error_message);
-        EVP_CIPHER_CTX_free(ctx);
         return result;
     }
     
     // Initialize encryption
-    if (EVP_EncryptInit_ex(ctx, cipher, nullptr, key.data(), nonce.data()) != 1) {
+    if (EVP_EncryptInit_ex(ctx.get(), cipher, nullptr, key.data(), nonce.data()) != 1) {
         result.error_message = "Failed to initialize encryption";
         m_logger->error("[ChaCha20] {}", result.error_message);
-        EVP_CIPHER_CTX_free(ctx);
         return result;
     }
     
     // Set AAD if provided
     int len = 0;
     if (!aad.empty()) {
-        if (EVP_EncryptUpdate(ctx, nullptr, &len, aad.data(), aad.size()) != 1) {
+        if (EVP_EncryptUpdate(ctx.get(), nullptr, &len, aad.data(), aad.size()) != 1) {
             result.error_message = "Failed to set AAD";
             m_logger->error("[ChaCha20] {}", result.error_message);
-            EVP_CIPHER_CTX_free(ctx);
             return result;
         }
     }
@@ -131,36 +137,32 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::encrypt(
     result.data.resize(plaintext.size() + CHACHA20_TAG_SIZE);
     
     // Encrypt plaintext
-    if (EVP_EncryptUpdate(ctx, result.data.data(), &len, plaintext.data(), plaintext.size()) != 1) {
+    if (EVP_EncryptUpdate(ctx.get(), result.data.data(), &len, plaintext.data(), plaintext.size()) != 1) {
         result.error_message = "Encryption failed";
         m_logger->error("[ChaCha20] {}", result.error_message);
-        EVP_CIPHER_CTX_free(ctx);
         return result;
     }
     int ciphertext_len = len;
     
     // Finalize encryption
-    if (EVP_EncryptFinal_ex(ctx, result.data.data() + len, &len) != 1) {
+    if (EVP_EncryptFinal_ex(ctx.get(), result.data.data() + len, &len) != 1) {
         result.error_message = "Encryption finalization failed";
         m_logger->error("[ChaCha20] {}", result.error_message);
-        EVP_CIPHER_CTX_free(ctx);
         return result;
     }
     ciphertext_len += len;
     
     // Get authentication tag
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, CHACHA20_TAG_SIZE, 
+    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_GET_TAG, CHACHA20_TAG_SIZE, 
                             result.data.data() + ciphertext_len) != 1) {
         result.error_message = "Failed to get authentication tag";
         m_logger->error("[ChaCha20] {}", result.error_message);
-        EVP_CIPHER_CTX_free(ctx);
         return result;
     }
     
     // Resize to actual size (ciphertext + tag)
     result.data.resize(ciphertext_len + CHACHA20_TAG_SIZE);
     
-    EVP_CIPHER_CTX_free(ctx);
     result.success = true;
     
     m_logger->debug("[ChaCha20] Encrypted {} bytes -> {} bytes (including tag)", 
@@ -201,8 +203,8 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::decrypt(
     size_t ciphertext_len = ciphertext.size() - CHACHA20_TAG_SIZE;
     std::vector<uint8_t> tag(ciphertext.end() - CHACHA20_TAG_SIZE, ciphertext.end());
     
-    // Create and initialize context
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    // Create and initialize context (RAII — freed automatically on any exit path)
+    EvpCipherCtxPtr ctx(EVP_CIPHER_CTX_new());
     if (!ctx) {
         result.error_message = "Failed to create cipher context";
         m_logger->error("[ChaCha20] {}", result.error_message);
@@ -214,25 +216,22 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::decrypt(
     if (!cipher) {
         result.error_message = "ChaCha20-Poly1305 not available";
         m_logger->error("[ChaCha20] {}", result.error_message);
-        EVP_CIPHER_CTX_free(ctx);
         return result;
     }
     
     // Initialize decryption
-    if (EVP_DecryptInit_ex(ctx, cipher, nullptr, key.data(), nonce.data()) != 1) {
+    if (EVP_DecryptInit_ex(ctx.get(), cipher, nullptr, key.data(), nonce.data()) != 1) {
         result.error_message = "Failed to initialize decryption";
         m_logger->error("[ChaCha20] {}", result.error_message);
-        EVP_CIPHER_CTX_free(ctx);
         return result;
     }
     
     // Set AAD if provided
     int len = 0;
     if (!aad.empty()) {
-        if (EVP_DecryptUpdate(ctx, nullptr, &len, aad.data(), aad.size()) != 1) {
+        if (EVP_DecryptUpdate(ctx.get(), nullptr, &len, aad.data(), aad.size()) != 1) {
             result.error_message = "Failed to set AAD";
             m_logger->error("[ChaCha20] {}", result.error_message);
-            EVP_CIPHER_CTX_free(ctx);
             return result;
         }
     }
@@ -241,28 +240,25 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::decrypt(
     result.data.resize(ciphertext_len);
     
     // Decrypt ciphertext
-    if (EVP_DecryptUpdate(ctx, result.data.data(), &len, ciphertext.data(), ciphertext_len) != 1) {
+    if (EVP_DecryptUpdate(ctx.get(), result.data.data(), &len, ciphertext.data(), ciphertext_len) != 1) {
         result.error_message = "Decryption failed";
         m_logger->error("[ChaCha20] {}", result.error_message);
-        EVP_CIPHER_CTX_free(ctx);
         return result;
     }
     int plaintext_len = len;
     
     // Set expected tag
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, CHACHA20_TAG_SIZE, 
+    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_TAG, CHACHA20_TAG_SIZE, 
                             const_cast<uint8_t*>(tag.data())) != 1) {
         result.error_message = "Failed to set authentication tag";
         m_logger->error("[ChaCha20] {}", result.error_message);
-        EVP_CIPHER_CTX_free(ctx);
         return result;
     }
     
     // Finalize decryption (verifies tag)
-    if (EVP_DecryptFinal_ex(ctx, result.data.data() + len, &len) != 1) {
+    if (EVP_DecryptFinal_ex(ctx.get(), result.data.data() + len, &len) != 1) {
         result.error_message = "Decryption finalization failed (authentication tag mismatch)";
         m_logger->error("[ChaCha20] {}", result.error_message);
-        EVP_CIPHER_CTX_free(ctx);
         return result;
     }
     plaintext_len += len;
@@ -270,7 +266,6 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::decrypt(
     // Resize to actual plaintext size
     result.data.resize(plaintext_len);
     
-    EVP_CIPHER_CTX_free(ctx);
     result.success = true;
     
     m_logger->debug("[ChaCha20] Decrypted {} bytes -> {} bytes", 

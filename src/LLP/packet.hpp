@@ -338,8 +338,7 @@ namespace nexusminer
 				else if (buffer->size() >= 5)
 				{
 					// Parse length (4 bytes, big-endian, starts at offset 1)
-					m_length = ((*buffer)[1] << 24) + ((*buffer)[2] << 16) + 
-					           ((*buffer)[3] << 8) + ((*buffer)[4]);
+					m_length = read_be32(buffer->data() + 1);
 					
 					// Extract data (starts at offset 5)
 					if (buffer->size() >= 5 + m_length)
@@ -358,8 +357,7 @@ namespace nexusminer
 			else if (first_byte >= PacketConstants::STATELESS_OPCODE_THRESHOLD && buffer->size() >= 2)
 			{
 				// Parse potential 2-byte header to check if it's a known stateless opcode
-				uint16_t potential_header = (static_cast<uint16_t>(first_byte) << 8) | 
-				                            static_cast<uint16_t>((*buffer)[1]);
+				uint16_t potential_header = read_be16(buffer->data() + 0);
 				
 				if (PacketConstants::is_stateless_opcode(potential_header))
 				{
@@ -376,8 +374,7 @@ namespace nexusminer
 					}
 					
 					// Parse length (4 bytes, big-endian, starts at offset 2)
-					m_length = ((*buffer)[2] << 24) + ((*buffer)[3] << 16) + 
-					           ((*buffer)[4] << 8) + (*buffer)[5];
+					m_length = read_be32(buffer->data() + 2);
 					
 					// Extract data (starts at offset 6)
 					if (buffer->size() >= 6 + m_length)
@@ -406,8 +403,7 @@ namespace nexusminer
 					else if (buffer->size() >= 5)
 					{
 						// Parse length (4 bytes, big-endian, starts at offset 1)
-						m_length = ((*buffer)[1] << 24) + ((*buffer)[2] << 16) + 
-						           ((*buffer)[3] << 8) + ((*buffer)[4]);
+						m_length = read_be32(buffer->data() + 1);
 						
 						// Extract data (starts at offset 5)
 						if (buffer->size() >= 5 + m_length)
@@ -438,8 +434,7 @@ namespace nexusminer
 				else if (buffer->size() >= 5)
 				{
 					// Parse length (4 bytes, big-endian, starts at offset 1)
-					m_length = ((*buffer)[1] << 24) + ((*buffer)[2] << 16) + 
-					           ((*buffer)[3] << 8) + ((*buffer)[4]);
+					m_length = read_be32(buffer->data() + 1);
 					
 					// Extract data (starts at offset 5)
 					if (buffer->size() >= 5 + m_length)
@@ -690,8 +685,7 @@ namespace nexusminer
 			
 			if (m_is_uint16_opcode && payload->size() >= 2)
 			{
-				uint16_t wire_opcode = (static_cast<uint16_t>((*payload)[0]) << 8) |
-					static_cast<uint16_t>((*payload)[1]);
+				uint16_t wire_opcode = read_be16(payload->data());
 				
 				if (!PacketConstants::is_stateless_opcode(wire_opcode) ||
 					wire_opcode == PacketConstants::CORRUPT_OPCODE_LEGACY_SHIFT ||
@@ -846,10 +840,7 @@ namespace nexusminer
 			else
 			{
 				// Parse length (4 bytes, big-endian)
-				std::uint32_t const length = ((*buffer)[start_index + 1] << 24) + 
-				                              ((*buffer)[start_index + 2] << 16) + 
-				                              ((*buffer)[start_index + 3] << 8) + 
-				                              ((*buffer)[start_index + 4]);
+				std::uint32_t const length = read_be32(buffer->data() + start_index + 1);
 				
 				if (length > std::distance(buffer_start + 5, buffer->end()))
 				{
@@ -881,8 +872,7 @@ namespace nexusminer
 			}
 			
 			// Parse 2-byte header (big-endian)
-			uint16_t header16 = (static_cast<uint16_t>((*buffer)[start_index]) << 8) |
-			                    static_cast<uint16_t>((*buffer)[start_index + 1]);
+			uint16_t header16 = read_be16(buffer->data() + start_index);
 			packet.m_header = header16;
 			
 			// Header-only opcodes: complete with just 2 bytes
@@ -905,10 +895,7 @@ namespace nexusminer
 			else
 			{
 				// Parse length (4 bytes, big-endian)
-				std::uint32_t const length = ((*buffer)[start_index + 2] << 24) + 
-				                              ((*buffer)[start_index + 3] << 16) + 
-				                              ((*buffer)[start_index + 4] << 8) + 
-				                              ((*buffer)[start_index + 5]);
+				std::uint32_t const length = read_be32(buffer->data() + start_index + 2);
 				
 				if (length > std::distance(buffer_start + 6, buffer->end()))
 				{
@@ -1022,10 +1009,7 @@ namespace nexusminer
 			}
 			
 			// Parse length (4 bytes, big-endian)
-			std::uint32_t const length = ((*buffer)[start_index + 1] << 24) + 
-			                              ((*buffer)[start_index + 2] << 16) + 
-			                              ((*buffer)[start_index + 3] << 8) + 
-			                              ((*buffer)[start_index + 4]);
+			std::uint32_t const length = read_be32(buffer->data() + start_index + 1);
 			
 			// Sanity check: unreasonably large length indicates malformed data
 			if (length > PacketConstants::MAX_REASONABLE_LENGTH)
@@ -1071,8 +1055,7 @@ namespace nexusminer
 			}
 			
 			// Parse 2-byte header (big-endian)
-			uint16_t header16 = (static_cast<uint16_t>((*buffer)[start_index]) << 8) |
-			                    static_cast<uint16_t>((*buffer)[start_index + 1]);
+			uint16_t header16 = read_be16(buffer->data() + start_index);
 			packet.m_header = header16;
 			
 			// Validate that this is a valid opcode for stateless lane
@@ -1111,10 +1094,7 @@ namespace nexusminer
 			}
 			
 			// Parse length (4 bytes, big-endian)
-			std::uint32_t const length = ((*buffer)[start_index + 2] << 24) + 
-			                              ((*buffer)[start_index + 3] << 16) + 
-			                              ((*buffer)[start_index + 4] << 8) + 
-			                              ((*buffer)[start_index + 5]);
+			std::uint32_t const length = read_be32(buffer->data() + start_index + 2);
 			
 			// Sanity check: unreasonably large length indicates malformed data
 			if (length > PacketConstants::MAX_REASONABLE_LENGTH)

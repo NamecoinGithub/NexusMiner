@@ -12,6 +12,7 @@
 #include "../cuda_prime/fermat_prime/fermat_prime.hpp"
 #include "../cuda_prime/sieve.hpp"
 #include "gpu/prime_common.hpp"
+#include "mining/mining_constants.hpp"
 
 namespace nexusminer {
 	namespace gpu
@@ -104,11 +105,11 @@ namespace nexusminer {
 			uint32_t m_large_prime_limit;
 			uint32_t m_trial_division_prime_limit;
 			std::vector<Cuda_sieve::sieve_word_t> m_sieve_results;  //accumulated results of sieving
-			static constexpr int m_fermat_test_batch_size = 200000;
-			static constexpr int m_fermat_test_batch_size_max = 1000000;
+			static constexpr int m_fermat_test_batch_size = mining::GPU_FERMAT_BATCH_SIZE_DEFAULT;
+			static constexpr int m_fermat_test_batch_size_max = mining::GPU_FERMAT_BATCH_SIZE_MAX;
 			static constexpr int m_segment_batch_size = Cuda_sieve::m_kernel_segments_per_block * Cuda_sieve::m_num_blocks; //number of segments to sieve in one batch
 			uint64_t m_sieve_range;
-			static constexpr int m_min_chain_length = 8;
+			static constexpr int m_min_chain_length = mining::MIN_CHAIN_LENGTH;
 			static constexpr uint32_t large_prime_count = 0;
 
 			//stats

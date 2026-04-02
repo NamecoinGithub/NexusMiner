@@ -5,6 +5,7 @@
 #include "stats/stats_collector.hpp"
 #include "block.hpp"
 #include "hash/nexus_hash_utils.hpp"
+#include "mining/mining_constants.hpp"
 #include <asio.hpp>
 #include <optional>
 #include <sstream>
@@ -378,7 +379,7 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 {
 	m_logger->info(m_log_leader + "Mining thread {} of {} started", thread_id, total_threads);
 	uint64_t last_log_hash_count = 0;
-	constexpr uint64_t log_interval = 1000000;  // Log every 1M hashes
+	constexpr uint64_t log_interval = mining::HASH_LOG_INTERVAL;
 	constexpr int max_retries = 3;
 	uint64_t payload_validation_failures = 0;
 	uint64_t hash_mismatches = 0;

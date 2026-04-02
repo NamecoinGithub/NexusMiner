@@ -14,6 +14,7 @@
 #include <boost/multiprecision/cpp_int.hpp>
 #include <spdlog/spdlog.h>
 #include "LLC/types/bignum.h"
+#include "mining/mining_constants.hpp"
 
 namespace asio { class io_context; }
 
@@ -92,12 +93,12 @@ private:
 
 
     std::vector<bool>m_sieve;
-    static constexpr int m_primorialEndPrime = 3000000;
-    static constexpr int m_minChainLength = 8;  //min chain length
-    static constexpr int m_maxGap = 12 / 2;  //the largest allowable prime gap.Divide by two because the sieve excludes all even numbers.
+    static constexpr int m_primorialEndPrime = mining::CPU_PRIMORIAL_END_PRIME;
+    static constexpr int m_minChainLength = mining::MIN_CHAIN_LENGTH;  //min chain length
+    static constexpr int m_maxGap = mining::MAX_PRIME_GAP_HALF;  //the largest allowable prime gap.Divide by two because the sieve excludes all even numbers.
 
     //we have finite memory so we have to limit the sieve to some reasonable size
-    static constexpr int m_maxSieveLength = 30000000;
+    static constexpr int m_maxSieveLength = mining::CPU_SIEVE_LENGTH_MAX;
     static constexpr int m_sieveLength = m_maxSieveLength;
     static constexpr int m_sieveRange = m_sieveLength * 2;
 
