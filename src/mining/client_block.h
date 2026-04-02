@@ -69,7 +69,8 @@ public:
     uint512_t hashMerkleRoot;       // Merkle root (64 bytes) (alias: merkle_root)
     uint32_t nChannel;              // Mining channel (1=Prime, 2=Hash, 3=Stake) (alias: channel)
     uint32_t nHeight;               // UNIFIED blockchain height (alias: unified_height).
-                                    // This is tStateBest.nHeight + 1 — the TIP, not a per-channel count.
+                                    // This is tStateBest.nHeight + 1 — the next unified blockchain
+                                    // height to be mined, not a per-channel count.
                                     // Block::ProofHash() hashes nVersion→nBits range including this field.
                                     // MUST NOT be overwritten with channel-specific height — that
                                     // would corrupt ProofHash(). Channel-specific height is tracked
