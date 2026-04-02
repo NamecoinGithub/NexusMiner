@@ -8,6 +8,33 @@
 namespace nexusminer
 {
 
+// ============================================================================
+//  Endian-safe byte-to-integer helpers
+//  ------------------------------------
+//  These explicitly cast each uint8_t to the target unsigned type BEFORE
+//  shifting, avoiding the C++ integer-promotion trap where a uint8_t is
+//  promoted to *signed* int and a left-shift into the sign bit triggers
+//  undefined behaviour (UB) in C++17 and earlier.
+// ============================================================================
+
+/// Read a big-endian uint32_t from a raw byte pointer.
+/// Caller must guarantee that at least 4 bytes are readable at @p p.
+inline uint32_t read_be32(const uint8_t* p) noexcept
+{
+	return (static_cast<uint32_t>(p[0]) << 24)
+	     | (static_cast<uint32_t>(p[1]) << 16)
+	     | (static_cast<uint32_t>(p[2]) <<  8)
+	     |  static_cast<uint32_t>(p[3]);
+}
+
+/// Read a big-endian uint16_t from a raw byte pointer.
+/// Caller must guarantee that at least 2 bytes are readable at @p p.
+inline uint16_t read_be16(const uint8_t* p) noexcept
+{
+	return static_cast<uint16_t>(
+		(static_cast<uint16_t>(p[0]) << 8) | static_cast<uint16_t>(p[1]));
+}
+
 /** Determines the Decimal of nBits per Channel for a decent "Frame of Reference".
 Has no functionality in Network Operation. **/
 inline double get_difficulty(uint32_t nBits, int nChannel)
@@ -60,7 +87,7 @@ inline uint32_t bytes2uint(std::vector<uint8_t> const& BYTES, int nOffset = 0)
 	if (BYTES.size() < nOffset + 4)
 		return 0;
 
-	return (BYTES[0 + nOffset] << 24) + (BYTES[1 + nOffset] << 16) + (BYTES[2 + nOffset] << 8) + BYTES[3 + nOffset];
+	return read_be32(BYTES.data() + nOffset);
 }
 
 /** Convert a 64 bit Unsigned Integer to Byte Vector using Bitwise Shifts. **/
