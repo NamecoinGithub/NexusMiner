@@ -51,8 +51,7 @@ public:
     };
 
     Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
-         std::shared_ptr<NodeSessionContext> session_context,
-         std::shared_ptr<asio::io_context> io_context = nullptr);
+         std::shared_ptr<NodeSessionContext> session_context);
 
     void reset() override;
     network::Shared_payload login(Login_handler handler) override;
@@ -763,46 +762,6 @@ private:
     };
     PendingGetBlock m_pending_get_block;
 
-    // ── PUSH→GET_BLOCK deferral (200ms window for auto-attach BLOCK_DATA) ────────────
-    // When the node sends a PUSH notification it also immediately auto-attaches and
-    // delivers a BLOCK_DATA (TryAttachBlockTemplate, PR #497 on the node).  If we
-    // fire GET_BLOCK immediately on PUSH, the auto-attached BLOCK_DATA (FEED #1) and
-    // the GET_BLOCK response BLOCK_DATA (FEED #2) both arrive within ~40ms of each
-    // other, causing workers to restart twice for the same unified height.
-    //
-    // Fix: defer GET_BLOCK by DEFERRAL_WINDOW_MS after PUSH.  If BLOCK_DATA arrives
-    // within that window, cancel the deferred GET_BLOCK (auto-attach won; no request
-    // needed).  If the window expires without BLOCK_DATA, send GET_BLOCK as fallback.
-    struct PendingPushGetBlock {
-        bool                                     active{false};
-        std::chrono::steady_clock::time_point    push_received_at{};
-        uint32_t                                 push_unified_height{0};
-
-        static constexpr int64_t DEFERRAL_WINDOW_MS = 200;  // ms to wait for auto-attach
-
-        bool is_active() const { return active; }
-
-        void arm(uint32_t unified_height) {
-            active              = true;
-            push_received_at    = std::chrono::steady_clock::now();
-            push_unified_height = unified_height;
-        }
-
-        void cancel() { active = false; }
-
-        int64_t elapsed_ms() const {
-            if (!active) return -1;
-            return std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - push_received_at).count();
-        }
-    };
-    PendingPushGetBlock                 m_pending_push_get_block;
-    std::unique_ptr<asio::steady_timer> m_push_get_block_timer;
-    // Lifetime guard for the deferred timer callback.  The timer captures a weak_ptr
-    // to this flag.  When Solo is destroyed the shared_ptr member is released, so
-    // weak_ptr::lock() returns nullptr and the callback exits safely.
-    std::shared_ptr<bool>               m_push_alive{std::make_shared<bool>(true)};
-
 public:
     /// Mark a GET_BLOCK request as in-flight using the current height-tracker snapshot.
     /// Must be called immediately after the GET_BLOCK payload has been successfully
@@ -826,16 +785,6 @@ private:
     // - m_protocol_lane: Authoritative lane identifier (set at connection time)
     // - m_auth_state: Authentication state (managed by session manager)
     // - Push readiness: Inferred from actual template delivery events
-
-    // ── PUSH→GET_BLOCK deferral helpers ─────────────────────────────────────
-    /// Schedule a 200ms deferred GET_BLOCK triggered by a PUSH notification.
-    /// If BLOCK_DATA arrives within the window, cancel_deferred_push_get_block()
-    /// suppresses the GET_BLOCK so workers are not restarted a second time.
-    void schedule_deferred_push_get_block(std::shared_ptr<network::Connection> connection,
-                                          GetBlockReason reason);
-    /// Cancel any pending deferred PUSH GET_BLOCK (called by on_block_data /
-    /// on_stateless_get_block when BLOCK_DATA arrives within the deferral window).
-    void cancel_deferred_push_get_block();
 };
 
 }

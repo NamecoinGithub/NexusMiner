@@ -41,7 +41,7 @@ NodeSession::NodeSession(
     // Channel is determined by mining mode (1=Prime, 2=Hash)
     // Pass shared NodeSessionContext so primary and secondary protocols share session state
     uint8_t channel = (m_config.get_mining_mode() == config::Mining_mode::PRIME) ? 1U : 2U;
-    m_primary_protocol = std::make_shared<protocol::Solo>(channel, m_stats_collector, m_session_context, m_io_context);
+    m_primary_protocol = std::make_shared<protocol::Solo>(channel, m_stats_collector, m_session_context);
 
     m_logger->info("[NodeSession:{}] Initialized with channel {}", m_node_label, channel);
 }
@@ -186,7 +186,7 @@ void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
     // Create secondary protocol instance (Legacy lane, port 8323)
     // Pass shared NodeSessionContext so it uses the same session state as primary
     uint8_t channel = (m_config.get_mining_mode() == config::Mining_mode::PRIME) ? 1U : 2U;
-    m_secondary_protocol = std::make_shared<protocol::Solo>(channel, m_stats_collector, m_session_context, m_io_context);
+    m_secondary_protocol = std::make_shared<protocol::Solo>(channel, m_stats_collector, m_session_context);
 
     // Copy configuration from primary
     if (!m_miner_pubkey.empty() && !m_miner_privkey.empty()) {
