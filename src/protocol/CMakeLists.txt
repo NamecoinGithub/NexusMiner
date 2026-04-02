@@ -146,6 +146,11 @@ add_nexusminer_test(NAME solo_auth_resync_test
     SOURCES     solo_auth_resync_test.cpp
     LINK_LIBS   protocol spdlog)
 
+# --- PUSH→GET_BLOCK deferral ---
+add_nexusminer_test(NAME push_get_block_deferral_test
+    SOURCES     push_get_block_deferral_test.cpp
+    LINK_LIBS   "")
+
 # --- Node session context & epochs ---
 add_nexusminer_test(NAME node_session_context_test
     SOURCES     node_session_context_test.cpp
