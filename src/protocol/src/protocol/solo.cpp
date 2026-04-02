@@ -103,8 +103,7 @@ static std::string get_channel_name(uint32_t channel) {
 }
 
 Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
-           std::shared_ptr<NodeSessionContext> session_context,
-           std::shared_ptr<asio::io_context> io_context)
+           std::shared_ptr<NodeSessionContext> session_context)
 : m_channel{channel}
 , m_logger{spdlog::get("logger")}
 , m_current_height{0}
@@ -250,13 +249,6 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             }
         }
     );
-
-    // Initialize the PUSH→GET_BLOCK deferred timer if an io_context was supplied.
-    // Without an io_context the fallback is to fire GET_BLOCK immediately (old behaviour).
-    if (io_context) {
-        m_push_get_block_timer = std::make_unique<asio::steady_timer>(*io_context);
-        m_logger->debug("[Solo] PUSH→GET_BLOCK 200ms deferral timer initialised");
-    }
 }
 
 std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t>& genesis)
@@ -1217,85 +1209,6 @@ void Solo::mark_get_block_pending(GetBlockReason reason)
                     snap.unified_height, reason_name(reason));
 }
 
-void Solo::schedule_deferred_push_get_block(std::shared_ptr<network::Connection> connection,
-                                            GetBlockReason reason)
-{
-    if (!m_push_get_block_timer) {
-        // No timer available (constructed without io_context) — fire immediately.
-        m_logger->warn("[Solo Push] Deferred timer unavailable — firing GET_BLOCK immediately (no io_context)");
-        m_pending_push_get_block.cancel();
-        auto work_payload = get_work(reason);
-        if (work_payload && !work_payload->empty()) {
-            try {
-                connection->transmit(work_payload);
-                mark_get_block_pending(reason);
-                reset_get_block_dedup_state();
-            } catch (...) {
-                m_logger->warn("[Solo Push] Immediate GET_BLOCK transmit failed (no io_context path)");
-            }
-        }
-        return;
-    }
-
-    auto alive_weak = std::weak_ptr<bool>(m_push_alive);
-    auto conn_weak  = std::weak_ptr<network::Connection>(connection);
-
-    m_push_get_block_timer->expires_after(
-        std::chrono::milliseconds(PendingPushGetBlock::DEFERRAL_WINDOW_MS));
-    m_push_get_block_timer->async_wait(
-        [this, alive_weak, conn_weak, reason](const asio::error_code& ec) {
-            if (ec) return;  // timer cancelled (new PUSH or BLOCK_DATA arrived)
-            auto alive = alive_weak.lock();
-            if (!alive) return;  // Solo object already destroyed
-
-            if (!m_pending_push_get_block.is_active()) {
-                m_logger->info("[Solo Push] ✅ BLOCK_DATA arrived within {}ms — "
-                               "deferred GET_BLOCK suppressed (no duplicate send)",
-                               PendingPushGetBlock::DEFERRAL_WINDOW_MS);
-                return;
-            }
-
-            auto elapsed = m_pending_push_get_block.elapsed_ms();
-            m_logger->info("[Solo Push] ⏱️  {}ms elapsed — no auto-attach BLOCK_DATA; "
-                           "firing deferred GET_BLOCK ({})",
-                           elapsed, reason_name(reason));
-            m_pending_push_get_block.cancel();
-
-            auto conn = conn_weak.lock();
-            if (!conn) {
-                m_logger->warn("[Solo Push] Deferred GET_BLOCK: connection no longer available");
-                return;
-            }
-
-            auto work_payload = get_work(reason);
-            if (work_payload && !work_payload->empty()) {
-                try {
-                    conn->transmit(work_payload);
-                    mark_get_block_pending(reason);
-                    reset_get_block_dedup_state();
-                    m_logger->info("[Solo Push] Deferred GET_BLOCK sent successfully");
-                } catch (...) {
-                    m_logger->warn("[Solo Push] Deferred GET_BLOCK transmit failed");
-                }
-            } else {
-                m_logger->warn("[Solo Push] Deferred GET_BLOCK: get_work returned empty payload — "
-                               "will wait for next PUSH or GET_ROUND");
-            }
-        });
-}
-
-void Solo::cancel_deferred_push_get_block()
-{
-    if (m_pending_push_get_block.is_active()) {
-        m_logger->debug("[Solo] PUSH deferral cancelled — BLOCK_DATA arrived within {}ms window",
-                        m_pending_push_get_block.elapsed_ms());
-        m_pending_push_get_block.cancel();
-    }
-    if (m_push_get_block_timer) {
-        m_push_get_block_timer->cancel();
-    }
-}
-
 network::Shared_payload Solo::send_get_round()
 {
     // GET_ROUND — pure informational/sanity probe.
@@ -1884,10 +1797,6 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
         // leaving the flag set strands it for up to TIMEOUT_SECONDS, suppressing
         // legitimate future GET_BLOCK requests from PUSH/GET_ROUND/Health paths.
         m_pending_get_block.clear();
-
-        // Cancel any deferred PUSH→GET_BLOCK timer: BLOCK_DATA has arrived so the
-        // auto-attach delivered the template; no need to send a redundant GET_BLOCK.
-        cancel_deferred_push_get_block();
 
         // Enhanced diagnostics: Check payload is non-null
         if (!packet.m_data) {
@@ -3688,43 +3597,47 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
         [this](uint32_t u, uint32_t c, uint32_t d) {
             update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
         },
-        // CALLBACK 2: request_work_fn — Same-channel path: defer GET_BLOCK by
-        // PendingPushGetBlock::DEFERRAL_WINDOW_MS.  If BLOCK_DATA arrives within that
-        // window (auto-attach from node, PR #497) the deferred GET_BLOCK is cancelled so
-        // workers are only restarted once.  If the window expires without BLOCK_DATA the
-        // GET_BLOCK is sent as fallback.
-        // Returns false because GET_BLOCK is not transmitted immediately; the dedup reset
-        // and mark_get_block_pending are handled inside the timer callback.
+        // CALLBACK 2: request_work_fn — Same-channel path: GET_BLOCK with PUSH_STALE reason.
+        // PUSH reasons bypass height dedup in GetBlockDedupGuard so this
+        // is never suppressed by stale cached heights.
+        // Returns true only when GET_BLOCK was actually transmitted (not suppressed
+        // by dedup guard), so that the caller only resets dedup state on real sends.
         [connection, this, push_opcode_name]() -> bool {
             if (connection) {
-                auto snap = m_height_tracker.GetSnapshot();
-                m_pending_push_get_block.arm(snap.unified_height);
-                m_logger->info("[Solo Push] Deferring GET_BLOCK {}ms — waiting for auto-attach "
-                               "BLOCK_DATA (PUSH_STALE, unified={})",
-                               PendingPushGetBlock::DEFERRAL_WINDOW_MS, snap.unified_height);
-                schedule_deferred_push_get_block(connection, GetBlockReason::PUSH_STALE);
+                auto work_payload = get_work(GetBlockReason::PUSH_STALE);
+                if (work_payload && !work_payload->empty()) {
+                    connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::PUSH_STALE);
+                    return true;
+                } else {
+                    m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
+                }
             }
-            return false;  // GET_BLOCK not yet transmitted; deferred to timer callback
+            return false;
         },
-        // CALLBACK 3: cross_channel_request_fn — Cross-channel tip advance: defer
-        // GET_BLOCK by DEFERRAL_WINDOW_MS (same logic as same-channel path above).
+        // CALLBACK 3: cross_channel_request_fn — Cross-channel tip advance: GET_BLOCK with
+        // PUSH_CROSS_CHANNEL reason (same dedup tier as PUSH_STALE, semantically distinct).
         [connection, this]() -> bool {
             if (connection) {
-                auto snap = m_height_tracker.GetSnapshot();
-                m_pending_push_get_block.arm(snap.unified_height);
-                m_logger->info("[Solo Push] Deferring cross-channel GET_BLOCK {}ms — waiting for "
-                               "auto-attach BLOCK_DATA (PUSH_CROSS_CHANNEL, unified={})",
-                               PendingPushGetBlock::DEFERRAL_WINDOW_MS, snap.unified_height);
-                schedule_deferred_push_get_block(connection, GetBlockReason::PUSH_CROSS_CHANNEL);
+                auto work_payload = get_work(GetBlockReason::PUSH_CROSS_CHANNEL);
+                if (work_payload && !work_payload->empty()) {
+                    connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::PUSH_CROSS_CHANNEL);
+                    return true;
+                } else {
+                    m_logger->warn("[Solo] GET_BLOCK (cross-channel) unavailable — will wait for next node push");
+                }
             }
-            return false;  // GET_BLOCK not yet transmitted; deferred to timer callback
+            return false;
         });
 
-    // GET_BLOCK is now deferred via a 200ms timer (see schedule_deferred_push_get_block).
-    // Both request_work_fn and cross_channel_request_fn return false since GET_BLOCK
-    // is not transmitted synchronously any more.  The timer callback handles
-    // mark_get_block_pending() and reset_get_block_dedup_state() after the send.
-    // The block below is kept for any future path that returns work_requested=true.
+    // Only reset dedup state when GET_BLOCK was actually transmitted.
+    // work_requested is now true only when the callback successfully transmitted
+    // a GET_BLOCK (not merely invoked).  This prevents premature dedup reset
+    // when the burst guard suppresses the send — a second PUSH arriving within
+    // the 100ms window would incorrectly bypass the guard if we reset here.
+    // Liveness-only cross-channel pushes (unified height unchanged) also keep
+    // work_requested == false, preserving dedup state.
     if (work_requested) {
         reset_get_block_dedup_state();
         m_logger->debug("[Solo Push] Dedup state reset ({} channel tip advance confirmed)",
@@ -3739,9 +3652,6 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
     // leaving the flag set strands it for up to TIMEOUT_SECONDS, suppressing
     // legitimate future GET_BLOCK requests from PUSH/GET_ROUND/Health paths.
     m_pending_get_block.clear();
-
-    // Cancel any deferred PUSH→GET_BLOCK timer (template delivered via stateless path).
-    cancel_deferred_push_get_block();
 
     // ═══════════════════════════════════════════════════════════════════
     // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!
