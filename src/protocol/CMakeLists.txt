@@ -154,3 +154,9 @@ add_nexusminer_test(NAME node_session_context_test
 add_nexusminer_test(NAME epoch_coordinator_test
     SOURCES     epoch_coordinator_test.cpp
     LINK_LIBS   protocol network asio spdlog)
+
+# --- MerkleRoot feed guard ---
+add_nexusminer_test(NAME merkle_root_feed_guard_test
+    SOURCES     merkle_root_feed_guard_test.cpp
+    LINK_LIBS   protocol
+    INCLUDE_DIRS ${_LLC_INC})

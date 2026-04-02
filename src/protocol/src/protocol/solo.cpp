@@ -340,6 +340,9 @@ void Solo::reset()
     // Reset HashCheckpoint Guard state for new session
     m_hash_checkpoint_guard.reset();
 
+    // Reset MerkleRoot Feed Guard for new session
+    m_merkle_root_feed_guard.reset();
+
     // Note: m_chacha20_wrapper is intentionally NOT cleared here — the wrapper object
     // is stateless (no per-session state) and can be reused across reconnects.
 
@@ -655,6 +658,16 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     if (!m_set_block_handler) {
         m_logger->error("[{}] CRITICAL: No block handler set - cannot process template", log_scope);
         return false;
+    }
+
+    // *** MerkleRoot Feed Guard: suppress duplicate worker restarts ***
+    // If the same hashMerkleRoot was fed within the last 5 seconds, suppress
+    // the worker distribution.  The receive and validation still proceed normally.
+    if (!m_merkle_root_feed_guard.should_feed(tmpl->block.hashMerkleRoot)) {
+        m_logger->info("[{}] Feed suppressed: same hashMerkleRoot within {}s window (suppressed count: {})",
+                       log_scope, MerkleRootFeedGuard::SUPPRESSION_WINDOW_SECONDS,
+                       m_merkle_root_feed_guard.suppressed_count());
+        return true;  // receive succeeded, feed intentionally suppressed
     }
 
     if (!m_template_interface->feed_current_template()) {
