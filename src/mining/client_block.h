@@ -40,22 +40,43 @@ class ClientBlock
 {
 public:
     // Block header fields (serializable)
-    uint32_t nVersion;              // Block version
+    //
+    // NOTE ON NAMING CONVENTIONS:
+    // These fields use Hungarian notation (nHeight, nBits, nChannel, etc.) to match
+    // the LLL-TAO node's TAO::Ledger::Block struct for wire-compatibility.
+    // Modern protocol-layer code uses snake_case aliases:
+    //   nHeight         → "unified_height"    (blockchain tip + 1, used in ProofHash)
+    //   nChannel        → "channel"           (1=Prime, 2=Hash, 3=Stake)
+    //   nBits           → "difficulty_bits"    (compact difficulty representation)
+    //   nVersion        → "block_version"     (protocol version for this block)
+    //   nNonce          → "mining_nonce"      (worker-incremented solution nonce)
+    //   nTime           → "block_timestamp"   (block creation time, epoch seconds)
+    //   hashPrevBlock   → "hash_prev_block"   (best-chain tip hash at template time)
+    //   hashMerkleRoot  → "merkle_root"       (64-byte transaction commitment)
+    //
+    // See also: ClientBlockState::nChannelHeight → "channel_height"
+    //   (channel-specific height, metadata only — NOT part of 216-byte block bytes).
+    //   This is the HEIGHT for "how many blocks in THIS channel", not the TIP.
+    //   nHeight is always the UNIFIED TIP height across all channels.
+
+    uint32_t nVersion;              // Block version (alias: block_version)
     uint1024_t hashPrevBlock;       // Hash of the best chain tip at template creation time.
+                                    // (alias: hash_prev_block)
                                     // MUST equal ChainState::hashBestChain at block acceptance.
                                     // This is the primary staleness anchor (StakeMinter pattern).
                                     // On any tip_moved notification, request a fresh template;
                                     // the new template's hashPrevBlock will reflect the new tip.
-    uint512_t hashMerkleRoot;       // Merkle root (64 bytes)
-    uint32_t nChannel;              // Mining channel (1=Prime, 2=Hash, 3=Stake)
-    uint32_t nHeight;               // UNIFIED blockchain height for this template (tStateBest.nHeight + 1).
-                                    // This is what Block::ProofHash() hashes for Prime channel (nVersion→nBits range).
-                                    // MUST NOT be overwritten with channel-specific height — that would corrupt ProofHash().
-                                    // Channel-specific height is tracked separately in ClientBlockState::nChannelHeight
-                                    // and MiningTemplate::nChannelHeight (metadata only, not in 216-byte block bytes).
-    uint32_t nBits;                 // Difficulty bits
-    uint64_t nNonce;                // Mining nonce
-    uint32_t nTime;                 // Block timestamp
+    uint512_t hashMerkleRoot;       // Merkle root (64 bytes) (alias: merkle_root)
+    uint32_t nChannel;              // Mining channel (1=Prime, 2=Hash, 3=Stake) (alias: channel)
+    uint32_t nHeight;               // UNIFIED blockchain height (alias: unified_height).
+                                    // This is tStateBest.nHeight + 1 — the TIP, not a per-channel count.
+                                    // Block::ProofHash() hashes nVersion→nBits range including this field.
+                                    // MUST NOT be overwritten with channel-specific height — that
+                                    // would corrupt ProofHash(). Channel-specific height is tracked
+                                    // separately in ClientBlockState::nChannelHeight (metadata only).
+    uint32_t nBits;                 // Difficulty bits (alias: difficulty_bits)
+    uint64_t nNonce;                // Mining nonce (alias: mining_nonce)
+    uint32_t nTime;                 // Block timestamp (alias: block_timestamp)
     
     // Prime-specific fields
     std::vector<uint32_t> vOffsets; // Prime offsets (Prime channel only)

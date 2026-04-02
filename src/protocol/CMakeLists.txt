@@ -24,250 +24,133 @@ target_include_directories(protocol
 
 target_link_libraries(protocol PRIVATE network LLP stats config spdlog nlohmann_json::nlohmann_json ${OPENSSL_LIBRARIES})
 
-# Mining Template Validation Unit Test
-add_executable(mining_template_validation_test mining_template_validation_test.cpp)
-target_link_libraries(mining_template_validation_test PRIVATE protocol LLP TAO spdlog)
-target_include_directories(mining_template_validation_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/TAO/inc
-)
-add_test(NAME mining_template_validation_test COMMAND $<TARGET_FILE:mining_template_validation_test>)
+# ============================================================================
+# Protocol test executables — uses add_nexusminer_test() from cmake/AddTest.cmake.
+# Every test automatically gets ${CMAKE_CURRENT_SOURCE_DIR}/inc and ${CMAKE_SOURCE_DIR}/src.
+# ============================================================================
 
-# ChaCha20-Poly1305 AEAD Unit Test
-add_executable(chacha20_test chacha20_test.cpp)
-target_link_libraries(chacha20_test PRIVATE protocol spdlog ${OPENSSL_LIBRARIES})
-target_include_directories(chacha20_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-)
+# Common include-directory shorthands used by many tests
+set(_LLP_INC  ${CMAKE_SOURCE_DIR}/src/LLP/inc
+              ${CMAKE_SOURCE_DIR}/src/LLP
+              ${CMAKE_SOURCE_DIR}/src/LLP/include)
+set(_LLC_INC  ${CMAKE_SOURCE_DIR}/src/LLC/inc)
 
-# Falcon Quantum Tunnel Vector parity + benchmark test
-add_executable(falcon_qtv_parity_test falcon_qtv_parity_test.cpp)
-target_link_libraries(falcon_qtv_parity_test PRIVATE ${OPENSSL_LIBRARIES})
-target_include_directories(falcon_qtv_parity_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-)
+# --- Template & height validation ---
+add_nexusminer_test(NAME mining_template_validation_test
+    SOURCES     mining_template_validation_test.cpp
+    LINK_LIBS   protocol LLP TAO spdlog
+    INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/src/TAO/inc ${CMAKE_SOURCE_DIR}/src/LLP/inc)
 
-# Genesis Utils and Serialization Helpers Unit Test
-add_executable(genesis_serialization_utils_test genesis_serialization_utils_test.cpp)
-target_link_libraries(genesis_serialization_utils_test PRIVATE protocol)
-target_include_directories(genesis_serialization_utils_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-)
+add_nexusminer_test(NAME height_tracker_test
+    SOURCES     height_tracker_test.cpp
+    LINK_LIBS   protocol
+    INCLUDE_DIRS ${_LLC_INC})
 
-# HeightTracker Unit Test
-add_executable(height_tracker_test height_tracker_test.cpp)
-target_link_libraries(height_tracker_test PRIVATE protocol)
-target_include_directories(height_tracker_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLC/inc
-)
+add_nexusminer_test(NAME phase2b_update_height_test
+    SOURCES     phase2b_update_height_test.cpp
+    LINK_LIBS   protocol LLP spdlog
+    INCLUDE_DIRS ${_LLP_INC})
 
-# PacketBuilder Unit Test
-add_executable(packet_builder_test packet_builder_test.cpp)
-target_link_libraries(packet_builder_test PRIVATE protocol LLP spdlog)
-target_include_directories(packet_builder_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src
-)
+# --- Crypto ---
+add_nexusminer_test(NAME chacha20_test
+    SOURCES     chacha20_test.cpp
+    LINK_LIBS   protocol spdlog ${OPENSSL_LIBRARIES})
 
-# Phase 2B: unified height-state update regression tests
-add_executable(phase2b_update_height_test phase2b_update_height_test.cpp)
-target_link_libraries(phase2b_update_height_test PRIVATE protocol LLP spdlog)
-target_include_directories(phase2b_update_height_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src
-)
+add_nexusminer_test(NAME falcon_qtv_parity_test
+    SOURCES     falcon_qtv_parity_test.cpp
+    LINK_LIBS   ${OPENSSL_LIBRARIES})
 
-# KEEPALIVE v2 miner-side unit tests
-add_executable(keepalive_v2_test keepalive_v2_test.cpp)
-target_link_libraries(keepalive_v2_test PRIVATE protocol LLP spdlog)
-target_include_directories(keepalive_v2_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src
-)
+# --- Serialization helpers ---
+add_nexusminer_test(NAME genesis_serialization_utils_test
+    SOURCES     genesis_serialization_utils_test.cpp
+    LINK_LIBS   protocol)
 
-# Push notification lane detection unit tests
-add_executable(push_notification_lane_test
-    push_notification_lane_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp)
-target_link_libraries(push_notification_lane_test PRIVATE protocol LLP LLC spdlog)
-target_include_directories(push_notification_lane_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src
-)
+add_nexusminer_test(NAME session_start_parser_test
+    SOURCES     session_start_parser_test.cpp
+    LINK_LIBS   protocol)
 
-# SESSION_STATUS / SESSION_STATUS_ACK wire-protocol unit tests
-add_executable(session_status_wire_test session_status_wire_test.cpp)
-target_link_libraries(session_status_wire_test PRIVATE LLP)
-target_include_directories(session_status_wire_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src
-)
+# --- Packet / wire protocol ---
+add_nexusminer_test(NAME packet_builder_test
+    SOURCES     packet_builder_test.cpp
+    LINK_LIBS   protocol LLP spdlog
+    INCLUDE_DIRS ${_LLP_INC})
 
-# StatelessBlockUtility encode/decode unit tests
-add_executable(stateless_block_utility_test
-    stateless_block_utility_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp)
-target_link_libraries(stateless_block_utility_test PRIVATE protocol LLP spdlog)
-target_include_directories(stateless_block_utility_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src/LLP/include
-    ${CMAKE_SOURCE_DIR}/src/LLC/inc
-    ${CMAKE_SOURCE_DIR}/src
-)
+add_nexusminer_test(NAME keepalive_v2_test
+    SOURCES     keepalive_v2_test.cpp
+    LINK_LIBS   protocol LLP spdlog
+    INCLUDE_DIRS ${_LLP_INC})
 
-# End-to-End Block Submission Test (encode_submit → ChaCha20 → SUBMIT_BLOCK)
-add_executable(e2e_block_submission_test
-    e2e_block_submission_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp)
-target_link_libraries(e2e_block_submission_test PRIVATE protocol LLP spdlog ${OPENSSL_LIBRARIES})
-target_include_directories(e2e_block_submission_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src/LLP/include
-    ${CMAKE_SOURCE_DIR}/src/LLC/inc
-    ${CMAKE_SOURCE_DIR}/src
-)
+add_nexusminer_test(NAME session_status_wire_test
+    SOURCES     session_status_wire_test.cpp
+    LINK_LIBS   LLP
+    INCLUDE_DIRS ${_LLP_INC})
 
-# Deterministic first-block acceptance harness
-add_executable(first_block_acceptance_test
-    first_block_acceptance_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp)
-target_link_libraries(first_block_acceptance_test PRIVATE protocol network LLP asio spdlog ${OPENSSL_LIBRARIES})
-target_include_directories(first_block_acceptance_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src/LLP/include
-    ${CMAKE_SOURCE_DIR}/src/LLC/inc
-    ${CMAKE_SOURCE_DIR}/src
-)
+add_nexusminer_test(NAME node_shutdown_wire_test
+    SOURCES     node_shutdown_wire_test.cpp
+    LINK_LIBS   protocol LLP spdlog
+    INCLUDE_DIRS ${_LLP_INC})
 
-# MinedBlockCache + worker-feed dedup guard unit tests
-add_executable(mined_block_cache_dedup_test
-    ${CMAKE_SOURCE_DIR}/src/stats/mined_block_cache_test.cpp)
-target_link_libraries(mined_block_cache_dedup_test PRIVATE protocol LLP stats spdlog)
-target_include_directories(mined_block_cache_dedup_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src/stats/inc
-    ${CMAKE_SOURCE_DIR}/src/LLC/inc
-    ${CMAKE_SOURCE_DIR}/src
-)
+add_nexusminer_test(NAME packet_ingress_preflight_test
+    SOURCES     packet_ingress_preflight_test.cpp
+    LINK_LIBS   protocol network asio spdlog)
 
-# NODE_SHUTDOWN (0xD0FF) wire protocol unit tests
-add_executable(node_shutdown_wire_test node_shutdown_wire_test.cpp)
-target_link_libraries(node_shutdown_wire_test PRIVATE protocol LLP spdlog)
-target_include_directories(node_shutdown_wire_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src
-)
+# --- Push notifications & lane detection ---
+add_nexusminer_test(NAME push_notification_lane_test
+    SOURCES     push_notification_lane_test.cpp
+                ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp
+    LINK_LIBS   protocol LLP LLC spdlog
+    INCLUDE_DIRS ${_LLP_INC})
 
-# GET_BLOCK deduplication and recovery unit tests
-add_executable(get_block_dedup_recovery_test get_block_dedup_recovery_test.cpp)
-target_link_libraries(get_block_dedup_recovery_test PRIVATE protocol LLP spdlog)
-target_include_directories(get_block_dedup_recovery_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src
-)
+add_nexusminer_test(NAME fork_vs_tip_change_test
+    SOURCES     fork_vs_tip_change_test.cpp
+    LINK_LIBS   protocol LLP LLC spdlog
+    INCLUDE_DIRS ${_LLP_INC})
 
-# Degraded mode recovery and keepalive epoch isolation tests
-add_executable(degraded_recovery_test degraded_recovery_test.cpp)
-target_link_libraries(degraded_recovery_test PRIVATE protocol LLP spdlog)
-target_include_directories(degraded_recovery_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src
-)
+# --- Block submission ---
+add_nexusminer_test(NAME stateless_block_utility_test
+    SOURCES     stateless_block_utility_test.cpp
+                ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp
+    LINK_LIBS   protocol LLP spdlog
+    INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
 
-# Solo auth/session resync regression tests
-add_executable(solo_auth_resync_test solo_auth_resync_test.cpp)
-target_link_libraries(solo_auth_resync_test PRIVATE protocol spdlog)
-target_include_directories(solo_auth_resync_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src
-)
+add_nexusminer_test(NAME e2e_block_submission_test
+    SOURCES     e2e_block_submission_test.cpp
+                ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp
+    LINK_LIBS   protocol LLP spdlog ${OPENSSL_LIBRARIES}
+    INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
 
-# PacketIngressPreflight + SessionRecoveryPolicy unit tests
-add_executable(packet_ingress_preflight_test packet_ingress_preflight_test.cpp)
-target_link_libraries(packet_ingress_preflight_test PRIVATE protocol network asio spdlog)
-target_include_directories(packet_ingress_preflight_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src
-)
+add_nexusminer_test(NAME first_block_acceptance_test
+    SOURCES     first_block_acceptance_test.cpp
+                ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp
+    LINK_LIBS   protocol network LLP asio spdlog ${OPENSSL_LIBRARIES}
+    INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
 
-# Register all test executables with CTest
-add_test(NAME chacha20_test COMMAND $<TARGET_FILE:chacha20_test>)
-add_test(NAME falcon_qtv_parity_test COMMAND $<TARGET_FILE:falcon_qtv_parity_test>)
-add_test(NAME genesis_serialization_utils_test COMMAND $<TARGET_FILE:genesis_serialization_utils_test>)
-add_test(NAME height_tracker_test COMMAND $<TARGET_FILE:height_tracker_test>)
-add_test(NAME packet_builder_test COMMAND $<TARGET_FILE:packet_builder_test>)
-add_test(NAME phase2b_update_height_test COMMAND $<TARGET_FILE:phase2b_update_height_test>)
-add_test(NAME keepalive_v2_test COMMAND $<TARGET_FILE:keepalive_v2_test>)
-add_test(NAME push_notification_lane_test COMMAND $<TARGET_FILE:push_notification_lane_test>)
-add_test(NAME session_status_wire_test COMMAND $<TARGET_FILE:session_status_wire_test>)
-add_test(NAME stateless_block_utility_test COMMAND $<TARGET_FILE:stateless_block_utility_test>)
-add_test(NAME e2e_block_submission_test COMMAND $<TARGET_FILE:e2e_block_submission_test>)
-add_test(NAME first_block_acceptance_test COMMAND $<TARGET_FILE:first_block_acceptance_test>)
-add_test(NAME mined_block_cache_dedup_test COMMAND $<TARGET_FILE:mined_block_cache_dedup_test>)
-add_test(NAME node_shutdown_wire_test COMMAND $<TARGET_FILE:node_shutdown_wire_test>)
-add_test(NAME get_block_dedup_recovery_test COMMAND $<TARGET_FILE:get_block_dedup_recovery_test>)
-add_test(NAME solo_auth_resync_test COMMAND $<TARGET_FILE:solo_auth_resync_test>)
-add_test(NAME degraded_recovery_test COMMAND $<TARGET_FILE:degraded_recovery_test>)
-add_test(NAME packet_ingress_preflight_test COMMAND $<TARGET_FILE:packet_ingress_preflight_test>)
-# SESSION_START packet parser unit tests
-add_executable(session_start_parser_test session_start_parser_test.cpp)
-target_link_libraries(session_start_parser_test PRIVATE protocol)
-target_include_directories(session_start_parser_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src
-)
+add_nexusminer_test(NAME mined_block_cache_dedup_test
+    SOURCES     ${CMAKE_SOURCE_DIR}/src/stats/mined_block_cache_test.cpp
+    LINK_LIBS   protocol LLP stats spdlog
+    INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC}
+                 ${CMAKE_SOURCE_DIR}/src/stats/inc)
 
-# NodeSessionContext unit tests
-add_executable(node_session_context_test node_session_context_test.cpp)
-target_link_libraries(node_session_context_test PRIVATE protocol network asio spdlog)
-target_include_directories(node_session_context_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src
-)
-add_test(NAME node_session_context_test COMMAND $<TARGET_FILE:node_session_context_test>)
+# --- Session & dedup recovery ---
+add_nexusminer_test(NAME get_block_dedup_recovery_test
+    SOURCES     get_block_dedup_recovery_test.cpp
+    LINK_LIBS   protocol LLP spdlog
+    INCLUDE_DIRS ${_LLP_INC})
 
-# EpochCoordinator unit tests
-add_executable(epoch_coordinator_test epoch_coordinator_test.cpp)
-target_link_libraries(epoch_coordinator_test PRIVATE protocol network asio spdlog)
-target_include_directories(epoch_coordinator_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src
-)
-add_test(NAME epoch_coordinator_test COMMAND $<TARGET_FILE:epoch_coordinator_test>)
+add_nexusminer_test(NAME degraded_recovery_test
+    SOURCES     degraded_recovery_test.cpp
+    LINK_LIBS   protocol LLP spdlog
+    INCLUDE_DIRS ${_LLP_INC})
 
-# Fork vs Tip Change semantics unit tests
-add_executable(fork_vs_tip_change_test fork_vs_tip_change_test.cpp)
-target_link_libraries(fork_vs_tip_change_test PRIVATE protocol LLP LLC spdlog)
-target_include_directories(fork_vs_tip_change_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP/inc
-    ${CMAKE_SOURCE_DIR}/src/LLP
-    ${CMAKE_SOURCE_DIR}/src
-)
-add_test(NAME fork_vs_tip_change_test COMMAND $<TARGET_FILE:fork_vs_tip_change_test>)
+add_nexusminer_test(NAME solo_auth_resync_test
+    SOURCES     solo_auth_resync_test.cpp
+    LINK_LIBS   protocol spdlog)
+
+# --- Node session context & epochs ---
+add_nexusminer_test(NAME node_session_context_test
+    SOURCES     node_session_context_test.cpp
+    LINK_LIBS   protocol network asio spdlog)
+
+add_nexusminer_test(NAME epoch_coordinator_test
+    SOURCES     epoch_coordinator_test.cpp
+    LINK_LIBS   protocol network asio spdlog)
