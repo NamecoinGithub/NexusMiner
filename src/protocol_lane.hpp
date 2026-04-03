@@ -2,6 +2,8 @@
 #define NEXUSMINER_PROTOCOL_LANE_HPP
 
 #include <cstdint>
+#include <cstdio>
+#include <string>
 
 namespace nexusminer {
 
@@ -48,6 +50,40 @@ inline const char* get_lane_name(ProtocolLane lane) {
         case ProtocolLane::STATELESS: return "Stateless";
         default: return "Unknown";
     }
+}
+
+/**
+ * Wire-format header size for a given lane.
+ *   STATELESS: [uint16 opcode][uint32 length] = 6 bytes
+ *   LEGACY:    [uint8  opcode][uint32 length] = 5 bytes
+ *
+ * Use this instead of inline ternaries so the framing constant lives in one place.
+ */
+inline constexpr std::size_t lane_header_size(ProtocolLane lane) noexcept {
+    return (lane == ProtocolLane::STATELESS) ? 6u : 5u;
+}
+
+/**
+ * Format a canonical 8-bit LLP opcode for diagnostic logging, respecting the
+ * active lane's wire encoding.
+ *
+ *   STATELESS: "0xD085" (mirror-mapped 16-bit)
+ *   LEGACY:    "0x85"   (raw 8-bit)
+ *
+ * Returns a short, fixed-width hex string suitable for log messages.
+ * Eliminates scattered ternary expressions like:
+ *     m_protocol_lane == ProtocolLane::STATELESS ? "stateless 0xD085" : "legacy 0x85"
+ */
+inline std::string format_lane_opcode(ProtocolLane lane, uint8_t legacy_opcode) {
+    if (lane == ProtocolLane::STATELESS) {
+        // Mirror-map to 16-bit stateless opcode (0xD000 | legacy_opcode)
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), "0x%04X", 0xD000u | static_cast<unsigned>(legacy_opcode));
+        return buf;
+    }
+    char buf[6];
+    std::snprintf(buf, sizeof(buf), "0x%02X", static_cast<unsigned>(legacy_opcode));
+    return buf;
 }
 
 } // namespace nexusminer
