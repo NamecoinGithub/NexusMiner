@@ -60,7 +60,7 @@ inline uint32_t bytes2uint(std::vector<uint8_t> const& BYTES, int nOffset = 0)
 	if (BYTES.size() < nOffset + 4)
 		return 0;
 
-	return (BYTES[0 + nOffset] << 24) + (BYTES[1 + nOffset] << 16) + (BYTES[2 + nOffset] << 8) + BYTES[3 + nOffset];
+	return (static_cast<uint32_t>(BYTES[0 + nOffset]) << 24) + (static_cast<uint32_t>(BYTES[1 + nOffset]) << 16) + (static_cast<uint32_t>(BYTES[2 + nOffset]) << 8) + static_cast<uint32_t>(BYTES[3 + nOffset]);
 }
 
 /** Convert a 64 bit Unsigned Integer to Byte Vector using Bitwise Shifts. **/

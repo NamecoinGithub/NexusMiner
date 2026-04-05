@@ -34,14 +34,7 @@ bool ChaCha20Wrapper::is_available()
     return true;
 #else
     // OpenSSL 1.1.1 also has ChaCha20-Poly1305
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) return false;
-    
-    const EVP_CIPHER* cipher = EVP_chacha20_poly1305();
-    bool available = (cipher != nullptr);
-    
-    EVP_CIPHER_CTX_free(ctx);
-    return available;
+    return EVP_chacha20_poly1305() != nullptr;
 #endif
 }
 

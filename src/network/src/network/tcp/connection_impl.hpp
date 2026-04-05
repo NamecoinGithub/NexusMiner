@@ -218,10 +218,10 @@ inline void Connection_impl<ProtocolDescriptionType>::receive()
                             if (length_offset + 4 <= receive_buffer->size())
                             {
                                 // Parse length (4 bytes, big-endian)
-                                pkt_length = ((*receive_buffer)[length_offset] << 24) + 
-                                           ((*receive_buffer)[length_offset + 1] << 16) + 
-                                           ((*receive_buffer)[length_offset + 2] << 8) + 
-                                           (*receive_buffer)[length_offset + 3];
+                                pkt_length = (static_cast<std::uint32_t>((*receive_buffer)[length_offset]) << 24) + 
+                                           (static_cast<std::uint32_t>((*receive_buffer)[length_offset + 1]) << 16) + 
+                                           (static_cast<std::uint32_t>((*receive_buffer)[length_offset + 2]) << 8) + 
+                                           static_cast<std::uint32_t>((*receive_buffer)[length_offset + 3]);
                             }
                             
                             // Create data payload for hex preview
@@ -282,7 +282,15 @@ inline void Connection_impl<ProtocolDescriptionType>::receive()
                         }
                     }
                     
-                    self->m_connection_handler(Result::receive_ok, std::move(receive_buffer));
+                    try {
+                        self->m_connection_handler(Result::receive_ok, std::move(receive_buffer));
+                    } catch (const std::exception& e) {
+                        if (self->m_logger) {
+                            self->m_logger->error("[LLP RECV] Handler exception: {}", e.what());
+                        }
+                        self->close_internal(Result::Code::connection_aborted);
+                        return;
+                    }
                     self->receive();
                 }
                 else
@@ -517,22 +525,43 @@ void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
     
     ::asio::async_write(*m_asio_socket, ::asio::buffer(*payload, payload->size()),
         // don't forget to keep the payload until transmission has been completed!!!
-        [weak_self = get_weak_self(), payload](auto, auto) 
+        [weak_self = get_weak_self(), payload](const ::asio::error_code& ec, std::size_t /*bytes_transferred*/) 
         {
             auto self = weak_self.lock();
-            if ((self != nullptr) && self->m_connection_handler) 
+            if (!self || !self->m_connection_handler) 
             {
-                // Safely pop from queue
-                if (!self->m_tx_queue.empty())
+                return;
+            }
+
+            if (ec)
+            {
+                if (ec == ::asio::error::operation_aborted)
+                {
+                    return;  // Socket/timer cancelled — no further action
+                }
+                if (self->m_logger)
+                {
+                    self->m_logger->error("[LLP SEND] async_write failed: {}", ec.message());
+                }
+                // Drain stale payloads to prevent accumulation
+                while (!self->m_tx_queue.empty())
                 {
                     self->m_tx_queue.pop();
                 }
-                
-                // Tail-recurse if more queued payloads
-                if (!self->m_tx_queue.empty()) 
-                {
-                    self->transmit_trigger();
-                }
+                self->close_internal(Result::Code::connection_aborted);
+                return;
+            }
+
+            // Safely pop completed payload from queue
+            if (!self->m_tx_queue.empty())
+            {
+                self->m_tx_queue.pop();
+            }
+            
+            // Tail-recurse if more queued payloads
+            if (!self->m_tx_queue.empty()) 
+            {
+                self->transmit_trigger();
             }
         });
 }
