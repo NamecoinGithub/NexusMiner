@@ -16,6 +16,7 @@
 #include "protocol/get_block_reason.hpp"
 #include "protocol/get_block_dedup_guard.hpp"
 #include "protocol/hash_checkpoint_guard.hpp"
+#include "protocol/merkle_root_feed_guard.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "LLP/colin_ping_handler.h"
@@ -538,6 +539,11 @@ private:
     // hashPrevBlock (which can change during node reorgs), checkpoints represent
     // confirmed chain tips that the node has built on.
     HashCheckpointGuard m_hash_checkpoint_guard;
+
+    // MerkleRoot Feed Guard: suppresses duplicate worker feeds when the same
+    // hashMerkleRoot arrives within 5 seconds.  Only the feed (worker distribution)
+    // is suppressed — the receive and validation still proceed normally.
+    MerkleRootFeedGuard m_merkle_root_feed_guard;
     
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;

@@ -340,6 +340,9 @@ void Solo::reset()
     // Reset HashCheckpoint Guard state for new session
     m_hash_checkpoint_guard.reset();
 
+    // Reset MerkleRoot Feed Guard for new session
+    m_merkle_root_feed_guard.reset();
+
     // Note: m_chacha20_wrapper is intentionally NOT cleared here — the wrapper object
     // is stateless (no per-session state) and can be reused across reconnects.
 
@@ -655,6 +658,16 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     if (!m_set_block_handler) {
         m_logger->error("[{}] CRITICAL: No block handler set - cannot process template", log_scope);
         return false;
+    }
+
+    // *** MerkleRoot Feed Guard: suppress duplicate worker restarts ***
+    // If the same hashMerkleRoot was fed within the last 5 seconds, suppress
+    // the worker distribution.  The receive and validation still proceed normally.
+    if (!m_merkle_root_feed_guard.should_feed(tmpl->block.hashMerkleRoot)) {
+        m_logger->info("[{}] Feed suppressed: same hashMerkleRoot within {}s window (suppressed count: {})",
+                       log_scope, MerkleRootFeedGuard::SUPPRESSION_WINDOW_SECONDS,
+                       m_merkle_root_feed_guard.suppressed_count());
+        return true;  // receive succeeded, feed intentionally suppressed
     }
 
     if (!m_template_interface->feed_current_template()) {
@@ -1153,6 +1166,11 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
         auto verdict = m_dedup_guard.check(reason, canonical_unified, have_valid_template);
         if (verdict != GetBlockDedupGuard::Verdict::ALLOW) {
             m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
+            m_logger->warn("[Solo] GET_BLOCK suppressed by dedup guard: verdict={}, reason={}, "
+                           "unified={}, have_template={}",
+                           verdict == GetBlockDedupGuard::Verdict::SUPPRESS_RAPID_BURST
+                               ? "RAPID_BURST" : "HEIGHT_MATCH",
+                           reason_name(reason), canonical_unified, have_valid_template);
             return nullptr;
         }
     }
@@ -1230,8 +1248,8 @@ network::Shared_payload Solo::send_get_round()
     }
 
     // Always send GET_ROUND on all lanes (legacy: 0x85, stateless: 0xD085).
-    m_logger->debug("[Solo GET_ROUND] Sending GET_ROUND ({} lane)",
-        m_protocol_lane == ProtocolLane::STATELESS ? "stateless 0xD085" : "legacy 0x85");
+    m_logger->debug("[Solo GET_ROUND] Sending GET_ROUND ({} {})",
+        get_lane_name(m_protocol_lane), format_lane_opcode(m_protocol_lane, LLP::GET_ROUND));
     auto payload = PacketBuilder::build(m_protocol_lane, LLP::GET_ROUND);
     if (payload && !payload->empty()) {
         m_logger->debug("[Solo GET_ROUND] Encoded payload size: {} bytes (header-only)", payload->size());
@@ -1253,8 +1271,8 @@ network::Shared_payload Solo::send_recovery_work_request()
     // Use this method — not send_get_round() — whenever the goal is to force a
     // template refresh (e.g. Timer_manager recovery, Worker_manager emergency).
 
-    m_logger->debug("[Solo Recovery] Requesting fresh template via GET_BLOCK ({} lane)",
-        m_protocol_lane == ProtocolLane::STATELESS ? "stateless 0xD081" : "legacy 0x81");
+    m_logger->debug("[Solo Recovery] Requesting fresh template via GET_BLOCK ({} {})",
+        get_lane_name(m_protocol_lane), format_lane_opcode(m_protocol_lane, LLP::GET_BLOCK));
     return get_work(GetBlockReason::RECOVERY_FORCED);
 }
 
@@ -1368,7 +1386,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // ── Extract plaintext payload from PacketBuilder-framed wire_bytes ────────
     // STATELESS wire format: [opcode(2 BE)][length(4 BE)][plaintext_payload]
     // LEGACY wire format:    [opcode(1)   ][length(4 BE)][plaintext_payload]
-    const size_t header_size = (m_protocol_lane == ProtocolLane::STATELESS) ? 6u : 5u;
+    const size_t header_size = lane_header_size(m_protocol_lane);
     const auto& framed = *submit_result.wire_bytes;
     if (framed.size() <= header_size) {
         m_logger->error("[Solo Submit] Wire frame too small: {} bytes (header={})",
@@ -1459,9 +1477,8 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
             return network::Shared_payload{};
         }
 
-        m_logger->info("[Solo Submit] {} wire format: {} bytes",
-            (m_protocol_lane == ProtocolLane::STATELESS)
-                ? "STATELESS_SUBMIT_BLOCK (0xD001)" : "SUBMIT_BLOCK (0x01)",
+        m_logger->info("[Solo Submit] SUBMIT_BLOCK ({}) wire format: {} bytes",
+            format_lane_opcode(m_protocol_lane, LLP::SUBMIT_BLOCK),
             result->size());
         if (m_session_context) {
             m_session_context->set_channel_state(m_channel, true, true);
@@ -2331,8 +2348,7 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
 
 void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
-    const bool is_stateless_lane = (m_protocol_lane == ProtocolLane::STATELESS);
-    const char* lane_label = is_stateless_lane ? "STATELESS" : "LEGACY";
+    const char* lane_label = get_lane_name(m_protocol_lane);
 
     if (matches_opcode(packet, Packet::NEW_ROUND))
     {
@@ -3351,62 +3367,41 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
         // LANE-BASED PROTOCOL FLOW (NO NEGOTIATION)
         // ═══════════════════════════════════════════════════════════════════
         
-        if (m_protocol_lane == ProtocolLane::STATELESS) {
-            // STATELESS LANE: Send MINER_READY to subscribe to push notifications
-            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-            m_logger->info("[Solo Protocol] STATELESS LANE: Using push protocol");
-            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-            m_logger->info("[Solo Protocol] Sending STATELESS_MINER_READY (0xD0D8)");
-            
-            auto miner_ready_payload = send_miner_ready();
-            if (!miner_ready_payload || miner_ready_payload->empty()) {
-                m_logger->error("[Solo Protocol] Failed to encode STATELESS_MINER_READY");
-                if (connection) {
-                    connection->close();
-                }
-                return;
-            }
-            
-            if (connection) {
-                connection->transmit(miner_ready_payload);
-                m_logger->info("[Solo Protocol] ✓ STATELESS_MINER_READY transmitted");
-                m_logger->info("[Solo Protocol] Waiting for STATELESS_GET_BLOCK (0xD081) pushes...");
-                flush_pending_push_after_auth(connection, "Solo Protocol");
-            } else {
-                m_logger->error("[Solo Protocol] No connection available");
-                return;
-            }
-        } else if (m_protocol_lane == ProtocolLane::LEGACY) {
-            // LEGACY LANE: Send MINER_READY to subscribe to push notifications
-            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-            m_logger->info("[Solo Protocol] LEGACY LANE: Using push protocol");
-            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-            m_logger->info("[Solo Protocol] Sending MINER_READY (0xD8)");
-            
-            auto miner_ready_payload = send_miner_ready();
-            if (!miner_ready_payload || miner_ready_payload->empty()) {
-                m_logger->error("[Solo Protocol] Failed to encode MINER_READY");
-                if (connection) {
-                    connection->close();
-                }
-                return;
-            }
-            
-            if (connection) {
-                connection->transmit(miner_ready_payload);
-                m_logger->info("[Solo Protocol] ✓ MINER_READY transmitted");
-                m_logger->info("[Solo Protocol] Waiting for PRIME_BLOCK_AVAILABLE/HASH_BLOCK_AVAILABLE pushes...");
-                flush_pending_push_after_auth(connection, "Solo Protocol");
-            } else {
-                m_logger->error("[Solo Protocol] No connection available");
-                return;
-            }
-        } else {
+        if (m_protocol_lane == ProtocolLane::UNKNOWN) {
             m_logger->error("[Solo Protocol] UNKNOWN protocol lane - cannot proceed");
             if (connection) {
                 connection->close();
             }
             return;
+        }
+
+        {
+            // Unified push-subscription path — lane-specific framing handled by PacketBuilder
+            const char* lane_name = get_lane_name(m_protocol_lane);
+            const auto opcode_str = format_lane_opcode(m_protocol_lane, LLP::MINER_READY);
+
+            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+            m_logger->info("[Solo Protocol] {} LANE: Using push protocol", lane_name);
+            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+            m_logger->info("[Solo Protocol] Sending MINER_READY ({})", opcode_str);
+
+            auto miner_ready_payload = send_miner_ready();
+            if (!miner_ready_payload || miner_ready_payload->empty()) {
+                m_logger->error("[Solo Protocol] Failed to encode MINER_READY on {} lane", lane_name);
+                if (connection) {
+                    connection->close();
+                }
+                return;
+            }
+
+            if (connection) {
+                connection->transmit(miner_ready_payload);
+                m_logger->info("[Solo Protocol] ✓ MINER_READY ({}) transmitted on {} lane", opcode_str, lane_name);
+                flush_pending_push_after_auth(connection, "Solo Protocol");
+            } else {
+                m_logger->error("[Solo Protocol] No connection available");
+                return;
+            }
         }
     }
     else if (matches_opcode(packet, Packet::SESSION_START))
@@ -3601,12 +3596,17 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
         // PUSH reasons bypass height dedup in GetBlockDedupGuard so this
         // is never suppressed by stale cached heights.
         // Returns true only when GET_BLOCK was actually transmitted (not suppressed
-        // by dedup guard), so that the caller only resets dedup state on real sends.
+        // by dedup guard), so that the caller knows a real send occurred.
         [connection, this, push_opcode_name]() -> bool {
             if (connection) {
                 auto work_payload = get_work(GetBlockReason::PUSH_STALE);
                 if (work_payload && !work_payload->empty()) {
-                    connection->transmit(work_payload);
+                    try {
+                        connection->transmit(work_payload);
+                    } catch (const std::exception& e) {
+                        m_logger->error("[Solo] GET_BLOCK transmit failed: {}", e.what());
+                        return false;
+                    }
                     mark_get_block_pending(GetBlockReason::PUSH_STALE);
                     return true;
                 } else {
@@ -3621,7 +3621,12 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
             if (connection) {
                 auto work_payload = get_work(GetBlockReason::PUSH_CROSS_CHANNEL);
                 if (work_payload && !work_payload->empty()) {
-                    connection->transmit(work_payload);
+                    try {
+                        connection->transmit(work_payload);
+                    } catch (const std::exception& e) {
+                        m_logger->error("[Solo] GET_BLOCK (cross-channel) transmit failed: {}", e.what());
+                        return false;
+                    }
                     mark_get_block_pending(GetBlockReason::PUSH_CROSS_CHANNEL);
                     return true;
                 } else {
@@ -3631,16 +3636,27 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
             return false;
         });
 
-    // Only reset dedup state when GET_BLOCK was actually transmitted.
-    // work_requested is now true only when the callback successfully transmitted
-    // a GET_BLOCK (not merely invoked).  This prevents premature dedup reset
-    // when the burst guard suppresses the send — a second PUSH arriving within
-    // the 100ms window would incorrectly bypass the guard if we reset here.
-    // Liveness-only cross-channel pushes (unified height unchanged) also keep
-    // work_requested == false, preserving dedup state.
+    // Do NOT reset dedup state here.  record_transmission() inside get_work()
+    // already armed the 100ms rapid-burst guard; resetting it immediately after
+    // the callback returns clears m_last_transmitted_tp, allowing a second PUSH
+    // arriving <100ms later to bypass the burst guard entirely.  When the node's
+    // 1-second per-request cooldown silently drops that second GET_BLOCK, the
+    // m_pending_get_block flag strands for up to TIMEOUT_SECONDS with no
+    // BLOCK_DATA response, suppressing GET_ROUND-driven retries.
+    //
+    // PUSH reasons already bypass the height-based guard via
+    // should_bypass_height_dedup(), so removing this reset does not block
+    // legitimate subsequent PUSH-triggered requests — only the rapid-burst
+    // guard remains active, which is exactly the protection we need.
+    //
+    // The dedup state is properly reset when the canonical tip actually changes:
+    //   - on_block_data() / on_stateless_get_block() response handlers
+    //   - on_block_accepted() / on_block_rejected()
+    //   - on_new_round_received() (GET_ROUND detects tip change)
+    //   - Stake-advance and template-discard paths
     if (work_requested) {
-        reset_get_block_dedup_state();
-        m_logger->debug("[Solo Push] Dedup state reset ({} channel tip advance confirmed)",
+        m_logger->debug("[Solo Push] GET_BLOCK transmitted ({} channel tip advance) — "
+                        "burst guard remains armed to protect against rapid duplicate pushes",
             (channel == m_channel) ? "same" : "cross");
     }
 }
@@ -4419,15 +4435,11 @@ network::Shared_payload Solo::send_set_reward()
 
 network::Shared_payload Solo::send_miner_ready()
 {
-    bool use_stateless = (m_protocol_lane == ProtocolLane::STATELESS);
-    
-    if (use_stateless) {
-        m_logger->info("[Solo Push] Sending STATELESS_MINER_READY (subscribe to push notifications)");
-        m_logger->info("[Solo Push]   Opcode: 0xD0D8 (mirror-mapped from legacy MINER_READY 216)");
-    } else {
-        m_logger->info("[Solo Push] Sending MINER_READY (subscribe to push notifications)");
-        m_logger->info("[Solo Push]   Opcode: 0xD8 (legacy MINER_READY 216)");
-    }
+    const char* lane_name = get_lane_name(m_protocol_lane);
+    const auto opcode_str = format_lane_opcode(m_protocol_lane, LLP::MINER_READY);
+
+    m_logger->info("[Solo Push] Sending MINER_READY (subscribe to push notifications)");
+    m_logger->info("[Solo Push]   Lane: {}, Opcode: {}", lane_name, opcode_str);
     m_logger->info("[Solo Push]   Channel: {} ({})", 
                    m_channel, 
                    m_channel == mining::CHANNEL_PRIME ? "Prime" : "Hash");
@@ -4436,15 +4448,7 @@ network::Shared_payload Solo::send_miner_ready()
     auto payload = PacketBuilder::build(m_protocol_lane, LLP::MINER_READY);
     if (payload && !payload->empty()) {
         m_subscribed_to_notifications = true;
-        if (use_stateless) {
-            m_logger->info("[Solo Push] ✓ Subscribed to push notifications (stateless protocol)");
-            m_logger->info("[Solo Push]   Node will send immediate STATELESS_GET_BLOCK (0xD081)");
-            m_logger->info("[Solo Push]   Then push STATELESS_GET_BLOCK on every block validation");
-        } else {
-            m_logger->info("[Solo Push] ✓ MINER_READY sent - subscribed to channel {}", m_channel);
-            m_logger->info("[Solo Push]   Node will send PRIME_BLOCK_AVAILABLE (0xD9) or HASH_BLOCK_AVAILABLE (0xDA)");
-            m_logger->info("[Solo Push]   Then push notifications on every block validation");
-        }
+        m_logger->info("[Solo Push] ✓ Subscribed to push notifications ({} lane)", lane_name);
         
         m_logger->info("[Solo Push] MINER_READY packet hex dump:");
         m_logger->info("\n{}", format_llp_payload_hexdump(payload, 16));
@@ -5165,25 +5169,23 @@ void Solo::initialize_protocol_lane(std::shared_ptr<network::Connection> connect
     // Determine lane from port (authoritative)
     m_protocol_lane = determine_lane_from_port(remote_port);
     
-    // Log lane selection with loud formatting
+    const char* lane_name = get_lane_name(m_protocol_lane);
+    const char* framing = (m_protocol_lane == ProtocolLane::STATELESS)
+                            ? "16-bit header (0xD000-0xD0FF)" : "8-bit header (legacy)";
+    const char* behavior = (m_protocol_lane == ProtocolLane::STATELESS)
+                            ? "Push (STATELESS_GET_BLOCK)" : "Polling (GET_ROUND / GET_BLOCK)";
+
+    // Log lane selection
     m_logger->info("═══════════════════════════════════════════════════════════");
     m_logger->info("PROTOCOL LANE INITIALIZATION (Solo Protocol Layer)");
     m_logger->info("═══════════════════════════════════════════════════════════");
     m_logger->info("Remote:          {}", remote_ep.to_string());
     m_logger->info("Remote Port:     {}", remote_port);
-    m_logger->info("Selected Lane:   {}", get_lane_name(m_protocol_lane));
+    m_logger->info("Selected Lane:   {}", lane_name);
     m_logger->info("Lane Source:     Port-determined (authoritative)");
-    
-    if (m_protocol_lane == ProtocolLane::LEGACY) {
-        m_logger->info("Framing:         8-bit header (legacy)");
-        m_logger->info("Behavior:        Polling (GET_ROUND / GET_BLOCK)");
-        m_logger->info("Authentication:  Falcon + ChaCha20 (required)");
-    } else if (m_protocol_lane == ProtocolLane::STATELESS) {
-        m_logger->info("Framing:         16-bit header (0xD000-0xD0FF)");
-        m_logger->info("Behavior:        Push (STATELESS_GET_BLOCK)");
-        m_logger->info("Authentication:  Falcon + ChaCha20 (required)");
-    }
-    
+    m_logger->info("Framing:         {}", framing);
+    m_logger->info("Behavior:        {}", behavior);
+    m_logger->info("Authentication:  Falcon + ChaCha20 (required)");
     m_logger->info("═══════════════════════════════════════════════════════════");
     m_logger->info("STRICT LANE SEPARATION: NO FALLBACK BETWEEN LANES");
     m_logger->info("═══════════════════════════════════════════════════════════");

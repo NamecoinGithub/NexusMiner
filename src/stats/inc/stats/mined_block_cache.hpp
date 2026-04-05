@@ -61,7 +61,7 @@ struct MinedBlockRecord
  *
  * Tier 1 (Hot):     Last 5 mined blocks — confirmation tracking active.
  * Tier 2 (Warm):    Up to 100 confirmed blocks — hash_prev_block + height + channel.
- * Tier 3 (Archive): Overflow from Tier 2 — accumulated, no size limit.
+ * Tier 3 (Archive): Overflow from Tier 2 — capped at 1000 entries (FIFO eviction).
  *
  * Thread safety: all methods must be called on the asio I/O thread
  * (same serialisation guarantee as the rest of Worker_manager).
@@ -71,6 +71,7 @@ class MinedBlockCache
 public:
     static constexpr size_t TIER1_MAX = 5;
     static constexpr size_t TIER2_MAX = 100;
+    static constexpr size_t TIER3_MAX = 1000;
     static constexpr uint32_t CONFIRMATION_THRESHOLD = 5;
 
     /// Record a newly accepted block into Tier 1.
@@ -97,6 +98,11 @@ public:
         while (m_tier2.size() > TIER2_MAX) {
             m_tier3.push_front(m_tier2.back());
             m_tier2.pop_back();
+        }
+
+        // Cap Tier 3 to prevent unbounded growth over long-running sessions.
+        while (m_tier3.size() > TIER3_MAX) {
+            m_tier3.pop_back();
         }
     }
 
@@ -129,6 +135,10 @@ public:
             while (m_tier2.size() > TIER2_MAX) {
                 m_tier3.push_front(m_tier2.back());
                 m_tier2.pop_back();
+            }
+            // Cap Tier 3 to prevent unbounded growth.
+            while (m_tier3.size() > TIER3_MAX) {
+                m_tier3.pop_back();
             }
         }
     }
@@ -198,7 +208,7 @@ public:
 private:
     std::deque<MinedBlockRecord> m_tier1;  // Hot:    ≤5  blocks
     std::deque<MinedBlockRecord> m_tier2;  // Warm:   ≤100 blocks
-    std::deque<MinedBlockRecord> m_tier3;  // Archive: unbounded
+    std::deque<MinedBlockRecord> m_tier3;  // Archive: ≤1000 blocks
     uint32_t m_last_confirmation_height{0};  // Height-gate for update_confirmations()
 };
 

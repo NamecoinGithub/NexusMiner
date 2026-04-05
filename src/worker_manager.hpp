@@ -47,7 +47,11 @@ enum class RecoveryPhase : uint8_t {
 };
 
 struct RecoveryContext {
-    RecoveryPhase phase{RecoveryPhase::HEALTHY};
+    // Thread safety: phase and degraded_signal may be read from protocol
+    // callback threads while written from the I/O thread.  Use std::atomic
+    // to avoid data races without adding mutex overhead that could block
+    // recovery paths.
+    std::atomic<RecoveryPhase> phase{RecoveryPhase::HEALTHY};
 
     std::chrono::steady_clock::time_point entered_at{};            // When current epoch (recovery start) began
     std::chrono::steady_clock::time_point degraded_since{};        // When current outage started (set once per outage)
@@ -58,7 +62,7 @@ struct RecoveryContext {
 
     // ── Reconnect sub-state (only valid when phase == RECONNECTING) ──────────
     std::chrono::steady_clock::time_point reconnect_started_at{};
-    int degraded_signal{0};
+    std::atomic<int> degraded_signal{0};
 
 };
 
@@ -164,10 +168,10 @@ private:
     static const char* phase_name(RecoveryPhase phase);
 
     // ── State query helpers (backward-compat convenience) ─────────────────────
-    bool is_degraded()              const { return m_recovery.phase == RecoveryPhase::WAITING_TEMPLATE; }
+    bool is_degraded()              const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::WAITING_TEMPLATE; }
     bool is_submissions_withheld()  const { return false; }
-    bool is_recovery_active()       const { return m_recovery.phase != RecoveryPhase::HEALTHY; }
-    bool is_reconnecting()          const { return m_recovery.phase == RecoveryPhase::RECONNECTING; }
+    bool is_recovery_active()       const { return m_recovery.phase.load(std::memory_order_relaxed) != RecoveryPhase::HEALTHY; }
+    bool is_reconnecting()          const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::RECONNECTING; }
 
     /// Submit a found block: try primary lane first, fallback to secondary within 100 ms.
     void submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce);
