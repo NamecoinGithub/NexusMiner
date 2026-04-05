@@ -577,12 +577,17 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
         // Reset GET_BLOCK dedup state so the recovery request is not suppressed
         // by stale height values from the prior (now-rejected) template request.
         reset_get_block_dedup_state();
+        // Also clear the in-flight pending flag so the next GET_BLOCK is not
+        // suppressed by cross-handler dedup (PendingGetBlock).  The response
+        // for the rejected template has already been consumed — keeping pending
+        // active would block recovery for up to TIMEOUT_SECONDS (1s).
+        m_pending_get_block.clear();
         return false;
     }
 
     // Template passed validation — reset the consecutive hashPrevBlock mismatch counter
     // so the chain-in-flux guard doesn't carry over stale state to the next validate cycle.
-    m_hashprev_mismatch_consecutive = 0;
+    m_hashprev_mismatch_consecutive.store(0, std::memory_order_relaxed);
 
     m_current_height = unified_height;
 
@@ -1165,17 +1170,12 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
         // Record transmission for dedup guard (prevents rapid duplicate requests).
         // NOTE: m_pending_get_block is NOT marked here — the caller must call
         // mark_get_block_pending() AFTER the payload has been handed to
-        // Connection::transmit().  This prevents a 10-second stall when transmit
+        // Connection::transmit().  This prevents a 1-second stall when transmit
         // fails (socket closed, null handler, etc.) from keeping the pending flag
         // set without being cleared (clear() only fires in on_block_data / on_stateless_get_block).
         {
             auto snap = m_height_tracker.GetSnapshot();
             m_dedup_guard.record_transmission(snap.canonical_unified_height);
-            // Mark in-flight so cross-handler dedup (GET_ROUND after PUSH) can
-            // detect that a response is already expected for this height.
-            m_pending_get_block.mark_pending(snap.canonical_unified_height, reason);
-            m_logger->debug("[Solo] GET_BLOCK in-flight marked: canonical_unified={} reason={}",
-                            snap.canonical_unified_height, reason_name(reason));
         }
         m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
 
@@ -1794,6 +1794,12 @@ bool Solo::requires_active_session_packet(Packet const& packet)
 
 void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
+        // Clear in-flight GET_BLOCK state unconditionally — a response (even an error
+        // response) means the request is no longer pending.  Previously this was only
+        // cleared on the success path, leaving the pending flag stuck for up to 1 second
+        // on error paths (null payload, too-small, validation failure, etc.).
+        m_pending_get_block.clear();
+
         // Enhanced diagnostics: Check payload is non-null
         if (!packet.m_data) {
             m_logger->error("[Solo] CRITICAL: BLOCK_DATA received with null payload");
@@ -1826,11 +1832,6 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
         // Node sends BLOCK_DATA (opcode 0) instead of STATELESS_GET_BLOCK (0xD081)
         // This fixes the 5-second timeout that causes 0.00 GIPS (no mining work)
         handle_initial_template_response("BLOCK_DATA (0x00)");
-
-        // Clear in-flight GET_BLOCK state — the response has arrived.
-        // This prevents stale pending state from suppressing legitimate future
-        // GET_BLOCK requests across handler boundaries.
-        m_pending_get_block.clear();
         
         // ═══════════════════════════════════════════════════════════════════
         // ENHANCED DIAGNOSTICS: Template delivery tracking
@@ -3625,15 +3626,18 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
 
 void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
+    // Clear in-flight GET_BLOCK state unconditionally — a response (even an error
+    // response) means the request is no longer pending.  Previously this was only
+    // cleared after the initial response handler, leaving error paths (null payload,
+    // decode failure, finalize failure) with a stuck pending flag for up to 1 second.
+    m_pending_get_block.clear();
+
     // ═══════════════════════════════════════════════════════════════════
     // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!
     // ═══════════════════════════════════════════════════════════════════
     
     // Unified handler for initial template response
     handle_initial_template_response("STATELESS_GET_BLOCK (0xD081)");
-
-    // Clear in-flight GET_BLOCK state — the response has arrived.
-    m_pending_get_block.clear();
     
     // ═══════════════════════════════════════════════════════════════════
     // ENHANCED DIAGNOSTICS: Template delivery tracking
@@ -4730,14 +4734,14 @@ bool Solo::validate_current_template()
     if (snap.hash_prev_block != uint1024_t(0) &&
         tmpl->block.hashPrevBlock != snap.hash_prev_block) {
 
-        ++m_hashprev_mismatch_consecutive;
+        m_hashprev_mismatch_consecutive.fetch_add(1, std::memory_order_relaxed);
 
-        if (m_hashprev_mismatch_consecutive <= MAX_CONSECUTIVE_HASHPREV_MISMATCHES) {
+        if (m_hashprev_mismatch_consecutive.load(std::memory_order_relaxed) <= MAX_CONSECUTIVE_HASHPREV_MISMATCHES) {
             m_logger->warn("[ValidateTemplate] ⚡ Unified Tip-Anchor Changed — hashPrevBlock mismatch "
                            "(canonical={}, template={}) — discarding stale template "
                            "[consecutive mismatch #{}/{}]",
                            snap.hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString(),
-                           m_hashprev_mismatch_consecutive, MAX_CONSECUTIVE_HASHPREV_MISMATCHES);
+                           m_hashprev_mismatch_consecutive.load(std::memory_order_relaxed), MAX_CONSECUTIVE_HASHPREV_MISMATCHES);
             m_template_interface->discard_template("hashPrevBlock_mismatch_reorg");
             return false;
         } else {
@@ -4750,7 +4754,7 @@ bool Solo::validate_current_template()
             m_logger->warn("[ValidateTemplate] ⚠️  Chain in flux: {} consecutive hashPrevBlock mismatches "
                            "(canonical={}, template={}) — accepting template to avoid doom loop "
                            "(chain may be under attack / reorg storm)",
-                           m_hashprev_mismatch_consecutive,
+                           m_hashprev_mismatch_consecutive.load(std::memory_order_relaxed),
                            snap.hash_prev_block.SubString(), tmpl->block.hashPrevBlock.SubString());
             // DO NOT discard — fall through to return true
         }
@@ -4760,7 +4764,7 @@ bool Solo::validate_current_template()
         // successful validation to cover the chain-in-flux acceptance path (where the if
         // condition above was true but we fell through without discarding).  The reset
         // here handles all other validate callers and the normal (no-mismatch) path.
-        m_hashprev_mismatch_consecutive = 0;
+        m_hashprev_mismatch_consecutive.store(0, std::memory_order_relaxed);
     }
 
     // Advisory: log if push_hash_prev_block differs (informational only, not a discard trigger)
