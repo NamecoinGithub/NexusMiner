@@ -304,6 +304,15 @@ inline void Connection_impl<ProtocolDescriptionType>::receive()
                 }
                 self->change(Result::Code::connection_closed);
             }
+            else if (error == ::asio::error::operation_aborted)
+            {
+                // Deliberate socket close (e.g. shutdown); not a real error
+                if (self->m_logger)
+                {
+                    self->m_logger->debug("[LLP RECV] Receive cancelled (operation_aborted)");
+                }
+                self->change(Result::Code::connection_aborted);
+            }
             else
             {
                 // established connection fails for any other reason
@@ -517,22 +526,37 @@ void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
     
     ::asio::async_write(*m_asio_socket, ::asio::buffer(*payload, payload->size()),
         // don't forget to keep the payload until transmission has been completed!!!
-        [weak_self = get_weak_self(), payload](auto, auto) 
+        [weak_self = get_weak_self(), payload](const ::asio::error_code& error, std::size_t /*bytes_transferred*/) 
         {
             auto self = weak_self.lock();
-            if ((self != nullptr) && self->m_connection_handler) 
+            if (!self || !self->m_connection_handler) 
             {
-                // Safely pop from queue
-                if (!self->m_tx_queue.empty())
+                return;
+            }
+
+            if (error)
+            {
+                if (error != ::asio::error::operation_aborted)
                 {
-                    self->m_tx_queue.pop();
+                    if (self->m_logger)
+                    {
+                        self->m_logger->error("[LLP SEND] async_write error: {}", error.message());
+                    }
                 }
-                
-                // Tail-recurse if more queued payloads
-                if (!self->m_tx_queue.empty()) 
-                {
-                    self->transmit_trigger();
-                }
+                self->close_internal(Result::Code::connection_aborted);
+                return;
+            }
+
+            // Safely pop from queue
+            if (!self->m_tx_queue.empty())
+            {
+                self->m_tx_queue.pop();
+            }
+            
+            // Tail-recurse if more queued payloads
+            if (!self->m_tx_queue.empty()) 
+            {
+                self->transmit_trigger();
             }
         });
 }

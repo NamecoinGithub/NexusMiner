@@ -16,6 +16,7 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
 	, m_best_leading_zeros{ 0 }
 	, m_met_difficulty_count{ 0 }
 	, m_hash_error_count{ 0 }
+	, m_consecutive_read_errors{ 0 }
 	, m_pool_nbits{0}
 {
 	auto& worker_config_fpga = std::get<config::Worker_config_fpga>(m_config.m_worker_mode);
@@ -135,6 +136,7 @@ void Worker_hash::handle_read(const asio::error_code& error_code, std::size_t by
 {
 	if (!error_code && bytes_transferred == m_receive_nonce_buffer.size())
 	{
+		m_consecutive_read_errors = 0;
 		uint64_t nonce = bytesToInt<uint64_t>(m_receive_nonce_buffer);
 		if (m_starting_nonce - nonce == 1)
 		{
@@ -184,6 +186,19 @@ void Worker_hash::handle_read(const asio::error_code& error_code, std::size_t by
 			else
 			{
 				m_logger->error(m_log_leader + "Received unexpected number of bytes on serial port.  Expected {} received {}.", m_receive_nonce_buffer.size(), bytes_transferred);
+			}
+
+			++m_consecutive_read_errors;
+			if (m_consecutive_read_errors < max_consecutive_read_errors)
+			{
+				m_logger->warn(m_log_leader + "Re-arming serial read after error ({}/{}).",
+					m_consecutive_read_errors, max_consecutive_read_errors);
+				start_read();
+			}
+			else
+			{
+				m_logger->critical(m_log_leader + "Serial read loop stopped after {} consecutive errors. "
+					"Waiting for next set_block() to restart.", max_consecutive_read_errors);
 			}
 		}
 	}

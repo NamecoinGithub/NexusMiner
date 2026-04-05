@@ -1113,6 +1113,7 @@ void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
                    token, wait_ms, trigger_reason ? trigger_reason : "unknown");
     m_forced_retry_timer->async_wait([self = shared_from_this(), token](const asio::error_code& ec) {
         if (ec) {
+            self->m_forced_retry_timer_pending = false;
             return;
         }
         if (!self->is_recovery_active() || token != self->m_forced_retry_timer_token) {

@@ -37,8 +37,9 @@ namespace nexusminer
 		m_signals->add(SIGQUIT);
 #endif 
 
-		m_signals->async_wait([this](const asio::error_code&, int signal_number)
+		m_signals->async_wait([this](const asio::error_code& ec, int signal_number)
 		{
+			if (ec) return;
 			m_logger->info("Shutting down NexusMiner (signal={})", signal_number);
 			if (m_worker_manager)
 			{
