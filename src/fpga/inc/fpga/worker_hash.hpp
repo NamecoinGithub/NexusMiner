@@ -66,6 +66,8 @@ private:
     int m_best_leading_zeros;
     int m_met_difficulty_count;
     int m_hash_error_count;
+    int m_consecutive_read_errors;
+    static constexpr int max_consecutive_read_errors = 5;
 
     std::uint32_t m_pool_nbits;
 };

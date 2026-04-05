@@ -329,6 +329,15 @@ inline void Connection_impl<ProtocolDescriptionType>::receive()
                 }
                 self->change(Result::Code::connection_closed);
             }
+            else if (error == ::asio::error::operation_aborted)
+            {
+                // Deliberate socket close (e.g. shutdown); not a real error
+                if (self->m_logger)
+                {
+                    self->m_logger->debug("[LLP RECV] Receive cancelled (operation_aborted)");
+                }
+                self->change(Result::Code::connection_aborted);
+            }
             else
             {
                 // established connection fails for any other reason
@@ -420,24 +429,24 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
         return;
     }
     
-    // Enqueue the payload and trigger transmission if queue was previously empty
-    m_tx_queue.emplace(tx_buffer);
-
-    // Drop-oldest overflow protection: during burst blocks rapid transmit()
-    // calls can outpace async_write completions.  Evict the oldest queued
-    // payload (the front is currently being sent by async_write so we drop
-    // the second-oldest — i.e. the new oldest waiting payload).
-    while (m_tx_queue.size() > MAX_TX_QUEUE_SIZE)
+    // TX queue overflow protection: during burst blocks rapid transmit() calls
+    // can outpace async_write completions.  We cannot safely pop the front of
+    // the queue because it is the in-flight payload whose async_write completion
+    // handler will pop it; removing it here would cause the handler to pop the
+    // NEXT payload instead, silently losing an unsent message.  Drop the newest
+    // payload (this one) instead.
+    if (m_tx_queue.size() >= MAX_TX_QUEUE_SIZE)
     {
         if (m_logger)
         {
-            m_logger->error("[LLP SEND] TX queue overflow ({} > {}), dropping oldest queued payload",
+            m_logger->warn("[LLP SEND] TX queue full ({}/{}), dropping outgoing payload",
                 m_tx_queue.size(), MAX_TX_QUEUE_SIZE);
         }
-        // Pop the front (oldest waiting) — the currently in-flight payload is
-        // held by the async_write lambda so it won't be lost.
-        m_tx_queue.pop();
+        return;
     }
+
+    // Enqueue the payload and trigger transmission if queue was previously empty
+    m_tx_queue.emplace(tx_buffer);
 
     if (m_tx_queue.size() == 1) 
     {
@@ -589,33 +598,38 @@ void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
             // ── CRITICAL: check async_write error ──────────────────────────
             if (error)
             {
-                if (self->m_logger)
+                if (error != ::asio::error::operation_aborted)
                 {
-                    self->m_logger->error("[LLP SEND] async_write failed: {} — draining TX queue ({} pending) and closing connection",
-                        error.message(), self->m_tx_queue.size());
+                    if (self->m_logger)
+                    {
+                        self->m_logger->error("[LLP SEND] async_write failed: {} — draining TX queue ({} pending) and closing connection",
+                            error.message(), self->m_tx_queue.size());
+                    }
                 }
                 // Drain the entire queue — all pending payloads are stale once
                 // the underlying socket has failed.
                 while (!self->m_tx_queue.empty())
                     self->m_tx_queue.pop();
 
-                self->close_internal(Result::Code::connection_closed);
+                self->close_internal(Result::Code::connection_aborted);
                 return;
             }
 
-            if (self->m_connection_handler) 
+            if (!self->m_connection_handler)
             {
-                // Safely pop from queue
-                if (!self->m_tx_queue.empty())
-                {
-                    self->m_tx_queue.pop();
-                }
-                
-                // Tail-recurse if more queued payloads
-                if (!self->m_tx_queue.empty()) 
-                {
-                    self->transmit_trigger();
-                }
+                return;
+            }
+
+            // Safely pop from queue
+            if (!self->m_tx_queue.empty())
+            {
+                self->m_tx_queue.pop();
+            }
+            
+            // Tail-recurse if more queued payloads
+            if (!self->m_tx_queue.empty()) 
+            {
+                self->transmit_trigger();
             }
         });
 }
