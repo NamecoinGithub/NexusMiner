@@ -509,7 +509,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 if (is_reconnecting() || (is_recovery_active() && m_epoch_coordinator->recovery_epoch() > 0)) {
                     m_logger->warn("[Worker_manager] Session EXPIRED ignored: reconnect/recovery already in progress "
                                    "(phase={}, recovery_active={}, recovery_epoch={})",
-                                   phase_name(m_recovery.phase),
+                                   phase_name(m_recovery.phase.load(std::memory_order_relaxed)),
                                    is_recovery_active(),
                                    m_epoch_coordinator->recovery_epoch());
                     return;
@@ -881,7 +881,7 @@ void Worker_manager::stop()
 
 void Worker_manager::enter_terminal_degraded_mode(int signal_number)
 {
-    m_recovery.degraded_signal = signal_number;
+    m_recovery.degraded_signal.store(signal_number, std::memory_order_relaxed);
     transition_to(RecoveryPhase::DEGRADED_MODE, "signal_terminal_exit");
     m_logger->critical("[Worker_manager] TERMINAL DEGRADED MODE entered by signal {} — full stop", signal_number);
     stop();
@@ -1113,6 +1113,13 @@ void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
                    token, wait_ms, trigger_reason ? trigger_reason : "unknown");
     m_forced_retry_timer->async_wait([self = shared_from_this(), token](const asio::error_code& ec) {
         if (ec) {
+            // Always clear the pending flag so future retries are not permanently blocked.
+            self->m_forced_retry_timer_pending = false;
+            if (ec != asio::error::operation_aborted) {
+                self->m_logger->warn("[Worker_manager] forced_retry_timer error: {}", ec.message());
+            } else {
+                self->m_logger->debug("[Worker_manager] forced_retry_timer cancelled (operation_aborted)");
+            }
             return;
         }
         if (!self->is_recovery_active() || token != self->m_forced_retry_timer_token) {
@@ -1538,7 +1545,7 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
 }
 
 void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) {
-    RecoveryPhase old_phase = m_recovery.phase;
+    RecoveryPhase old_phase = m_recovery.phase.load(std::memory_order_acquire);
     if (old_phase == new_phase) {
         return;  // Already in this phase — no-op
     }
@@ -1569,7 +1576,7 @@ void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) 
 
     on_phase_exit(old_phase);
 
-    m_recovery.phase = new_phase;
+    m_recovery.phase.store(new_phase, std::memory_order_release);
     m_recovery.reason = reason;
 
     // Reset per-epoch state for all non-HEALTHY phases
@@ -1647,7 +1654,7 @@ void Worker_manager::restart_recovery_window(const char* reason)
                        reason ? reason : "unknown",
                        m_epoch_coordinator->recovery_epoch(),
                        elapsed_s,
-                       phase_name(m_recovery.phase));
+                       phase_name(m_recovery.phase.load(std::memory_order_relaxed)));
     }
 }
 
@@ -1671,7 +1678,7 @@ void Worker_manager::clear_recovery_state()
     m_logger->info("[Worker_manager] Recovery exit gate: valid_template={} recovery_age={}s phase={}",
                    has_valid_template_now ? "YES" : "NO",
                    recovery_age_s,
-                   phase_name(m_recovery.phase));
+                   phase_name(m_recovery.phase.load(std::memory_order_relaxed)));
 
     if (solo_protocol) {
         auto* session_manager = solo_protocol->get_session_manager();
@@ -1685,7 +1692,7 @@ void Worker_manager::clear_recovery_state()
     }
 
     m_logger->info("[Worker_manager] Clearing recovery state — exiting {} phase",
-                   phase_name(m_recovery.phase));
+                   phase_name(m_recovery.phase.load(std::memory_order_relaxed)));
 
     // Note: m_recovery_workers_spawned is intentionally NOT reset here.
     // It is only reset in stop_all_workers() which actually destroys workers,

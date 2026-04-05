@@ -57,6 +57,10 @@ private:
     void change(Result::Code code);
     void close_internal(Result::Code code);
 
+    // Maximum TX queue depth.  During burst blocks rapid transmit() calls can
+    // outpace async_write completions; drop the oldest payload when exceeded.
+    static constexpr std::size_t MAX_TX_QUEUE_SIZE = 64;
+
     std::shared_ptr<::asio::io_context> m_io_context;
     std::shared_ptr<Protocol_socket> m_asio_socket;
     Endpoint m_remote_endpoint;
@@ -282,7 +286,28 @@ inline void Connection_impl<ProtocolDescriptionType>::receive()
                         }
                     }
                     
-                    self->m_connection_handler(Result::receive_ok, std::move(receive_buffer));
+                    try
+                    {
+                        self->m_connection_handler(Result::receive_ok, std::move(receive_buffer));
+                    }
+                    catch (const std::exception& ex)
+                    {
+                        if (self->m_logger)
+                        {
+                            self->m_logger->error("[LLP RECV] Exception in connection handler: {} — closing connection", ex.what());
+                        }
+                        self->close_internal(Result::Code::connection_closed);
+                        return;
+                    }
+                    catch (...)
+                    {
+                        if (self->m_logger)
+                        {
+                            self->m_logger->error("[LLP RECV] Unknown exception in connection handler — closing connection");
+                        }
+                        self->close_internal(Result::Code::connection_closed);
+                        return;
+                    }
                     self->receive();
                 }
                 else
@@ -322,7 +347,28 @@ inline void Connection_impl<ProtocolDescriptionType>::change(Result::Code code)
 {
     if (code == Result::Code::connection_ok) 
     {
-        m_connection_handler(code, Shared_payload{});
+        try
+        {
+            m_connection_handler(code, Shared_payload{});
+        }
+        catch (const std::exception& ex)
+        {
+            if (m_logger)
+            {
+                m_logger->error("[LLP] Exception in connection handler (change): {} — closing", ex.what());
+            }
+            close_internal(Result::Code::connection_closed);
+            return;
+        }
+        catch (...)
+        {
+            if (m_logger)
+            {
+                m_logger->error("[LLP] Unknown exception in connection handler (change) — closing");
+            }
+            close_internal(Result::Code::connection_closed);
+            return;
+        }
         receive();
     }
     else 
@@ -376,6 +422,23 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
     
     // Enqueue the payload and trigger transmission if queue was previously empty
     m_tx_queue.emplace(tx_buffer);
+
+    // Drop-oldest overflow protection: during burst blocks rapid transmit()
+    // calls can outpace async_write completions.  Evict the oldest queued
+    // payload (the front is currently being sent by async_write so we drop
+    // the second-oldest — i.e. the new oldest waiting payload).
+    while (m_tx_queue.size() > MAX_TX_QUEUE_SIZE)
+    {
+        if (m_logger)
+        {
+            m_logger->error("[LLP SEND] TX queue overflow ({} > {}), dropping oldest queued payload",
+                m_tx_queue.size(), MAX_TX_QUEUE_SIZE);
+        }
+        // Pop the front (oldest waiting) — the currently in-flight payload is
+        // held by the async_write lambda so it won't be lost.
+        m_tx_queue.pop();
+    }
+
     if (m_tx_queue.size() == 1) 
     {
         transmit_trigger();
@@ -517,10 +580,30 @@ void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
     
     ::asio::async_write(*m_asio_socket, ::asio::buffer(*payload, payload->size()),
         // don't forget to keep the payload until transmission has been completed!!!
-        [weak_self = get_weak_self(), payload](auto, auto) 
+        [weak_self = get_weak_self(), payload](const ::asio::error_code& error, std::size_t /*bytes_transferred*/) 
         {
             auto self = weak_self.lock();
-            if ((self != nullptr) && self->m_connection_handler) 
+            if (!self)
+                return;
+
+            // ── CRITICAL: check async_write error ──────────────────────────
+            if (error)
+            {
+                if (self->m_logger)
+                {
+                    self->m_logger->error("[LLP SEND] async_write failed: {} — draining TX queue ({} pending) and closing connection",
+                        error.message(), self->m_tx_queue.size());
+                }
+                // Drain the entire queue — all pending payloads are stale once
+                // the underlying socket has failed.
+                while (!self->m_tx_queue.empty())
+                    self->m_tx_queue.pop();
+
+                self->close_internal(Result::Code::connection_closed);
+                return;
+            }
+
+            if (self->m_connection_handler) 
             {
                 // Safely pop from queue
                 if (!self->m_tx_queue.empty())
