@@ -15,6 +15,7 @@ namespace protocol {
 constexpr size_t CHACHA20_KEY_SIZE = 32;    // 256 bits
 constexpr size_t CHACHA20_NONCE_SIZE = 12;  // 96 bits
 constexpr size_t CHACHA20_TAG_SIZE = 16;    // 128 bits
+const std::vector<uint8_t> FALCON_PUBKEY_AAD{'F', 'A', 'L', 'C', 'O', 'N', '_', 'P', 'U', 'B', 'K', 'E', 'Y'};
 
 // RAII deleter for EVP_CIPHER_CTX — guarantees cleanup on all exit paths,
 // including exceptions thrown by std::vector::resize().
@@ -201,7 +202,7 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::decrypt(
     
     // Split ciphertext and tag
     size_t ciphertext_len = ciphertext.size() - CHACHA20_TAG_SIZE;
-    std::vector<uint8_t> tag(ciphertext.end() - CHACHA20_TAG_SIZE, ciphertext.end());
+    const auto* tag = ciphertext.data() + ciphertext_len;
     
     // Create and initialize context (RAII — freed automatically on any exit path)
     EvpCipherCtxPtr ctx(EVP_CIPHER_CTX_new());
@@ -249,7 +250,7 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::decrypt(
     
     // Set expected tag
     if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_TAG, CHACHA20_TAG_SIZE, 
-                            const_cast<uint8_t*>(tag.data())) != 1) {
+                            const_cast<uint8_t*>(tag)) != 1) {
         result.error_message = "Failed to set authentication tag";
         m_logger->error("[ChaCha20] {}", result.error_message);
         return result;
@@ -290,9 +291,7 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::wrap_falcon_pubkey(
     m_logger->info("[ChaCha20] Wrapping Falcon public key ({} bytes)", falcon_pubkey.size());
     
     // Use "FALCON_PUBKEY" as AAD to bind encryption to this specific use case
-    std::vector<uint8_t> aad{'F', 'A', 'L', 'C', 'O', 'N', '_', 'P', 'U', 'B', 'K', 'E', 'Y'};
-    
-    auto result = encrypt(falcon_pubkey, session_key, nonce, aad);
+    auto result = encrypt(falcon_pubkey, session_key, nonce, FALCON_PUBKEY_AAD);
     
     if (result.success) {
         m_logger->info("[ChaCha20] Successfully wrapped Falcon public key: {} bytes -> {} bytes",
@@ -310,9 +309,7 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::unwrap_falcon_pubkey(
     m_logger->info("[ChaCha20] Unwrapping Falcon public key ({} bytes)", wrapped_pubkey.size());
     
     // Use same AAD as wrapping
-    std::vector<uint8_t> aad{'F', 'A', 'L', 'C', 'O', 'N', '_', 'P', 'U', 'B', 'K', 'E', 'Y'};
-    
-    auto result = decrypt(wrapped_pubkey, session_key, nonce, aad);
+    auto result = decrypt(wrapped_pubkey, session_key, nonce, FALCON_PUBKEY_AAD);
     
     if (result.success) {
         // Validate unwrapped key size — accept Falcon-1024 (1793) and Falcon-512 (897)

@@ -312,6 +312,7 @@ private:
     
     // Derive ChaCha20 session key from genesis hash
     std::vector<uint8_t> derive_chacha20_session_key(const std::vector<uint8_t>& genesis);
+    std::vector<uint8_t> derive_or_get_cached_chacha20_session_key(const std::vector<uint8_t>& genesis);
     
     // Load tritium genesis (session manager or persistent storage)
     std::vector<uint8_t> load_tritium_genesis();
@@ -506,6 +507,7 @@ private:
     std::uint32_t m_session_id;
     uint64_t m_session_epoch{0};
     bool m_has_seen_session_epoch{false};
+    uint64_t m_cached_runtime_state_generation{0};
     std::shared_ptr<EpochCoordinator> m_epoch_coordinator;
     std::string m_address;  // Miner's network address for auth message
     std::uint64_t m_auth_timestamp;  // Timestamp for auth message
@@ -589,6 +591,8 @@ private:
     
     // Persistent tritium genesis (preserved across reconnections)
     std::vector<uint8_t> m_persistent_tritium_genesis;
+    std::vector<uint8_t> m_cached_chacha20_key_genesis;
+    std::vector<uint8_t> m_cached_chacha20_key;
 
     // Stateless mining reward address binding (MINER_SET_REWARD protocol)
     std::string m_reward_address;  // NXS account address for mining rewards
