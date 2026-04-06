@@ -291,6 +291,13 @@ private:
     static constexpr int64_t GET_BLOCK_BACKOFF_INITIAL_MS   = 2000;   ///< First backoff step: 2 s
     static constexpr int64_t GET_BLOCK_BACKOFF_MAX_MS       = 30000;  ///< Ceiling: 30 s
 
+    // ── Template age request cooldown ────────────────────────────────────────
+    // Prevents the health timer from sending TEMPLATE_AGE_WARNING/EMERGENCY
+    // GET_BLOCK requests on every 5-second tick once the template exceeds the
+    // age threshold.  Only one request per TEMPLATE_AGE_COOLDOWN_SECONDS.
+    std::chrono::steady_clock::time_point m_last_template_age_request_at{};
+    static constexpr int64_t TEMPLATE_AGE_COOLDOWN_SECONDS = 30;
+
     // ── Mutex-based recovery gate (defense-in-depth) ─────────────────────────
     // Serialises the creation path in set_block_handler with the destruction
     // path in stop_all_workers() so they cannot interleave on m_workers.

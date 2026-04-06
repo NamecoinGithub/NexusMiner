@@ -30,26 +30,30 @@ namespace protocol {
 class MerkleRootFeedGuard {
 public:
     /// Time window within which a duplicate hashMerkleRoot suppresses the feed.
-    static constexpr int64_t SUPPRESSION_WINDOW_SECONDS = 5;
+    static constexpr int64_t SUPPRESSION_WINDOW_SECONDS = 2;
 
     MerkleRootFeedGuard() = default;
 
     /**
      * @brief Check whether the feed should proceed, and record the merkle root.
      *
-     * If the same hashMerkleRoot was last fed within SUPPRESSION_WINDOW_SECONDS,
-     * returns false (suppress).  Otherwise records the new merkle root + timestamp
-     * and returns true (allow).
+     * If the same (height, hashMerkleRoot) pair was last fed within
+     * SUPPRESSION_WINDOW_SECONDS, returns false (suppress).  Otherwise records
+     * the new state and returns true (allow).  Keying on height ensures that
+     * a height change always allows the feed even if the merkle root is
+     * coincidentally identical (e.g., empty-block templates at different heights).
      *
      * @param hash_merkle_root  hashMerkleRoot from the incoming template
+     * @param unified_height    Unified blockchain height (0 = ignore height key)
      * @return true if the feed should proceed, false if suppressed
      */
-    bool should_feed(const uint512_t& hash_merkle_root)
+    bool should_feed(const uint512_t& hash_merkle_root, uint32_t unified_height = 0)
     {
         auto now = std::chrono::steady_clock::now();
 
         if (hash_merkle_root != uint512_t{} &&
-            hash_merkle_root == m_last_fed_merkle_root)
+            hash_merkle_root == m_last_fed_merkle_root &&
+            (unified_height == 0 || unified_height == m_last_fed_height))
         {
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 now - m_last_fed_time).count();
@@ -59,8 +63,9 @@ public:
             }
         }
 
-        // New merkle root or window expired — record and allow
+        // New merkle root, different height, or window expired — record and allow
         m_last_fed_merkle_root = hash_merkle_root;
+        m_last_fed_height = unified_height;
         m_last_fed_time = now;
         return true;
     }
@@ -71,6 +76,7 @@ public:
     void reset()
     {
         m_last_fed_merkle_root = uint512_t{};
+        m_last_fed_height = 0;
         m_last_fed_time = {};
         m_suppressed_count = 0;
     }
@@ -83,6 +89,7 @@ public:
 
 private:
     uint512_t m_last_fed_merkle_root{};
+    uint32_t m_last_fed_height{0};
     std::chrono::steady_clock::time_point m_last_fed_time{};
     uint32_t m_suppressed_count{0};
 };

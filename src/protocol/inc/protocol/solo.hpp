@@ -726,7 +726,7 @@ private:
         std::chrono::steady_clock::time_point    sent_at{};
         GetBlockReason                           reason{GetBlockReason::INITIAL_REQUEST};
 
-        static constexpr int64_t TIMEOUT_SECONDS = 1;  // Auto-expire if no response (matches node's 1s GET_BLOCK cooldown)
+        static constexpr int64_t TIMEOUT_SECONDS = 4;  // Auto-expire if no response — allows for WAN/burst latency
 
         /// Returns true if a GET_BLOCK is already in-flight for the given height
         /// (or a higher height).  Auto-expires after TIMEOUT_SECONDS.

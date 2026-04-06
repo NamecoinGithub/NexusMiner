@@ -3,6 +3,7 @@
 
 #include "protocol/get_block_reason.hpp"
 #include "spdlog/spdlog.h"
+#include "LLC/types/uint1024.h"
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -52,17 +53,19 @@ public:
     /// @param reason            Why the GET_BLOCK is being requested
     /// @param current_unified   Current unified height from HeightTracker snapshot
     /// @param have_valid_template  Whether a valid mining template currently exists
+    /// @param current_hash_prev  Current hashPrevBlock (zero = unknown/don't compare)
     /// @return Verdict indicating whether request should proceed or be suppressed
     Verdict check(GetBlockReason reason,
                   uint32_t current_unified,
-                  bool have_valid_template) const
+                  bool have_valid_template,
+                  const uint1024_t& current_hash_prev = uint1024_t{}) const
     {
         bool bypass_all    = should_bypass_all_dedup(reason);
         bool bypass_height = should_bypass_height_dedup(reason);
 
         if (bypass_all) {
             if (m_logger) {
-                m_logger->info("[DedupGuard] bypass_all — reason: {}", reason_name(reason));
+                m_logger->debug("[DedupGuard] bypass_all — reason: {}", reason_name(reason));
             }
             return Verdict::ALLOW;
         }
@@ -74,7 +77,7 @@ public:
                 now - m_last_transmitted_tp).count();
             if (elapsed_ms < DEDUP_WINDOW_MS) {
                 if (m_logger) {
-                    m_logger->info("[DedupGuard] rapid-burst: suppressing ({}ms < {}ms, reason={})",
+                    m_logger->debug("[DedupGuard] rapid-burst: suppressing ({}ms < {}ms, reason={})",
                                   elapsed_ms, DEDUP_WINDOW_MS, reason_name(reason));
                 }
                 return Verdict::SUPPRESS_RAPID_BURST;
@@ -83,18 +86,33 @@ public:
 
         if (bypass_height) {
             if (m_logger) {
-                m_logger->info("[DedupGuard] bypass_height — reason: {}", reason_name(reason));
+                m_logger->debug("[DedupGuard] bypass_height — reason: {}", reason_name(reason));
             }
             return Verdict::ALLOW;
         }
 
-        // Guard 2: height-based (same unified height + valid template)
+        // Guard 2: height-based (same unified height + valid template + same hashPrevBlock)
+        // A same-height reorg changes hashPrevBlock without advancing unified height.
+        // When the caller provides a non-zero current_hash_prev that differs from the
+        // last recorded value, the template is stale even at the same height — allow.
         if (m_last_unified_height > 0 &&
             current_unified == m_last_unified_height &&
             have_valid_template)
         {
+            // Same height but different hashPrevBlock → same-height reorg → allow
+            if (current_hash_prev != uint1024_t{} &&
+                m_last_hash_prev != uint1024_t{} &&
+                current_hash_prev != m_last_hash_prev)
+            {
+                if (m_logger) {
+                    m_logger->debug("[DedupGuard] same-height reorg detected (unified={}, hashPrev changed) — allowing",
+                                  current_unified);
+                }
+                return Verdict::ALLOW;
+            }
+
             if (m_logger) {
-                m_logger->info("[DedupGuard] height-match: suppressing (unified={}, reason={})",
+                m_logger->debug("[DedupGuard] height-match: suppressing (unified={}, reason={})",
                               current_unified, reason_name(reason));
             }
             return Verdict::SUPPRESS_HEIGHT_MATCH;
@@ -105,10 +123,11 @@ public:
 
     /// Record that a GET_BLOCK was successfully transmitted.
     /// Must be called after every successful GET_BLOCK send to arm the dedup guards.
-    void record_transmission(uint32_t unified_height)
+    void record_transmission(uint32_t unified_height, const uint1024_t& hash_prev = uint1024_t{})
     {
         m_last_transmitted_tp = std::chrono::steady_clock::now();
         m_last_unified_height = unified_height;
+        m_last_hash_prev = hash_prev;
     }
 
     /// Reset all dedup state.  The next check() will always return ALLOW.
@@ -120,8 +139,9 @@ public:
     {
         m_last_transmitted_tp = {};
         m_last_unified_height = 0;
+        m_last_hash_prev = uint1024_t{};
         if (m_logger) {
-            m_logger->info("[DedupGuard] state reset — next request will not be suppressed");
+            m_logger->debug("[DedupGuard] state reset — next request will not be suppressed");
         }
     }
 
@@ -132,6 +152,7 @@ public:
 private:
     std::shared_ptr<spdlog::logger> m_logger;
     uint32_t m_last_unified_height{0};
+    uint1024_t m_last_hash_prev{};
     std::chrono::steady_clock::time_point m_last_transmitted_tp{};
 };
 
