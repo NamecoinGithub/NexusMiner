@@ -293,7 +293,10 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
 
 std::vector<uint8_t> Solo::derive_or_get_cached_chacha20_session_key(const std::vector<uint8_t>& genesis)
 {
-    if (!m_cached_chacha20_key.empty() && m_cached_chacha20_key_genesis == genesis) {
+    if (!genesis.empty() &&
+        !m_cached_chacha20_key.empty() &&
+        !m_cached_chacha20_key_genesis.empty() &&
+        m_cached_chacha20_key_genesis == genesis) {
         m_logger->debug("[Solo Auth] Reusing cached ChaCha20 session key for unchanged genesis");
         return m_cached_chacha20_key;
     }

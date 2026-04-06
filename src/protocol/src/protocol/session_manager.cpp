@@ -592,8 +592,8 @@ void SessionManager::note_keepalive_ack(bool accepted, const std::string& detail
         } else {
             m_session.expiry_state = ExpiryState::KEEPALIVE_MISMATCH_WARNING;
             m_session.expiry_reason = detail;
-                record_session_event_locked(SessionEventKind::KEEPALIVE_ACK,
-                                            detail.empty() ? "keepalive ack rejected" : detail);
+            record_session_event_locked(SessionEventKind::KEEPALIVE_ACK,
+                                        detail.empty() ? "keepalive ack rejected" : detail);
         }
     }
     if (accepted) {

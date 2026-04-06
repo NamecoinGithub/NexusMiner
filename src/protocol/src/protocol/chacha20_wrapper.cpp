@@ -3,6 +3,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
+#include <cassert>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -201,6 +202,7 @@ ChaCha20Wrapper::CryptoResult ChaCha20Wrapper::decrypt(
     }
     
     // Split ciphertext and tag
+    assert(ciphertext.size() >= CHACHA20_TAG_SIZE);
     size_t ciphertext_len = ciphertext.size() - CHACHA20_TAG_SIZE;
     const auto* tag = ciphertext.data() + ciphertext_len;
     
