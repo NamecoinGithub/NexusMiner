@@ -660,19 +660,50 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
         return false;
     }
 
+    // *** Unified-height feed guard: suppress same-height re-feeds within cooldown ***
+    // This is the ultimate backstop against the "Double Feed" race.  Even if
+    // transmit-side and MerkleRoot guards both pass, this guard prevents workers
+    // from being restarted with a duplicate template at the same chain-tip position.
+    // Legitimate reorgs (hashPrevBlock change) bypass the guard so the miner
+    // always switches to the correct chain tip.
+    {
+        // Skip on first-ever feed (no prior state to compare against).
+        if (m_last_fed_time != std::chrono::steady_clock::time_point{}) {
+            bool same_tip = (unified_height == m_last_fed_unified_height &&
+                             tmpl->block.hashPrevBlock == m_last_fed_hash_prev_block);
+            if (same_tip) {
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - m_last_fed_time).count();
+                if (elapsed < SAME_HEIGHT_FEED_COOLDOWN_SECONDS) {
+                    m_logger->info("[{}] Feed suppressed: same unified height {} within {}s cooldown "
+                                   "(elapsed {}s, same hashPrevBlock)",
+                                   log_scope, unified_height, SAME_HEIGHT_FEED_COOLDOWN_SECONDS, elapsed);
+                    return true;  // receive succeeded, feed intentionally suppressed
+                }
+            }
+        }
+    }
+
     // *** MerkleRoot Feed Guard: suppress duplicate worker restarts ***
-    // If the same (height, hashMerkleRoot) pair was fed within the last 2 seconds,
-    // suppress the worker distribution.  The receive and validation still proceed normally.
-    // Keying on height ensures height changes always allow the feed.
-    if (!m_merkle_root_feed_guard.should_feed(tmpl->block.hashMerkleRoot, tmpl->block.nHeight)) {
-        m_logger->info("[{}] Feed suppressed: same hashMerkleRoot within {}s window (suppressed count: {})",
-                       log_scope, MerkleRootFeedGuard::SUPPRESSION_WINDOW_SECONDS,
-                       m_merkle_root_feed_guard.suppressed_count());
+    // Tier 1: same (height, hashMerkleRoot) within 2s → suppressed.
+    // Tier 2: same height, different merkle root within 500ms → suppressed
+    //         (mempool-variant duplicates).
+    // hashPrevBlock change (reorg) always passes through both tiers.
+    if (!m_merkle_root_feed_guard.should_feed(tmpl->block.hashMerkleRoot,
+                                               tmpl->block.nHeight,
+                                               tmpl->block.hashPrevBlock)) {
+        m_logger->info("[{}] Feed suppressed by MerkleRoot/height guard (suppressed count: {})",
+                       log_scope, m_merkle_root_feed_guard.suppressed_count());
         return true;  // receive succeeded, feed intentionally suppressed
     }
 
     if (!m_template_interface->feed_current_template()) {
         m_logger->debug("[{}] Template feed suppressed by unified debounce gate", log_scope);
+    } else {
+        // Record successful feed for the unified-height guard.
+        m_last_fed_unified_height = unified_height;
+        m_last_fed_hash_prev_block = tmpl->block.hashPrevBlock;
+        m_last_fed_time = std::chrono::steady_clock::now();
     }
 
     auto stats = m_template_interface->get_stats();
@@ -864,10 +895,10 @@ void Solo::flush_pending_push_after_auth(const std::shared_ptr<network::Connecti
         m_pending_push_after_auth = false;
         try {
             connection->transmit(work_payload);
+            mark_get_block_pending(GetBlockReason::PUSH_NO_TEMPLATE);
         } catch (const std::exception& e) {
             m_logger->error("[Solo] reward transmit failed: {}", e.what());
         }
-        mark_get_block_pending(GetBlockReason::PUSH_NO_TEMPLATE);
         return;
     }
 
@@ -1155,6 +1186,26 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
         m_last_get_block_request_status.store(GetBlockRequestStatus::REWARD_NOT_BOUND);
         m_logger->error("[Solo] Cannot request work - reward address not bound");
         return nullptr;
+    }
+
+    // ── Pending GET_BLOCK in-flight guard ───────────────────────────────────
+    // If a GET_BLOCK is already in-flight for the same-or-higher unified height,
+    // suppress this request to prevent two concurrent responses triggering
+    // duplicate worker feeds (the "Double Feed" race).  Recovery reasons that
+    // bypass all dedup are exempt so degraded-mode retries always make progress.
+    {
+        auto snap = m_height_tracker.GetSnapshot();
+        uint32_t canonical_unified = snap.canonical_unified_height;
+        if (!should_bypass_all_dedup(reason) &&
+            m_pending_get_block.is_pending_for(canonical_unified)) {
+            m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
+            m_logger->debug("[Solo] GET_BLOCK suppressed: already in-flight for height {} "
+                           "(pending reason={}, new reason={})",
+                           m_pending_get_block.unified_height,
+                           reason_name(m_pending_get_block.reason),
+                           reason_name(reason));
+            return nullptr;
+        }
     }
 
     // ── GET_BLOCK deduplication guard ────────────────────────────────────────
@@ -1685,10 +1736,10 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
             if (work_payload && !work_payload->empty()) {
                 try {
                     connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::INITIAL_REQUEST);
                 } catch (const std::exception& e) {
                     m_logger->error("[Solo] transmit failed: {}", e.what());
                 }
-                mark_get_block_pending(GetBlockReason::INITIAL_REQUEST);
             } else {
                 m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
             }
@@ -1858,10 +1909,10 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 if (work_payload && !work_payload->empty()) {
                     try {
                         connection->transmit(work_payload);
+                        mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                     } catch (const std::exception& e) {
                         m_logger->error("[Solo] transmit failed: {}", e.what());
                     }
-                    mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                 } else {
                     m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
                 }
@@ -1913,10 +1964,10 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 if (work_payload && !work_payload->empty()) {
                     try {
                         connection->transmit(work_payload);
+                        mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                     } catch (const std::exception& e) {
                         m_logger->error("[Solo] transmit failed: {}", e.what());
                     }
-                    mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                 } else {
                     m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
                 }
@@ -1988,10 +2039,10 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                     if (work_payload && !work_payload->empty()) {
                         try {
                             connection->transmit(work_payload);
+                            mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                         } catch (const std::exception& e) {
                             m_logger->error("[Solo] transmit failed: {}", e.what());
                         }
-                        mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                     }
                 }
                 return;
@@ -2009,10 +2060,10 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                     if (work_payload && !work_payload->empty()) {
                         try {
                             connection->transmit(work_payload);
+                            mark_get_block_pending(GetBlockReason::TEMPLATE_FEED_FAILURE);
                         } catch (const std::exception& e) {
                             m_logger->error("[Solo] transmit failed: {}", e.what());
                         }
-                        mark_get_block_pending(GetBlockReason::TEMPLATE_FEED_FAILURE);
                     }
                 }
                 return;
@@ -2054,10 +2105,10 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                             if (work_payload && !work_payload->empty()) {
                                 try {
                                     connection->transmit(work_payload);
+                                    mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                                 } catch (const std::exception& e) {
                                     m_logger->error("[Solo] transmit failed: {}", e.what());
                                 }
-                                mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                             }
                         }
                         return;
@@ -2079,10 +2130,10 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                         if (work_payload && !work_payload->empty()) {
                             try {
                                 connection->transmit(work_payload);
+                                mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                             } catch (const std::exception& e) {
                                 m_logger->error("[Solo] transmit failed: {}", e.what());
                             }
-                            mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                         } else {
                             m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK returned empty payload");
                         }
@@ -2099,10 +2150,10 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                     if (work_payload && !work_payload->empty()) {
                         try {
                             connection->transmit(work_payload);
+                            mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                         } catch (const std::exception& e) {
                             m_logger->error("[Solo] transmit failed: {}", e.what());
                         }
-                        mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                     } else {
                         m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
                     }
@@ -2192,18 +2243,18 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
             } else {
                 try {
                     connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::RECOVERY_FORCED);
                 } catch (const std::exception& e) {
                     m_logger->error("[Solo] transmit failed: {}", e.what());
                 }
-                mark_get_block_pending(GetBlockReason::RECOVERY_FORCED);
             }
         } else {
             try {
                 connection->transmit(work_payload);
+                mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
             } catch (const std::exception& e) {
                 m_logger->error("[Solo] transmit failed: {}", e.what());
             }
-            mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
         }
     }
     // Handle legacy GOOD_BLOCK (opcode 6): some legacy nodes send this for valid-but-not-best blocks.
@@ -2251,10 +2302,10 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         if (work_payload && !work_payload->empty()) {
             try {
                 connection->transmit(work_payload);
+                mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
             } catch (const std::exception& e) {
                 m_logger->error("[Solo] transmit failed: {}", e.what());
             }
-            mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
         }
     }
 }
@@ -2374,18 +2425,18 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
             } else {
                 try {
                     connection->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::RECOVERY_FORCED);
                 } catch (const std::exception& e) {
                     m_logger->error("[Solo] MINER_READY transmit failed: {}", e.what());
                 }
-                mark_get_block_pending(GetBlockReason::RECOVERY_FORCED);
             }
         } else {
             try {
                 connection->transmit(work_payload);
+                mark_get_block_pending(GetBlockReason::BLOCK_REJECTED);
             } catch (const std::exception& e) {
                 m_logger->error("[Solo] MINER_READY transmit failed: {}", e.what());
             }
-            mark_get_block_pending(GetBlockReason::BLOCK_REJECTED);
         }
     }
     // Handle legacy ORPHAN_BLOCK (opcode 7): some legacy nodes send this for orphaned blocks.
@@ -2414,10 +2465,10 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
         if (work_payload && !work_payload->empty()) {
             try {
                 connection->transmit(work_payload);
+                mark_get_block_pending(GetBlockReason::BLOCK_REJECTED);
             } catch (const std::exception& e) {
                 m_logger->error("[Solo] transmit failed: {}", e.what());
             }
-            mark_get_block_pending(GetBlockReason::BLOCK_REJECTED);
         }
     }
 }
@@ -2546,10 +2597,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         if (work_payload && !work_payload->empty()) {
                             try {
                                 connection->transmit(work_payload);
+                                mark_get_block_pending(GetBlockReason::GET_ROUND_STALE);
                             } catch (const std::exception& e) {
                                 m_logger->error("[Solo GET_ROUND] transmit failed (staleness path): {}", e.what());
                             }
-                            mark_get_block_pending(GetBlockReason::GET_ROUND_STALE);
                             get_block_sent_in_handler = true;
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                         } else {
@@ -2627,10 +2678,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     if (work_payload && !work_payload->empty()) {
                         try {
                             connection->transmit(work_payload);
+                            mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                         } catch (const std::exception& e) {
                             m_logger->error("[Solo GET_ROUND] transmit failed (Stake/cross-channel): {}", e.what());
                         }
-                        mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                         get_block_sent_in_handler = true;
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
                     }
@@ -2688,10 +2739,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 if (work_payload && !work_payload->empty()) {
                     try {
                         connection->transmit(work_payload);
+                        mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                     } catch (const std::exception& e) {
                         m_logger->error("[Solo GET_ROUND] transmit failed (staleness path): {}", e.what());
                     }
-                    mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                     get_block_sent_in_handler = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 } else {
@@ -2751,10 +2802,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         if (work_payload && !work_payload->empty()) {
                             try {
                                 connection->transmit(work_payload);
+                                mark_get_block_pending(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
                             } catch (const std::exception& e) {
                                 m_logger->error("[Solo GET_ROUND] transmit failed (height parity): {}", e.what());
                             }
-                            mark_get_block_pending(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
                             get_block_sent_in_handler = true;
                             mark_authoritative_recovery_required("get_round_height_parity");
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent (height parity backup)");
@@ -2875,10 +2926,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         if (work_payload && !work_payload->empty()) {
                             try {
                                 connection->transmit(work_payload);
+                                mark_get_block_pending(GetBlockReason::GET_ROUND_STALE);
                             } catch (const std::exception& e) {
                                 m_logger->error("[Solo GET_ROUND] transmit failed (staleness path): {}", e.what());
                             }
-                            mark_get_block_pending(GetBlockReason::GET_ROUND_STALE);
                             get_block_sent_in_handler = true;
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                         } else {
@@ -2931,10 +2982,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     if (work_payload && !work_payload->empty()) {
                         try {
                             connection->transmit(work_payload);
+                            mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                         } catch (const std::exception& e) {
                             m_logger->error("[Solo GET_ROUND] transmit failed (Stake/cross-channel): {}", e.what());
                         }
-                        mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                         get_block_sent_in_handler = true;
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
                     }
@@ -2970,10 +3021,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 if (work_payload && !work_payload->empty()) {
                     try {
                         connection->transmit(work_payload);
+                        mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                     } catch (const std::exception& e) {
                         m_logger->error("[Solo GET_ROUND] transmit failed (Stake/cross-channel): {}", e.what());
                     }
-                    mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
                     get_block_sent_in_handler = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 } else {
@@ -3022,10 +3073,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                         if (work_payload && !work_payload->empty()) {
                             try {
                                 connection->transmit(work_payload);
+                                mark_get_block_pending(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
                             } catch (const std::exception& e) {
                                 m_logger->error("[Solo GET_ROUND] transmit failed (height parity): {}", e.what());
                             }
-                            mark_get_block_pending(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
                             get_block_sent_in_handler = true;
                             mark_authoritative_recovery_required("get_round_height_parity");
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent (height parity backup)");
@@ -3839,10 +3890,10 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
                 if (work_payload && !work_payload->empty()) {
                     try {
                         connection->transmit(work_payload);
+                        mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                     } catch (const std::exception& e) {
                         m_logger->error("[Solo] transmit failed: {}", e.what());
                     }
-                    mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                 } else {
                     m_logger->error("[Solo Stateless] Recovery failed - GET_BLOCK returned empty payload");
                 }
@@ -3868,10 +3919,10 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
                 if (work_payload && !work_payload->empty()) {
                     try {
                         connection->transmit(work_payload);
+                        mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                     } catch (const std::exception& e) {
                         m_logger->error("[Solo] transmit failed: {}", e.what());
                     }
-                    mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
                 } else {
                     m_logger->error("[Solo Stateless] Recovery failed - GET_BLOCK returned empty payload");
                 }
@@ -5293,10 +5344,10 @@ void Solo::check_unified_height_delta(uint32_t current_unified_height)
             if (work && !work->empty()) {
                 try {
                     m_connection->transmit(work);
+                    mark_get_block_pending(GetBlockReason::HEALTH_TIP_MOVED);
                 } catch (const std::exception& e) {
                     m_logger->error("[Solo] transmit failed: {}", e.what());
                 }
-                mark_get_block_pending(GetBlockReason::HEALTH_TIP_MOVED);
                 m_logger->info("[Solo Poll] ✓ GET_BLOCK sent for tip refresh");
             } else {
                 m_logger->debug("[Solo Poll] GET_BLOCK rate-limited — tip refresh deferred");

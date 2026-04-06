@@ -544,6 +544,16 @@ private:
     // hashMerkleRoot arrives within 5 seconds.  Only the feed (worker distribution)
     // is suppressed — the receive and validation still proceed normally.
     MerkleRootFeedGuard m_merkle_root_feed_guard;
+
+    // Unified-height feed guard: prevents same-height re-feeds within a cooldown.
+    // This is the ultimate backstop — even if transmit-side dedup fails, this guard
+    // prevents the actual worker restart for the same (height, hashPrevBlock) pair.
+    // Cooldown is long enough to suppress all duplicate arrivals but short enough
+    // to allow legitimate template refreshes (e.g., fee-optimization updates).
+    static constexpr int64_t SAME_HEIGHT_FEED_COOLDOWN_SECONDS = 10;
+    uint32_t     m_last_fed_unified_height{0};
+    uint1024_t   m_last_fed_hash_prev_block{};
+    std::chrono::steady_clock::time_point m_last_fed_time{};
     
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
