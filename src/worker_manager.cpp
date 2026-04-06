@@ -2108,14 +2108,28 @@ void Worker_manager::check_template_health()
     // before the 600s emergency fires.  Workers continue mining on the same height in the
     // meantime; only the timestamp is refreshed.  TEMPLATE_AGE_WARNING does not bypass
     // so it respects the can_request_get_block() session gate and hashPrevBlock mismatch backoff.
+    //
+    // Cooldown guard: fire at most once per TEMPLATE_AGE_COOLDOWN_SECONDS to prevent
+    // the 5-second health tick from exhausting the node's 25/60s GET_BLOCK rate limit.
     if (template_age > protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS &&
         template_age <= protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
-        m_logger->warn("[Worker_manager] ⚠️  {} template age {}s (warning threshold {}s, emergency {}s)",
-            channel_name, template_age,
-            protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS,
-            protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
-        m_logger->warn("[Worker_manager]    No push received for {}s — requesting proactive fresh work/GET_BLOCK", template_age);
-        retry_template_request(protocol::GetBlockReason::TEMPLATE_AGE_WARNING);
+        auto now = std::chrono::steady_clock::now();
+        auto since_last = std::chrono::duration_cast<std::chrono::seconds>(
+            now - m_last_template_age_request_at).count();
+        if (m_last_template_age_request_at == std::chrono::steady_clock::time_point{} ||
+            since_last >= TEMPLATE_AGE_COOLDOWN_SECONDS)
+        {
+            m_logger->warn("[Worker_manager] ⚠️  {} template age {}s (warning threshold {}s, emergency {}s)",
+                channel_name, template_age,
+                protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS,
+                protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS);
+            m_logger->warn("[Worker_manager]    No push received for {}s — requesting proactive fresh work/GET_BLOCK", template_age);
+            retry_template_request(protocol::GetBlockReason::TEMPLATE_AGE_WARNING);
+            m_last_template_age_request_at = now;
+        } else {
+            m_logger->debug("[Worker_manager] Template age {}s > warning threshold but cooldown active ({}s since last request, cooldown {}s)",
+                template_age, since_last, TEMPLATE_AGE_COOLDOWN_SECONDS);
+        }
     }
 
     // BLOCK_DATA timeout trigger (600s) — dead-connection detector for both channels.
@@ -2173,6 +2187,20 @@ void Worker_manager::check_template_health()
             m_logger->error("[Worker_manager]    Prime blocks may be long; treating this as recovery signal only");
         }
 
+        // Cooldown guard: do not escalate recovery on every 5-second health tick.
+        {
+            auto now_em = std::chrono::steady_clock::now();
+            auto since_last_em = std::chrono::duration_cast<std::chrono::seconds>(
+                now_em - m_last_template_age_request_at).count();
+            if (m_last_template_age_request_at != std::chrono::steady_clock::time_point{} &&
+                since_last_em < TEMPLATE_AGE_COOLDOWN_SECONDS)
+            {
+                m_logger->debug("[Worker_manager] Emergency recovery cooldown active ({}s since last, cooldown {}s)",
+                    since_last_em, TEMPLATE_AGE_COOLDOWN_SECONDS);
+                return;
+            }
+            m_last_template_age_request_at = now_em;
+        }
 
         // Non-authoritative path: do NOT discard valid template and do NOT halt workers here.
         // Escalate orchestration only (reconnect + forced GET_BLOCK lane).

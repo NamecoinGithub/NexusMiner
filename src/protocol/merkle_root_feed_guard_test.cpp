@@ -3,11 +3,12 @@
  *
  * Verifies that:
  *   1. First feed always proceeds
- *   2. Same hashMerkleRoot within 5s is suppressed
+ *   2. Same hashMerkleRoot within 2s is suppressed
  *   3. Different hashMerkleRoot always proceeds
  *   4. Same hashMerkleRoot after window expires proceeds
  *   5. Zero (empty) hashMerkleRoot is never subject to suppression dedup
  *   6. reset() clears all state
+ *   7. Same merkle root at different heights is allowed (height keying)
  */
 
 #include "protocol/merkle_root_feed_guard.hpp"
@@ -97,8 +98,20 @@ int main()
 
     // --- Test 6: Suppression window constant ---
     {
-        test_assert(MerkleRootFeedGuard::SUPPRESSION_WINDOW_SECONDS == 5,
-                    "suppression window is 5 seconds");
+        test_assert(MerkleRootFeedGuard::SUPPRESSION_WINDOW_SECONDS == 2,
+                    "suppression window is 2 seconds");
+    }
+
+    // --- Test 7: Same merkle root at different heights is allowed ---
+    {
+        MerkleRootFeedGuard guard;
+        uint512_t merkle;
+        merkle.SetHex("dddd444444444444444444444444444444444444444444444444444444444444"
+                       "4444444444444444444444444444444444444444444444444444444444444444");
+        test_assert(guard.should_feed(merkle, 1000), "first feed at height 1000 allowed");
+        test_assert(!guard.should_feed(merkle, 1000), "same merkle+height within window suppressed");
+        test_assert(guard.should_feed(merkle, 1001), "same merkle at different height allowed");
+        test_assert(guard.suppressed_count() == 1, "only one suppression");
     }
 
     // --- Summary ---
