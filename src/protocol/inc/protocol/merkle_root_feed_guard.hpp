@@ -72,8 +72,10 @@ public:
     {
         auto now = std::chrono::steady_clock::now();
 
-        // Height change always allows through
-        bool height_changed = (unified_height != 0 && unified_height != m_last_fed_height);
+        // Height change always allows through.
+        // unified_height == 0 means the caller opted out of height tracking.
+        bool height_tracking_active = (unified_height != 0);
+        bool height_changed = height_tracking_active && (unified_height != m_last_fed_height);
 
         // Same-height reorg (hashPrevBlock changed) always allows through
         bool reorg_at_same_height = false;
@@ -91,7 +93,7 @@ public:
             // Tier 1: same (merkleRoot, height) within 2s → suppress
             if (hash_merkle_root != uint512_t{} &&
                 hash_merkle_root == m_last_fed_merkle_root &&
-                (unified_height == 0 || unified_height == m_last_fed_height))
+                (!height_tracking_active || unified_height == m_last_fed_height))
             {
                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                     now - m_last_fed_time).count();
@@ -103,7 +105,7 @@ public:
 
             // Tier 2: same height, different merkle root, within 500ms → suppress
             // This catches mempool-variant duplicates at the same chain tip.
-            if (unified_height != 0 && unified_height == m_last_fed_height) {
+            if (height_tracking_active && unified_height == m_last_fed_height) {
                 auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                     now - m_last_fed_time).count();
                 if (elapsed_ms < HEIGHT_ONLY_SUPPRESSION_MS) {

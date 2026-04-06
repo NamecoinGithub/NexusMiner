@@ -667,31 +667,32 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     // Legitimate reorgs (hashPrevBlock change) bypass the guard so the miner
     // always switches to the correct chain tip.
     {
-        auto now = std::chrono::steady_clock::now();
-        bool same_tip = (unified_height == m_last_fed_unified_height &&
-                         tmpl->block.hashPrevBlock == m_last_fed_hash_prev_block);
-        if (same_tip && m_last_fed_time != std::chrono::steady_clock::time_point{}) {
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                now - m_last_fed_time).count();
-            if (elapsed < SAME_HEIGHT_FEED_COOLDOWN_SECONDS) {
-                m_logger->info("[{}] Feed suppressed: same unified height {} within {}s cooldown "
-                               "(elapsed {}s, same hashPrevBlock)",
-                               log_scope, unified_height, SAME_HEIGHT_FEED_COOLDOWN_SECONDS, elapsed);
-                return true;  // receive succeeded, feed intentionally suppressed
+        // Skip on first-ever feed (no prior state to compare against).
+        if (m_last_fed_time != std::chrono::steady_clock::time_point{}) {
+            bool same_tip = (unified_height == m_last_fed_unified_height &&
+                             tmpl->block.hashPrevBlock == m_last_fed_hash_prev_block);
+            if (same_tip) {
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - m_last_fed_time).count();
+                if (elapsed < SAME_HEIGHT_FEED_COOLDOWN_SECONDS) {
+                    m_logger->info("[{}] Feed suppressed: same unified height {} within {}s cooldown "
+                                   "(elapsed {}s, same hashPrevBlock)",
+                                   log_scope, unified_height, SAME_HEIGHT_FEED_COOLDOWN_SECONDS, elapsed);
+                    return true;  // receive succeeded, feed intentionally suppressed
+                }
             }
         }
     }
 
     // *** MerkleRoot Feed Guard: suppress duplicate worker restarts ***
-    // If the same (height, hashMerkleRoot) pair was fed within the last 2 seconds,
-    // suppress the worker distribution.  The receive and validation still proceed normally.
-    // Keying on height ensures height changes always allow the feed.
-    // Also suppresses same-height feeds with different merkle roots within 500ms
-    // (mempool-variant duplicates).  hashPrevBlock change (reorg) always passes.
+    // Tier 1: same (height, hashMerkleRoot) within 2s → suppressed.
+    // Tier 2: same height, different merkle root within 500ms → suppressed
+    //         (mempool-variant duplicates).
+    // hashPrevBlock change (reorg) always passes through both tiers.
     if (!m_merkle_root_feed_guard.should_feed(tmpl->block.hashMerkleRoot,
                                                tmpl->block.nHeight,
                                                tmpl->block.hashPrevBlock)) {
-        m_logger->info("[{}] Feed suppressed by MerkleRoot guard (suppressed count: {})",
+        m_logger->info("[{}] Feed suppressed by MerkleRoot/height guard (suppressed count: {})",
                        log_scope, m_merkle_root_feed_guard.suppressed_count());
         return true;  // receive succeeded, feed intentionally suppressed
     }
