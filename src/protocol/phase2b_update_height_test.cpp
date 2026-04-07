@@ -124,8 +124,6 @@ static void test_push_handler_callback_values()
 }
 
 // ============================================================================
-// Test 2: HeightTracker reflects same values after update_height_fn path
-// ============================================================================
 // Test 2: HeightTracker reflects push-derived diagnostic values
 //         (unified_height and channel_height are now canonical-only from BLOCK_DATA)
 // ============================================================================
