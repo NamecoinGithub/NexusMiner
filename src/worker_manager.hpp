@@ -139,15 +139,15 @@ private:
     void restart_recovery_window(const char* reason);
 
     /// Mark that a hard GET_BLOCK recovery is now in progress.
-    /// Sets m_recovery.phase=HARD_RECOVERY, increments epoch, records start time.
+    /// Sets m_recovery.phase=WAITING_TEMPLATE, increments epoch, records start time.
     /// Called from:
     ///  - the recovery_handler callback (push handler detected channel-stale staleness),
-    ///  - retry_template_request(true) (health monitor or validation failure path).
+    ///  - retry_template_request(GetBlockReason) (health monitor or validation failure path).
     void mark_recovery_initiated(const char* reason);
 
     /// Mark that a soft refresh is now in progress.
-    /// Sets m_recovery.phase=SOFT_REFRESH, increments epoch, records start time,
-    /// and withholds submissions without stopping workers or entering degraded mode.
+    /// Both soft refresh and hard recovery now map to WAITING_TEMPLATE.
+    /// Workers keep running; no submissions are withheld in the current model.
     void mark_soft_refresh_requested(const char* reason);
 
     /// Clear degraded mode and all recovery state after a valid template is delivered to workers.
@@ -169,11 +169,11 @@ private:
 
     // ── State query helpers (backward-compat convenience) ─────────────────────
     bool is_degraded()              const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::WAITING_TEMPLATE; }
-    bool is_submissions_withheld()  const { return false; }
+    bool is_submissions_withheld()  const { return false; }  // Backward-compat stub — no submission withholding in current model
     bool is_recovery_active()       const { return m_recovery.phase.load(std::memory_order_relaxed) != RecoveryPhase::HEALTHY; }
     bool is_reconnecting()          const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::RECONNECTING; }
 
-    /// Submit a found block: try primary lane first, fallback to secondary within 100 ms.
+    /// Submit a found block via primary NodeSession (handles dual-lane submission internally).
     void submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce);
 
 	std::shared_ptr<::asio::io_context> m_io_context;

@@ -183,19 +183,16 @@ and the secondary lane (GET_BLOCK response) can deliver a template for the **sam
 simultaneously. Without protection this causes every worker to be restarted mid-sieve by the
 second arrival — wasting solved sieves and increasing block-submission latency.
 
-**What it is:** A lightweight debounce filter inside `Worker_manager::set_block_handler` that
-compares each incoming template against the last template distributed to workers.
+**What it is:** Template feed debounce is now handled in `MiningTemplateInterface` (unified
+dedup gate). The `Worker_manager::set_block_handler` callback is only called after the
+template passes the debounce check, so no additional per-worker checking is needed.
 
-**Dedup key:** `(channel_height == m_last_worker_feed_height) AND (hashPrevBlock == m_last_worker_feed_prev_hash)`  
+**Dedup key:** `(channel_height, hashPrevBlock)` pair inside `MiningTemplateInterface`.
 Both fields must match for a template to be considered a duplicate. This means genuine forks at
 the same height (different `hashPrevBlock`) are **always** passed through — the dedup guard never
 suppresses a real chain fork.
 
-**Debounce window:** 2 000 ms (`WORKER_FEED_DEBOUNCE_MS`). This is intentionally wider than
-solo.cpp's 1 500 ms `ANCHOR_REPUSH_DEBOUNCE_MS` to cover any race between the push notification
-and the GET_BLOCK response round-trip.
-
-**Invariant:** A duplicate template arriving after the 2 000 ms window has expired is treated as
+**Invariant:** A duplicate template arriving after the debounce window has expired is treated as
 a new template and passed through. This ensures stale-recovery paths are never silently skipped.
 
 **Related:** The LLL-TAO node fix for the dual `SendChannelNotification` race is tracked in
@@ -206,11 +203,9 @@ whether the node fix is deployed.
 
 | Property | Value |
 |----------|-------|
-| Debounce window | 2 000 ms |
 | Dedup key | `(height, hashPrevBlock)` pair |
 | Fork protection | Same height, different `hashPrevBlock` → NOT suppressed |
-| Code location | `Worker_manager::set_block_handler` callback, `src/worker_manager.cpp` |
-| State fields | `m_last_worker_feed_tp`, `m_last_worker_feed_height`, `m_last_worker_feed_prev_hash` |
+| Code location | `MiningTemplateInterface` unified dedup gate |
 
 #### Warning Catalog
 

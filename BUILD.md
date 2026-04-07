@@ -146,7 +146,7 @@ cmake -DOPENSSL_ROOT_DIR=/usr \
 
 ## After Building
 
-Before running `NexusMiner`, copy `miner.conf` to the build folder and edit it with your settings. See the [Configuration Reference](docs/reference/nexus.conf.md) for details on configuring the miner.
+Before running `NexusMiner`, copy `example.miner.config` to the build folder (renaming it to `miner.conf`) and edit it with your settings. See the [Configuration Reference](docs/reference/nexus.conf.md) for details on configuring the miner.
 
 For Falcon authentication setup (required for solo mining), see the main [README.md](README.md) or run:
 ```bash
