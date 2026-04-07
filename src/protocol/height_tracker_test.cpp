@@ -26,9 +26,9 @@
  * 15. OnKeepaliveResponse legacy zeros — safe, no canonical corruption
  * 16. OnKeepaliveResponse updates stake_height correctly
  * 17. peak_fork_score is a persistent high-water mark
- * 18. Push updates channel_height; prime_height is keepalive-only (diagnostic)
- * 19. Push updates channel_height; hash_height is keepalive-only (diagnostic)
- * 20. Production regression: push advances channel_height; prime_height from keepalive
+ * 18. Push updates channel_height; prime_height is diagnostic max (keepalive, round, push)
+ * 19. Push updates channel_height; hash_height is diagnostic max (keepalive, round, push)
+ * 20. Production regression: push advances channel_height; prime_height diagnostic max
  * 21. OnTemplateReceived writes canonical_channel_target (only advances)
  * 22. OnTemplateReceived does not regress channel_target
  * 23. Doom-loop impossible with canonical-only channel_target
@@ -536,13 +536,15 @@ void test_on_keepalive_response_unified() {
     tracker.OnKeepaliveResponse(6000, 450, 800, 999, 0xCAFEBABEu, 3);
 
     auto snap = tracker.GetSnapshot();
-    // Keepalive heights must NOT appear in the snapshot (they are diagnostic only)
+    // Canonical heights must NOT be set by keepalive
     print_test_result("unified_height == 0 (keepalive does not set canonical)",
                       snap.unified_height == 0);
-    print_test_result("prime_height == 0 (keepalive does not set canonical)",
-                      snap.prime_height == 0);
-    print_test_result("hash_height == 0 (keepalive does not set canonical)",
-                      snap.hash_height == 0);
+    // prime_height and hash_height are diagnostic max(keepalive, round, push),
+    // so keepalive DOES contribute to these snapshot fields.
+    print_test_result("prime_height == 450 (diagnostic max includes keepalive)",
+                      snap.prime_height == 450);
+    print_test_result("hash_height == 800 (diagnostic max includes keepalive)",
+                      snap.hash_height == 800);
     print_test_result("channel_height == 0 (keepalive does not set canonical)",
                       snap.channel_height == 0);
     print_test_result("stake_height == 999",    snap.stake_height == 999);
@@ -571,13 +573,15 @@ void test_on_keepalive_response_legacy_zeros_safe() {
     tracker.OnKeepaliveResponse(6001, 451, 801, 999, 0u, 0u);
 
     auto snap = tracker.GetSnapshot();
-    // Keepalive heights must NOT appear in the snapshot
+    // Canonical heights must NOT be set by keepalive
     print_test_result("unified_height == 0 (keepalive does not set canonical)",
                       snap.unified_height == 0);
-    print_test_result("prime_height == 0 (keepalive does not set canonical)",
-                      snap.prime_height == 0);
-    print_test_result("hash_height == 0 (keepalive does not set canonical)",
-                      snap.hash_height == 0);
+    // prime_height and hash_height are diagnostic max(keepalive, round, push),
+    // so keepalive DOES contribute to these snapshot fields.
+    print_test_result("prime_height == 451 (diagnostic max includes keepalive)",
+                      snap.prime_height == 451);
+    print_test_result("hash_height == 801 (diagnostic max includes keepalive)",
+                      snap.hash_height == 801);
 
     // Stake and fork fields from diagnostic
     print_test_result("stake_height == 999",       snap.stake_height == 999);
@@ -631,49 +635,49 @@ void test_peak_fork_score_high_water_mark() {
 }
 
 // ============================================================================
-// Test 18: Push updates channel_height; prime_height is canonical-only
+// Test 18: Push updates channel_height; prime_height is diagnostic max
 // ============================================================================
 void test_push_updates_per_channel_heights() {
-    std::cout << "\nTest 18: Push updates channel_height; prime_height is canonical-only\n";
+    std::cout << "\nTest 18: Push updates channel_height; prime_height is diagnostic max\n";
     HeightTracker tracker;
     tracker.OnTemplateReceived(1, 101);
     tracker.OnKeepaliveResponse(5000, 100, 200, 300, 0, 0);
     auto snap1 = tracker.GetSnapshot();
-    // Keepalive prime_height does NOT appear in snapshot
-    print_test_result("prime_height == 0 after keepalive (canonical only)", snap1.prime_height == 0);
+    // prime_height is diagnostic max(keepalive, round, push) — keepalive sets it to 100
+    print_test_result("prime_height == 100 after keepalive (diagnostic max)", snap1.prime_height == 100);
     tracker.OnPushNotification(5002, 102, 0x1d00ffff);
     auto snap2 = tracker.GetSnapshot();
     print_test_result("push_channel_height == 102 after push", snap2.push_channel_height == 102);
-    // prime_height comes exclusively from canonical (OnBlockDataReceived) — push does NOT update it
-    print_test_result("prime_height == 0 after push (canonical only, not set yet)",
-                      snap2.prime_height == 0);
+    // prime_height is still from keepalive (push sets push_channel_height, not per-channel prime)
+    print_test_result("prime_height == 100 after push (keepalive contribution persists)",
+                      snap2.prime_height == 100);
 }
 
 // ============================================================================
-// Test 19: Push updates channel_height; hash_height is canonical-only
+// Test 19: Push updates channel_height; hash_height is diagnostic max
 // ============================================================================
 void test_push_updates_hash_height() {
-    std::cout << "\nTest 19: Push updates channel_height; hash_height is canonical-only\n";
+    std::cout << "\nTest 19: Push updates channel_height; hash_height is diagnostic max\n";
     HeightTracker tracker;
     tracker.OnTemplateReceived(2, 201);
     tracker.OnKeepaliveResponse(5000, 100, 200, 300, 0, 0);
     auto snap1 = tracker.GetSnapshot();
-    // Keepalive hash_height does NOT appear in snapshot
-    print_test_result("hash_height == 0 after keepalive (canonical only)", snap1.hash_height == 0);
+    // hash_height is diagnostic max(keepalive, round, push) — keepalive sets it to 200
+    print_test_result("hash_height == 200 after keepalive (diagnostic max)", snap1.hash_height == 200);
     tracker.OnPushNotification(5002, 202, 0x1d00ffff);
     auto snap2 = tracker.GetSnapshot();
     print_test_result("push_channel_height == 202 after push", snap2.push_channel_height == 202);
-    // hash_height comes exclusively from canonical (OnBlockDataReceived) — push does NOT update it
-    print_test_result("hash_height == 0 after push (canonical only, not set yet)",
-                      snap2.hash_height == 0);
+    // hash_height is still from keepalive (push sets push_channel_height, not per-channel hash)
+    print_test_result("hash_height == 200 after push (keepalive contribution persists)",
+                      snap2.hash_height == 200);
 }
 
 // ============================================================================
 // Test 20: Production regression (prime drift from 2331124 to 2331126)
-//          Push advances channel_height correctly; prime_height is canonical-only.
+//          Push advances channel_height correctly; prime_height is diagnostic max.
 // ============================================================================
 void test_push_keepalive_no_regression() {
-    std::cout << "\nTest 20: Production regression — push advances channel_height; prime_height canonical-only\n";
+    std::cout << "\nTest 20: Production regression — push advances channel_height; prime_height diagnostic max\n";
     HeightTracker tracker;
     tracker.OnTemplateReceived(1, 2331125);
     tracker.OnKeepaliveResponse(6609207, 2331124, 2193089, 2084996, 0, 0);
@@ -683,8 +687,8 @@ void test_push_keepalive_no_regression() {
     tracker.OnPushNotification(6609208, 2331126, 0x0414b755);
     auto snap = tracker.GetSnapshot();
     print_test_result("channel_height == 2331126", snap.channel_height == 2331126);
-    // prime_height is canonical-only (not set without OnBlockDataReceived)
-    print_test_result("prime_height == 0 (canonical only, not set yet)", snap.prime_height == 0);
+    // prime_height is diagnostic max — keepalive set it to 2331124
+    print_test_result("prime_height == 2331124 (diagnostic max from keepalive)", snap.prime_height == 2331124);
     // is_template_stale() removed (structurally false under canonical-only semantics)
     // OnBlockDataReceived auto-advanced target to 2331127, so 2331126 < 2331127.
 }
