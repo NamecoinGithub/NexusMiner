@@ -8,6 +8,7 @@
 #include <chrono>
 #include <atomic>
 #include <mutex>
+#include <shared_mutex>
 #include <array>
 #include <deque>
 #include <functional>
@@ -108,6 +109,7 @@ public:
         // ── Core minimal fields (new design) ──────────────────────────────
         uint32_t session_id{0};
         uint64_t session_epoch{0};
+        uint64_t runtime_state_generation{0};
         SessionState state{SessionState::DISCONNECTED};
         ProtocolLane active_lane{ProtocolLane::UNKNOWN};
         std::string reward_address;   // canonical name (new design)
@@ -249,6 +251,7 @@ public:
     std::string build_miner_session_diagnostics() const;
     uint32_t get_session_id() const;
     uint64_t get_session_epoch() const;
+    uint64_t peek_runtime_state_generation() const noexcept;
     SessionState get_state() const;
     SessionInfo get_session_info() const;
     RuntimeSessionSnapshot get_runtime_snapshot() const;
@@ -291,6 +294,7 @@ private:
                                             const std::vector<uint8_t>& tritium_genesis);
     void clear_runtime_session_locked(bool preserve_genesis, bool clear_prevblock_suffix);
     void update_replay_allowances_locked();
+    void bump_runtime_state_generation_locked();
     void clear_session_event_journal_locked();
     void record_session_event_locked(SessionEventKind kind, const std::string& detail);
     void schedule_regular_keepalives(const std::shared_ptr<SessionManager>& self);
@@ -299,7 +303,7 @@ private:
     static bool validate_miner_session_container_locked(const SessionInfo& session,
                                                         std::string* reason);
 
-    mutable std::mutex m_session_mutex;
+    mutable std::shared_mutex m_session_mutex;
     SessionInfo m_session;
     std::deque<SessionEvent> m_session_event_journal;
 
@@ -316,6 +320,7 @@ private:
     std::shared_ptr<spdlog::logger> m_logger;
     SessionExpiredHandler m_session_expired_handler;
     std::shared_ptr<EpochCoordinator> m_epoch_coordinator;
+    std::atomic<uint64_t> m_runtime_state_generation{0};
 };
 
 } // namespace protocol

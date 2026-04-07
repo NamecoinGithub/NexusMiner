@@ -179,6 +179,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     if (m_session_context) {
         m_session_epoch = m_session_context->get_session_epoch();
         m_has_seen_session_epoch = true;
+        m_cached_runtime_state_generation = m_session_context->get_runtime_snapshot().runtime_state_generation;
     }
     // Keep MTI/HeightTracker aligned with the authoritative session epoch even
     // before authentication. With no session context the epoch remains 0,
@@ -287,6 +288,22 @@ std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t
     m_logger->info("║ Derived Key (hex): {}", nexusminer::keys::to_hex(key));
     m_logger->info("╚═══════════════════════════════════════════════════════════╝");
     
+    return key;
+}
+
+std::vector<uint8_t> Solo::derive_or_get_cached_chacha20_session_key(const std::vector<uint8_t>& genesis)
+{
+    if (!genesis.empty() &&
+        !m_cached_chacha20_key.empty() &&
+        !m_cached_chacha20_key_genesis.empty() &&
+        m_cached_chacha20_key_genesis == genesis) {
+        m_logger->debug("[Solo Auth] Reusing cached ChaCha20 session key for unchanged genesis");
+        return m_cached_chacha20_key;
+    }
+
+    auto key = derive_chacha20_session_key(genesis);
+    m_cached_chacha20_key_genesis = genesis;
+    m_cached_chacha20_key = key;
     return key;
 }
 
@@ -404,7 +421,16 @@ void Solo::refresh_cached_session_state(const char* log_scope)
         return;
     }
 
+    if (auto* session_manager = get_session_manager()) {
+        const auto authoritative_generation = session_manager->peek_runtime_state_generation();
+        if (authoritative_generation != 0 &&
+            authoritative_generation == m_cached_runtime_state_generation) {
+            return;
+        }
+    }
+
     const auto session = m_session_context->get_runtime_snapshot();
+    m_cached_runtime_state_generation = session.runtime_state_generation;
 
     if (!m_has_seen_session_epoch || m_session_epoch != session.session_epoch) {
         if (!m_has_seen_session_epoch) {
@@ -1033,7 +1059,7 @@ network::Shared_payload Solo::login(Login_handler handler)
         
         try {
             // Derive session key from genesis
-            auto session_key = derive_chacha20_session_key(tritium_genesis);
+            auto session_key = derive_or_get_cached_chacha20_session_key(tritium_genesis);
             auto nonce = ChaCha20Wrapper::generate_nonce();  // Random 12 bytes
 
             // Log the nonce being used for encryption
@@ -1400,6 +1426,13 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     m_logger->info("[Solo Submit][Authoritative]   prevblock_suffix     = {}", format_hex_prefix(prevblock_suffix, 4));
     m_logger->info("[Solo Submit][Authoritative]   session_epoch        = {}", submit_context.session_epoch.get());
     m_logger->info("[Solo Submit][Authoritative]   template_age         = {}s", template_age_seconds);
+    if (const auto* session_manager = get_session_manager()) {
+        const auto current_epoch = session_manager->get_session_epoch();
+        if (current_epoch != submit_context.session_epoch.get()) {
+            m_logger->warn("[Solo Submit] Session epoch advanced after submit snapshot: snap={} current={}",
+                           submit_context.session_epoch.get(), current_epoch);
+        }
+    }
 
     if (!submit_context.matches_submit_height(block_to_submit.nHeight)) {
         const std::string detail =
@@ -1513,8 +1546,8 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     const auto& submit_session_key = session.chacha20_session_key;
 
     // Use the authoritative session key from the session container.
-    if (submit_session_key.empty()) {
-        m_logger->critical("[Solo Submit] CRITICAL: authoritative session.chacha20_session_key is empty");
+    if (!session.chacha20_ready || submit_session_key.empty()) {
+        m_logger->critical("[Solo Submit] CRITICAL: authoritative session.chacha20_session_key is not ready");
         return network::Shared_payload{};
     }
 
@@ -4572,6 +4605,10 @@ network::Shared_payload Solo::send_set_reward()
         const auto session = m_session_context ? m_session_context->get_runtime_snapshot()
                                                : SessionManager::SessionInfo{};
         const auto& reward_session_key = session.chacha20_session_key;
+        if (!session.chacha20_ready || reward_session_key.empty()) {
+            m_logger->error("[Solo Reward] Cannot send MINER_SET_REWARD: authoritative session key is not ready");
+            return nullptr;
+        }
 
         try {
             auto nonce = ChaCha20Wrapper::generate_nonce();
@@ -5101,7 +5138,7 @@ void Solo::handle_reward_result(const Packet& packet)
         const auto session = m_session_context ? m_session_context->get_runtime_snapshot()
                                                : SessionManager::SessionInfo{};
         const auto& reward_session_key = session.chacha20_session_key;
-        if (!reward_session_key.empty())
+        if (session.chacha20_ready && !reward_session_key.empty())
         {
             try {
                 // Extract nonce (first 12 bytes)
@@ -5128,6 +5165,9 @@ void Solo::handle_reward_result(const Packet& packet)
         }
         else
         {
+            if (!reward_session_key.empty() && !session.chacha20_ready) {
+                m_logger->warn("[Solo Reward] Reward result arrived with non-ready ChaCha20 key; treating payload as unencrypted");
+            }
             // No genesis, try unencrypted
             result_data.assign(packet.m_data->begin(), packet.m_data->end());
         }
