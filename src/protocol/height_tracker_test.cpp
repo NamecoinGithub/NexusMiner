@@ -1522,23 +1522,23 @@ void test_set_session_epoch_clears_keepalive_on_epoch_change() {
     HeightTracker tracker;
 
     // Epoch 1: session established, keepalives flowing
-    tracker.set_session_epoch(1);
+    tracker.set_session_epoch(SessionEpoch(1));
     tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0xDEADBEEFu, 0);
 
     auto snap_before = tracker.GetSnapshot();
     print_test_result("Epoch 1: last_keepalive_ack_at is set after OnKeepaliveResponse",
                       snap_before.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
     print_test_result("Epoch 1: session_epoch == 1 in snapshot",
-                      snap_before.session_epoch == 1);
+                      snap_before.session_epoch == SessionEpoch(1));
 
     // Advance the session epoch (simulates re-auth / channel advance causing epoch bump)
-    tracker.set_session_epoch(2);
+    tracker.set_session_epoch(SessionEpoch(2));
 
     auto snap_after = tracker.GetSnapshot();
     print_test_result("Epoch 2: last_keepalive_ack_at CLEARED after epoch change",
                       snap_after.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
     print_test_result("Epoch 2: session_epoch == 2 in snapshot",
-                      snap_after.session_epoch == 2);
+                      snap_after.session_epoch == SessionEpoch(2));
 }
 
 // ============================================================================
@@ -1548,7 +1548,7 @@ void test_set_session_epoch_no_clear_when_unchanged() {
     std::cout << "\nTest 12 (NEW): set_session_epoch() does NOT clear keepalive timestamp when epoch unchanged\n";
     HeightTracker tracker;
 
-    tracker.set_session_epoch(5);
+    tracker.set_session_epoch(SessionEpoch(5));
     tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0xDEADBEEFu, 0);
 
     auto snap_before = tracker.GetSnapshot();
@@ -1557,7 +1557,7 @@ void test_set_session_epoch_no_clear_when_unchanged() {
                       ack_time != std::chrono::steady_clock::time_point{});
 
     // Re-setting the SAME epoch should NOT clear the keepalive timestamp
-    tracker.set_session_epoch(5);
+    tracker.set_session_epoch(SessionEpoch(5));
 
     auto snap_after = tracker.GetSnapshot();
     print_test_result("last_keepalive_ack_at preserved when same epoch re-set",
@@ -1574,7 +1574,7 @@ void test_old_epoch_keepalive_does_not_signal_new_epoch_liveness() {
     HeightTracker tracker;
 
     // Epoch 1: session established, keepalives flowing
-    tracker.set_session_epoch(1);
+    tracker.set_session_epoch(SessionEpoch(1));
     tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0xDEADBEEFu, 0);
 
     // Confirm keepalive is "recent" for epoch 1
@@ -1583,7 +1583,7 @@ void test_old_epoch_keepalive_does_not_signal_new_epoch_liveness() {
                       snap1.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
 
     // Channel advance + re-auth → epoch 2
-    tracker.set_session_epoch(2);
+    tracker.set_session_epoch(SessionEpoch(2));
     tracker.OnPushNotification(5001, 101, 0x1d00ffff);  // channel advances
 
     // In the new epoch, before any keepalive for epoch 2,
@@ -1609,19 +1609,19 @@ void test_set_session_epoch_zero_no_clear() {
     std::cout << "\nTest 14 (NEW): set_session_epoch(0) does NOT clear keepalive timestamp (sentinel epoch)\n";
     HeightTracker tracker;
 
-    tracker.set_session_epoch(3);
+    tracker.set_session_epoch(SessionEpoch(3));
     tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0xDEADBEEFu, 0);
     auto ack_time = tracker.GetSnapshot().last_keepalive_ack_at;
     print_test_result("Initial keepalive timestamp is set",
                       ack_time != std::chrono::steady_clock::time_point{});
 
     // Setting epoch to 0 (sentinel) should be a no-op for keepalive clearing
-    tracker.set_session_epoch(0);
+    tracker.set_session_epoch(SessionEpoch(0));
     auto snap_after = tracker.GetSnapshot();
     print_test_result("set_session_epoch(0) does not clear keepalive timestamp",
                       snap_after.last_keepalive_ack_at == ack_time);
     print_test_result("session_epoch updated to 0",
-                      snap_after.session_epoch == 0);
+                      snap_after.session_epoch == SessionEpoch(0));
 }
 
 // ============================================================================
@@ -1633,17 +1633,17 @@ void test_session_epoch_in_snapshot() {
 
     auto snap0 = tracker.GetSnapshot();
     print_test_result("Initial session_epoch == 0",
-                      snap0.session_epoch == 0);
+                      snap0.session_epoch == SessionEpoch(0));
 
-    tracker.set_session_epoch(42);
+    tracker.set_session_epoch(SessionEpoch(42));
     auto snap42 = tracker.GetSnapshot();
     print_test_result("session_epoch == 42 after set",
-                      snap42.session_epoch == 42);
+                      snap42.session_epoch == SessionEpoch(42));
 
-    tracker.set_session_epoch(99);
+    tracker.set_session_epoch(SessionEpoch(99));
     auto snap99 = tracker.GetSnapshot();
     print_test_result("session_epoch == 99 after second set",
-                      snap99.session_epoch == 99);
+                      snap99.session_epoch == SessionEpoch(99));
 }
 
 // ============================================================================

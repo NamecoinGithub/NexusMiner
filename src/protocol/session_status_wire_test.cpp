@@ -212,15 +212,15 @@ void test_session_ingress_gate_rejects_stale_owner_generation() {
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
         true,               // has_authoritative_session
         true,               // authoritative_authenticated
-        0x22222222u,        // authoritative_session_id
-        uint64_t{7},        // authoritative_session_epoch
+        SessionId(0x22222222u),        // authoritative_session_id
+        SessionEpoch(uint64_t{7}),     // authoritative_session_epoch
         ProtocolLane::STATELESS,  // authoritative_lane
         ProtocolLane::STATELESS,  // packet_lane
         true,               // validate_lane
         false,              // allow_without_active_session
-        0x22222222u,        // packet_session_id
-        uint64_t{6},        // owner_epoch (stale: 6 vs authoritative 7)
-        0x22222222u         // owner_session_id
+        SessionId(0x22222222u),        // packet_session_id
+        SessionEpoch(uint64_t{6}),     // owner_epoch (stale: 6 vs authoritative 7)
+        SessionId(0x22222222u)         // owner_session_id
     });
 
     print_test_result("stale owner epoch is rejected", !decision.allow_processing);
@@ -241,15 +241,15 @@ void test_session_ingress_gate_requires_crypto_context_when_requested() {
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
         true,               // has_authoritative_session
         true,               // authoritative_authenticated
-        0x01020304u,        // authoritative_session_id
-        uint64_t{3},        // authoritative_session_epoch
+        SessionId(0x01020304u),        // authoritative_session_id
+        SessionEpoch(uint64_t{3}),     // authoritative_session_epoch
         ProtocolLane::STATELESS,
         ProtocolLane::STATELESS,
         true,               // validate_lane
         false,              // allow_without_active_session
-        0,                  // packet_session_id (no mismatch)
-        uint64_t{3},        // owner_epoch (matches)
-        0x01020304u         // owner_session_id (matches)
+        SessionId(0u),                 // packet_session_id (no mismatch)
+        SessionEpoch(uint64_t{3}),     // owner_epoch (matches)
+        SessionId(0x01020304u)         // owner_session_id (matches)
     });
 
     // Feature removed: crypto check no longer blocks processing
@@ -267,15 +267,15 @@ void test_session_ingress_gate_rejects_stale_packet_session_id() {
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
         true,               // has_authoritative_session
         true,               // authoritative_authenticated
-        0x11112222u,        // authoritative_session_id
-        uint64_t{4},        // authoritative_session_epoch
+        SessionId(0x11112222u),        // authoritative_session_id
+        SessionEpoch(uint64_t{4}),     // authoritative_session_epoch
         ProtocolLane::STATELESS,
         ProtocolLane::STATELESS,
         true,               // validate_lane
         false,              // allow_without_active_session
-        0x33334444u,        // packet_session_id (mismatched)
-        uint64_t{4},        // owner_epoch
-        0x11112222u         // owner_session_id
+        SessionId(0x33334444u),        // packet_session_id (mismatched)
+        SessionEpoch(uint64_t{4}),     // owner_epoch
+        SessionId(0x11112222u)         // owner_session_id
     });
 
     print_test_result("stale packet session ID is rejected", !decision.allow_processing);
@@ -294,15 +294,15 @@ void test_session_ingress_gate_rejects_stale_owner_session_id() {
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
         true,               // has_authoritative_session
         true,               // authoritative_authenticated
-        0x01020304u,        // authoritative_session_id
-        uint64_t{9},        // authoritative_session_epoch
+        SessionId(0x01020304u),        // authoritative_session_id
+        SessionEpoch(uint64_t{9}),     // authoritative_session_epoch
         ProtocolLane::STATELESS,
         ProtocolLane::STATELESS,
         true,               // validate_lane
         false,              // allow_without_active_session
-        0x01020304u,        // packet_session_id (matches)
-        uint64_t{9},        // owner_epoch (matches)
-        0xA0B0C0D0u         // owner_session_id (mismatches)
+        SessionId(0x01020304u),        // packet_session_id (matches)
+        SessionEpoch(uint64_t{9}),     // owner_epoch (matches)
+        SessionId(0xA0B0C0D0u)         // owner_session_id (mismatches)
     });
 
     print_test_result("stale owner session ID is rejected", !decision.allow_processing);
@@ -320,15 +320,15 @@ void test_session_ingress_gate_rejects_lane_mismatch() {
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
         true,               // has_authoritative_session
         true,               // authoritative_authenticated
-        0x0A0B0C0Du,        // authoritative_session_id
-        uint64_t{2},        // authoritative_session_epoch
+        SessionId(0x0A0B0C0Du),        // authoritative_session_id
+        SessionEpoch(uint64_t{2}),     // authoritative_session_epoch
         ProtocolLane::STATELESS,  // authoritative_lane
         ProtocolLane::LEGACY,     // packet_lane (mismatched)
         true,               // validate_lane
         false,              // allow_without_active_session
-        0x0A0B0C0Du,        // packet_session_id
-        uint64_t{2},        // owner_epoch
-        0x0A0B0C0Du         // owner_session_id
+        SessionId(0x0A0B0C0Du),        // packet_session_id
+        SessionEpoch(uint64_t{2}),     // owner_epoch
+        SessionId(0x0A0B0C0Du)         // owner_session_id
     });
 
     print_test_result("lane mismatch is rejected", !decision.allow_processing);
@@ -347,15 +347,15 @@ void test_session_ingress_gate_requires_authenticated_session() {
     const auto decision = SessionIngressGate::preflight(SessionIngressGate::Input{
         true,               // has_authoritative_session
         false,              // authoritative_authenticated = false
-        0x55667788u,        // authoritative_session_id
-        uint64_t{5},        // authoritative_session_epoch
+        SessionId(0x55667788u),        // authoritative_session_id
+        SessionEpoch(uint64_t{5}),     // authoritative_session_epoch
         ProtocolLane::STATELESS,
         ProtocolLane::STATELESS,
         true,               // validate_lane
         false,              // allow_without_active_session
-        0x55667788u,        // packet_session_id
-        uint64_t{5},        // owner_epoch
-        0x55667788u         // owner_session_id
+        SessionId(0x55667788u),        // packet_session_id
+        SessionEpoch(uint64_t{5}),     // owner_epoch
+        SessionId(0x55667788u)         // owner_session_id
     });
 
     print_test_result("unauthenticated authoritative session is rejected", !decision.allow_processing);

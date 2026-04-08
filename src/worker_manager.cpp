@@ -606,11 +606,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* This is the correct place to check session_id=0 (not in the login callback which */
         /* fires before MINER_AUTH_RESULT arrives). Triggers retry with exponential backoff. */
         m_primary_node_session->set_session_authenticated_handler(
-            [this](uint32_t session_id) {
+            [this](protocol::SessionId session_id) {
                 // CRITICAL: If session_id = 0, the node rejected authentication or didn't provide a session.
                 // Mining cannot proceed without a valid session_id (work submissions will be silently rejected).
                 // Use exponential backoff with max retry limit to prevent infinite tight retry loops.
-                if (session_id == 0)
+                if (session_id.is_default())
                 {
                     ++m_session_auth_fail_count;
                     ++m_session_generation;  // Failed auth is still a session transition
@@ -658,12 +658,12 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 if (m_using_failover)
                 {
                     m_logger->info("[Failover] Fresh session established on failover node: session_id=0x{:08x}",
-                        session_id);
+                        session_id.get());
                 }
                 else
                 {
                     m_logger->info("[Primary] Fresh session established on primary node: session_id=0x{:08x}",
-                        session_id);
+                        session_id.get());
                 }
 
                 // Bug 4 fix: If we are in degraded/recovery mode (e.g. after in-band
