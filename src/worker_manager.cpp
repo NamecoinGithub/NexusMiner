@@ -1438,6 +1438,18 @@ void Worker_manager::poll_get_round()
             return;
         }
         m_primary_node_session->transmit(payload);
+
+        // Shadow-ban detection: if we've sent multiple GET_ROUNDs with no
+        // NEW_ROUND/OLD_ROUND response, the miner is likely shadow-banned
+        // (responses are being silently dropped).  Force recovery.
+        constexpr uint32_t SHADOW_BAN_UNANSWERED_THRESHOLD = 5;
+        const auto unanswered = solo_protocol->get_unanswered_get_round_count();
+        if (unanswered >= SHADOW_BAN_UNANSWERED_THRESHOLD) {
+            m_logger->error("[Worker_manager] SHADOW BAN DETECTED: {} consecutive GET_ROUNDs "
+                           "unanswered — forcing session recovery",
+                           unanswered);
+            mark_recovery_initiated("shadow_ban_unanswered_get_round");
+        }
     }
 }
 
@@ -1964,6 +1976,35 @@ void Worker_manager::check_template_health()
     auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
     if (!solo_protocol) {
         return;
+    }
+
+    // ── Session health summary (every 60s) ──────────────────────────────────
+    {
+        auto now = std::chrono::steady_clock::now();
+        constexpr int64_t HEALTH_LOG_INTERVAL_SECONDS = 60;
+        auto since_last_log = std::chrono::duration_cast<std::chrono::seconds>(
+            now - m_last_session_health_log).count();
+        if (since_last_log >= HEALTH_LOG_INTERVAL_SECONDS) {
+            m_last_session_health_log = now;
+            auto ht = solo_protocol->get_height_tracker_snapshot();
+            bool push_received = (ht.last_push_notification_at != std::chrono::steady_clock::time_point{});
+            int64_t push_age_s = push_received
+                ? std::chrono::duration_cast<std::chrono::seconds>(now - ht.last_push_notification_at).count()
+                : -1;
+            m_logger->info("[Session Health] authenticated={} session=0x{:08x}"
+                           " push={}s_ago unanswered_rounds={}"
+                           " preflight_drops={} phase={}"
+                           " get_blocks_sent={} accepted={} rejected={}",
+                           solo_protocol->is_authenticated(),
+                           solo_protocol->get_session_id(),
+                           push_age_s,
+                           solo_protocol->get_unanswered_get_round_count(),
+                           solo_protocol->get_preflight_reject_count(),
+                           phase_name(m_recovery.phase.load(std::memory_order_relaxed)),
+                           m_get_block_sent_total,
+                           solo_protocol->get_blocks_accepted(),
+                           solo_protocol->get_blocks_rejected());
+        }
     }
 
     // Guard against a stalled reconnect. If RECONNECTING phase has been active for

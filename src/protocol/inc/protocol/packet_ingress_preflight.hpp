@@ -55,7 +55,7 @@ public:
         SessionEpoch authoritative_session_epoch{};
         ProtocolLane authoritative_lane{ProtocolLane::UNKNOWN};
         ProtocolLane packet_lane{ProtocolLane::UNKNOWN};
-        bool validate_lane{false};
+        bool validate_lane{false};         // Lane Health Monitor: reject cross-lane packets
         bool allow_without_active_session{false};
         SessionId packet_session_id{};   // default = no session ID in packet
         SessionEpoch owner_epoch{};      // default = no ownership stamp
