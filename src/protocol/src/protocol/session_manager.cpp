@@ -16,8 +16,9 @@ namespace protocol {
 
 constexpr uint16_t MIN_KEEPALIVE_HOURS = 1;
 constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
-constexpr auto SESSION_HEARTBEAT_EARLY_INTERVAL = std::chrono::seconds(10);
-constexpr auto SESSION_HEARTBEAT_INTERVAL       = std::chrono::seconds(170);
+
+// First keepalive sent 10 seconds after auth — immediate session liveness proof.
+constexpr auto SESSION_KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);
 
 namespace {
 
@@ -1061,6 +1062,19 @@ std::string SessionManager::build_session_event_journal() const
 }
 
 // ── Keepalive timer ───────────────────────────────────────────────────────────
+//
+// Sends SESSION_KEEPALIVE packets to the node to extend the session timeout.
+//
+// Timing is derived from the node's advertised session timeout (from
+// SESSION_START) divided by KEEPALIVE_SAFETY_DIVISOR (4):
+//   e.g. 24-hour timeout → keepalive every 6 hours (4 pings per window).
+//
+// Sequence:
+//   1) Early ping at +10s after auth (immediate session liveness proof)
+//   2) Regular pings at m_keepalive_interval_hours intervals thereafter
+//
+// This replaced the previous 170s "TCP keepalive" timer which was a confusing
+// AI-generated artifact unrelated to actual TCP SO_KEEPALIVE.
 
 void SessionManager::start_keepalive_timer()
 {
@@ -1074,15 +1088,19 @@ void SessionManager::start_keepalive_timer()
     m_keepalive_active = true;
     auto self = shared_from_this();
     uint64_t generation = m_keepalive_generation.load();
-    m_keepalive_timer->expires_after(SESSION_HEARTBEAT_EARLY_INTERVAL);
+    m_keepalive_timer->expires_after(SESSION_KEEPALIVE_EARLY_INTERVAL);
     m_keepalive_timer->async_wait([self, generation](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) return;
         if (generation != self->m_keepalive_generation.load()) return;
         self->send_keepalive("early");
         self->schedule_regular_keepalives(self);
     });
-    m_logger->info("[SessionManager] Keepalive timer started (early: {}s, TCP ping: {}s)",
-                  SESSION_HEARTBEAT_EARLY_INTERVAL.count(), SESSION_HEARTBEAT_INTERVAL.count());
+
+    auto regular_interval = get_keepalive_timer_interval();
+    m_logger->info("[SessionManager] Keepalive timer started (early: {}s, regular: {}s / {} hours)",
+                  SESSION_KEEPALIVE_EARLY_INTERVAL.count(),
+                  regular_interval.count(),
+                  m_keepalive_interval_hours);
 }
 
 void SessionManager::stop_keepalive_timer()
@@ -1098,13 +1116,24 @@ void SessionManager::schedule_regular_keepalives(const std::shared_ptr<SessionMa
 {
     if (!m_keepalive_timer || !m_keepalive_active) return;
     uint64_t generation = m_keepalive_generation.load();
-    m_keepalive_timer->expires_after(SESSION_HEARTBEAT_INTERVAL);
+    auto interval = get_keepalive_timer_interval();
+    m_keepalive_timer->expires_after(interval);
     m_keepalive_timer->async_wait([self, generation](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) return;
         if (generation != self->m_keepalive_generation.load()) return;
         self->send_keepalive("regular");
         self->schedule_regular_keepalives(self);
     });
+}
+
+std::chrono::seconds SessionManager::get_keepalive_timer_interval() const
+{
+    // Convert hours to seconds.  m_keepalive_interval_hours is derived from
+    // the node's SESSION_START timeout_seconds / KEEPALIVE_SAFETY_DIVISOR.
+    auto seconds = static_cast<int64_t>(m_keepalive_interval_hours) * 3600;
+    // Floor at 60s to prevent tight-loop keepalives on misconfiguration
+    if (seconds < 60) seconds = 60;
+    return std::chrono::seconds(seconds);
 }
 
 void SessionManager::send_keepalive(const char* cadence)
@@ -1127,8 +1156,8 @@ void SessionManager::send_keepalive(const char* cadence)
         m_session.last_activity = now_epoch_seconds();
     }
     connection->transmit(payload);
-    m_logger->info("[SessionManager] SESSION_KEEPALIVE sent ({}) for session 0x{:08X}",
-                  cadence, session_id);
+    m_logger->info("[SessionManager] SESSION_KEEPALIVE sent ({}, next in {}h) for session 0x{:08X}",
+                  cadence, m_keepalive_interval_hours, session_id);
 }
 
 network::Shared_payload SessionManager::build_keepalive_packet() const

@@ -276,8 +276,8 @@ private:
     std::vector<std::shared_ptr<stats::Printer>> m_stats_printers;
     std::vector<std::shared_ptr<Worker>> m_workers;
 
-    // ── SIM Link and diagnostic tools ─────────────────────────────────────────
-    DualConnectionManager m_sim_link;  // Lane state bookkeeper
+    // ── Lane Health Monitor and diagnostic tools ────────────────────────────
+    DualConnectionManager m_sim_link;  // Lane state bookkeeper (SIM Link removed; lane monitor only)
     std::shared_ptr<ColinAgent> m_colin_agent;  // Diagnostic agent (started after first connect)
 
     // Time of the most recent SESSION_STATUS sent on any lane.
