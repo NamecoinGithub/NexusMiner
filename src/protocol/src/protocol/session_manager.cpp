@@ -1130,6 +1130,7 @@ std::chrono::seconds SessionManager::get_keepalive_timer_interval() const
 {
     // Convert hours to seconds.  m_keepalive_interval_hours is derived from
     // the node's SESSION_START timeout_seconds / KEEPALIVE_SAFETY_DIVISOR.
+    // Overflow safe: MAX_KEEPALIVE_HOURS=168 → 168*3600=604800, well within int64_t.
     auto seconds = static_cast<int64_t>(m_keepalive_interval_hours) * 3600;
     // Floor at 60s to prevent tight-loop keepalives on misconfiguration
     if (seconds < 60) seconds = 60;
