@@ -91,11 +91,21 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     m_logger->debug("[TemplateInterface] READ: Processing template ({} bytes) from {}", 
         data.size(), source_endpoint.empty() ? "unknown" : source_endpoint);
     
+    // Snapshot session fields under the lock to avoid data races with
+    // set_session_id/epoch/identity() which write under m_template_mutex.
+    uint32_t snapshot_session_id;
+    uint64_t snapshot_session_epoch;
+    {
+        std::lock_guard<std::mutex> lock(m_template_mutex);
+        snapshot_session_id = m_session_id;
+        snapshot_session_epoch = m_session_epoch;
+    }
+
     // Parse the block header
     MiningTemplate tmpl;
     tmpl.state = TemplateState::PENDING;
-    tmpl.session_id = m_session_id;
-    tmpl.session_epoch = m_session_epoch;
+    tmpl.session_id = snapshot_session_id;
+    tmpl.session_epoch = snapshot_session_epoch;
     tmpl.source_endpoint = source_endpoint;
     tmpl.timestamp_received = static_cast<uint64_t>(
         std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
