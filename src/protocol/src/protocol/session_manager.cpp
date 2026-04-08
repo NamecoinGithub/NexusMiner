@@ -288,6 +288,16 @@ void SessionManager::bump_runtime_state_generation_locked()
 
 void SessionManager::clear_session_event_journal_locked()
 {
+    // Bug 10 fix: Archive previous journal entries instead of dropping them.
+    // This preserves the failure/degradation events that triggered re-auth
+    // for post-mortem debugging.
+    for (auto& event : m_session_event_journal) {
+        m_archived_event_journal.push_back(std::move(event));
+    }
+    // Cap archived events to prevent unbounded growth
+    while (m_archived_event_journal.size() > MAX_ARCHIVED_EVENTS) {
+        m_archived_event_journal.pop_front();
+    }
     m_session_event_journal.clear();
 }
 
@@ -440,6 +450,10 @@ void SessionManager::mark_session_expired(const std::string& reason)
         if (m_session.reward_bound) {
             m_session.reward_state = RewardState::STALE;
         }
+        // Bug 4 fix: Clear canonical identity so downstream code checking
+        // session_id validity (non-zero) does not proceed with stale identity
+        // while session state is DEGRADED.
+        m_canonical_identity = SessionIdentity{};
         m_session.last_activity = now_epoch_seconds();
         record_session_event_locked(SessionEventKind::DEGRADED,
                                     reason.empty() ? "session marked expired" : reason);
@@ -1018,6 +1032,24 @@ std::string SessionManager::build_session_event_journal() const
     const auto journal = get_session_event_journal();
     std::ostringstream oss;
     oss << "SESSION EVENT JOURNAL";
+
+    // Bug 10: Include archived events from previous sessions for debugging
+    {
+        SessionReadLock lock(m_session_mutex);
+        if (!m_archived_event_journal.empty()) {
+            oss << "\n--- ARCHIVED (previous sessions) ---";
+            for (const auto& ev : m_archived_event_journal) {
+                oss << "\n- [" << ev.timestamp << "] "
+                    << session_event_kind_name(ev.kind)
+                    << " sid=0x" << std::hex << std::setw(8) << std::setfill('0')
+                    << ev.session_id.get() << std::dec
+                    << " epoch=" << ev.session_epoch.get();
+                if (!ev.detail.empty()) oss << " detail=" << ev.detail;
+            }
+            oss << "\n--- CURRENT SESSION ---";
+        }
+    }
+
     if (journal.empty()) {
         oss << "\n- <empty>";
         return oss.str();

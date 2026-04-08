@@ -53,6 +53,11 @@ struct RecoveryContext {
     // recovery paths.
     std::atomic<RecoveryPhase> phase{RecoveryPhase::HEALTHY};
 
+    // Bug 7 fix: Atomic flag set immediately when recovery begins, before
+    // epoch advance.  Guards SESSION_EXPIRED handler against re-entrance
+    // during the window between phase transition and epoch advance.
+    std::atomic<bool> recovery_in_progress{false};
+
     std::chrono::steady_clock::time_point entered_at{};            // When current epoch (recovery start) began
     std::chrono::steady_clock::time_point degraded_since{};        // When current outage started (set once per outage)
     std::chrono::steady_clock::time_point last_get_block_at{};     // Last confirmed GET_BLOCK transmit
@@ -206,6 +211,11 @@ private:
     uint64_t m_degraded_enter_total{0};
     uint64_t m_degraded_exit_total{0};
     uint64_t m_time_in_degraded_ms{0};
+
+    // Bug 5 fix: Track last GET_BLOCK request time to prevent burst duplicate
+    // requests from forced retry timer (100-250ms) and health monitor (5s cycle)
+    // both firing within the same short window.
+    std::chrono::steady_clock::time_point m_last_get_block_request_time{};
 
     // Connection retry state for exponential backoff
     uint32_t m_connection_retry_count{0};

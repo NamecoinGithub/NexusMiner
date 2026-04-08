@@ -69,11 +69,12 @@ namespace {
     // signal for session liveness — keepalive ACK is diagnostic only.
     constexpr int64_t PUSH_ALIVE_THRESHOLD_SECONDS = protocol::ProtocolConstants::PUSH_LIVENESS_THRESHOLD_SECONDS;
 
-    // Fix A: push-alive guard in retry_connect() uses a much shorter window (30s).
-    // A push received in the last 30s proves the TCP connection is alive RIGHT NOW.
-    // A push received 5 minutes ago proves nothing about current TCP state and must
-    // not suppress a TCP reconnect — that causes the doom loop.
-    constexpr int64_t RETRY_CONNECT_PUSH_LIVE_SECONDS = 30;
+    // Push-alive guard in retry_connect(): suppress TCP reconnect if a push
+    // notification was received within this window, proving the connection is alive.
+    // Aligned with PUSH_ALIVE_THRESHOLD_SECONDS to prevent conflicting liveness
+    // decisions: retry_connect() must not tear down a session that
+    // check_template_health() still considers alive (Bug 2 fix).
+    constexpr int64_t RETRY_CONNECT_PUSH_LIVE_SECONDS = PUSH_ALIVE_THRESHOLD_SECONDS;
 
     // Aggressive secondary reconnect delay during degraded mode.
     // Unified height drift threshold: if HeightTracker.unified_height exceeds
@@ -506,11 +507,14 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* the TCP connection. Uses existing session auth backoff infrastructure.    */
         m_primary_node_session->set_session_expired_handler(
             [this]() {
-                if (is_reconnecting() || (is_recovery_active() && m_epoch_coordinator->recovery_epoch() > 0)) {
+                // Bug 7 fix: Use atomic recovery_in_progress flag instead of epoch-based
+                // guard to prevent re-entrance during the window between phase transition
+                // and epoch advance in transition_to().
+                if (is_reconnecting() || m_recovery.recovery_in_progress.load(std::memory_order_acquire)) {
                     m_logger->warn("[Worker_manager] Session EXPIRED ignored: reconnect/recovery already in progress "
-                                   "(phase={}, recovery_active={}, recovery_epoch={})",
+                                   "(phase={}, recovery_in_progress={}, recovery_epoch={})",
                                    phase_name(m_recovery.phase.load(std::memory_order_relaxed)),
-                                   is_recovery_active(),
+                                   m_recovery.recovery_in_progress.load(std::memory_order_relaxed),
                                    m_epoch_coordinator->recovery_epoch());
                     return;
                 }
@@ -1523,6 +1527,8 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
             m_recovery.degraded_since = {};
             m_recovery.last_completed_at = now;
             m_recovery.entered_at = {};
+            // Bug 7 fix: Clear recovery flag when transitioning back to HEALTHY
+            m_recovery.recovery_in_progress.store(false, std::memory_order_release);
             // Template successfully adopted — reset GET_BLOCK mismatch backoff.
             m_get_block_backoff_ms    = 0;
             m_get_block_backoff_until = {};
@@ -1615,6 +1621,10 @@ void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) 
 
 void Worker_manager::mark_recovery_initiated(const char* reason)
 {
+    // Bug 7 fix: Set atomic flag immediately before any phase transition
+    // to guard SESSION_EXPIRED re-entrance during the transition window.
+    m_recovery.recovery_in_progress.store(true, std::memory_order_release);
+
     // Idempotent: if already in WAITING_TEMPLATE or RECONNECTING,
     // a new epoch is already running — do NOT reset it.
     if (is_recovery_active()) {
@@ -1756,6 +1766,23 @@ void Worker_manager::stop_all_workers()
 void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
 {
     auto now = std::chrono::steady_clock::now();
+
+    // Bug 5 fix: Prevent burst duplicate GET_BLOCK requests when both the forced
+    // retry timer (100-250ms jitter) and health monitor (5s cycle) fire within
+    // the same short window.  Suppress if the last request was sent < 500ms ago,
+    // unless the reason bypasses all dedup (recovery-critical).
+    constexpr int64_t GET_BLOCK_BURST_GUARD_MS = 500;
+    if (!should_bypass_all_dedup(reason) &&
+        m_last_get_block_request_time != std::chrono::steady_clock::time_point{}) {
+        auto since_last_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - m_last_get_block_request_time).count();
+        if (since_last_ms < GET_BLOCK_BURST_GUARD_MS) {
+            m_logger->debug("[Worker_manager] GET_BLOCK burst-suppressed: {}ms since last request "
+                           "(guard={}ms, reason={})", since_last_ms, GET_BLOCK_BURST_GUARD_MS, reason_name(reason));
+            return;
+        }
+    }
+
     m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK... (reason={})", reason_name(reason));
 
     // Domain-isolation contract:
@@ -1888,6 +1915,7 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
         }
         m_recovery.last_get_block_at = std::chrono::steady_clock::now();
         m_recovery.get_block_confirmed = true;
+        m_last_get_block_request_time = std::chrono::steady_clock::now();  // Bug 5: burst guard timestamp
         ++m_get_block_sent_total;
         if (is_forced) {
             ++m_get_block_forced_retry_total;
@@ -1949,7 +1977,10 @@ void Worker_manager::check_template_health()
         }
         auto reconnect_age_s = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - m_recovery.reconnect_started_at).count();
-        constexpr int64_t MAX_RECONNECT_WAIT_SECONDS = 60;
+        // Bug 6 fix: Extended from 60s to 90s to avoid racing exponential backoff
+        // retries that may have a scheduled attempt at 60-65s.  The extra 30s margin
+        // ensures the stall guard only fires when retries have genuinely stalled.
+        constexpr int64_t MAX_RECONNECT_WAIT_SECONDS = 90;
         if (reconnect_age_s > MAX_RECONNECT_WAIT_SECONDS) {
             m_logger->warn("[Worker_manager] Reconnect stalled for {}s > {}s — clearing RECONNECTING phase",
                            reconnect_age_s, MAX_RECONNECT_WAIT_SECONDS);
