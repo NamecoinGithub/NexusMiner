@@ -569,16 +569,25 @@ void Solo::propagate_session_to_template_interface(const char* log_scope)
         return;
     }
 
-    m_template_interface->set_session_epoch(m_session_epoch);
-    m_template_interface->set_session_id(m_session_id);
+    // Read authoritative state from SessionManager via session_context
+    const uint64_t epoch = m_session_context ? m_session_context->get_session_epoch() : m_session_epoch;
+    const uint32_t sid = get_session_id();
+
+    m_template_interface->set_session_epoch(epoch);
+    m_template_interface->set_session_id(sid);
 
     // Propagate canonical identity bundle for hardened template ownership
-    if (m_cached_identity.is_valid()) {
+    if (m_session_context) {
+        auto identity = m_session_context->get_canonical_identity();
+        if (identity.is_valid()) {
+            m_template_interface->set_session_identity(identity);
+        }
+    } else if (m_cached_identity.is_valid()) {
         m_template_interface->set_session_identity(m_cached_identity);
     }
 
     m_logger->debug("[{}] Propagated session binding to MiningTemplateInterface: session_id=0x{:08x}, epoch={}",
-                    log_scope, m_session_id, m_session_epoch);
+                    log_scope, sid, epoch);
 }
 
 void Solo::resync_auth_from_session_context(const char* log_scope)
@@ -1029,7 +1038,7 @@ bool Solo::ensure_session_ready_for_ingress(const char* log_scope,
     const auto decision = SessionRecoveryPolicy::evaluate_ingress_readiness({
         m_session_context != nullptr,                              // has_session_context
         authoritative_authenticated,                               // authoritative_authenticated
-        !m_authenticated && authoritative_authenticated,           // local_auth_stale
+        false,                                                     // local_auth_stale (eliminated: single source of truth)
         m_auth_state == AuthState::NOT_AUTHENTICATED               // auth_not_in_flight
     });
 
@@ -1059,7 +1068,7 @@ bool Solo::ensure_session_ready_for_ingress(const char* log_scope,
         m_logger->info("[{}] Session ingress resyncing stale local auth cache before processing {}",
                        log_scope, packet_name);
         resync_auth_from_session_context(log_scope);
-        if (!m_authenticated) {
+        if (!is_authenticated()) {
             m_logger->warn("[{}] Session ingress deferred: failed to resync local auth cache for {}",
                            log_scope, packet_name);
             if (m_session_context) {
@@ -1096,7 +1105,7 @@ void Solo::flush_pending_push_after_auth(const std::shared_ptr<network::Connecti
 
     refresh_cached_session_state(log_scope);
 
-    if (!m_authenticated) {
+    if (!is_authenticated()) {
         m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: canonical session not authenticated yet",
                        log_scope);
         return;
@@ -1388,7 +1397,7 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
     refresh_cached_session_state("Solo GET_BLOCK");
 
     /* Validate prerequisites */
-    if (!m_authenticated) {
+    if (!is_authenticated()) {
         m_last_get_block_request_status.store(GetBlockRequestStatus::UNAUTHENTICATED);
         m_logger->error("[Solo] Cannot request work - not authenticated");
         m_logger->error("[Solo]   Current auth state: {}",
@@ -1467,9 +1476,9 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
     }
 
     m_logger->debug("[Solo] Requesting mining template via GET_BLOCK");
-    m_logger->debug("[Solo]   Session ID: 0x{:08x}", m_session_id);
-    m_logger->debug("[Solo]   Authenticated: {}", m_authenticated ? "YES" : "NO");
-    m_logger->debug("[Solo]   Reward bound: {}", m_reward_bound ? "YES" : "NO");
+    m_logger->debug("[Solo]   Session ID: 0x{:08x}", get_session_id());
+    m_logger->debug("[Solo]   Authenticated: {}", is_authenticated() ? "YES" : "NO");
+    m_logger->debug("[Solo]   Reward bound: {}", is_reward_bound() ? "YES" : "NO");
     if (m_session_context) {
         m_session_context->set_channel_state(m_channel, false, true);
         m_session_context->mark_activity();
@@ -1533,7 +1542,7 @@ network::Shared_payload Solo::send_get_round()
     //
     // To request a fresh mining template use send_recovery_work_request() instead.
 
-    if (!m_authenticated) {
+    if (!is_authenticated()) {
         m_logger->warn("[Solo GET_ROUND] Cannot send GET_ROUND - not authenticated yet");
         m_logger->debug("[Solo GET_ROUND]   Current auth state: {}",
             m_auth_state == AuthState::NOT_AUTHENTICATED ? "NOT_AUTHENTICATED" :
@@ -2175,9 +2184,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 
                 // Phase 2: In stateless mining, we always accept the block from GET_BLOCK response
                 // Update our height tracking to match
-                if (block.nHeight > m_current_height || m_authenticated)
+                if (block.nHeight > m_current_height || is_authenticated())
                 {
-                    if (m_authenticated && block.nHeight != m_current_height) {
+                    if (is_authenticated() && block.nHeight != m_current_height) {
                         m_logger->debug("[Solo Phase 2] Stateless mining - accepting block at height {}", block.nHeight);
                     }
                     m_current_height = block.nHeight;  // diagnostic only
@@ -3229,16 +3238,18 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             m_auth_in_flight_since = {};  // Auth complete — clear in-flight timestamp
 
             // Extract session ID if present (4 bytes, little-endian)
+            uint32_t received_session_id = 0;
             if (packet.m_length >= 5) {
                 // Read little-endian uint32
-                m_session_id = static_cast<uint32_t>((*packet.m_data)[1]) |
+                received_session_id = static_cast<uint32_t>((*packet.m_data)[1]) |
                                (static_cast<uint32_t>((*packet.m_data)[2]) << 8) |
                                (static_cast<uint32_t>((*packet.m_data)[3]) << 16) |
                                (static_cast<uint32_t>((*packet.m_data)[4]) << 24);
+                m_session_id = received_session_id;
 
                 // Validate session ID: must be non-zero for a valid session
                 // Zero session ID indicates a protocol error or node-side issue
-                if (m_session_id == 0) {
+                if (received_session_id == 0) {
                     m_logger->error("[Solo Auth] CRITICAL: Node sent session_id = 0 (invalid)");
                     m_logger->error("[Solo Auth] This indicates a node-side bug or protocol violation");
                     m_logger->error("[Solo Auth] Valid session IDs must be non-zero");
@@ -3275,7 +3286,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 pubkey_line << "║ Public Key:  " << m_miner_pubkey.size() << " bytes";
                 genesis_line << "║ Genesis:     " << genesis_status;
                 chacha20_line << "║ ChaCha20:    " << chacha20_status;
-                session_line << "║ Session ID:  0x" << std::hex << std::setw(8) << std::setfill('0') << m_session_id;
+                session_line << "║ Session ID:  0x" << std::hex << std::setw(8) << std::setfill('0') << received_session_id;
 
                 // Calculate padding (box width = 59 chars, '║' takes 1 char at end)
                 auto pad_line = [](std::stringstream& ss) -> std::string {
@@ -3302,7 +3313,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 // Start session in session manager
                 if (m_session_context) {
                     m_session_context->commit_authenticated_session(
-                        m_session_id,
+                        received_session_id,
                         m_miner_pubkey,
                         format_hex_prefix(m_miner_pubkey, 16),
                         load_tritium_genesis());
@@ -3324,7 +3335,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 // This allows Worker_manager to check session_id=0 and trigger retry at the correct time
                 // (after MINER_AUTH_RESULT processing, not at login callback which fires too early).
                 if (m_session_authenticated_handler) {
-                    m_session_authenticated_handler(m_session_id);
+                    m_session_authenticated_handler(received_session_id);
                 }
 
                 if (!validate_authoritative_session("Solo Auth", false)) {
@@ -3345,7 +3356,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
 
                 // BUG FIX (Bug 2): Invoke handler even when no session ID provided (session_id will be 0).
                 if (m_session_authenticated_handler) {
-                    m_session_authenticated_handler(m_session_id);
+                    m_session_authenticated_handler(received_session_id);
                 }
             }
             
@@ -3369,7 +3380,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 m_logger->info("[Solo Connection] Session details:");
                 m_logger->info("[Solo Connection]   - Local endpoint: {}:{}", local_addr, local_port);
                 m_logger->info("[Solo Connection]   - Remote endpoint: {}:{}", remote_addr, actual_port);
-                m_logger->info("[Solo Connection]   - Session ID: 0x{:08x}", m_session_id);
+                m_logger->info("[Solo Connection]   - Session ID: 0x{:08x}", received_session_id);
             }
             
             // Check if we have a reward address to bind
@@ -3672,7 +3683,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
 
         // Defensive check: SESSION_START should only be processed after successful authentication
         // This guards against node-side bugs where SESSION_START might be sent after auth rejection
-        if (!m_authenticated) {
+        if (!is_authenticated()) {
             m_logger->error("[Solo Session] Rejecting SESSION_START - not authenticated");
             m_logger->error("[Solo Session] This indicates a node-side protocol violation");
             m_logger->error("[Solo Session] SESSION_START should only be sent after MINER_AUTH_RESULT success");
@@ -3701,9 +3712,9 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
         }
 
         // Validate session ID matches what we received in MINER_AUTH_RESULT
-        if (parsed->session_id != m_session_id) {
+        if (parsed->session_id != get_session_id()) {
             m_logger->error("[Solo Session] Session ID mismatch in SESSION_START:");
-            m_logger->error("[Solo Session]   - Expected: 0x{:08x} (from MINER_AUTH_RESULT)", m_session_id);
+            m_logger->error("[Solo Session]   - Expected: 0x{:08x} (from MINER_AUTH_RESULT)", get_session_id());
             m_logger->error("[Solo Session]   - Received: 0x{:08x} (from SESSION_START)", parsed->session_id);
             return;
         }
@@ -3837,9 +3848,9 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
     // PUSH is processed regardless (it's a broadcast), but log a warning if the
     // session is not authenticated — this detects stale/mismatched PUSH data
     // from a previous session that could inject incorrect template data.
-    if (!m_authenticated) {
+    if (!is_authenticated()) {
         m_logger->warn("[Solo PUSH] Received push notification while NOT authenticated — "
-                       "data may be from a stale session (session_id=0x{:08x})", m_session_id);
+                       "data may be from a stale session (session_id=0x{:08x})", get_session_id());
     }
 
     const char* push_opcode_name = (channel == mining::CHANNEL_PRIME) ? "PRIME_BLOCK_AVAILABLE"
@@ -4204,7 +4215,7 @@ void Solo::set_protocol_lane(ProtocolLane lane)
 
 network::Shared_payload Solo::send_session_keepalive()
 {
-    m_logger->debug("[Solo Session] Sending SESSION_KEEPALIVE for session 0x{:08x}", m_session_id);
+    m_logger->debug("[Solo Session] Sending SESSION_KEEPALIVE for session 0x{:08x}", get_session_id());
 
     // Delegate to SessionManager which builds the correct 8-byte v2 payload:
     //   [0..3] session_id             (u32 little-endian)
@@ -4295,18 +4306,20 @@ void Solo::set_keepalive_interval(std::uint16_t hours)
 
 std::uint32_t Solo::get_session_id() const
 {
-    if (get_session_manager()) {
-        return get_session_manager()->get_session_id();
+    if (m_session_context) {
+        auto* sm = m_session_context->get_session_manager().get();
+        if (sm) return sm->get_session_id();
     }
-    return m_session_id;  // Fallback to legacy session ID
+    return m_session_id;  // Fallback (pre-commit or no session context)
 }
 
 bool Solo::is_session_active() const
 {
-    if (get_session_manager()) {
-        return get_session_manager()->is_active();
+    if (m_session_context) {
+        auto* sm = m_session_context->get_session_manager().get();
+        if (sm) return sm->is_active();
     }
-    return m_authenticated;  // Fallback to legacy auth status
+    return m_authenticated;  // Fallback
 }
 
 void Solo::set_connection(std::shared_ptr<network::Connection> connection)
@@ -4623,7 +4636,7 @@ network::Shared_payload Solo::send_set_reward()
     }
     
     // Verify we are authenticated (ChaCha20 encryption requires established session)
-    if (!m_authenticated) {
+    if (!is_authenticated()) {
         m_logger->error("[Solo Reward] Cannot send reward address - not authenticated");
         return nullptr;
     }
