@@ -3,6 +3,7 @@
 
 #include <string>
 #include <cstdint>
+#include "protocol/session_semantic_types.hpp"
 
 namespace nexusminer {
 namespace protocol {
@@ -68,8 +69,8 @@ public:
     struct SessionExpiredInput
     {
         bool has_authoritative_session{false};  ///< False when no SessionManager is wired in
-        uint32_t expired_session_id{0};         ///< session_id carried in the SESSION_EXPIRED packet
-        uint32_t authoritative_session_id{0};   ///< session_id from the authoritative SessionManager
+        SessionId expired_session_id{};         ///< session_id carried in the SESSION_EXPIRED packet
+        SessionId authoritative_session_id{};   ///< session_id from the authoritative SessionManager
         uint8_t reason_code{0};                 ///< reason byte from the SESSION_EXPIRED packet
     };
 

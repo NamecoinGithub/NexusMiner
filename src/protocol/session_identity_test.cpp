@@ -16,6 +16,8 @@
 #include <sstream>
 
 using nexusminer::protocol::SessionIdentity;
+using nexusminer::protocol::SessionId;
+using nexusminer::protocol::SessionEpoch;
 using nexusminer::ProtocolLane;
 
 namespace {
@@ -30,8 +32,8 @@ std::vector<uint8_t> make_bytes(size_t size, uint8_t fill)
 
 /// Convenience: build a valid SessionIdentity with default test values.
 SessionIdentity make_valid_identity(
-    uint32_t session_id = 0x548c90d3,
-    uint64_t session_epoch = 2,
+    SessionId session_id = SessionId(0x548c90d3u),
+    SessionEpoch session_epoch = SessionEpoch(2u),
     ProtocolLane lane = ProtocolLane::STATELESS)
 {
     return SessionIdentity(
@@ -51,8 +53,8 @@ void test_default_construction()
     assert(!id.is_valid());
     assert(id.is_empty());
     assert(!id.has_crypto_context());
-    assert(id.session_id() == 0);
-    assert(id.session_epoch() == 0);
+    assert(id.session_id() == SessionId(0u));
+    assert(id.session_epoch() == SessionEpoch(0u));
     assert(id.genesis_hash().empty());
     assert(id.chacha20_key().empty());
     assert(id.falcon_pubkey_hash().empty());
@@ -66,8 +68,8 @@ void test_valid_construction()
     assert(id.is_valid());
     assert(!id.is_empty());
     assert(id.has_crypto_context());
-    assert(id.session_id() == 0x548c90d3);
-    assert(id.session_epoch() == 2);
+    assert(id.session_id() == SessionId(0x548c90d3u));
+    assert(id.session_epoch() == SessionEpoch(2u));
     assert(id.genesis_hash().size() == 32);
     assert(id.chacha20_key().size() == 32);
     assert(id.falcon_pubkey_hash().size() == 32);  // SK256 produces 32 bytes
@@ -78,8 +80,8 @@ void test_valid_construction()
 void test_is_valid_requires_nonzero_session_id()
 {
     auto id = SessionIdentity(
-        0,  // zero session_id
-        2,
+        SessionId(0u),  // zero session_id
+        SessionEpoch(2u),
         make_bytes(32, 0xAA),
         make_bytes(32, 0xBB),
         make_bytes(32, 0xCC),  // pre-computed pubkey hash
@@ -91,9 +93,7 @@ void test_is_valid_requires_nonzero_session_id()
 
 void test_is_valid_requires_nonzero_epoch()
 {
-    auto id = SessionIdentity(
-        0x1234,
-        0,  // zero epoch
+    auto id = SessionIdentity(SessionId(0x1234u), SessionEpoch(0u),  // zero epoch
         make_bytes(32, 0xAA),
         make_bytes(32, 0xBB),
         make_bytes(32, 0xCC),  // pre-computed pubkey hash
@@ -109,8 +109,7 @@ void test_has_crypto_context()
     assert(id_full.has_crypto_context());
 
     // Without chacha20 key
-    auto id_no_key = SessionIdentity(
-        0x1234, 1,
+    auto id_no_key = SessionIdentity(SessionId(0x1234u), SessionEpoch(1u),
         make_bytes(32, 0xAA),
         {},  // empty key
         make_bytes(32, 0xCC),  // pre-computed pubkey hash
@@ -118,8 +117,7 @@ void test_has_crypto_context()
     assert(!id_no_key.has_crypto_context());
 
     // Without genesis
-    auto id_no_genesis = SessionIdentity(
-        0x1234, 1,
+    auto id_no_genesis = SessionIdentity(SessionId(0x1234u), SessionEpoch(1u),
         {},  // empty genesis
         make_bytes(32, 0xBB),
         make_bytes(32, 0xCC),  // pre-computed pubkey hash
@@ -131,8 +129,8 @@ void test_has_crypto_context()
 
 void test_matches_same_session()
 {
-    auto id1 = make_valid_identity(0x1111, 5);
-    auto id2 = make_valid_identity(0x1111, 5);
+    auto id1 = make_valid_identity(SessionId(0x1111u), SessionEpoch(5u));
+    auto id2 = make_valid_identity(SessionId(0x1111u), SessionEpoch(5u));
     assert(id1.matches(id2));
     assert(id2.matches(id1));
     std::cout << "  PASS: matches_same_session\n";
@@ -140,16 +138,16 @@ void test_matches_same_session()
 
 void test_matches_different_session_id()
 {
-    auto id1 = make_valid_identity(0x1111, 5);
-    auto id2 = make_valid_identity(0x2222, 5);
+    auto id1 = make_valid_identity(SessionId(0x1111u), SessionEpoch(5u));
+    auto id2 = make_valid_identity(SessionId(0x2222u), SessionEpoch(5u));
     assert(!id1.matches(id2));
     std::cout << "  PASS: matches_different_session_id\n";
 }
 
 void test_matches_different_epoch()
 {
-    auto id1 = make_valid_identity(0x1111, 5);
-    auto id2 = make_valid_identity(0x1111, 6);
+    auto id1 = make_valid_identity(SessionId(0x1111u), SessionEpoch(5u));
+    auto id2 = make_valid_identity(SessionId(0x1111u), SessionEpoch(6u));
     assert(!id1.matches(id2));
     std::cout << "  PASS: matches_different_epoch\n";
 }
@@ -158,8 +156,8 @@ void test_same_miner_same_pubkey()
 {
     // Same SK256 pubkey hash → same miner identity
     auto pubkey_hash = make_bytes(32, 0xDD);
-    auto id1 = SessionIdentity(0x1111, 1, {}, {}, pubkey_hash, ProtocolLane::STATELESS);
-    auto id2 = SessionIdentity(0x2222, 2, {}, {}, pubkey_hash, ProtocolLane::STATELESS);
+    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, pubkey_hash, ProtocolLane::STATELESS);
+    auto id2 = SessionIdentity(SessionId(0x2222u), SessionEpoch(2u), {}, {}, pubkey_hash, ProtocolLane::STATELESS);
     // Different sessions but same miner identity
     assert(id1.same_miner(id2));
     assert(id2.same_miner(id1));
@@ -169,16 +167,16 @@ void test_same_miner_same_pubkey()
 void test_same_miner_different_pubkey()
 {
     // Different SK256 pubkey hashes → different miner identities
-    auto id1 = SessionIdentity(0x1111, 1, {}, {}, make_bytes(32, 0xDD), ProtocolLane::STATELESS);
-    auto id2 = SessionIdentity(0x1111, 1, {}, {}, make_bytes(32, 0xEE), ProtocolLane::STATELESS);
+    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, make_bytes(32, 0xDD), ProtocolLane::STATELESS);
+    auto id2 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, make_bytes(32, 0xEE), ProtocolLane::STATELESS);
     assert(!id1.same_miner(id2));
     std::cout << "  PASS: same_miner_different_pubkey\n";
 }
 
 void test_same_miner_empty_pubkey()
 {
-    auto id1 = SessionIdentity(0x1111, 1, {}, {}, {}, ProtocolLane::STATELESS);
-    auto id2 = SessionIdentity(0x2222, 2, {}, {}, {}, ProtocolLane::STATELESS);
+    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, {}, ProtocolLane::STATELESS);
+    auto id2 = SessionIdentity(SessionId(0x2222u), SessionEpoch(2u), {}, {}, {}, ProtocolLane::STATELESS);
     // Both have empty pubkey — same_miner should return false (no identity to compare)
     assert(!id1.same_miner(id2));
     std::cout << "  PASS: same_miner_empty_pubkey\n";
@@ -190,16 +188,16 @@ void test_full_match()
     auto key = make_bytes(32, 0xBB);
     auto pubkey_hash = make_bytes(32, 0xCC);  // pre-computed SK256
 
-    auto id1 = SessionIdentity(0x1111, 1, genesis, key, pubkey_hash, ProtocolLane::STATELESS);
-    auto id2 = SessionIdentity(0x1111, 1, genesis, key, pubkey_hash, ProtocolLane::STATELESS);
+    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), genesis, key, pubkey_hash, ProtocolLane::STATELESS);
+    auto id2 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), genesis, key, pubkey_hash, ProtocolLane::STATELESS);
     assert(id1.full_match(id2));
 
     // Different lane breaks full match
-    auto id3 = SessionIdentity(0x1111, 1, genesis, key, pubkey_hash, ProtocolLane::LEGACY);
+    auto id3 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), genesis, key, pubkey_hash, ProtocolLane::LEGACY);
     assert(!id1.full_match(id3));
 
     // Different key breaks full match
-    auto id4 = SessionIdentity(0x1111, 1, genesis, make_bytes(32, 0xFF), pubkey_hash, ProtocolLane::STATELESS);
+    auto id4 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), genesis, make_bytes(32, 0xFF), pubkey_hash, ProtocolLane::STATELESS);
     assert(!id1.full_match(id4));
 
     std::cout << "  PASS: full_match\n";
@@ -207,7 +205,7 @@ void test_full_match()
 
 void test_fingerprint_format()
 {
-    auto id = make_valid_identity(0x548c90d3, 2);
+    auto id = make_valid_identity(SessionId(0x548c90d3u), SessionEpoch(2u));
     auto fp = id.fingerprint();
     // Should contain "sid=0x548c90d3/e2"
     assert(fp.find("sid=0x548c90d3/e2") != std::string::npos);
@@ -224,7 +222,7 @@ void test_fingerprint_default_identity()
 
 void test_diagnostics_contains_fields()
 {
-    auto id = make_valid_identity(0xDEADBEEF, 42);
+    auto id = make_valid_identity(SessionId(0xDEADBEEFu), SessionEpoch(42u));
     auto diag = id.diagnostics();
     assert(diag.find("SessionIdentity{") != std::string::npos);
     assert(diag.find("deadbeef") != std::string::npos);
@@ -244,9 +242,9 @@ void test_diagnostics_invalid_identity()
 
 void test_equality_operator()
 {
-    auto id1 = make_valid_identity(0x1111, 1);
-    auto id2 = make_valid_identity(0x1111, 1);
-    auto id3 = make_valid_identity(0x2222, 1);
+    auto id1 = make_valid_identity(SessionId(0x1111u), SessionEpoch(1u));
+    auto id2 = make_valid_identity(SessionId(0x1111u), SessionEpoch(1u));
+    auto id3 = make_valid_identity(SessionId(0x2222u), SessionEpoch(1u));
 
     assert(id1 == id2);
     assert(!(id1 != id2));
@@ -257,13 +255,13 @@ void test_equality_operator()
 
 void test_copy_semantics()
 {
-    auto id1 = make_valid_identity(0xAAAA, 10);
+    auto id1 = make_valid_identity(SessionId(0xAAAAu), SessionEpoch(10u));
 
     // Copy construction
     auto id2 = id1;
     assert(id2 == id1);
-    assert(id2.session_id() == 0xAAAA);
-    assert(id2.session_epoch() == 10);
+    assert(id2.session_id() == SessionId(0xAAAAu));
+    assert(id2.session_epoch() == SessionEpoch(10u));
 
     // Copy assignment
     SessionIdentity id3;
@@ -271,20 +269,20 @@ void test_copy_semantics()
     assert(id3 == id1);
 
     // Original is unmodified
-    assert(id1.session_id() == 0xAAAA);
+    assert(id1.session_id() == SessionId(0xAAAAu));
 
     std::cout << "  PASS: copy_semantics\n";
 }
 
 void test_move_semantics()
 {
-    auto id1 = make_valid_identity(0xBBBB, 20);
+    auto id1 = make_valid_identity(SessionId(0xBBBBu), SessionEpoch(20u));
     auto genesis_copy = id1.genesis_hash();
 
     // Move construction
     auto id2 = std::move(id1);
-    assert(id2.session_id() == 0xBBBB);
-    assert(id2.session_epoch() == 20);
+    assert(id2.session_id() == SessionId(0xBBBBu));
+    assert(id2.session_epoch() == SessionEpoch(20u));
     assert(id2.genesis_hash() == genesis_copy);
     assert(id2.is_valid());
 
@@ -299,8 +297,8 @@ void test_sk256_pubkey_hash_size()
     auto hash_512 = make_bytes(32, 0xDD);   // simulated SK256 of Falcon-512 pubkey
     auto hash_1024 = make_bytes(32, 0xEE);  // simulated SK256 of Falcon-1024 pubkey
 
-    auto id_512 = SessionIdentity(0x1234, 1, {}, {}, hash_512, ProtocolLane::STATELESS);
-    auto id_1024 = SessionIdentity(0x1234, 1, {}, {}, hash_1024, ProtocolLane::STATELESS);
+    auto id_512 = SessionIdentity(SessionId(0x1234u), SessionEpoch(1u), {}, {}, hash_512, ProtocolLane::STATELESS);
+    auto id_1024 = SessionIdentity(SessionId(0x1234u), SessionEpoch(1u), {}, {}, hash_1024, ProtocolLane::STATELESS);
 
     assert(id_512.falcon_pubkey_hash().size() == 32);
     assert(id_1024.falcon_pubkey_hash().size() == 32);
@@ -308,7 +306,7 @@ void test_sk256_pubkey_hash_size()
     // Different hashes → different miners
     assert(!id_512.same_miner(id_1024));
     // Same hash → same miner
-    auto id_512b = SessionIdentity(0x5678, 2, {}, {}, hash_512, ProtocolLane::STATELESS);
+    auto id_512b = SessionIdentity(SessionId(0x5678u), SessionEpoch(2u), {}, {}, hash_512, ProtocolLane::STATELESS);
     assert(id_512.same_miner(id_512b));
 
     std::cout << "  PASS: sk256_pubkey_hash_size\n";
@@ -318,8 +316,8 @@ void test_pubkey_hash_deterministic()
 {
     // Same pre-computed SK256 hash always produces the same identity
     auto pubkey_hash = make_bytes(32, 0xCC);
-    auto id1 = SessionIdentity(0x1111, 1, {}, {}, pubkey_hash, ProtocolLane::STATELESS);
-    auto id2 = SessionIdentity(0x2222, 2, {}, {}, pubkey_hash, ProtocolLane::STATELESS);
+    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, pubkey_hash, ProtocolLane::STATELESS);
+    auto id2 = SessionIdentity(SessionId(0x2222u), SessionEpoch(2u), {}, {}, pubkey_hash, ProtocolLane::STATELESS);
     // Same pubkey hash regardless of other fields
     assert(id1.falcon_pubkey_hash() == id2.falcon_pubkey_hash());
     std::cout << "  PASS: pubkey_hash_deterministic\n";
@@ -327,10 +325,10 @@ void test_pubkey_hash_deterministic()
 
 void test_matches_ignores_crypto_context()
 {
-    auto id1 = SessionIdentity(0x1111, 1,
+    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u),
         make_bytes(32, 0xAA), make_bytes(32, 0xBB),
         make_bytes(32, 0xCC), ProtocolLane::STATELESS);
-    auto id2 = SessionIdentity(0x1111, 1,
+    auto id2 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u),
         make_bytes(32, 0xFF), make_bytes(32, 0xEE),
         make_bytes(32, 0xDD), ProtocolLane::LEGACY);
     // matches() only checks session_id + epoch
@@ -353,10 +351,10 @@ void test_default_identity_matches_itself()
 
 void test_lane_variations()
 {
-    auto id_unknown = make_valid_identity(0x1111, 1);
+    auto id_unknown = make_valid_identity(SessionId(0x1111u), SessionEpoch(1u));
     // Construct with different lanes to confirm lane is stored correctly
-    auto id_legacy = SessionIdentity(0x1111, 1, {}, {}, {}, ProtocolLane::LEGACY);
-    auto id_stateless = SessionIdentity(0x1111, 1, {}, {}, {}, ProtocolLane::STATELESS);
+    auto id_legacy = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, {}, ProtocolLane::LEGACY);
+    auto id_stateless = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, {}, ProtocolLane::STATELESS);
 
     assert(id_legacy.lane() == ProtocolLane::LEGACY);
     assert(id_stateless.lane() == ProtocolLane::STATELESS);
@@ -390,11 +388,11 @@ void test_sk256_node_compatible_hash()
     assert(hash_512 == hash_512b);
 
     // Build identities with the real SK256 hashes
-    auto id_512 = SessionIdentity(0x1111, 1, {}, {}, hash_512, ProtocolLane::STATELESS);
-    auto id_1024 = SessionIdentity(0x2222, 2, {}, {}, hash_1024, ProtocolLane::STATELESS);
+    auto id_512 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, hash_512, ProtocolLane::STATELESS);
+    auto id_1024 = SessionIdentity(SessionId(0x2222u), SessionEpoch(2u), {}, {}, hash_1024, ProtocolLane::STATELESS);
     assert(!id_512.same_miner(id_1024));  // different keys → different miners
 
-    auto id_512b = SessionIdentity(0x3333, 3, {}, {}, hash_512, ProtocolLane::STATELESS);
+    auto id_512b = SessionIdentity(SessionId(0x3333u), SessionEpoch(3u), {}, {}, hash_512, ProtocolLane::STATELESS);
     assert(id_512.same_miner(id_512b));   // same key → same miner
 
     std::cout << "  PASS: sk256_node_compatible_hash\n";

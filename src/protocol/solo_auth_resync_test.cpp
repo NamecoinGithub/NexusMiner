@@ -373,8 +373,8 @@ struct SimulatedSessionStatusAckHandler
     {
         const auto decision = nexusminer::protocol::SessionStatusPolicy::validate_ack({
             true,
-            local_session_id,
-            ack_session_id,
+            nexusminer::protocol::SessionId(local_session_id),
+            nexusminer::protocol::SessionId(ack_session_id),
             mismatch_count,
             nexusminer::protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD
         });

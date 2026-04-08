@@ -346,7 +346,7 @@ void Solo::reset()
     m_current_height = 0;
     m_current_reward = 0;
     m_authenticated = false;
-    m_session_id = 0;
+    m_session_id.clear();
     m_auth_timestamp = 0;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_auth_in_flight_since = {};
@@ -400,7 +400,7 @@ void Solo::propagate_session_to_template_interface(const char* log_scope)
     }
 
     m_logger->debug("[{}] Propagated session binding to MiningTemplateInterface: session_id=0x{:08x}, epoch={}",
-                    log_scope, m_session_id, m_session_epoch);
+                    log_scope, m_session_id.get(), m_session_epoch.get());
 }
 
 void Solo::resync_auth_from_session_context(const char* log_scope)
@@ -416,7 +416,7 @@ void Solo::resync_auth_from_session_context(const char* log_scope)
                    log_scope);
 
     refresh_cached_session_state(log_scope);
-    if (m_session_id != 0) {
+    if (!m_session_id.is_default()) {
         propagate_session_to_template_interface(log_scope);
     }
 }
@@ -441,10 +441,10 @@ void Solo::refresh_cached_session_state(const char* log_scope)
     if (!m_has_seen_session_epoch || m_session_epoch != session.session_epoch) {
         if (!m_has_seen_session_epoch) {
             m_logger->info("[{}] Resyncing local session epoch from authoritative session container: local={} authoritative={}",
-                           log_scope, m_session_epoch, session.session_epoch);
+                           log_scope, m_session_epoch.get(), session.session_epoch.get());
         } else {
             m_logger->warn("[{}] Session epoch advanced: local={} authoritative={} — invalidating generation-bound cached state",
-                           log_scope, m_session_epoch, session.session_epoch);
+                           log_scope, m_session_epoch.get(), session.session_epoch.get());
             clear_generation_bound_state("authoritative session epoch advanced");
         }
 
@@ -465,12 +465,12 @@ void Solo::refresh_cached_session_state(const char* log_scope)
     }
 
     if (m_session_id != session.session_id) {
-        if (is_expected_cached_session_resync(m_session_id != 0, session.session_id != 0)) {
+        if (is_expected_cached_session_resync(!m_session_id.is_default(), !session.session_id.is_default())) {
             m_logger->info("[{}] Resyncing local session_id from authoritative session container after reconnect: local=0x{:08x} authoritative=0x{:08x}",
-                           log_scope, m_session_id, session.session_id);
+                           log_scope, m_session_id.get(), session.session_id.get());
         } else {
             m_logger->warn("[{}] Local session_id drifted from authoritative session container mid-session: local=0x{:08x} authoritative=0x{:08x}",
-                           log_scope, m_session_id, session.session_id);
+                           log_scope, m_session_id.get(), session.session_id.get());
         }
         m_session_id = session.session_id;
     }
@@ -486,7 +486,7 @@ void Solo::refresh_cached_session_state(const char* log_scope)
         }
     }
 
-    if (session.authenticated && session.session_id != 0) {
+    if (session.authenticated && !session.session_id.is_default()) {
         propagate_session_to_template_interface(log_scope);
     }
 
@@ -797,8 +797,8 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
     std::string validation_reason;
     const bool session_valid = m_session_context->validate_miner_session(&validation_reason);
     const auto session = m_session_context->get_runtime_snapshot();
-    const uint64_t owner_epoch     = options.owner ? options.owner->session_epoch.get() : uint64_t{0};
-    const uint32_t owner_session_id = options.owner ? options.owner->session_id.get() : uint32_t{0};
+    const SessionEpoch owner_epoch     = options.owner ? options.owner->session_epoch : SessionEpoch{};
+    const SessionId owner_session_id = options.owner ? options.owner->session_id : SessionId{};
     const auto decision = PacketIngressPreflight::evaluate({
         true,
         session.authenticated,
@@ -1316,7 +1316,7 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
     }
 
     m_logger->debug("[Solo] Requesting mining template via GET_BLOCK");
-    m_logger->debug("[Solo]   Session ID: 0x{:08x}", m_session_id);
+    m_logger->debug("[Solo]   Session ID: 0x{:08x}", m_session_id.get());
     m_logger->debug("[Solo]   Authenticated: {}", m_authenticated ? "YES" : "NO");
     m_logger->debug("[Solo]   Reward bound: {}", m_reward_bound ? "YES" : "NO");
     if (m_session_context) {
@@ -1478,12 +1478,12 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     m_logger->info("[Solo Submit][Authoritative]   template_age         = {}s", template_age_seconds);
     if (const auto* session_manager = get_session_manager()) {
         const auto current_epoch = session_manager->get_session_epoch();
-        if (current_epoch != submit_context.session_epoch.get()) {
+        if (current_epoch != submit_context.session_epoch) {
             // Bug 8 fix: Reject submit with stale epoch — NODE may silently drop
             // the block if session credentials don't match the current epoch.
             const std::string detail =
                 "snap_epoch=" + std::to_string(submit_context.session_epoch.get()) +
-                " current_epoch=" + std::to_string(current_epoch) +
+                " current_epoch=" + std::to_string(current_epoch.get()) +
                 " height=" + std::to_string(block_to_submit.nHeight);
             m_logger->error("[Solo Submit] Session epoch mismatch — rejecting stale submit: {}", detail);
             record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED, detail);
@@ -2576,7 +2576,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 m_logger->error("[Solo GET_ROUND] NEW_ROUND received but no active session");
             } else {
                 auto session_id = get_session_manager()->get_session_id();
-                m_logger->info("[Solo GET_ROUND] NEW_ROUND received, keeping session 0x{:08X}", session_id);
+                m_logger->info("[Solo GET_ROUND] NEW_ROUND received, keeping session 0x{:08X}", session_id.get());
             }
         }
         
@@ -3233,14 +3233,14 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             // Extract session ID if present (4 bytes, little-endian)
             if (packet.m_length >= 5) {
                 // Read little-endian uint32
-                m_session_id = static_cast<uint32_t>((*packet.m_data)[1]) |
+                m_session_id = SessionId(static_cast<uint32_t>((*packet.m_data)[1]) |
                                (static_cast<uint32_t>((*packet.m_data)[2]) << 8) |
                                (static_cast<uint32_t>((*packet.m_data)[3]) << 16) |
-                               (static_cast<uint32_t>((*packet.m_data)[4]) << 24);
+                               (static_cast<uint32_t>((*packet.m_data)[4]) << 24));
 
                 // Validate session ID: must be non-zero for a valid session
                 // Zero session ID indicates a protocol error or node-side issue
-                if (m_session_id == 0) {
+                if (m_session_id.is_default()) {
                     m_logger->error("[Solo Auth] CRITICAL: Node sent session_id = 0 (invalid)");
                     m_logger->error("[Solo Auth] This indicates a node-side bug or protocol violation");
                     m_logger->error("[Solo Auth] Valid session IDs must be non-zero");
@@ -3371,7 +3371,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 m_logger->info("[Solo Connection] Session details:");
                 m_logger->info("[Solo Connection]   - Local endpoint: {}:{}", local_addr, local_port);
                 m_logger->info("[Solo Connection]   - Remote endpoint: {}:{}", remote_addr, actual_port);
-                m_logger->info("[Solo Connection]   - Session ID: 0x{:08x}", m_session_id);
+                m_logger->info("[Solo Connection]   - Session ID: 0x{:08x}", m_session_id.get());
             }
             
             // Check if we have a reward address to bind
@@ -3705,15 +3705,15 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
         // Validate session ID matches what we received in MINER_AUTH_RESULT
         if (parsed->session_id != m_session_id) {
             m_logger->error("[Solo Session] Session ID mismatch in SESSION_START:");
-            m_logger->error("[Solo Session]   - Expected: 0x{:08x} (from MINER_AUTH_RESULT)", m_session_id);
-            m_logger->error("[Solo Session]   - Received: 0x{:08x} (from SESSION_START)", parsed->session_id);
+            m_logger->error("[Solo Session]   - Expected: 0x{:08x} (from MINER_AUTH_RESULT)", m_session_id.get());
+            m_logger->error("[Solo Session]   - Received: 0x{:08x} (from SESSION_START)", parsed->session_id.get());
             return;
         }
 
         // Log parsed session parameters
         m_logger->info("[Solo Session] Session parameters:");
         m_logger->info("[Solo Session]   - Success: 0x{:02x}", parsed->success);
-        m_logger->info("[Solo Session]   - Session ID: 0x{:08x}", parsed->session_id);
+        m_logger->info("[Solo Session]   - Session ID: 0x{:08x}", parsed->session_id.get());
         m_logger->info("[Solo Session]   - Timeout: {} seconds ({} hours)",
                       parsed->timeout_seconds, parsed->timeout_seconds / 3600);
 
@@ -3758,7 +3758,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             {
                 PacketIngressPreflightOptions preflight;
                 preflight.owner = &m_last_keepalive_request_owner;
-                preflight.packet_session_id = unified.session_id;
+                preflight.packet_session_id = SessionId(unified.session_id);
                 if (!run_packet_ingress_preflight("Solo SessionKeepalive", preflight)) {
                     return;
                 }
@@ -3819,10 +3819,10 @@ void Solo::on_session_expired(Packet const& packet, std::shared_ptr<network::Con
         }
 
         // Parse session_id (little-endian uint32)
-        uint32_t expired_sid = static_cast<uint32_t>((*packet.m_data)[0]) |
+        SessionId expired_sid(static_cast<uint32_t>((*packet.m_data)[0]) |
                                (static_cast<uint32_t>((*packet.m_data)[1]) << 8) |
                                (static_cast<uint32_t>((*packet.m_data)[2]) << 16) |
-                               (static_cast<uint32_t>((*packet.m_data)[3]) << 24);
+                               (static_cast<uint32_t>((*packet.m_data)[3]) << 24));
 
         // Parse reason code
         uint8_t reason = (*packet.m_data)[4];
@@ -3841,7 +3841,7 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
     // from a previous session that could inject incorrect template data.
     if (!m_authenticated) {
         m_logger->warn("[Solo PUSH] Received push notification while NOT authenticated — "
-                       "data may be from a stale session (session_id=0x{:08x})", m_session_id);
+                       "data may be from a stale session (session_id=0x{:08x})", m_session_id.get());
     }
 
     const char* push_opcode_name = (channel == mining::CHANNEL_PRIME) ? "PRIME_BLOCK_AVAILABLE"
@@ -4206,7 +4206,7 @@ void Solo::set_protocol_lane(ProtocolLane lane)
 
 network::Shared_payload Solo::send_session_keepalive()
 {
-    m_logger->debug("[Solo Session] Sending SESSION_KEEPALIVE for session 0x{:08x}", m_session_id);
+    m_logger->debug("[Solo Session] Sending SESSION_KEEPALIVE for session 0x{:08x}", m_session_id.get());
 
     // Delegate to SessionManager which builds the correct 8-byte v2 payload:
     //   [0..3] session_id             (u32 little-endian)
@@ -4295,7 +4295,7 @@ void Solo::set_keepalive_interval(std::uint16_t hours)
     }
 }
 
-std::uint32_t Solo::get_session_id() const
+SessionId Solo::get_session_id() const
 {
     if (get_session_manager()) {
         return get_session_manager()->get_session_id();
@@ -4349,10 +4349,10 @@ bool Solo::check_auth_in_flight_timeout(const char* context)
     return false;
 }
 
-bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
+bool Solo::handle_session_id_mismatch(SessionId ack_session_id)
 {
     auto* session_manager = get_session_manager();
-    const uint32_t authoritative_session_id = session_manager ? session_manager->get_session_id() : 0;
+    const SessionId authoritative_session_id = session_manager ? session_manager->get_session_id() : SessionId{};
     const auto decision = SessionStatusPolicy::validate_ack({
         session_manager != nullptr,
         authoritative_session_id,
@@ -4378,7 +4378,7 @@ bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
     if (m_session_id_mismatch_count >= protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD) {
         m_logger->error("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != authoritative=0x{:08x}"
                        " — threshold reached, triggering re-authentication",
-            decision.reason, m_session_id_mismatch_count, ack_session_id, authoritative_session_id);
+            decision.reason, m_session_id_mismatch_count, ack_session_id.get(), authoritative_session_id.get());
 
         // Reset counter to prevent re-triggering on every subsequent mismatch
         m_session_id_mismatch_count = 0;
@@ -4390,14 +4390,14 @@ bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
     } else {
         m_logger->warn("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != authoritative=0x{:08x}"
                        " — tracking mismatch (threshold={})",
-            decision.reason, m_session_id_mismatch_count, ack_session_id, authoritative_session_id,
+            decision.reason, m_session_id_mismatch_count, ack_session_id.get(), authoritative_session_id.get(),
             protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD);
     }
 
     return true;  // mismatch detected — caller must return to skip further ACK processing
 }
 
-void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection)
+void Solo::handle_session_expired(SessionId expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection)
 {
     // ═══════════════════════════════════════════════════════════════════════════
     // SESSION_EXPIRED HANDLER (5-step response flow per LLL-TAO PR #354)
@@ -4407,9 +4407,9 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
     // Use SessionRecoveryPolicy to make the stale-replay guard explicit and
     // consistent with the authoritative session machine.
     m_logger->warn("[Solo] SESSION_EXPIRED received: session_id=0x{:08x} reason=0x{:02x}",
-                   expired_sid, reason);
+                   expired_sid.get(), reason);
 
-    const uint32_t authoritative_session_id = get_session_id();
+    const SessionId authoritative_session_id = get_session_id();
     const auto recovery_decision = SessionRecoveryPolicy::evaluate_session_expired({
         m_session_context != nullptr,  // has_authoritative_session
         expired_sid,                   // expired_session_id
@@ -4420,7 +4420,7 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
     if (recovery_decision.is_stale_replay) {
         m_logger->warn("[Solo] SESSION_EXPIRED stale or replay — ignoring: {} "
                        "(expired=0x{:08x} authoritative=0x{:08x})",
-                       recovery_decision.reason, expired_sid, authoritative_session_id);
+                       recovery_decision.reason, expired_sid.get(), authoritative_session_id.get());
         return;
     }
 
@@ -4430,11 +4430,11 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
         reason_str = "EXPIRED_INACTIVITY";
     }
     m_logger->warn("[Solo] Session 0x{:08x} expired: reason={} ({}) — {}",
-                  authoritative_session_id, reason_str, reason, recovery_decision.reason);
+                  authoritative_session_id.get(), reason_str, reason, recovery_decision.reason);
 
     // STEP 2: CLEAR LOCAL SESSION STATE (mirror reset_auth_state)
     m_logger->info("[Solo] Clearing local session state");
-    m_session_id = 0;
+    m_session_id.clear();
     m_authenticated = false;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_auth_in_flight_since = {};

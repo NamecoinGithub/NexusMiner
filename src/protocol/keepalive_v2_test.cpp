@@ -75,7 +75,7 @@ static uint32_t read_le32(const std::vector<uint8_t>& v, size_t off) {
 // then return the wire bytes of the keepalive packet.
 // ============================================================================
 static std::vector<uint8_t> make_keepalive_bytes(
-        uint32_t session_id,
+        SessionId session_id,
         ProtocolLane lane,
         const std::array<uint8_t, 4>* suffix = nullptr)
 {
@@ -97,7 +97,7 @@ static std::vector<uint8_t> make_keepalive_bytes(
 void test_keepalive_payload_size_legacy() {
     std::cout << "\nTest 1: Legacy keepalive packet total wire size\n";
     // Legacy: 1-byte opcode + 4-byte BE length + 8-byte payload = 13 bytes
-    auto bytes = make_keepalive_bytes(0x00000001, ProtocolLane::LEGACY);
+    auto bytes = make_keepalive_bytes(SessionId(0x00000001u), ProtocolLane::LEGACY);
     print_test_result("Legacy wire size == 13 (1+4+8)", bytes.size() == 13);
 }
 
@@ -107,7 +107,7 @@ void test_keepalive_payload_size_legacy() {
 // ============================================================================
 void test_keepalive_session_id_le() {
     std::cout << "\nTest 2: session_id is little-endian in bytes [payload+0..3]\n";
-    uint32_t session_id = 0x12345678;
+    SessionId session_id(0x12345678u);
     auto bytes = make_keepalive_bytes(session_id, ProtocolLane::LEGACY);
     if (bytes.size() < 13) {
         print_test_result("Legacy wire size sufficient for check", false);
@@ -128,7 +128,7 @@ void test_keepalive_session_id_le() {
 // ============================================================================
 void test_keepalive_suffix_zeros_default() {
     std::cout << "\nTest 3: Default prevblock_suffix is all zeros\n";
-    auto bytes = make_keepalive_bytes(0xCAFEBABE, ProtocolLane::LEGACY);
+    auto bytes = make_keepalive_bytes(SessionId(0xCAFEBABEu), ProtocolLane::LEGACY);
     if (bytes.size() < 13) {
         print_test_result("Packet large enough", false);
         return;
@@ -144,7 +144,7 @@ void test_keepalive_suffix_zeros_default() {
 void test_keepalive_suffix_set() {
     std::cout << "\nTest 4: set_prevblock_suffix() reflected in keepalive packet\n";
     std::array<uint8_t, 4> suffix = { 0x11, 0x22, 0x33, 0x44 };
-    auto bytes = make_keepalive_bytes(0x00000001, ProtocolLane::LEGACY, &suffix);
+    auto bytes = make_keepalive_bytes(SessionId(0x00000001u), ProtocolLane::LEGACY, &suffix);
     if (bytes.size() < 13) {
         print_test_result("Packet large enough", false);
         return;
@@ -183,7 +183,7 @@ void test_prevblock_suffix_extraction_logic() {
 void test_keepalive_suffix_explicit_zeros() {
     std::cout << "\nTest 6: set_prevblock_suffix with zeros sends zero suffix\n";
     std::array<uint8_t, 4> zero_suffix = { 0, 0, 0, 0 };
-    auto bytes = make_keepalive_bytes(0x00000001, ProtocolLane::LEGACY, &zero_suffix);
+    auto bytes = make_keepalive_bytes(SessionId(0x00000001u), ProtocolLane::LEGACY, &zero_suffix);
     if (bytes.size() < 13) {
         print_test_result("Packet large enough", false);
         return;
@@ -269,7 +269,7 @@ void test_set_protocol_lane_no_deadlock_and_updates_state() {
     std::cout << "\nTest 10: set_protocol_lane does not deadlock and updates packet lane\n";
 
     auto mgr = std::make_shared<SessionManager>(24, nullptr);
-    mgr->start_session(0x01020304);
+    mgr->start_session(SessionId(0x01020304u));
 
     auto future = std::async(std::launch::async, [mgr]() {
         mgr->set_protocol_lane(ProtocolLane::STATELESS);
@@ -301,7 +301,7 @@ void test_keepalive_ack_bookkeeping_updates_runtime_snapshot() {
     std::cout << "\nTest 11: accepted keepalive bookkeeping updates runtime snapshot\n";
 
     auto mgr = std::make_shared<SessionManager>(24, nullptr);
-    mgr->start_session(0x0BADB002);
+    mgr->start_session(SessionId(0x0BADB002u));
 
     mgr->note_keepalive_ack(true, "keepalive ack accepted");
     mgr->record_keepalive();
@@ -335,7 +335,7 @@ void test_backward_compat_alias() {
 // ============================================================================
 void test_single_keepalive_packet_stateless() {
     std::cout << "\nTest 13: Stateless keepalive produces single packet\n";
-    auto bytes = make_keepalive_bytes(0xDEADBEEF, ProtocolLane::STATELESS);
+    auto bytes = make_keepalive_bytes(SessionId(0xDEADBEEFu), ProtocolLane::STATELESS);
     // Stateless: 2-byte opcode + 4-byte BE length + 8-byte payload = 14 bytes
     print_test_result("Stateless wire size == 14 (2+4+8)", bytes.size() == 14);
     // Verify session_id in LE at payload offset [6..9] (2-byte header + 4-byte length = offset 6)

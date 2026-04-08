@@ -24,11 +24,11 @@ static void print_result(const char* name, bool ok) {
 void test_initial_state() {
     std::cout << "\nTest: initial state\n";
     EpochCoordinator ec;
-    print_result("session_epoch starts at 0", ec.session_epoch() == 0);
+    print_result("session_epoch starts at 0", ec.session_epoch().get() == 0);
     print_result("recovery_epoch starts at 0", ec.recovery_epoch() == 0);
     print_result("global_epoch starts at 0", ec.global_epoch() == 0);
     auto snap = ec.snapshot();
-    print_result("snapshot session=0", snap.session_epoch == 0);
+    print_result("snapshot session=0", snap.session_epoch.get() == 0);
     print_result("snapshot recovery=0", snap.recovery_epoch == 0);
     print_result("snapshot global=0", snap.global_epoch == 0);
 }
@@ -37,11 +37,11 @@ void test_session_epoch_monotonic() {
     std::cout << "\nTest: session_epoch monotonic\n";
     EpochCoordinator ec;
     auto v1 = ec.advance_session_epoch("test_a");
-    print_result("first advance returns 1", v1 == 1);
-    print_result("session_epoch() == 1", ec.session_epoch() == 1);
+    print_result("first advance returns 1", v1.get() == 1);
+    print_result("session_epoch() == 1", ec.session_epoch().get() == 1);
     auto v2 = ec.advance_session_epoch("test_b");
-    print_result("second advance returns 2", v2 == 2);
-    print_result("never decreases", ec.session_epoch() >= v1);
+    print_result("second advance returns 2", v2.get() == 2);
+    print_result("never decreases", ec.session_epoch().get() >= v1.get());
 }
 
 void test_recovery_epoch_monotonic() {
@@ -59,9 +59,9 @@ void test_global_epoch() {
     EpochCoordinator ec;
     ec.advance_session_epoch("s1");
     ec.advance_session_epoch("s2");
-    print_result("global after 2 session advances == 2", ec.global_epoch() == 2);
+    print_result("global after 2 session advances == 2", ec.global_epoch() == 2u);
     ec.advance_recovery_epoch("r1");
-    print_result("global after 1 recovery advance == 2 (max)", ec.global_epoch() == 2);
+    print_result("global after 1 recovery advance == 2 (max)", ec.global_epoch() == 2u);
     ec.advance_recovery_epoch("r2");
     ec.advance_recovery_epoch("r3");
     print_result("global after 3 recovery advances == 3", ec.global_epoch() == 3);
@@ -102,7 +102,7 @@ void test_thread_safety() {
     }
     for (auto& t : threads) t.join();
     print_result("session_epoch == N_THREADS * ADVANCES_PER_THREAD after concurrent advances",
-                 ec.session_epoch() == static_cast<uint64_t>(N_THREADS * ADVANCES_PER_THREAD));
+                 ec.session_epoch().get() == static_cast<uint64_t>(N_THREADS * ADVANCES_PER_THREAD));
 }
 
 void test_no_reset_after_session_clear() {
@@ -110,14 +110,14 @@ void test_no_reset_after_session_clear() {
     EpochCoordinator ec;
     ec.advance_session_epoch("auth1");
     ec.advance_session_epoch("auth2");
-    uint64_t epoch_before = ec.session_epoch();
+    uint64_t epoch_before = ec.session_epoch().get();
     // Simulate SessionManager calling session_epoch() after clear_runtime_session_locked()
-    uint64_t restored = ec.session_epoch();
+    uint64_t restored = ec.session_epoch().get();
     print_result("epoch preserved (not reset to 0)", restored == epoch_before);
     print_result("epoch is 2 after 2 advances", epoch_before == 2);
     // Advance again — must go to 3, not back to 1
     ec.advance_session_epoch("auth3");
-    print_result("epoch is 3 after third advance", ec.session_epoch() == 3);
+    print_result("epoch is 3 after third advance", ec.session_epoch().get() == 3);
 }
 
 // Regression test: wiring the coordinator AFTER local epoch increments must
@@ -128,19 +128,19 @@ void test_set_epoch_coordinator_no_regression() {
     // Step 1-2: Create SessionManager without a coordinator; authenticate once
     // via the fallback path so local epoch becomes 1.
     auto sm = std::make_shared<SessionManager>(24, nullptr);
-    sm->start_session(/*session_id=*/1001);
-    uint64_t epoch_after_auth = sm->get_session_epoch();
+    sm->start_session(SessionId(1001u));
+    uint64_t epoch_after_auth = sm->get_session_epoch().get();
     print_result("epoch is 1 after first auth (no coordinator)", epoch_after_auth == 1);
 
     // Step 3: Create a fresh EpochCoordinator — it starts at epoch 0.
     auto coordinator = std::make_shared<EpochCoordinator>();
-    print_result("coordinator starts at epoch 0", coordinator->session_epoch() == 0);
+    print_result("coordinator starts at epoch 0", coordinator->session_epoch().get() == 0);
 
     // Step 4: Wire the coordinator AFTER the local increment.
     sm->set_epoch_coordinator(coordinator);
 
     // Step 5: Epoch must not have gone backwards.
-    uint64_t epoch_after_wire = sm->get_session_epoch();
+    uint64_t epoch_after_wire = sm->get_session_epoch().get();
     print_result("epoch did not regress after late coordinator wire",
                  epoch_after_wire >= epoch_after_auth);
     print_result("epoch is still >= 1 after set_epoch_coordinator",
@@ -158,14 +158,14 @@ void test_clear_for_disconnect_epoch_preserved() {
     sm->set_epoch_coordinator(coordinator);
 
     // Authenticate — advances coordinator epoch to 1.
-    sm->start_session(/*session_id=*/2002);
-    uint64_t epoch_before_clear = sm->get_session_epoch();
+    sm->start_session(SessionId(2002u));
+    uint64_t epoch_before_clear = sm->get_session_epoch().get();
     print_result("epoch is 1 after auth with coordinator", epoch_before_clear == 1);
 
     // Disconnect — calls clear_runtime_session_locked().
     sm->clear_for_disconnect();
 
-    uint64_t epoch_after_clear = sm->get_session_epoch();
+    uint64_t epoch_after_clear = sm->get_session_epoch().get();
     print_result("epoch did not regress after clear_for_disconnect",
                  epoch_after_clear >= epoch_before_clear);
 }

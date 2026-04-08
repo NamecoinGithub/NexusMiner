@@ -314,7 +314,7 @@ HeightTracker::Snapshot HeightTracker::GetSnapshot() const {
     return build_snapshot_locked();
 }
 
-void HeightTracker::set_session_epoch(uint64_t session_epoch)
+void HeightTracker::set_session_epoch(SessionEpoch session_epoch)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     // When the session epoch advances, invalidate the keepalive timestamp so
@@ -323,7 +323,7 @@ void HeightTracker::set_session_epoch(uint64_t session_epoch)
     // Without this, a keepalive received for epoch N can keep ack_recent=true
     // during epoch N+1, suppressing Stage-0 fast reconnect when the connection
     // is actually dead.
-    if (session_epoch != m_session_epoch && session_epoch != 0) {
+    if (session_epoch != m_session_epoch && !session_epoch.is_default()) {
         m_diagnostic.last_keepalive_ack_at = {};
         m_diagnostic.push_hash_prev_block = uint1024_t{};
     }

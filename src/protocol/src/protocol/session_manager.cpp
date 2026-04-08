@@ -220,7 +220,7 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     m_canonical_identity = SessionIdentity{};
 }
 
-void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
+void SessionManager::transition_to_authenticated_locked(SessionId session_id,
                                                          const std::vector<uint8_t>& tritium_genesis)
 {
     if (m_epoch_coordinator) {
@@ -230,7 +230,7 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
             m_logger->warn("[SessionManager] EpochCoordinator not wired — using local session_epoch counter. "
                            "Call set_epoch_coordinator() before sessions begin to enable global epoch sync.");
         }
-        ++m_session.session_epoch;
+        m_session.session_epoch = m_session.session_epoch.next();
     }
     m_session.session_id = session_id;
     m_session.state = SessionState::AUTHENTICATED;
@@ -264,7 +264,7 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
 
     record_session_event_locked(SessionEventKind::AUTH_SUCCESS, "authenticated");
     std::ostringstream sid_oss;
-    sid_oss << "session_id=0x" << std::hex << std::setw(8) << std::setfill('0') << session_id;
+    sid_oss << "session_id=0x" << std::hex << std::setw(8) << std::setfill('0') << session_id.get();
     record_session_event_locked(SessionEventKind::SESSION_START, sid_oss.str());
 }
 
@@ -323,7 +323,7 @@ void SessionManager::begin_auth()
     begin_auth_handshake("auth started");
 }
 
-void SessionManager::commit_authenticated(uint32_t session_id, ProtocolLane lane,
+void SessionManager::commit_authenticated(SessionId session_id, ProtocolLane lane,
                                           const std::string& reward_address)
 {
     {
@@ -388,7 +388,7 @@ void SessionManager::begin_auth_handshake(const std::string& detail)
     bump_runtime_state_generation_locked();
 }
 
-void SessionManager::commit_authenticated_session(uint32_t session_id,
+void SessionManager::commit_authenticated_session(SessionId session_id,
                                                    const std::vector<uint8_t>& pubkey,
                                                    const std::string& key_id,
                                                    const std::vector<uint8_t>& tritium_genesis)
@@ -409,10 +409,10 @@ void SessionManager::commit_authenticated_session(uint32_t session_id,
         bump_runtime_state_generation_locked();
     }
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
-                   session_id, get_session_epoch());
+                   session_id.get(), get_session_epoch().get());
 }
 
-void SessionManager::start_session(uint32_t session_id,
+void SessionManager::start_session(SessionId session_id,
                                     const std::vector<uint8_t>& session_key,
                                     const std::vector<uint8_t>& tritium_genesis)
 {
@@ -429,7 +429,7 @@ void SessionManager::start_session(uint32_t session_id,
         bump_runtime_state_generation_locked();
     }
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
-                   session_id, get_session_epoch());
+                   session_id.get(), get_session_epoch().get());
 }
 
 void SessionManager::mark_session_expired(const std::string& reason)
@@ -888,7 +888,7 @@ bool SessionManager::validate_miner_session_container_locked(const SessionInfo& 
     if (!session.authenticated) {
         return fail("session not authenticated");
     }
-    if (session.session_id == 0) {
+    if (session.session_id.is_default()) {
         return fail("authenticated session missing session_id");
     }
     if (reason) *reason = "PASS";
@@ -906,8 +906,8 @@ std::string SessionManager::build_miner_session_diagnostics() const
         << "- active lane: "   << lane_name(m_session.active_lane) << '\n'
         << "- authenticated: " << (m_session.authenticated ? "YES" : "NO") << '\n'
         << "- session_id: 0x"  << std::hex << std::setw(8) << std::setfill('0')
-                               << m_session.session_id << std::dec << '\n'
-        << "- session_epoch: " << m_session.session_epoch << '\n'
+                               << m_session.session_id.get() << std::dec << '\n'
+        << "- session_epoch: " << m_session.session_epoch.get() << '\n'
         << "- reward_address: " << (m_session.reward_address_string.empty()
                                      ? "<unset>" : m_session.reward_address_string) << '\n'
         << "- reward_bound: "  << (m_session.reward_bound ? "YES" : "NO") << '\n'
@@ -933,13 +933,13 @@ std::string SessionManager::build_miner_session_diagnostics() const
     return oss.str();
 }
 
-uint32_t SessionManager::get_session_id() const
+SessionId SessionManager::get_session_id() const
 {
     SessionReadLock lock(m_session_mutex);
     return m_session.session_id;
 }
 
-uint64_t SessionManager::get_session_epoch() const
+SessionEpoch SessionManager::get_session_epoch() const
 {
     SessionReadLock lock(m_session_mutex);
     return m_session.session_epoch;
@@ -1150,29 +1150,29 @@ void SessionManager::send_keepalive(const char* cadence)
         m_logger->warn("[SessionManager] Keepalive skipped - no session packet");
         return;
     }
-    uint32_t session_id;
+    uint32_t session_id_raw;
     {
         SessionWriteLock lock(m_session_mutex);
-        session_id = m_session.session_id;
+        session_id_raw = m_session.session_id.get();
         m_session.last_activity = now_epoch_seconds();
     }
     connection->transmit(payload);
     m_logger->info("[SessionManager] SESSION_KEEPALIVE sent ({}, next in {}h) for session 0x{:08X}",
-                  cadence, m_keepalive_interval_hours, session_id);
+                  cadence, m_keepalive_interval_hours, session_id_raw);
 }
 
 network::Shared_payload SessionManager::build_keepalive_packet() const
 {
-    uint32_t session_id;
+    uint32_t session_id_raw;
     ProtocolLane lane;
     std::array<uint8_t, 4> prevblock_suffix;
     {
         SessionReadLock lock(m_session_mutex);
-        session_id = m_session.session_id;
+        session_id_raw = m_session.session_id.get();
         lane = m_protocol_lane;
         prevblock_suffix = m_session.prevblock_suffix;
     }
-    if (session_id == 0) return {};
+    if (session_id_raw == 0) return {};
     if (lane == ProtocolLane::UNKNOWN) {
         m_logger->error("[SessionManager] build_keepalive_packet(): UNKNOWN protocol lane");
         return {};
@@ -1183,10 +1183,10 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
     //   [4-7] hashPrevBlock_lo32  (raw prevblock_suffix bytes)
     std::vector<uint8_t> payload;
     payload.reserve(8);
-    payload.push_back(static_cast<uint8_t>( session_id        & 0xFF));
-    payload.push_back(static_cast<uint8_t>((session_id >>  8) & 0xFF));
-    payload.push_back(static_cast<uint8_t>((session_id >> 16) & 0xFF));
-    payload.push_back(static_cast<uint8_t>((session_id >> 24) & 0xFF));
+    payload.push_back(static_cast<uint8_t>( session_id_raw        & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id_raw >>  8) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id_raw >> 16) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id_raw >> 24) & 0xFF));
     payload.insert(payload.end(), prevblock_suffix.begin(), prevblock_suffix.end());
 
     Packet packet = (lane == ProtocolLane::STATELESS)
@@ -1202,14 +1202,14 @@ network::Shared_payload SessionManager::build_session_status_packet(
     bool degraded, bool has_template, bool workers_running, bool secondary_up) const
 {
     using namespace ::LLP::SessionStatusOpcodes;
-    uint32_t session_id;
+    uint32_t session_id_raw;
     ProtocolLane lane;
     {
         SessionReadLock lock(m_session_mutex);
-        session_id = m_session.session_id;
+        session_id_raw = m_session.session_id.get();
         lane = m_protocol_lane;
     }
-    if (session_id == 0) return {};
+    if (session_id_raw == 0) return {};
     if (lane == ProtocolLane::UNKNOWN) {
         m_logger->error("[SessionManager] build_session_status_packet(): UNKNOWN protocol lane");
         return {};
@@ -1222,7 +1222,7 @@ network::Shared_payload SessionManager::build_session_status_packet(
     if (secondary_up)    status_flags |= MINER_SECONDARY_UP;
 
     ::LLP::SessionStatusFrame frame;
-    frame.session_id   = session_id;
+    frame.session_id   = session_id_raw;
     frame.status_flags = status_flags;
     auto payload = frame.Serialize();
 

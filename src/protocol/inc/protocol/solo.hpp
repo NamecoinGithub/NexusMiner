@@ -171,7 +171,7 @@ public:
     // Sends SESSION_KEEPALIVE via SessionManager (8-byte v2 payload: session_id + prevhash_lo32).
     // Node replies with the 32-byte unified KeepAliveV2AckFrame carrying all channel heights.
     network::Shared_payload send_session_keepalive();
-    std::uint32_t get_session_id() const;
+    SessionId get_session_id() const;
     bool is_session_active() const;
 
     // Build a SESSION_STATUS packet for transmission on this lane.
@@ -238,7 +238,7 @@ public:
     // Session-authenticated callback: called after MINER_AUTH_RESULT is fully processed and session_id is set.
     // Worker_manager registers this to check session_id=0 and trigger retry if needed.
     // Parameter: session_id (0 if node rejected authentication).
-    using Session_authenticated_handler = std::function<void(uint32_t session_id)>;
+    using Session_authenticated_handler = std::function<void(SessionId session_id)>;
     void set_session_authenticated_handler(Session_authenticated_handler h) { m_session_authenticated_handler = std::move(h); }
 
     // Session-start callback: called when SESSION_START is received and keepalive interval
@@ -331,11 +331,11 @@ private:
     // Session ID mismatch check — shared by KEEPALIVE_V2_ACK and SESSION_STATUS_ACK handlers.
     // Returns true if a mismatch was detected (state set to EXPIRED, handler called);
     // caller must return immediately when true is returned.
-    bool handle_session_id_mismatch(uint32_t ack_session_id);
+    bool handle_session_id_mismatch(SessionId ack_session_id);
 
     // Session expired handler — called when SESSION_EXPIRED (0xDD / 0xD0DD) packet is received
     // Implements 5-step response: log, clear state, stop workers, prepare for re-auth
-    void handle_session_expired(uint32_t expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection);
+    void handle_session_expired(SessionId expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection);
 
     // Challenge-response authentication methods
     void handle_miner_auth_challenge(const Packet& packet);
@@ -365,7 +365,7 @@ private:
     void log_session_container_summary(const char* log_scope) const;
     struct PacketIngressPreflightOptions {
         const SessionOwnershipStamp* owner{nullptr};
-        uint32_t packet_session_id{0};
+        SessionId packet_session_id{};
         bool allow_without_active_session{false};
         bool validate_lane{false};
         bool require_crypto_ready{false};
@@ -508,8 +508,8 @@ private:
     std::vector<uint8_t> m_miner_pubkey;
     std::vector<uint8_t> m_miner_privkey;
     bool m_authenticated;
-    std::uint32_t m_session_id;
-    uint64_t m_session_epoch{0};
+    SessionId m_session_id;
+    SessionEpoch m_session_epoch{};
     bool m_has_seen_session_epoch{false};
     uint64_t m_cached_runtime_state_generation{0};
     SessionIdentity m_cached_identity{};  // Cached canonical identity from SessionManager

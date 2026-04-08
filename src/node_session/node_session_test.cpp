@@ -69,7 +69,7 @@ void test_node_session_creation()
 
     assert(node_session != nullptr);
     assert(!node_session->is_authenticated());
-    assert(node_session->session_id() == 0);
+    assert(node_session->session_id() == protocol::SessionId(0u));
     assert(!node_session->is_session_active());
 
     std::cout << "  ✓ NodeSession created successfully" << std::endl;
@@ -158,7 +158,7 @@ void test_node_session_handlers()
     });
 
     bool session_authenticated_handler_called = false;
-    node_session->set_session_authenticated_handler([&session_authenticated_handler_called](uint32_t) {
+    node_session->set_session_authenticated_handler([&session_authenticated_handler_called](protocol::SessionId) {
         session_authenticated_handler_called = true;
     });
 
@@ -236,12 +236,12 @@ void test_node_session_stop_and_reset()
     // Test reset
     node_session->reset();
     assert(!node_session->is_authenticated());
-    assert(node_session->session_id() == 0);
+    assert(node_session->session_id() == protocol::SessionId(0u));
 
     // Test stop
     node_session->stop();
     assert(!node_session->is_authenticated());
-    assert(node_session->session_id() == 0);
+    assert(node_session->session_id() == protocol::SessionId(0u));
 
     std::cout << "  ✓ Reset clears authentication state" << std::endl;
     std::cout << "  ✓ Stop closes connections and resets state" << std::endl;
