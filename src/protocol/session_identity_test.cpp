@@ -372,12 +372,12 @@ void test_sk256_node_compatible_hash()
     // Verify that LLC::SK256(pubkey) produces the correct 32-byte hash
     // matching NODE-side hashKeyID used for miner identity.
 
-    // Falcon-512 pubkey (897 bytes)
+    // Falcon-512 pubkey: LOGN=9, 897 bytes (9 + 2^(LOGN-1) = 9 + 2^8 = 9 + 256 = ... see falcon_keygen.h)
     auto pubkey_512 = make_bytes(897, 0xCC);
     auto hash_512 = LLC::SK256(pubkey_512).GetBytes();
     assert(hash_512.size() == 32);
 
-    // Falcon-1024 pubkey (1793 bytes)
+    // Falcon-1024 pubkey: LOGN=10, 1793 bytes
     auto pubkey_1024 = make_bytes(1793, 0xCC);
     auto hash_1024 = LLC::SK256(pubkey_1024).GetBytes();
     assert(hash_1024.size() == 32);
