@@ -28,8 +28,14 @@ namespace protocol {
  * @invariant Once constructed, a valid SessionIdentity has:
  *   - A non-zero session_id
  *   - A non-zero session_epoch
- *   - A non-empty falcon_pubkey_hash (SHA256 truncation of pubkey)
+ *   - A non-empty falcon_pubkey_hash (LLC::SK256 of pubkey, 32 bytes)
  *   - session_id, chacha20_key, falcon identity, and lane are all bound together
+ *
+ * Identity hashing:  The Falcon public key is canonically hashed using
+ * LLC::SK256(vPubKey) → 256-bit Skein-Keccak hash.  This matches the NODE-side
+ * hashKeyID used for miner identity in session recovery and cross-comparison.
+ * The caller (SessionManager) pre-computes the SK256 hash and passes the
+ * 32-byte result to the constructor.
  *
  * Thread safety: SessionIdentity is a value type.  It can be copied freely and
  * shared between threads without synchronization.
@@ -48,24 +54,26 @@ public:
      * Typically called from SessionManager::transition_to_authenticated_locked()
      * at the moment authentication succeeds.
      *
-     * @param session_id       Node-assigned wire protocol session ID (non-zero)
-     * @param session_epoch    Monotonic session generation counter
-     * @param genesis_hash     Tritium genesis hash (32 bytes, used for ChaCha20 KDF)
-     * @param chacha20_key     Derived ChaCha20 session key (32 bytes)
-     * @param falcon_pubkey    Full Falcon public key (for identity fingerprinting)
-     * @param lane             Active protocol lane (LEGACY or STATELESS)
+     * @param session_id            Node-assigned wire protocol session ID (non-zero)
+     * @param session_epoch         Monotonic session generation counter
+     * @param genesis_hash          Tritium genesis hash (32 bytes, used for ChaCha20 KDF)
+     * @param chacha20_key          Derived ChaCha20 session key (32 bytes)
+     * @param falcon_pubkey_hash    Pre-computed SK256 hash of Falcon public key (32 bytes).
+     *                              Must be computed by the caller via LLC::SK256(vPubKey).GetBytes()
+     *                              to match the NODE-side hashKeyID used for miner identity.
+     * @param lane                  Active protocol lane (LEGACY or STATELESS)
      */
     SessionIdentity(uint32_t session_id,
                     uint64_t session_epoch,
                     std::vector<uint8_t> genesis_hash,
                     std::vector<uint8_t> chacha20_key,
-                    std::vector<uint8_t> falcon_pubkey,
+                    std::vector<uint8_t> falcon_pubkey_hash,
                     ProtocolLane lane)
         : m_session_id(session_id)
         , m_session_epoch(session_epoch)
         , m_genesis_hash(std::move(genesis_hash))
         , m_chacha20_key(std::move(chacha20_key))
-        , m_falcon_pubkey_hash(compute_pubkey_hash(falcon_pubkey))
+        , m_falcon_pubkey_hash(std::move(falcon_pubkey_hash))
         , m_lane(lane)
     {
     }
@@ -84,8 +92,8 @@ public:
     /// Derived ChaCha20 session key (32 bytes).
     const std::vector<uint8_t>& chacha20_key() const { return m_chacha20_key; }
 
-    /// FNV-1a hash fingerprint of the Falcon public key (first 8 bytes).
-    /// Used for cross-miner identity comparison without carrying full pubkey.
+    /// SK256 hash of the Falcon public key (32 bytes, matches NODE-side hashKeyID).
+    /// Used for cross-miner identity comparison and session recovery handshake.
     const std::vector<uint8_t>& falcon_pubkey_hash() const { return m_falcon_pubkey_hash; }
 
     /// Active protocol lane at authentication time.
@@ -236,29 +244,6 @@ public:
     }
 
 private:
-    /// Compute a truncated SHA256 hash of the Falcon public key for fingerprinting.
-    /// Returns the first 8 bytes of SHA256(pubkey), or empty if pubkey is empty.
-    static std::vector<uint8_t> compute_pubkey_hash(const std::vector<uint8_t>& pubkey)
-    {
-        if (pubkey.empty()) {
-            return {};
-        }
-        // Use a simple FNV-1a inspired hash for the fingerprint.
-        // We avoid pulling in OpenSSL here to keep SessionIdentity lightweight
-        // and header-only.  8 bytes of FNV-1a over a 897/1793-byte Falcon pubkey
-        // gives ample collision resistance for same-process identity checking.
-        uint64_t hash = 14695981039346656037ULL;  // FNV offset basis
-        for (auto byte : pubkey) {
-            hash ^= static_cast<uint64_t>(byte);
-            hash *= 1099511628211ULL;  // FNV prime
-        }
-        std::vector<uint8_t> result(8);
-        for (int i = 0; i < 8; ++i) {
-            result[i] = static_cast<uint8_t>((hash >> (i * 8)) & 0xFF);
-        }
-        return result;
-    }
-
     /// Format first N bytes of a vector as hex for diagnostics.
     static std::string hex_prefix(const std::vector<uint8_t>& data, size_t n)
     {
@@ -277,7 +262,7 @@ private:
     uint64_t m_session_epoch{0};
     std::vector<uint8_t> m_genesis_hash;
     std::vector<uint8_t> m_chacha20_key;
-    std::vector<uint8_t> m_falcon_pubkey_hash;  // FNV-1a hash, first 8 bytes
+    std::vector<uint8_t> m_falcon_pubkey_hash;  // SK256 hash of Falcon pubkey (32 bytes)
     ProtocolLane m_lane{ProtocolLane::UNKNOWN};
 };
 

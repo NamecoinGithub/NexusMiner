@@ -4,6 +4,7 @@
 #include "network/connection.hpp"
 #include "packet.hpp"
 #include "miner_opcodes.hpp"
+#include <LLC/hash/SK.h>
 #include <algorithm>
 #include <ctime>
 #include <iomanip>
@@ -247,12 +248,17 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
     // ── Freeze the canonical identity bundle ────────────────────────────
     // This binds session_id, epoch, crypto context, and miner identity
     // into a single immutable snapshot at authentication time.
+    // Compute SK256(falcon_pubkey) → 32-byte hash matching NODE-side hashKeyID.
+    std::vector<uint8_t> pubkey_hash;
+    if (!m_session.falcon_pubkey.empty()) {
+        pubkey_hash = LLC::SK256(m_session.falcon_pubkey).GetBytes();
+    }
     m_canonical_identity = SessionIdentity(
         session_id,
         m_session.session_epoch,
         m_session.session_genesis,
         m_session.chacha20_session_key,
-        m_session.falcon_pubkey,
+        std::move(pubkey_hash),
         m_protocol_lane);
 
     record_session_event_locked(SessionEventKind::AUTH_SUCCESS, "authenticated");

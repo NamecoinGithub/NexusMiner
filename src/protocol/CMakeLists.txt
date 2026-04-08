@@ -22,7 +22,7 @@ target_include_directories(protocol
         ${CMAKE_SOURCE_DIR}/src
 )
 
-target_link_libraries(protocol PRIVATE network LLP stats config spdlog nlohmann_json::nlohmann_json ${OPENSSL_LIBRARIES})
+target_link_libraries(protocol PRIVATE network LLP LLC stats config spdlog nlohmann_json::nlohmann_json ${OPENSSL_LIBRARIES})
 
 # ============================================================================
 # Protocol test executables — uses add_nexusminer_test() from cmake/AddTest.cmake.
@@ -164,4 +164,5 @@ add_nexusminer_test(NAME merkle_root_feed_guard_test
 # --- Session identity ---
 add_nexusminer_test(NAME session_identity_test
     SOURCES     session_identity_test.cpp
-    LINK_LIBS   protocol)
+    LINK_LIBS   protocol LLC
+    INCLUDE_DIRS ${_LLC_INC})
