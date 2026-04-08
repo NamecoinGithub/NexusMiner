@@ -126,8 +126,10 @@ The guard works in two layers:
 > moved, so the mining template is **always** refreshed.
 
 **Channel staleness** (`channel_height >= channel_target`) is now **informational
-only**.  When detected, `AdvanceChannelTarget` is called for doom-loop prevention,
-but it does not gate the template refresh decision.
+only**.  `AdvanceChannelTarget()` has been removed (see Bug #6 fix in
+`height_tracker.hpp`).  Post-refactor, `canonical_channel_target` is set ONLY by
+`OnBlockDataReceived()` and `OnTemplateReceived()`, so doom-loop prevention is
+structural rather than push-driven.
 
 **Same-height tip replacement** (hash mismatch at same channel height) is still
 detected and triggers a template `discard_template()` to force replacement.
@@ -141,8 +143,8 @@ detected and triggers a template `discard_template()` to force replacement.
 On every same-channel push notification:
   1. Update HeightTracker (unified_height, channel_height, difficulty)
   2. If extended push carries hashPrevBlock, store as tip anchor hint
-  3. Channel staleness (informational — doom-loop prevention):
-       if channel_height >= channel_target → AdvanceChannelTarget(channel_height + 1)
+  3. Channel staleness (informational — logged, no action):
+       if channel_height >= channel_target → log warning (AdvanceChannelTarget removed)
   4. Same-height tip replacement (only when NOT channel-stale):
        if hash mismatch at same channel height → discard_template("same_height_tip_update")
   5. ALWAYS → request_work_fn()

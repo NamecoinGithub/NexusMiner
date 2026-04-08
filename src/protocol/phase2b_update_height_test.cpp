@@ -124,7 +124,8 @@ static void test_push_handler_callback_values()
 }
 
 // ============================================================================
-// Test 2: HeightTracker reflects same values after update_height_fn path
+// Test 2: HeightTracker reflects push-derived diagnostic values
+//         (unified_height and channel_height are now canonical-only from BLOCK_DATA)
 // ============================================================================
 static void test_height_tracker_updated_via_callback()
 {
@@ -152,19 +153,22 @@ static void test_height_tracker_updated_via_callback()
     );
 
     auto snap = tracker.GetSnapshot();
-    print_test_result("HeightTracker unified_height == UNIFIED", snap.unified_height == UNIFIED);
-    print_test_result("HeightTracker channel_height == CHANNEL", snap.channel_height == CHANNEL);
+    // unified_height and channel_height are canonical-only (set by OnBlockDataReceived),
+    // so push does NOT set them in the snapshot.
+    print_test_result("HeightTracker push_unified_height == UNIFIED", snap.push_unified_height == UNIFIED);
+    print_test_result("HeightTracker push_channel_height == CHANNEL", snap.push_channel_height == CHANNEL);
     print_test_result("HeightTracker difficulty_nbits == DIFF",  snap.difficulty_nbits == DIFF);
     print_test_result("HeightTracker source == PUSH",
         snap.last_update_source == HeightTracker::UpdateSource::PUSH);
 }
 
 // ============================================================================
-// Test 2b: Channel-mismatch push refreshes liveness without updating heights
+// Test 2b: Channel-mismatch push with unified tip advance triggers callback
+//          (Bug 1 fix: cross-channel tip advance requests fresh template)
 // ============================================================================
 static void test_channel_mismatch_refreshes_push_liveness_only()
 {
-    std::cout << "\nTest 2b: channel-mismatch push refreshes liveness without height update\n";
+    std::cout << "\nTest 2b: channel-mismatch push with tip advance invokes callback\n";
 
     constexpr uint32_t UNIFIED  = 5001;
     constexpr uint32_t CHANNEL  = 301;
@@ -190,17 +194,16 @@ static void test_channel_mismatch_refreshes_push_liveness_only()
     auto after_push = std::chrono::steady_clock::now();
 
     auto snap = tracker.GetSnapshot();
-    print_test_result("channel-mismatch push does not invoke height callback", !callback_invoked);
+    // Cross-channel push with unified tip advance (5001 > 0) DOES invoke height
+    // callback to update push diagnostic state and request fresh template.
+    print_test_result("cross-channel push with tip advance invokes height callback", callback_invoked);
     print_test_result("channel-mismatch push refreshes push liveness timestamp",
         snap.last_push_notification_at >= before_push && snap.last_push_notification_at <= after_push);
-    print_test_result("channel-mismatch push does not set last_height_update",
-        snap.last_height_update == std::chrono::steady_clock::time_point{});
-    print_test_result("channel-mismatch push does not advance unified_height",
+    // unified_height and channel_height remain canonical-only (0 until BLOCK_DATA)
+    print_test_result("channel-mismatch push does not advance canonical unified_height",
         snap.unified_height == 0);
-    print_test_result("channel-mismatch push does not advance channel_height",
+    print_test_result("channel-mismatch push does not advance canonical channel_height",
         snap.channel_height == 0);
-    print_test_result("channel-mismatch push does not update difficulty",
-        snap.difficulty_nbits == 0);
 }
 
 // ============================================================================
@@ -240,11 +243,12 @@ static void test_channel_manager_same_data_as_height_tracker()
     auto snap = tracker.GetSnapshot();
     auto [node_u, node_c] = mgr.GetNodeHeights();
 
-    print_test_result("HeightTracker unified_height == UNIFIED", snap.unified_height == UNIFIED);
+    print_test_result("HeightTracker push_unified_height == UNIFIED", snap.push_unified_height == UNIFIED);
     print_test_result("ClientChannelManager unified_height == UNIFIED", node_u == UNIFIED);
     print_test_result("ClientChannelManager channel_height == CHANNEL", node_c == CHANNEL);
-    print_test_result("Both sources match (unified)",  snap.unified_height == node_u);
-    print_test_result("Both sources match (channel)",  snap.channel_height == node_c);
+    // HeightTracker's push_unified_height matches ClientChannelManager (both from push path)
+    print_test_result("Both sources match (unified)",  snap.push_unified_height == node_u);
+    print_test_result("Both sources match (channel)",  snap.push_channel_height == node_c);
 }
 
 // ============================================================================
@@ -294,7 +298,10 @@ static void test_node_block_data_fields_drive_height_tracker()
     HashClientManager mgr;
 
     // Mirrors Solo::update_height_state(...) for BLOCK_DATA metadata feed.
+    // OnPushNotification sets diagnostic push heights only.
     tracker.OnPushNotification(UNIFIED, CHANNEL, DIFF);
+    // OnBlockDataReceived sets canonical heights (required for snap.unified_height).
+    tracker.OnBlockDataReceived(UNIFIED, CHANNEL, DIFF, uint1024_t{});
     mgr.UpdateFromGetRound(UNIFIED, CHANNEL);
 
     // Mirrors Solo::OnTemplateReceived(channel_height + 1) for template target.
@@ -306,7 +313,8 @@ static void test_node_block_data_fields_drive_height_tracker()
     print_test_result("HeightTracker unified_height from BLOCK_DATA metadata", snap.unified_height == UNIFIED);
     print_test_result("HeightTracker difficulty_nbits from BLOCK_DATA metadata", snap.difficulty_nbits == DIFF);
     print_test_result("HeightTracker channel_target == channel_height + 1", snap.channel_target == CHANNEL + 1);
-    print_test_result("template_unified_height captured from metadata unified_height", snap.template_unified_height == UNIFIED);
+    // template_unified_height is set from canonical_unified_height by OnTemplateReceived
+    print_test_result("template_unified_height captured from canonical unified_height", snap.template_unified_height == UNIFIED);
     print_test_result("ClientChannelManager unified_height matches metadata", node_u == UNIFIED);
     print_test_result("ClientChannelManager channel_height matches metadata", node_c == CHANNEL);
 }
@@ -329,10 +337,12 @@ static void test_stateless_lane_mirrors_legacy_for_height_tracker()
 
     // Legacy lane sequence
     tracker_legacy.OnPushNotification(UNIFIED, CHANNEL, DIFF);
+    tracker_legacy.OnBlockDataReceived(UNIFIED, CHANNEL, DIFF, uint1024_t{});
     tracker_legacy.OnTemplateReceived(CHANNEL_HASH, CHANNEL + 1);
 
     // Stateless lane sequence (identical calls — same update path)
     tracker_stateless.OnPushNotification(UNIFIED, CHANNEL, DIFF);
+    tracker_stateless.OnBlockDataReceived(UNIFIED, CHANNEL, DIFF, uint1024_t{});
     tracker_stateless.OnTemplateReceived(CHANNEL_HASH, CHANNEL + 1);
 
     auto snap_l = tracker_legacy.GetSnapshot();

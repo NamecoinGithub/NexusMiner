@@ -200,7 +200,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 m_mined_block_cache.update_confirmations(block.nHeight);
 
                 // ═══════════════════════════════════════════════════════════════
-                // Soft-pause (SOFT_REFRESH) state is cleared by the phase transition
+                // Recovery state (WAITING_TEMPLATE) is cleared by the phase transition
                 // in clear_recovery_state() below (workers_fed > 0 branch).
                 // Do not clear here — we must confirm workers actually received the
                 // template first before exiting recovery state.
