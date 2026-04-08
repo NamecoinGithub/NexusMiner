@@ -824,7 +824,7 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
     // exceeded, force re-auth to break out of the silent drop cycle.
     ++m_preflight_reject_count;
 
-    m_logger->warn("[{}] Session ingress preflight rejected packet: {} (consecutive={})",
+    m_logger->warn("[{}] Session ingress preflight rejected packet: {} (reject_count={})",
                    log_scope, decision.reason, m_preflight_reject_count);
     if (decision.drop_as_stale) {
         const auto kind = decision.stale_reason == PacketStaleReason::OWNERSHIP_EPOCH_MISMATCH

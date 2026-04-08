@@ -539,10 +539,9 @@ private:
 
     // Unanswered GET_ROUND counter: incremented on each GET_ROUND send,
     // reset to zero when a NEW_ROUND / OLD_ROUND response is processed.
-    // If this exceeds UNANSWERED_GET_ROUND_THRESHOLD while PUSH is alive,
+    // If this exceeds the shadow-ban threshold while PUSH is alive,
     // the session is considered shadow-banned.
     uint32_t m_unanswered_get_round_count{0};
-    static constexpr uint32_t UNANSWERED_GET_ROUND_THRESHOLD = 5;
 
     // Consecutive hashPrevBlock mismatch counter (chain-in-flux doom-loop guard).
     // Incremented each time validate_current_template() detects a hashPrevBlock mismatch
