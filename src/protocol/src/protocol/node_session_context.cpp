@@ -368,6 +368,14 @@ SessionManager::RuntimeSessionSnapshot NodeSessionContext::get_runtime_snapshot(
     return SessionManager::RuntimeSessionSnapshot{};
 }
 
+SessionIdentity NodeSessionContext::get_canonical_identity() const
+{
+    if (m_session_manager) {
+        return m_session_manager->get_canonical_identity();
+    }
+    return SessionIdentity{};
+}
+
 void NodeSessionContext::set_session_expired_handler(SessionManager::SessionExpiredHandler handler)
 {
     if (m_session_manager) {

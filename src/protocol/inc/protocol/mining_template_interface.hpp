@@ -12,6 +12,7 @@
 #include "LLP/block.hpp"
 #include "network/types.hpp"
 #include "protocol/height_tracker.hpp"
+#include "protocol/session_identity.hpp"
 #include "spdlog/spdlog.h"
 
 namespace nexusminer {
@@ -105,6 +106,7 @@ public:
         TemplateState state;        // Current state
         uint32_t session_id;        // Falcon session ID
         uint64_t session_epoch{0};  // Authoritative session epoch that owns this template
+        SessionIdentity identity{}; // Canonical identity bundle that owns this template
         std::string source_endpoint;// Node endpoint that sent template
         BlockFormat format;         // Block format (Tritium/Legacy/Compact)
         
@@ -466,6 +468,21 @@ public:
      * @param session_epoch Session epoch/generation from SessionManager
      */
     void set_session_epoch(uint64_t session_epoch);
+
+    /**
+     * @brief Set the canonical session identity for template ownership.
+     *
+     * This also updates session_id and session_epoch for backward compat.
+     *
+     * @param identity Canonical identity bundle from SessionManager
+     */
+    void set_session_identity(const SessionIdentity& identity);
+
+    /**
+     * @brief Get the canonical session identity bound to the current template.
+     * @return SessionIdentity (may be empty if no session is active)
+     */
+    SessionIdentity get_session_identity() const;
     
     /**
      * @brief Get current session ID
@@ -567,6 +584,7 @@ private:
     uint8_t m_channel;
     uint32_t m_session_id;
     uint64_t m_session_epoch{0};
+    SessionIdentity m_session_identity{};  // Canonical identity bound to templates
     uint32_t m_current_unified_height;
     uint32_t m_current_channel_height;
     uint32_t m_template_channel_height_snapshot;
