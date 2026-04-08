@@ -171,7 +171,7 @@ void SessionManager::set_epoch_coordinator(std::shared_ptr<EpochCoordinator> coo
     // value so the monotonic invariant is preserved in both directions.
     if (m_epoch_coordinator) {
         const auto coord_epoch = m_epoch_coordinator->session_epoch();
-        m_session.session_epoch = std::max(m_session.session_epoch, coord_epoch);
+        m_session.session_epoch = SessionEpoch(std::max(m_session.session_epoch.get(), coord_epoch.get()));
     }
     bump_runtime_state_generation_locked();
 }
@@ -204,7 +204,7 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     // regress to 0.
     if (m_epoch_coordinator) {
         const auto coord_epoch = m_epoch_coordinator->session_epoch();
-        m_session.session_epoch = std::max(saved_epoch, coord_epoch);
+        m_session.session_epoch = SessionEpoch(std::max(saved_epoch.get(), coord_epoch.get()));
     } else {
         m_session.session_epoch = saved_epoch;
     }
@@ -224,7 +224,7 @@ void SessionManager::transition_to_authenticated_locked(SessionId session_id,
                                                          const std::vector<uint8_t>& tritium_genesis)
 {
     if (m_epoch_coordinator) {
-        m_session.session_epoch = m_epoch_coordinator->advance_session_epoch("authenticated");
+        m_session.session_epoch = SessionEpoch(m_epoch_coordinator->advance_session_epoch("authenticated"));
     } else {
         if (m_logger) {
             m_logger->warn("[SessionManager] EpochCoordinator not wired — using local session_epoch counter. "
@@ -232,7 +232,7 @@ void SessionManager::transition_to_authenticated_locked(SessionId session_id,
         }
         m_session.session_epoch = m_session.session_epoch.next();
     }
-    m_session.session_id = session_id;
+    m_session.session_id = SessionId(session_id);
     m_session.state = SessionState::AUTHENTICATED;
     m_session.authenticated = true;
     m_session.falcon_authenticated = true;
@@ -307,8 +307,8 @@ void SessionManager::record_session_event_locked(SessionEventKind kind, const st
     m_session_event_journal.push_back(SessionEvent{
         now_epoch_seconds(),
         kind,
-        SessionId(m_session.session_id),
-        SessionEpoch(m_session.session_epoch),
+        m_session.session_id,
+        m_session.session_epoch,
         detail
     });
     while (m_session_event_journal.size() > SESSION_EVENT_JOURNAL_CAPACITY) {

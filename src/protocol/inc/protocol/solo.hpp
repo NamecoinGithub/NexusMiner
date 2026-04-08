@@ -17,6 +17,7 @@
 #include "protocol/get_block_dedup_guard.hpp"
 #include "protocol/hash_checkpoint_guard.hpp"
 #include "protocol/merkle_root_feed_guard.hpp"
+#include "protocol/packet_router.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "LLP/colin_ping_handler.h"
@@ -476,6 +477,9 @@ private:
     static bool matches_stateless_opcode(Packet const& packet, uint16_t legacy_opcode);
     static bool requires_active_session_packet(Packet const& packet);
 
+    /// Register all packet handlers with m_packet_router (called once from constructor).
+    void register_packet_handlers();
+
     // Called from process_messages() after the lane/validity guards pass
     void on_miner_auth_response(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_session_expired(Packet const& packet, std::shared_ptr<network::Connection> connection);
@@ -749,6 +753,10 @@ private:
     // bypass_height, full dedup).  See get_block_dedup_guard.hpp.
     GetBlockDedupGuard m_dedup_guard;
     std::atomic<GetBlockRequestStatus> m_last_get_block_request_status{GetBlockRequestStatus::NONE};
+
+    // ── Packet dispatch router ──────────────────────────────────────────────
+    // Table-driven dispatch replacing the if/else-if chain in process_messages().
+    PacketRouter m_packet_router;
 
     // ── In-flight GET_BLOCK awareness (cross-handler dedup tier) ────────────
     // Bridges the gap between PUSH and GET_ROUND handlers: when PUSH sends a
