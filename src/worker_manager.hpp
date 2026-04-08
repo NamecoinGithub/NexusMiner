@@ -217,6 +217,9 @@ private:
     // both firing within the same short window.
     std::chrono::steady_clock::time_point m_last_get_block_request_time{};
 
+    // Session health summary log: throttled to once per 60s
+    std::chrono::steady_clock::time_point m_last_session_health_log{};
+
     // Connection retry state for exponential backoff
     uint32_t m_connection_retry_count{0};
     util::ExponentialBackoffWithState m_connection_backoff{
