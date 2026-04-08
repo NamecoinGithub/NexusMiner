@@ -485,16 +485,22 @@ public:
     SessionIdentity get_session_identity() const;
     
     /**
-     * @brief Get current session ID
+     * @brief Get current session ID (thread-safe)
      * @return Session ID
      */
-    uint32_t get_session_id() const { return m_session_id; }
+    uint32_t get_session_id() const {
+        std::lock_guard<std::mutex> lock(m_template_mutex);
+        return m_session_id;
+    }
     
     /**
-     * @brief Check if session is authenticated
+     * @brief Check if session is authenticated (thread-safe)
      * @return true if session has valid session ID
      */
-    bool is_session_authenticated() const { return m_session_id != 0; }
+    bool is_session_authenticated() const {
+        std::lock_guard<std::mutex> lock(m_template_mutex);
+        return m_session_id != 0;
+    }
     
     /**
      * @brief Set the mining channel
