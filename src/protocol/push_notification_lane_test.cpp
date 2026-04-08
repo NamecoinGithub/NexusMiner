@@ -794,7 +794,7 @@ int main()
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
-        session_manager->start_session(0x12345678);
+        session_manager->start_session(protocol::SessionId(0x12345678u));
         session_manager->set_falcon_identity({0x01}, "push-lane-test-key", true);
         protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
         solo.set_protocol_lane(ProtocolLane::STATELESS);
@@ -823,7 +823,7 @@ int main()
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
-        session_manager->start_session(0x87654321);
+        session_manager->start_session(protocol::SessionId(0x87654321u));
         session_manager->set_falcon_identity({0x02}, "push-lane-test-key", true);
         protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
         solo.set_protocol_lane(ProtocolLane::STATELESS);
@@ -1021,7 +1021,7 @@ int main()
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
-        session_manager->start_session(0xAABBCCDD);
+        session_manager->start_session(protocol::SessionId(0xAABBCCDDu));
         session_manager->set_falcon_identity({0x21}, "get-round-fallback-test-key", true);
 
         protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
@@ -1089,7 +1089,7 @@ int main()
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
-        session_manager->start_session(0x13572468);
+        session_manager->start_session(protocol::SessionId(0x13572468u));
 
         protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_PRIME), nullptr, session_context);
         solo.set_protocol_lane(ProtocolLane::STATELESS);
