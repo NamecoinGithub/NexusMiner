@@ -440,6 +440,10 @@ void SessionManager::mark_session_expired(const std::string& reason)
         if (m_session.reward_bound) {
             m_session.reward_state = RewardState::STALE;
         }
+        // Bug 4 fix: Clear canonical identity so downstream code checking
+        // session_id validity (non-zero) does not proceed with stale identity
+        // while session state is DEGRADED.
+        m_canonical_identity = SessionIdentity{};
         m_session.last_activity = now_epoch_seconds();
         record_session_event_locked(SessionEventKind::DEGRADED,
                                     reason.empty() ? "session marked expired" : reason);

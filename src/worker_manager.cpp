@@ -69,11 +69,12 @@ namespace {
     // signal for session liveness — keepalive ACK is diagnostic only.
     constexpr int64_t PUSH_ALIVE_THRESHOLD_SECONDS = protocol::ProtocolConstants::PUSH_LIVENESS_THRESHOLD_SECONDS;
 
-    // Fix A: push-alive guard in retry_connect() uses a much shorter window (30s).
-    // A push received in the last 30s proves the TCP connection is alive RIGHT NOW.
-    // A push received 5 minutes ago proves nothing about current TCP state and must
-    // not suppress a TCP reconnect — that causes the doom loop.
-    constexpr int64_t RETRY_CONNECT_PUSH_LIVE_SECONDS = 30;
+    // Push-alive guard in retry_connect(): suppress TCP reconnect if a push
+    // notification was received within this window, proving the connection is alive.
+    // Aligned with PUSH_ALIVE_THRESHOLD_SECONDS to prevent conflicting liveness
+    // decisions: retry_connect() must not tear down a session that
+    // check_template_health() still considers alive (Bug 2 fix).
+    constexpr int64_t RETRY_CONNECT_PUSH_LIVE_SECONDS = PUSH_ALIVE_THRESHOLD_SECONDS;
 
     // Aggressive secondary reconnect delay during degraded mode.
     // Unified height drift threshold: if HeightTracker.unified_height exceeds

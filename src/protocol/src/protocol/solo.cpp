@@ -577,6 +577,10 @@ void Solo::clear_generation_bound_state(const char* reason)
     m_last_keepalive_prevhash_lo32 = 0;
     m_get_round_push_silent_fallback_active = false;
 
+    // Bug 1 fix: Clear in-flight GET_BLOCK flag so recovery is not blocked
+    // for up to TIMEOUT_SECONDS (4s) after session invalidation.
+    m_pending_get_block.clear();
+
     if (m_template_interface) {
         m_template_interface->discard_template(reason);
         m_template_interface->clear_template_channel_height_snapshot();
@@ -4323,13 +4327,28 @@ bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
         m_session_context->note_keepalive_ack(false, decision.reason);
     }
 
-    // ACK mismatch is diagnostic only — PUSH notification liveness is the sole
-    // authoritative signal for session health.  Log for observability but do NOT
-    // expire the session or invoke session_expired_handler(); the node-side ACK
-    // responder can lag or fail independently of the PUSH path.
-    m_logger->warn("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != authoritative=0x{:08x}"
-                   " — diagnostic only, PUSH is authoritative (not self-expiring)",
-        decision.reason, m_session_id_mismatch_count, ack_session_id, authoritative_session_id);
+    // Bug 3 fix: After N consecutive mismatches, trigger soft re-authentication.
+    // Persistent mismatches indicate the NODE assigned a new session_id (e.g., after
+    // a session sweep) and the miner's cached session is stale.  Without re-auth,
+    // the session silently dies once PUSH notifications also stop.
+    if (m_session_id_mismatch_count >= protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD) {
+        m_logger->error("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != authoritative=0x{:08x}"
+                       " — threshold reached, triggering re-authentication",
+            decision.reason, m_session_id_mismatch_count, ack_session_id, authoritative_session_id);
+
+        // Reset counter to prevent re-triggering on every subsequent mismatch
+        m_session_id_mismatch_count = 0;
+
+        // Force re-auth via the same path as SESSION_EXPIRED
+        if (m_session_expired_handler) {
+            m_session_expired_handler();
+        }
+    } else {
+        m_logger->warn("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != authoritative=0x{:08x}"
+                       " — tracking mismatch (threshold={})",
+            decision.reason, m_session_id_mismatch_count, ack_session_id, authoritative_session_id,
+            protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD);
+    }
 
     return true;  // mismatch detected — caller must return to skip further ACK processing
 }
@@ -4377,6 +4396,10 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
     m_auth_in_flight_since = {};
     m_reward_bound = false;  // Reward binding dies with session
     m_subscribed_to_notifications = false;
+
+    // Bug 1 fix: Clear in-flight GET_BLOCK so recovery can immediately
+    // request a new template instead of being blocked for up to 4 seconds.
+    m_pending_get_block.clear();
 
     // Clear the authoritative session context
     if (m_session_context) {

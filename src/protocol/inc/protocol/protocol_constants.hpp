@@ -190,16 +190,15 @@ namespace ProtocolConstants {
     //==========================================================================
 
     /**
-     * Number of consecutive KEEPALIVE_V2_ACK session ID mismatches tracked
-     * for diagnostic logging.
+     * Number of consecutive KEEPALIVE_V2_ACK session ID mismatches before
+     * triggering a soft re-authentication.
      *
-     * ACK mismatches are diagnostic only — they are logged for observability
-     * but do NOT trigger session expiry or re-auth.  PUSH notification
-     * liveness is the sole authoritative signal for session health.
-     *
-     * Retained as a counter ceiling for warning-level log escalation.
+     * Persistent mismatches indicate the NODE has assigned a new session_id
+     * (e.g., after a session sweep), making the miner's cached session stale.
+     * After this many consecutive mismatches, the miner forces a re-auth
+     * via the session_expired_handler to resynchronize with the NODE.
      */
-    constexpr uint32_t SESSION_MISMATCH_EXPIRE_THRESHOLD = 5;
+    constexpr uint32_t SESSION_MISMATCH_EXPIRE_THRESHOLD = 3;
 
 } // namespace ProtocolConstants
 
