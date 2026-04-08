@@ -14,7 +14,7 @@ void PacketRouter::register_raw_handler(uint16_t raw_opcode, Handler handler)
     m_raw_handlers[raw_opcode] = std::move(handler);
 }
 
-bool PacketRouter::dispatch(Packet const& packet, std::shared_ptr<network::Connection> connection) const
+bool PacketRouter::dispatch(Packet const& packet, const std::shared_ptr<network::Connection>& connection) const
 {
     // 1. Try raw handler first (for opcodes with no legacy mirror)
     {

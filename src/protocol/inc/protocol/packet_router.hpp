@@ -44,7 +44,7 @@ public:
 
     /// Attempt to dispatch the packet to a registered handler.
     /// Returns true if a handler was found and invoked, false otherwise.
-    bool dispatch(Packet const& packet, std::shared_ptr<network::Connection> connection) const;
+    bool dispatch(Packet const& packet, const std::shared_ptr<network::Connection>& connection) const;
 
     /// Returns the number of registered handlers (for diagnostics / tests).
     std::size_t handler_count() const;
