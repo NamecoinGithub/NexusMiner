@@ -182,7 +182,7 @@ void test_authoritative_miner_session_container_binding() {
     assert(info.connected);
     assert(info.authenticated);
     assert(info.falcon_authenticated);
-    assert(info.session_id == 0x12345678);
+    assert(info.session_id.get() == 0x12345678);
     assert(info.session_genesis == genesis);
     assert(info.falcon_pubkey == falcon_pubkey);
     assert(info.falcon_key_id == "2222222222222222");
@@ -220,7 +220,7 @@ void test_reward_binding_persists_across_session_restart() {
     context.start_session(0x87654321, {}, reconnect_genesis);
 
     const auto info = context.get_session_info();
-    assert(info.session_id == 0x87654321);
+    assert(info.session_id.get() == 0x87654321);
     assert(info.session_genesis == reconnect_genesis);
     assert(info.reward_address_string == "reward-address");
     assert(info.reward_hash == reward_hash);
@@ -299,8 +299,8 @@ void test_atomic_authenticated_session_commit_sets_auth_fields_together() {
     context.commit_authenticated_session(committed_session_id, falcon_pubkey, "atomic-session-key", genesis);
 
     const auto info = context.get_session_info();
-    assert(info.session_id == committed_session_id);
-    assert(info.session_epoch == context.get_session_epoch());
+    assert(info.session_id.get() == committed_session_id);
+    assert(info.session_epoch.get() == context.get_session_epoch());
     assert(info.authenticated);
     assert(info.falcon_authenticated);
     assert(info.falcon_pubkey == falcon_pubkey);
@@ -421,7 +421,7 @@ void test_reset_session_credentials_clears_atomic_auth_flags() {
     const std::array<uint8_t, 4> cleared_suffix{0, 0, 0, 0};
     // reset_session_credentials clears credential/auth flags but NOT session identity
     // (session_id, authenticated state, etc. persist — only crypto keys and readiness are reset)
-    assert(info.session_id == committed_session_id);
+    assert(info.session_id.get() == committed_session_id);
     assert(!info.falcon_authenticated);
     assert(info.chacha20_session_key.empty());
     assert(info.chacha20_key_fingerprint.empty());
@@ -453,8 +453,8 @@ void test_multiple_session_contexts_do_not_overlap() {
     auto info_a = context_a.get_session_info();
     auto info_b = context_b.get_session_info();
 
-    assert(info_a.session_id == 0x11111111);
-    assert(info_b.session_id == 0x22222222);
+    assert(info_a.session_id.get() == 0x11111111);
+    assert(info_b.session_id.get() == 0x22222222);
     assert(info_a.reward_address_string == "reward-a");
     assert(info_b.reward_address_string == "reward-b");
     assert(info_a.falcon_key_id == "aaaaaaaaaaaaaaaa");
@@ -495,21 +495,21 @@ void test_session_epoch_advances_across_session_restarts() {
 
     context.start_session(0x11111111);
     const auto first_info = context.get_session_info();
-    assert(first_info.session_id == 0x11111111);
-    assert(first_info.session_epoch == context.get_session_epoch());
-    assert(first_info.session_epoch > 0);
+    assert(first_info.session_id.get() == 0x11111111);
+    assert(first_info.session_epoch.get() == context.get_session_epoch());
+    assert(first_info.session_epoch.get() > 0);
 
     context.end_session();
-    assert(context.get_session_epoch() == first_info.session_epoch);
+    assert(context.get_session_epoch() == first_info.session_epoch.get());
 
     context.start_session(0x22222222);
     const auto second_info = context.get_session_info();
-    assert(second_info.session_id == 0x22222222);
-    assert(second_info.session_epoch == context.get_session_epoch());
-    assert(second_info.session_epoch > first_info.session_epoch);
+    assert(second_info.session_id.get() == 0x22222222);
+    assert(second_info.session_epoch.get() == context.get_session_epoch());
+    assert(second_info.session_epoch.get() > first_info.session_epoch.get());
 
     const auto diagnostics = context.build_miner_session_diagnostics();
-    assert(diagnostics.find("session_epoch: " + std::to_string(second_info.session_epoch)) != std::string::npos);
+    assert(diagnostics.find("session_epoch: " + std::to_string(second_info.session_epoch.get())) != std::string::npos);
 
     std::cout << "Session epoch advancement test passed!" << std::endl;
 }
@@ -528,7 +528,7 @@ void test_runtime_snapshot_is_authoritative_copy() {
 
     const auto authenticated_snapshot = context.get_runtime_snapshot();
     const auto compatibility_snapshot = context.get_session_info();
-    assert(authenticated_snapshot.session_id == 0x1234ABCD);
+    assert(authenticated_snapshot.session_id.get() == 0x1234ABCD);
     assert(authenticated_snapshot.session_epoch == compatibility_snapshot.session_epoch);
     assert(authenticated_snapshot.state == SessionManager::SessionState::AUTHENTICATED);
     assert(authenticated_snapshot.falcon_key_id == "snapshot-key");
@@ -544,7 +544,7 @@ void test_runtime_snapshot_is_authoritative_copy() {
 
     context.end_session();
     const auto disconnected_snapshot = context.get_runtime_snapshot();
-    assert(disconnected_snapshot.session_id == 0);
+    assert(disconnected_snapshot.session_id.is_default());
     assert(disconnected_snapshot.state == SessionManager::SessionState::DISCONNECTED);
     assert(disconnected_snapshot.session_epoch == active_snapshot.session_epoch);
 

@@ -625,17 +625,17 @@ void Solo::refresh_cached_session_state(const char* log_scope)
     const auto session = m_session_context->get_runtime_snapshot();
     m_cached_runtime_state_generation = session.runtime_state_generation;
 
-    if (!m_has_seen_session_epoch || m_session_epoch != session.session_epoch) {
+    if (!m_has_seen_session_epoch || m_session_epoch != session.session_epoch.get()) {
         if (!m_has_seen_session_epoch) {
             m_logger->info("[{}] Resyncing local session epoch from authoritative session container: local={} authoritative={}",
-                           log_scope, m_session_epoch, session.session_epoch);
+                           log_scope, m_session_epoch, session.session_epoch.get());
         } else {
             m_logger->warn("[{}] Session epoch advanced: local={} authoritative={} — invalidating generation-bound cached state",
-                           log_scope, m_session_epoch, session.session_epoch);
+                           log_scope, m_session_epoch, session.session_epoch.get());
             clear_generation_bound_state("authoritative session epoch advanced");
         }
 
-        m_session_epoch = session.session_epoch;
+        m_session_epoch = session.session_epoch.get();
         m_has_seen_session_epoch = true;
         m_height_tracker.set_session_epoch(m_session_epoch);
     }
@@ -651,15 +651,15 @@ void Solo::refresh_cached_session_state(const char* log_scope)
         m_authenticated = session.authenticated;
     }
 
-    if (m_session_id != session.session_id) {
-        if (is_expected_cached_session_resync(m_session_id != 0, session.session_id != 0)) {
+    if (m_session_id != session.session_id.get()) {
+        if (is_expected_cached_session_resync(m_session_id != 0, !session.session_id.is_default())) {
             m_logger->info("[{}] Resyncing local session_id from authoritative session container after reconnect: local=0x{:08x} authoritative=0x{:08x}",
-                           log_scope, m_session_id, session.session_id);
+                           log_scope, m_session_id, session.session_id.get());
         } else {
             m_logger->warn("[{}] Local session_id drifted from authoritative session container mid-session: local=0x{:08x} authoritative=0x{:08x}",
-                           log_scope, m_session_id, session.session_id);
+                           log_scope, m_session_id, session.session_id.get());
         }
-        m_session_id = session.session_id;
+        m_session_id = session.session_id.get();
     }
 
     // Resync canonical identity bundle from the authoritative session container.
@@ -673,7 +673,7 @@ void Solo::refresh_cached_session_state(const char* log_scope)
         }
     }
 
-    if (session.authenticated && session.session_id != 0) {
+    if (session.authenticated && !session.session_id.is_default()) {
         propagate_session_to_template_interface(log_scope);
     }
 
@@ -987,8 +987,8 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
     const auto decision = PacketIngressPreflight::evaluate({
         true,
         session.authenticated,
-        session.session_id,
-        session.session_epoch,
+        session.session_id.get(),
+        session.session_epoch.get(),
         session.active_lane,
         m_protocol_lane,
         options.validate_lane,

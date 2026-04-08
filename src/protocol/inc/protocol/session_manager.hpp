@@ -108,8 +108,8 @@ public:
     // Full session info — new minimal fields plus backward-compat fields
     struct SessionInfo {
         // ── Core minimal fields (new design) ──────────────────────────────
-        uint32_t session_id{0};
-        uint64_t session_epoch{0};
+        SessionId session_id{};
+        SessionEpoch session_epoch{};
         uint64_t runtime_state_generation{0};
         SessionState state{SessionState::DISCONNECTED};
         ProtocolLane active_lane{ProtocolLane::UNKNOWN};
