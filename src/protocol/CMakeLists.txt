@@ -9,6 +9,7 @@ add_library(protocol STATIC src/protocol/solo.cpp
                             src/protocol/height_tracker.cpp
                             src/protocol/packet_builder.cpp
                             src/protocol/epoch_coordinator.cpp
+                            src/protocol/packet_router.cpp
                             ${CMAKE_SOURCE_DIR}/src/LLP/colin_ping_handler.cpp
                             ${CMAKE_SOURCE_DIR}/src/LLP/stateless_block_utility.cpp)
                     

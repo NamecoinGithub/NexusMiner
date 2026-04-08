@@ -250,8 +250,186 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             }
         }
     );
+
+    // Register all packet handlers with the table-driven router
+    register_packet_handlers();
 }
 
+void Solo::register_packet_handlers()
+{
+    using Pkt = Packet;
+
+    // Auth-related opcodes all route to the same handler (on_miner_auth_response
+    // discriminates internally based on the opcode).
+    auto auth_handler = [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_miner_auth_response(p, c);
+    };
+    m_packet_router.register_handler(Pkt::MINER_AUTH_CHALLENGE, auth_handler);
+    m_packet_router.register_handler(Pkt::MINER_AUTH_RESULT,    auth_handler);
+    m_packet_router.register_handler(Pkt::CHANNEL_ACK,          auth_handler);
+    m_packet_router.register_handler(Pkt::SESSION_START,        auth_handler);
+    m_packet_router.register_handler(Pkt::SESSION_KEEPALIVE,    auth_handler);
+    m_packet_router.register_handler(Pkt::MINER_REWARD_RESULT,  auth_handler);
+
+    // BLOCK_DATA → on_block_data
+    m_packet_router.register_handler(Pkt::BLOCK_DATA, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_block_data(p, c);
+    });
+
+    // ACCEPT / GOOD_BLOCK → on_block_accepted
+    auto accept_handler = [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_block_accepted(p, c);
+    };
+    m_packet_router.register_handler(Pkt::ACCEPT, accept_handler);
+    m_packet_router.register_handler(LLP::GOOD_BLOCK, accept_handler);
+
+    // REJECT / ORPHAN_BLOCK → on_block_rejected
+    auto reject_handler = [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_block_rejected(p, c);
+    };
+    m_packet_router.register_handler(Pkt::REJECT, reject_handler);
+    m_packet_router.register_handler(LLP::ORPHAN_BLOCK, reject_handler);
+
+    // NEW_ROUND / OLD_ROUND → on_get_round_response
+    auto round_handler = [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_get_round_response(p, c);
+    };
+    m_packet_router.register_handler(Pkt::NEW_ROUND, round_handler);
+    m_packet_router.register_handler(Pkt::OLD_ROUND, round_handler);
+
+    // SESSION_EXPIRED → on_session_expired
+    m_packet_router.register_handler(Pkt::SESSION_EXPIRED, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_session_expired(p, c);
+    });
+
+    // Push notifications → on_push_notification with channel
+    m_packet_router.register_handler(Pkt::PRIME_BLOCK_AVAILABLE, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_push_notification(p, c, mining::CHANNEL_PRIME);
+    });
+    m_packet_router.register_handler(Pkt::HASH_BLOCK_AVAILABLE, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_push_notification(p, c, mining::CHANNEL_HASH);
+    });
+
+    // Stateless GET_BLOCK response (uint16_t only — no legacy mirror)
+    m_packet_router.register_handler(Pkt::GET_BLOCK, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        // Only stateless-lane packets (the handler itself checks internally)
+        if (p.m_is_uint16_opcode) {
+            on_stateless_get_block(p, c);
+        }
+    });
+
+    // Colin AI Diagnostic PING (0xE0)
+    m_packet_router.register_handler(0xE0, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_ping_diag(p, c);
+    });
+
+    // SESSION_STATUS_ACK (raw handlers — these opcodes have no legacy mirror)
+    auto status_ack_handler = [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_session_status_ack(p, c);
+    };
+    m_packet_router.register_raw_handler(
+        static_cast<uint16_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK), status_ack_handler);
+    m_packet_router.register_raw_handler(
+        static_cast<uint16_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY), status_ack_handler);
+
+    // NODE_SHUTDOWN → handled inline in process_messages (it reads frame data and
+    // fires the m_node_shutdown_handler callback, which is tightly coupled to the
+    // pre-dispatch preamble).  Registered here for completeness so the router
+    // recognizes it and does not log "invalid header".
+    m_packet_router.register_handler(Pkt::NODE_SHUTDOWN, [this](Pkt const& p, std::shared_ptr<network::Connection> /*c*/) {
+        ::LLP::NodeShutdownFrame frame;
+        static const std::vector<uint8_t> empty_vec;
+        const auto& payload = p.m_data ? *p.m_data : empty_vec;
+        if (frame.Parse(payload)) {
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason={}) — stopping workers",
+                frame.ReasonString());
+            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+        } else {
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason=UNKNOWN, no payload) — stopping workers");
+            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+        }
+        if (m_node_shutdown_handler)
+            m_node_shutdown_handler(frame.reason);
+    });
+
+    // BLOCK_REWARD → inline (small, self-contained)
+    m_packet_router.register_handler(Pkt::BLOCK_REWARD, [this](Pkt const& p, std::shared_ptr<network::Connection> /*c*/) {
+        if (!p.m_data || p.m_length < 8) {
+            m_logger->warn("Solo::process_messages: BLOCK_REWARD packet has invalid data or length < 8");
+            return;
+        }
+        m_current_reward = bytes2uint64(*p.m_data);
+        m_logger->info("[Solo] Received BLOCK_REWARD: reward={}", m_current_reward);
+    });
+
+    // BLOCK_HEIGHT (opcode 0x02 / 0xD002) — with compat disambiguation.
+    // 0xD002 with length 0 is BLOCK_ACCEPTED_COMPAT (routed to on_block_accepted).
+    // 0xD003 with length ≤ 1 is BLOCK_REJECTED_COMPAT — but 0xD003 unmirrors to
+    // SET_CHANNEL (0x03), so it doesn't collide with BLOCK_HEIGHT (0x02).
+    // We only need to check for BLOCK_ACCEPTED_COMPAT here.
+    m_packet_router.register_handler(Pkt::BLOCK_HEIGHT, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        // Check for BLOCK_ACCEPTED_COMPAT (0xD002 with zero-length payload)
+        if (p.m_is_uint16_opcode &&
+            p.m_header == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT &&
+            p.m_length == 0) {
+            on_block_accepted(p, c);
+            return;
+        }
+
+        // Normal BLOCK_HEIGHT processing
+        if (!p.m_data || p.m_length < 4) {
+            m_logger->warn("Solo::process_messages: BLOCK_HEIGHT packet has invalid data or length < 4");
+            return;
+        }
+
+        auto const height = bytes2uint(*p.m_data);
+        m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
+
+        auto snap = m_height_tracker.GetSnapshot();
+        uint32_t known_height = snap.unified_height > 0 ? snap.unified_height : m_current_height;
+
+        if (height > known_height) {
+            m_logger->info("Nexus Network: New height {} (old height: {})", height, known_height);
+            m_current_height = height;  // diagnostic only
+
+            m_logger->info("[Solo] Height updated, requesting work via GET_BLOCK");
+            auto work_payload = get_work(GetBlockReason::INITIAL_REQUEST);
+            if (work_payload && !work_payload->empty()) {
+                try {
+                    c->transmit(work_payload);
+                    mark_get_block_pending(GetBlockReason::INITIAL_REQUEST);
+                } catch (const std::exception& e) {
+                    m_logger->error("[Solo] transmit failed: {}", e.what());
+                }
+            } else {
+                m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
+            }
+        } else if (height == known_height) {
+            m_logger->debug("[Solo] Height unchanged ({}), no action needed", height);
+        } else {
+            m_logger->warn("[Solo] Received older height {} (current: {})", height, known_height);
+        }
+    });
+
+    // SET_CHANNEL (opcode 0x03 / 0xD003) — with BLOCK_REJECTED_COMPAT disambiguation.
+    // 0xD003 with length ≤ 1 is BLOCK_REJECTED_COMPAT (routed to on_block_rejected).
+    // Normal SET_CHANNEL packets have different lengths and are not currently handled,
+    // but this registration ensures the compat case is dispatched correctly.
+    m_packet_router.register_handler(Pkt::SET_CHANNEL, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        if (p.m_is_uint16_opcode &&
+            p.m_header == LLP::StatelessMining::BLOCK_REJECTED_COMPAT &&
+            p.m_length <= 1) {
+            on_block_rejected(p, c);
+            return;
+        }
+        // Normal SET_CHANNEL — currently no handler (node-initiated channel acknowledgement)
+        m_logger->debug("[Solo] Received SET_CHANNEL packet — no action");
+    });
+}
 std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t>& genesis)
 {
     // IMPORTANT: Use genesis bytes exactly as parsed/configured; do not reverse them
@@ -1753,166 +1931,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo] ══════════════════════════════════════════════");
     }
     
-    const bool is_block_accepted_compat =
-        packet.m_is_uint16_opcode &&
-        packet.m_header == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT &&
-        packet.m_length == 0;
-    // Some nodes include a 1-byte rejection reason with 0xD003.
-    const bool is_block_rejected_compat =
-        packet.m_is_uint16_opcode &&
-        packet.m_header == LLP::StatelessMining::BLOCK_REJECTED_COMPAT &&
-        packet.m_length <= 1;
-    
-    // 0xD002/0xD003 may be used as stateless response aliases by some nodes.
-    // Exclude those compatibility responses from normal BLOCK_HEIGHT parsing.
-    if (matches_opcode(packet, Packet::BLOCK_HEIGHT) &&
-        !is_block_accepted_compat &&
-        !is_block_rejected_compat)
-    {
-        // Validate packet data before processing
-        if (!packet.m_data || packet.m_length < 4) {
-            m_logger->warn("Solo::process_messages: BLOCK_HEIGHT packet has invalid data or length < 4");
-            return;
-        }
-        
-        auto const height = bytes2uint(*packet.m_data);
-        
-        // Log the received height information
-        m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
-        
-        // Use HeightTracker snapshot for comparison (single source of truth).
-        // Fall back to m_current_height only during startup before any GET_ROUND/push
-        // notification has been received (unified_height == 0 in that case).
-        // m_current_height is kept as a diagnostic-only reference.
-        auto snap = m_height_tracker.GetSnapshot();
-        uint32_t known_height = snap.unified_height > 0 ? snap.unified_height : m_current_height;
-        
-        if (height > known_height)
-        {
-            m_logger->info("Nexus Network: New height {} (old height: {})", height, known_height);
-            m_current_height = height;  // diagnostic only
-            
-            // After receiving height, request actual work via GET_BLOCK
-            m_logger->info("[Solo] Height updated, requesting work via GET_BLOCK");
-            auto work_payload = get_work(GetBlockReason::INITIAL_REQUEST);
-            if (work_payload && !work_payload->empty()) {
-                try {
-                    connection->transmit(work_payload);
-                    mark_get_block_pending(GetBlockReason::INITIAL_REQUEST);
-                } catch (const std::exception& e) {
-                    m_logger->error("[Solo] transmit failed: {}", e.what());
-                }
-            } else {
-                m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
-            }
-        }
-        else
-        {
-            // Height is unchanged or older than current
-            if (height == known_height) {
-                m_logger->debug("[Solo] Height unchanged ({}), no action needed", height);
-            } else {
-                m_logger->warn("[Solo] Received older height {} (current: {})", height, known_height);
-            }
-        }
-    }
-    // Handle BLOCK_REWARD response
-    else if (matches_opcode(packet, Packet::BLOCK_REWARD))
-    {
-        // Validate packet data before processing
-        if (!packet.m_data || packet.m_length < 8) {
-            m_logger->warn("Solo::process_messages: BLOCK_REWARD packet has invalid data or length < 8");
-            return;
-        }
-        
-        // Parse reward using bytes2uint64 (consistent with bytes2uint - big-endian byte order)
-        m_current_reward = bytes2uint64(*packet.m_data);
-        
-        m_logger->info("[Solo] Received BLOCK_REWARD: reward={}", m_current_reward);
-    }
-    // Block from wallet received
-    else if (matches_opcode(packet, Packet::BLOCK_DATA))
-    {
-        on_block_data(packet, connection);
-    }
-    else if (matches_opcode(packet, Packet::ACCEPT) || is_block_accepted_compat ||
-             matches_opcode(packet, LLP::GOOD_BLOCK))
-    {
-        on_block_accepted(packet, connection);
-    }
-    else if (matches_opcode(packet, Packet::REJECT) || is_block_rejected_compat ||
-             matches_opcode(packet, LLP::ORPHAN_BLOCK))
-    {
-        on_block_rejected(packet, connection);
-    }
-    else if (matches_opcode(packet, Packet::NEW_ROUND) || matches_opcode(packet, Packet::OLD_ROUND))
-    {
-        on_get_round_response(packet, connection);
-    }
-    else if (matches_opcode(packet, Packet::MINER_AUTH_CHALLENGE) ||
-             matches_opcode(packet, Packet::MINER_AUTH_RESULT)    ||
-             matches_opcode(packet, Packet::CHANNEL_ACK)          ||
-             matches_opcode(packet, Packet::SESSION_START)        ||
-             matches_opcode(packet, Packet::SESSION_KEEPALIVE)    ||
-             matches_opcode(packet, Packet::MINER_REWARD_RESULT))
-    {
-        on_miner_auth_response(packet, connection);
-    }
-    else if (matches_opcode(packet, Packet::SESSION_EXPIRED))
-    {
-        on_session_expired(packet, connection);
-    }
-    else if (matches_opcode(packet, Packet::PRIME_BLOCK_AVAILABLE))
-    {
-        on_push_notification(packet, connection, mining::CHANNEL_PRIME);
-    }
-    else if (matches_opcode(packet, Packet::HASH_BLOCK_AVAILABLE))
-    {
-        on_push_notification(packet, connection, mining::CHANNEL_HASH);
-    }
-    else if (matches_stateless_opcode(packet, Packet::GET_BLOCK))
-    {
-        on_stateless_get_block(packet, connection);
-    }
-    else if (matches_opcode(packet, 0xE0))
-    {
-        on_ping_diag(packet, connection);
-    }
-    else if (packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK)
-          || packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY))
-    {
-        on_session_status_ack(packet, connection);
-    }
     // ═══════════════════════════════════════════════════════════════════════
-    // NODE_SHUTDOWN (0xD0FF / legacy 0xFF) — graceful shutdown notice from node
+    // TABLE-DRIVEN DISPATCH (via PacketRouter)
     // ═══════════════════════════════════════════════════════════════════════
-    else if(matches_opcode(packet, Packet::NODE_SHUTDOWN))
-    {
-        ::LLP::NodeShutdownFrame frame;
-        static const std::vector<uint8_t> empty_vec;
-        const auto& payload = packet.m_data ? *packet.m_data : empty_vec;
-        if(frame.Parse(payload))
-        {
-            m_logger->warn("[Solo] ════════════════════════════════════════════════");
-            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason={}) — stopping workers",
-                frame.ReasonString());
-            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
-            m_logger->warn("[Solo] ════════════════════════════════════════════════");
-        }
-        else
-        {
-            m_logger->warn("[Solo] ════════════════════════════════════════════════");
-            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason=UNKNOWN, no payload) — stopping workers");
-            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
-            m_logger->warn("[Solo] ════════════════════════════════════════════════");
-        }
-
-        // Notify Worker_manager to stop workers and set reconnect backoff
-        if(m_node_shutdown_handler)
-            m_node_shutdown_handler(frame.reason);
-    }
-    else
-    {
+    // All handler registrations live in register_packet_handlers() (called
+    // once from the constructor).  The router canonicalizes uint16_t opcodes
+    // to their legacy mirror before lookup, and handles raw (unmirror-able)
+    // opcodes via a separate table.
+    if (!m_packet_router.dispatch(packet, connection)) {
         m_logger->debug("Invalid header received: 0x{:04x}", packet.m_header);
     } 
 }
