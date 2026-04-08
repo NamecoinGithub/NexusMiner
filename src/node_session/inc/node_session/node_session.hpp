@@ -90,7 +90,7 @@ public:
      * @brief Session authenticated handler
      * @param session_id Session ID (0 if authentication failed)
      */
-    using Session_authenticated_handler = std::function<void(uint32_t session_id)>;
+    using Session_authenticated_handler = std::function<void(protocol::SessionId session_id)>;
 
     /**
      * @brief Session start handler
@@ -142,7 +142,7 @@ public:
      * @brief Get the session ID
      * @return Session ID (0 if not authenticated)
      */
-    uint32_t session_id() const;
+    protocol::SessionId session_id() const;
 
     /**
      * @brief Check if authenticated

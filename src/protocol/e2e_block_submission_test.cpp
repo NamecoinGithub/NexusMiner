@@ -141,20 +141,20 @@ static std::unique_ptr<MiningTemplateInterface> make_loaded_mti(uint32_t channel
 
 static void test_height_tracker_snapshot_carries_session_epoch() {
     HeightTracker tracker;
-    tracker.set_session_epoch(42);
+    tracker.set_session_epoch(SessionEpoch(uint64_t{42}));
     auto snap = tracker.GetSnapshot();
-    print_result("HeightTracker snapshot carries authoritative session epoch", snap.session_epoch == 42);
+    print_result("HeightTracker snapshot carries authoritative session epoch", snap.session_epoch == SessionEpoch(uint64_t{42}));
 }
 
 static void test_template_interface_stamps_session_epoch() {
     MiningTemplateInterface mti_hash(2, 0);
-    mti_hash.set_session_epoch(11);
+    mti_hash.set_session_epoch(SessionEpoch(uint64_t{11}));
     auto payload = make_template_payload(6000000, 2000000, DEFAULT_DIFFICULTY,
                                          8, 2, 6000001, DEFAULT_DIFFICULTY, 0);
     auto result = mti_hash.read_stateless_payload(payload, "test");
     const auto* tmpl = mti_hash.get_current_template();
 
-    bool ok = result.is_valid && tmpl != nullptr && tmpl->session_epoch == 11;
+    bool ok = result.is_valid && tmpl != nullptr && tmpl->session_epoch == SessionEpoch(uint64_t{11});
     print_result("MiningTemplateInterface stamps templates with authoritative session epoch", ok);
 }
 

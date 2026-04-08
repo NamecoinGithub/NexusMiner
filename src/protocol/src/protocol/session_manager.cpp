@@ -16,8 +16,9 @@ namespace protocol {
 
 constexpr uint16_t MIN_KEEPALIVE_HOURS = 1;
 constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
-constexpr auto KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);
-constexpr auto KEEPALIVE_TCP_INTERVAL   = std::chrono::seconds(170);
+
+// First keepalive sent 10 seconds after auth — immediate session liveness proof.
+constexpr auto SESSION_KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);
 
 namespace {
 
@@ -170,7 +171,7 @@ void SessionManager::set_epoch_coordinator(std::shared_ptr<EpochCoordinator> coo
     // value so the monotonic invariant is preserved in both directions.
     if (m_epoch_coordinator) {
         const auto coord_epoch = m_epoch_coordinator->session_epoch();
-        m_session.session_epoch = SessionEpoch(std::max(m_session.session_epoch.get(), coord_epoch));
+        m_session.session_epoch = SessionEpoch(std::max(m_session.session_epoch.get(), coord_epoch.get()));
     }
     bump_runtime_state_generation_locked();
 }
@@ -203,7 +204,7 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     // regress to 0.
     if (m_epoch_coordinator) {
         const auto coord_epoch = m_epoch_coordinator->session_epoch();
-        m_session.session_epoch = SessionEpoch(std::max(saved_epoch.get(), coord_epoch));
+        m_session.session_epoch = SessionEpoch(std::max(saved_epoch.get(), coord_epoch.get()));
     } else {
         m_session.session_epoch = saved_epoch;
     }
@@ -219,7 +220,7 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     m_canonical_identity = SessionIdentity{};
 }
 
-void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
+void SessionManager::transition_to_authenticated_locked(SessionId session_id,
                                                          const std::vector<uint8_t>& tritium_genesis)
 {
     if (m_epoch_coordinator) {
@@ -229,7 +230,7 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
             m_logger->warn("[SessionManager] EpochCoordinator not wired — using local session_epoch counter. "
                            "Call set_epoch_coordinator() before sessions begin to enable global epoch sync.");
         }
-        m_session.session_epoch = SessionEpoch(m_session.session_epoch.get() + 1);
+        m_session.session_epoch = m_session.session_epoch.next();
     }
     m_session.session_id = SessionId(session_id);
     m_session.state = SessionState::AUTHENTICATED;
@@ -255,7 +256,7 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
     }
     m_canonical_identity = SessionIdentity(
         session_id,
-        m_session.session_epoch.get(),
+        m_session.session_epoch,
         m_session.session_genesis,
         m_session.chacha20_session_key,
         std::move(pubkey_hash),
@@ -263,7 +264,7 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
 
     record_session_event_locked(SessionEventKind::AUTH_SUCCESS, "authenticated");
     std::ostringstream sid_oss;
-    sid_oss << "session_id=0x" << std::hex << std::setw(8) << std::setfill('0') << session_id;
+    sid_oss << "session_id=0x" << std::hex << std::setw(8) << std::setfill('0') << session_id.get();
     record_session_event_locked(SessionEventKind::SESSION_START, sid_oss.str());
 }
 
@@ -322,7 +323,7 @@ void SessionManager::begin_auth()
     begin_auth_handshake("auth started");
 }
 
-void SessionManager::commit_authenticated(uint32_t session_id, ProtocolLane lane,
+void SessionManager::commit_authenticated(SessionId session_id, ProtocolLane lane,
                                           const std::string& reward_address)
 {
     {
@@ -387,7 +388,7 @@ void SessionManager::begin_auth_handshake(const std::string& detail)
     bump_runtime_state_generation_locked();
 }
 
-void SessionManager::commit_authenticated_session(uint32_t session_id,
+void SessionManager::commit_authenticated_session(SessionId session_id,
                                                    const std::vector<uint8_t>& pubkey,
                                                    const std::string& key_id,
                                                    const std::vector<uint8_t>& tritium_genesis)
@@ -408,10 +409,10 @@ void SessionManager::commit_authenticated_session(uint32_t session_id,
         bump_runtime_state_generation_locked();
     }
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
-                   session_id, get_session_epoch());
+                   session_id.get(), get_session_epoch().get());
 }
 
-void SessionManager::start_session(uint32_t session_id,
+void SessionManager::start_session(SessionId session_id,
                                     const std::vector<uint8_t>& session_key,
                                     const std::vector<uint8_t>& tritium_genesis)
 {
@@ -428,7 +429,7 @@ void SessionManager::start_session(uint32_t session_id,
         bump_runtime_state_generation_locked();
     }
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
-                   session_id, get_session_epoch());
+                   session_id.get(), get_session_epoch().get());
 }
 
 void SessionManager::mark_session_expired(const std::string& reason)
@@ -761,11 +762,6 @@ void SessionManager::set_keepalive_interval(uint16_t hours)
         m_keepalive_interval_hours = MAX_KEEPALIVE_HOURS;
 }
 
-void SessionManager::set_keepalive_interval_seconds(uint32_t /*seconds*/)
-{
-    // no-op in minimal design — TCP keepalive is fixed at 45s
-}
-
 void SessionManager::set_prevblock_suffix(const std::array<uint8_t, 4>& suffix)
 {
     SessionWriteLock lock(m_session_mutex);
@@ -937,16 +933,16 @@ std::string SessionManager::build_miner_session_diagnostics() const
     return oss.str();
 }
 
-uint32_t SessionManager::get_session_id() const
+SessionId SessionManager::get_session_id() const
 {
     SessionReadLock lock(m_session_mutex);
-    return m_session.session_id.get();
+    return m_session.session_id;
 }
 
-uint64_t SessionManager::get_session_epoch() const
+SessionEpoch SessionManager::get_session_epoch() const
 {
     SessionReadLock lock(m_session_mutex);
-    return m_session.session_epoch.get();
+    return m_session.session_epoch;
 }
 
 uint64_t SessionManager::peek_runtime_state_generation() const noexcept
@@ -1066,6 +1062,19 @@ std::string SessionManager::build_session_event_journal() const
 }
 
 // ── Keepalive timer ───────────────────────────────────────────────────────────
+//
+// Sends SESSION_KEEPALIVE packets to the node to extend the session timeout.
+//
+// Timing is derived from the node's advertised session timeout (from
+// SESSION_START) divided by KEEPALIVE_SAFETY_DIVISOR (4):
+//   e.g. 24-hour timeout → keepalive every 6 hours (4 pings per window).
+//
+// Sequence:
+//   1) Early ping at +10s after auth (immediate session liveness proof)
+//   2) Regular pings at m_keepalive_interval_hours intervals thereafter
+//
+// This replaced the previous 170s "TCP keepalive" timer which was a confusing
+// AI-generated artifact unrelated to actual TCP SO_KEEPALIVE.
 
 void SessionManager::start_keepalive_timer()
 {
@@ -1079,15 +1088,19 @@ void SessionManager::start_keepalive_timer()
     m_keepalive_active = true;
     auto self = shared_from_this();
     uint64_t generation = m_keepalive_generation.load();
-    m_keepalive_timer->expires_after(KEEPALIVE_EARLY_INTERVAL);
+    m_keepalive_timer->expires_after(SESSION_KEEPALIVE_EARLY_INTERVAL);
     m_keepalive_timer->async_wait([self, generation](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) return;
         if (generation != self->m_keepalive_generation.load()) return;
         self->send_keepalive("early");
         self->schedule_regular_keepalives(self);
     });
-    m_logger->info("[SessionManager] Keepalive timer started (early: {}s, TCP ping: {}s)",
-                  KEEPALIVE_EARLY_INTERVAL.count(), KEEPALIVE_TCP_INTERVAL.count());
+
+    auto regular_interval = get_keepalive_timer_interval();
+    m_logger->info("[SessionManager] Keepalive timer started (early: {}s, regular: {}s / {} hours)",
+                  SESSION_KEEPALIVE_EARLY_INTERVAL.count(),
+                  regular_interval.count(),
+                  m_keepalive_interval_hours);
 }
 
 void SessionManager::stop_keepalive_timer()
@@ -1103,13 +1116,25 @@ void SessionManager::schedule_regular_keepalives(const std::shared_ptr<SessionMa
 {
     if (!m_keepalive_timer || !m_keepalive_active) return;
     uint64_t generation = m_keepalive_generation.load();
-    m_keepalive_timer->expires_after(KEEPALIVE_TCP_INTERVAL);
+    auto interval = get_keepalive_timer_interval();
+    m_keepalive_timer->expires_after(interval);
     m_keepalive_timer->async_wait([self, generation](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) return;
         if (generation != self->m_keepalive_generation.load()) return;
         self->send_keepalive("regular");
         self->schedule_regular_keepalives(self);
     });
+}
+
+std::chrono::seconds SessionManager::get_keepalive_timer_interval() const
+{
+    // Convert hours to seconds.  m_keepalive_interval_hours is derived from
+    // the node's SESSION_START timeout_seconds / KEEPALIVE_SAFETY_DIVISOR.
+    // Overflow safe: MAX_KEEPALIVE_HOURS=168 → 168*3600=604800, well within int64_t.
+    auto seconds = static_cast<int64_t>(m_keepalive_interval_hours) * 3600;
+    // Floor at 60s to prevent tight-loop keepalives on misconfiguration
+    if (seconds < 60) seconds = 60;
+    return std::chrono::seconds(seconds);
 }
 
 void SessionManager::send_keepalive(const char* cadence)
@@ -1125,29 +1150,29 @@ void SessionManager::send_keepalive(const char* cadence)
         m_logger->warn("[SessionManager] Keepalive skipped - no session packet");
         return;
     }
-    uint32_t session_id;
+    uint32_t session_id_raw;
     {
         SessionWriteLock lock(m_session_mutex);
-        session_id = m_session.session_id.get();
+        session_id_raw = m_session.session_id.get();
         m_session.last_activity = now_epoch_seconds();
     }
     connection->transmit(payload);
-    m_logger->info("[SessionManager] SESSION_KEEPALIVE sent ({}) for session 0x{:08X}",
-                  cadence, session_id);
+    m_logger->info("[SessionManager] SESSION_KEEPALIVE sent ({}, next in {}h) for session 0x{:08X}",
+                  cadence, m_keepalive_interval_hours, session_id_raw);
 }
 
 network::Shared_payload SessionManager::build_keepalive_packet() const
 {
-    uint32_t session_id;
+    uint32_t session_id_raw;
     ProtocolLane lane;
     std::array<uint8_t, 4> prevblock_suffix;
     {
         SessionReadLock lock(m_session_mutex);
-        session_id = m_session.session_id.get();
+        session_id_raw = m_session.session_id.get();
         lane = m_protocol_lane;
         prevblock_suffix = m_session.prevblock_suffix;
     }
-    if (session_id == 0) return {};
+    if (session_id_raw == 0) return {};
     if (lane == ProtocolLane::UNKNOWN) {
         m_logger->error("[SessionManager] build_keepalive_packet(): UNKNOWN protocol lane");
         return {};
@@ -1158,10 +1183,10 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
     //   [4-7] hashPrevBlock_lo32  (raw prevblock_suffix bytes)
     std::vector<uint8_t> payload;
     payload.reserve(8);
-    payload.push_back(static_cast<uint8_t>( session_id        & 0xFF));
-    payload.push_back(static_cast<uint8_t>((session_id >>  8) & 0xFF));
-    payload.push_back(static_cast<uint8_t>((session_id >> 16) & 0xFF));
-    payload.push_back(static_cast<uint8_t>((session_id >> 24) & 0xFF));
+    payload.push_back(static_cast<uint8_t>( session_id_raw        & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id_raw >>  8) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id_raw >> 16) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id_raw >> 24) & 0xFF));
     payload.insert(payload.end(), prevblock_suffix.begin(), prevblock_suffix.end());
 
     Packet packet = (lane == ProtocolLane::STATELESS)
@@ -1177,14 +1202,14 @@ network::Shared_payload SessionManager::build_session_status_packet(
     bool degraded, bool has_template, bool workers_running, bool secondary_up) const
 {
     using namespace ::LLP::SessionStatusOpcodes;
-    uint32_t session_id;
+    uint32_t session_id_raw;
     ProtocolLane lane;
     {
         SessionReadLock lock(m_session_mutex);
-        session_id = m_session.session_id.get();
+        session_id_raw = m_session.session_id.get();
         lane = m_protocol_lane;
     }
-    if (session_id == 0) return {};
+    if (session_id_raw == 0) return {};
     if (lane == ProtocolLane::UNKNOWN) {
         m_logger->error("[SessionManager] build_session_status_packet(): UNKNOWN protocol lane");
         return {};
@@ -1197,7 +1222,7 @@ network::Shared_payload SessionManager::build_session_status_packet(
     if (secondary_up)    status_flags |= MINER_SECONDARY_UP;
 
     ::LLP::SessionStatusFrame frame;
-    frame.session_id   = session_id;
+    frame.session_id   = session_id_raw;
     frame.status_flags = status_flags;
     auto payload = frame.Serialize();
 

@@ -15,13 +15,13 @@ EpochCoordinator::EpochCoordinator()
     }
 }
 
-uint64_t EpochCoordinator::session_epoch() const
+SessionEpoch EpochCoordinator::session_epoch() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return m_session_epoch;
+    return SessionEpoch{m_session_epoch};
 }
 
-uint64_t EpochCoordinator::advance_session_epoch(const char* reason)
+SessionEpoch EpochCoordinator::advance_session_epoch(const char* reason)
 {
     std::vector<EpochObserver> observers_copy;
     uint64_t old_val{0};
@@ -39,7 +39,7 @@ uint64_t EpochCoordinator::advance_session_epoch(const char* reason)
     for (auto& obs : observers_copy) {
         obs("session", old_val, new_val);
     }
-    return new_val;
+    return SessionEpoch{new_val};
 }
 
 uint64_t EpochCoordinator::recovery_epoch() const
@@ -84,7 +84,7 @@ void EpochCoordinator::add_observer(EpochObserver observer)
 EpochCoordinator::Snapshot EpochCoordinator::snapshot() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return {m_session_epoch, m_recovery_epoch, std::max(m_session_epoch, m_recovery_epoch)};
+    return {SessionEpoch{m_session_epoch}, m_recovery_epoch, std::max(m_session_epoch, m_recovery_epoch)};
 }
 
 std::string EpochCoordinator::diagnostics() const

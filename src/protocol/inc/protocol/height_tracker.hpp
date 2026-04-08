@@ -8,6 +8,7 @@
 #include <string>
 #include <optional>
 #include "LLC/types/uint1024.h"
+#include "protocol/session_semantic_types.hpp"
 
 namespace nexusminer {
 namespace protocol {
@@ -229,7 +230,7 @@ public:
      *   TARGET = next block to mine (tip + 1)
      */
     struct Snapshot {
-        uint64_t session_epoch{0};           ///< Authoritative session epoch captured with this snapshot
+        SessionEpoch session_epoch{};        ///< Authoritative session epoch captured with this snapshot
         uint32_t unified_height{0};          ///< Unified blockchain TIP — Source: BLOCK_DATA (canonical only)
         uint32_t channel_height{0};          ///< Channel-specific TIP — Source: BLOCK_DATA (canonical only)
         uint32_t push_channel_height{0};     ///< Channel TIP from latest push notification — Source: PUSH (diagnostic)
@@ -636,7 +637,7 @@ public:
      * stale-epoch keepalive responses cannot falsely signal liveness in the new
      * epoch's escape ladder (check_template_health ack_recent computation).
      */
-    void set_session_epoch(uint64_t session_epoch);
+    void set_session_epoch(SessionEpoch session_epoch);
 
     /**
      * @brief Return a snapshot of canonical chain state only
@@ -679,7 +680,7 @@ private:
     UpdateSource m_last_update_source{UpdateSource::NONE};
     std::chrono::steady_clock::time_point m_last_height_update{};
     std::chrono::steady_clock::time_point m_last_template_update{};
-    uint64_t m_session_epoch{0};
+    SessionEpoch m_session_epoch{};
 
     // Latest non-zero difficulty from any non-keepalive source (push, GET_ROUND, block data).
     // Difficulty doesn't suffer from the height-regression problem, so the latest value wins.

@@ -47,7 +47,7 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     
     // Initialize template as empty
     m_current_template.state = TemplateState::INVALID;
-    m_current_template.session_id = session_id;
+    m_current_template.session_id = SessionId{session_id};
     m_current_template.session_epoch = m_session_epoch;
     m_current_template.timestamp_received = 0;
     m_current_template.nChannelHeight = 0;
@@ -91,11 +91,21 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     m_logger->debug("[TemplateInterface] READ: Processing template ({} bytes) from {}", 
         data.size(), source_endpoint.empty() ? "unknown" : source_endpoint);
     
+    // Snapshot session fields under the lock to avoid data races with
+    // set_session_id/epoch/identity() which write under m_template_mutex.
+    SessionId snapshot_session_id;
+    SessionEpoch snapshot_session_epoch;
+    {
+        std::lock_guard<std::mutex> lock(m_template_mutex);
+        snapshot_session_id = m_session_id;
+        snapshot_session_epoch = m_session_epoch;
+    }
+
     // Parse the block header
     MiningTemplate tmpl;
     tmpl.state = TemplateState::PENDING;
-    tmpl.session_id = m_session_id;
-    tmpl.session_epoch = m_session_epoch;
+    tmpl.session_id = snapshot_session_id;
+    tmpl.session_epoch = snapshot_session_epoch;
     tmpl.source_endpoint = source_endpoint;
     tmpl.timestamp_received = static_cast<uint64_t>(
         std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
@@ -660,22 +670,22 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     return payload;
 }
 
-void MiningTemplateInterface::set_session_id(uint32_t session_id)
+void MiningTemplateInterface::set_session_id(SessionId session_id)
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
     
     m_session_id = session_id;
     m_current_template.session_id = session_id;
-    m_logger->info("[TemplateInterface] Session ID set to 0x{:08x}", session_id);
+    m_logger->info("[TemplateInterface] Session ID set to 0x{:08x}", session_id.get());
 }
 
-void MiningTemplateInterface::set_session_epoch(uint64_t session_epoch)
+void MiningTemplateInterface::set_session_epoch(SessionEpoch session_epoch)
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
 
     m_session_epoch = session_epoch;
     m_current_template.session_epoch = session_epoch;
-    m_logger->info("[TemplateInterface] Session epoch set to {}", session_epoch);
+    m_logger->info("[TemplateInterface] Session epoch set to {}", session_epoch.get());
 }
 
 void MiningTemplateInterface::set_session_identity(const SessionIdentity& identity)

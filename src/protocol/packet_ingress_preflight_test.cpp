@@ -77,15 +77,15 @@ PacketIngressPreflight::Input make_input(const AuthSession& s,
     PacketIngressPreflight::Input in;
     in.has_authoritative_session      = true;
     in.authoritative_authenticated    = s.authenticated;
-    in.authoritative_session_id       = s.session_id;
-    in.authoritative_session_epoch    = s.session_epoch;
+    in.authoritative_session_id       = SessionId(s.session_id);
+    in.authoritative_session_epoch    = SessionEpoch(s.session_epoch);
     in.authoritative_lane             = s.active_lane;
     in.packet_lane                    = packet_lane;
     in.validate_lane                  = validate_lane;
     in.allow_without_active_session   = allow_without;
-    in.packet_session_id              = packet_session_id;
-    in.owner_epoch                    = owner_epoch;
-    in.owner_session_id               = owner_session_id;
+    in.packet_session_id              = SessionId(packet_session_id);
+    in.owner_epoch                    = SessionEpoch(owner_epoch);
+    in.owner_session_id               = SessionId(owner_session_id);
     return in;
 }
 
@@ -306,10 +306,10 @@ void test_recovery_allows_matching_session_expired()
     std::cout << "\nTest: SessionRecoveryPolicy — SESSION_EXPIRED with matching session_id allows recovery\n";
 
     const auto decision = SessionRecoveryPolicy::evaluate_session_expired({
-        true,           // has_authoritative_session
-        0xABCD1234,     // expired_session_id
-        0xABCD1234,     // authoritative_session_id (matches)
-        0x01            // reason_code
+        true,                       // has_authoritative_session
+        SessionId(0xABCD1234u),     // expired_session_id
+        SessionId(0xABCD1234u),     // authoritative_session_id (matches)
+        0x01                        // reason_code
     });
 
     print_test_result("allow_recovery is true",     decision.allow_recovery);
@@ -322,8 +322,8 @@ void test_recovery_ignores_stale_replay_session_expired()
 
     const auto decision = SessionRecoveryPolicy::evaluate_session_expired({
         true,
-        0xDEADBEEF,    // expired_session_id (stale/old)
-        0xABCD1234,    // authoritative_session_id (current)
+        SessionId(0xDEADBEEFu),    // expired_session_id (stale/old)
+        SessionId(0xABCD1234u),    // authoritative_session_id (current)
         0x01
     });
 
@@ -336,9 +336,9 @@ void test_recovery_ignores_session_expired_when_no_authoritative_session()
     std::cout << "\nTest: SessionRecoveryPolicy — SESSION_EXPIRED without authoritative session is stale replay\n";
 
     const auto decision = SessionRecoveryPolicy::evaluate_session_expired({
-        false,          // has_authoritative_session = false
-        0x00000001,
-        0x00000000,
+        false,                      // has_authoritative_session = false
+        SessionId(0x00000001u),
+        SessionId(0x00000000u),
         0x01
     });
 
@@ -352,8 +352,8 @@ void test_recovery_allows_zero_session_id_when_both_zero()
 
     const auto decision = SessionRecoveryPolicy::evaluate_session_expired({
         true,
-        0x00000000,    // expired matches
-        0x00000000,    // authoritative
+        SessionId(0x00000000u),    // expired matches
+        SessionId(0x00000000u),    // authoritative
         0x01
     });
 

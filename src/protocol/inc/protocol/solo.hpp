@@ -172,7 +172,7 @@ public:
     // Sends SESSION_KEEPALIVE via SessionManager (8-byte v2 payload: session_id + prevhash_lo32).
     // Node replies with the 32-byte unified KeepAliveV2AckFrame carrying all channel heights.
     network::Shared_payload send_session_keepalive();
-    std::uint32_t get_session_id() const;
+    SessionId get_session_id() const;
     bool is_session_active() const;
 
     // Build a SESSION_STATUS packet for transmission on this lane.
@@ -239,7 +239,7 @@ public:
     // Session-authenticated callback: called after MINER_AUTH_RESULT is fully processed and session_id is set.
     // Worker_manager registers this to check session_id=0 and trigger retry if needed.
     // Parameter: session_id (0 if node rejected authentication).
-    using Session_authenticated_handler = std::function<void(uint32_t session_id)>;
+    using Session_authenticated_handler = std::function<void(SessionId session_id)>;
     void set_session_authenticated_handler(Session_authenticated_handler h) { m_session_authenticated_handler = std::move(h); }
 
     // Session-start callback: called when SESSION_START is received and keepalive interval
@@ -251,6 +251,10 @@ public:
     // Block-result counters (Gap 3)
     uint32_t get_blocks_accepted() const { return m_blocks_accepted.load(); }
     uint32_t get_blocks_rejected() const { return m_blocks_rejected.load(); }
+
+    // Shadow-ban telemetry: consecutive unanswered GET_ROUNDs and preflight rejections
+    uint32_t get_unanswered_get_round_count() const { return m_unanswered_get_round_count; }
+    uint32_t get_preflight_reject_count() const { return m_preflight_reject_count; }
 
     // Block-result callback: invoked on BLOCK_ACCEPTED with (height, hashPrevBlock, channel, nonce).
     // Worker_manager registers this to record accepted blocks in the mined-block cache.
@@ -328,11 +332,11 @@ private:
     // Session ID mismatch check — shared by KEEPALIVE_V2_ACK and SESSION_STATUS_ACK handlers.
     // Returns true if a mismatch was detected (state set to EXPIRED, handler called);
     // caller must return immediately when true is returned.
-    bool handle_session_id_mismatch(uint32_t ack_session_id);
+    bool handle_session_id_mismatch(SessionId ack_session_id);
 
     // Session expired handler — called when SESSION_EXPIRED (0xDD / 0xD0DD) packet is received
     // Implements 5-step response: log, clear state, stop workers, prepare for re-auth
-    void handle_session_expired(uint32_t expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection);
+    void handle_session_expired(SessionId expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection);
 
     // Challenge-response authentication methods
     void handle_miner_auth_challenge(const Packet& packet);
@@ -362,7 +366,7 @@ private:
     void log_session_container_summary(const char* log_scope) const;
     struct PacketIngressPreflightOptions {
         const SessionOwnershipStamp* owner{nullptr};
-        uint32_t packet_session_id{0};
+        SessionId packet_session_id{};
         bool allow_without_active_session{false};
         bool validate_lane{false};
         bool require_crypto_ready{false};
@@ -383,7 +387,7 @@ private:
     static const PacketIngressPreflightOptions kDefaultPacketIngressPreflightOptions;
     bool run_packet_ingress_preflight(
         const char* log_scope,
-        const PacketIngressPreflightOptions& options = kDefaultPacketIngressPreflightOptions) const;
+        const PacketIngressPreflightOptions& options = kDefaultPacketIngressPreflightOptions);
     bool ensure_session_ready_for_ingress(const char* log_scope,
                                           const char* packet_name,
                                           bool queue_post_auth_get_block);
@@ -508,8 +512,8 @@ private:
     std::vector<uint8_t> m_miner_pubkey;
     std::vector<uint8_t> m_miner_privkey;
     bool m_authenticated;
-    std::uint32_t m_session_id;
-    uint64_t m_session_epoch{0};
+    SessionId m_session_id;
+    SessionEpoch m_session_epoch{};
     bool m_has_seen_session_epoch{false};
     uint64_t m_cached_runtime_state_generation{0};
     SessionIdentity m_cached_identity{};  // Cached canonical identity from SessionManager
@@ -526,6 +530,22 @@ private:
     // self-expired once this reaches SESSION_MISMATCH_EXPIRE_THRESHOLD,
     // preventing premature expiry on late/replayed ACKs or node-side races.
     uint32_t m_session_id_mismatch_count{0};
+
+    // ── Shadow-ban detection ────────────────────────────────────────────────
+    // Counts consecutive packet-ingress preflight rejections for response
+    // packets (GET_ROUND replies, BLOCK_ACCEPTED/REJECTED, keepalive ACK).
+    // When the counter reaches SHADOW_BAN_PREFLIGHT_THRESHOLD the miner
+    // forces a full re-auth to break out of the "shadow ban" state where
+    // PUSH still arrives but all miner-initiated round-trips are silently
+    // dropped by the miner's own preflight logic.
+    uint32_t m_preflight_reject_count{0};
+    static constexpr uint32_t SHADOW_BAN_PREFLIGHT_THRESHOLD = 5;
+
+    // Unanswered GET_ROUND counter: incremented on each GET_ROUND send,
+    // reset to zero when a NEW_ROUND / OLD_ROUND response is processed.
+    // If this exceeds the shadow-ban threshold while PUSH is alive,
+    // the session is considered shadow-banned.
+    uint32_t m_unanswered_get_round_count{0};
 
     // Consecutive hashPrevBlock mismatch counter (chain-in-flux doom-loop guard).
     // Incremented each time validate_current_template() detects a hashPrevBlock mismatch

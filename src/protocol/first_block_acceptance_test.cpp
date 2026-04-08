@@ -320,7 +320,7 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
         return fail("session start payload did not preserve session metadata");
     }
 
-    context.start_session(parsed_session_id, {}, parsed_genesis);
+    context.start_session(SessionId(parsed_session_id), {}, parsed_genesis);
     context.set_state(SessionManager::SessionState::ACTIVE);
     const uint16_t keepalive_hours = static_cast<uint16_t>(
         std::max<uint32_t>(1u,

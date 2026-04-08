@@ -222,9 +222,9 @@ void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
     // protocol still triggers timers, recovery transitions, and template requests.
     // Without this, secondary re-auth only updated DualConnectionManager — the
     // Worker_manager never knew auth succeeded and the miner would stall.
-    m_secondary_protocol->set_session_authenticated_handler([this](uint32_t sid) {
+    m_secondary_protocol->set_session_authenticated_handler([this](protocol::SessionId sid) {
         // Update DualConnectionManager: secondary (legacy) lane is now authenticated and alive
-        if (m_dcm && sid != 0) {
+        if (m_dcm && !sid.is_default()) {
             m_dcm->set_legacy_alive(true);
             m_logger->info("[NodeSession:{}] Secondary lane (LEGACY) authenticated → DualConnectionManager updated",
                           m_node_label);
@@ -537,10 +537,10 @@ std::shared_ptr<protocol::Solo> NodeSession::get_active_protocol() const
     return select_active_pair().second;
 }
 
-uint32_t NodeSession::session_id() const
+protocol::SessionId NodeSession::session_id() const
 {
     // Query the authoritative session context
-    return m_session_context ? m_session_context->get_session_id() : 0;
+    return m_session_context ? m_session_context->get_session_id() : protocol::SessionId{};
 }
 
 bool NodeSession::is_authenticated() const
@@ -711,13 +711,13 @@ void NodeSession::set_session_authenticated_handler(Session_authenticated_handle
     m_session_authenticated_handler = std::move(handler);
 
     if (m_primary_protocol) {
-        m_primary_protocol->set_session_authenticated_handler([this](uint32_t sid) {
+        m_primary_protocol->set_session_authenticated_handler([this](protocol::SessionId sid) {
             // Note: Session state is managed by SessionManager inside Solo protocol
             // The session_id can be queried via m_session_context->get_session_id()
             // No need to maintain a duplicate here
 
             // Update DualConnectionManager: primary (stateless) lane is now authenticated and alive
-            if (m_dcm && sid != 0) {
+            if (m_dcm && !sid.is_default()) {
                 m_dcm->set_stateless_alive(true);
                 m_logger->info("[NodeSession:{}] Primary lane (STATELESS) authenticated → DualConnectionManager updated",
                               m_node_label);
@@ -734,8 +734,8 @@ void NodeSession::set_session_authenticated_handler(Session_authenticated_handle
     // secondary lane still triggers the full Worker_manager callback chain
     // (timers, recovery transitions, template requests).
     if (m_secondary_protocol) {
-        m_secondary_protocol->set_session_authenticated_handler([this](uint32_t sid) {
-            if (m_dcm && sid != 0) {
+        m_secondary_protocol->set_session_authenticated_handler([this](protocol::SessionId sid) {
+            if (m_dcm && !sid.is_default()) {
                 m_dcm->set_legacy_alive(true);
                 m_logger->info("[NodeSession:{}] Secondary lane (LEGACY) authenticated → DualConnectionManager updated",
                               m_node_label);

@@ -76,7 +76,7 @@ void test_minimum_valid_packet() {
     auto result = parse_session_start(packet);
     bool ok = result.has_value() &&
               result->success == 0x01 &&
-              result->session_id == 0x12345678 &&
+              result->session_id == SessionId(0x12345678u) &&
               result->timeout_seconds == 3600 &&
               !result->has_genesis_hash();
 
@@ -96,7 +96,7 @@ void test_full_packet() {
     auto result = parse_session_start(packet);
     bool ok = result.has_value() &&
               result->success == 0x01 &&
-              result->session_id == 0xABCDEF01 &&
+              result->session_id == SessionId(0xABCDEF01u) &&
               result->timeout_seconds == 86400 &&
               result->has_genesis_hash() &&
               result->genesis_hash->size() == 32 &&
@@ -184,7 +184,7 @@ void test_excess_data() {
     auto result = parse_session_start(packet);
     bool ok = result.has_value() &&
               result->success == 0x01 &&
-              result->session_id == 0x5000 &&
+              result->session_id == SessionId(0x5000u) &&
               result->timeout_seconds == 5000 &&
               result->has_genesis_hash();
 
@@ -225,19 +225,19 @@ void test_session_id_endianness() {
     // Test 1: 0x12345678 in little-endian → [0x78, 0x56, 0x34, 0x12]
     auto packet1 = make_session_start_packet(0x01, 0x12345678, 1000);
     auto result1 = parse_session_start(packet1);
-    bool ok1 = result1.has_value() && result1->session_id == 0x12345678;
+    bool ok1 = result1.has_value() && result1->session_id == SessionId(0x12345678u);
     print_test_result("Parse session_id 0x12345678 (LE)", ok1);
 
     // Test 2: 0x00000001 → [0x01, 0x00, 0x00, 0x00]
     auto packet2 = make_session_start_packet(0x01, 0x00000001, 2000);
     auto result2 = parse_session_start(packet2);
-    bool ok2 = result2.has_value() && result2->session_id == 1;
+    bool ok2 = result2.has_value() && result2->session_id == SessionId(1u);
     print_test_result("Parse session_id 1 (LE)", ok2);
 
     // Test 3: 0xFFFFFFFF → [0xFF, 0xFF, 0xFF, 0xFF]
     auto packet3 = make_session_start_packet(0x01, 0xFFFFFFFF, 3000);
     auto result3 = parse_session_start(packet3);
-    bool ok3 = result3.has_value() && result3->session_id == 0xFFFFFFFF;
+    bool ok3 = result3.has_value() && result3->session_id == SessionId(0xFFFFFFFFu);
     print_test_result("Parse session_id max uint32 (LE)", ok3);
 }
 

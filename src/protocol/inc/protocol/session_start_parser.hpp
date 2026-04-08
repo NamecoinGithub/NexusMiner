@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <vector>
 #include <optional>
+#include "protocol/session_semantic_types.hpp"
 
 namespace nexusminer {
 namespace protocol {
@@ -35,7 +36,7 @@ namespace protocol {
  */
 struct SessionStartData {
     uint8_t  success;                                ///< Success byte (0x01 = success)
-    uint32_t session_id;                             ///< Session ID from node (4 bytes LE)
+    SessionId session_id;                            ///< Session ID from node (4 bytes LE)
     uint32_t timeout_seconds;                        ///< Session timeout in seconds (4 bytes LE)
     std::optional<std::vector<uint8_t>> genesis_hash; ///< Optional genesis hash (32 bytes)
 
@@ -70,10 +71,10 @@ inline std::optional<SessionStartData> parse_session_start(const uint8_t* data, 
     result.success = data[0];
 
     // Parse session_id (4 bytes, little-endian, offset 1-4)
-    result.session_id = static_cast<uint32_t>(data[1]) |
+    result.session_id = SessionId{static_cast<uint32_t>(data[1]) |
                        (static_cast<uint32_t>(data[2]) << 8) |
                        (static_cast<uint32_t>(data[3]) << 16) |
-                       (static_cast<uint32_t>(data[4]) << 24);
+                       (static_cast<uint32_t>(data[4]) << 24)};
 
     // Parse timeout (4 bytes, little-endian, offset 5-8)
     result.timeout_seconds = static_cast<uint32_t>(data[5]) |

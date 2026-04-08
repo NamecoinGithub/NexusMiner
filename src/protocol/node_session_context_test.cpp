@@ -22,20 +22,20 @@ void test_session_lifecycle() {
     NodeSessionContext context(session_manager);
 
     // Initially no session
-    assert(context.get_session_id() == 0);
+    assert(context.get_session_id() == SessionId(0u));
     assert(!context.is_authenticated());
     assert(!context.is_active());
     assert(context.get_state() == SessionManager::SessionState::DISCONNECTED);
 
     // Start a session
-    context.start_session(12345);
-    assert(context.get_session_id() == 12345);
+    context.start_session(SessionId(12345u));
+    assert(context.get_session_id() == SessionId(12345u));
     assert(context.is_authenticated());
     assert(context.is_active());
 
     // End session
     context.end_session();
-    assert(context.get_session_id() == 0);
+    assert(context.get_session_id() == SessionId(0u));
     assert(!context.is_authenticated());
 
     std::cout << "Session lifecycle test passed!" << std::endl;
@@ -168,7 +168,7 @@ void test_authoritative_miner_session_container_binding() {
     context.set_connection_metadata("127.0.0.1:4000", "127.0.0.1:9323", true);
     context.set_tritium_genesis(genesis);
     context.set_falcon_identity(falcon_pubkey, "2222222222222222", true);
-    context.start_session(0x12345678, {}, genesis);
+    context.start_session(SessionId(0x12345678u), {}, genesis);
     const auto chacha_fingerprint = format_hex_prefix(chacha_key, 8);
     context.set_chacha20_session_key(chacha_key, chacha_fingerprint, true);
     context.set_reward_binding("reward-address", reward_hash, true, "config");
@@ -182,7 +182,7 @@ void test_authoritative_miner_session_container_binding() {
     assert(info.connected);
     assert(info.authenticated);
     assert(info.falcon_authenticated);
-    assert(info.session_id.get() == 0x12345678);
+    assert(info.session_id == SessionId(0x12345678u));
     assert(info.session_genesis == genesis);
     assert(info.falcon_pubkey == falcon_pubkey);
     assert(info.falcon_key_id == "2222222222222222");
@@ -213,14 +213,14 @@ void test_reward_binding_persists_across_session_restart() {
     const std::vector<uint8_t> reconnect_genesis(32, 0x22);
     const std::vector<uint8_t> reward_hash(32, 0x44);
 
-    context.start_session(0x12345678, {}, initial_genesis);
+    context.start_session(SessionId(0x12345678u), {}, initial_genesis);
     context.set_reward_binding("reward-address", reward_hash, true, "config");
     context.set_channel_state(2, true, true);
 
-    context.start_session(0x87654321, {}, reconnect_genesis);
+    context.start_session(SessionId(0x87654321u), {}, reconnect_genesis);
 
     const auto info = context.get_session_info();
-    assert(info.session_id.get() == 0x87654321);
+    assert(info.session_id == SessionId(0x87654321u));
     assert(info.session_genesis == reconnect_genesis);
     assert(info.reward_address_string == "reward-address");
     assert(info.reward_hash == reward_hash);
@@ -252,7 +252,7 @@ void test_format_hex_prefix_matches_session_validation_fingerprint() {
 
     context.set_protocol_lane(nexusminer::ProtocolLane::STATELESS);
     context.set_connection_metadata("127.0.0.1:4000", "127.0.0.1:9323", true);
-    context.start_session(0xDEADBEEF, {}, genesis);
+    context.start_session(SessionId(0xDEADBEEFu), {}, genesis);
     context.set_falcon_identity(std::vector<uint8_t>(32, 0x77), "7777777777777777", true);
     context.set_chacha20_session_key(chacha_key, fingerprint, true);
 
@@ -278,7 +278,7 @@ void test_miner_session_container_detects_inconsistent_state() {
     std::vector<uint8_t> genesis(32, 0x55);
     context.set_protocol_lane(nexusminer::ProtocolLane::STATELESS);
     context.set_connection_metadata("127.0.0.1:4000", "127.0.0.1:9323", true);
-    context.start_session(0xABCDEF01, {}, genesis);
+    context.start_session(SessionId(0xABCDEF01u), {}, genesis);
     assert(context.validate_miner_session(&reason));
     assert(reason == "PASS");
 
@@ -291,7 +291,7 @@ void test_atomic_authenticated_session_commit_sets_auth_fields_together() {
     auto session_manager = std::make_shared<SessionManager>(24, nullptr);
     NodeSessionContext context(session_manager);
 
-    constexpr uint32_t committed_session_id = 0x13572468;
+    const SessionId committed_session_id(0x13572468u);
     const std::vector<uint8_t> genesis(32, 0x5A);
     const std::vector<uint8_t> falcon_pubkey(32, 0x7C);
 
@@ -299,8 +299,8 @@ void test_atomic_authenticated_session_commit_sets_auth_fields_together() {
     context.commit_authenticated_session(committed_session_id, falcon_pubkey, "atomic-session-key", genesis);
 
     const auto info = context.get_session_info();
-    assert(info.session_id.get() == committed_session_id);
-    assert(info.session_epoch.get() == context.get_session_epoch());
+    assert(info.session_id == committed_session_id);
+    assert(info.session_epoch == context.get_session_epoch());
     assert(info.authenticated);
     assert(info.falcon_authenticated);
     assert(info.falcon_pubkey == falcon_pubkey);
@@ -337,7 +337,7 @@ void test_auth_handshake_preserves_reward_crypto_material() {
     assert(snapshot.reward_address_string == "reward-address");
     assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
 
-    context.commit_authenticated_session(0x11223344,
+    context.commit_authenticated_session(SessionId(0x11223344u),
                                          std::vector<uint8_t>(32, 0x21),
                                          "preserved-handshake-key",
                                          genesis);
@@ -364,7 +364,7 @@ void test_reward_bind_readiness_reports_precise_missing_crypto_reason() {
 
     const std::vector<uint8_t> genesis(32, 0x4C);
     context.set_reward_binding("reward-address", {}, false, "config");
-    context.commit_authenticated_session(0xA1B2C3D4,
+    context.commit_authenticated_session(SessionId(0xA1B2C3D4u),
                                          std::vector<uint8_t>(32, 0x33),
                                          "missing-crypto-key",
                                          genesis);
@@ -385,7 +385,7 @@ void test_reward_bind_readiness_requires_ready_chacha20_flag() {
     const std::vector<uint8_t> genesis(32, 0x5D);
     const std::vector<uint8_t> chacha_key(32, 0x7E);
     context.set_reward_binding("reward-address", {}, false, "config");
-    context.commit_authenticated_session(0x0BADF00D,
+    context.commit_authenticated_session(SessionId(0x0BADF00Du),
                                          std::vector<uint8_t>(32, 0x41),
                                          "not-ready-crypto-key",
                                          genesis);
@@ -404,7 +404,7 @@ void test_reset_session_credentials_clears_atomic_auth_flags() {
     auto session_manager = std::make_shared<SessionManager>(24, nullptr);
     NodeSessionContext context(session_manager);
 
-    constexpr uint32_t committed_session_id = 0x24681357;
+    const SessionId committed_session_id(0x24681357u);
     context.commit_authenticated_session(
         committed_session_id,
         std::vector<uint8_t>(32, 0x33),
@@ -421,7 +421,7 @@ void test_reset_session_credentials_clears_atomic_auth_flags() {
     const std::array<uint8_t, 4> cleared_suffix{0, 0, 0, 0};
     // reset_session_credentials clears credential/auth flags but NOT session identity
     // (session_id, authenticated state, etc. persist — only crypto keys and readiness are reset)
-    assert(info.session_id.get() == committed_session_id);
+    assert(info.session_id == committed_session_id);
     assert(!info.falcon_authenticated);
     assert(info.chacha20_session_key.empty());
     assert(info.chacha20_key_fingerprint.empty());
@@ -441,20 +441,20 @@ void test_multiple_session_contexts_do_not_overlap() {
     NodeSessionContext context_b(session_manager_b);
 
     context_a.set_falcon_identity(std::vector<uint8_t>(32, 0x01), "aaaaaaaaaaaaaaaa", true);
-    context_a.start_session(0x11111111, {}, std::vector<uint8_t>(32, 0x10));
+    context_a.start_session(SessionId(0x11111111u), {}, std::vector<uint8_t>(32, 0x10));
     context_a.set_reward_binding("reward-a", std::vector<uint8_t>(32, 0x21), true, "config");
     context_a.set_channel_state(1, true, true);
 
     context_b.set_falcon_identity(std::vector<uint8_t>(32, 0x02), "bbbbbbbbbbbbbbbb", true);
-    context_b.start_session(0x22222222, {}, std::vector<uint8_t>(32, 0x20));
+    context_b.start_session(SessionId(0x22222222u), {}, std::vector<uint8_t>(32, 0x20));
     context_b.set_reward_binding("reward-b", std::vector<uint8_t>(32, 0x31), true, "config");
     context_b.set_channel_state(2, true, true);
 
     auto info_a = context_a.get_session_info();
     auto info_b = context_b.get_session_info();
 
-    assert(info_a.session_id.get() == 0x11111111);
-    assert(info_b.session_id.get() == 0x22222222);
+    assert(info_a.session_id == SessionId(0x11111111u));
+    assert(info_b.session_id == SessionId(0x22222222u));
     assert(info_a.reward_address_string == "reward-a");
     assert(info_b.reward_address_string == "reward-b");
     assert(info_a.falcon_key_id == "aaaaaaaaaaaaaaaa");
@@ -491,21 +491,21 @@ void test_session_epoch_advances_across_session_restarts() {
     auto session_manager = std::make_shared<SessionManager>(24, nullptr);
     NodeSessionContext context(session_manager);
 
-    assert(context.get_session_epoch() == 0);
+    assert(context.get_session_epoch() == SessionEpoch(0u));
 
-    context.start_session(0x11111111);
+    context.start_session(SessionId(0x11111111u));
     const auto first_info = context.get_session_info();
-    assert(first_info.session_id.get() == 0x11111111);
-    assert(first_info.session_epoch.get() == context.get_session_epoch());
-    assert(first_info.session_epoch.get() > 0);
+    assert(first_info.session_id == SessionId(0x11111111u));
+    assert(first_info.session_epoch == context.get_session_epoch());
+    assert(first_info.session_epoch.get() > 0u);
 
     context.end_session();
-    assert(context.get_session_epoch() == first_info.session_epoch.get());
+    assert(context.get_session_epoch() == first_info.session_epoch);
 
-    context.start_session(0x22222222);
+    context.start_session(SessionId(0x22222222u));
     const auto second_info = context.get_session_info();
-    assert(second_info.session_id.get() == 0x22222222);
-    assert(second_info.session_epoch.get() == context.get_session_epoch());
+    assert(second_info.session_id == SessionId(0x22222222u));
+    assert(second_info.session_epoch == context.get_session_epoch());
     assert(second_info.session_epoch.get() > first_info.session_epoch.get());
 
     const auto diagnostics = context.build_miner_session_diagnostics();
@@ -521,14 +521,14 @@ void test_runtime_snapshot_is_authoritative_copy() {
     NodeSessionContext context(session_manager);
 
     context.set_state(SessionManager::SessionState::AUTHENTICATING);
-    context.commit_authenticated_session(0x1234ABCD,
+    context.commit_authenticated_session(SessionId(0x1234ABCDu),
                                          std::vector<uint8_t>(32, 0x11),
                                          "snapshot-key",
                                          std::vector<uint8_t>(32, 0x22));
 
     const auto authenticated_snapshot = context.get_runtime_snapshot();
     const auto compatibility_snapshot = context.get_session_info();
-    assert(authenticated_snapshot.session_id.get() == 0x1234ABCD);
+    assert(authenticated_snapshot.session_id == SessionId(0x1234ABCDu));
     assert(authenticated_snapshot.session_epoch == compatibility_snapshot.session_epoch);
     assert(authenticated_snapshot.state == SessionManager::SessionState::AUTHENTICATED);
     assert(authenticated_snapshot.falcon_key_id == "snapshot-key");
@@ -544,7 +544,7 @@ void test_runtime_snapshot_is_authoritative_copy() {
 
     context.end_session();
     const auto disconnected_snapshot = context.get_runtime_snapshot();
-    assert(disconnected_snapshot.session_id.is_default());
+    assert(disconnected_snapshot.session_id == SessionId(0u));
     assert(disconnected_snapshot.state == SessionManager::SessionState::DISCONNECTED);
     assert(disconnected_snapshot.session_epoch == active_snapshot.session_epoch);
 
@@ -569,7 +569,7 @@ void test_session_event_journal_tracks_current_session() {
     // Use begin_auth_handshake() to properly record AUTH_INIT event,
     // rather than set_state(AUTHENTICATING) which only changes state.
     session_manager->begin_auth_handshake();
-    context.start_session(0xABCDEF01);
+    context.start_session(SessionId(0xABCDEF01u));
     context.record_session_event(SessionManager::SessionEventKind::STATUS_ACK_ACCEPTED,
                                  "session status ack accepted");
     context.set_reward_binding("reward-address", std::vector<uint8_t>(32, 0x42), true, "live bind");
@@ -581,7 +581,7 @@ void test_session_event_journal_tracks_current_session() {
     assert(journal[2].kind == SessionManager::SessionEventKind::SESSION_START);
     assert(journal.back().kind == SessionManager::SessionEventKind::REWARD_BIND_RESULT);
     assert(journal.back().session_id.get() == 0xABCDEF01u);
-    assert(journal.back().session_epoch.get() == context.get_session_epoch());
+    assert(journal.back().session_epoch == context.get_session_epoch());
 
     const auto diagnostics = context.build_miner_session_diagnostics();
     assert(diagnostics.find("SESSION EVENT JOURNAL") != std::string::npos);
@@ -597,7 +597,7 @@ void test_session_event_journal_behaves_like_ring_buffer() {
     auto session_manager = std::make_shared<SessionManager>(24, nullptr);
     NodeSessionContext context(session_manager);
 
-    context.start_session(0x12345678);
+    context.start_session(SessionId(0x12345678u));
     for (std::size_t i = 0; i < SessionManager::SESSION_EVENT_JOURNAL_CAPACITY + 5; ++i) {
         context.record_session_event(SessionManager::SessionEventKind::STALE_PACKET_DROPPED,
                                      "drop-" + std::to_string(i));
@@ -618,7 +618,7 @@ void test_session_event_journal_preserves_preflight_drop_detail() {
     auto session_manager = std::make_shared<SessionManager>(24, nullptr);
     NodeSessionContext context(session_manager);
 
-    context.start_session(0xCAFEBABEu);
+    context.start_session(SessionId(0xCAFEBABEu));
     context.record_session_event(SessionManager::SessionEventKind::EPOCH_MISMATCH,
                                  "Solo SessionKeepalive: packet ownership epoch mismatched authoritative session");
 
@@ -642,7 +642,7 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
     assert(snapshot.recovery_state == SessionManager::RecoveryState::HEALTHY);
 
-    context.commit_authenticated_session(0xABCDEF12,
+    context.commit_authenticated_session(SessionId(0xABCDEF12u),
                                          std::vector<uint8_t>(32, 0x21),
                                          "transition-key",
                                          std::vector<uint8_t>(32, 0x34));

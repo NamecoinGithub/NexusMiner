@@ -217,6 +217,9 @@ private:
     // both firing within the same short window.
     std::chrono::steady_clock::time_point m_last_get_block_request_time{};
 
+    // Session health summary log: throttled to once per 60s
+    std::chrono::steady_clock::time_point m_last_session_health_log{};
+
     // Connection retry state for exponential backoff
     uint32_t m_connection_retry_count{0};
     util::ExponentialBackoffWithState m_connection_backoff{
@@ -273,8 +276,8 @@ private:
     std::vector<std::shared_ptr<stats::Printer>> m_stats_printers;
     std::vector<std::shared_ptr<Worker>> m_workers;
 
-    // ── SIM Link and diagnostic tools ─────────────────────────────────────────
-    DualConnectionManager m_sim_link;  // Lane state bookkeeper
+    // ── Lane Health Monitor and diagnostic tools ────────────────────────────
+    DualConnectionManager m_sim_link;  // Lane state bookkeeper (SIM Link removed; lane monitor only)
     std::shared_ptr<ColinAgent> m_colin_agent;  // Diagnostic agent (started after first connect)
 
     // Time of the most recent SESSION_STATUS sent on any lane.

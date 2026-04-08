@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include "protocol/session_semantic_types.hpp"
 
 namespace nexusminer {
 namespace protocol {
@@ -25,8 +26,8 @@ public:
     struct AckValidationInput
     {
         bool has_session_manager{false};
-        uint32_t local_session_id{0};
-        uint32_t ack_session_id{0};
+        SessionId local_session_id{};
+        SessionId ack_session_id{};
         uint32_t consecutive_mismatches{0};
         uint32_t mismatch_expire_threshold{1};
     };
@@ -55,7 +56,7 @@ public:
             return decision;
         }
 
-        if (input.ack_session_id == 0) {
+        if (input.ack_session_id.is_default()) {
             decision.reason = "ack omitted session id";
             return decision;
         }
