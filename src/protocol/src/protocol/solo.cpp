@@ -571,6 +571,8 @@ void Solo::clear_generation_bound_state(const char* reason)
     m_last_submitted_height = 0;
     m_last_submitted_channel = 0;
     m_session_id_mismatch_count = 0;
+    m_preflight_reject_count = 0;
+    m_unanswered_get_round_count = 0;
     m_last_session_status_ack = {};
     m_last_session_status_ack_time = {};
     m_last_known_hash_prev_block = uint1024_t(0);
@@ -786,7 +788,7 @@ void Solo::set_epoch_coordinator(std::shared_ptr<EpochCoordinator> coordinator)
 const Solo::PacketIngressPreflightOptions Solo::kDefaultPacketIngressPreflightOptions{};
 
 bool Solo::run_packet_ingress_preflight(const char* log_scope,
-                                        const PacketIngressPreflightOptions& options) const
+                                        const PacketIngressPreflightOptions& options)
 {
     if (!m_session_context) {
         return true;
@@ -812,10 +814,18 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
     });
 
     if (decision.allow_processing) {
+        // Reset preflight reject counter on any successful pass
+        m_preflight_reject_count = 0;
         return true;
     }
 
-    m_logger->warn("[{}] Session ingress preflight rejected packet: {}", log_scope, decision.reason);
+    // ── Shadow-ban detection ────────────────────────────────────────────
+    // Track consecutive preflight rejections.  When the threshold is
+    // exceeded, force re-auth to break out of the silent drop cycle.
+    ++m_preflight_reject_count;
+
+    m_logger->warn("[{}] Session ingress preflight rejected packet: {} (consecutive={})",
+                   log_scope, decision.reason, m_preflight_reject_count);
     if (decision.drop_as_stale) {
         const auto kind = decision.stale_reason == PacketStaleReason::OWNERSHIP_EPOCH_MISMATCH
                         ? SessionManager::SessionEventKind::EPOCH_MISMATCH
@@ -827,7 +837,24 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
         m_logger->warn("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
     }
 
-    if (decision.force_reauth && options.trigger_reauth && m_session_expired_handler) {
+    // Clear pending GET_BLOCK so recovery is not blocked by a stale
+    // in-flight marker when the response was preflight-rejected.
+    if (m_pending_get_block.active) {
+        m_logger->warn("[{}] Clearing stale pending GET_BLOCK after preflight rejection", log_scope);
+        m_pending_get_block.clear();
+    }
+
+    // Force re-auth on threshold-triggered escalation or explicit force_reauth
+    const bool threshold_exceeded = m_preflight_reject_count >= SHADOW_BAN_PREFLIGHT_THRESHOLD;
+    if (threshold_exceeded && m_session_expired_handler) {
+        m_logger->error("[{}] SHADOW BAN DETECTED: {} consecutive preflight rejections — forcing re-auth",
+                        log_scope, m_preflight_reject_count);
+        record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
+                             "shadow_ban_detected: " + std::to_string(m_preflight_reject_count) +
+                             " consecutive preflight rejections");
+        m_preflight_reject_count = 0;
+        m_session_expired_handler();
+    } else if (decision.force_reauth && options.trigger_reauth && m_session_expired_handler) {
         record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
                              std::string(log_scope) + ": " + decision.reason);
         m_logger->warn("[{}] Triggering session-expired handler after preflight rejection", log_scope);
@@ -1371,6 +1398,7 @@ network::Shared_payload Solo::send_get_round()
     auto payload = PacketBuilder::build(m_protocol_lane, LLP::GET_ROUND);
     if (payload && !payload->empty()) {
         m_logger->debug("[Solo GET_ROUND] Encoded payload size: {} bytes (header-only)", payload->size());
+        ++m_unanswered_get_round_count;
     } else {
         m_logger->error("[Solo GET_ROUND] PacketBuilder::build returned null or empty payload!");
     }
@@ -5395,6 +5423,9 @@ void Solo::on_new_round_received(uint32_t new_unified_height)
     m_logger->info("[Solo Poll] ⚡ NEW_ROUND: chain tip changed — poll interval reset to {}ms",
         m_current_poll_interval_ms);
     
+    // GET_ROUND response received — reset unanswered counter
+    m_unanswered_get_round_count = 0;
+
     // Check unified height delta
     check_unified_height_delta(new_unified_height);
 }
@@ -5406,6 +5437,9 @@ void Solo::on_old_round_received()
     // interval ensures the miner polls for template freshness consistently.
     // m_current_poll_interval_ms stays at POLL_INTERVAL_MIN_MS always.
     m_current_poll_interval_ms = POLL_INTERVAL_MIN_MS;
+
+    // GET_ROUND response received — reset unanswered counter
+    m_unanswered_get_round_count = 0;
 }
 
 void Solo::on_template_received(uint32_t template_height)

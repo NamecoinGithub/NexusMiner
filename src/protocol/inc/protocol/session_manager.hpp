@@ -230,7 +230,6 @@ public:
     void mark_activity();
     void set_tritium_genesis(const std::vector<uint8_t>&);
     void set_keepalive_interval(uint16_t hours);
-    void set_keepalive_interval_seconds(uint32_t seconds);
     void set_prevblock_suffix(const std::array<uint8_t, 4>& suffix);
     void set_protocol_lane(ProtocolLane lane);
     void set_connection(std::shared_ptr<network::Connection> connection);

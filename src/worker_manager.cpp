@@ -1438,6 +1438,18 @@ void Worker_manager::poll_get_round()
             return;
         }
         m_primary_node_session->transmit(payload);
+
+        // Shadow-ban detection: if we've sent multiple GET_ROUNDs with no
+        // NEW_ROUND/OLD_ROUND response, the miner is likely shadow-banned
+        // (responses are being silently dropped).  Force recovery.
+        constexpr uint32_t SHADOW_BAN_UNANSWERED_THRESHOLD = 5;
+        const auto unanswered = solo_protocol->get_unanswered_get_round_count();
+        if (unanswered >= SHADOW_BAN_UNANSWERED_THRESHOLD) {
+            m_logger->error("[Worker_manager] SHADOW BAN DETECTED: {} consecutive GET_ROUNDs "
+                           "unanswered — forcing session recovery",
+                           unanswered);
+            mark_recovery_initiated("shadow_ban_unanswered_get_round");
+        }
     }
 }
 

@@ -16,8 +16,8 @@ namespace protocol {
 
 constexpr uint16_t MIN_KEEPALIVE_HOURS = 1;
 constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
-constexpr auto KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);
-constexpr auto KEEPALIVE_TCP_INTERVAL   = std::chrono::seconds(170);
+constexpr auto SESSION_HEARTBEAT_EARLY_INTERVAL = std::chrono::seconds(10);
+constexpr auto SESSION_HEARTBEAT_INTERVAL       = std::chrono::seconds(170);
 
 namespace {
 
@@ -761,11 +761,6 @@ void SessionManager::set_keepalive_interval(uint16_t hours)
         m_keepalive_interval_hours = MAX_KEEPALIVE_HOURS;
 }
 
-void SessionManager::set_keepalive_interval_seconds(uint32_t /*seconds*/)
-{
-    // no-op in minimal design — TCP keepalive is fixed at 45s
-}
-
 void SessionManager::set_prevblock_suffix(const std::array<uint8_t, 4>& suffix)
 {
     SessionWriteLock lock(m_session_mutex);
@@ -1079,7 +1074,7 @@ void SessionManager::start_keepalive_timer()
     m_keepalive_active = true;
     auto self = shared_from_this();
     uint64_t generation = m_keepalive_generation.load();
-    m_keepalive_timer->expires_after(KEEPALIVE_EARLY_INTERVAL);
+    m_keepalive_timer->expires_after(SESSION_HEARTBEAT_EARLY_INTERVAL);
     m_keepalive_timer->async_wait([self, generation](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) return;
         if (generation != self->m_keepalive_generation.load()) return;
@@ -1087,7 +1082,7 @@ void SessionManager::start_keepalive_timer()
         self->schedule_regular_keepalives(self);
     });
     m_logger->info("[SessionManager] Keepalive timer started (early: {}s, TCP ping: {}s)",
-                  KEEPALIVE_EARLY_INTERVAL.count(), KEEPALIVE_TCP_INTERVAL.count());
+                  SESSION_HEARTBEAT_EARLY_INTERVAL.count(), SESSION_HEARTBEAT_INTERVAL.count());
 }
 
 void SessionManager::stop_keepalive_timer()
@@ -1103,7 +1098,7 @@ void SessionManager::schedule_regular_keepalives(const std::shared_ptr<SessionMa
 {
     if (!m_keepalive_timer || !m_keepalive_active) return;
     uint64_t generation = m_keepalive_generation.load();
-    m_keepalive_timer->expires_after(KEEPALIVE_TCP_INTERVAL);
+    m_keepalive_timer->expires_after(SESSION_HEARTBEAT_INTERVAL);
     m_keepalive_timer->async_wait([self, generation](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) return;
         if (generation != self->m_keepalive_generation.load()) return;
