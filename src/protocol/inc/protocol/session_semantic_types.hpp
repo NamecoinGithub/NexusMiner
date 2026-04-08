@@ -2,6 +2,8 @@
 #define NEXUSMINER_PROTOCOL_SESSION_SEMANTIC_TYPES_HPP
 
 #include <cstdint>
+#include <functional>
+#include <ostream>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -55,6 +57,17 @@ public:
         return !(lhs == rhs);
     }
 
+    friend bool operator<(const SemanticValue& lhs, const SemanticValue& rhs)
+    {
+        return lhs.m_value < rhs.m_value;
+    }
+
+    friend std::ostream& operator<<(std::ostream& os, const SemanticValue& sv)
+    {
+        os << sv.m_value;
+        return os;
+    }
+
 private:
     T m_value{};
 };
@@ -75,5 +88,19 @@ using SessionFingerprint = SemanticValue<std::string, SessionFingerprintTag>;
 
 } // namespace protocol
 } // namespace nexusminer
+
+// std::hash specializations for use in unordered containers.
+namespace std {
+
+template <typename T, typename Tag>
+struct hash<nexusminer::protocol::SemanticValue<T, Tag>>
+{
+    std::size_t operator()(const nexusminer::protocol::SemanticValue<T, Tag>& v) const noexcept
+    {
+        return std::hash<T>{}(v.get());
+    }
+};
+
+} // namespace std
 
 #endif // NEXUSMINER_PROTOCOL_SESSION_SEMANTIC_TYPES_HPP

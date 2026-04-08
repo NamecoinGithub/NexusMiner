@@ -108,8 +108,8 @@ public:
     // Full session info — new minimal fields plus backward-compat fields
     struct SessionInfo {
         // ── Core minimal fields (new design) ──────────────────────────────
-        uint32_t session_id{0};
-        uint64_t session_epoch{0};
+        SessionId session_id{};
+        SessionEpoch session_epoch{};
         uint64_t runtime_state_generation{0};
         SessionState state{SessionState::DISCONNECTED};
         ProtocolLane active_lane{ProtocolLane::UNKNOWN};
@@ -171,7 +171,7 @@ public:
 
     // ── Core session lifecycle (new minimal API) ──────────────────────────────
     void begin_auth();
-    void commit_authenticated(uint32_t session_id, ProtocolLane lane,
+    void commit_authenticated(SessionId session_id, ProtocolLane lane,
                               const std::string& reward_address = {});
     void commit_reward_bound(const std::string& reward_address,
                              const std::string& source = "");
@@ -180,11 +180,11 @@ public:
 
     // ── Backward-compat lifecycle ─────────────────────────────────────────────
     void begin_auth_handshake(const std::string& detail = "");
-    void commit_authenticated_session(uint32_t session_id,
+    void commit_authenticated_session(SessionId session_id,
                                       const std::vector<uint8_t>& pubkey = {},
                                       const std::string& key_id = {},
                                       const std::vector<uint8_t>& tritium_genesis = {});
-    void start_session(uint32_t session_id,
+    void start_session(SessionId session_id,
                        const std::vector<uint8_t>& session_key = {},
                        const std::vector<uint8_t>& tritium_genesis = {});
     void mark_session_expired(const std::string& reason);
@@ -250,8 +250,8 @@ public:
     RewardBindReadiness get_reward_bind_readiness() const;
     bool validate_miner_session(std::string* reason = nullptr) const;
     std::string build_miner_session_diagnostics() const;
-    uint32_t get_session_id() const;
-    uint64_t get_session_epoch() const;
+    SessionId get_session_id() const;
+    SessionEpoch get_session_epoch() const;
     uint64_t peek_runtime_state_generation() const noexcept;
     SessionState get_state() const;
     SessionInfo get_session_info() const;
@@ -292,7 +292,7 @@ public:
     void set_epoch_coordinator(std::shared_ptr<EpochCoordinator> coordinator);
 
 private:
-    void transition_to_authenticated_locked(uint32_t session_id,
+    void transition_to_authenticated_locked(SessionId session_id,
                                             const std::vector<uint8_t>& tritium_genesis);
     void clear_runtime_session_locked(bool preserve_genesis, bool clear_prevblock_suffix);
     void update_replay_allowances_locked();

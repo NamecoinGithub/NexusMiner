@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include "protocol/session_semantic_types.hpp"
 #include "spdlog/spdlog.h"
 
 namespace nexusminer {
@@ -35,8 +36,8 @@ public:
     /// Session epoch: incremented on every successful authentication.
     /// Replaces SessionManager::SessionInfo::session_epoch, Solo::m_session_epoch,
     /// HeightTracker::m_session_epoch, MiningTemplateInterface::m_session_epoch.
-    uint64_t session_epoch() const;
-    uint64_t advance_session_epoch(const char* reason);
+    SessionEpoch session_epoch() const;
+    SessionEpoch advance_session_epoch(const char* reason);
 
     /// Recovery epoch: incremented on every recovery phase transition (non-HEALTHY).
     /// Replaces RecoveryContext::epoch in worker_manager.hpp.
@@ -59,7 +60,7 @@ public:
     // ── Snapshot ─────────────────────────────────────────────────────────────
 
     struct Snapshot {
-        uint64_t session_epoch{0};
+        SessionEpoch session_epoch{};
         uint64_t recovery_epoch{0};
         uint64_t global_epoch{0};
     };

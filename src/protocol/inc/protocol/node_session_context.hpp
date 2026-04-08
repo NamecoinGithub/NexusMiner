@@ -42,13 +42,13 @@ public:
      * @brief Get the current session ID (authoritative)
      * @return Session ID (0 if no active session)
      */
-    uint32_t get_session_id() const;
+    SessionId get_session_id() const;
 
     /**
      * @brief Get the current authoritative session epoch/generation
      * @return Session epoch (0 before the first session is established)
      */
-    uint64_t get_session_epoch() const;
+    SessionEpoch get_session_epoch() const;
 
     /**
      * @brief Check if session is authenticated
@@ -74,11 +74,11 @@ public:
      * @param session_key Falcon session key (optional)
      * @param tritium_genesis Tritium genesis hash (optional)
      */
-    void start_session(uint32_t session_id,
+    void start_session(SessionId session_id,
                       const std::vector<uint8_t>& session_key = {},
                       const std::vector<uint8_t>& tritium_genesis = {});
 
-    void commit_authenticated_session(uint32_t session_id,
+    void commit_authenticated_session(SessionId session_id,
                                       const std::vector<uint8_t>& pubkey,
                                       const std::string& key_id,
                                       const std::vector<uint8_t>& tritium_genesis = {});

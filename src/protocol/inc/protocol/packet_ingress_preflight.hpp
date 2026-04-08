@@ -51,15 +51,15 @@ public:
     {
         bool has_authoritative_session{false};
         bool authoritative_authenticated{false};
-        uint32_t authoritative_session_id{0};
-        uint64_t authoritative_session_epoch{0};
+        SessionId authoritative_session_id{};
+        SessionEpoch authoritative_session_epoch{};
         ProtocolLane authoritative_lane{ProtocolLane::UNKNOWN};
         ProtocolLane packet_lane{ProtocolLane::UNKNOWN};
         bool validate_lane{false};
         bool allow_without_active_session{false};
-        uint32_t packet_session_id{0};   // 0 = no session ID in packet
-        uint64_t owner_epoch{0};         // 0 = no ownership stamp
-        uint32_t owner_session_id{0};    // 0 = no ownership stamp
+        SessionId packet_session_id{};   // default = no session ID in packet
+        SessionEpoch owner_epoch{};      // default = no ownership stamp
+        SessionId owner_session_id{};    // default = no ownership stamp
     };
 
     static PacketIngressDecision evaluate(const Input& input)
@@ -87,7 +87,7 @@ public:
             return decision;
         }
 
-        if (input.packet_session_id != 0 &&
+        if (!input.packet_session_id.is_default() &&
             input.packet_session_id != input.authoritative_session_id) {
             decision.reason = "packet session id mismatched authoritative session";
             decision.drop_as_stale = true;
@@ -96,7 +96,7 @@ public:
             return decision;
         }
 
-        if (input.owner_epoch != 0) {
+        if (!input.owner_epoch.is_default()) {
             if (input.owner_epoch != input.authoritative_session_epoch) {
                 decision.reason = "packet ownership epoch mismatched authoritative session";
                 decision.drop_as_stale = true;
@@ -105,7 +105,7 @@ public:
                 return decision;
             }
 
-            if (input.owner_session_id != 0 &&
+            if (!input.owner_session_id.is_default() &&
                 input.owner_session_id != input.authoritative_session_id) {
                 decision.reason = "packet ownership session id mismatched authoritative session";
                 decision.drop_as_stale = true;

@@ -63,8 +63,8 @@ public:
      *                              to match the NODE-side hashKeyID used for miner identity.
      * @param lane                  Active protocol lane (LEGACY or STATELESS)
      */
-    SessionIdentity(uint32_t session_id,
-                    uint64_t session_epoch,
+    SessionIdentity(SessionId session_id,
+                    SessionEpoch session_epoch,
                     std::vector<uint8_t> genesis_hash,
                     std::vector<uint8_t> chacha20_key,
                     std::vector<uint8_t> falcon_pubkey_hash,
@@ -81,10 +81,10 @@ public:
     // ── Accessors ─────────────────────────────────────────────────────────
 
     /// Node-assigned wire protocol session ID.
-    uint32_t session_id() const { return m_session_id; }
+    SessionId session_id() const { return m_session_id; }
 
     /// Monotonic session generation counter (never resets to 0).
-    uint64_t session_epoch() const { return m_session_epoch; }
+    SessionEpoch session_epoch() const { return m_session_epoch; }
 
     /// Tritium genesis hash used for ChaCha20 key derivation (32 bytes).
     const std::vector<uint8_t>& genesis_hash() const { return m_genesis_hash; }
@@ -115,7 +115,7 @@ public:
      */
     bool is_valid() const
     {
-        return m_session_id != 0 && m_session_epoch != 0;
+        return !m_session_id.is_default() && !m_session_epoch.is_default();
     }
 
     /**
@@ -124,7 +124,7 @@ public:
      */
     bool is_empty() const
     {
-        return m_session_id == 0 && m_session_epoch == 0;
+        return m_session_id.is_default() && m_session_epoch.is_default();
     }
 
     /**
@@ -199,7 +199,7 @@ public:
     {
         std::ostringstream oss;
         oss << "sid=0x" << std::hex << std::setw(8) << std::setfill('0')
-            << m_session_id << "/e" << std::dec << m_session_epoch;
+            << m_session_id.get() << "/e" << std::dec << m_session_epoch.get();
         return oss.str();
     }
 
@@ -215,8 +215,8 @@ public:
     {
         std::ostringstream oss;
         oss << "SessionIdentity{"
-            << "sid=0x" << std::hex << std::setw(8) << std::setfill('0') << m_session_id
-            << " epoch=" << std::dec << m_session_epoch
+            << "sid=0x" << std::hex << std::setw(8) << std::setfill('0') << m_session_id.get()
+            << " epoch=" << std::dec << m_session_epoch.get()
             << " lane=" << get_lane_name(m_lane)
             << " genesis=" << hex_prefix(m_genesis_hash, 4)
             << " key=" << hex_prefix(m_chacha20_key, 4)
@@ -258,8 +258,8 @@ private:
         return oss.str();
     }
 
-    uint32_t m_session_id{0};
-    uint64_t m_session_epoch{0};
+    SessionId m_session_id{};
+    SessionEpoch m_session_epoch{};
     std::vector<uint8_t> m_genesis_hash;
     std::vector<uint8_t> m_chacha20_key;
     std::vector<uint8_t> m_falcon_pubkey_hash;  // SK256 hash of Falcon pubkey (32 bytes)
