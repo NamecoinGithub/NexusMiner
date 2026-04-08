@@ -47,7 +47,7 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     
     // Initialize template as empty
     m_current_template.state = TemplateState::INVALID;
-    m_current_template.session_id = session_id;
+    m_current_template.session_id = SessionId{session_id};
     m_current_template.session_epoch = m_session_epoch;
     m_current_template.timestamp_received = 0;
     m_current_template.nChannelHeight = 0;
@@ -660,22 +660,22 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     return payload;
 }
 
-void MiningTemplateInterface::set_session_id(uint32_t session_id)
+void MiningTemplateInterface::set_session_id(SessionId session_id)
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
     
     m_session_id = session_id;
     m_current_template.session_id = session_id;
-    m_logger->info("[TemplateInterface] Session ID set to 0x{:08x}", session_id);
+    m_logger->info("[TemplateInterface] Session ID set to 0x{:08x}", session_id.get());
 }
 
-void MiningTemplateInterface::set_session_epoch(uint64_t session_epoch)
+void MiningTemplateInterface::set_session_epoch(SessionEpoch session_epoch)
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);
 
     m_session_epoch = session_epoch;
     m_current_template.session_epoch = session_epoch;
-    m_logger->info("[TemplateInterface] Session epoch set to {}", session_epoch);
+    m_logger->info("[TemplateInterface] Session epoch set to {}", session_epoch.get());
 }
 
 void MiningTemplateInterface::set_session_identity(const SessionIdentity& identity)

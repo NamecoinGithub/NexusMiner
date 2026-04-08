@@ -56,7 +56,7 @@ public:
             return decision;
         }
 
-        if (input.ack_session_id == 0) {
+        if (input.ack_session_id.is_default()) {
             decision.reason = "ack omitted session id";
             return decision;
         }

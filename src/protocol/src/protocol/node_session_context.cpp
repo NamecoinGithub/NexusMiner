@@ -10,14 +10,14 @@ NodeSessionContext::NodeSessionContext(std::shared_ptr<SessionManager> session_m
 {
 }
 
-uint32_t NodeSessionContext::get_session_id() const
+SessionId NodeSessionContext::get_session_id() const
 {
-    return m_session_manager ? m_session_manager->get_session_id() : 0;
+    return m_session_manager ? m_session_manager->get_session_id() : SessionId{};
 }
 
-uint64_t NodeSessionContext::get_session_epoch() const
+SessionEpoch NodeSessionContext::get_session_epoch() const
 {
-    return m_session_manager ? m_session_manager->get_session_epoch() : 0;
+    return m_session_manager ? m_session_manager->get_session_epoch() : SessionEpoch{};
 }
 
 bool NodeSessionContext::is_authenticated() const
@@ -36,7 +36,7 @@ SessionManager::SessionState NodeSessionContext::get_state() const
                              : SessionManager::SessionState::DISCONNECTED;
 }
 
-void NodeSessionContext::start_session(uint32_t session_id,
+void NodeSessionContext::start_session(SessionId session_id,
                                        const std::vector<uint8_t>& session_key,
                                        const std::vector<uint8_t>& tritium_genesis)
 {
@@ -45,7 +45,7 @@ void NodeSessionContext::start_session(uint32_t session_id,
     }
 }
 
-void NodeSessionContext::commit_authenticated_session(uint32_t session_id,
+void NodeSessionContext::commit_authenticated_session(SessionId session_id,
                                                       const std::vector<uint8_t>& pubkey,
                                                       const std::string& key_id,
                                                       const std::vector<uint8_t>& tritium_genesis)
