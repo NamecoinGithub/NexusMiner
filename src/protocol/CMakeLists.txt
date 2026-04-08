@@ -160,3 +160,8 @@ add_nexusminer_test(NAME merkle_root_feed_guard_test
     SOURCES     merkle_root_feed_guard_test.cpp
     LINK_LIBS   protocol
     INCLUDE_DIRS ${_LLC_INC})
+
+# --- Session identity ---
+add_nexusminer_test(NAME session_identity_test
+    SOURCES     session_identity_test.cpp
+    LINK_LIBS   protocol)
