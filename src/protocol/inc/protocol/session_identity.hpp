@@ -84,7 +84,7 @@ public:
     /// Derived ChaCha20 session key (32 bytes).
     const std::vector<uint8_t>& chacha20_key() const { return m_chacha20_key; }
 
-    /// SHA256-truncated fingerprint of the Falcon public key (first 8 bytes).
+    /// FNV-1a hash fingerprint of the Falcon public key (first 8 bytes).
     /// Used for cross-miner identity comparison without carrying full pubkey.
     const std::vector<uint8_t>& falcon_pubkey_hash() const { return m_falcon_pubkey_hash; }
 
