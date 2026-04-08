@@ -310,6 +310,13 @@ private:
     SessionIdentity m_canonical_identity;   // Frozen at auth time; cleared on disconnect/reauth
     std::deque<SessionEvent> m_session_event_journal;
 
+    // Bug 10 fix: Archive previous journal entries across re-auth instead of
+    // dropping them.  Preserves the failure/degradation events that triggered
+    // re-auth for post-mortem debugging.  Capped at MAX_ARCHIVED_EVENTS to
+    // prevent unbounded memory growth.
+    static constexpr size_t MAX_ARCHIVED_EVENTS = 64;
+    std::deque<SessionEvent> m_archived_event_journal;
+
     uint16_t m_keepalive_interval_hours{12};
     bool m_preserve_genesis_on_disconnect{true};
     ProtocolLane m_protocol_lane{ProtocolLane::UNKNOWN};

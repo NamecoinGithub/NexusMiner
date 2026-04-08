@@ -1451,8 +1451,15 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     if (const auto* session_manager = get_session_manager()) {
         const auto current_epoch = session_manager->get_session_epoch();
         if (current_epoch != submit_context.session_epoch.get()) {
-            m_logger->warn("[Solo Submit] Session epoch advanced after submit snapshot: snap={} current={}",
-                           submit_context.session_epoch.get(), current_epoch);
+            // Bug 8 fix: Reject submit with stale epoch — NODE may silently drop
+            // the block if session credentials don't match the current epoch.
+            const std::string detail =
+                "snap_epoch=" + std::to_string(submit_context.session_epoch.get()) +
+                " current_epoch=" + std::to_string(current_epoch) +
+                " height=" + std::to_string(block_to_submit.nHeight);
+            m_logger->error("[Solo Submit] Session epoch mismatch — rejecting stale submit: {}", detail);
+            record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED, detail);
+            return network::Shared_payload{};
         }
     }
 
@@ -3799,6 +3806,15 @@ void Solo::on_session_expired(Packet const& packet, std::shared_ptr<network::Con
 void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::Connection> connection, uint32_t channel)
 {
     disarm_get_round_fallback("PUSH re-established");
+
+    // Bug 11 fix: Lightweight session validation for PUSH notifications.
+    // PUSH is processed regardless (it's a broadcast), but log a warning if the
+    // session is not authenticated — this detects stale/mismatched PUSH data
+    // from a previous session that could inject incorrect template data.
+    if (!m_authenticated) {
+        m_logger->warn("[Solo PUSH] Received push notification while NOT authenticated — "
+                       "data may be from a stale session (session_id=0x{:08x})", m_session_id);
+    }
 
     const char* push_opcode_name = (channel == mining::CHANNEL_PRIME) ? "PRIME_BLOCK_AVAILABLE"
                                  : (channel == mining::CHANNEL_HASH)  ? "HASH_BLOCK_AVAILABLE"
