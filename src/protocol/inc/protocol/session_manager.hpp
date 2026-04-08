@@ -230,7 +230,6 @@ public:
     void mark_activity();
     void set_tritium_genesis(const std::vector<uint8_t>&);
     void set_keepalive_interval(uint16_t hours);
-    void set_keepalive_interval_seconds(uint32_t seconds);
     void set_prevblock_suffix(const std::array<uint8_t, 4>& suffix);
     void set_protocol_lane(ProtocolLane lane);
     void set_connection(std::shared_ptr<network::Connection> connection);
@@ -262,9 +261,12 @@ public:
     std::vector<uint8_t> get_tritium_genesis() const;
     std::chrono::seconds get_time_until_keepalive() const { return std::chrono::seconds(0); }
     uint16_t get_keepalive_interval() const { return m_keepalive_interval_hours; }
+    std::chrono::seconds get_keepalive_timer_interval() const;
     uint16_t map_auth_opcode(uint8_t legacy_opcode) const;
 
-    // ── Keepalive ─────────────────────────────────────────────────────────────
+    // ── Session Keepalive ────────────────────────────────────────────────────
+    // Single keepalive system: SESSION_KEEPALIVE packets at node-derived interval.
+    // Early ping at +10s after auth, then every m_keepalive_interval_hours.
     void start_keepalive_timer();
     void stop_keepalive_timer();
     network::Shared_payload build_keepalive_packet() const;

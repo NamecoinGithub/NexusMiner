@@ -439,8 +439,13 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
     {
         if (m_logger)
         {
-            m_logger->warn("[LLP SEND] TX queue full ({}/{}), dropping outgoing payload",
-                m_tx_queue.size(), MAX_TX_QUEUE_SIZE);
+            // Log the dropped payload size for shadow-ban diagnostics: if
+            // recovery logic floods the queue, GET_ROUND/SUBMIT_BLOCK packets
+            // are silently lost (PUSH is unaffected — uses node's TX queue).
+            m_logger->error("[LLP SEND] TX QUEUE OVERFLOW ({}/{}) — DROPPING outgoing payload "
+                "({} bytes). Recovery flooding may cause silent shadow ban!",
+                m_tx_queue.size(), MAX_TX_QUEUE_SIZE,
+                tx_buffer ? tx_buffer->size() : 0);
         }
         return;
     }
