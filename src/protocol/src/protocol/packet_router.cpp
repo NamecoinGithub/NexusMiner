@@ -20,7 +20,7 @@ bool PacketRouter::dispatch(Packet const& packet, const std::shared_ptr<network:
     {
         auto it = m_raw_handlers.find(packet.m_header);
         if (it != m_raw_handlers.end()) {
-            it->second(packet, std::move(connection));
+            it->second(packet, connection);
             return true;
         }
     }
@@ -33,7 +33,7 @@ bool PacketRouter::dispatch(Packet const& packet, const std::shared_ptr<network:
 
     auto it = m_handlers.find(canonical);
     if (it != m_handlers.end()) {
-        it->second(packet, std::move(connection));
+        it->second(packet, connection);
         return true;
     }
 
