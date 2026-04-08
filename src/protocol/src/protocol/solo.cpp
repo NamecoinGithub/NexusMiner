@@ -641,58 +641,22 @@ void Solo::refresh_cached_session_state(const char* log_scope)
     }
 
     if (m_authenticated != session.authenticated) {
-        if (is_expected_cached_session_resync(m_authenticated, session.authenticated)) {
-            m_logger->info("[{}] Resyncing local auth flag from authoritative session container after reconnect: local={} authoritative={}",
-                           log_scope, m_authenticated ? "true" : "false", session.authenticated ? "true" : "false");
-        } else {
-            m_logger->warn("[{}] Local auth flag drifted from authoritative session container mid-session: local={} authoritative={}",
-                           log_scope, m_authenticated ? "true" : "false", session.authenticated ? "true" : "false");
-        }
         m_authenticated = session.authenticated;
     }
 
-    if (m_session_id != session.session_id.get()) {
-        if (is_expected_cached_session_resync(m_session_id != 0, !session.session_id.is_default())) {
-            m_logger->info("[{}] Resyncing local session_id from authoritative session container after reconnect: local=0x{:08x} authoritative=0x{:08x}",
-                           log_scope, m_session_id, session.session_id.get());
-        } else {
-            m_logger->warn("[{}] Local session_id drifted from authoritative session container mid-session: local=0x{:08x} authoritative=0x{:08x}",
-                           log_scope, m_session_id, session.session_id.get());
-        }
-        m_session_id = session.session_id.get();
-    }
+    m_session_id = session.session_id.get();
 
-    // Resync canonical identity bundle from the authoritative session container.
-    // This is a value copy — cheap and thread-safe.
-    const auto authoritative_identity = m_session_context->get_canonical_identity();
-    if (m_cached_identity != authoritative_identity) {
-        m_cached_identity = authoritative_identity;
-        if (m_cached_identity.is_valid()) {
-            m_logger->debug("[{}] Resynced canonical identity: {}",
-                            log_scope, m_cached_identity.fingerprint());
-        }
-    }
+    // Sync canonical identity
+    m_cached_identity = m_session_context->get_canonical_identity();
 
     if (session.authenticated && !session.session_id.is_default()) {
         propagate_session_to_template_interface(log_scope);
     }
 
-    if (m_reward_bound != session.reward_bound) {
-        if (is_expected_cached_session_resync(m_reward_bound, session.reward_bound)) {
-            m_logger->info("[{}] Resyncing local reward_bound from authoritative session container after reconnect: local={} authoritative={}",
-                           log_scope, m_reward_bound ? "true" : "false", session.reward_bound ? "true" : "false");
-        } else {
-            m_logger->warn("[{}] Local reward_bound drifted from authoritative session container mid-session: local={} authoritative={}",
-                           log_scope, m_reward_bound ? "true" : "false", session.reward_bound ? "true" : "false");
-        }
-        m_reward_bound = session.reward_bound;
-    }
+    m_reward_bound = session.reward_bound;
 
-    if (m_protocol_lane != session.active_lane &&
-        session.active_lane != ProtocolLane::UNKNOWN &&
-        m_protocol_lane == ProtocolLane::UNKNOWN) {
-        m_logger->info("[{}] Resyncing protocol lane from authoritative session container after reconnect because local lane was UNKNOWN: authoritative={}",
-                       log_scope, get_lane_name(session.active_lane));
+    if (m_protocol_lane == ProtocolLane::UNKNOWN &&
+        session.active_lane != ProtocolLane::UNKNOWN) {
         m_protocol_lane = session.active_lane;
     }
 }
