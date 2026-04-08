@@ -68,6 +68,13 @@ public:
         return os;
     }
 
+    /// Return a new SemanticValue with the underlying value incremented by 1.
+    /// Useful for monotonic counters like SessionEpoch.
+    SemanticValue next() const
+    {
+        return SemanticValue(m_value + 1);
+    }
+
 private:
     T m_value{};
 };

@@ -230,7 +230,7 @@ void SessionManager::transition_to_authenticated_locked(SessionId session_id,
             m_logger->warn("[SessionManager] EpochCoordinator not wired — using local session_epoch counter. "
                            "Call set_epoch_coordinator() before sessions begin to enable global epoch sync.");
         }
-        m_session.session_epoch = SessionEpoch(m_session.session_epoch.get() + 1);
+        m_session.session_epoch = m_session.session_epoch.next();
     }
     m_session.session_id = session_id;
     m_session.state = SessionState::AUTHENTICATED;
