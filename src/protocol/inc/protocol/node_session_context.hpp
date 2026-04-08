@@ -279,6 +279,18 @@ public:
     void set_prevblock_suffix(const std::array<uint8_t, 4>& suffix);
 
     /**
+     * @brief Get the canonical session identity bundle.
+     *
+     * Returns the frozen SessionIdentity constructed at authentication time.
+     * This bundle binds session_id, epoch, crypto context, and Falcon identity
+     * into a single immutable snapshot.  Returns an empty (invalid) identity
+     * if no authenticated session exists.
+     *
+     * @return SessionIdentity (value copy, safe for cross-thread use)
+     */
+    SessionIdentity get_canonical_identity() const;
+
+    /**
      * @brief Get the underlying SessionManager (for advanced use cases)
      * @return Shared pointer to SessionManager
      */

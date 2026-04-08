@@ -17,6 +17,7 @@
 #include "asio/steady_timer.hpp"
 #include "network/types.hpp"
 #include "protocol/session_semantic_types.hpp"
+#include "protocol/session_identity.hpp"
 #include "protocol_lane.hpp"
 #include "spdlog/spdlog.h"
 #include "LLP/include/colin_ping_protocol.h"
@@ -255,6 +256,7 @@ public:
     SessionState get_state() const;
     SessionInfo get_session_info() const;
     RuntimeSessionSnapshot get_runtime_snapshot() const;
+    SessionIdentity get_canonical_identity() const;
     std::chrono::seconds get_session_uptime() const;
     std::vector<uint8_t> get_session_key() const;
     std::vector<uint8_t> get_tritium_genesis() const;
@@ -305,6 +307,7 @@ private:
 
     mutable std::shared_mutex m_session_mutex;
     SessionInfo m_session;
+    SessionIdentity m_canonical_identity;   // Frozen at auth time; cleared on disconnect/reauth
     std::deque<SessionEvent> m_session_event_journal;
 
     uint16_t m_keepalive_interval_hours{12};

@@ -4,6 +4,7 @@
 #include "network/connection.hpp"
 #include "packet.hpp"
 #include "miner_opcodes.hpp"
+#include <LLC/hash/SK.h>
 #include <algorithm>
 #include <ctime>
 #include <iomanip>
@@ -213,6 +214,9 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     if (!clear_prevblock_suffix) {
         m_session.prevblock_suffix = saved_suffix;
     }
+
+    // Clear the canonical identity — no authenticated session exists.
+    m_canonical_identity = SessionIdentity{};
 }
 
 void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
@@ -240,6 +244,22 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
         m_session.session_genesis = tritium_genesis;
     }
     update_replay_allowances_locked();
+
+    // ── Freeze the canonical identity bundle ────────────────────────────
+    // This binds session_id, epoch, crypto context, and miner identity
+    // into a single immutable snapshot at authentication time.
+    // Compute SK256(falcon_pubkey) → 32-byte hash matching NODE-side hashKeyID.
+    std::vector<uint8_t> pubkey_hash;
+    if (!m_session.falcon_pubkey.empty()) {
+        pubkey_hash = LLC::SK256(m_session.falcon_pubkey).GetBytes();
+    }
+    m_canonical_identity = SessionIdentity(
+        session_id,
+        m_session.session_epoch,
+        m_session.session_genesis,
+        m_session.chacha20_session_key,
+        std::move(pubkey_hash),
+        m_protocol_lane);
 
     record_session_event_locked(SessionEventKind::AUTH_SUCCESS, "authenticated");
     std::ostringstream sid_oss;
@@ -935,6 +955,12 @@ SessionManager::RuntimeSessionSnapshot SessionManager::get_runtime_snapshot() co
 {
     SessionReadLock lock(m_session_mutex);
     return m_session;
+}
+
+SessionIdentity SessionManager::get_canonical_identity() const
+{
+    SessionReadLock lock(m_session_mutex);
+    return m_canonical_identity;
 }
 
 std::chrono::seconds SessionManager::get_session_uptime_locked() const

@@ -508,6 +508,7 @@ private:
     uint64_t m_session_epoch{0};
     bool m_has_seen_session_epoch{false};
     uint64_t m_cached_runtime_state_generation{0};
+    SessionIdentity m_cached_identity{};  // Cached canonical identity from SessionManager
     std::shared_ptr<EpochCoordinator> m_epoch_coordinator;
     std::string m_address;  // Miner's network address for auth message
     std::uint64_t m_auth_timestamp;  // Timestamp for auth message

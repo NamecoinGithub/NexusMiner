@@ -678,6 +678,26 @@ void MiningTemplateInterface::set_session_epoch(uint64_t session_epoch)
     m_logger->info("[TemplateInterface] Session epoch set to {}", session_epoch);
 }
 
+void MiningTemplateInterface::set_session_identity(const SessionIdentity& identity)
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+
+    m_session_identity = identity;
+    // Keep backward-compat fields in sync
+    m_session_id = identity.session_id();
+    m_session_epoch = identity.session_epoch();
+    m_current_template.identity = identity;
+    m_current_template.session_id = identity.session_id();
+    m_current_template.session_epoch = identity.session_epoch();
+    m_logger->info("[TemplateInterface] Session identity set: {}", identity.fingerprint());
+}
+
+SessionIdentity MiningTemplateInterface::get_session_identity() const
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    return m_session_identity;
+}
+
 void MiningTemplateInterface::set_channel(uint8_t channel)
 {
     if (channel != 1 && channel != 2) {

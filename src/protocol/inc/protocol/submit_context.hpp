@@ -2,6 +2,7 @@
 #define NEXUSMINER_PROTOCOL_SUBMIT_CONTEXT_HPP
 
 #include "protocol/session_semantic_types.hpp"
+#include "protocol/session_identity.hpp"
 #include <cstdint>
 
 namespace nexusminer {
@@ -13,6 +14,10 @@ struct SubmitContext
     SessionEpoch session_epoch{};
     uint32_t template_height{0};
     uint32_t chain_height{0};
+
+    /// Canonical identity bundle captured at submit time.
+    /// Binds session_id, epoch, crypto context, and miner identity together.
+    SessionIdentity identity{};
 
     bool has_authoritative_height() const
     {

@@ -393,6 +393,12 @@ void Solo::propagate_session_to_template_interface(const char* log_scope)
 
     m_template_interface->set_session_epoch(m_session_epoch);
     m_template_interface->set_session_id(m_session_id);
+
+    // Propagate canonical identity bundle for hardened template ownership
+    if (m_cached_identity.is_valid()) {
+        m_template_interface->set_session_identity(m_cached_identity);
+    }
+
     m_logger->debug("[{}] Propagated session binding to MiningTemplateInterface: session_id=0x{:08x}, epoch={}",
                     log_scope, m_session_id, m_session_epoch);
 }
@@ -469,6 +475,17 @@ void Solo::refresh_cached_session_state(const char* log_scope)
         m_session_id = session.session_id;
     }
 
+    // Resync canonical identity bundle from the authoritative session container.
+    // This is a value copy — cheap and thread-safe.
+    const auto authoritative_identity = m_session_context->get_canonical_identity();
+    if (m_cached_identity != authoritative_identity) {
+        m_cached_identity = authoritative_identity;
+        if (m_cached_identity.is_valid()) {
+            m_logger->debug("[{}] Resynced canonical identity: {}",
+                            log_scope, m_cached_identity.fingerprint());
+        }
+    }
+
     if (session.authenticated && session.session_id != 0) {
         propagate_session_to_template_interface(log_scope);
     }
@@ -519,6 +536,7 @@ SubmitContext Solo::capture_submit_context(uint32_t template_height,
     const auto session = m_session_context->get_runtime_snapshot();
     context.session_id = SessionId(session.session_id);
     context.session_epoch = SessionEpoch(session.session_epoch);
+    context.identity = m_session_context->get_canonical_identity();
     return context;
 }
 
