@@ -93,8 +93,8 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     
     // Snapshot session fields under the lock to avoid data races with
     // set_session_id/epoch/identity() which write under m_template_mutex.
-    uint32_t snapshot_session_id;
-    uint64_t snapshot_session_epoch;
+    SessionId snapshot_session_id;
+    SessionEpoch snapshot_session_epoch;
     {
         std::lock_guard<std::mutex> lock(m_template_mutex);
         snapshot_session_id = m_session_id;

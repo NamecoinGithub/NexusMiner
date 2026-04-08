@@ -1996,7 +1996,7 @@ void Worker_manager::check_template_health()
                            " preflight_drops={} phase={}"
                            " get_blocks_sent={} accepted={} rejected={}",
                            solo_protocol->is_authenticated(),
-                           solo_protocol->get_session_id(),
+                           solo_protocol->get_session_id().get(),
                            push_age_s,
                            solo_protocol->get_unanswered_get_round_count(),
                            solo_protocol->get_preflight_reject_count(),
