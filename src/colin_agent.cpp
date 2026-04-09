@@ -393,7 +393,7 @@ void ColinAgent::emit_report(
             m_logger->info("[Colin]    SIM Link active: {}", ack.IsSimLinkActive()  ? "✅" : "❌");
             m_logger->info("[Colin]    Authenticated:   {}", ack.IsAuthenticated()  ? "✅" : "❌");
             m_logger->info("[Colin]    Node uptime:     {}s", ack.uptime_seconds);
-            if (age_s > 750)  // 2.5× of 5-minute SESSION_STATUS cadence
+            if (age_s > 750)  // 2.5 × 300s (5 min cadence) = 750s (12.5 min)
                 warnings.push_back("No SESSION_STATUS_ACK for >" + std::to_string(age_s) +
                                    "s — node may have dropped session or lane is silent");
         }
