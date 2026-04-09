@@ -27,9 +27,7 @@ bool PushNotificationHandler::handle_push_notification(
     ProtocolLane lane,
     MiningTemplateInterface* template_interface,
     HeightTracker* height_tracker,
-    std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
-    std::function<bool()> request_work_fn,
-    std::function<bool()> cross_channel_request_fn)
+    std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn)
 {
     const char* ch_name = channel_name(expected_channel);
 
@@ -65,7 +63,7 @@ bool PushNotificationHandler::handle_push_notification(
      * cross-channel paths.  Bug 1 fix: cross-channel path must call update_height_fn
      * so HeightTracker/ClientChannelManager are updated on every push, not just
      * same-channel ones.  Without this, repeated cross-channel pushes at the same
-     * unified height silently skip request_work_fn due to stale snapshot. */
+     * unified height silently skip state updates due to stale snapshot. */
     uint32_t notification_channel_height = bytes2uint(*packet.m_data, CHANNEL_HEIGHT_OFFSET);
     uint32_t notification_difficulty     = bytes2uint(*packet.m_data, DIFFICULTY_OFFSET);
 
@@ -92,11 +90,11 @@ bool PushNotificationHandler::handle_push_notification(
             if (notification_unified_height > snap.unified_height) {
                 tip_advanced = true;
                 m_logger->info("[Solo Push] ⚡ Cross-channel tip advance: unified {} → {} — "
-                               "requesting fresh template (hashPrevBlock changed)",
+                               "node will auto-send fresh template (hashPrevBlock changed)",
                                snap.unified_height, notification_unified_height);
 
                 // Bug 1 fix: update height state so next cross-channel push at the same
-                // unified height does not see a stale snapshot and miss request_work_fn.
+                // unified height does not see a stale snapshot and miss state updates.
                 if (update_height_fn) {
                     update_height_fn(notification_unified_height,
                                      notification_channel_height,
@@ -119,13 +117,10 @@ bool PushNotificationHandler::handle_push_notification(
                     }
                 }
 
-                // Use cross_channel_request_fn if provided (PUSH_CROSS_CHANNEL reason),
-                // otherwise fall back to request_work_fn.
-                if (cross_channel_request_fn) {
-                    work_requested = cross_channel_request_fn();
-                } else {
-                    work_requested = request_work_fn();
-                }
+                // NODE auto-sends BLOCK_DATA after PUSH — no GET_BLOCK request needed.
+                // Heights are updated and tip anchor recorded; the miner will receive
+                // the fresh template automatically from the node.
+                work_requested = true;  // heights/state were substantively updated
             }
         }
 
@@ -242,16 +237,12 @@ bool PushNotificationHandler::handle_push_notification(
     }
 
     /* ═══════════════════════════════════════════════════════════════════════
-     * TEMPLATE REFRESH — unified-height-driven model
+     * TEMPLATE REFRESH — node auto-sends BLOCK_DATA after PUSH
      * ═══════════════════════════════════════════════════════════════════════
-     * Every PUSH from the node signifies a unified tip advance (a new block
-     * was found on some channel).  Every unified height movement changes
-     * hashPrevBlock, so the mining template MUST be refreshed to embed the
-     * correct parent hash in the next mined block.
-     *
-     * Channel heights are tracked informationally (doom-loop prevention,
-     * diagnostics) but do NOT drive the template refresh decision.
-     * Same-height dedup is unified-height-only via GetBlockDedupGuard.
+     * The NODE now auto-sends BLOCK_DATA after every PUSH notification.
+     * The miner no longer needs to send a GET_BLOCK request in response.
+     * Heights and state have been updated above; the fresh template will
+     * arrive automatically from the node.
      * ═════════════════════════════════════════════════════════════════════ */
     if (template_interface && template_interface->has_valid_template())
     {
@@ -266,7 +257,7 @@ bool PushNotificationHandler::handle_push_notification(
         // ─── Same-height tip replacement (reorg at same channel height) ──────
         // A hash mismatch at the same channel height means the tip anchor was
         // replaced (same-height reorg).
-        // Discard the template so the fresh one from GET_BLOCK replaces it.
+        // Discard the template so the fresh one from the node replaces it.
         if (has_hash_prev_block)
         {
             auto const* tmpl = template_interface->get_current_template();
@@ -279,21 +270,16 @@ bool PushNotificationHandler::handle_push_notification(
             }
         }
 
-        // ─── ALWAYS request fresh template ───────────────────────────────────
-        // The Nexus node sends PUSH when a new block is found on ANY channel.
-        // Every unified height movement changes hashPrevBlock, so the mining
-        // template must be refreshed to embed the correct parent hash.
-        // PUSH reasons bypass height dedup in GetBlockDedupGuard; the 100ms
-        // rapid-burst guard still applies to prevent two identical pushes racing.
-        m_logger->info("[Solo Push] Requesting fresh {} template (PUSH → unified tip moved → hashPrevBlock changed)",
+        // NODE auto-sends BLOCK_DATA — no GET_BLOCK request needed.
+        m_logger->info("[Solo Push] {} PUSH processed — node will auto-send fresh template (unified tip moved → hashPrevBlock changed)",
                        ch_name);
-        work_requested = request_work_fn();
+        work_requested = true;
     }
     else
     {
-        /* No template yet — request one */
-        m_logger->info("[Solo Push] No template — requesting initial {} template", ch_name);
-        work_requested = request_work_fn();
+        /* No template yet — node will auto-send block data */
+        m_logger->info("[Solo Push] No template — node will auto-send {} block data", ch_name);
+        work_requested = true;
     }
 
     return work_requested;

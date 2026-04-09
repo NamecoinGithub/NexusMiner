@@ -711,9 +711,10 @@ void test_cross_channel_unified_advance_resets_dedup() {
 //   1. bypass_all:    RECOVERY_FORCED, RECOVERY_TIMER, HEALTH_NO_TEMPLATE → skip everything
 //   2. bypass_height: TEMPLATE_AGE_WARNING, VALIDATION_FAILURE, BLOCK_REJECTED, etc. → skip height guard
 //   3. full dedup:    INITIAL_REQUEST, HEALTH_STALE_SUPPRESSED, etc. → all guards active
-//   Note: HEALTH_TIP_MOVED and HEALTH_CHANNEL_ADVANCE are in tier 2 (bypass_height)
+//   Note: HEALTH_CHANNEL_ADVANCE is in tier 2 (bypass_height)
 //   because when the unified tip moves the template's hashPrevBlock is stale even
 //   though the DedupGuard has the same unified height recorded.
+//   HEALTH_TIP_MOVED removed — GET_ROUND handles tip changes.
 //
 // This is the core bug fix: TEMPLATE_AGE_WARNING must bypass height-based dedup
 // so the 480s proactive refresh is not suppressed when heights are stagnant.
@@ -772,41 +773,32 @@ void test_get_block_reason_dedup_policy() {
 
     // PUSH reasons: bypass height dedup (PUSH is authoritative) but NOT all dedup
     // (100ms rapid-burst guard still applies).
-    print_test_result("PUSH_STALE bypasses height dedup (authoritative push)",
-        should_bypass_height_dedup(GetBlockReason::PUSH_STALE));
+    // NOTE: PUSH_STALE, PUSH_NO_TEMPLATE, PUSH_CROSS_CHANNEL removed —
+    //       NODE auto-sends BLOCK_DATA after PUSH, so no GET_BLOCK needed.
     print_test_result("PUSH_TIP_MOVED bypasses height dedup (authoritative push)",
         should_bypass_height_dedup(GetBlockReason::PUSH_TIP_MOVED));
     print_test_result("PUSH_SAME_HEIGHT_TIP bypasses height dedup (authoritative push)",
         should_bypass_height_dedup(GetBlockReason::PUSH_SAME_HEIGHT_TIP));
-    print_test_result("PUSH_NO_TEMPLATE bypasses height dedup (authoritative push)",
-        should_bypass_height_dedup(GetBlockReason::PUSH_NO_TEMPLATE));
-    print_test_result("PUSH_CROSS_CHANNEL bypasses height dedup (cross-channel tip advance)",
-        should_bypass_height_dedup(GetBlockReason::PUSH_CROSS_CHANNEL));
-    print_test_result("PUSH_CROSS_CHANNEL does NOT bypass all dedup (burst guard still active)",
-        !should_bypass_all_dedup(GetBlockReason::PUSH_CROSS_CHANNEL));
 
     // Tier 3: full dedup — non-push normal requests respect all guards
-    // Note: HEALTH_TIP_MOVED and HEALTH_CHANNEL_ADVANCE BYPASS height dedup because
+    // Note: HEALTH_CHANNEL_ADVANCE BYPASSES height dedup because
     // when the unified tip moves (e.g. Stake block on another channel), the current
     // template's hashPrevBlock becomes stale even though the DedupGuard already recorded
     // a GET_BLOCK at the same unified height.  Without the bypass, the height-match
     // guard suppresses the refresh and the miner gets stuck on a stale tip.
+    // NOTE: HEALTH_TIP_MOVED removed — GET_ROUND is the backup for tip changes.
     print_test_result("HEALTH_CHANNEL_ADVANCE bypasses height dedup (template stale at same unified height)",
         should_bypass_height_dedup(GetBlockReason::HEALTH_CHANNEL_ADVANCE));
-    print_test_result("HEALTH_TIP_MOVED bypasses height dedup (unified tip moved, template stale)",
-        should_bypass_height_dedup(GetBlockReason::HEALTH_TIP_MOVED));
     print_test_result("HEALTH_CHANNEL_ADVANCE does NOT bypass all dedup (burst guard still active)",
         !should_bypass_all_dedup(GetBlockReason::HEALTH_CHANNEL_ADVANCE));
-    print_test_result("HEALTH_TIP_MOVED does NOT bypass all dedup (burst guard still active)",
-        !should_bypass_all_dedup(GetBlockReason::HEALTH_TIP_MOVED));
     print_test_result("HEALTH_STALE_SUPPRESSED does NOT bypass height dedup",
         !should_bypass_height_dedup(GetBlockReason::HEALTH_STALE_SUPPRESSED));
     print_test_result("INITIAL_REQUEST does NOT bypass height dedup",
         !should_bypass_height_dedup(GetBlockReason::INITIAL_REQUEST));
 
     // PUSH bypasses height but NOT all dedup (burst guard still applies)
-    print_test_result("PUSH_STALE does NOT bypass all dedup",
-        !should_bypass_all_dedup(GetBlockReason::PUSH_STALE));
+    print_test_result("PUSH_TIP_MOVED does NOT bypass all dedup",
+        !should_bypass_all_dedup(GetBlockReason::PUSH_TIP_MOVED));
     print_test_result("INITIAL_REQUEST does NOT bypass all dedup",
         !should_bypass_all_dedup(GetBlockReason::INITIAL_REQUEST));
 
@@ -819,8 +811,8 @@ void test_get_block_reason_dedup_policy() {
         std::string(reason_name(GetBlockReason::GET_ROUND_HEIGHT_PARITY)) == "get_round_height_parity");
     print_test_result("reason_name(BLOCK_REJECTED) returns expected name",
         std::string(reason_name(GetBlockReason::BLOCK_REJECTED)) == "block_rejected");
-    print_test_result("reason_name(PUSH_CROSS_CHANNEL) returns expected name",
-        std::string(reason_name(GetBlockReason::PUSH_CROSS_CHANNEL)) == "push_cross_channel");
+    print_test_result("reason_name(PUSH_TIP_MOVED) returns expected name",
+        std::string(reason_name(GetBlockReason::PUSH_TIP_MOVED)) == "push_tip_moved");
 }
 
 // ============================================================================

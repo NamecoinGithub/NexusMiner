@@ -174,10 +174,10 @@ The `GetBlockReason` enum (`get_block_reason.hpp`) labels each request semantica
 | Reason | When emitted |
 |---|---|
 | `PUSH_TIP_MOVED` | Unified tip moved on own channel (normal advance) |
-| `PUSH_STALE` | Own-channel PUSH with channel target already met |
 | `PUSH_SAME_HEIGHT_TIP` | Hash mismatch at equal channel height (same-height reorg) |
-| `PUSH_NO_TEMPLATE` | PUSH arrived but no template exists yet |
-| `PUSH_CROSS_CHANNEL` | Cross-channel PUSH with unified tip advance |
+
+> **Note**: `PUSH_STALE`, `PUSH_NO_TEMPLATE`, and `PUSH_CROSS_CHANNEL` have been
+> removed — the NODE now auto-sends BLOCK_DATA after PUSH, so no GET_BLOCK is needed.
 
 See also: [get-block-dedup-unified-height.md](../mining-protocols/get-block-dedup-unified-height.md)
 for the dedup guard that prevents redundant back-to-back requests.
@@ -189,28 +189,24 @@ for the dedup guard that prevents redundant back-to-back requests.
 T0: Template for Prime height 2301207 (node: unified=6533548, prime=2301206)
 T1: Hash block mined → unified advances, Prime unchanged
     Push received:  unified=6533549, prime=2301206
-    Snapshot:       is_template_stale()=false (channel_height < channel_target)
-    Action: request_work_fn() called unconditionally [reason: PUSH_TIP_MOVED]
+    Action: NODE auto-sends fresh BLOCK_DATA template [reason: PUSH_TIP_MOVED]
     (hashPrevBlock in old template now points to a stale ancestor)
 ```
 
-**Scenario 2: Own Channel Mines — Channel Target Met (PUSH_STALE)**
+**Scenario 2: Own Channel Mines — Template Auto-Refreshed**
 ```
 T0: Template for Prime height 2301207 (node: unified=6533548, prime=2301206)
 T1: Prime block mined → channel advances
     Push received:  unified=6533549, prime=2301207
-    Snapshot:       is_template_stale()=true (channel_height 2301207 >= channel_target 2301207)
-    Action: AdvanceChannelTarget() called for bookkeeping,
-            then request_work_fn() called unconditionally [reason: PUSH_STALE]
-    (result is identical to Scenario 1 — work is always requested)
+    Action: NODE auto-sends fresh BLOCK_DATA template
+    (no GET_BLOCK request needed)
 ```
 
-**Scenario 3: Cross-Channel PUSH — Unified Tip Advanced (PUSH_CROSS_CHANNEL)**
+**Scenario 3: Cross-Channel PUSH — Unified Tip Advanced**
 ```
 T0: Prime miner has template for Prime height 2301207 (unified=6533548)
 T1: Stake block mined → Hash/Stake PUSH received on Prime miner
     Push received:  channel=Stake, unified=6533549
-    Snapshot:       notification_unified_height (6533549) > snap.unified_height (6533548)
-    Action: cross_channel_request_fn() (or request_work_fn()) called [reason: PUSH_CROSS_CHANNEL]
-    (hashPrevBlock changed — Prime template must be refreshed even though Prime height unchanged)
+    Action: NODE auto-sends fresh BLOCK_DATA template
+    (hashPrevBlock changed — Prime template refreshed automatically)
 ```
