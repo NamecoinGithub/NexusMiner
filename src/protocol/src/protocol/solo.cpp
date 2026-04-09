@@ -1089,52 +1089,12 @@ void Solo::flush_pending_push_after_auth(const std::shared_ptr<network::Connecti
         return;
     }
 
-    if (!connection) {
-        m_logger->warn("[{}] Pending post-auth GET_BLOCK still queued: no connection available", log_scope);
-        return;
-    }
-
-    refresh_cached_session_state(log_scope);
-
-    if (!is_authenticated()) {
-        m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: canonical session not authenticated yet",
-                       log_scope);
-        return;
-    }
-
-    if (!validate_authoritative_session(log_scope, !m_reward_address.empty())) {
-        m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: authoritative session is not ready yet",
-                       log_scope);
-        return;
-    }
-
-    if (!m_reward_address.empty() && !m_reward_bound) {
-        m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: reward binding not finished yet",
-                       log_scope);
-        return;
-    }
-
-    m_logger->info("[{}] Push arrived during auth handshake — sending queued GET_BLOCK now", log_scope);
-
-    auto work_payload = get_work(GetBlockReason::PUSH_NO_TEMPLATE);
-    if (work_payload && !work_payload->empty()) {
-        m_pending_push_after_auth = false;
-        try {
-            connection->transmit(work_payload);
-            mark_get_block_pending(GetBlockReason::PUSH_NO_TEMPLATE);
-        } catch (const std::exception& e) {
-            m_logger->error("[Solo] reward transmit failed: {}", e.what());
-        }
-        return;
-    }
-
-    if (m_last_get_block_request_status.load() == GetBlockRequestStatus::DUPLICATE_WINDOW) {
-        m_pending_push_after_auth = false;
-        m_logger->info("[{}] Queued post-auth GET_BLOCK already satisfied by a recent request", log_scope);
-        return;
-    }
-
-    m_logger->warn("[{}] Queued post-auth GET_BLOCK is still pending after readiness check", log_scope);
+    // NODE auto-sends BLOCK_DATA after PUSH — no GET_BLOCK request needed.
+    // The push arrived during the auth handshake; the node will auto-send
+    // fresh block data now that the miner is authenticated and ready.
+    m_pending_push_after_auth = false;
+    m_logger->info("[{}] Push arrived during auth handshake — node will auto-send block data (no GET_BLOCK needed)",
+                   log_scope);
 }
 
 void Solo::update_connection_metadata(const std::shared_ptr<network::Connection>& connection)
