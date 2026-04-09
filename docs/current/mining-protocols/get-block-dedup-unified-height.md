@@ -25,14 +25,13 @@ Tier 1: bypass_all    → RECOVERY_FORCED, RECOVERY_TIMER, HEALTH_NO_TEMPLATE
          Skip all guards; degraded-mode retries and no-template health checks
          must always make progress.
 
-Tier 2: bypass_height → PUSH_STALE, PUSH_TIP_MOVED, PUSH_SAME_HEIGHT_TIP,
-                         PUSH_NO_TEMPLATE, TEMPLATE_AGE_*, VALIDATION_FAILURE,
+Tier 2: bypass_height → PUSH_TIP_MOVED, PUSH_SAME_HEIGHT_TIP,
+                         TEMPLATE_AGE_*, VALIDATION_FAILURE,
                          BLOCK_REJECTED, GET_ROUND_*, SESSION_REAUTH,
-                         HEIGHT_DRIFT, etc.
+                         HEIGHT_DRIFT, HEALTH_CHANNEL_ADVANCE, etc.
          Skip height guard, keep rapid-burst guard.
 
-Tier 3: full dedup    → INITIAL_REQUEST, HEALTH_CHANNEL_ADVANCE,
-                         HEALTH_STALE_SUPPRESSED
+Tier 3: full dedup    → INITIAL_REQUEST, HEALTH_STALE_SUPPRESSED
          Both guards active.
 ```
 
@@ -135,18 +134,11 @@ PUSH notification arrives
   └── Same-channel:
       1. Channel stale? → AdvanceChannelTarget (informational)
       2. Same-height hash mismatch? → discard_template
-      3. ALWAYS → request_work_fn()  (PUSH = unified tip moved)
+      3. NODE auto-sends BLOCK_DATA after PUSH — no GET_BLOCK needed
                 │
                 ▼
-         Solo::get_work(PUSH_STALE / PUSH_TIP_MOVED / ...)
-                │
-                ▼
-         GetBlockDedupGuard::check(reason, unified, have_template)
-         ├── bypass_all? (RECOVERY_FORCED) → ALLOW ✅
-         ├── rapid-burst (<100ms)? → SUPPRESS_RAPID_BURST ❌
-         ├── bypass_height? (all PUSH_* reasons) → ALLOW ✅
-         └── same unified + valid template? → SUPPRESS_HEIGHT_MATCH ❌
-                                            └── else → ALLOW ✅
+         Heights/state updated; node sends fresh template automatically
+         GET_ROUND is the backup for tip changes.
 
 GET_ROUND response (NEW_ROUND)
          │

@@ -1958,8 +1958,8 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
         if (solo_protocol->is_authenticated() && no_valid_template) {
             // Epoch 0 fix: when HEALTHY (recovery_epoch == 0) but no valid template
             // and GET_BLOCK was just suppressed by the dedup guard, the miner is stuck:
-            // the health monitor retries with non-bypassing reasons (HEALTH_TIP_MOVED,
-            // HEALTH_CHANNEL_ADVANCE) which the dedup guard blocks at the same height,
+            // the health monitor retries with non-bypassing reasons (HEALTH_CHANNEL_ADVANCE)
+            // which the dedup guard blocks at the same height,
             // and no forced retry is scheduled because is_recovery_active() is false.
             // Initiate recovery so the epoch advances (0 → 1), enabling
             // RECOVERY_FORCED/RECOVERY_TIMER which bypass ALL dedup guards.
@@ -2126,11 +2126,13 @@ void Worker_manager::check_template_health()
     // advances target = channel + 1, so channel_height >= channel_target never holds).
     // Staleness detection lives in PUSH, GET_ROUND, and Health Monitor trigger paths.
 
-    // Unified tip moved on another channel — request fresh work opportunistically
+    // Unified tip moved on another channel — log it but do NOT send GET_BLOCK.
+    // GET_ROUND is the backup to PUSH for tip changes, and GET_ROUND triggers
+    // GET_BLOCK on tip changes.  Health monitor should not send GET_BLOCK directly.
     if (ht_snap.is_tip_moved()) {
-        m_logger->debug("[Worker_manager] Unified tip moved (template_unified_height {} → unified_height {}) — requesting fresh work; workers continue on valid channel template",
+        m_logger->info("[Worker_manager] Unified tip moved (template_unified_height {} → unified_height {}) — "
+                       "node will auto-send via PUSH; GET_ROUND backup active; workers continue on valid channel template",
                        ht_snap.template_unified_height, ht_snap.unified_height);
-        retry_template_request(protocol::GetBlockReason::HEALTH_TIP_MOVED);
         return;
     }
 

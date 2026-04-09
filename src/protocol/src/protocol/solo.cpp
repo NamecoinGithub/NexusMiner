@@ -5360,32 +5360,17 @@ void Solo::check_unified_height_delta(uint32_t current_unified_height)
     }
     
     // When the unified tip moves, hashPrevBlock in the current template becomes
-    // stale even if the channel height hasn't changed. Request a fresh template
-    // so mining doesn't waste work on an orphan-prone block.
-    // Rate limiting in get_work() (6500ms) prevents spamming the node.
+    // stale even if the channel height hasn't changed.  The NODE auto-sends
+    // BLOCK_DATA after PUSH, and GET_ROUND is the backup for tip changes.
+    // Health monitor logs the tip movement but does NOT send GET_BLOCK.
     if (current_unified_height > m_template_unified_height) {
         uint32_t delta = current_unified_height - m_template_unified_height;
         
-        m_logger->info("[Solo Poll] ↑ Unified tip moved {} blocks ({} → {}) [reason: tip_moved] — requesting fresh template",
+        m_logger->info("[Solo Poll] ↑ Unified tip moved {} blocks ({} → {}) [reason: tip_moved] — "
+                       "node will auto-send fresh template via PUSH; GET_ROUND backup active",
             delta, m_template_unified_height, current_unified_height);
         // Update to avoid repeated log spam
         m_template_unified_height = current_unified_height;
-
-        // Request fresh template via GET_BLOCK (rate-limited)
-        if (m_connection) {
-            auto work = get_work(GetBlockReason::HEALTH_TIP_MOVED);
-            if (work && !work->empty()) {
-                try {
-                    m_connection->transmit(work);
-                    mark_get_block_pending(GetBlockReason::HEALTH_TIP_MOVED);
-                } catch (const std::exception& e) {
-                    m_logger->error("[Solo] transmit failed: {}", e.what());
-                }
-                m_logger->info("[Solo Poll] ✓ GET_BLOCK sent for tip refresh");
-            } else {
-                m_logger->debug("[Solo Poll] GET_BLOCK rate-limited — tip refresh deferred");
-            }
-        }
     }
 }
 
