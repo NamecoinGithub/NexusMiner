@@ -120,6 +120,14 @@ Connection_impl<ProtocolDescriptionType>::initialise_socket()
         return Result::error;
     }
 
+    // Disable Nagle's algorithm — mining is latency-sensitive and LLP
+    // packets are small.  Nagle can add up to 40ms per small packet.
+    this->m_asio_socket->set_option(::asio::ip::tcp::no_delay(true), error);
+    if (error && m_logger)
+    {
+        m_logger->warn("[LLP] Failed to set TCP_NODELAY: {}", error.message());
+    }
+
     this->m_asio_socket->bind(get_endpoint_base<Protocol_endpoint>(m_local_endpoint), error);
     if (error)
 	{
@@ -226,6 +234,16 @@ inline void Connection_impl<ProtocolDescriptionType>::receive()
                                            ((*receive_buffer)[length_offset + 1] << 16) + 
                                            ((*receive_buffer)[length_offset + 2] << 8) + 
                                            (*receive_buffer)[length_offset + 3];
+
+                                // Bounds-check: reject obviously oversized packets
+                                // (max reasonable LLP payload is ~4 MB for block data)
+                                static constexpr std::uint32_t MAX_LLP_PACKET_SIZE = 4u * 1024u * 1024u;
+                                if (pkt_length > MAX_LLP_PACKET_SIZE)
+                                {
+                                    self->m_logger->warn("[LLP RECV] Oversized packet length {} (max {}), skipping parse",
+                                        pkt_length, MAX_LLP_PACKET_SIZE);
+                                    break;
+                                }
                             }
                             
                             // Create data payload for hex preview
@@ -241,23 +259,24 @@ inline void Connection_impl<ProtocolDescriptionType>::receive()
                                 }
                             }
                             
-                            // Log with appropriate format
+                            // Log with appropriate format (debug level — payload hex
+                            // can be noisy and may expose sensitive data at info).
                             std::string hex_preview = format_llp_payload_hex(data_payload, 16);
                             if (is_stateless) {
                                 if (!hex_preview.empty()) {
-                                    self->m_logger->info("[LLP RECV] header=0x{:04x} {} length={} payload=[{}]", 
+                                    self->m_logger->debug("[LLP RECV] header=0x{:04x} {} length={} payload=[{}]", 
                                         header, get_llp_header_name(header), pkt_length, hex_preview);
                                 } else {
-                                    self->m_logger->info("[LLP RECV] header=0x{:04x} {} length={}", 
+                                    self->m_logger->debug("[LLP RECV] header=0x{:04x} {} length={}", 
                                         header, get_llp_header_name(header), pkt_length);
                                 }
                             } else {
                                 if (!hex_preview.empty()) {
-                                    self->m_logger->info("[LLP RECV] header=0x{:02x} {} length={} payload=[{}]", 
+                                    self->m_logger->debug("[LLP RECV] header=0x{:02x} {} length={} payload=[{}]", 
                                         static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)), 
                                         pkt_length, hex_preview);
                                 } else {
-                                    self->m_logger->info("[LLP RECV] header=0x{:02x} {} length={}", 
+                                    self->m_logger->debug("[LLP RECV] header=0x{:02x} {} length={}", 
                                         static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)), 
                                         pkt_length);
                                 }
@@ -533,10 +552,10 @@ void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
             {
                 // Header-only packet
                 if (is_stateless) {
-                    m_logger->info("[LLP SEND] header=0x{:04x} {} length=0 (header-only)", 
+                    m_logger->debug("[LLP SEND] header=0x{:04x} {} length=0 (header-only)", 
                         header, get_llp_header_name(header));
                 } else {
-                    m_logger->info("[LLP SEND] header=0x{:02x} {} length=0 (header-only)", 
+                    m_logger->debug("[LLP SEND] header=0x{:02x} {} length=0 (header-only)", 
                         static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)));
                 }
             }
@@ -565,19 +584,19 @@ void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
                 std::string hex_preview = format_llp_payload_hex(data_payload, 16);
                 if (is_stateless) {
                     if (!hex_preview.empty()) {
-                        m_logger->info("[LLP SEND] header=0x{:04x} {} length={} payload=[{}]", 
+                        m_logger->debug("[LLP SEND] header=0x{:04x} {} length={} payload=[{}]", 
                             header, get_llp_header_name(header), length, hex_preview);
                     } else {
-                        m_logger->info("[LLP SEND] header=0x{:04x} {} length={}", 
+                        m_logger->debug("[LLP SEND] header=0x{:04x} {} length={}", 
                             header, get_llp_header_name(header), length);
                     }
                 } else {
                     if (!hex_preview.empty()) {
-                        m_logger->info("[LLP SEND] header=0x{:02x} {} length={} payload=[{}]", 
+                        m_logger->debug("[LLP SEND] header=0x{:02x} {} length={} payload=[{}]", 
                             static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)), 
                             length, hex_preview);
                     } else {
-                        m_logger->info("[LLP SEND] header=0x{:02x} {} length={}", 
+                        m_logger->debug("[LLP SEND] header=0x{:02x} {} length={}", 
                             static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)), 
                             length);
                     }

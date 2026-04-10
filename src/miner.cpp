@@ -175,6 +175,7 @@ namespace nexusminer
 		auto endpoint = resolver.resolve(dns_name, std::string{std::to_string(port)}, ec);
 		if(ec) 
 		{
+			m_logger->error("DNS resolution failed for '{}:{}': {}", dns_name, port, ec.message());
 			return network::Endpoint{};
 		}
 
