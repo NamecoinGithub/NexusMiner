@@ -33,7 +33,7 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
 	}
 	catch (asio::system_error& e)
 	{
-		m_logger->debug(e.what());
+		m_logger->error("Failed to open serial port '{}': {}", m_serial_port_path, e.what());
 	}
 }
 
