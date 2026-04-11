@@ -158,8 +158,8 @@ This document summarizes the security aspects of the ChaCha20 wrapper implementa
 
 #### Cryptographic Standards
 ✅ RFC 8439: ChaCha20-Poly1305 AEAD
-✅ NIST SP 800-38D: Galois/Counter Mode (authentication)
-✅ RFC 8032: EdDSA signature scheme (Falcon similar properties)
+✅ RFC 5116: Authenticated Encryption with Associated Data (AEAD) requirements and interface
+✅ Falcon: Post-quantum signature algorithm; reference current NIST PQC standardization status rather than RFC 8032
 
 #### Industry Best Practices
 ✅ OWASP Cryptographic Storage Cheat Sheet
