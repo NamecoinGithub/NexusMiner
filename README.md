@@ -58,7 +58,7 @@ extension map, performance tables, and ecosystem status.
 | Layer | Algorithm | Notes |
 |-------|-----------|-------|
 | Authentication | Falcon-1024 | 256-bit post-quantum, session disposable |
-| Session encryption | ChaCha20-Poly1305 | Always-on, hardware-accelerated on RISC-V (Zbkb/Zbkc) and x86 (AES-NI) |
+| Session encryption | ChaCha20-Poly1305 | Always-on, hardware-accelerated on RISC-V (Zbkb/Zbkc) and optimized on x86 via SSSE3/AVX2 implementations |
 | Transport | TLS 1.2 / 1.3 | Auto-enabled for remote connections |
 | Quantum resistance | Falcon-512 / 1024 | Falcon-1024 default (2× stronger) |
 
