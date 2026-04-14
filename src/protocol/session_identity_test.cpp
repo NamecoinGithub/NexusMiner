@@ -18,6 +18,8 @@
 using nexusminer::protocol::SessionIdentity;
 using nexusminer::protocol::SessionId;
 using nexusminer::protocol::SessionEpoch;
+using nexusminer::protocol::FalconHashKeyId;
+using nexusminer::protocol::SessionFingerprint;
 using nexusminer::ProtocolLane;
 
 namespace {
@@ -42,7 +44,9 @@ SessionIdentity make_valid_identity(
         make_bytes(32, 0xAA),  // genesis
         make_bytes(32, 0xBB),  // chacha20 key
         make_bytes(32, 0xCC),  // pre-computed SK256 pubkey hash (32 bytes)
-        lane);
+        lane,
+        FalconHashKeyId("hashkeyid-cc"),
+        SessionFingerprint("fingerprint-bb"));
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -58,6 +62,8 @@ void test_default_construction()
     assert(id.genesis_hash().empty());
     assert(id.chacha20_key().empty());
     assert(id.falcon_pubkey_hash().empty());
+    assert(id.falcon_key_id().is_default());
+    assert(id.chacha20_fingerprint().is_default());
     assert(id.lane() == ProtocolLane::UNKNOWN);
     std::cout << "  PASS: default_construction\n";
 }
@@ -73,6 +79,8 @@ void test_valid_construction()
     assert(id.genesis_hash().size() == 32);
     assert(id.chacha20_key().size() == 32);
     assert(id.falcon_pubkey_hash().size() == 32);  // SK256 produces 32 bytes
+    assert(id.falcon_key_id().get() == "hashkeyid-cc");
+    assert(id.chacha20_fingerprint().get() == "fingerprint-bb");
     assert(id.lane() == ProtocolLane::STATELESS);
     std::cout << "  PASS: valid_construction\n";
 }
@@ -156,8 +164,10 @@ void test_same_miner_same_pubkey()
 {
     // Same SK256 pubkey hash → same miner identity
     auto pubkey_hash = make_bytes(32, 0xDD);
-    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, pubkey_hash, ProtocolLane::STATELESS);
-    auto id2 = SessionIdentity(SessionId(0x2222u), SessionEpoch(2u), {}, {}, pubkey_hash, ProtocolLane::STATELESS);
+    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, pubkey_hash, ProtocolLane::STATELESS,
+                               FalconHashKeyId("same-miner"), SessionFingerprint{});
+    auto id2 = SessionIdentity(SessionId(0x2222u), SessionEpoch(2u), {}, {}, pubkey_hash, ProtocolLane::STATELESS,
+                               FalconHashKeyId("same-miner"), SessionFingerprint{});
     // Different sessions but same miner identity
     assert(id1.same_miner(id2));
     assert(id2.same_miner(id1));
@@ -167,8 +177,10 @@ void test_same_miner_same_pubkey()
 void test_same_miner_different_pubkey()
 {
     // Different SK256 pubkey hashes → different miner identities
-    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, make_bytes(32, 0xDD), ProtocolLane::STATELESS);
-    auto id2 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, make_bytes(32, 0xEE), ProtocolLane::STATELESS);
+    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, make_bytes(32, 0xDD), ProtocolLane::STATELESS,
+                               FalconHashKeyId("miner-a"), SessionFingerprint{});
+    auto id2 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, make_bytes(32, 0xEE), ProtocolLane::STATELESS,
+                               FalconHashKeyId("miner-b"), SessionFingerprint{});
     assert(!id1.same_miner(id2));
     std::cout << "  PASS: same_miner_different_pubkey\n";
 }
@@ -188,16 +200,20 @@ void test_full_match()
     auto key = make_bytes(32, 0xBB);
     auto pubkey_hash = make_bytes(32, 0xCC);  // pre-computed SK256
 
-    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), genesis, key, pubkey_hash, ProtocolLane::STATELESS);
-    auto id2 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), genesis, key, pubkey_hash, ProtocolLane::STATELESS);
+    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), genesis, key, pubkey_hash, ProtocolLane::STATELESS,
+                               FalconHashKeyId("hashkeyid-1"), SessionFingerprint("fingerprint-1"));
+    auto id2 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), genesis, key, pubkey_hash, ProtocolLane::STATELESS,
+                               FalconHashKeyId("hashkeyid-1"), SessionFingerprint("fingerprint-1"));
     assert(id1.full_match(id2));
 
     // Different lane breaks full match
-    auto id3 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), genesis, key, pubkey_hash, ProtocolLane::LEGACY);
+    auto id3 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), genesis, key, pubkey_hash, ProtocolLane::LEGACY,
+                               FalconHashKeyId("hashkeyid-1"), SessionFingerprint("fingerprint-1"));
     assert(!id1.full_match(id3));
 
     // Different key breaks full match
-    auto id4 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), genesis, make_bytes(32, 0xFF), pubkey_hash, ProtocolLane::STATELESS);
+    auto id4 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), genesis, make_bytes(32, 0xFF), pubkey_hash, ProtocolLane::STATELESS,
+                               FalconHashKeyId("hashkeyid-1"), SessionFingerprint("fingerprint-2"));
     assert(!id1.full_match(id4));
 
     std::cout << "  PASS: full_match\n";
@@ -227,6 +243,8 @@ void test_diagnostics_contains_fields()
     assert(diag.find("SessionIdentity{") != std::string::npos);
     assert(diag.find("deadbeef") != std::string::npos);
     assert(diag.find("epoch=42") != std::string::npos);
+    assert(diag.find("hashkeyid=") != std::string::npos);
+    assert(diag.find("chacha_fp=") != std::string::npos);
     assert(diag.find("valid=yes") != std::string::npos);
     std::cout << "  PASS: diagnostics_contains_fields\n";
 }
@@ -297,8 +315,10 @@ void test_sk256_pubkey_hash_size()
     auto hash_512 = make_bytes(32, 0xDD);   // simulated SK256 of Falcon-512 pubkey
     auto hash_1024 = make_bytes(32, 0xEE);  // simulated SK256 of Falcon-1024 pubkey
 
-    auto id_512 = SessionIdentity(SessionId(0x1234u), SessionEpoch(1u), {}, {}, hash_512, ProtocolLane::STATELESS);
-    auto id_1024 = SessionIdentity(SessionId(0x1234u), SessionEpoch(1u), {}, {}, hash_1024, ProtocolLane::STATELESS);
+    auto id_512 = SessionIdentity(SessionId(0x1234u), SessionEpoch(1u), {}, {}, hash_512, ProtocolLane::STATELESS,
+                                  FalconHashKeyId("hash-512"), SessionFingerprint{});
+    auto id_1024 = SessionIdentity(SessionId(0x1234u), SessionEpoch(1u), {}, {}, hash_1024, ProtocolLane::STATELESS,
+                                   FalconHashKeyId("hash-1024"), SessionFingerprint{});
 
     assert(id_512.falcon_pubkey_hash().size() == 32);
     assert(id_1024.falcon_pubkey_hash().size() == 32);
@@ -306,7 +326,8 @@ void test_sk256_pubkey_hash_size()
     // Different hashes → different miners
     assert(!id_512.same_miner(id_1024));
     // Same hash → same miner
-    auto id_512b = SessionIdentity(SessionId(0x5678u), SessionEpoch(2u), {}, {}, hash_512, ProtocolLane::STATELESS);
+    auto id_512b = SessionIdentity(SessionId(0x5678u), SessionEpoch(2u), {}, {}, hash_512, ProtocolLane::STATELESS,
+                                   FalconHashKeyId("hash-512"), SessionFingerprint{});
     assert(id_512.same_miner(id_512b));
 
     std::cout << "  PASS: sk256_pubkey_hash_size\n";
@@ -316,10 +337,13 @@ void test_pubkey_hash_deterministic()
 {
     // Same pre-computed SK256 hash always produces the same identity
     auto pubkey_hash = make_bytes(32, 0xCC);
-    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, pubkey_hash, ProtocolLane::STATELESS);
-    auto id2 = SessionIdentity(SessionId(0x2222u), SessionEpoch(2u), {}, {}, pubkey_hash, ProtocolLane::STATELESS);
+    auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, pubkey_hash, ProtocolLane::STATELESS,
+                               FalconHashKeyId("stable-hashkeyid"), SessionFingerprint{});
+    auto id2 = SessionIdentity(SessionId(0x2222u), SessionEpoch(2u), {}, {}, pubkey_hash, ProtocolLane::STATELESS,
+                               FalconHashKeyId("stable-hashkeyid"), SessionFingerprint{});
     // Same pubkey hash regardless of other fields
     assert(id1.falcon_pubkey_hash() == id2.falcon_pubkey_hash());
+    assert(id1.falcon_key_id() == id2.falcon_key_id());
     std::cout << "  PASS: pubkey_hash_deterministic\n";
 }
 
@@ -327,10 +351,12 @@ void test_matches_ignores_crypto_context()
 {
     auto id1 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u),
         make_bytes(32, 0xAA), make_bytes(32, 0xBB),
-        make_bytes(32, 0xCC), ProtocolLane::STATELESS);
+        make_bytes(32, 0xCC), ProtocolLane::STATELESS,
+        FalconHashKeyId("hashkeyid-shared"), SessionFingerprint("fp-1"));
     auto id2 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u),
         make_bytes(32, 0xFF), make_bytes(32, 0xEE),
-        make_bytes(32, 0xDD), ProtocolLane::LEGACY);
+        make_bytes(32, 0xDD), ProtocolLane::LEGACY,
+        FalconHashKeyId("hashkeyid-shared"), SessionFingerprint("fp-2"));
     // matches() only checks session_id + epoch
     assert(id1.matches(id2));
     // but full_match() catches the differences
@@ -388,11 +414,14 @@ void test_sk256_node_compatible_hash()
     assert(hash_512 == hash_512b);
 
     // Build identities with the real SK256 hashes
-    auto id_512 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, hash_512, ProtocolLane::STATELESS);
-    auto id_1024 = SessionIdentity(SessionId(0x2222u), SessionEpoch(2u), {}, {}, hash_1024, ProtocolLane::STATELESS);
+    auto id_512 = SessionIdentity(SessionId(0x1111u), SessionEpoch(1u), {}, {}, hash_512, ProtocolLane::STATELESS,
+                                  FalconHashKeyId("hash-512-real"), SessionFingerprint{});
+    auto id_1024 = SessionIdentity(SessionId(0x2222u), SessionEpoch(2u), {}, {}, hash_1024, ProtocolLane::STATELESS,
+                                   FalconHashKeyId("hash-1024-real"), SessionFingerprint{});
     assert(!id_512.same_miner(id_1024));  // different keys → different miners
 
-    auto id_512b = SessionIdentity(SessionId(0x3333u), SessionEpoch(3u), {}, {}, hash_512, ProtocolLane::STATELESS);
+    auto id_512b = SessionIdentity(SessionId(0x3333u), SessionEpoch(3u), {}, {}, hash_512, ProtocolLane::STATELESS,
+                                   FalconHashKeyId("hash-512-real"), SessionFingerprint{});
     assert(id_512.same_miner(id_512b));   // same key → same miner
 
     std::cout << "  PASS: sk256_node_compatible_hash\n";

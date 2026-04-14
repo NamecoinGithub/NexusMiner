@@ -15,6 +15,7 @@
 #include "LLP/block_utils.hpp"
 #include "LLP/llp_logging.hpp"
 #include "LLP/utils.hpp"
+#include <LLC/hash/SK.h>
 #include "include/stateless_block_utility.hpp"
 #include "../miner_keys.hpp"
 #include "hex_utils.h"
@@ -36,6 +37,26 @@ namespace {
 bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_has_state)
 {
     return !local_has_state && authoritative_has_state;
+}
+
+FalconHashKeyId falcon_pubkey_to_hash_key_id(const std::vector<uint8_t>& pubkey)
+{
+    if (pubkey.empty()) {
+        return FalconHashKeyId{};
+    }
+
+    return FalconHashKeyId(keys::to_hex(LLC::SK256(pubkey).GetBytes()));
+}
+
+std::vector<uint8_t> strip_submit_wire_header(const network::Payload& framed,
+                                              ProtocolLane lane)
+{
+    const std::size_t header_size = (lane == ProtocolLane::STATELESS) ? 6u : 5u;
+    if (framed.size() <= header_size) {
+        return {};
+    }
+
+    return std::vector<uint8_t>(framed.begin() + header_size, framed.end());
 }
 
 }
@@ -1196,7 +1217,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
     if (m_session_context) {
         m_session_context->set_tritium_genesis(tritium_genesis);
-        m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), false);
+        m_session_context->set_falcon_identity(m_miner_pubkey, falcon_pubkey_to_hash_key_id(m_miner_pubkey), false);
         m_session_context->set_channel_state(m_channel, false, false);
         m_session_context->mark_activity();
     }
@@ -1657,14 +1678,17 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // ── Extract plaintext payload from PacketBuilder-framed wire_bytes ────────
     // STATELESS wire format: [opcode(2 BE)][length(4 BE)][plaintext_payload]
     // LEGACY wire format:    [opcode(1)   ][length(4 BE)][plaintext_payload]
-    const size_t header_size = lane_header_size(m_protocol_lane);
+    // The ChaCha20 submit payload must exclude BOTH the opcode and the LLP length
+    // prefix.  Encrypting the 4-byte length field breaks the node-side submit
+    // parser and causes lane-specific framing drift.
     const auto& framed = *submit_result.wire_bytes;
-    if (framed.size() <= header_size) {
-        m_logger->error("[Solo Submit] Wire frame too small: {} bytes (header={})",
+    auto plaintextPayload = strip_submit_wire_header(framed, m_protocol_lane);
+    if (plaintextPayload.empty()) {
+        const size_t header_size = (m_protocol_lane == ProtocolLane::STATELESS) ? 6u : 5u;
+        m_logger->error("[Solo Submit] Wire frame too small: {} bytes (header+length={})",
                         framed.size(), header_size);
         return network::Shared_payload{};
     }
-    std::vector<uint8_t> plaintextPayload(framed.begin() + header_size, framed.end());
     record_session_event(SessionManager::SessionEventKind::SUBMIT_SENT,
                          "unified_height=" + std::to_string(m_last_submitted_height) +
                          " channel_height=" + std::to_string(tracker_channel_tip) +
@@ -3214,7 +3238,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                         m_session_context->reset_session_credentials();
                         m_session_context->set_falcon_identity(
                             m_miner_pubkey,
-                            format_hex_prefix(m_miner_pubkey, 16),
+                            falcon_pubkey_to_hash_key_id(m_miner_pubkey),
                             false);
                         m_session_context->set_chacha20_session_key({}, "", false);
                     }
@@ -3265,8 +3289,8 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     m_session_context->commit_authenticated_session(
                         m_session_id,
                         m_miner_pubkey,
-                        format_hex_prefix(m_miner_pubkey, 16),
-                        load_tritium_genesis());
+                        falcon_pubkey_to_hash_key_id(m_miner_pubkey),
+                        SessionGenesisHash(load_tritium_genesis()));
                     refresh_cached_session_state("Solo Auth");
                     m_session_context->set_channel_state(m_channel, false, false);
                     m_session_context->start_keepalive_timer();
@@ -3300,7 +3324,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 m_logger->warn("[Solo Auth]   - WARNING: No session ID provided by node (expected 5 bytes, got {})",
                     packet.m_length);
                 if (m_session_context) {
-                    m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), true);
+                    m_session_context->set_falcon_identity(m_miner_pubkey, falcon_pubkey_to_hash_key_id(m_miner_pubkey), true);
                     m_session_context->set_channel_state(m_channel, false, false);
                 }
 
@@ -3381,7 +3405,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 m_session_context->reset_session_credentials();
                 m_session_context->set_falcon_identity(
                     m_miner_pubkey,
-                    format_hex_prefix(m_miner_pubkey, 16),
+                    falcon_pubkey_to_hash_key_id(m_miner_pubkey),
                     false);
                 m_session_context->set_chacha20_session_key({}, "", false);
                 m_session_context->set_channel_state(m_channel, false, false);
@@ -4234,7 +4258,7 @@ void Solo::reset_auth_state()
         m_session_context->reset_session_credentials();
         m_session_context->set_falcon_identity(
             m_miner_pubkey,
-            format_hex_prefix(m_miner_pubkey, 16),
+            falcon_pubkey_to_hash_key_id(m_miner_pubkey),
             false);
     }
     m_logger->info("[Solo] Auth state reset (in-band re-auth prep)");
@@ -4355,7 +4379,7 @@ void Solo::handle_session_expired(SessionId expired_sid, uint8_t reason, std::sh
     // Clear the authoritative session context
     if (m_session_context) {
         m_session_context->set_chacha20_session_key({}, "", false);
-        m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), false);
+        m_session_context->set_falcon_identity(m_miner_pubkey, falcon_pubkey_to_hash_key_id(m_miner_pubkey), false);
         m_session_context->clear_for_reauth(m_reward_address,
                                             m_reward_address.empty() ? "" : "config",
                                             "node signalled session expiry");
