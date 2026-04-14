@@ -285,24 +285,16 @@ static void test_push_reasons_bypass_height_dedup()
 {
     std::cout << "\nTest 12: PUSH reasons bypass height dedup\n";
 
-    print_test_result("PUSH_STALE bypasses height dedup",
-        should_bypass_height_dedup(GetBlockReason::PUSH_STALE));
+    // Remaining PUSH reasons (PUSH_STALE, PUSH_NO_TEMPLATE, PUSH_CROSS_CHANNEL
+    // removed — NODE auto-sends BLOCK_DATA after PUSH)
     print_test_result("PUSH_TIP_MOVED bypasses height dedup",
         should_bypass_height_dedup(GetBlockReason::PUSH_TIP_MOVED));
     print_test_result("PUSH_SAME_HEIGHT_TIP bypasses height dedup",
         should_bypass_height_dedup(GetBlockReason::PUSH_SAME_HEIGHT_TIP));
-    print_test_result("PUSH_NO_TEMPLATE bypasses height dedup",
-        should_bypass_height_dedup(GetBlockReason::PUSH_NO_TEMPLATE));
-    print_test_result("PUSH_CROSS_CHANNEL bypasses height dedup",
-        should_bypass_height_dedup(GetBlockReason::PUSH_CROSS_CHANNEL));
 
     // PUSH reasons should NOT bypass ALL dedup
-    print_test_result("PUSH_STALE does NOT bypass all dedup",
-        !should_bypass_all_dedup(GetBlockReason::PUSH_STALE));
     print_test_result("PUSH_TIP_MOVED does NOT bypass all dedup",
         !should_bypass_all_dedup(GetBlockReason::PUSH_TIP_MOVED));
-    print_test_result("PUSH_CROSS_CHANNEL does NOT bypass all dedup",
-        !should_bypass_all_dedup(GetBlockReason::PUSH_CROSS_CHANNEL));
 }
 
 // ============================================================================

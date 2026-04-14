@@ -299,7 +299,7 @@ void ColinAgent::run_diagnostics()
                 if (!w.empty()) {
                     warnings.push_back(w);
                     recommendations.push_back(
-                        "Check node block propagation; verify keepalive interval is ≤60s");
+                        "Check node block propagation; verify session keepalive is active");
                 }
             }
         }

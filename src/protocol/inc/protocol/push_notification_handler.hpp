@@ -41,6 +41,11 @@ public:
     /**
      * @brief Handle a block-available push notification
      *
+     * Since the NODE now auto-sends BLOCK_DATA after every PUSH notification,
+     * the miner no longer needs to send GET_BLOCK in response to PUSH.
+     * This handler processes the push metadata (heights, tip anchors, liveness)
+     * but does NOT trigger a GET_BLOCK request.
+     *
      * @param packet            Received LLP packet (must have 12-byte, 140-byte, or 148-byte payload)
      * @param expected_channel  mining::CHANNEL_PRIME or mining::CHANNEL_HASH
      * @param lane              ProtocolLane::LEGACY or ProtocolLane::STATELESS
@@ -49,22 +54,10 @@ public:
      * @param update_height_fn  Callback invoked with (unified_height, channel_height, difficulty_nbits)
      *                          to update both HeightTracker and ClientChannelManager atomically.
      *                          If null, the update is skipped.
-     * @param request_work_fn   Callback to request a fresh mining template (same-channel path).
-     *                          PUSH is the authoritative liveness signal — the handler will
-     *                          always invoke this when staleness is detected.  The callback
-     *                          is responsible for providing a GetBlockReason to get_work()
-     *                          that bypasses height-based dedup (PUSH_STALE, PUSH_TIP_MOVED, etc.).
-     *                          Returns true if GET_BLOCK was actually transmitted, false if
-     *                          suppressed (e.g. by the dedup guard).
-     * @param cross_channel_request_fn  Optional callback for cross-channel tip-advance path.
-     *                          When provided, this is called instead of request_work_fn for
-     *                          cross-channel tip advances (e.g. PUSH_CROSS_CHANNEL reason).
-     *                          If null/empty, falls back to request_work_fn.
-     *                          Returns true if GET_BLOCK was actually transmitted.
-     * @return true  if request_work_fn (or cross_channel_request_fn) was invoked AND
-     *               GET_BLOCK was actually transmitted
+     * @return true  if the push was substantively processed (heights/state updated) —
+     *               same-channel pushes or cross-channel tip advances
      *         false if only push liveness was recorded (cross-channel, no height change),
-     *               the payload was invalid, or the callback was suppressed by dedup
+     *               or the payload was invalid
      */
     bool handle_push_notification(
         const Packet& packet,
@@ -72,9 +65,7 @@ public:
         ProtocolLane lane,
         MiningTemplateInterface* template_interface,
         HeightTracker* height_tracker,
-        std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn,
-        std::function<bool()> request_work_fn,
-        std::function<bool()> cross_channel_request_fn = {}
+        std::function<void(uint32_t, uint32_t, uint32_t)> update_height_fn
     );
 
 private:

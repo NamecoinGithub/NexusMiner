@@ -1089,52 +1089,12 @@ void Solo::flush_pending_push_after_auth(const std::shared_ptr<network::Connecti
         return;
     }
 
-    if (!connection) {
-        m_logger->warn("[{}] Pending post-auth GET_BLOCK still queued: no connection available", log_scope);
-        return;
-    }
-
-    refresh_cached_session_state(log_scope);
-
-    if (!is_authenticated()) {
-        m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: canonical session not authenticated yet",
-                       log_scope);
-        return;
-    }
-
-    if (!validate_authoritative_session(log_scope, !m_reward_address.empty())) {
-        m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: authoritative session is not ready yet",
-                       log_scope);
-        return;
-    }
-
-    if (!m_reward_address.empty() && !m_reward_bound) {
-        m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: reward binding not finished yet",
-                       log_scope);
-        return;
-    }
-
-    m_logger->info("[{}] Push arrived during auth handshake — sending queued GET_BLOCK now", log_scope);
-
-    auto work_payload = get_work(GetBlockReason::PUSH_NO_TEMPLATE);
-    if (work_payload && !work_payload->empty()) {
-        m_pending_push_after_auth = false;
-        try {
-            connection->transmit(work_payload);
-            mark_get_block_pending(GetBlockReason::PUSH_NO_TEMPLATE);
-        } catch (const std::exception& e) {
-            m_logger->error("[Solo] reward transmit failed: {}", e.what());
-        }
-        return;
-    }
-
-    if (m_last_get_block_request_status.load() == GetBlockRequestStatus::DUPLICATE_WINDOW) {
-        m_pending_push_after_auth = false;
-        m_logger->info("[{}] Queued post-auth GET_BLOCK already satisfied by a recent request", log_scope);
-        return;
-    }
-
-    m_logger->warn("[{}] Queued post-auth GET_BLOCK is still pending after readiness check", log_scope);
+    // NODE auto-sends BLOCK_DATA after PUSH — no GET_BLOCK request needed.
+    // The push arrived during the auth handshake; the node will auto-send
+    // fresh block data now that the miner is authenticated and ready.
+    m_pending_push_after_auth = false;
+    m_logger->info("[{}] Push arrived during auth handshake — node will auto-send block data (no GET_BLOCK needed)",
+                   log_scope);
 }
 
 void Solo::update_connection_metadata(const std::shared_ptr<network::Connection>& connection)
@@ -3847,84 +3807,25 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                                  : (channel == mining::CHANNEL_HASH)  ? "HASH_BLOCK_AVAILABLE"
                                  : "STAKE_BLOCK_AVAILABLE";
 
-    // Capture whether the handler actually requested work.
-    // Same-channel: always true (every same-channel PUSH is a tip advance).
-    // Cross-channel tip advance: true (unified height moved → hashPrevBlock changed).
-    // Cross-channel liveness-only (same unified height): false — no tip anchor change,
-    //   so the dedup guard must NOT be reset.
-    bool work_requested = m_push_handler->handle_push_notification(
+    // Capture whether the handler substantively processed the push
+    // (heights/state updated) vs just recorded liveness.
+    // Same-channel: always true (every same-channel PUSH updates state).
+    // Cross-channel tip advance: true (unified height moved → state updated).
+    // Cross-channel liveness-only (same unified height): false — no state change.
+    //
+    // NODE auto-sends BLOCK_DATA after PUSH — no GET_BLOCK request needed.
+    bool push_processed = m_push_handler->handle_push_notification(
         packet, channel, m_protocol_lane,
         m_template_interface.get(),
         &m_height_tracker,
-        // CALLBACK 1: update_height_fn — Updates cached height state
+        // update_height_fn — Updates cached height state
         [this](uint32_t u, uint32_t c, uint32_t d) {
             update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
-        },
-        // CALLBACK 2: request_work_fn — Same-channel path: GET_BLOCK with PUSH_STALE reason.
-        // PUSH reasons bypass height dedup in GetBlockDedupGuard so this
-        // is never suppressed by stale cached heights.
-        // Returns true only when GET_BLOCK was actually transmitted (not suppressed
-        // by dedup guard), so that the caller knows a real send occurred.
-        [connection, this, push_opcode_name]() -> bool {
-            if (connection) {
-                auto work_payload = get_work(GetBlockReason::PUSH_STALE);
-                if (work_payload && !work_payload->empty()) {
-                    try {
-                        connection->transmit(work_payload);
-                    } catch (const std::exception& e) {
-                        m_logger->error("[Solo] GET_BLOCK transmit failed: {}", e.what());
-                        return false;
-                    }
-                    mark_get_block_pending(GetBlockReason::PUSH_STALE);
-                    return true;
-                } else {
-                    m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
-                }
-            }
-            return false;
-        },
-        // CALLBACK 3: cross_channel_request_fn — Cross-channel tip advance: GET_BLOCK with
-        // PUSH_CROSS_CHANNEL reason (same dedup tier as PUSH_STALE, semantically distinct).
-        [connection, this]() -> bool {
-            if (connection) {
-                auto work_payload = get_work(GetBlockReason::PUSH_CROSS_CHANNEL);
-                if (work_payload && !work_payload->empty()) {
-                    try {
-                        connection->transmit(work_payload);
-                    } catch (const std::exception& e) {
-                        m_logger->error("[Solo] GET_BLOCK (cross-channel) transmit failed: {}", e.what());
-                        return false;
-                    }
-                    mark_get_block_pending(GetBlockReason::PUSH_CROSS_CHANNEL);
-                    return true;
-                } else {
-                    m_logger->warn("[Solo] GET_BLOCK (cross-channel) unavailable — will wait for next node push");
-                }
-            }
-            return false;
         });
 
-    // Do NOT reset dedup state here.  record_transmission() inside get_work()
-    // already armed the 100ms rapid-burst guard; resetting it immediately after
-    // the callback returns clears m_last_transmitted_tp, allowing a second PUSH
-    // arriving <100ms later to bypass the burst guard entirely.  When the node's
-    // 1-second per-request cooldown silently drops that second GET_BLOCK, the
-    // m_pending_get_block flag strands for up to TIMEOUT_SECONDS with no
-    // BLOCK_DATA response, suppressing GET_ROUND-driven retries.
-    //
-    // PUSH reasons already bypass the height-based guard via
-    // should_bypass_height_dedup(), so removing this reset does not block
-    // legitimate subsequent PUSH-triggered requests — only the rapid-burst
-    // guard remains active, which is exactly the protection we need.
-    //
-    // The dedup state is properly reset when the canonical tip actually changes:
-    //   - on_block_data() / on_stateless_get_block() response handlers
-    //   - on_block_accepted() / on_block_rejected()
-    //   - on_new_round_received() (GET_ROUND detects tip change)
-    //   - Stake-advance and template-discard paths
-    if (work_requested) {
-        m_logger->debug("[Solo Push] GET_BLOCK transmitted ({} channel tip advance) — "
-                        "burst guard remains armed to protect against rapid duplicate pushes",
+    if (push_processed) {
+        m_logger->debug("[Solo Push] PUSH processed ({} channel) — "
+                        "node will auto-send fresh BLOCK_DATA",
             (channel == m_channel) ? "same" : "cross");
     }
 }
@@ -4269,7 +4170,10 @@ void Solo::set_reward_address(std::string const& address)
 {
     m_reward_address = address;
     if (m_session_context) {
-        m_session_context->set_reward_binding(address, {}, false, address.empty() ? "" : "config");
+        m_session_context->set_reward_binding(address,
+                                              RewardHash{},
+                                              false,
+                                              address.empty() ? "" : "config");
     }
 }
 
@@ -5461,32 +5365,17 @@ void Solo::check_unified_height_delta(uint32_t current_unified_height)
     }
     
     // When the unified tip moves, hashPrevBlock in the current template becomes
-    // stale even if the channel height hasn't changed. Request a fresh template
-    // so mining doesn't waste work on an orphan-prone block.
-    // Rate limiting in get_work() (6500ms) prevents spamming the node.
+    // stale even if the channel height hasn't changed.  The NODE auto-sends
+    // BLOCK_DATA after PUSH, and GET_ROUND is the backup for tip changes.
+    // Health monitor logs the tip movement but does NOT send GET_BLOCK.
     if (current_unified_height > m_template_unified_height) {
         uint32_t delta = current_unified_height - m_template_unified_height;
         
-        m_logger->info("[Solo Poll] ↑ Unified tip moved {} blocks ({} → {}) [reason: tip_moved] — requesting fresh template",
+        m_logger->info("[Solo Poll] ↑ Unified tip moved {} blocks ({} → {}) [reason: tip_moved] — "
+                       "node will auto-send fresh template via PUSH; GET_ROUND backup active",
             delta, m_template_unified_height, current_unified_height);
         // Update to avoid repeated log spam
         m_template_unified_height = current_unified_height;
-
-        // Request fresh template via GET_BLOCK (rate-limited)
-        if (m_connection) {
-            auto work = get_work(GetBlockReason::HEALTH_TIP_MOVED);
-            if (work && !work->empty()) {
-                try {
-                    m_connection->transmit(work);
-                    mark_get_block_pending(GetBlockReason::HEALTH_TIP_MOVED);
-                } catch (const std::exception& e) {
-                    m_logger->error("[Solo] transmit failed: {}", e.what());
-                }
-                m_logger->info("[Solo Poll] ✓ GET_BLOCK sent for tip refresh");
-            } else {
-                m_logger->debug("[Solo Poll] GET_BLOCK rate-limited — tip refresh deferred");
-            }
-        }
     }
 }
 

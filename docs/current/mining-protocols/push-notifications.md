@@ -240,15 +240,19 @@ On cross-channel PUSH (Hash/Stake block for Prime miner):
 
 ### GetBlockDedupGuard Three-Tier Policy
 
-PUSH-triggered `GET_BLOCK` requests use `GetBlockReason` (e.g., `PUSH_STALE`,
-`PUSH_TIP_MOVED`) which **bypasses** the height-based dedup guard but still
-respects the 100ms rapid-burst guard to prevent two identical pushes from racing.
+PUSH-triggered template refreshes use `GetBlockReason` (e.g., `PUSH_TIP_MOVED`)
+which **bypasses** the height-based dedup guard but still respects the 100ms
+rapid-burst guard to prevent two identical pushes from racing.
+
+> **Note**: `PUSH_STALE`, `PUSH_NO_TEMPLATE`, and `PUSH_CROSS_CHANNEL` have been
+> removed — the NODE now auto-sends BLOCK_DATA after PUSH, so no GET_BLOCK
+> request is needed for PUSH notifications.
 
 Recovery retries (`RECOVERY_FORCED`, `RECOVERY_TIMER`) bypass **all** guards.
 
 ```
 Tier 1: bypass_all   → RECOVERY_FORCED, RECOVERY_TIMER (skip all guards)
-Tier 2: bypass_height → PUSH_*, TEMPLATE_AGE_*, GET_ROUND_*, etc. (skip height, keep burst)
+Tier 2: bypass_height → PUSH_TIP_MOVED, PUSH_SAME_HEIGHT_TIP, TEMPLATE_AGE_*, GET_ROUND_*, etc. (skip height, keep burst)
 Tier 3: full dedup   → INITIAL_REQUEST, HEALTH_CHANNEL_ADVANCE (both guards active)
 ```
 
