@@ -125,7 +125,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             throw std::runtime_error("Invalid Falcon key format in configuration");
         }
 
-        // Create primary NodeSession (handles both stateless and legacy ports automatically via SIM Link)
+        // Create the primary lane-scoped NodeSession.
+        // Lane selection follows the configured node port; failover happens by
+        // reconnecting to a secondary node endpoint with a full auth cycle.
         m_primary_node_session = std::make_shared<NodeSession>(
             m_io_context,
             m_config,
@@ -1161,7 +1163,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
     m_logger->info("[Solo] Port Configuration: Using port {} from miner.conf", configured_port);
     m_logger->debug("[Solo] Connection initiated to endpoint: {}", wallet_endpoint.to_string());
 
-    // Use NodeSession to connect (handles both stateless and legacy ports via SIM Link)
+    // Use NodeSession to connect on the configured lane; no cross-lane fallback.
     std::weak_ptr<Worker_manager> weak_self = shared_from_this();
     return m_primary_node_session->connect(wallet_endpoint, [weak_self, wallet_endpoint](bool success) {
         auto self = weak_self.lock();
@@ -1474,7 +1476,7 @@ void Worker_manager::send_session_status_if_due()
         auto solo_protocol = m_primary_node_session->get_active_protocol();
         if (solo_protocol)
         {
-            // NodeSession handles SIM Link internally, so we don't need to track secondary separately
+            // NodeSession is lane-scoped; lane health is diagnostic only.
             auto pkt = solo_protocol->build_session_status_packet(degraded, workers_run, false);
             if (pkt && !pkt->empty()) {
                 if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry) {

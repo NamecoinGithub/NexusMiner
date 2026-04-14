@@ -113,18 +113,7 @@ void NodeSession::connect_primary(const network::Endpoint& node_endpoint, Connec
                         self->m_logger->info("[NodeSession:{}] Primary authentication initiated",
                                             self->m_node_label);
 
-                        // After primary connection is established, initiate secondary connection
-                        if (self->m_config.get_enable_sim_link() && !self->m_secondary_connected) {
-                            // Create secondary endpoint with legacy port (8323)
-                            std::string node_ip;
-                            node_endpoint.address(node_ip);
-                            network::Endpoint secondary_endpoint{
-                                network::Transport_protocol::tcp,
-                                node_ip,
-                                ProtocolPorts::LEGACY_PORT};
-                            self->connect_secondary(secondary_endpoint);
-                        }
-                    });
+                });
 
                     if (auth_payload && !auth_payload->empty()) {
                         self->m_primary_connection->transmit(auth_payload);
@@ -503,15 +492,12 @@ void NodeSession::handle_secondary_connection_result(network::Result::Code resul
 std::pair<network::Connection::Sptr, std::shared_ptr<protocol::Solo>>
 NodeSession::select_active_pair() const
 {
-    // Single authoritative source for primary→secondary fallback logic.
-    // All three guards are required: connection object must exist, protocol must
-    // exist, and the connected flag must be set.  This mirrors the invariants that
-    // Connection::transmit() expects (non-null handler, open socket).
+    // Single authoritative source for lane-scoped transmit logic.
+    // Cross-lane fallback is intentionally disabled: one NodeSession owns one
+    // authenticated lane, and failover must happen through a separate node/auth
+    // cycle rather than switching protocol lanes mid-session.
     if (m_primary_connection && m_primary_protocol && m_primary_connected) {
         return {m_primary_connection, m_primary_protocol};
-    }
-    if (m_secondary_connection && m_secondary_protocol && m_secondary_connected) {
-        return {m_secondary_connection, m_secondary_protocol};
     }
     return {nullptr, nullptr};
 }

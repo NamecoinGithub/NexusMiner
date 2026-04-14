@@ -260,7 +260,9 @@ void SessionManager::transition_to_authenticated_locked(SessionId session_id,
         m_session.session_genesis.get(),
         m_session.chacha20_session_key,
         std::move(pubkey_hash),
-        m_protocol_lane);
+        m_protocol_lane,
+        m_session.falcon_key_id,
+        m_session.chacha20_key_fingerprint);
 
     record_session_event_locked(SessionEventKind::AUTH_SUCCESS, "authenticated");
     std::ostringstream sid_oss;
