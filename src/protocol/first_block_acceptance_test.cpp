@@ -297,7 +297,7 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
     const auto falcon_pubkey = make_repeated_bytes(32, 0x20);
     context.set_falcon_identity(falcon_pubkey, "acceptance-harness-key", true);
     auto auth_info = context.get_session_info();
-    if (!auth_info.falcon_authenticated || auth_info.falcon_key_id != "acceptance-harness-key") {
+    if (!auth_info.falcon_authenticated || auth_info.falcon_key_id.get() != "acceptance-harness-key") {
         return fail("auth phase did not persist falcon identity");
     }
 

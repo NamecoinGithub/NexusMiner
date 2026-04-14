@@ -183,13 +183,13 @@ void test_authoritative_miner_session_container_binding() {
     assert(info.authenticated);
     assert(info.falcon_authenticated);
     assert(info.session_id == SessionId(0x12345678u));
-    assert(info.session_genesis == genesis);
+    assert(info.session_genesis.get() == genesis);
     assert(info.falcon_pubkey == falcon_pubkey);
-    assert(info.falcon_key_id == "2222222222222222");
+    assert(info.falcon_key_id.get() == "2222222222222222");
     assert(info.chacha20_session_key == chacha_key);
-    assert(info.chacha20_key_fingerprint == chacha_fingerprint);
+    assert(info.chacha20_key_fingerprint.get() == chacha_fingerprint);
     assert(info.reward_address_string == "reward-address");
-    assert(info.reward_hash == reward_hash);
+    assert(info.reward_hash.get() == reward_hash);
     assert(info.reward_bound);
     assert(info.channel == 2);
     assert(info.ready_for_submit);
@@ -221,9 +221,9 @@ void test_reward_binding_persists_across_session_restart() {
 
     const auto info = context.get_session_info();
     assert(info.session_id == SessionId(0x87654321u));
-    assert(info.session_genesis == reconnect_genesis);
+    assert(info.session_genesis.get() == reconnect_genesis);
     assert(info.reward_address_string == "reward-address");
-    assert(info.reward_hash == reward_hash);
+    assert(info.reward_hash.get() == reward_hash);
     assert(info.reward_bound);
     // After session restart with reward still bound:
     // update_replay_allowances_locked() sets ready_for_submit = authenticated && reward_bound.
@@ -304,8 +304,8 @@ void test_atomic_authenticated_session_commit_sets_auth_fields_together() {
     assert(info.authenticated);
     assert(info.falcon_authenticated);
     assert(info.falcon_pubkey == falcon_pubkey);
-    assert(info.falcon_key_id == "atomic-session-key");
-    assert(info.session_genesis == genesis);
+    assert(info.falcon_key_id.get() == "atomic-session-key");
+    assert(info.session_genesis.get() == genesis);
     assert(context.get_state() == SessionManager::SessionState::AUTHENTICATED);
     assert(context.is_authenticated());
 
@@ -323,16 +323,16 @@ void test_auth_handshake_preserves_reward_crypto_material() {
     const auto fingerprint = format_hex_prefix(chacha_key, 8);
 
     context.set_tritium_genesis(genesis);
-    context.set_reward_binding("reward-address", {}, false, "config");
+    context.set_reward_binding("reward-address", RewardHash{}, false, "config");
     context.set_chacha20_session_key(chacha_key, fingerprint, true);
 
     context.begin_auth_handshake("preserve reward crypto");
 
     auto snapshot = context.get_runtime_snapshot();
     assert(snapshot.state == SessionManager::SessionState::AUTHENTICATING);
-    assert(snapshot.session_genesis == genesis);
+    assert(snapshot.session_genesis.get() == genesis);
     assert(snapshot.chacha20_session_key == chacha_key);
-    assert(snapshot.chacha20_key_fingerprint == fingerprint);
+    assert(snapshot.chacha20_key_fingerprint.get() == fingerprint);
     assert(snapshot.chacha20_ready);
     assert(snapshot.reward_address_string == "reward-address");
     assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
@@ -344,9 +344,9 @@ void test_auth_handshake_preserves_reward_crypto_material() {
 
     snapshot = context.get_runtime_snapshot();
     assert(snapshot.state == SessionManager::SessionState::AUTHENTICATED);
-    assert(snapshot.session_genesis == genesis);
+    assert(snapshot.session_genesis.get() == genesis);
     assert(snapshot.chacha20_session_key == chacha_key);
-    assert(snapshot.chacha20_key_fingerprint == fingerprint);
+    assert(snapshot.chacha20_key_fingerprint.get() == fingerprint);
     assert(snapshot.chacha20_ready);
 
     const auto readiness = context.get_reward_bind_readiness();
@@ -363,7 +363,7 @@ void test_reward_bind_readiness_reports_precise_missing_crypto_reason() {
     NodeSessionContext context(session_manager);
 
     const std::vector<uint8_t> genesis(32, 0x4C);
-    context.set_reward_binding("reward-address", {}, false, "config");
+    context.set_reward_binding("reward-address", RewardHash{}, false, "config");
     context.commit_authenticated_session(SessionId(0xA1B2C3D4u),
                                          std::vector<uint8_t>(32, 0x33),
                                          "missing-crypto-key",
@@ -384,7 +384,7 @@ void test_reward_bind_readiness_requires_ready_chacha20_flag() {
 
     const std::vector<uint8_t> genesis(32, 0x5D);
     const std::vector<uint8_t> chacha_key(32, 0x7E);
-    context.set_reward_binding("reward-address", {}, false, "config");
+    context.set_reward_binding("reward-address", RewardHash{}, false, "config");
     context.commit_authenticated_session(SessionId(0x0BADF00Du),
                                          std::vector<uint8_t>(32, 0x41),
                                          "not-ready-crypto-key",
@@ -424,7 +424,7 @@ void test_reset_session_credentials_clears_atomic_auth_flags() {
     assert(info.session_id == committed_session_id);
     assert(!info.falcon_authenticated);
     assert(info.chacha20_session_key.empty());
-    assert(info.chacha20_key_fingerprint.empty());
+    assert(info.chacha20_key_fingerprint.get().empty());
     assert(!info.chacha20_ready);
     assert(!info.ready_for_submit);
     assert(!info.ready_for_get_block);
@@ -457,8 +457,8 @@ void test_multiple_session_contexts_do_not_overlap() {
     assert(info_b.session_id == SessionId(0x22222222u));
     assert(info_a.reward_address_string == "reward-a");
     assert(info_b.reward_address_string == "reward-b");
-    assert(info_a.falcon_key_id == "aaaaaaaaaaaaaaaa");
-    assert(info_b.falcon_key_id == "bbbbbbbbbbbbbbbb");
+    assert(info_a.falcon_key_id.get() == "aaaaaaaaaaaaaaaa");
+    assert(info_b.falcon_key_id.get() == "bbbbbbbbbbbbbbbb");
     assert(info_a.session_genesis != info_b.session_genesis);
     assert(info_a.reward_hash != info_b.reward_hash);
 
@@ -531,7 +531,7 @@ void test_runtime_snapshot_is_authoritative_copy() {
     assert(authenticated_snapshot.session_id == SessionId(0x1234ABCDu));
     assert(authenticated_snapshot.session_epoch == compatibility_snapshot.session_epoch);
     assert(authenticated_snapshot.state == SessionManager::SessionState::AUTHENTICATED);
-    assert(authenticated_snapshot.falcon_key_id == "snapshot-key");
+    assert(authenticated_snapshot.falcon_key_id.get() == "snapshot-key");
 
     session_manager->record_keepalive();
     const auto active_snapshot = context.get_runtime_snapshot();
@@ -635,7 +635,7 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     auto session_manager = std::make_shared<SessionManager>(24, nullptr);
     NodeSessionContext context(session_manager);
 
-    context.set_reward_binding("reward-address", {}, false, "config");
+    context.set_reward_binding("reward-address", RewardHash{}, false, "config");
     context.begin_auth_handshake("unit test auth");
     auto snapshot = context.get_runtime_snapshot();
     assert(snapshot.state == SessionManager::SessionState::AUTHENTICATING);

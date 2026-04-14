@@ -4170,7 +4170,10 @@ void Solo::set_reward_address(std::string const& address)
 {
     m_reward_address = address;
     if (m_session_context) {
-        m_session_context->set_reward_binding(address, {}, false, address.empty() ? "" : "config");
+        m_session_context->set_reward_binding(address,
+                                              RewardHash{},
+                                              false,
+                                              address.empty() ? "" : "config");
     }
 }
 
