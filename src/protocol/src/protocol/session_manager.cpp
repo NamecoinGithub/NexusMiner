@@ -516,6 +516,7 @@ void SessionManager::clear_for_disconnect(const std::string& reward_address,
                                           const std::string& reason,
                                           bool preserve_genesis)
 {
+    stop_keepalive_timer();
     {
         SessionWriteLock lock(m_session_mutex);
         const auto retained_reward_address =
@@ -537,7 +538,6 @@ void SessionManager::clear_for_disconnect(const std::string& reward_address,
                                     reason.empty() ? "session cleared for disconnect" : reason);
         bump_runtime_state_generation_locked();
     }
-    stop_keepalive_timer();
 }
 
 void SessionManager::clear_for_reauth(const std::string& reward_address,

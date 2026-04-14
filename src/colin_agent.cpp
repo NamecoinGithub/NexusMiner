@@ -39,7 +39,8 @@ namespace nexusminer
 // Warning-catalog threshold constants
 static constexpr uint32_t WARN_CONNECTION_RETRIES = 100;
 static constexpr uint64_t WARN_TEMPLATE_AGE_SECONDS = 150;
-static constexpr int64_t DIAG_KEEPALIVE_ACK_STALE_SECONDS = 32400;  // 9h without keepalive ACK (diagnostic only); ~1.5× the 6h session keepalive interval (4 pings per 24h window)
+static constexpr int64_t DIAG_KEEPALIVE_ACK_STALE_SECONDS = 32400;  // 9h without keepalive ACK (diagnostic only); 1.5× default 6h keepalive cadence
+static constexpr int64_t DIAG_SESSION_STATUS_ACK_STALE_SECONDS = 750;  // 12.5 min; 2.5× 5 min SESSION_STATUS_ACK cadence
 static constexpr int32_t WARN_CANONICAL_DRIFT_THRESHOLD = 500;    // blocks ahead before warning
 static constexpr uint64_t WARN_DIAGNOSTIC_STALE_SECONDS = 180;    // 3 min without any diagnostic update
 static constexpr uint64_t WARN_DIAGNOSTIC_INIT_GRACE_SECONDS = 30; // grace period before warning about uninit diagnostic
@@ -393,7 +394,7 @@ void ColinAgent::emit_report(
             m_logger->info("[Colin]    SIM Link active: {}", ack.IsSimLinkActive()  ? "✅" : "❌");
             m_logger->info("[Colin]    Authenticated:   {}", ack.IsAuthenticated()  ? "✅" : "❌");
             m_logger->info("[Colin]    Node uptime:     {}s", ack.uptime_seconds);
-            if (age_s > 750)  // 2.5 × 300s (5 min cadence) = 750s (12.5 min)
+            if (age_s > DIAG_SESSION_STATUS_ACK_STALE_SECONDS)
                 warnings.push_back("No SESSION_STATUS_ACK for >" + std::to_string(age_s) +
                                    "s — node may have dropped session or lane is silent");
         }

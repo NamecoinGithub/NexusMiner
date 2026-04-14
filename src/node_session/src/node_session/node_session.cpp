@@ -524,8 +524,7 @@ bool NodeSession::transmit(network::Shared_payload data)
 
     auto [conn, proto] = select_active_pair();
     if (conn) {
-        conn->transmit(data);
-        return true;
+        return conn->transmit(data);
     }
 
     m_logger->warn("[NodeSession:{}] No active connection to transmit on", m_node_label);
