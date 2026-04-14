@@ -221,7 +221,7 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
 }
 
 void SessionManager::transition_to_authenticated_locked(SessionId session_id,
-                                                         const std::vector<uint8_t>& tritium_genesis)
+                                                         SessionGenesisHash tritium_genesis)
 {
     if (m_epoch_coordinator) {
         m_session.session_epoch = SessionEpoch(m_epoch_coordinator->advance_session_epoch("authenticated"));
@@ -241,7 +241,7 @@ void SessionManager::transition_to_authenticated_locked(SessionId session_id,
     m_session.session_start = m_session.last_auth_time;
     m_session.session_start_tp = std::chrono::system_clock::now();
     m_session.active_lane = m_protocol_lane;
-    if (!tritium_genesis.empty()) {
+    if (!tritium_genesis.get().empty()) {
         m_session.session_genesis = tritium_genesis;
     }
     update_replay_allowances_locked();
@@ -257,7 +257,7 @@ void SessionManager::transition_to_authenticated_locked(SessionId session_id,
     m_canonical_identity = SessionIdentity(
         session_id,
         m_session.session_epoch,
-        m_session.session_genesis,
+        m_session.session_genesis.get(),
         m_session.chacha20_session_key,
         std::move(pubkey_hash),
         m_protocol_lane);
@@ -332,7 +332,10 @@ void SessionManager::commit_authenticated(SessionId session_id, ProtocolLane lan
         m_session.active_lane = lane;
         bump_runtime_state_generation_locked();
     }
-    commit_authenticated_session(session_id, {}, {}, {});
+    commit_authenticated_session(session_id,
+                                 std::vector<uint8_t>{},
+                                 FalconHashKeyId{},
+                                 SessionGenesisHash{});
     if (!reward_address.empty()) {
         SessionWriteLock lock(m_session_mutex);
         m_session.reward_address = reward_address;
@@ -390,8 +393,8 @@ void SessionManager::begin_auth_handshake(const std::string& detail)
 
 void SessionManager::commit_authenticated_session(SessionId session_id,
                                                    const std::vector<uint8_t>& pubkey,
-                                                   const std::string& key_id,
-                                                   const std::vector<uint8_t>& tritium_genesis)
+                                                   FalconHashKeyId key_id,
+                                                   SessionGenesisHash tritium_genesis)
 {
     stop_keepalive_timer();
     {
@@ -402,7 +405,7 @@ void SessionManager::commit_authenticated_session(SessionId session_id,
         if (!pubkey.empty()) {
             m_session.falcon_pubkey = pubkey;
         }
-        if (!key_id.empty()) {
+        if (!key_id.get().empty()) {
             m_session.falcon_key_id = key_id;
         }
         transition_to_authenticated_locked(session_id, tritium_genesis);
@@ -412,9 +415,18 @@ void SessionManager::commit_authenticated_session(SessionId session_id,
                    session_id.get(), get_session_epoch().get());
 }
 
+void SessionManager::commit_authenticated_session(SessionId session_id,
+                                                   const std::vector<uint8_t>& pubkey,
+                                                   const std::string& key_id,
+                                                   const std::vector<uint8_t>& tritium_genesis)
+{
+    commit_authenticated_session(session_id, pubkey, FalconHashKeyId(key_id),
+                                 SessionGenesisHash(tritium_genesis));
+}
+
 void SessionManager::start_session(SessionId session_id,
                                     const std::vector<uint8_t>& session_key,
-                                    const std::vector<uint8_t>& tritium_genesis)
+                                    SessionGenesisHash tritium_genesis)
 {
     stop_keepalive_timer();
     {
@@ -430,6 +442,13 @@ void SessionManager::start_session(SessionId session_id,
     }
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
                    session_id.get(), get_session_epoch().get());
+}
+
+void SessionManager::start_session(SessionId session_id,
+                                    const std::vector<uint8_t>& session_key,
+                                    const std::vector<uint8_t>& tritium_genesis)
+{
+    start_session(session_id, session_key, SessionGenesisHash(tritium_genesis));
 }
 
 void SessionManager::mark_session_expired(const std::string& reason)
@@ -556,7 +575,7 @@ void SessionManager::end_session()
 // ── Reward binding ────────────────────────────────────────────────────────────
 
 void SessionManager::begin_reward_binding(const std::string& addr,
-                                          const std::vector<uint8_t>& hash,
+                                          RewardHash hash,
                                           const std::string& src)
 {
     SessionWriteLock lock(m_session_mutex);
@@ -574,8 +593,15 @@ void SessionManager::begin_reward_binding(const std::string& addr,
     bump_runtime_state_generation_locked();
 }
 
+void SessionManager::begin_reward_binding(const std::string& addr,
+                                          const std::vector<uint8_t>& hash,
+                                          const std::string& src)
+{
+    begin_reward_binding(addr, RewardHash(hash), src);
+}
+
 void SessionManager::commit_reward_bound(const std::string& reward_address,
-                                         const std::vector<uint8_t>& reward_hash,
+                                         RewardHash reward_hash,
                                          const std::string& source)
 {
     SessionWriteLock lock(m_session_mutex);
@@ -591,6 +617,13 @@ void SessionManager::commit_reward_bound(const std::string& reward_address,
     record_session_event_locked(SessionEventKind::REWARD_BOUND,
                                 "accepted" + (source.empty() ? "" : " via " + source));
     bump_runtime_state_generation_locked();
+}
+
+void SessionManager::commit_reward_bound(const std::string& reward_address,
+                                         const std::vector<uint8_t>& reward_hash,
+                                         const std::string& source)
+{
+    commit_reward_bound(reward_address, RewardHash(reward_hash), source);
 }
 
 void SessionManager::commit_reward_rejected(const std::string& addr,
@@ -675,13 +708,19 @@ void SessionManager::set_connection_metadata(const std::string& local,
 }
 
 void SessionManager::set_falcon_identity(const std::vector<uint8_t>& pubkey,
-                                          const std::string& key_id, bool authenticated)
+                                          FalconHashKeyId key_id, bool authenticated)
 {
     SessionWriteLock lock(m_session_mutex);
     m_session.falcon_pubkey = pubkey;
     m_session.falcon_key_id = key_id;
     m_session.falcon_authenticated = authenticated;
     bump_runtime_state_generation_locked();
+}
+
+void SessionManager::set_falcon_identity(const std::vector<uint8_t>& pubkey,
+                                          const std::string& key_id, bool authenticated)
+{
+    set_falcon_identity(pubkey, FalconHashKeyId(key_id), authenticated);
 }
 
 void SessionManager::reset_session_credentials()
@@ -699,7 +738,7 @@ void SessionManager::reset_session_credentials()
 }
 
 void SessionManager::set_chacha20_session_key(const std::vector<uint8_t>& key,
-                                               const std::string& fingerprint, bool ready)
+                                               SessionFingerprint fingerprint, bool ready)
 {
     SessionWriteLock lock(m_session_mutex);
     m_session.chacha20_session_key = key;
@@ -708,8 +747,14 @@ void SessionManager::set_chacha20_session_key(const std::vector<uint8_t>& key,
     bump_runtime_state_generation_locked();
 }
 
+void SessionManager::set_chacha20_session_key(const std::vector<uint8_t>& key,
+                                               const std::string& fingerprint, bool ready)
+{
+    set_chacha20_session_key(key, SessionFingerprint(fingerprint), ready);
+}
+
 void SessionManager::set_reward_binding(const std::string& addr,
-                                        const std::vector<uint8_t>& hash,
+                                        RewardHash hash,
                                         bool bound,
                                         const std::string& src)
 {
@@ -729,6 +774,14 @@ void SessionManager::set_reward_binding(const std::string& addr,
     }
 }
 
+void SessionManager::set_reward_binding(const std::string& addr,
+                                        const std::vector<uint8_t>& hash,
+                                        bool bound,
+                                        const std::string& src)
+{
+    set_reward_binding(addr, RewardHash(hash), bound, src);
+}
+
 void SessionManager::set_channel_state(uint32_t channel,
                                        bool ready_for_submit,
                                        bool ready_for_get_block)
@@ -746,11 +799,16 @@ void SessionManager::mark_activity()
     m_session.last_activity = now_epoch_seconds();
 }
 
-void SessionManager::set_tritium_genesis(const std::vector<uint8_t>& genesis)
+void SessionManager::set_tritium_genesis(SessionGenesisHash genesis)
 {
     SessionWriteLock lock(m_session_mutex);
     m_session.session_genesis = genesis;
     bump_runtime_state_generation_locked();
+}
+
+void SessionManager::set_tritium_genesis(const std::vector<uint8_t>& genesis)
+{
+    set_tritium_genesis(SessionGenesisHash(genesis));
 }
 
 void SessionManager::set_keepalive_interval(uint16_t hours)
@@ -993,10 +1051,15 @@ std::vector<uint8_t> SessionManager::get_session_key() const
     return m_session.chacha20_session_key;
 }
 
-std::vector<uint8_t> SessionManager::get_tritium_genesis() const
+SessionGenesisHash SessionManager::get_typed_tritium_genesis() const
 {
     SessionReadLock lock(m_session_mutex);
     return m_session.session_genesis;
+}
+
+std::vector<uint8_t> SessionManager::get_tritium_genesis() const
+{
+    return get_typed_tritium_genesis().get();
 }
 
 uint16_t SessionManager::map_auth_opcode(uint8_t legacy_opcode) const
