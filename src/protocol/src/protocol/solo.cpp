@@ -3276,7 +3276,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                         m_session_id,
                         m_miner_pubkey,
                         build_falcon_hash_key_id(m_miner_pubkey),
-                        load_tritium_genesis());
+                        SessionGenesisHash(load_tritium_genesis()));
                     refresh_cached_session_state("Solo Auth");
                     m_session_context->set_channel_state(m_channel, false, false);
                     m_session_context->start_keepalive_timer();
