@@ -194,10 +194,12 @@ public:
      */
     bool full_match(const SessionIdentity& other) const
     {
-        const bool fingerprint_matches =
-            (!m_chacha20_fingerprint.is_default() || !other.m_chacha20_fingerprint.is_default())
-                ? (m_chacha20_fingerprint == other.m_chacha20_fingerprint)
-                : (m_chacha20_key == other.m_chacha20_key);
+        bool fingerprint_matches = false;
+        if (!m_chacha20_fingerprint.is_default() && !other.m_chacha20_fingerprint.is_default()) {
+            fingerprint_matches = (m_chacha20_fingerprint == other.m_chacha20_fingerprint);
+        } else if (m_chacha20_fingerprint.is_default() && other.m_chacha20_fingerprint.is_default()) {
+            fingerprint_matches = (m_chacha20_key == other.m_chacha20_key);
+        }
         return matches(other) &&
                same_miner(other) &&
                fingerprint_matches &&

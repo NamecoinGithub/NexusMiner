@@ -39,7 +39,7 @@ bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_
     return !local_has_state && authoritative_has_state;
 }
 
-FalconHashKeyId build_falcon_hash_key_id(const std::vector<uint8_t>& pubkey)
+FalconHashKeyId compute_falcon_hash_key_id(const std::vector<uint8_t>& pubkey)
 {
     if (pubkey.empty()) {
         return FalconHashKeyId{};
@@ -1206,7 +1206,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
     if (m_session_context) {
         m_session_context->set_tritium_genesis(tritium_genesis);
-        m_session_context->set_falcon_identity(m_miner_pubkey, build_falcon_hash_key_id(m_miner_pubkey), false);
+        m_session_context->set_falcon_identity(m_miner_pubkey, compute_falcon_hash_key_id(m_miner_pubkey), false);
         m_session_context->set_channel_state(m_channel, false, false);
         m_session_context->mark_activity();
     }
@@ -3224,7 +3224,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                         m_session_context->reset_session_credentials();
                         m_session_context->set_falcon_identity(
                             m_miner_pubkey,
-                            build_falcon_hash_key_id(m_miner_pubkey),
+                            compute_falcon_hash_key_id(m_miner_pubkey),
                             false);
                         m_session_context->set_chacha20_session_key({}, "", false);
                     }
@@ -3275,7 +3275,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     m_session_context->commit_authenticated_session(
                         m_session_id,
                         m_miner_pubkey,
-                        build_falcon_hash_key_id(m_miner_pubkey),
+                        compute_falcon_hash_key_id(m_miner_pubkey),
                         SessionGenesisHash(load_tritium_genesis()));
                     refresh_cached_session_state("Solo Auth");
                     m_session_context->set_channel_state(m_channel, false, false);
@@ -3310,7 +3310,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 m_logger->warn("[Solo Auth]   - WARNING: No session ID provided by node (expected 5 bytes, got {})",
                     packet.m_length);
                 if (m_session_context) {
-                    m_session_context->set_falcon_identity(m_miner_pubkey, build_falcon_hash_key_id(m_miner_pubkey), true);
+                    m_session_context->set_falcon_identity(m_miner_pubkey, compute_falcon_hash_key_id(m_miner_pubkey), true);
                     m_session_context->set_channel_state(m_channel, false, false);
                 }
 
@@ -3391,7 +3391,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 m_session_context->reset_session_credentials();
                 m_session_context->set_falcon_identity(
                     m_miner_pubkey,
-                    build_falcon_hash_key_id(m_miner_pubkey),
+                    compute_falcon_hash_key_id(m_miner_pubkey),
                     false);
                 m_session_context->set_chacha20_session_key({}, "", false);
                 m_session_context->set_channel_state(m_channel, false, false);
@@ -4244,7 +4244,7 @@ void Solo::reset_auth_state()
         m_session_context->reset_session_credentials();
         m_session_context->set_falcon_identity(
             m_miner_pubkey,
-            build_falcon_hash_key_id(m_miner_pubkey),
+            compute_falcon_hash_key_id(m_miner_pubkey),
             false);
     }
     m_logger->info("[Solo] Auth state reset (in-band re-auth prep)");
@@ -4365,7 +4365,7 @@ void Solo::handle_session_expired(SessionId expired_sid, uint8_t reason, std::sh
     // Clear the authoritative session context
     if (m_session_context) {
         m_session_context->set_chacha20_session_key({}, "", false);
-        m_session_context->set_falcon_identity(m_miner_pubkey, build_falcon_hash_key_id(m_miner_pubkey), false);
+        m_session_context->set_falcon_identity(m_miner_pubkey, compute_falcon_hash_key_id(m_miner_pubkey), false);
         m_session_context->clear_for_reauth(m_reward_address,
                                             m_reward_address.empty() ? "" : "config",
                                             "node signalled session expiry");
