@@ -48,6 +48,18 @@ FalconHashKeyId compute_falcon_hash_key_id(const std::vector<uint8_t>& pubkey)
     return FalconHashKeyId(keys::to_hex(LLC::SK256(pubkey).GetBytes()));
 }
 
+std::vector<uint8_t> strip_submit_wire_header(const network::Payload& framed,
+                                              ProtocolLane lane)
+{
+    const std::size_t header_size = (lane == ProtocolLane::STATELESS) ? 6u : 5u;
+    if (framed.size() <= header_size) {
+        return {};
+    }
+
+    return std::vector<uint8_t>(framed.begin() + static_cast<std::ptrdiff_t>(header_size),
+                                framed.end());
+}
+
 }
 
 // Protocol constants
@@ -1667,14 +1679,17 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // ── Extract plaintext payload from PacketBuilder-framed wire_bytes ────────
     // STATELESS wire format: [opcode(2 BE)][length(4 BE)][plaintext_payload]
     // LEGACY wire format:    [opcode(1)   ][length(4 BE)][plaintext_payload]
-    const size_t header_size = lane_header_size(m_protocol_lane);
+    // The ChaCha20 submit payload must exclude BOTH the opcode and the LLP length
+    // prefix.  Encrypting the 4-byte length field breaks the node-side submit
+    // parser and causes lane-specific framing drift.
     const auto& framed = *submit_result.wire_bytes;
-    if (framed.size() <= header_size) {
-        m_logger->error("[Solo Submit] Wire frame too small: {} bytes (header={})",
+    auto plaintextPayload = strip_submit_wire_header(framed, m_protocol_lane);
+    if (plaintextPayload.empty()) {
+        const size_t header_size = (m_protocol_lane == ProtocolLane::STATELESS) ? 6u : 5u;
+        m_logger->error("[Solo Submit] Wire frame too small: {} bytes (header+length={})",
                         framed.size(), header_size);
         return network::Shared_payload{};
     }
-    std::vector<uint8_t> plaintextPayload(framed.begin() + header_size, framed.end());
     record_session_event(SessionManager::SessionEventKind::SUBMIT_SENT,
                          "unified_height=" + std::to_string(m_last_submitted_height) +
                          " channel_height=" + std::to_string(tracker_channel_tip) +

@@ -28,6 +28,9 @@ bool PacketRouter::dispatch(Packet const& packet, const std::shared_ptr<network:
     // 2. Canonicalize: convert uint16_t stateless opcode to its legacy 8-bit mirror
     uint16_t canonical = packet.m_header;
     if (packet.m_is_uint16_opcode) {
+        if (!LLP::IsStatelessOpcode(static_cast<uint16_t>(packet.m_header))) {
+            return false;
+        }
         canonical = LLP::UnmirrorOpcode(static_cast<uint16_t>(packet.m_header));
     }
 
