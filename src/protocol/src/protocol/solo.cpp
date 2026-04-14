@@ -4439,6 +4439,8 @@ void Solo::handle_session_expired(SessionId expired_sid, uint8_t reason, std::sh
     m_authenticated = false;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_auth_in_flight_since = {};
+    m_current_height = 0;
+    m_current_reward = 0;
     m_reward_bound = false;  // Reward binding dies with session
     m_subscribed_to_notifications = false;
 
