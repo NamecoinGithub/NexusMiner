@@ -127,7 +127,11 @@ void NodeSession::connect_primary(const network::Endpoint& node_endpoint, Connec
                     });
 
                     if (auth_payload && !auth_payload->empty()) {
-                        self->m_primary_connection->transmit(auth_payload);
+                        if (!self->m_primary_connection->transmit(auth_payload)) {
+                            self->m_logger->error("[NodeSession:{}] Failed to queue primary authentication payload",
+                                                 self->m_node_label);
+                            if (callback) callback(false);
+                        }
                     }
                 });
                 return;
@@ -285,7 +289,10 @@ void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
                     });
 
                     if (auth_payload && !auth_payload->empty()) {
-                        self->m_secondary_connection->transmit(auth_payload);
+                        if (!self->m_secondary_connection->transmit(auth_payload)) {
+                            self->m_logger->error("[NodeSession:{}] Failed to queue secondary authentication payload",
+                                                 self->m_node_label);
+                        }
                     }
                 });
                 return;
@@ -452,7 +459,11 @@ void NodeSession::handle_primary_connection_result(network::Result::Code result,
         });
 
         if (auth_payload && !auth_payload->empty()) {
-            m_primary_connection->transmit(auth_payload);
+            if (!m_primary_connection->transmit(auth_payload)) {
+                m_logger->error("[NodeSession:{}] Failed to queue primary authentication payload",
+                               m_node_label);
+                if (callback) callback(false);
+            }
         }
     }
 }
@@ -495,7 +506,10 @@ void NodeSession::handle_secondary_connection_result(network::Result::Code resul
         });
 
         if (auth_payload && !auth_payload->empty()) {
-            m_secondary_connection->transmit(auth_payload);
+            if (!m_secondary_connection->transmit(auth_payload)) {
+                m_logger->error("[NodeSession:{}] Failed to queue secondary authentication payload",
+                               m_node_label);
+            }
         }
     }
 }
@@ -524,8 +538,7 @@ bool NodeSession::transmit(network::Shared_payload data)
 
     auto [conn, proto] = select_active_pair();
     if (conn) {
-        conn->transmit(data);
-        return true;
+        return conn->transmit(data);
     }
 
     m_logger->warn("[NodeSession:{}] No active connection to transmit on", m_node_label);
@@ -865,8 +878,12 @@ bool NodeSession::login_on_active_connection(std::function<void(bool)> login_cal
     if (conn && proto) {
         auto auth_payload = proto->login(login_callback);
         if (auth_payload && !auth_payload->empty()) {
-            conn->transmit(auth_payload);
-            return true;
+            if (conn->transmit(auth_payload)) {
+                return true;
+            }
+            m_logger->error("[NodeSession:{}] Failed to queue login payload on active connection", m_node_label);
+            if (login_callback) login_callback(false);
+            return false;
         }
         // Solo::login() can return empty (without invoking the callback) when
         // PacketBuilder::build() fails — e.g. if the Falcon keys are not yet

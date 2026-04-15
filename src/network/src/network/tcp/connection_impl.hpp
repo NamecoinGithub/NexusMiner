@@ -41,7 +41,7 @@ public:
     // Connection interface
     Endpoint const& remote_endpoint() const override { return m_remote_endpoint; }
     Endpoint const& local_endpoint() const override { return m_local_endpoint; }
-    void transmit(Shared_payload tx_buffer) override;
+    bool transmit(Shared_payload tx_buffer) override;
     void close() override;
     ProtocolLane get_protocol_lane() const override { return m_protocol_lane; }
 
@@ -416,7 +416,7 @@ inline void Connection_impl<ProtocolDescriptionType>::handle_accept(Connection::
 
 
 template<typename ProtocolDescriptionType>
-void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer)
+bool Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer)
 {
     // Early-return if connection handler is null (connection already closed/uninitialised)
     if (!m_connection_handler) 
@@ -425,7 +425,7 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
         {
             m_logger->warn("[LLP SEND] Cannot transmit - connection handler is null (connection closed/uninitialised)");
         }
-        return;
+        return false;
     }
     
     // Early-return if socket is null
@@ -435,7 +435,7 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
         {
             m_logger->error("[LLP SEND] Cannot transmit - socket is null");
         }
-        return;
+        return false;
     }
     
     // Early-return if buffer is null or empty (no header/payload to send)
@@ -445,7 +445,7 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
         {
             m_logger->error("[LLP SEND] Cannot transmit - payload is null or empty");
         }
-        return;
+        return false;
     }
     
     // TX queue overflow protection: during burst blocks rapid transmit() calls
@@ -466,7 +466,7 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
                 m_tx_queue.size(), MAX_TX_QUEUE_SIZE,
                 tx_buffer ? tx_buffer->size() : 0);
         }
-        return;
+        return false;
     }
 
     // Enqueue the payload and trigger transmission if queue was previously empty
@@ -476,6 +476,8 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
     {
         transmit_trigger();
     }
+
+    return true;
 }
 
 template<typename ProtocolDescriptionType>

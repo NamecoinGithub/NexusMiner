@@ -1390,7 +1390,10 @@ void Worker_manager::submit_solution(const std::vector<uint8_t>& full_block_byte
         auto packet = m_primary_node_session->submit_block(full_block_bytes, nNonce);
         if (packet && !packet->empty())
         {
-            m_primary_node_session->transmit(packet);
+            if (m_primary_node_session->transmit(packet)) {
+                return;
+            }
+            m_logger->error("[Worker_manager] Block submission failed — payload was not queued");
             return;
         }
     }
@@ -1437,7 +1440,10 @@ void Worker_manager::poll_get_round()
                            gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
             return;
         }
-        m_primary_node_session->transmit(payload);
+        if (!m_primary_node_session->transmit(payload)) {
+            m_logger->warn("[Worker_manager] GET_ROUND not queued — skipping unanswered-round shadow-ban check");
+            return;
+        }
 
         // Shadow-ban detection: if we've sent multiple GET_ROUNDs with no
         // NEW_ROUND/OLD_ROUND response, the miner is likely shadow-banned
@@ -1482,7 +1488,9 @@ void Worker_manager::send_session_status_if_due()
                                    gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
                     return;
                 }
-                m_primary_node_session->transmit(pkt);
+                if (!m_primary_node_session->transmit(pkt)) {
+                    m_logger->warn("[Worker_manager] SESSION_STATUS not queued on active node session");
+                }
             }
         }
     }

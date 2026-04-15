@@ -17,10 +17,39 @@
 using namespace nexusminer;
 
 // Mock implementations for testing
+class MockConnection : public network::Connection {
+public:
+    explicit MockConnection(bool transmit_result = true)
+        : m_remote_endpoint(network::Transport_protocol::tcp, "127.0.0.1", 9323)
+        , m_local_endpoint(network::Transport_protocol::tcp, "127.0.0.1", 0)
+        , m_transmit_result(transmit_result)
+    {}
+
+    network::Endpoint const& remote_endpoint() const override { return m_remote_endpoint; }
+    network::Endpoint const& local_endpoint() const override { return m_local_endpoint; }
+    bool transmit(network::Shared_payload) override
+    {
+        ++m_transmit_calls;
+        return m_transmit_result;
+    }
+    void close() override {}
+    ProtocolLane get_protocol_lane() const override { return ProtocolLane::STATELESS; }
+
+    void set_transmit_result(bool value) { m_transmit_result = value; }
+    int transmit_calls() const { return m_transmit_calls; }
+
+private:
+    network::Endpoint m_remote_endpoint;
+    network::Endpoint m_local_endpoint;
+    bool m_transmit_result{true};
+    int m_transmit_calls{0};
+};
+
 class MockSocket : public network::Socket {
 public:
-    MockSocket(std::shared_ptr<asio::io_context> io_context)
-        : m_io_context(io_context), m_local_endpoint{} {}
+    MockSocket(std::shared_ptr<asio::io_context> io_context,
+               std::shared_ptr<MockConnection> connection = nullptr)
+        : m_io_context(io_context), m_local_endpoint{}, m_connection(std::move(connection)) {}
 
     network::Result::Code listen(Connect_handler handler) override
     {
@@ -37,12 +66,20 @@ public:
     network::Connection::Sptr connect(network::Endpoint remote_endpoint,
                                       network::Connection::Handler handler) override
     {
-        return nullptr;
+        if (!m_connection) {
+            return nullptr;
+        }
+
+        handler(network::Result::connection_ok, nullptr);
+        return m_connection;
     }
+
+    std::shared_ptr<MockConnection> connection() const { return m_connection; }
 
 private:
     std::shared_ptr<asio::io_context> m_io_context;
     network::Endpoint m_local_endpoint;
+    std::shared_ptr<MockConnection> m_connection;
 };
 
 void test_node_session_creation()
@@ -458,6 +495,62 @@ void test_login_callback_invoked_on_empty_payload()
     std::cout << "  ✓ login_callback(false) is not spuriously fired for no-connection path" << std::endl;
 }
 
+void test_transmit_returns_false_when_connection_rejects_payload()
+{
+    std::cout << "Test: transmit() returns false when active connection rejects payload..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    auto logger = spdlog::stdout_color_mt("test_logger_transmit_reject");
+    config::Config config(logger);
+    config.set_mining_mode(config::Mining_mode::HASH);
+
+    auto connection = std::make_shared<MockConnection>(false);
+    auto socket = std::make_shared<MockSocket>(io_context, connection);
+    auto stats_collector = std::make_shared<stats::Collector>(config);
+
+    auto node_session = std::make_shared<NodeSession>(
+        io_context, config, socket, stats_collector, "TEST_TX_REJECT");
+
+    network::Endpoint endpoint{network::Transport_protocol::tcp, "127.0.0.1", 9323};
+    bool connected = false;
+    assert(node_session->connect(endpoint, [&connected](bool success) { connected = success; }));
+    io_context->poll();
+
+    auto payload = std::make_shared<network::Payload>(network::Payload{0xD0, 0x85});
+    assert(!node_session->transmit(payload));
+    assert(connection->transmit_calls() >= 2); // auth attempt + explicit transmit
+    assert(!connected);
+
+    std::cout << "  ✓ NodeSession::transmit() propagates enqueue failure from Connection" << std::endl;
+}
+
+void test_transmit_returns_true_when_connection_accepts_payload()
+{
+    std::cout << "Test: transmit() returns true when active connection accepts payload..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    auto logger = spdlog::stdout_color_mt("test_logger_transmit_accept");
+    config::Config config(logger);
+    config.set_mining_mode(config::Mining_mode::HASH);
+
+    auto connection = std::make_shared<MockConnection>(true);
+    auto socket = std::make_shared<MockSocket>(io_context, connection);
+    auto stats_collector = std::make_shared<stats::Collector>(config);
+
+    auto node_session = std::make_shared<NodeSession>(
+        io_context, config, socket, stats_collector, "TEST_TX_ACCEPT");
+
+    network::Endpoint endpoint{network::Transport_protocol::tcp, "127.0.0.1", 9323};
+    assert(node_session->connect(endpoint, [](bool) {}));
+    io_context->poll();
+
+    auto payload = std::make_shared<network::Payload>(network::Payload{0xD0, 0x85});
+    assert(node_session->transmit(payload));
+    assert(connection->transmit_calls() >= 2); // auth attempt + explicit transmit
+
+    std::cout << "  ✓ NodeSession::transmit() reports enqueue success from Connection" << std::endl;
+}
+
 int main()
 {
     std::cout << "\n=== NodeSession Unit Tests ===\n" << std::endl;
@@ -500,6 +593,12 @@ int main()
         std::cout << std::endl;
 
         test_login_callback_invoked_on_empty_payload();
+        std::cout << std::endl;
+
+        test_transmit_returns_false_when_connection_rejects_payload();
+        std::cout << std::endl;
+
+        test_transmit_returns_true_when_connection_accepts_payload();
         std::cout << std::endl;
 
         std::cout << "=== All NodeSession tests passed! ===\n" << std::endl;
