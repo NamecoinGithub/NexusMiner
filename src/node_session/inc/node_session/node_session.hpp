@@ -327,6 +327,8 @@ public:
     void set_epoch_coordinator(std::shared_ptr<protocol::EpochCoordinator> coordinator);
 
 private:
+    enum class Session_lane { Primary, Secondary };
+
     /**
      * @brief Select the active connection+protocol pair using the same logic as transmit().
      *
@@ -339,6 +341,37 @@ private:
      * @return Pair of (connection, protocol); both are nullptr when no lane is active.
      */
     std::pair<network::Connection::Sptr, std::shared_ptr<protocol::Solo>> select_active_pair() const;
+
+    uint8_t mining_channel() const;
+    std::shared_ptr<protocol::Solo> create_protocol(Session_lane lane);
+    void apply_protocol_configuration(const std::shared_ptr<protocol::Solo>& protocol, Session_lane lane);
+    void wire_protocol_handlers(const std::shared_ptr<protocol::Solo>& protocol, Session_lane lane);
+    void wire_template_handler(const std::shared_ptr<protocol::Solo>& protocol);
+    void wire_block_accepted_handler(const std::shared_ptr<protocol::Solo>& protocol);
+    void wire_recovery_handler(const std::shared_ptr<protocol::Solo>& protocol);
+    void wire_session_expired_handler(const std::shared_ptr<protocol::Solo>& protocol);
+    void wire_session_authenticated_handler(const std::shared_ptr<protocol::Solo>& protocol, Session_lane lane);
+    void wire_session_start_handler(const std::shared_ptr<protocol::Solo>& protocol);
+    void wire_node_shutdown_handler(const std::shared_ptr<protocol::Solo>& protocol);
+    network::Connection::Sptr& connection_for(Session_lane lane);
+    const network::Connection::Sptr& connection_for(Session_lane lane) const;
+    std::shared_ptr<protocol::Solo>& protocol_for(Session_lane lane);
+    const std::shared_ptr<protocol::Solo>& protocol_for(Session_lane lane) const;
+    std::atomic<bool>& connected_flag_for(Session_lane lane);
+    const std::atomic<bool>& connected_flag_for(Session_lane lane) const;
+    std::deque<uint8_t>& rx_accumulator_for(Session_lane lane);
+    const char* lane_name(Session_lane lane) const;
+    ProtocolLane lane_health_tag(Session_lane lane) const;
+    void handle_lane_event(Session_lane lane, const network::Endpoint& node_endpoint,
+                           network::Result::Code result, network::Shared_payload&& receive_buffer,
+                           Connection_callback callback = {});
+    void configure_connected_lane(Session_lane lane);
+    bool send_auth_payload(Session_lane lane, network::Shared_payload auth_payload,
+                           Connection_callback callback = {});
+    void handle_lane_failure(Session_lane lane, network::Result::Code result,
+                             Connection_callback callback = {});
+    void process_lane_data(Session_lane lane, network::Shared_payload&& receive_buffer);
+    network::Endpoint secondary_endpoint_for(const network::Endpoint& node_endpoint) const;
 
     /**
      * @brief Initialize primary connection (stateless port 9323)
