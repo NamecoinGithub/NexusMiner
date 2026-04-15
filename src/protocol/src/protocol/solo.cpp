@@ -4363,6 +4363,8 @@ void Solo::handle_session_expired(SessionId expired_sid, uint8_t reason, std::sh
 
     // STEP 2: CLEAR LOCAL SESSION STATE (mirror reset_auth_state)
     m_logger->info("[Solo] Clearing local session state");
+    m_current_height = 0;
+    m_current_reward = 0;
     m_session_id.clear();
     m_authenticated = false;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
