@@ -1390,10 +1390,9 @@ void Worker_manager::submit_solution(const std::vector<uint8_t>& full_block_byte
         auto packet = m_primary_node_session->submit_block(full_block_bytes, nNonce);
         if (packet && !packet->empty())
         {
-            if (m_primary_node_session->transmit(packet)) {
-                return;
+            if (!m_primary_node_session->transmit(packet)) {
+                m_logger->error("[Worker_manager] Block submission failed — payload was not queued");
             }
-            m_logger->error("[Worker_manager] Block submission failed — payload was not queued");
             return;
         }
     }

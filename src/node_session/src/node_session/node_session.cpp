@@ -518,9 +518,10 @@ std::pair<network::Connection::Sptr, std::shared_ptr<protocol::Solo>>
 NodeSession::select_active_pair() const
 {
     // Single authoritative source for primary→secondary fallback logic.
-    // All three guards are required: connection object must exist, protocol must
-    // exist, and the connected flag must be set.  This mirrors the invariants that
-    // Connection::transmit() expects (non-null handler, open socket).
+    // For either lane, all three guards are required: connection object must
+    // exist, protocol must exist, and the connected flag must be set. This
+    // mirrors the invariants that Connection::transmit() expects (non-null
+    // handler, open socket).
     if (m_primary_connection && m_primary_protocol && m_primary_connected) {
         return {m_primary_connection, m_primary_protocol};
     }
