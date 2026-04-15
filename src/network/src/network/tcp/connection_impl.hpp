@@ -57,8 +57,8 @@ private:
     void change(Result::Code code);
     void close_internal(Result::Code code);
 
-    // Maximum TX queue depth.  During burst blocks rapid transmit() calls can
-    // outpace async_write completions; drop the oldest payload when exceeded.
+    // Maximum TX queue depth. During burst blocks rapid transmit() calls can
+    // outpace async_write completions; when full, drop the newest payload.
     static constexpr std::size_t MAX_TX_QUEUE_SIZE = 64;
 
     std::shared_ptr<::asio::io_context> m_io_context;

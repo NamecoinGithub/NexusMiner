@@ -193,9 +193,6 @@ NodeSession::select_active_pair() const
     if (m_primary_connection && m_primary_protocol && m_primary_connected) {
         return {m_primary_connection, m_primary_protocol};
     }
-    if (m_secondary_connection && m_secondary_protocol && m_secondary_connected) {
-        return {m_secondary_connection, m_secondary_protocol};
-    }
     return {nullptr, nullptr};
 }
 

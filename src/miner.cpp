@@ -154,14 +154,13 @@ namespace nexusminer
 			return;
 		}
 
-		// SIM Link is now handled automatically by NodeSession - no need for explicit secondary connection
 		if (m_config.get_enable_sim_link())
 		{
-			m_logger->info("[SIM Link] ENABLED — NodeSession will automatically manage dual-lane connections");
+			m_logger->warn("[SIM Link] sim_link is configured but cross-lane fallback is disabled; failover requires a secondary node endpoint with full re-authentication");
 		}
 		else
 		{
-			m_logger->info("[SIM Link] DISABLED (sim_link = false in config)");
+			m_logger->info("[SIM Link] DISABLED (single lane-scoped node session)");
 		}
 
 		m_io_context->run();

@@ -32,21 +32,21 @@ namespace stats { class Collector; }
 /**
  * @brief NodeSession — Unified Active Session Outer Wrapper
  *
- * NodeSession is the outer wrapper that owns both port connections (Stateless 9323
- * and Legacy 8323) to a single mining node. It presents a single authenticated
- * identity to Worker_manager regardless of which port is active.
+ * NodeSession is the outer wrapper that owns one lane-scoped connection to a
+ * mining node. It presents a single authenticated identity to Worker_manager
+ * and deliberately avoids any in-session cross-lane fallback.
  *
  * Design Principles:
- * - Outer Wrapper, Not Protocol Replacement: Wraps two Solo protocol instances
+ * - Outer Wrapper, Not Protocol Replacement: Wraps the Solo protocol instance
  *   and one SessionManager. Does not replace any existing auth logic.
- * - OPCODE Firewall Preserved: Each Solo instance retains its ProtocolLane.
+ * - OPCODE Firewall Preserved: The Solo instance retains its ProtocolLane.
  *   Packet lane enforcement is never bypassed.
  * - Session ID is Node-Scoped: One Falcon handshake is performed. The resulting
- *   session_id is authoritative for that node.
+ *   session_id is authoritative for that node and lane.
  * - Simple Surface Area: Worker_manager calls connect(), transmit(),
  *   session_id(), is_authenticated().
- * - Failover Topology Correct: NodeSession primary = Node A, NodeSession
- *   secondary = Node B (optional).
+ * - Failover Topology Correct: failover uses a separate node/auth cycle, never
+ *   a protocol-lane crossover inside the same NodeSession.
  */
 class NodeSession : public std::enable_shared_from_this<NodeSession>
 {
@@ -124,8 +124,8 @@ public:
         DualConnectionManager* dcm = nullptr);
 
     /**
-     * @brief Connect to the node (both ports)
-     * @param node_endpoint Primary endpoint (typically stateless port 9323)
+     * @brief Connect to the node on the configured lane
+     * @param node_endpoint Endpoint whose port selects the mining lane
      * @param callback Connection result callback
      * @return True if connection initiation succeeded
      */
@@ -252,11 +252,10 @@ public:
     std::shared_ptr<protocol::Solo> get_primary_protocol() const { return m_primary_protocol; }
 
     /**
-     * @brief Get the protocol instance matching the connection transmit() would use.
+     * @brief Get the protocol instance matching the active connection.
      *
-     * Mirrors transmit()'s primary→secondary fallback logic — including the
-     * m_primary_connection / m_secondary_connection presence checks — so that
-     * callers can build payloads with the correct lane framing.
+     * NodeSession is lane-scoped, so this returns the primary protocol only when
+     * its connection is up. There is no cross-lane fallback.
      *
      * @return Protocol instance matching the active connection, or nullptr if none available
      */
@@ -269,8 +268,8 @@ public:
     std::shared_ptr<network::Connection> get_primary_connection() const { return m_primary_connection; }
 
     /**
-     * @brief Get the secondary protocol instance (for direct access if needed)
-     * @return Shared pointer to secondary Solo protocol (may be null)
+     * @brief Get the secondary protocol instance (legacy compatibility surface)
+     * @return Shared pointer to secondary Solo protocol (normally null; cross-lane fallback disabled)
      */
     std::shared_ptr<protocol::Solo> get_secondary_protocol() const { return m_secondary_protocol; }
 
@@ -304,11 +303,8 @@ public:
     /**
      * @brief Perform in-band re-authentication on the active connection.
      *
-     * Selects the protocol+connection pairing via select_active_pair(), calls
-     * login() on that protocol, and transmits the resulting auth payload on the
-     * matching connection.  This avoids the lane mismatch that occurs when
-     * callers use get_primary_protocol()->login() + transmit() separately,
-     * since transmit() may fall back to the secondary connection.
+     * Selects the lane-scoped primary protocol+connection pair, calls login() on
+     * that protocol, and transmits the resulting auth payload on the same lane.
      *
      * IMPORTANT: Solo::login() may return an empty payload if PacketBuilder::build()
      * fails without invoking the callback.  When this happens login_on_active_connection()
@@ -330,13 +326,12 @@ private:
     enum class Session_lane { Primary, Secondary };
 
     /**
-     * @brief Select the active connection+protocol pair using the same logic as transmit().
+     * @brief Select the active connection+protocol pair used by transmit().
      *
-     * Returns {primary_connection, primary_protocol} if the primary lane is up, else
-     * {secondary_connection, secondary_protocol} if the secondary lane is up, else
-     * {nullptr, nullptr}.  All three guards (connection, protocol, connected flag) are
-     * checked atomically in one place so that transmit(), get_active_protocol(), and
-     * login_on_active_connection() can never diverge.
+     * Returns {primary_connection, primary_protocol} when the configured lane is
+     * up, else {nullptr, nullptr}. All three guards (connection, protocol,
+     * connected flag) are checked atomically in one place so that transmit(),
+     * get_active_protocol(), and login_on_active_connection() can never diverge.
      *
      * @return Pair of (connection, protocol); both are nullptr when no lane is active.
      */

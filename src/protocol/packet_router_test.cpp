@@ -138,6 +138,20 @@ int main()
         TEST_ASSERT(router.handler_count() == 3, "handler_count = 2 legacy + 1 raw");
     }
 
+    // ── Test 9: Non-stateless uint16_t opcodes must not canonicalize ──
+    {
+        PacketRouter router;
+        bool called = false;
+        router.register_handler(0x34, [&](Packet const&, std::shared_ptr<network::Connection>) {
+            called = true;
+        });
+
+        Packet pkt(static_cast<uint16_t>(0x1234));
+        bool dispatched = router.dispatch(pkt, conn);
+        TEST_ASSERT(!dispatched, "Non-stateless uint16 opcode is rejected");
+        TEST_ASSERT(!called, "Legacy handler not called for arbitrary uint16 opcode");
+    }
+
     std::cout << "\n=== All " << g_test_count << " PacketRouter tests PASSED ===" << std::endl;
     return 0;
 }

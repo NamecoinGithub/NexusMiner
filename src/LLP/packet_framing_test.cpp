@@ -287,6 +287,23 @@ void test_malformed_huge_length() {
     print_test_result("Huge length detected as malformed", test_passed);
 }
 
+void test_packet_constructor_rejects_huge_length() {
+    std::cout << "\nTest 6b: Packet constructor rejects unreasonably large length" << std::endl;
+
+    auto malformed = std::make_shared<network::Payload>(network::Payload{
+        0x10,                           // header
+        0x06, 0x40, 0x00, 0x00         // length = 100MB
+    });
+
+    Packet packet(malformed);
+
+    bool test_passed = !packet.m_is_valid &&
+                       packet.m_length == 0 &&
+                       !packet.m_data;
+
+    print_test_result("Constructor huge length detected as malformed", test_passed);
+}
+
 // ============================================================================
 // Test Case 7: Malformed - invalid stateless opcode
 // ============================================================================
@@ -1260,6 +1277,7 @@ int main() {
     test_multiple_packets_single_receive();
     test_stateless_header_fragmented();
     test_malformed_huge_length();
+    test_packet_constructor_rejects_huge_length();
     test_malformed_invalid_stateless_opcode();
     test_complex_mixed_scenario();
     test_byte_by_byte_feeding();
