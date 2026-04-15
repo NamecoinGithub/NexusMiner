@@ -185,7 +185,7 @@ void NodeSession::handle_secondary_connection_result(network::Result::Code resul
 std::pair<network::Connection::Sptr, std::shared_ptr<protocol::Solo>>
 NodeSession::select_active_pair() const
 {
-    // Single authoritative source for primary→secondary fallback logic.
+    // Single authoritative source for NodeSession's active-lane selection.
     // For either lane, all three guards are required: connection object must
     // exist, protocol must exist, and the connected flag must be set. This
     // mirrors the invariants that Connection::transmit() expects (non-null
