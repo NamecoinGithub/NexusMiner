@@ -2,12 +2,6 @@ name: Copilot Setup Steps
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - .github/workflows/copilot-setup-steps.yml
-  pull_request:
-    paths:
-      - .github/workflows/copilot-setup-steps.yml
 
 env:
   CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
