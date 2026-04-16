@@ -192,7 +192,7 @@ public:
     void set_reward_address(std::string const& address);
     bool has_reward_address() const { return !m_reward_address.empty(); }
     bool is_reward_bound() const {
-        return m_session_context ? m_session_context->get_runtime_snapshot().reward_bound : m_reward_bound;
+        return m_session_context ? m_session_context->get_session_binding().reward_bound : m_reward_bound;
     }
     network::Shared_payload send_set_reward();
     

@@ -75,18 +75,22 @@ This roadmap focuses on what remains.
   overloads.
 - `Solo` now propagates template ownership through the canonical binding bundle
   rather than separate session-id / epoch / identity calls.
+- `SessionBinding` now also carries authoritative auth and ChaCha20 crypto
+  state so reward-send and submit paths can batch their reads from one
+  canonical source.
+- Session-loss handling now treats the old session as non-viable: workers stop,
+  then the miner performs full re-auth on the current connection or reconnects /
+  fails over to a configured node if no active connection remains.
 
-## Next coding sequence for phases 4-6
+## Next coding sequence for phases 5-6
 
 1. Expand typed wrappers to any remaining epoch domains that carry distinct
    semantics, or explicitly document why raw counters remain operational-only.
-2. Continue replacing piecemeal runtime-snapshot reads in submit, reward,
-   reconnect, and diagnostics flows with `SessionBinding`-style batch access.
-3. Migrate more tests and fixtures to typed semantic helpers so new code follows
+2. Migrate more tests and fixtures to typed semantic helpers so new code follows
    the canonical API shape by default.
-4. Remove transitional raw overloads only after all production and test call
+3. Remove transitional raw overloads only after all production and test call
    sites have switched to typed or batched APIs.
-5. Add targeted observability around binding changes so future sweeps can prove
+4. Add targeted observability around binding changes so future sweeps can prove
    cache resync paths stay aligned with the authoritative session container.
 
 ## Diagram-guided map

@@ -1042,8 +1042,11 @@ SessionBinding SessionManager::get_session_binding() const
     binding.session_epoch = m_session.session_epoch;
     binding.session_genesis = m_session.session_genesis;
     binding.falcon_key_id = m_session.falcon_key_id;
+    binding.chacha20_session_key = m_session.chacha20_session_key;
     binding.chacha20_key_fingerprint = m_session.chacha20_key_fingerprint;
     binding.active_lane = m_session.active_lane;
+    binding.authenticated = m_session.authenticated;
+    binding.chacha20_ready = m_session.chacha20_ready;
     binding.reward_address = !m_session.reward_address.empty()
                                  ? m_session.reward_address
                                  : m_session.reward_address_string;

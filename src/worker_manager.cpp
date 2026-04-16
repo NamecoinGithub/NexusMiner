@@ -521,9 +521,10 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     return;
                 }
 
-                m_logger->warn("[Worker_manager] Session EXPIRED — initiating in-band re-authentication");
+                m_logger->warn("[Worker_manager] Session EXPIRED — stopping workers and requiring a fresh session");
                 ++m_session_generation;  // Invalidate any in-flight timer dispatches for the old session
-                mark_recovery_initiated("session_expired");
+                stop_all_workers();
+                transition_to(RecoveryPhase::RECONNECTING, "session_expired");
 
                 // Use the current session auth fail count to calculate backoff delay.
                 // NOTE: We do NOT increment m_session_auth_fail_count here.
@@ -1752,11 +1753,15 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
 
-    // Notify protocol layer that recovery is required.
-    // Phase transition is handled by the caller (mark_recovery_initiated / transition_to)
-    // before or after stop_all_workers() — this function is a pure physical stop.
+    bool session_active = false;
     if (auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr) {
-        solo_protocol->mark_authoritative_recovery_required("workers_stopped_waiting_for_valid_template");
+        if (auto* session_manager = solo_protocol->get_session_manager()) {
+            const auto binding = session_manager->get_session_binding();
+            session_active = binding.authenticated && binding.has_session();
+        }
+        if (session_active) {
+            solo_protocol->mark_authoritative_recovery_required("workers_stopped_waiting_for_valid_template");
+        }
     }
 
     // Reset all worker instances so that the next create_workers() call starts fresh
@@ -1770,9 +1775,15 @@ void Worker_manager::stop_all_workers()
     // Clear the recovery gate so the next epoch can re-create workers
     m_recovery_workers_spawned = false;
 
-    m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
-    m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
-    m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK (0xD081)");
+    if (session_active) {
+        m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
+        m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
+        m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK (0xD081)");
+    } else {
+        m_logger->warn("[Worker_manager] Mining stopped - session unavailable");
+        m_logger->warn("[Worker_manager] Workers stopped and cleared — waiting for full re-auth or configured failover");
+        m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — no work requests until a fresh session is established");
+    }
     m_logger->warn("[Worker_manager] degraded_enter_total={}", m_degraded_enter_total);
 }
 

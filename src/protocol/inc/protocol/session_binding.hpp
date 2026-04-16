@@ -2,6 +2,7 @@
 #define NEXUSMINER_PROTOCOL_SESSION_BINDING_HPP
 
 #include "protocol/session_identity.hpp"
+#include <vector>
 #include <string>
 
 namespace nexusminer {
@@ -20,8 +21,11 @@ struct SessionBinding
     SessionEpoch session_epoch{};
     SessionGenesisHash session_genesis{};
     FalconHashKeyId falcon_key_id{};
+    std::vector<uint8_t> chacha20_session_key;
     SessionFingerprint chacha20_key_fingerprint{};
     ProtocolLane active_lane{ProtocolLane::UNKNOWN};
+    bool authenticated{false};
+    bool chacha20_ready{false};
 
     std::string reward_address;
     RewardHash reward_hash{};
@@ -46,6 +50,11 @@ struct SessionBinding
     bool can_request_get_block() const
     {
         return ready_for_get_block;
+    }
+
+    bool has_crypto_context() const
+    {
+        return !chacha20_session_key.empty() && chacha20_ready;
     }
 
     bool identity_matches_session() const
