@@ -327,6 +327,20 @@ public:
     void set_epoch_coordinator(std::shared_ptr<protocol::EpochCoordinator> coordinator);
 
 private:
+    enum class LaneSlot {
+        Primary,
+        Secondary
+    };
+
+    struct LaneDescriptor {
+        LaneSlot slot;
+        const char* label;
+        network::Connection::Sptr* connection;
+        std::shared_ptr<protocol::Solo>* protocol;
+        std::atomic<bool>* connected;
+        ProtocolLane* requested_lane;
+    };
+
     /**
      * @brief Select the active connection+protocol pair using the same logic as transmit().
      *
@@ -340,15 +354,24 @@ private:
      */
     std::pair<network::Connection::Sptr, std::shared_ptr<protocol::Solo>> select_active_pair() const;
 
-    /**
-     * @brief Initialize primary connection (stateless port 9323)
-     * @param node_endpoint Node endpoint
-     * @param callback Connection callback
-     */
-    void connect_primary(const network::Endpoint& node_endpoint, Connection_callback callback);
+    LaneDescriptor lane(LaneSlot slot);
+    ProtocolLane resolve_lane(LaneSlot slot) const;
+    void apply_protocol_handlers(LaneSlot slot);
+    void mark_lane_socket_connected(LaneSlot slot);
+    void mark_lane_socket_failed(LaneSlot slot);
+    void mark_lane_authenticated(LaneSlot slot, protocol::SessionId sid);
+    bool begin_lane_authentication(LaneSlot slot, const network::Endpoint* primary_endpoint = nullptr);
+    void complete_pending_connect(bool success);
+    void mark_all_lanes_down(const char* reason);
 
     /**
-     * @brief Initialize secondary connection (legacy port 8323)
+     * @brief Initialize the configured primary connection lane
+     * @param node_endpoint Node endpoint
+     */
+    void connect_primary(const network::Endpoint& node_endpoint);
+
+    /**
+     * @brief Initialize the secondary connection lane
      * @param node_endpoint Node endpoint (port will be adjusted to 8323)
      */
     void connect_secondary(const network::Endpoint& node_endpoint);
@@ -364,19 +387,6 @@ private:
      * @param receive_buffer Received data
      */
     void process_secondary_data(network::Shared_payload&& receive_buffer);
-
-    /**
-     * @brief Handle primary connection result
-     * @param result Connection result
-     * @param callback User callback
-     */
-    void handle_primary_connection_result(network::Result::Code result, Connection_callback callback);
-
-    /**
-     * @brief Handle secondary connection result
-     * @param result Connection result
-     */
-    void handle_secondary_connection_result(network::Result::Code result);
 
     // Core components
     std::shared_ptr<asio::io_context> m_io_context;
@@ -416,6 +426,9 @@ private:
     std::string m_reward_address;
     std::vector<uint8_t> m_tritium_genesis;
     uint16_t m_keepalive_interval_hours{24};
+    Connection_callback m_pending_connect_callback;
+    ProtocolLane m_primary_requested_lane{ProtocolLane::UNKNOWN};
+    ProtocolLane m_secondary_requested_lane{ProtocolLane::LEGACY};
 
     // State flags
     std::atomic<bool> m_primary_connected{false};
