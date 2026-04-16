@@ -578,15 +578,12 @@ void NodeSession::process_secondary_data(network::Shared_payload&& receive_buffe
 std::pair<network::Connection::Sptr, std::shared_ptr<protocol::Solo>>
 NodeSession::select_active_pair() const
 {
-    // Single authoritative source for primary→secondary fallback logic.
-    // All three guards are required: connection object must exist, protocol must
-    // exist, and the connected flag must be set.  This mirrors the invariants that
-    // Connection::transmit() expects (non-null handler, open socket).
+    // Single authoritative source for active-lane selection.
+    // NodeSession is now a one-configured-lane session wrapper, so reconnect and
+    // re-auth stay on the configured primary lane instead of falling through to
+    // any dormant secondary-node plumbing.
     if (m_primary_connection && m_primary_protocol && m_primary_connected) {
         return {m_primary_connection, m_primary_protocol};
-    }
-    if (m_secondary_connection && m_secondary_protocol && m_secondary_connected) {
-        return {m_secondary_connection, m_secondary_protocol};
     }
     return {nullptr, nullptr};
 }

@@ -1144,9 +1144,17 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         if (m_config.has_failover())
         {
             auto const fo_ip   = m_config.get_failover_wallet_ip();
-            auto const fo_port = m_config.get_failover_port() != 0
-                                     ? m_config.get_failover_port()
-                                     : m_config.get_port();
+            auto fo_port = m_config.get_failover_port() != 0
+                               ? m_config.get_failover_port()
+                               : wallet_endpoint.port();
+            if (fo_port != wallet_endpoint.port())
+            {
+                m_logger->warn("[Failover] Ignoring configured failover port {} and pinning failover lane "
+                               "to primary port {} so reconnect/failover stay on the configured lane",
+                               fo_port,
+                               wallet_endpoint.port());
+                fo_port = wallet_endpoint.port();
+            }
             m_failover_endpoint = network::Endpoint{network::Transport_protocol::tcp, fo_ip, fo_port};
             m_logger->info("[Failover] Configured: {}:{} (switch after {} primary failures)",
                            fo_ip, fo_port, m_config.get_failover_max_retries());

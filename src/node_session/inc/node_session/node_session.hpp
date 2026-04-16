@@ -146,7 +146,7 @@ public:
 
     /**
      * @brief Check if authenticated
-     * @return True if at least one connection is authenticated
+     * @return True if the configured session lane is authenticated
      */
     bool is_authenticated() const;
 
@@ -254,9 +254,8 @@ public:
     /**
      * @brief Get the protocol instance matching the connection transmit() would use.
      *
-     * Mirrors transmit()'s primary→secondary fallback logic — including the
-     * m_primary_connection / m_secondary_connection presence checks — so that
-     * callers can build payloads with the correct lane framing.
+     * Mirrors transmit()'s active-lane selection so callers can build payloads
+     * with the correct lane framing.
      *
      * @return Protocol instance matching the active connection, or nullptr if none available
      */
@@ -304,11 +303,9 @@ public:
     /**
      * @brief Perform in-band re-authentication on the active connection.
      *
-     * Selects the protocol+connection pairing via select_active_pair(), calls
-     * login() on that protocol, and transmits the resulting auth payload on the
-     * matching connection.  This avoids the lane mismatch that occurs when
-     * callers use get_primary_protocol()->login() + transmit() separately,
-     * since transmit() may fall back to the secondary connection.
+     * Selects the configured primary protocol+connection pairing via
+     * select_active_pair(), calls login() on that protocol, and transmits the
+     * resulting auth payload on the matching connection.
      *
      * IMPORTANT: Solo::login() may return an empty payload if PacketBuilder::build()
      * fails without invoking the callback.  When this happens login_on_active_connection()
@@ -344,11 +341,10 @@ private:
     /**
      * @brief Select the active connection+protocol pair using the same logic as transmit().
      *
-     * Returns {primary_connection, primary_protocol} if the primary lane is up, else
-     * {secondary_connection, secondary_protocol} if the secondary lane is up, else
-     * {nullptr, nullptr}.  All three guards (connection, protocol, connected flag) are
-     * checked atomically in one place so that transmit(), get_active_protocol(), and
-     * login_on_active_connection() can never diverge.
+     * Returns {primary_connection, primary_protocol} if the configured lane is
+     * up, else {nullptr, nullptr}. All three guards (connection, protocol,
+     * connected flag) are checked atomically in one place so that transmit(),
+     * get_active_protocol(), and login_on_active_connection() can never diverge.
      *
      * @return Pair of (connection, protocol); both are nullptr when no lane is active.
      */
@@ -378,7 +374,7 @@ private:
 
     /**
      * @brief Initialize the secondary connection lane
-     * @param node_endpoint Node endpoint (port will be adjusted to 8323)
+     * @param node_endpoint Explicit secondary-node endpoint (if ever used)
      */
     void connect_secondary(const network::Endpoint& node_endpoint);
 
@@ -403,12 +399,12 @@ private:
     std::string m_node_label;
 
     // Connections
-    network::Connection::Sptr m_primary_connection;    // Stateless port (9323)
-    network::Connection::Sptr m_secondary_connection;  // Legacy port (8323)
+    network::Connection::Sptr m_primary_connection;    // Configured mining lane/session
+    network::Connection::Sptr m_secondary_connection;  // Reserved for explicit secondary-node use only
 
     // Protocol instances
     std::shared_ptr<protocol::Solo> m_primary_protocol;
-    std::shared_ptr<protocol::Solo> m_secondary_protocol;
+    std::shared_ptr<protocol::Solo> m_secondary_protocol; // Reserved for explicit secondary-node use only
 
     // Session management (shared across both ports) - AUTHORITATIVE source for session state
     std::shared_ptr<protocol::NodeSessionContext> m_session_context;

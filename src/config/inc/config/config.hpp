@@ -83,10 +83,9 @@ public:
 	bool has_reward_address() const { return !m_mining.m_reward_address.empty(); }
 	std::string const& get_reward_address() const { return m_mining.m_reward_address; }
 	
-	// SIM Link: dual-lane (stateless + legacy) simultaneous connection
+	// SIM Link / failover flags retained for lane-health + second-node failover wiring.
 	bool get_enable_sim_link() const { return m_enable_sim_link; }
-	/// Returns the secondary port derived from the primary port.
-	/// Primary 9323 → secondary 8323 (legacy); primary 8323 → secondary 9323 (stateless).
+	/// Returns the opposite-lane companion port for legacy compatibility helpers only.
 	std::uint16_t get_secondary_port() const
 	{
 		return (m_port == ProtocolPorts::STATELESS_PORT) ? ProtocolPorts::LEGACY_PORT : ProtocolPorts::STATELESS_PORT;
