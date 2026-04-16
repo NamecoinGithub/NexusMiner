@@ -192,7 +192,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     // Initialize the Mining Template Interface for unified READ/FEED operations
     // Session ID starts at 0 (unauthenticated) and will be updated after MINER_AUTH_RESULT
     // The session ID binds the template interface to the FALCON authenticated tunnel
-    m_template_interface = std::make_unique<MiningTemplateInterface>(m_channel, 0);
+    m_template_interface = std::make_unique<MiningTemplateInterface>(m_channel, SessionId{});
     m_logger->info("[Solo] Mining Template Interface initialized for unified READ/FEED system");
     
     // Wire centralized HeightTracker into MiningTemplateInterface (non-owning pointer)
@@ -590,25 +590,20 @@ void Solo::propagate_session_to_template_interface(const char* log_scope)
         return;
     }
 
-    // Read authoritative state from SessionManager via session_context
-    const SessionEpoch epoch = m_session_context ? m_session_context->get_session_epoch() : m_session_epoch;
-    const SessionId sid = get_session_id();
-
-    m_template_interface->set_session_epoch(epoch);
-    m_template_interface->set_session_id(sid);
-
-    // Propagate canonical identity bundle for hardened template ownership
+    SessionBinding binding;
     if (m_session_context) {
-        auto identity = m_session_context->get_canonical_identity();
-        if (identity.is_valid()) {
-            m_template_interface->set_session_identity(identity);
-        }
-    } else if (m_cached_identity.is_valid()) {
-        m_template_interface->set_session_identity(m_cached_identity);
+        binding = m_session_context->get_session_binding();
+    } else {
+        binding.session_id = get_session_id();
+        binding.session_epoch = m_session_epoch;
+        binding.active_lane = m_protocol_lane;
+        binding.identity = m_cached_identity;
     }
 
+    m_template_interface->set_session_binding(binding);
+
     m_logger->debug("[{}] Propagated session binding to MiningTemplateInterface: session_id=0x{:08x}, epoch={}",
-                    log_scope, m_session_id.get(), m_session_epoch.get());
+                    log_scope, binding.session_id.get(), binding.session_epoch.get());
 }
 
 void Solo::resync_auth_from_session_context(const char* log_scope)
@@ -690,8 +685,8 @@ SessionOwnershipStamp Solo::capture_session_ownership() const
         return {};
     }
 
-    const auto session = m_session_context->get_runtime_snapshot();
-    return { SessionId(session.session_id), SessionEpoch(session.session_epoch) };
+    const auto binding = m_session_context->get_session_binding();
+    return { binding.session_id, binding.session_epoch };
 }
 
 SubmitContext Solo::capture_submit_context(uint32_t template_height,
@@ -705,10 +700,10 @@ SubmitContext Solo::capture_submit_context(uint32_t template_height,
         return context;
     }
 
-    const auto session = m_session_context->get_runtime_snapshot();
-    context.session_id = SessionId(session.session_id);
-    context.session_epoch = SessionEpoch(session.session_epoch);
-    context.identity = m_session_context->get_canonical_identity();
+    const auto binding = m_session_context->get_session_binding();
+    context.session_id = binding.session_id;
+    context.session_epoch = binding.session_epoch;
+    context.identity = binding.identity;
     return context;
 }
 

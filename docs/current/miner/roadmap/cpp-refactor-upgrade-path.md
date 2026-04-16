@@ -63,6 +63,32 @@ This roadmap focuses on what remains.
 3. Add cross-architecture serialization stability checks.
 4. Validate accepted-submission snapshot lifecycle under template churn.
 
+## Current implementation status
+
+- A shared `SessionBinding` value object now batches authoritative session,
+  crypto, reward, and readiness semantics.
+- `SessionManager` and `NodeSessionContext` now expose typed session-binding
+  accessors so callers can consume one canonical bundle instead of piecemeal
+  fields.
+- `MiningTemplateInterface` now accepts typed `SessionId` construction and a
+  batched `SessionBinding` update path while retaining backward-compatible raw
+  overloads.
+- `Solo` now propagates template ownership through the canonical binding bundle
+  rather than separate session-id / epoch / identity calls.
+
+## Next coding sequence for phases 4-6
+
+1. Expand typed wrappers to any remaining epoch domains that carry distinct
+   semantics, or explicitly document why raw counters remain operational-only.
+2. Continue replacing piecemeal runtime-snapshot reads in submit, reward,
+   reconnect, and diagnostics flows with `SessionBinding`-style batch access.
+3. Migrate more tests and fixtures to typed semantic helpers so new code follows
+   the canonical API shape by default.
+4. Remove transitional raw overloads only after all production and test call
+   sites have switched to typed or batched APIs.
+5. Add targeted observability around binding changes so future sweeps can prove
+   cache resync paths stay aligned with the authoritative session container.
+
 ## Diagram-guided map
 
 | Topic | Diagram |

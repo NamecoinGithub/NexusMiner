@@ -168,6 +168,10 @@ add_nexusminer_test(NAME session_identity_test
     LINK_LIBS   protocol LLC
     INCLUDE_DIRS ${_LLC_INC})
 
+add_nexusminer_test(NAME session_binding_test
+    SOURCES     session_binding_test.cpp
+    LINK_LIBS   protocol network asio spdlog)
+
 # --- Packet router ---
 add_nexusminer_test(NAME packet_router_test
     SOURCES     packet_router_test.cpp

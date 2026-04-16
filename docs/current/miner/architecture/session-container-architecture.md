@@ -69,9 +69,9 @@ is “never let a local cache become a competing source of truth.”
 
 ## SessionBinding as the mental model
 
-The codebase does not yet expose a single `SessionBinding` value object, but the
-session container already behaves like one.  Documentation and future refactors
-should treat these fields as a package:
+The codebase now exposes a `SessionBinding` value object, and the session
+container remains the authoritative source used to populate it. Documentation
+and future refactors should treat these fields as a package:
 
 - session identity (`session_id`, `active_lane`)
 - Genesis/Falcon/ChaCha20 identity (`session_genesis`, `falcon_key_id`,
