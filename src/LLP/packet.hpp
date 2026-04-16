@@ -700,10 +700,10 @@ namespace nexusminer
 				// [header (1 byte)] [length (4 bytes, big-endian)] [payload data]
 				if ((m_header < 128 || is_auth_packet()) && m_length > 0)
 				{
-					BYTES.push_back((m_length >> 24) & 0xFF);
-					BYTES.push_back((m_length >> 16) & 0xFF);
-					BYTES.push_back((m_length >> 8) & 0xFF);
-					BYTES.push_back(m_length & 0xFF);
+					BYTES.push_back(static_cast<uint8_t>((m_length >> 24) & 0xFF));
+					BYTES.push_back(static_cast<uint8_t>((m_length >> 16) & 0xFF));
+					BYTES.push_back(static_cast<uint8_t>((m_length >> 8) & 0xFF));
+					BYTES.push_back(static_cast<uint8_t>(m_length & 0xFF));
 
 					BYTES.insert(BYTES.end(), m_data->begin(), m_data->end());
 				}
