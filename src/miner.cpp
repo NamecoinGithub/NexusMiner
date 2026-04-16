@@ -154,10 +154,11 @@ namespace nexusminer
 			return;
 		}
 
-		// SIM Link is now handled automatically by NodeSession - no need for explicit secondary connection
+		// NodeSession now stays on the configured primary node/lane.
+		// Optional secondary-node failover is handled by Worker_manager retry logic.
 		if (m_config.get_enable_sim_link())
 		{
-			m_logger->info("[SIM Link] ENABLED — NodeSession will automatically manage dual-lane connections");
+			m_logger->info("[SIM Link] ENABLED — reconnect/re-auth stays on the configured primary lane");
 		}
 		else
 		{

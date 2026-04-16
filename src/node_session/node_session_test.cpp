@@ -611,21 +611,23 @@ void test_connect_failure_updates_dcm_for_configured_lane()
     std::cout << "  ✓ DCM failure bookkeeping follows the configured lane symmetrically" << std::endl;
 }
 
-void test_dual_lane_connect_is_symmetric_across_configured_primary_lanes()
+void test_connect_stays_on_configured_primary_node_and_lane()
 {
-    std::cout << "Test: dual-lane connect/auth behavior is symmetric across configured primary lanes..." << std::endl;
+    std::cout << "Test: NodeSession connect/auth stays on the configured primary node and lane..." << std::endl;
 
-    auto run_case = [](uint16_t primary_port, uint16_t secondary_port) {
+    auto run_case = [](uint16_t primary_port) {
         auto io_context = std::make_shared<asio::io_context>();
         config::Config config(make_logger(primary_port == ProtocolPorts::LEGACY_PORT
-                                              ? "test_logger_dual_legacy_primary"
-                                              : "test_logger_dual_stateless_primary"));
+                                              ? "test_logger_primary_node_legacy"
+                                              : "test_logger_primary_node_stateless"));
         config.set_mining_mode(config::Mining_mode::HASH);
         config.set_enable_sim_link(true);
+        config.set_failover_wallet_ip("127.0.0.2");
+        config.set_failover_port(primary_port);
 
         DualConnectionManager dcm;
         auto socket = std::make_shared<MockSocket>(io_context);
-        auto node_session = make_node_session(io_context, config, socket, "TEST_DUAL_LANE", &dcm);
+        auto node_session = make_node_session(io_context, config, socket, "TEST_PRIMARY_NODE_ONLY", &dcm);
         configure_valid_auth(*node_session);
 
         bool callback_invoked = false;
@@ -639,28 +641,30 @@ void test_dual_lane_connect_is_symmetric_across_configured_primary_lanes()
         assert(connect_started);
         pump_io(io_context);
 
-        assert(socket->connect_count() == 2);
+        assert(socket->connect_count() == 1);
         assert(socket->connection(0)->remote_endpoint().port() == primary_port);
-        assert(socket->connection(1)->remote_endpoint().port() == secondary_port);
         assert(socket->connection(0)->get_protocol_lane() == determine_lane_from_port(primary_port));
-        assert(socket->connection(1)->get_protocol_lane() == determine_lane_from_port(secondary_port));
         assert(socket->connection(0)->transmit_count() == 1);
-        assert(socket->connection(1)->transmit_count() == 1);
+        assert(!node_session->is_secondary_connected());
 
         socket->emit_receive(0, build_auth_result_packet(determine_lane_from_port(primary_port), 0x01, 0x10203040u));
-        socket->emit_receive(1, build_auth_result_packet(determine_lane_from_port(secondary_port), 0x01, 0x10203040u));
 
         assert(callback_invoked);
         assert(callback_success);
-        assert(dcm.is_stateless_alive());
-        assert(dcm.is_legacy_alive());
         assert(dcm.mining_lane() == determine_lane_from_port(primary_port));
+        if (primary_port == ProtocolPorts::STATELESS_PORT) {
+            assert(dcm.is_stateless_alive());
+            assert(!dcm.is_legacy_alive());
+        } else {
+            assert(dcm.is_legacy_alive());
+            assert(!dcm.is_stateless_alive());
+        }
     };
 
-    run_case(ProtocolPorts::STATELESS_PORT, ProtocolPorts::LEGACY_PORT);
-    run_case(ProtocolPorts::LEGACY_PORT, ProtocolPorts::STATELESS_PORT);
+    run_case(ProtocolPorts::STATELESS_PORT);
+    run_case(ProtocolPorts::LEGACY_PORT);
 
-    std::cout << "  ✓ Primary-lane selection no longer assumes stateless-vs-legacy by slot" << std::endl;
+    std::cout << "  ✓ NodeSession keeps reconnect/auth on the configured primary node/lane" << std::endl;
 }
 
 void test_malformed_packet_does_not_fail_active_lane()
@@ -763,7 +767,7 @@ int main()
         test_connect_failure_updates_dcm_for_configured_lane();
         std::cout << std::endl;
 
-        test_dual_lane_connect_is_symmetric_across_configured_primary_lanes();
+        test_connect_stays_on_configured_primary_node_and_lane();
         std::cout << std::endl;
 
         test_malformed_packet_does_not_fail_active_lane();

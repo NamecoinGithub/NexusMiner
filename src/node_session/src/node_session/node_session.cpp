@@ -169,22 +169,6 @@ void NodeSession::rewire_protocol_handlers()
     apply_protocol_handlers(LaneSlot::Secondary);
 }
 
-network::Endpoint NodeSession::companion_endpoint(const network::Endpoint& endpoint) const
-{
-    std::string node_ip;
-    endpoint.address(node_ip);
-
-    ProtocolLane configured_lane = determine_lane_from_port(endpoint.port());
-    const uint16_t companion_port =
-        (configured_lane == ProtocolLane::LEGACY) ? ProtocolPorts::STATELESS_PORT
-                                                  : ProtocolPorts::LEGACY_PORT;
-
-    return network::Endpoint{
-        network::Transport_protocol::tcp,
-        node_ip,
-        companion_port};
-}
-
 void NodeSession::connect_lane(LaneSlot slot, const network::Endpoint& node_endpoint)
 {
     auto descriptor = lane(slot);
@@ -203,10 +187,10 @@ void NodeSession::connect_lane(LaneSlot slot, const network::Endpoint& node_endp
 
     auto observation = std::make_shared<ConnectObservation>();
     auto weak_self = std::weak_ptr<NodeSession>(shared_from_this());
-    auto connection_callback = [weak_self, slot, node_endpoint](auto result, auto receive_buffer) {
+    auto connection_callback = [weak_self, slot](auto result, auto receive_buffer) {
         auto self = weak_self.lock();
         if (!self) return;
-        self->handle_lane_event(slot, node_endpoint, result, std::move(receive_buffer));
+        self->handle_lane_event(slot, result, std::move(receive_buffer));
     };
 
     auto observed_callback = [connection_callback, observation](auto result, auto receive_buffer) mutable {
@@ -236,23 +220,23 @@ void NodeSession::connect_lane(LaneSlot slot, const network::Endpoint& node_endp
     }
 }
 
-void NodeSession::handle_lane_event(LaneSlot slot, const network::Endpoint& node_endpoint,
-                                    network::Result::Code result, network::Shared_payload&& receive_buffer)
+void NodeSession::handle_lane_event(LaneSlot slot, network::Result::Code result,
+                                    network::Shared_payload&& receive_buffer)
 {
     auto descriptor = lane(slot);
 
     if (result == network::Result::connection_ok) {
         if (!*descriptor.connection) {
             ::asio::post(*m_io_context, [weak_self = std::weak_ptr<NodeSession>(shared_from_this()),
-                                         slot, node_endpoint]() {
+                                         slot]() {
                 auto self = weak_self.lock();
                 if (!self) return;
-                self->finalize_lane_connection(slot, node_endpoint, true);
+                self->finalize_lane_connection(slot, true);
             });
             return;
         }
 
-        finalize_lane_connection(slot, node_endpoint, false);
+        finalize_lane_connection(slot, false);
         return;
     }
 
@@ -278,7 +262,7 @@ void NodeSession::handle_lane_event(LaneSlot slot, const network::Endpoint& node
     }
 }
 
-void NodeSession::finalize_lane_connection(LaneSlot slot, const network::Endpoint& node_endpoint, bool deferred)
+void NodeSession::finalize_lane_connection(LaneSlot slot, bool deferred)
 {
     auto descriptor = lane(slot);
     m_logger->info("[NodeSession:{}] {} connection established{}",
@@ -286,16 +270,7 @@ void NodeSession::finalize_lane_connection(LaneSlot slot, const network::Endpoin
                    descriptor.label,
                    deferred ? " (deferred)" : "");
     mark_lane_socket_connected(slot);
-    begin_lane_authentication(slot, slot == LaneSlot::Primary ? &node_endpoint : nullptr);
-}
-
-void NodeSession::maybe_connect_companion_lane(LaneSlot slot, const network::Endpoint& node_endpoint)
-{
-    if (slot != LaneSlot::Primary || !m_config.get_enable_sim_link() || m_secondary_connected) {
-        return;
-    }
-
-    connect_secondary(companion_endpoint(node_endpoint));
+    begin_lane_authentication(slot);
 }
 
 void NodeSession::complete_pending_connect(bool success)
@@ -385,7 +360,7 @@ void NodeSession::mark_lane_authenticated(LaneSlot slot, protocol::SessionId sid
     }
 }
 
-bool NodeSession::begin_lane_authentication(LaneSlot slot, const network::Endpoint* primary_endpoint)
+bool NodeSession::begin_lane_authentication(LaneSlot slot)
 {
     auto descriptor = lane(slot);
     sync_protocol_state(slot);
@@ -427,10 +402,6 @@ bool NodeSession::begin_lane_authentication(LaneSlot slot, const network::Endpoi
 
     connection->transmit(auth_payload);
     m_logger->info("[NodeSession:{}] {} authentication initiated", m_node_label, descriptor.label);
-
-    if (primary_endpoint) {
-        maybe_connect_companion_lane(slot, *primary_endpoint);
-    }
 
     return true;
 }

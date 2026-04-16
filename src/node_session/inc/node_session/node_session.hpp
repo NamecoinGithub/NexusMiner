@@ -32,9 +32,9 @@ namespace stats { class Collector; }
 /**
  * @brief NodeSession — Unified Active Session Outer Wrapper
  *
- * NodeSession is the outer wrapper that owns both port connections (Stateless 9323
- * and Legacy 8323) to a single mining node. It presents a single authenticated
- * identity to Worker_manager regardless of which port is active.
+ * NodeSession is the outer wrapper for one configured mining-node session. It
+ * presents a single authenticated identity to Worker_manager on the lane selected
+ * by the configured endpoint instead of assuming a paired same-node opposite lane.
  *
  * Design Principles:
  * - Outer Wrapper, Not Protocol Replacement: Wraps two Solo protocol instances
@@ -124,8 +124,8 @@ public:
         DualConnectionManager* dcm = nullptr);
 
     /**
-     * @brief Connect to the node (both ports)
-     * @param node_endpoint Primary endpoint (typically stateless port 9323)
+     * @brief Connect to the configured node/lane
+     * @param node_endpoint Endpoint selected from config (legacy or stateless)
      * @param callback Connection result callback
      * @return True if connection initiation succeeded
      */
@@ -359,17 +359,14 @@ private:
     std::shared_ptr<protocol::Solo> ensure_protocol(LaneSlot slot);
     void sync_protocol_state(LaneSlot slot);
     void rewire_protocol_handlers();
-    network::Endpoint companion_endpoint(const network::Endpoint& endpoint) const;
     void connect_lane(LaneSlot slot, const network::Endpoint& node_endpoint);
-    void handle_lane_event(LaneSlot slot, const network::Endpoint& node_endpoint,
-                           network::Result::Code result, network::Shared_payload&& receive_buffer);
-    void finalize_lane_connection(LaneSlot slot, const network::Endpoint& node_endpoint, bool deferred);
-    void maybe_connect_companion_lane(LaneSlot slot, const network::Endpoint& node_endpoint);
+    void handle_lane_event(LaneSlot slot, network::Result::Code result, network::Shared_payload&& receive_buffer);
+    void finalize_lane_connection(LaneSlot slot, bool deferred);
     void apply_protocol_handlers(LaneSlot slot);
     void mark_lane_socket_connected(LaneSlot slot);
     void mark_lane_socket_failed(LaneSlot slot);
     void mark_lane_authenticated(LaneSlot slot, protocol::SessionId sid);
-    bool begin_lane_authentication(LaneSlot slot, const network::Endpoint* primary_endpoint = nullptr);
+    bool begin_lane_authentication(LaneSlot slot);
     void complete_pending_connect(bool success);
     void mark_all_lanes_down(const char* reason);
 
