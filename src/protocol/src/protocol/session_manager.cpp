@@ -461,6 +461,11 @@ void SessionManager::mark_session_expired(const std::string& reason)
         notify = (m_session.state != SessionState::DEGRADED);
         m_session.state = SessionState::DEGRADED;
         m_session.authenticated = false;
+        m_session.falcon_authenticated = false;
+        m_session.session_key.clear();
+        m_session.chacha20_session_key.clear();
+        m_session.chacha20_key_fingerprint = SessionFingerprint{};
+        m_session.chacha20_ready = false;
         m_session.expiry_state = ExpiryState::EXPIRED_ACCEPTED;
         m_session.expiry_reason = reason;
         m_session.recovery_state = RecoveryState::FORCED_REAUTH;
