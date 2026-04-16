@@ -126,6 +126,18 @@ add_nexusminer_test(NAME first_block_acceptance_test
     LINK_LIBS   protocol network LLP asio spdlog ${OPENSSL_LIBRARIES}
     INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
 
+add_nexusminer_test(NAME cross_architecture_serialization_test
+    SOURCES     cross_architecture_serialization_test.cpp
+                ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp
+    LINK_LIBS   protocol network LLP asio spdlog ${OPENSSL_LIBRARIES}
+    INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
+
+add_nexusminer_test(NAME multi_miner_session_isolation_test
+    SOURCES     multi_miner_session_isolation_test.cpp
+                ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp
+    LINK_LIBS   protocol network LLP asio spdlog ${OPENSSL_LIBRARIES}
+    INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
+
 add_nexusminer_test(NAME mined_block_cache_dedup_test
     SOURCES     ${CMAKE_SOURCE_DIR}/src/stats/mined_block_cache_test.cpp
     LINK_LIBS   protocol LLP stats spdlog

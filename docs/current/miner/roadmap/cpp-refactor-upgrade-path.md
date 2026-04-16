@@ -81,13 +81,18 @@ This roadmap focuses on what remains.
 - Session-loss handling now treats the old session as non-viable: workers stop,
   then the miner performs full re-auth on the current connection or reconnects /
   fails over to a configured node if no active connection remains.
+- The first-block acceptance harness now captures session-event-journal
+  artifacts in full-validation mode and verifies accepted-submission snapshot
+  consumption under template churn.
+- The protocol test suite now includes deterministic cross-architecture
+  serialization replay coverage and multi-miner/session isolation coverage.
 
 ## Next coding sequence for phases 5-6
 
-1. Expand typed wrappers to any remaining epoch domains that carry distinct
-   semantics, or explicitly document why raw counters remain operational-only.
-2. Migrate more tests and fixtures to typed semantic helpers so new code follows
-   the canonical API shape by default.
+1. Expand acceptance coverage from deterministic protocol fixtures into broader
+   reconnect / failure-injection cases.
+2. Grow the multi-miner matrix from protocol isolation tests into larger mixed
+   lane / reconnect-storm coverage.
 3. Remove transitional raw overloads only after all production and test call
    sites have switched to typed or batched APIs.
 4. Add targeted observability around binding changes so future sweeps can prove

@@ -73,6 +73,16 @@ A multi-miner run passes only if every event can be attributed back to the
 correct miner/session pair and no authoritative session container reports drift
 caused by another miner’s activity.
 
+## Current protocol-level coverage
+
+The repository now includes focused collision/isolation tests that prove:
+
+- the same reward string does not imply shared session authority
+- miner A re-authentication does not mutate miner B session state or journal
+- template ownership remains bound to the correct miner/session identity
+
+Larger-scale reconnect-storm and mixed-lane matrices remain future work.
+
 ## Related diagram
 
 - [08-multi-miner-tests-diagram.txt](../diagrams/08-multi-miner-tests-diagram.txt)
