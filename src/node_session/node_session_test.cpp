@@ -471,6 +471,198 @@ void test_login_on_active_connection_uses_active_lane()
     std::cout << "  ✓ In-band reauth stays on the currently active lane" << std::endl;
 }
 
+void test_session_expired_handler_fires_from_authoritative_packet()
+{
+    std::cout << "Test: SESSION_EXPIRED packet fires the NodeSession callback and clears auth..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    config::Config config(make_logger("test_logger_session_expired"));
+    config.set_mining_mode(config::Mining_mode::HASH);
+    config.set_enable_sim_link(false);
+
+    DualConnectionManager dcm;
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto node_session = make_node_session(io_context, config, socket, "TEST_SESSION_EXPIRED", &dcm);
+    configure_valid_auth(*node_session);
+
+    int expired_count = 0;
+    node_session->set_session_expired_handler([&expired_count]() {
+        ++expired_count;
+    });
+
+    bool connect_callback_invoked = false;
+    bool connect_started = node_session->connect(make_endpoint(ProtocolPorts::STATELESS_PORT),
+                                                 [&connect_callback_invoked](bool) {
+                                                     connect_callback_invoked = true;
+                                                 });
+
+    assert(connect_started);
+    pump_io(io_context);
+    socket->emit_receive(0, build_auth_result_packet(ProtocolLane::STATELESS, 0x01, 0xA1B2C3D4u));
+
+    assert(connect_callback_invoked);
+    assert(node_session->is_authenticated());
+    assert(dcm.is_stateless_alive());
+
+    network::Payload session_expired_payload{
+        0xD4, 0xC3, 0xB2, 0xA1,
+        static_cast<uint8_t>(nexusminer::LLP::StatelessMining::SessionExpiredReason::EXPIRED_INACTIVITY)
+    };
+    node_session->get_primary_protocol()->process_messages(
+        Packet(static_cast<uint16_t>(nexusminer::LLP::StatelessMining::SESSION_EXPIRED),
+               session_expired_payload),
+        socket->connection(0));
+
+    assert(expired_count == 1);
+    assert(!node_session->is_authenticated());
+    assert(node_session->session_id() == protocol::SessionId(0u));
+    assert(dcm.is_stateless_alive());
+
+    std::cout << "  ✓ SESSION_EXPIRED propagates from the packet event and clears session state" << std::endl;
+}
+
+void test_node_shutdown_handler_fires_from_packet()
+{
+    std::cout << "Test: NODE_SHUTDOWN packet fires the NodeSession callback..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    config::Config config(make_logger("test_logger_node_shutdown"));
+    config.set_mining_mode(config::Mining_mode::HASH);
+    config.set_enable_sim_link(false);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto node_session = make_node_session(io_context, config, socket, "TEST_NODE_SHUTDOWN");
+    configure_valid_auth(*node_session);
+
+    int shutdown_count = 0;
+    uint8_t shutdown_reason = 0;
+    node_session->set_node_shutdown_handler([&shutdown_count, &shutdown_reason](uint8_t reason) {
+        ++shutdown_count;
+        shutdown_reason = reason;
+    });
+
+    bool connect_callback_invoked = false;
+    bool connect_started = node_session->connect(make_endpoint(ProtocolPorts::STATELESS_PORT),
+                                                 [&connect_callback_invoked](bool) {
+                                                     connect_callback_invoked = true;
+                                                 });
+
+    assert(connect_started);
+    pump_io(io_context);
+    socket->emit_receive(0, build_auth_result_packet(ProtocolLane::STATELESS, 0x01, 0x12345678u));
+
+    assert(connect_callback_invoked);
+
+    node_session->get_primary_protocol()->process_messages(
+        Packet(static_cast<uint16_t>(nexusminer::LLP::StatelessMining::NODE_SHUTDOWN),
+               network::Payload{
+                   static_cast<uint8_t>(nexusminer::LLP::StatelessMining::ShutdownReason::MAINTENANCE)
+               }),
+        socket->connection(0));
+
+    assert(shutdown_count == 1);
+    assert(shutdown_reason == static_cast<uint8_t>(nexusminer::LLP::StatelessMining::ShutdownReason::MAINTENANCE));
+
+    std::cout << "  ✓ NODE_SHUTDOWN is forwarded from the authoritative packet event" << std::endl;
+}
+
+void test_connect_failure_updates_dcm_for_configured_lane()
+{
+    std::cout << "Test: connection failure updates DCM on the configured lane..." << std::endl;
+
+    auto run_case = [](uint16_t port, ProtocolLane expected_lane) {
+        auto io_context = std::make_shared<asio::io_context>();
+        config::Config config(make_logger(port == ProtocolPorts::LEGACY_PORT
+                                              ? "test_logger_connect_fail_legacy"
+                                              : "test_logger_connect_fail_stateless"));
+        config.set_mining_mode(config::Mining_mode::HASH);
+        config.set_enable_sim_link(false);
+
+        DualConnectionManager dcm;
+        auto socket = std::make_shared<MockSocket>(io_context);
+        socket->m_connect_result = network::Result::connection_error;
+
+        auto node_session = make_node_session(io_context, config, socket, "TEST_CONNECT_FAIL", &dcm);
+        configure_valid_auth(*node_session);
+
+        bool callback_invoked = false;
+        bool callback_success = true;
+        bool connect_started = node_session->connect(make_endpoint(port),
+                                                     [&callback_invoked, &callback_success](bool success) {
+                                                         callback_invoked = true;
+                                                         callback_success = success;
+                                                     });
+
+        assert(connect_started);
+        pump_io(io_context);
+
+        assert(callback_invoked);
+        assert(!callback_success);
+        assert(!dcm.any_lane_alive());
+        assert(dcm.consume_bypass(expected_lane));
+        assert(!dcm.consume_bypass(expected_lane == ProtocolLane::LEGACY
+                                       ? ProtocolLane::STATELESS
+                                       : ProtocolLane::LEGACY));
+    };
+
+    run_case(ProtocolPorts::STATELESS_PORT, ProtocolLane::STATELESS);
+    run_case(ProtocolPorts::LEGACY_PORT, ProtocolLane::LEGACY);
+
+    std::cout << "  ✓ DCM failure bookkeeping follows the configured lane symmetrically" << std::endl;
+}
+
+void test_dual_lane_connect_is_symmetric_across_configured_primary_lanes()
+{
+    std::cout << "Test: dual-lane connect/auth behavior is symmetric across configured primary lanes..." << std::endl;
+
+    auto run_case = [](uint16_t primary_port, uint16_t secondary_port) {
+        auto io_context = std::make_shared<asio::io_context>();
+        config::Config config(make_logger(primary_port == ProtocolPorts::LEGACY_PORT
+                                              ? "test_logger_dual_legacy_primary"
+                                              : "test_logger_dual_stateless_primary"));
+        config.set_mining_mode(config::Mining_mode::HASH);
+        config.set_enable_sim_link(true);
+
+        DualConnectionManager dcm;
+        auto socket = std::make_shared<MockSocket>(io_context);
+        auto node_session = make_node_session(io_context, config, socket, "TEST_DUAL_LANE", &dcm);
+        configure_valid_auth(*node_session);
+
+        bool callback_invoked = false;
+        bool callback_success = false;
+        bool connect_started = node_session->connect(make_endpoint(primary_port),
+                                                     [&callback_invoked, &callback_success](bool success) {
+                                                         callback_invoked = true;
+                                                         callback_success = success;
+                                                     });
+
+        assert(connect_started);
+        pump_io(io_context);
+
+        assert(socket->connect_count() == 2);
+        assert(socket->connection(0)->remote_endpoint().port() == primary_port);
+        assert(socket->connection(1)->remote_endpoint().port() == secondary_port);
+        assert(socket->connection(0)->get_protocol_lane() == determine_lane_from_port(primary_port));
+        assert(socket->connection(1)->get_protocol_lane() == determine_lane_from_port(secondary_port));
+        assert(socket->connection(0)->transmit_count() == 1);
+        assert(socket->connection(1)->transmit_count() == 1);
+
+        socket->emit_receive(0, build_auth_result_packet(determine_lane_from_port(primary_port), 0x01, 0x10203040u));
+        socket->emit_receive(1, build_auth_result_packet(determine_lane_from_port(secondary_port), 0x01, 0x10203040u));
+
+        assert(callback_invoked);
+        assert(callback_success);
+        assert(dcm.is_stateless_alive());
+        assert(dcm.is_legacy_alive());
+        assert(dcm.mining_lane() == determine_lane_from_port(primary_port));
+    };
+
+    run_case(ProtocolPorts::STATELESS_PORT, ProtocolPorts::LEGACY_PORT);
+    run_case(ProtocolPorts::LEGACY_PORT, ProtocolPorts::STATELESS_PORT);
+
+    std::cout << "  ✓ Primary-lane selection no longer assumes stateless-vs-legacy by slot" << std::endl;
+}
+
 void test_malformed_packet_does_not_fail_active_lane()
 {
     std::cout << "Test: malformed packet stays diagnostic-only and does not fail the active lane..." << std::endl;
@@ -560,6 +752,18 @@ int main()
         std::cout << std::endl;
 
         test_login_on_active_connection_uses_active_lane();
+        std::cout << std::endl;
+
+        test_session_expired_handler_fires_from_authoritative_packet();
+        std::cout << std::endl;
+
+        test_node_shutdown_handler_fires_from_packet();
+        std::cout << std::endl;
+
+        test_connect_failure_updates_dcm_for_configured_lane();
+        std::cout << std::endl;
+
+        test_dual_lane_connect_is_symmetric_across_configured_primary_lanes();
         std::cout << std::endl;
 
         test_malformed_packet_does_not_fail_active_lane();

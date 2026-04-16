@@ -356,6 +356,15 @@ private:
 
     LaneDescriptor lane(LaneSlot slot);
     ProtocolLane resolve_lane(LaneSlot slot) const;
+    std::shared_ptr<protocol::Solo> ensure_protocol(LaneSlot slot);
+    void sync_protocol_state(LaneSlot slot);
+    void rewire_protocol_handlers();
+    network::Endpoint companion_endpoint(const network::Endpoint& endpoint) const;
+    void connect_lane(LaneSlot slot, const network::Endpoint& node_endpoint);
+    void handle_lane_event(LaneSlot slot, const network::Endpoint& node_endpoint,
+                           network::Result::Code result, network::Shared_payload&& receive_buffer);
+    void finalize_lane_connection(LaneSlot slot, const network::Endpoint& node_endpoint, bool deferred);
+    void maybe_connect_companion_lane(LaneSlot slot, const network::Endpoint& node_endpoint);
     void apply_protocol_handlers(LaneSlot slot);
     void mark_lane_socket_connected(LaneSlot slot);
     void mark_lane_socket_failed(LaneSlot slot);
