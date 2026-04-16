@@ -492,7 +492,12 @@ void NodeSession::process_primary_data(network::Shared_payload&& receive_buffer)
         } else if (parse_result == ParseResult::MALFORMED) {
             m_logger->error("[NodeSession:{}] Malformed packet on primary connection",
                           m_node_label);
-            m_primary_rx_accumulator.clear();
+            if (!m_primary_rx_accumulator.empty()) {
+                m_primary_rx_accumulator.pop_front();
+                m_logger->warn("[NodeSession:{}] Dropped 1 byte from primary RX accumulator for resync ({} bytes remain)",
+                               m_node_label, m_primary_rx_accumulator.size());
+                continue;
+            }
             break;
         } else {
             // Remove consumed bytes
@@ -537,7 +542,12 @@ void NodeSession::process_secondary_data(network::Shared_payload&& receive_buffe
         } else if (parse_result == ParseResult::MALFORMED) {
             m_logger->error("[NodeSession:{}] Malformed packet on secondary connection",
                           m_node_label);
-            m_secondary_rx_accumulator.clear();
+            if (!m_secondary_rx_accumulator.empty()) {
+                m_secondary_rx_accumulator.pop_front();
+                m_logger->warn("[NodeSession:{}] Dropped 1 byte from secondary RX accumulator for resync ({} bytes remain)",
+                               m_node_label, m_secondary_rx_accumulator.size());
+                continue;
+            }
             break;
         } else {
             // Remove consumed bytes

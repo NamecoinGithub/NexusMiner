@@ -471,6 +471,60 @@ void test_login_on_active_connection_uses_active_lane()
     std::cout << "  ✓ In-band reauth stays on the currently active lane" << std::endl;
 }
 
+void test_malformed_packet_does_not_fail_active_lane()
+{
+    std::cout << "Test: malformed packet stays diagnostic-only and does not fail the active lane..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    config::Config config(make_logger("test_logger_malformed_lane"));
+    config.set_mining_mode(config::Mining_mode::HASH);
+    config.set_enable_sim_link(false);
+
+    DualConnectionManager dcm;
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto node_session = make_node_session(io_context, config, socket, "TEST_MALFORMED_LANE", &dcm);
+    configure_valid_auth(*node_session);
+
+    int session_authenticated_count = 0;
+    protocol::SessionId last_sid{};
+    node_session->set_session_authenticated_handler(
+        [&session_authenticated_count, &last_sid](protocol::SessionId sid) {
+            ++session_authenticated_count;
+            last_sid = sid;
+        });
+
+    bool connect_callback_invoked = false;
+    bool connect_started = node_session->connect(make_endpoint(ProtocolPorts::STATELESS_PORT),
+                                                 [&connect_callback_invoked](bool) {
+                                                     connect_callback_invoked = true;
+                                                 });
+
+    assert(connect_started);
+    pump_io(io_context);
+
+    socket->emit_receive(0, build_auth_result_packet(ProtocolLane::STATELESS, 0x01, 0x10203040u));
+    assert(connect_callback_invoked);
+    assert(node_session->is_authenticated());
+    assert(session_authenticated_count == 1);
+    assert(last_sid == protocol::SessionId(0x10203040u));
+    assert(dcm.is_stateless_alive());
+
+    socket->emit_receive(0, std::make_shared<network::Payload>(
+        network::Payload{0x00, 0x01, 0x00, 0x00, 0x00, 0x00}));
+
+    assert(node_session->is_primary_connected());
+    assert(dcm.is_stateless_alive());
+
+    socket->emit_receive(0, build_auth_result_packet(ProtocolLane::STATELESS, 0x01, 0x55667788u));
+
+    assert(session_authenticated_count == 2);
+    assert(last_sid == protocol::SessionId(0x55667788u));
+    assert(node_session->session_id() == protocol::SessionId(0x55667788u));
+    assert(dcm.is_stateless_alive());
+
+    std::cout << "  ✓ Malformed bytes do not mark the lane failed and parsing recovers" << std::endl;
+}
+
 } // namespace
 
 int main()
@@ -506,6 +560,9 @@ int main()
         std::cout << std::endl;
 
         test_login_on_active_connection_uses_active_lane();
+        std::cout << std::endl;
+
+        test_malformed_packet_does_not_fail_active_lane();
         std::cout << std::endl;
 
         std::cout << "=== All NodeSession tests passed! ===\n" << std::endl;

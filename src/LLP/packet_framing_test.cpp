@@ -805,6 +805,71 @@ void test_stateless_header_only_two_byte() {
 }
 
 // ============================================================================
+// Test Case 18b: Stateless compat submit-result opcodes accept both header-only
+// and explicit zero/one-length framed forms.
+// ============================================================================
+void test_stateless_submit_result_compat_forms() {
+    std::cout << "\nTest 18b: Stateless compat submit-result opcode wire forms" << std::endl;
+
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+
+    // Header-only BLOCK_ACCEPTED_COMPAT (0xD002)
+    acc.feed({0xD0, 0x02});
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed1 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD002) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("BLOCK_ACCEPTED_COMPAT header-only form parsed immediately", test1);
+
+    // Explicit framed zero-length BLOCK_ACCEPTED_COMPAT
+    acc.feed({0xD0, 0x02, 0x00, 0x00, 0x00, 0x00});
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test2 = parsed2 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD002) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("BLOCK_ACCEPTED_COMPAT explicit zero-length frame parsed", test2);
+
+    // Header-only compat followed immediately by another valid packet should not
+    // be misread as a zero-length frame for the next packet.
+    acc.feed({0xD0, 0x02, 0xD0, 0xD8});
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test3 = parsed3 &&
+                 parsed4 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0D8) &&
+                 acc.empty();
+    print_test_result("Header-only BLOCK_ACCEPTED_COMPAT does not misframe adjacent stateless packets", test3);
+
+    // BLOCK_REJECTED_COMPAT supports zero-length and 1-byte reason payload forms.
+    acc.feed({0xD0, 0x03, 0x00, 0x00, 0x00, 0x00});
+    bool parsed5 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test4 = parsed5 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD003) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("BLOCK_REJECTED_COMPAT explicit zero-length frame parsed", test4);
+
+    acc.feed({0xD0, 0x03, 0x00, 0x00, 0x00, 0x01, 0x04});
+    bool parsed6 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test5 = parsed6 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD003) &&
+                 (packet.m_length == 1) &&
+                 (packet.m_data != nullptr) &&
+                 ((*packet.m_data)[0] == 0x04) &&
+                 acc.empty();
+    print_test_result("BLOCK_REJECTED_COMPAT one-byte reason frame parsed", test5);
+}
+
+// ============================================================================
 // Test Case 19: NEW_ROUND (204) with 12-byte payload
 // NEW_ROUND carries payload: [unified_height][channel_height][difficulty]
 // ============================================================================
@@ -1272,6 +1337,7 @@ int main() {
     test_legacy_auth_packet_single_byte();
     test_stateless_data_packet_two_byte();
     test_stateless_header_only_two_byte();
+    test_stateless_submit_result_compat_forms();
     test_new_round_with_payload();
     test_old_round_with_payload();
     test_round_legacy_16byte_payload();
