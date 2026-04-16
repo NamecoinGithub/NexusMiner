@@ -161,7 +161,7 @@ network::Shared_payload build_auth_result_packet(ProtocolLane lane, uint8_t stat
         payload.push_back(static_cast<uint8_t>((session_id >> 16) & 0xFF));
         payload.push_back(static_cast<uint8_t>((session_id >> 24) & 0xFF));
     }
-    return protocol::PacketBuilder::build(lane, LLP::MINER_AUTH_RESULT, payload);
+    return protocol::PacketBuilder::build(lane, nexusminer::LLP::MINER_AUTH_RESULT, payload);
 }
 
 std::shared_ptr<NodeSession> make_node_session(const std::shared_ptr<asio::io_context>& io_context,
@@ -466,7 +466,7 @@ void test_login_on_active_connection_uses_active_lane()
     assert(login_callback_success);
     assert(connection->transmit_count() == transmit_count_before + 1);
     assert(!connection->transmissions().back().empty());
-    assert(connection->transmissions().back().front() == LLP::MINER_AUTH_INIT);
+    assert(connection->transmissions().back().front() == nexusminer::LLP::MINER_AUTH_INIT);
 
     std::cout << "  ✓ In-band reauth stays on the currently active lane" << std::endl;
 }
