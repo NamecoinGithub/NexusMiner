@@ -32,6 +32,7 @@ submit is accepted predictably instead of relying on an uncontrolled live race.
 Capture at least:
 
 - session diagnostics before submit
+- session event journal for auth / reward / submit transitions
 - reward bind diagnostics
 - template metadata and hashPrevBlock anchor
 - submit snapshot contents
@@ -84,6 +85,10 @@ Repeat the harness with injected failures:
 Replay the same harness artifacts on x86-64, ARM64, and RISC-V to verify packet
 bytes, decoded reward hash bytes, Genesis hash bytes, and ChaCha20 inputs stay
 identical.
+
+The repository now includes deterministic protocol-level replay tests for those
+serialization invariants and the full-validation harness captures event-journal
+artifacts alongside accepted-submission snapshot consumption.
 
 ## Exit criteria
 

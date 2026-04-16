@@ -2,6 +2,12 @@ name: Copilot Setup Steps
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
 
 env:
   CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
@@ -17,8 +23,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Cache CPM dependencies
-        uses: actions/cache@v4
+      - name: Ensure CPM cache directory exists
+        run: mkdir -p "${CPM_SOURCE_CACHE}"
+
+      - name: Restore CPM dependencies cache
+        id: cpm-cache-restore
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.CPM_SOURCE_CACHE }}
           key: copilot-cpm-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt', 'cmake/**', 'CMakePresets.json') }}
@@ -32,3 +42,10 @@ jobs:
 
       - name: Warm debug configure
         run: cmake --preset debug
+
+      - name: Save CPM dependencies cache
+        if: steps.cpm-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CPM_SOURCE_CACHE }}
+          key: ${{ steps.cpm-cache-restore.outputs.cache-primary-key }}

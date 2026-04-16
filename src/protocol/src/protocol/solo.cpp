@@ -192,7 +192,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     // Initialize the Mining Template Interface for unified READ/FEED operations
     // Session ID starts at 0 (unauthenticated) and will be updated after MINER_AUTH_RESULT
     // The session ID binds the template interface to the FALCON authenticated tunnel
-    m_template_interface = std::make_unique<MiningTemplateInterface>(m_channel, 0);
+    m_template_interface = std::make_unique<MiningTemplateInterface>(m_channel, SessionId{});
     m_logger->info("[Solo] Mining Template Interface initialized for unified READ/FEED system");
     
     // Wire centralized HeightTracker into MiningTemplateInterface (non-owning pointer)
@@ -590,25 +590,20 @@ void Solo::propagate_session_to_template_interface(const char* log_scope)
         return;
     }
 
-    // Read authoritative state from SessionManager via session_context
-    const SessionEpoch epoch = m_session_context ? m_session_context->get_session_epoch() : m_session_epoch;
-    const SessionId sid = get_session_id();
-
-    m_template_interface->set_session_epoch(epoch);
-    m_template_interface->set_session_id(sid);
-
-    // Propagate canonical identity bundle for hardened template ownership
+    SessionBinding binding;
     if (m_session_context) {
-        auto identity = m_session_context->get_canonical_identity();
-        if (identity.is_valid()) {
-            m_template_interface->set_session_identity(identity);
-        }
-    } else if (m_cached_identity.is_valid()) {
-        m_template_interface->set_session_identity(m_cached_identity);
+        binding = m_session_context->get_session_binding();
+    } else {
+        binding.session_id = get_session_id();
+        binding.session_epoch = m_session_epoch;
+        binding.active_lane = m_protocol_lane;
+        binding.identity = m_cached_identity;
     }
 
+    m_template_interface->set_session_binding(binding);
+
     m_logger->debug("[{}] Propagated session binding to MiningTemplateInterface: session_id=0x{:08x}, epoch={}",
-                    log_scope, m_session_id.get(), m_session_epoch.get());
+                    log_scope, binding.session_id.get(), binding.session_epoch.get());
 }
 
 void Solo::resync_auth_from_session_context(const char* log_scope)
@@ -644,41 +639,40 @@ void Solo::refresh_cached_session_state(const char* log_scope)
     }
 
     const auto session = m_session_context->get_runtime_snapshot();
+    const auto binding = m_session_context->get_session_binding();
     m_cached_runtime_state_generation = session.runtime_state_generation;
 
-    if (!m_has_seen_session_epoch || m_session_epoch != session.session_epoch) {
+    if (!m_has_seen_session_epoch || m_session_epoch != binding.session_epoch) {
         if (!m_has_seen_session_epoch) {
             m_logger->info("[{}] Resyncing local session epoch from authoritative session container: local={} authoritative={}",
-                           log_scope, m_session_epoch.get(), session.session_epoch.get());
+                           log_scope, m_session_epoch.get(), binding.session_epoch.get());
         } else {
             m_logger->warn("[{}] Session epoch advanced: local={} authoritative={} — invalidating generation-bound cached state",
-                           log_scope, m_session_epoch.get(), session.session_epoch.get());
+                           log_scope, m_session_epoch.get(), binding.session_epoch.get());
             clear_generation_bound_state("authoritative session epoch advanced");
         }
 
-        m_session_epoch = session.session_epoch;
+        m_session_epoch = binding.session_epoch;
         m_has_seen_session_epoch = true;
         m_height_tracker.set_session_epoch(m_session_epoch);
     }
 
-    if (m_authenticated != session.authenticated) {
-        m_authenticated = session.authenticated;
+    if (m_authenticated != binding.authenticated) {
+        m_authenticated = binding.authenticated;
     }
 
-    m_session_id = session.session_id;
+    m_session_id = binding.session_id;
+    m_cached_identity = binding.identity;
 
-    // Sync canonical identity
-    m_cached_identity = m_session_context->get_canonical_identity();
-
-    if (session.authenticated && !session.session_id.is_default()) {
+    if (binding.authenticated && !binding.session_id.is_default()) {
         propagate_session_to_template_interface(log_scope);
     }
 
-    m_reward_bound = session.reward_bound;
+    m_reward_bound = binding.reward_bound;
 
     if (m_protocol_lane == ProtocolLane::UNKNOWN &&
-        session.active_lane != ProtocolLane::UNKNOWN) {
-        m_protocol_lane = session.active_lane;
+        binding.active_lane != ProtocolLane::UNKNOWN) {
+        m_protocol_lane = binding.active_lane;
     }
 }
 
@@ -690,8 +684,8 @@ SessionOwnershipStamp Solo::capture_session_ownership() const
         return {};
     }
 
-    const auto session = m_session_context->get_runtime_snapshot();
-    return { SessionId(session.session_id), SessionEpoch(session.session_epoch) };
+    const auto binding = m_session_context->get_session_binding();
+    return { binding.session_id, binding.session_epoch };
 }
 
 SubmitContext Solo::capture_submit_context(uint32_t template_height,
@@ -705,10 +699,10 @@ SubmitContext Solo::capture_submit_context(uint32_t template_height,
         return context;
     }
 
-    const auto session = m_session_context->get_runtime_snapshot();
-    context.session_id = SessionId(session.session_id);
-    context.session_epoch = SessionEpoch(session.session_epoch);
-    context.identity = m_session_context->get_canonical_identity();
+    const auto binding = m_session_context->get_session_binding();
+    context.session_id = binding.session_id;
+    context.session_epoch = binding.session_epoch;
+    context.identity = binding.identity;
     return context;
 }
 
@@ -968,15 +962,15 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
 
     std::string validation_reason;
     const bool session_valid = m_session_context->validate_miner_session(&validation_reason);
-    const auto session = m_session_context->get_runtime_snapshot();
+    const auto binding = m_session_context->get_session_binding();
     const SessionEpoch owner_epoch     = options.owner ? options.owner->session_epoch : SessionEpoch{};
     const SessionId owner_session_id = options.owner ? options.owner->session_id : SessionId{};
     const auto decision = PacketIngressPreflight::evaluate({
         true,
-        session.authenticated,
-        session.session_id,
-        session.session_epoch,
-        session.active_lane,
+        binding.authenticated,
+        binding.session_id,
+        binding.session_epoch,
+        binding.active_lane,
         m_protocol_lane,
         options.validate_lane,
         options.allow_without_active_session,
@@ -1147,8 +1141,8 @@ bool Solo::validate_authoritative_session(const char* log_scope, bool require_re
         return false;
     }
 
-    const auto session = m_session_context->get_runtime_snapshot();
-    if (require_reward_binding && !session.reward_address.empty() && !session.reward_bound) {
+    const auto binding = m_session_context->get_session_binding();
+    if (require_reward_binding && !binding.reward_address.empty() && !binding.reward_bound) {
         m_logger->error("[{}] Authoritative miner session container requires reward binding before continuing", log_scope);
         m_logger->error("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
         return false;
@@ -1733,12 +1727,12 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         return network::Shared_payload{};
     }
 
-    const auto session = m_session_context ? m_session_context->get_runtime_snapshot()
-                                           : SessionManager::SessionInfo{};
-    const auto& submit_session_key = session.chacha20_session_key;
+    const auto binding = m_session_context ? m_session_context->get_session_binding()
+                                           : SessionBinding{};
+    const auto& submit_session_key = binding.chacha20_session_key;
 
     // Use the authoritative session key from the session container.
-    if (!session.chacha20_ready || submit_session_key.empty()) {
+    if (!binding.has_crypto_context()) {
         m_logger->critical("[Solo Submit] CRITICAL: authoritative session.chacha20_session_key is not ready");
         return network::Shared_payload{};
     }
@@ -4620,10 +4614,10 @@ network::Shared_payload Solo::send_set_reward()
                             reward_readiness.reason);
             return nullptr;
         }
-        const auto session = m_session_context ? m_session_context->get_runtime_snapshot()
-                                               : SessionManager::SessionInfo{};
-        const auto& reward_session_key = session.chacha20_session_key;
-        if (!session.chacha20_ready || reward_session_key.empty()) {
+        const auto binding = m_session_context ? m_session_context->get_session_binding()
+                                               : SessionBinding{};
+        const auto& reward_session_key = binding.chacha20_session_key;
+        if (!binding.has_crypto_context()) {
             m_logger->error("[Solo Reward] Cannot send MINER_SET_REWARD: authoritative session key is not ready");
             return nullptr;
         }

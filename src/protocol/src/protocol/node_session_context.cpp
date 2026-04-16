@@ -438,6 +438,14 @@ SessionIdentity NodeSessionContext::get_canonical_identity() const
     return SessionIdentity{};
 }
 
+SessionBinding NodeSessionContext::get_session_binding() const
+{
+    if (m_session_manager) {
+        return m_session_manager->get_session_binding();
+    }
+    return SessionBinding{};
+}
+
 void NodeSessionContext::set_session_expired_handler(SessionManager::SessionExpiredHandler handler)
 {
     if (m_session_manager) {

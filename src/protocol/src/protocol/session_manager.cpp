@@ -461,6 +461,11 @@ void SessionManager::mark_session_expired(const std::string& reason)
         notify = (m_session.state != SessionState::DEGRADED);
         m_session.state = SessionState::DEGRADED;
         m_session.authenticated = false;
+        m_session.falcon_authenticated = false;
+        m_session.session_key.clear();
+        m_session.chacha20_session_key.clear();
+        m_session.chacha20_key_fingerprint = SessionFingerprint{};
+        m_session.chacha20_ready = false;
         m_session.expiry_state = ExpiryState::EXPIRED_ACCEPTED;
         m_session.expiry_reason = reason;
         m_session.recovery_state = RecoveryState::FORCED_REAUTH;
@@ -1031,6 +1036,32 @@ SessionIdentity SessionManager::get_canonical_identity() const
 {
     SessionReadLock lock(m_session_mutex);
     return m_canonical_identity;
+}
+
+SessionBinding SessionManager::get_session_binding() const
+{
+    SessionReadLock lock(m_session_mutex);
+
+    SessionBinding binding;
+    binding.session_id = m_session.session_id;
+    binding.session_epoch = m_session.session_epoch;
+    binding.session_genesis = m_session.session_genesis;
+    binding.falcon_key_id = m_session.falcon_key_id;
+    binding.chacha20_session_key = m_session.chacha20_session_key;
+    binding.chacha20_key_fingerprint = m_session.chacha20_key_fingerprint;
+    binding.active_lane = m_session.active_lane;
+    binding.authenticated = m_session.authenticated;
+    binding.chacha20_ready = m_session.chacha20_ready;
+    binding.reward_address = !m_session.reward_address.empty()
+                                 ? m_session.reward_address
+                                 : m_session.reward_address_string;
+    binding.reward_hash = m_session.reward_hash;
+    binding.reward_bound = m_session.reward_bound;
+    binding.channel = m_session.channel;
+    binding.ready_for_submit = m_session.ready_for_submit;
+    binding.ready_for_get_block = m_session.ready_for_get_block;
+    binding.identity = m_canonical_identity;
+    return binding;
 }
 
 std::chrono::seconds SessionManager::get_session_uptime_locked() const

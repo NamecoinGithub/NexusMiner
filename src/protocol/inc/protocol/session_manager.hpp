@@ -16,6 +16,7 @@
 #include "asio/io_context.hpp"
 #include "asio/steady_timer.hpp"
 #include "network/types.hpp"
+#include "protocol/session_binding.hpp"
 #include "protocol/session_semantic_types.hpp"
 #include "protocol/session_identity.hpp"
 #include "protocol_lane.hpp"
@@ -277,6 +278,7 @@ public:
     SessionInfo get_session_info() const;
     RuntimeSessionSnapshot get_runtime_snapshot() const;
     SessionIdentity get_canonical_identity() const;
+    SessionBinding get_session_binding() const;
     std::chrono::seconds get_session_uptime() const;
     std::vector<uint8_t> get_session_key() const;
     SessionGenesisHash get_typed_tritium_genesis() const;

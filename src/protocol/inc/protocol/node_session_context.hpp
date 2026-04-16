@@ -3,6 +3,7 @@
 
 #include "protocol/session_manager.hpp"
 #include "protocol/protocol_constants.hpp"
+#include "protocol/session_binding.hpp"
 #include "protocol_lane.hpp"
 #include <memory>
 #include <functional>
@@ -314,6 +315,7 @@ public:
      * @return SessionIdentity (value copy, safe for cross-thread use)
      */
     SessionIdentity get_canonical_identity() const;
+    SessionBinding get_session_binding() const;
 
     /**
      * @brief Get the underlying SessionManager (for advanced use cases)
