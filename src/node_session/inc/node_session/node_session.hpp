@@ -380,16 +380,16 @@ private:
     void connect_secondary(const network::Endpoint& node_endpoint);
 
     /**
-     * @brief Process data received on primary connection
-     * @param receive_buffer Received data
+     * @brief Process data received on a lane connection (primary or secondary)
+     *
+     * Unified RX processing: accumulates bytes, extracts framed packets using
+     * the connection's protocol lane, applies one-byte resync on malformed frames,
+     * and dispatches to the lane's Solo protocol instance.
+     *
+     * @param slot  Which lane (Primary or Secondary)
+     * @param receive_buffer  Received data
      */
-    void process_primary_data(network::Shared_payload&& receive_buffer);
-
-    /**
-     * @brief Process data received on secondary connection
-     * @param receive_buffer Received data
-     */
-    void process_secondary_data(network::Shared_payload&& receive_buffer);
+    void process_lane_data(LaneSlot slot, network::Shared_payload&& receive_buffer);
 
     // Core components
     std::shared_ptr<asio::io_context> m_io_context;
