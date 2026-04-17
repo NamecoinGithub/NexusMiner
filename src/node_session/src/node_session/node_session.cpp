@@ -510,19 +510,43 @@ void NodeSession::process_lane_data(LaneSlot slot, network::Shared_payload&& rec
             break;
         }
         if (parse_result == ParseResult::MALFORMED) {
-            m_logger->error("[NodeSession:{}] Malformed packet on {} connection",
-                            m_node_label, descriptor.label);
+            const bool is_zero_pad_byte = !accumulator.empty() && accumulator.front() == 0x00;
+            const auto now = std::chrono::steady_clock::now();
+            const bool in_post_accept_window =
+                (m_last_block_result_parsed_at != std::chrono::steady_clock::time_point{}) &&
+                ((now - m_last_block_result_parsed_at) <= POST_ACCEPT_ZERO_PAD_WINDOW);
+            const bool benign_zero_pad = is_zero_pad_byte && in_post_accept_window;
+
+            if (benign_zero_pad) {
+                m_logger->debug("[NodeSession:{}] Malformed byte on {} (reason=post_accept_zero_pad) — absorbing",
+                                m_node_label, descriptor.label);
+            } else {
+                m_logger->error("[NodeSession:{}] Malformed packet on {} connection",
+                                m_node_label, descriptor.label);
+            }
             if (!accumulator.empty()) {
                 accumulator.pop_front();
-                m_logger->warn("[NodeSession:{}] Dropped 1 byte from {} RX accumulator for resync "
-                               "({} bytes remain)",
-                               m_node_label, descriptor.label, accumulator.size());
+                if (benign_zero_pad) {
+                    m_logger->debug("[NodeSession:{}] Absorbed 1 zero-pad byte post-accept on {} ({} bytes remain)",
+                                    m_node_label, descriptor.label, accumulator.size());
+                } else {
+                    m_logger->warn("[NodeSession:{}] Dropped 1 byte from {} RX accumulator for resync "
+                                   "({} bytes remain)",
+                                   m_node_label, descriptor.label, accumulator.size());
+                }
                 continue;
             }
             break;
         }
 
         accumulator.erase(accumulator.begin(), accumulator.begin() + bytes_consumed);
+        // Stamp the post-accept window so that any residual zero-pad bytes from node
+        // builds that still use the bare 2-byte form (no length field) are absorbed
+        // at DEBUG level rather than ERROR/WARN.
+        if (packet.m_header == LLP::StatelessMining::BLOCK_ACCEPTED ||
+            packet.m_header == LLP::StatelessMining::BLOCK_REJECTED) {
+            m_last_block_result_parsed_at = std::chrono::steady_clock::now();
+        }
         protocol->process_messages(packet, connection);
     }
 }

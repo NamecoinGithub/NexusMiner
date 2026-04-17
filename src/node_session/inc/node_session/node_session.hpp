@@ -16,6 +16,7 @@
 #include <string>
 #include <functional>
 #include <atomic>
+#include <chrono>
 #include <deque>
 
 namespace asio { class io_context; }
@@ -440,6 +441,15 @@ private:
 
     // Lane health tracking
     DualConnectionManager* m_dcm{nullptr};
+
+    // Post-accept zero-pad window: after a BLOCK_ACCEPTED/BLOCK_REJECTED parse the
+    // node (LLL-TAO commit 206d1a2c) emits a 6-byte framed packet; Fix A routes these
+    // through the compat parser so no orphan bytes remain.  This state machine is the
+    // belt-and-braces safety net: if a future or older node build ever leaves zero
+    // padding in the RX accumulator, the MALFORMED logs are demoted to DEBUG instead
+    // of ERROR/WARN, since the bytes are harmless.
+    std::chrono::steady_clock::time_point m_last_block_result_parsed_at{};
+    static constexpr std::chrono::milliseconds POST_ACCEPT_ZERO_PAD_WINDOW{10};
 };
 
 } // namespace nexusminer
