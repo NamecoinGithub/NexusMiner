@@ -107,11 +107,20 @@ namespace nexusminer
 			// Their un-mirrored byte (0xE0, 0xE1) falls in the legacy header-only catch-all range,
 			// so we must short-circuit before calling is_legacy_header_only_opcode.
 			if (::LLP::IsUnmirroredDataOpcode(opcode)) return false;
+			// Some node builds emit compat submit-result opcodes as bare 2-byte stateless headers
+			// instead of a 2-byte header followed by a zero-length frame.
+			if (opcode == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT ||
+			    opcode == LLP::StatelessMining::BLOCK_REJECTED_COMPAT) return true;
 			// GET_BLOCK (0xD081) is ALWAYS data-bearing on stateless lane (228-byte template push)
 			// Legacy GET_BLOCK (129) is header-only request, but stateless repurposes it for push
 			if (opcode == LLP::StatelessMining::GET_BLOCK) return false;
 			uint8_t legacy = LLP::UnmirrorOpcode(opcode);
 			return is_legacy_header_only_opcode(legacy);
+		}
+
+		inline bool is_stateless_zero_payload_compat_opcode(uint16_t opcode) {
+			return opcode == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT ||
+			       opcode == LLP::StatelessMining::BLOCK_REJECTED_COMPAT;
 		}
 	}
 	
@@ -1102,6 +1111,45 @@ namespace nexusminer
 				return packet;
 			}
 			
+			// Special-case compat submit-result opcodes that some node builds emit either
+			// as bare 2-byte headers or as explicit zero/one-length stateless frames.
+			// Prefer the explicit framed form when it is fully present in the buffer;
+			// otherwise accept the bare header form so adjacent packets are not misframed.
+			if (is_valid_stateless && PacketConstants::is_stateless_zero_payload_compat_opcode(header16))
+			{
+				if (buffer_size >= MIN_PACKET_SIZE)
+				{
+					std::uint32_t const compat_length = read_be32(buffer->data() + start_index + 2);
+					if (compat_length == 0 ||
+					    (header16 == LLP::StatelessMining::BLOCK_REJECTED_COMPAT && compat_length == 1))
+					{
+						std::size_t const compat_packet_size = MIN_PACKET_SIZE + compat_length;
+						if (buffer_size < compat_packet_size)
+						{
+							result = ParseResult::NEED_MORE_DATA;
+							return packet;
+						}
+
+						packet.m_is_valid = true;
+						packet.m_length = compat_length;
+						if (compat_length > 0)
+						{
+							packet.m_data = std::make_shared<network::Payload>(
+								buffer_start + MIN_PACKET_SIZE, buffer_start + compat_packet_size);
+						}
+						bytes_consumed = compat_packet_size;
+						result = ParseResult::SUCCESS;
+						return packet;
+					}
+				}
+
+				packet.m_is_valid = true;
+				packet.m_length = 0;
+				bytes_consumed = HEADER_SIZE;
+				result = ParseResult::SUCCESS;
+				return packet;
+			}
+
 			// Check if this opcode is header-only (no length field follows)
 			// Un-mirrored data opcodes are always data-bearing (never header-only)
 			if (is_valid_stateless && PacketConstants::is_stateless_header_only_opcode(header16))

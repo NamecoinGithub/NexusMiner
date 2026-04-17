@@ -1,273 +1,113 @@
-# SIM Link — Dual-Server Architecture
+# SIM Link — Lane Health and Same-Lane Recovery
 
-NexusMiner's **SIM Link** feature maintains **two simultaneous TCP connections** to the same
-Nexus node — one on the **Stateless lane (port 9323)** and one on the **Legacy lane (port 8323)**
-— providing redundant template delivery, cross-lane failover, and one-shot bypass for the
-GET_BLOCK rate limiter.
+`sim_link` no longer means “open two live mining lanes to the same node”.
 
----
+The current model is:
 
-## Architecture
-
-```
-                     ┌─────────────────────────────────┐
-                     │          NexusMiner              │
-                     │                                  │
-                     │  ┌───────────────────────────┐  │
-                     │  │      Worker_manager        │  │
-                     │  │                            │  │
-                     │  │  Primary connection        │  │──── TCP :9323 (Stateless)
-                     │  │  (Solo protocol, push)     │  │
-                     │  │                            │  │
-                     │  │  Secondary connection      │  │──── TCP :8323 (Legacy)
-                     │  │  (Solo protocol, polling)  │  │
-                     │  │                            │  │
-                     │  │  DualConnectionManager     │  │
-                     │  │  (lane bookkeeper)         │  │
-                     │  │                            │  │
-                     │  │  ColinAgent                │  │
-                     │  │  (periodic diagnostics)    │  │
-                     │  └───────────────────────────┘  │
-                     │                                  │
-                     │  ┌───────────────────────────┐  │
-                     │  │       Worker pool          │  │
-                     │  │  (shared by both lanes)    │  │
-                     │  └───────────────────────────┘  │
-                     └─────────────────────────────────┘
-```
+- **One configured node + one configured lane per active `NodeSession`**
+- **Reconnect/re-auth stay on that same configured lane**
+- **Optional second node is failover only**
+- **`DualConnectionManager` (DCM) is lane-health bookkeeping, not dual-live-lane mining**
 
 ---
 
-## Components
+## Current Architecture
 
-### DualConnectionManager (bookkeeper)
+```
+                 ┌─────────────────────────────────┐
+                 │          NexusMiner             │
+                 │                                 │
+                 │  Worker_manager                 │
+                 │   ├─ NodeSession (active node)  │── TCP to configured port
+                 │   ├─ DualConnectionManager      │   (8323 or 9323)
+                 │   └─ ColinAgent                 │
+                 │                                 │
+                 │  Worker pool                    │
+                 └─────────────────────────────────┘
+```
 
-`DualConnectionManager` is a lightweight value member of `Worker_manager` that tracks:
+If failover is configured, `Worker_manager` switches the **node endpoint** after repeated
+primary failures, but it keeps the **same mining lane/port**.
 
-- **Lane liveness** — whether the stateless and/or legacy lanes are currently up
-- **Mining lane** — the protocol lane the miner was configured to mine on; stamped once
-  by `NodeSession::connect_primary()` on first connection (guarded by
-  `mining_lane() == ProtocolLane::UNKNOWN`) and **never changed** for the session
-  lifetime — not during reconnection, not during failover
-- **One-shot bypass flags** — armed when a lane fails, consumed on the first GET_BLOCK
-  sent on that **same lane** when it reconnects (allows immediate recovery without
-  triggering the node's rate limiter)
+---
 
-When a lane fails, `on_lane_failed()` marks it dead and arms a bypass on the **same
-lane** — NOT the opposite lane.  Recovery always stays on the lane that failed.
+## Recovery Model
 
-### Recovery Model
+Lane selection is immutable for a session lifetime.
 
-The miner's protocol lane is determined at initial connection time by port and **never
-changes**.  All recovery operations (template refresh, reconnection, failover) happen on
-the same protocol lane.  The only thing that changes during failover is the NODE endpoint.
+1. **Initial connect**
+   - `NodeSession::connect(..., callback)` targets the lane selected by TOML config.
+   - The callback means the session is **fully authenticated and ready for session-bound mining flow**.
 
-1. **Primary retry** — Retry on the **same** protocol lane (same port, same node) up to
-   the configured retry limit.
-2. **Failover** — If primary retry exhausts, connect to the **failover node** on the
-   **same** protocol lane (same port type) and perform a **full RE-AUTH sequence**:
-   - TCP connect to failover node's matching port (primary was 9323 → failover is also
-     9323; primary was 8323 → failover is also 8323)
-   - Send `MINER_AUTH_INIT` with full Falcon public key (unencrypted Tritium genesis)
-   - Receive `MINER_AUTH_CHALLENGE`
-   - Send `MINER_AUTH_RESPONSE` (Falcon signature)
-   - Receive `MINER_AUTH_RESULT` with new session ID
-   - All subsequent communication is ChaCha20-encrypted
-   - Send `STATELESS_MINER_READY` / `MINER_READY` to subscribe to push notifications
+2. **Reconnect on the same node**
+   - Retry the same endpoint/lane.
+   - Re-authenticate on that same lane.
 
-**The miner must NEVER cross from Stateless→Legacy or Legacy→Stateless during recovery
-or failover.**
+3. **Failover to a second node**
+   - Switch only the node IP/host.
+   - Keep the same lane/port as the primary session.
+   - Perform a fresh full Falcon authentication handshake and obtain a new session ID.
 
-### Worker_manager SIM Link wiring
+The miner must **not** switch from Stateless→Legacy or Legacy→Stateless during reconnect or failover.
 
-- `connect()` establishes the **primary** connection (stateless, port 9323 by default)
-- `connect_secondary()` opens the **secondary** connection (legacy, port 8323) using the
-  same Falcon keys and configuration as the primary, but an independent protocol instance
-- Both connections share the same `Worker` pool — workers mine on whichever template
-  arrives last (the node pushes identical templates on both ports)
-- `submit_solution()` tries the primary connection first and falls back to the secondary
-  within 100 ms if the primary is unavailable
+---
 
-### Heartbeat / Keepalive
+## What `sim_link` Means Now
 
-Both lanes use **`SessionManager::start_keepalive_timer()`** as the sole heartbeat driver.
-The former bare `Packet::PING` timer has been removed because it carried no payload and
-conveyed no height data to the node.
+`sim_link` is retained for compatibility with the existing lane-health / diagnostics plumbing.
+It does **not** imply dual live same-node template delivery.
 
-| Property | Value |
-|----------|-------|
-| Timer owner | `SessionManager::start_keepalive_timer()` |
-| Interval | 170 seconds |
-| Packet type | `SESSION_KEEPALIVE` |
-| Miner → Node payload | 8 bytes: `session_id (4 LE)` + `hashPrevBlock_lo32 (4 BE)` |
-| Node → Miner reply | 32 bytes: `unified_height`, `prime_height`, `hash_height`, `stake_height`, `hash_tip_lo32`, `fork_score` |
-| Height ingestion point | `HeightTracker::OnKeepaliveResponse()` (both lanes) |
+Today it mainly means:
 
-### SESSION_STATUS — Lane Health Query
+- enable the existing lane-health bookkeeping paths
+- preserve DCM/diagnostic reporting hooks
+- keep reconnect/re-auth policy aligned with the configured primary lane
 
-In addition to `SESSION_KEEPALIVE`, the miner periodically sends a `SESSION_STATUS` request
-(opcode 219 / `0xD0DB`) on each live lane to query the node's view of lane and session health.
-The node responds with `SESSION_STATUS_ACK` (opcode 220 / `0xD0DC`) carrying 16 bytes of
-lane health state.
+---
 
-| Property | Value |
-|----------|-------|
-| Opcode (legacy) | 219 (`0xDB`) |
-| Opcode (stateless) | `0xD0DB` |
-| Direction | miner → node |
-| Request payload | 8 bytes: `session_id (4 LE)` + `status_flags (4 BE)` |
-| ACK opcode (legacy) | 220 (`0xDC`) |
-| ACK opcode (stateless) | `0xD0DC` |
-| ACK payload | 16 bytes: `session_id (4 LE)` + `lane_health_flags (4 BE)` + `uptime_seconds (4 BE)` + `status_echo_flags (4 BE)` |
-| Send interval | 300 seconds (piggybacked on lane-health-check timer) |
-| Code location | `Worker_manager::send_session_status_if_due()` |
+## DualConnectionManager (DCM)
 
-**Lane health flags** (ACK bytes `[4-7]`):
-- bit 0 (`0x01`): stateless (primary) lane alive
-- bit 1 (`0x02`): legacy (secondary) lane alive
-- bit 2 (`0x04`): SIM Link dual-lane active
-- bit 3 (`0x08`): session authenticated
+`DualConnectionManager` remains a lightweight bookkeeper for lane state:
 
-**Miner status flags** (request bytes `[4-7]` and ACK echo `[12-15]`):
-- bit 0 (`0x01`): miner degraded mode active
-- bit 1 (`0x02`): miner has valid template
-- bit 2 (`0x04`): workers running
-- bit 3 (`0x08`): secondary lane connected
+- which protocol lane is the miner’s configured mining lane
+- whether a lane should be treated as alive/dead for diagnostics
+- one-shot bypass flags used on same-lane recovery paths
 
-The send interval is hardcoded to 300 seconds, piggybacked on the existing lane-health-check timer (every 30 s) with an internal 300-second gate. Future releases may expose this as a config option:
+DCM does **not** change the miner into dual-live-lane mode.
+
+---
+
+## Failover Rules
+
+- `failover_wallet_ip = ""` disables failover
+- `failover_port = 0` means “use the same port as the configured primary lane”
+- if a mismatched failover port is configured, NexusMiner pins failover back to the primary lane/port
+
+That keeps reconnect and failover semantics simple:
+
+- **same node** → same lane, re-auth
+- **different node** → same lane, full fresh auth
+
+---
+
+## Configuration
+
 ```toml
+[wallet]
+ip = "127.0.0.1"
+port = 9323
+failover_wallet_ip = "127.0.0.2"   # optional second node
+failover_port = 0                  # 0 = same lane/port as primary
+
 [network]
-session_status_interval_seconds = 300  # Planned: How often to send SESSION_STATUS queries
-```
-
-### GET_BLOCK Rate Limiter
-
-| Setting | Value | Notes |
-|---------|-------|-------|
-| `get_block_interval_ms` | 2000 ms (default) | Miner-side guard — matches node's 2-second AutoCoolDown |
-| Node AutoCoolDown | 2 s | Node's rate-limit floor (GET_BLOCK_COOLDOWN_SECONDS) |
-| Node minimum (LLL-TAO) | 2000 ms | Node's authoritative floor (unchanged) |
-| One-shot bypass | immediate | Armed by tip_moved/recovery paths |
-
-Configure in `miner.conf`:
-```toml
-[network]
-get_block_interval_ms = 2000   # Matches node's 2-second AutoCoolDown (GET_BLOCK_COOLDOWN_SECONDS)
-```
-
-### Colin — Diagnostic Agent
-
-Colin (`ColinAgent`) is a periodic background task that monitors:
-- Lane health (stateless + legacy)
-- Block accept/reject counters
-- Connection retry counts
-- Degraded mode (workers stopped)
-
-Colin prints a structured diagnostic report every 60 seconds (configurable):
-
-```
-╔══════════════════════════════════════════════════════════════╗
-║  COLIN DIAGNOSTIC REPORT  [2026-02-25 10:17:01]            ║
-╠══════════════════════════════════════════════════════════════╣
-║  PRIMARY   (stateless:9323) ✅ HEALTHY                      ║
-║  SECONDARY (legacy:8323)    ✅ HEALTHY                      ║
-╠══════════════════════════════════════════════════════════════╣
-║  BLOCKS    Accepted: 0  Rejected: 0  Retries: 0             ║
-╚══════════════════════════════════════════════════════════════╝
-```
-
-#### Worker-Feed Dedup Guard
-
-When SIM Link is active both the primary lane (push notification via `SendChannelNotification`)
-and the secondary lane (GET_BLOCK response) can deliver a template for the **same block** almost
-simultaneously. Without protection this causes every worker to be restarted mid-sieve by the
-second arrival — wasting solved sieves and increasing block-submission latency.
-
-**What it is:** Template feed debounce is now handled in `MiningTemplateInterface` (unified
-dedup gate). The `Worker_manager::set_block_handler` callback is only called after the
-template passes the debounce check, so no additional per-worker checking is needed.
-
-**Dedup key:** `(channel_height, hashPrevBlock)` pair inside `MiningTemplateInterface`.
-Both fields must match for a template to be considered a duplicate. This means genuine forks at
-the same height (different `hashPrevBlock`) are **always** passed through — the dedup guard never
-suppresses a real chain fork.
-
-**Invariant:** A duplicate template arriving after the debounce window has expired is treated as
-a new template and passed through. This ensures stale-recovery paths are never silently skipped.
-
-**Related:** The LLL-TAO node fix for the dual `SendChannelNotification` race is tracked in
-LLL-TAO PRs #324 / #325. The miner-side dedup guard provides defence-in-depth regardless of
-whether the node fix is deployed.
-
-**Configuration:** None required. The guard is always active and requires no operator tuning.
-
-| Property | Value |
-|----------|-------|
-| Dedup key | `(height, hashPrevBlock)` pair |
-| Fork protection | Same height, different `hashPrevBlock` → NOT suppressed |
-| Code location | `MiningTemplateInterface` unified dedup gate |
-
-#### Warning Catalog
-
-| Pattern | Warning | Recommendation |
-|---------|---------|----------------|
-| `BASE IS NOT PRIME` | Node PrimeCheck rejected hashPrime base | Verify nNonce LE encoding (PR #180) |
-| `MALFORMED PACKET DETECTED` | Likely node sent null BLOCK_DATA | Check node `new_block()` retry (PR #283) |
-| `BLOCK REJECTED reason=NONE` | Stale block / nonce doesn't meet difficulty | Check `is_template_stale()` path |
-| `NO OFFSETS FOUND` | Cunningham chain vOffsets empty | Base not prime — chain search failed |
-| Connection retries > 100 | Connection instability | Check network / node restart |
-| Template age > 150 s | Approaching emergency timeout | Verify push notifications working |
-| `MINING STOPPED` | Workers in degraded mode | Check template delivery path |
-| TipSync mismatch | Miner may be on a stale or forked tip | Watch for next keepalive ACK update; check node chain sync |
-| No SESSION_STATUS_ACK for > 120s | Node may have dropped session or lane is silent | Check keepalive path; consider reconnect |
-
-Configure Colin in `miner.conf`:
-```toml
-[colin]
-enabled = true
-report_interval_seconds = 60
+sim_link = true
 ```
 
 ---
 
-## Configuration Reference
+## Summary
 
-```toml
-[network]
-sim_link = true                # Enable dual-lane simultaneous connections (default: true)
-get_block_interval_ms = 2000   # Miner-side GET_BLOCK rate limit in milliseconds
-
-[colin]
-enabled = true                 # Enable Colin diagnostic agent (default: true)
-report_interval_seconds = 60   # Diagnostic report cadence in seconds
-```
-
----
-
-## Lane Semantics
-
-| Property | Stateless (9323) | Legacy (8323) |
-|----------|-----------------|---------------|
-| Header | 16-bit | 8-bit |
-| Template delivery | Push-driven (low latency) | Polling (GET_ROUND) |
-| Block submission | Preferred (session context) | Fallback if primary down |
-| Recovery | Retry on same lane (9323); failover to new node on same lane | Retry on same lane (8323); failover to new node on same lane |
-| Cross-lane recovery | **NEVER** — lanes are never crossed | **NEVER** — lanes are never crossed |
-
----
-
-## Backward Compatibility
-
-When `sim_link = false`, the miner behaves exactly like the pre-SIM-Link single-connection
-mode. Colin can also run in single-connection mode (it simply reports only the primary lane).
-
----
-
-## Related PRs
-
-| PR | Feature |
-|----|---------|
-| #180 | Little-endian nNonce serialization fix |
-| #181 | MALFORMED recovery + exponential backoff |
-| #182 | Prime channel workers not halting on Hash blocks |
-| #185 | `send_get_round()` lane aliasing + `send_recovery_work_request()` |
+- **Primary** = one configured node/lane
+- **Reconnect** = same node, same lane, re-auth
+- **Secondary/failover** = different node, same lane, fresh auth
+- **No live same-node opposite-lane mining session by default**

@@ -154,9 +154,11 @@ namespace nexusminer
 			return;
 		}
 
+		// NodeSession now stays on the configured primary node/lane.
+		// Optional secondary-node failover is handled by Worker_manager retry logic.
 		if (m_config.get_enable_sim_link())
 		{
-			m_logger->warn("[SIM Link] sim_link is configured but cross-lane fallback is disabled; failover requires a secondary node endpoint with full re-authentication");
+			m_logger->info("[SIM Link] ENABLED — reconnect/re-auth stays on the configured primary lane");
 		}
 		else
 		{

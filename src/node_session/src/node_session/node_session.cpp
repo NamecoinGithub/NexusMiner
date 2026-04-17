@@ -10,6 +10,22 @@
 
 namespace nexusminer {
 
+namespace {
+
+const char* lane_name(ProtocolLane lane)
+{
+    switch (lane) {
+    case ProtocolLane::STATELESS:
+        return "STATELESS";
+    case ProtocolLane::LEGACY:
+        return "LEGACY";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+} // namespace
+
 NodeSession::NodeSession(
     std::shared_ptr<asio::io_context> io_context,
     Config& config,
@@ -37,11 +53,8 @@ NodeSession::NodeSession(
     // Wrap session manager in NodeSessionContext (AUTHORITATIVE session state)
     m_session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
 
-    // Create primary protocol instance (Stateless lane, port 9323)
-    // Channel is determined by mining mode (1=Prime, 2=Hash)
-    // Pass shared NodeSessionContext so primary and secondary protocols share session state
-    const uint8_t channel = mining_channel();
-    m_primary_protocol = create_protocol(Session_lane::Primary);
+    uint8_t channel = (m_config.get_mining_mode() == config::Mining_mode::PRIME) ? 1U : 2U;
+    ensure_protocol(LaneSlot::Primary);
 
     m_logger->info("[NodeSession:{}] Initialized with channel {}", m_node_label, channel);
 }
@@ -56,30 +69,18 @@ bool NodeSession::connect(const network::Endpoint& node_endpoint, Connection_cal
     m_logger->info("[NodeSession:{}] Connecting to node at {}",
                    m_node_label, node_endpoint.to_string());
 
-    // Start with primary connection (stateless port)
-    connect_primary(node_endpoint, std::move(callback));
+    m_pending_connect_callback = std::move(callback);
+
+    // Start with the configured primary lane.
+    connect_primary(node_endpoint);
 
     return true;
 }
 
-void NodeSession::connect_primary(const network::Endpoint& node_endpoint, Connection_callback callback)
+void NodeSession::connect_primary(const network::Endpoint& node_endpoint)
 {
-    auto weak_self = std::weak_ptr<NodeSession>(shared_from_this());
-
-    auto connection_callback = [weak_self, callback, node_endpoint](auto result, auto receive_buffer) {
-        auto self = weak_self.lock();
-        if (!self) return;
-        self->handle_lane_event(Session_lane::Primary, node_endpoint, result,
-                                std::move(receive_buffer), callback);
-    };
-
-    // Initiate connection
-    auto connection = m_socket->connect(node_endpoint, connection_callback);
-    if (connection) {
-        m_primary_connection = std::move(connection);
-        m_primary_protocol->set_connection(m_primary_connection);
-        m_session_context->set_connection(m_primary_connection);
-    }
+    m_primary_requested_lane = determine_lane_from_port(node_endpoint.port());
+    connect_lane(LaneSlot::Primary, node_endpoint);
 }
 
 void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
@@ -88,108 +89,499 @@ void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
         return;
     }
 
-    m_logger->info("[NodeSession:{}] Connecting secondary (legacy) to {}",
-                   m_node_label, node_endpoint.to_string());
+    m_secondary_requested_lane = determine_lane_from_port(node_endpoint.port());
+    connect_lane(LaneSlot::Secondary, node_endpoint);
+}
 
-    // Create secondary protocol instance (Legacy lane, port 8323)
-    // Pass shared NodeSessionContext so it uses the same session state as primary
-    m_secondary_protocol = create_protocol(Session_lane::Secondary);
+NodeSession::LaneDescriptor NodeSession::lane(LaneSlot slot)
+{
+    if (slot == LaneSlot::Primary) {
+        return LaneDescriptor{
+            LaneSlot::Primary,
+            "Primary",
+            &m_primary_connection,
+            &m_primary_protocol,
+            &m_primary_connected,
+            &m_primary_requested_lane
+        };
+    }
 
-    auto weak_self = std::weak_ptr<NodeSession>(shared_from_this());
+    return LaneDescriptor{
+        LaneSlot::Secondary,
+        "Secondary",
+        &m_secondary_connection,
+        &m_secondary_protocol,
+        &m_secondary_connected,
+        &m_secondary_requested_lane
+    };
+}
 
-    auto connection_callback = [weak_self, node_endpoint](auto result, auto receive_buffer) {
-        auto self = weak_self.lock();
-        if (!self) return;
-        self->handle_lane_event(Session_lane::Secondary, node_endpoint, result,
-                                std::move(receive_buffer));
+ProtocolLane NodeSession::resolve_lane(LaneSlot slot) const
+{
+    switch (slot) {
+    case LaneSlot::Primary:
+        return m_primary_connection ? m_primary_connection->get_protocol_lane() : m_primary_requested_lane;
+    case LaneSlot::Secondary:
+        return m_secondary_connection ? m_secondary_connection->get_protocol_lane() : m_secondary_requested_lane;
+    }
+
+    return ProtocolLane::UNKNOWN;
+}
+
+std::shared_ptr<protocol::Solo> NodeSession::ensure_protocol(LaneSlot slot)
+{
+    auto descriptor = lane(slot);
+    if (!*descriptor.protocol) {
+        uint8_t channel = (m_config.get_mining_mode() == config::Mining_mode::PRIME) ? 1U : 2U;
+        *descriptor.protocol = std::make_shared<protocol::Solo>(channel, m_stats_collector, m_session_context);
+    }
+
+    sync_protocol_state(slot);
+    return *descriptor.protocol;
+}
+
+void NodeSession::sync_protocol_state(LaneSlot slot)
+{
+    auto descriptor = lane(slot);
+    auto protocol = *descriptor.protocol;
+    if (!protocol) {
+        return;
+    }
+
+    if (!m_miner_pubkey.empty() && !m_miner_privkey.empty()) {
+        protocol->set_miner_keys(m_miner_pubkey, m_miner_privkey);
+    }
+    if (!m_reward_address.empty()) {
+        protocol->set_reward_address(m_reward_address);
+    }
+    if (!m_tritium_genesis.empty()) {
+        protocol->set_tritium_genesis(m_tritium_genesis);
+    }
+    protocol->set_keepalive_interval(m_keepalive_interval_hours);
+    protocol->enable_chacha20_wrapping(true);
+    protocol->enable_disposable_falcon(true);
+    apply_protocol_handlers(slot);
+}
+
+void NodeSession::rewire_protocol_handlers()
+{
+    apply_protocol_handlers(LaneSlot::Primary);
+    apply_protocol_handlers(LaneSlot::Secondary);
+}
+
+void NodeSession::connect_lane(LaneSlot slot, const network::Endpoint& node_endpoint)
+{
+    auto descriptor = lane(slot);
+    ensure_protocol(slot);
+
+    m_logger->info("[NodeSession:{}] Connecting {} ({}) to {}",
+                   m_node_label,
+                   descriptor.label,
+                   lane_name(*descriptor.requested_lane),
+                   node_endpoint.to_string());
+
+    struct ConnectObservation {
+        bool saw_initial_result{false};
+        network::Result::Code result{network::Result::connection_ok};
     };
 
-    // Initiate secondary connection
-    auto connection = m_socket->connect(node_endpoint, connection_callback);
-    if (connection) {
-        m_secondary_connection = std::move(connection);
-        m_secondary_protocol->set_connection(m_secondary_connection);
+    auto observation = std::make_shared<ConnectObservation>();
+    auto weak_self = std::weak_ptr<NodeSession>(shared_from_this());
+    auto connection_callback = [weak_self, slot](auto result, auto receive_buffer) {
+        auto self = weak_self.lock();
+        if (!self) return;
+        self->handle_lane_event(slot, result, std::move(receive_buffer));
+    };
+
+    auto observed_callback = [connection_callback, observation](auto result, auto receive_buffer) mutable {
+        if (network::Result::category(result) == network::Result::Category::connection) {
+            observation->saw_initial_result = true;
+            observation->result = result;
+        }
+        connection_callback(result, std::move(receive_buffer));
+    };
+
+    auto connection = m_socket->connect(node_endpoint, observed_callback);
+    if (!connection) {
+        m_logger->error("[NodeSession:{}] {} connection setup returned null connection",
+                        m_node_label, descriptor.label);
+        mark_lane_socket_failed(slot);
+        return;
     }
+
+    if (observation->saw_initial_result &&
+        observation->result != network::Result::connection_ok) {
+        return;
+    }
+
+    *descriptor.connection = std::move(connection);
+    if (auto protocol = *descriptor.protocol) {
+        protocol->set_connection(*descriptor.connection);
+    }
+}
+
+void NodeSession::handle_lane_event(LaneSlot slot, network::Result::Code result,
+                                    network::Shared_payload&& receive_buffer)
+{
+    auto descriptor = lane(slot);
+
+    if (result == network::Result::connection_ok) {
+        if (!*descriptor.connection) {
+            ::asio::post(*m_io_context, [weak_self = std::weak_ptr<NodeSession>(shared_from_this()),
+                                         slot]() {
+                auto self = weak_self.lock();
+                if (!self) return;
+                self->finalize_lane_connection(slot, true);
+            });
+            return;
+        }
+
+        finalize_lane_connection(slot, false);
+        return;
+    }
+
+    if (result == network::Result::connection_declined ||
+        result == network::Result::connection_aborted ||
+        result == network::Result::connection_closed ||
+        result == network::Result::connection_error) {
+        if (slot == LaneSlot::Primary) {
+            m_logger->error("[NodeSession:{}] {} connection failed: {}",
+                            m_node_label, descriptor.label, static_cast<int>(result));
+        } else {
+            m_logger->warn("[NodeSession:{}] {} connection failed: {}",
+                           m_node_label, descriptor.label, static_cast<int>(result));
+        }
+        mark_lane_socket_failed(slot);
+        return;
+    }
+
+    if (slot == LaneSlot::Primary) {
+        process_primary_data(std::move(receive_buffer));
+    } else {
+        process_secondary_data(std::move(receive_buffer));
+    }
+}
+
+void NodeSession::finalize_lane_connection(LaneSlot slot, bool deferred)
+{
+    auto descriptor = lane(slot);
+    m_logger->info("[NodeSession:{}] {} connection established{}",
+                   m_node_label,
+                   descriptor.label,
+                   deferred ? " (deferred)" : "");
+    mark_lane_socket_connected(slot);
+    begin_lane_authentication(slot);
+}
+
+void NodeSession::complete_pending_connect(bool success)
+{
+    if (!m_pending_connect_callback) {
+        return;
+    }
+
+    auto callback = std::move(m_pending_connect_callback);
+    m_pending_connect_callback = {};
+    callback(success);
+}
+
+void NodeSession::mark_lane_socket_connected(LaneSlot slot)
+{
+    auto descriptor = lane(slot);
+    descriptor.connected->store(true);
+
+    auto lane_kind = resolve_lane(slot);
+    if (*descriptor.protocol) {
+        (*descriptor.protocol)->set_protocol_lane(lane_kind);
+    }
+
+    m_logger->info("[NodeSession:{}] {} lane: {}", m_node_label, descriptor.label, lane_name(lane_kind));
+
+    if (!m_dcm || lane_kind == ProtocolLane::UNKNOWN) {
+        return;
+    }
+
+    if (lane_kind == ProtocolLane::STATELESS) {
+        m_dcm->set_stateless_alive(true);
+    } else {
+        m_dcm->set_legacy_alive(true);
+    }
+
+    if (slot == LaneSlot::Primary && m_dcm->mining_lane() == ProtocolLane::UNKNOWN) {
+        m_dcm->set_mining_lane(lane_kind);
+        m_logger->info("[NodeSession:{}] Mining lane stamped: {} (immutable for session lifetime)",
+                       m_node_label, lane_name(lane_kind));
+    }
+
+    m_logger->info("[NodeSession:{}] {} socket connected → DualConnectionManager updated",
+                   m_node_label, descriptor.label);
+}
+
+void NodeSession::mark_lane_socket_failed(LaneSlot slot)
+{
+    auto descriptor = lane(slot);
+    descriptor.connected->store(false);
+
+    auto lane_kind = resolve_lane(slot);
+    if (m_dcm && lane_kind != ProtocolLane::UNKNOWN) {
+        m_dcm->on_lane_failed(lane_kind);
+        m_logger->warn("[NodeSession:{}] {} lane ({}) failed → DualConnectionManager updated",
+                       m_node_label, descriptor.label, lane_name(lane_kind));
+    }
+
+    if (slot == LaneSlot::Primary) {
+        complete_pending_connect(false);
+    }
+}
+
+void NodeSession::mark_lane_authenticated(LaneSlot slot, protocol::SessionId sid)
+{
+    if (sid.is_default()) {
+        if (slot == LaneSlot::Primary) {
+            complete_pending_connect(false);
+        }
+        return;
+    }
+
+    auto descriptor = lane(slot);
+    auto lane_kind = resolve_lane(slot);
+
+    if (m_dcm && lane_kind != ProtocolLane::UNKNOWN) {
+        if (lane_kind == ProtocolLane::STATELESS) {
+            m_dcm->set_stateless_alive(true);
+        } else {
+            m_dcm->set_legacy_alive(true);
+        }
+        m_logger->info("[NodeSession:{}] {} lane ({}) authenticated → DualConnectionManager updated",
+                       m_node_label, descriptor.label, lane_name(lane_kind));
+    }
+
+    if (slot == LaneSlot::Primary) {
+        complete_pending_connect(true);
+    }
+}
+
+bool NodeSession::begin_lane_authentication(LaneSlot slot)
+{
+    auto descriptor = lane(slot);
+    sync_protocol_state(slot);
+    auto connection = *descriptor.connection;
+    auto protocol = *descriptor.protocol;
+    if (!connection || !protocol) {
+        m_logger->error("[NodeSession:{}] {} authentication cannot start - lane not fully initialized",
+                        m_node_label, descriptor.label);
+        if (slot == LaneSlot::Primary) {
+            complete_pending_connect(false);
+        }
+        return false;
+    }
+
+    auto weak_self = std::weak_ptr<NodeSession>(shared_from_this());
+    auto auth_payload = protocol->login([weak_self, slot](bool login_result) {
+        auto self = weak_self.lock();
+        if (!self) return;
+
+        auto descriptor = self->lane(slot);
+        if (!login_result) {
+            self->m_logger->error("[NodeSession:{}] {} authentication failed",
+                                  self->m_node_label, descriptor.label);
+            if (slot == LaneSlot::Primary) {
+                self->complete_pending_connect(false);
+            }
+            return;
+        }
+    });
+
+    if (!auth_payload || auth_payload->empty()) {
+        m_logger->error("[NodeSession:{}] {} authentication payload generation failed",
+                        m_node_label, descriptor.label);
+        if (slot == LaneSlot::Primary) {
+            complete_pending_connect(false);
+        }
+        return false;
+    }
+
+    connection->transmit(auth_payload);
+    m_logger->info("[NodeSession:{}] {} authentication initiated", m_node_label, descriptor.label);
+
+    return true;
+}
+
+void NodeSession::apply_protocol_handlers(LaneSlot slot)
+{
+    auto descriptor = lane(slot);
+    auto protocol = *descriptor.protocol;
+    if (!protocol) {
+        return;
+    }
+
+    protocol->set_block_handler([this](const ::LLP::CBlock& block, uint32_t nBits) {
+        if (m_template_handler) {
+            m_template_handler(block, nBits);
+        }
+    });
+
+    protocol->set_block_accepted_handler(
+        [this](uint32_t height, uint1024_t hash_prev, uint32_t channel, uint64_t nonce) {
+            if (m_block_accepted_handler) {
+                m_block_accepted_handler(height, hash_prev, channel, nonce);
+            }
+        });
+
+    protocol->set_recovery_initiated_handler([this]() {
+        if (m_recovery_handler) {
+            m_recovery_handler();
+        }
+    });
+
+    protocol->set_session_expired_handler([this]() {
+        if (m_session_expired_handler) {
+            m_session_expired_handler();
+        }
+    });
+
+    protocol->set_session_authenticated_handler([this, slot](protocol::SessionId sid) {
+        mark_lane_authenticated(slot, sid);
+        if (m_session_authenticated_handler) {
+            m_session_authenticated_handler(sid);
+        }
+    });
+
+    protocol->set_session_start_handler([this](uint16_t hours) {
+        if (m_session_start_handler) {
+            m_session_start_handler(hours);
+        }
+    });
+
+    protocol->set_node_shutdown_handler([this](uint8_t reason) {
+        if (m_node_shutdown_handler) {
+            m_node_shutdown_handler(reason);
+        }
+    });
+}
+
+void NodeSession::mark_all_lanes_down(const char* reason)
+{
+    m_primary_connected = false;
+    m_secondary_connected = false;
+
+    if (!m_dcm) {
+        return;
+    }
+
+    m_dcm->set_stateless_alive(false);
+    m_dcm->set_legacy_alive(false);
+    m_logger->info("[NodeSession:{}] {} → DualConnectionManager lanes marked down",
+                   m_node_label, reason);
 }
 
 void NodeSession::process_primary_data(network::Shared_payload&& receive_buffer)
 {
-    process_lane_data(Session_lane::Primary, std::move(receive_buffer));
+    if (m_stopped || !m_primary_connection) {
+        return;
+    }
+
+    // Append to accumulator
+    m_primary_rx_accumulator.insert(m_primary_rx_accumulator.end(),
+                                    receive_buffer->begin(),
+                                    receive_buffer->end());
+
+    // Get protocol lane
+    ProtocolLane lane = m_primary_connection->get_protocol_lane();
+
+    // Parse and process packets
+    while (!m_primary_rx_accumulator.empty()) {
+        // Create a shared buffer view for packet extraction
+        auto buffer_shared = std::make_shared<std::vector<uint8_t>>(
+            m_primary_rx_accumulator.begin(),
+            m_primary_rx_accumulator.end());
+
+        size_t bytes_consumed = 0;
+        ParseResult parse_result;
+
+        auto packet = extract_packet_from_buffer_with_result(
+            buffer_shared, bytes_consumed, 0, lane, parse_result);
+
+        if (parse_result == ParseResult::NEED_MORE_DATA) {
+            break;
+        } else if (parse_result == ParseResult::MALFORMED) {
+            m_logger->error("[NodeSession:{}] Malformed packet on primary connection",
+                          m_node_label);
+            if (!m_primary_rx_accumulator.empty()) {
+                m_primary_rx_accumulator.pop_front();
+                m_logger->warn("[NodeSession:{}] Dropped 1 byte from primary RX accumulator for resync ({} bytes remain)",
+                               m_node_label, m_primary_rx_accumulator.size());
+                continue;
+            }
+            break;
+        } else {
+            // Remove consumed bytes
+            m_primary_rx_accumulator.erase(
+                m_primary_rx_accumulator.begin(),
+                m_primary_rx_accumulator.begin() + bytes_consumed);
+
+            // Process packet
+            m_primary_protocol->process_messages(packet, m_primary_connection);
+        }
+    }
 }
 
 void NodeSession::process_secondary_data(network::Shared_payload&& receive_buffer)
 {
-    process_lane_data(Session_lane::Secondary, std::move(receive_buffer));
-}
-
-void NodeSession::handle_primary_connection_result(network::Result::Code result, Connection_callback callback)
-{
-    if (result == network::Result::connection_ok) {
-        configure_connected_lane(Session_lane::Primary);
-
-        // Start authentication
-        auto auth_payload = m_primary_protocol->login([this, callback](bool login_result) {
-            if (!login_result) {
-                m_logger->error("[NodeSession:{}] Primary authentication failed", m_node_label);
-                if (callback) callback(false);
-                return;
-            }
-
-            m_logger->info("[NodeSession:{}] Primary authentication succeeded", m_node_label);
-            // Note: Session state is managed by SessionManager inside Solo protocol
-            // NodeSession queries session state via m_session_context
-
-            if (callback) callback(true);
-        });
-
-        send_auth_payload(Session_lane::Primary, std::move(auth_payload), callback);
+    if (m_stopped || !m_secondary_connection || !m_secondary_protocol) {
+        return;
     }
-}
 
-void NodeSession::handle_secondary_connection_result(network::Result::Code result)
-{
-    if (result == network::Result::connection_ok && m_secondary_connection) {
-        configure_connected_lane(Session_lane::Secondary);
+    // Append to accumulator
+    m_secondary_rx_accumulator.insert(m_secondary_rx_accumulator.end(),
+                                      receive_buffer->begin(),
+                                      receive_buffer->end());
 
-        // Invariant: This lambda MUST call m_session_authenticated_handler on success.
-        // Without it, Worker_manager never resets timers, never triggers recovery
-        // transitions, and never requests the initial GET_BLOCK — leaving workers
-        // stuck at "NO VALID TEMPLATE" even though the node considers the session
-        // fully authenticated. This mirrors the pattern in set_session_authenticated_handler()
-        // and the deferred path in connect_secondary().
-        auto auth_payload = m_secondary_protocol->login([this](bool login_result) {
-            if (!login_result) {
-                m_logger->error("[NodeSession:{}] Secondary authentication failed", m_node_label);
-                return;
+    // Get protocol lane
+    ProtocolLane lane = m_secondary_connection->get_protocol_lane();
+
+    // Parse and process packets
+    while (!m_secondary_rx_accumulator.empty()) {
+        auto buffer_shared = std::make_shared<std::vector<uint8_t>>(
+            m_secondary_rx_accumulator.begin(),
+            m_secondary_rx_accumulator.end());
+
+        size_t bytes_consumed = 0;
+        ParseResult parse_result;
+
+        auto packet = extract_packet_from_buffer_with_result(
+            buffer_shared, bytes_consumed, 0, lane, parse_result);
+
+        if (parse_result == ParseResult::NEED_MORE_DATA) {
+            break;
+        } else if (parse_result == ParseResult::MALFORMED) {
+            m_logger->error("[NodeSession:{}] Malformed packet on secondary connection",
+                          m_node_label);
+            if (!m_secondary_rx_accumulator.empty()) {
+                m_secondary_rx_accumulator.pop_front();
+                m_logger->warn("[NodeSession:{}] Dropped 1 byte from secondary RX accumulator for resync ({} bytes remain)",
+                               m_node_label, m_secondary_rx_accumulator.size());
+                continue;
             }
+            break;
+        } else {
+            // Remove consumed bytes
+            m_secondary_rx_accumulator.erase(
+                m_secondary_rx_accumulator.begin(),
+                m_secondary_rx_accumulator.begin() + bytes_consumed);
 
-            m_logger->info("[NodeSession:{}] Secondary authentication succeeded", m_node_label);
-
-            // Update DualConnectionManager: secondary lane is now alive
-            if (m_dcm) {
-                m_dcm->set_legacy_alive(true);
-                m_logger->info("[NodeSession:{}] Secondary lane (LEGACY) authenticated → DualConnectionManager updated",
-                              m_node_label);
-            }
-
-            // Notify Worker_manager so it resets timers and requests initial GET_BLOCK
-            if (m_session_authenticated_handler) {
-                m_session_authenticated_handler(m_secondary_protocol->get_session_id());
-            }
-        });
-
-        send_auth_payload(Session_lane::Secondary, std::move(auth_payload));
+            // Process packet
+            m_secondary_protocol->process_messages(packet, m_secondary_connection);
+        }
     }
 }
 
 std::pair<network::Connection::Sptr, std::shared_ptr<protocol::Solo>>
 NodeSession::select_active_pair() const
 {
-    // Single authoritative source for NodeSession's active-lane selection.
-    // For either lane, all three guards are required: connection object must
-    // exist, protocol must exist, and the connected flag must be set. This
-    // mirrors the invariants that Connection::transmit() expects (non-null
-    // handler, open socket).
+    // Single authoritative source for active-lane selection.
+    // NodeSession is now a one-configured-lane session wrapper, so reconnect and
+    // re-auth stay on the configured primary lane instead of falling through to
+    // any dormant secondary-node plumbing.
     if (m_primary_connection && m_primary_protocol && m_primary_connected) {
         return {m_primary_connection, m_primary_protocol};
     }
@@ -247,6 +639,7 @@ bool NodeSession::is_session_active() const
 void NodeSession::stop()
 {
     m_stopped = true;
+    complete_pending_connect(false);
 
     m_logger->info("[NodeSession:{}] Stopping", m_node_label);
 
@@ -268,16 +661,7 @@ void NodeSession::stop()
         m_secondary_protocol->reset();
     }
 
-    m_primary_connected = false;
-    m_secondary_connected = false;
-
-    // Update DualConnectionManager: both lanes are now down
-    if (m_dcm) {
-        m_dcm->set_stateless_alive(false);
-        m_dcm->set_legacy_alive(false);
-        m_logger->info("[NodeSession:{}] Session stopped → DualConnectionManager lanes marked down",
-                      m_node_label);
-    }
+    mark_all_lanes_down("Session stopped");
 
     // End session in the context (clears session ID and state)
     if (m_session_context) {
@@ -292,6 +676,7 @@ void NodeSession::stop()
 void NodeSession::reset()
 {
     m_logger->info("[NodeSession:{}] Resetting", m_node_label);
+    complete_pending_connect(false);
 
     // Reset protocols
     if (m_primary_protocol) {
@@ -301,13 +686,7 @@ void NodeSession::reset()
         m_secondary_protocol->reset();
     }
 
-    // Update DualConnectionManager: both lanes are being reset (mark down)
-    if (m_dcm) {
-        m_dcm->set_stateless_alive(false);
-        m_dcm->set_legacy_alive(false);
-        m_logger->info("[NodeSession:{}] Session reset → DualConnectionManager lanes marked down",
-                      m_node_label);
-    }
+    mark_all_lanes_down("Session reset");
 
     // End session in the context (clears session ID and state)
     if (m_session_context) {
@@ -322,50 +701,43 @@ void NodeSession::reset()
 void NodeSession::set_template_handler(Template_handler handler)
 {
     m_template_handler = std::move(handler);
-    wire_template_handler(m_primary_protocol);
-    wire_template_handler(m_secondary_protocol);
+    rewire_protocol_handlers();
 }
 
 void NodeSession::set_block_accepted_handler(Block_accepted_handler handler)
 {
     m_block_accepted_handler = std::move(handler);
-    wire_block_accepted_handler(m_primary_protocol);
-    wire_block_accepted_handler(m_secondary_protocol);
+    rewire_protocol_handlers();
 }
 
 void NodeSession::set_recovery_initiated_handler(Recovery_handler handler)
 {
     m_recovery_handler = std::move(handler);
-    wire_recovery_handler(m_primary_protocol);
-    wire_recovery_handler(m_secondary_protocol);
+    rewire_protocol_handlers();
 }
 
 void NodeSession::set_session_expired_handler(Session_expired_handler handler)
 {
     m_session_expired_handler = std::move(handler);
-    wire_session_expired_handler(m_primary_protocol);
-    wire_session_expired_handler(m_secondary_protocol);
+    rewire_protocol_handlers();
 }
 
 void NodeSession::set_session_authenticated_handler(Session_authenticated_handler handler)
 {
     m_session_authenticated_handler = std::move(handler);
-    wire_session_authenticated_handler(m_primary_protocol, Session_lane::Primary);
-    wire_session_authenticated_handler(m_secondary_protocol, Session_lane::Secondary);
+    rewire_protocol_handlers();
 }
 
 void NodeSession::set_session_start_handler(Session_start_handler handler)
 {
     m_session_start_handler = std::move(handler);
-    wire_session_start_handler(m_primary_protocol);
-    wire_session_start_handler(m_secondary_protocol);
+    rewire_protocol_handlers();
 }
 
 void NodeSession::set_node_shutdown_handler(Node_shutdown_handler handler)
 {
     m_node_shutdown_handler = std::move(handler);
-    wire_node_shutdown_handler(m_primary_protocol);
-    wire_node_shutdown_handler(m_secondary_protocol);
+    rewire_protocol_handlers();
 }
 
 void NodeSession::set_miner_keys(const std::vector<uint8_t>& pubkey, const std::vector<uint8_t>& privkey)

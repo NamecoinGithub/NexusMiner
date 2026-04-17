@@ -126,7 +126,8 @@ counted in the warnings list even if the report is not yet due.
 When the miner switches to the failover node, NexusMiner performs a complete fresh Falcon handshake
 (`MINER_AUTH_INIT` → `MINER_AUTH_CHALLENGE` → `MINER_AUTH_RESPONSE` → `MINER_AUTH_RESULT`) with the
 failover node.  The old session ID from the primary node is discarded.  The failover node issues a new
-session ID.  Mining resumes automatically once the fresh session is established.
+session ID.  Mining resumes automatically once the fresh session is established. The failover
+connection stays on the same configured lane/port as the primary session; only the node endpoint changes.
 
 The protocol state is reset before scheduling the reconnect timer, so `login()` always sends
 `MINER_AUTH_INIT` as if it were a brand-new connection.  The new session ID is logged on successful

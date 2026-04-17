@@ -24,9 +24,9 @@ class Worker;
 
 // NOTE: Heartbeat / keepalive is NOT managed by Timer_manager.
 // SessionManager::start_keepalive_timer() owns the 170-second SESSION_KEEPALIVE
-// heartbeat for both the primary and secondary lanes.  The former Packet::PING
-// timer (bare header-only ping) was removed because it carried no payload and
-// conveyed no height data to the node.
+// heartbeat for the active session lane. The former Packet::PING timer (bare
+// header-only ping) was removed because it carried no payload and conveyed no
+// height data to the node.
 class Timer_manager
 {
 public:
@@ -49,12 +49,12 @@ public:
     // Template Health Monitoring (Template Validation & Worker Protection)
     void start_template_health_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager);
 
-    // SIM Link: secondary connection retry timer (independent from primary retry)
+    // Optional secondary-path retry timer retained for compatibility wiring.
     void start_secondary_connection_retry_timer(std::uint16_t timer_interval,
         std::weak_ptr<Worker_manager> worker_manager,
         network::Endpoint const& secondary_endpoint);
 
-    // SIM Link: periodic lane health-check (logs both lane states every N seconds)
+    // Periodic lane health-check / diagnostics timer.
     void start_lane_health_check_timer(std::uint16_t timer_interval,
         std::weak_ptr<Worker_manager> worker_manager);
 
@@ -85,8 +85,8 @@ private:
     chrono::Timer::Uptr m_stats_printer_timer;
     chrono::Timer::Uptr m_get_round_timer;  // Template Staleness Prevention
     chrono::Timer::Uptr m_template_health_timer;  // Template Health Monitoring
-    chrono::Timer::Uptr m_secondary_connection_retry_timer;  // SIM Link: secondary lane retry
-    chrono::Timer::Uptr m_lane_health_check_timer;  // SIM Link: periodic lane health log
+    chrono::Timer::Uptr m_secondary_connection_retry_timer;  // Optional compatibility retry path
+    chrono::Timer::Uptr m_lane_health_check_timer;  // Periodic lane health log
 };
 }
 
