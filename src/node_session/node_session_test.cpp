@@ -35,12 +35,13 @@ public:
     network::Endpoint const& remote_endpoint() const override { return m_remote_endpoint; }
     network::Endpoint const& local_endpoint() const override { return m_local_endpoint; }
 
-    void transmit(network::Shared_payload tx_buffer) override
+    bool transmit(network::Shared_payload tx_buffer) override
     {
         if (!tx_buffer) {
-            return;
+            return false;
         }
         m_transmissions.push_back(*tx_buffer);
+        return true;
     }
 
     void close() override
@@ -719,6 +720,70 @@ void test_malformed_packet_does_not_fail_active_lane()
     assert(dcm.is_stateless_alive());
 
     std::cout << "  ✓ Malformed bytes do not mark the lane failed and parsing recovers" << std::endl;
+}
+
+void test_transmit_returns_false_when_connection_rejects_payload()
+{
+    std::cout << "Test: NodeSession::transmit returns false when no active authenticated connection..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    config::Config config(make_logger("test_logger_tx_false"));
+    config.set_mining_mode(config::Mining_mode::HASH);
+    config.set_enable_sim_link(false);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto node_session = make_node_session(io_context, config, socket, "TEST_TX_FALSE");
+    configure_valid_auth(*node_session);
+
+    // Do not connect/authenticate: transmit() must return false with no active pair
+    auto payload = std::make_shared<network::Payload>(network::Payload{0x01, 0x02});
+    bool tx_result = node_session->transmit(payload);
+    assert(!tx_result);
+
+    // Null and empty payloads also return false
+    bool tx_null = node_session->transmit(nullptr);
+    bool tx_empty = node_session->transmit(std::make_shared<network::Payload>());
+    assert(!tx_null);
+    assert(!tx_empty);
+
+    std::cout << "  ✓ transmit() returns false when no active authenticated connection" << std::endl;
+}
+
+void test_transmit_returns_true_when_connection_accepts_payload()
+{
+    std::cout << "Test: NodeSession::transmit returns true when connection accepts payload..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    config::Config config(make_logger("test_logger_tx_true"));
+    config.set_mining_mode(config::Mining_mode::HASH);
+    config.set_enable_sim_link(false);
+
+    DualConnectionManager dcm;
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto node_session = make_node_session(io_context, config, socket, "TEST_TX_TRUE", &dcm);
+    configure_valid_auth(*node_session);
+
+    bool connect_callback_invoked = false;
+    bool connect_started = node_session->connect(
+        make_endpoint(ProtocolPorts::STATELESS_PORT),
+        [&connect_callback_invoked](bool) { connect_callback_invoked = true; });
+
+    assert(connect_started);
+    pump_io(io_context);
+
+    socket->emit_receive(0, build_auth_result_packet(ProtocolLane::STATELESS, 0x01, 0xDEADBEEFu));
+    assert(connect_callback_invoked);
+    assert(node_session->is_authenticated());
+
+    // Transmit a small payload; MockConnection::transmit returns true
+    auto payload = std::make_shared<network::Payload>(network::Payload{0x01, 0x02, 0x03});
+    bool tx_result = node_session->transmit(payload);
+    assert(tx_result);
+
+    // Verify the bytes landed in the connection
+    assert(socket->connection(0)->transmit_count() >= 2); // auth + our payload
+
+    std::cout << "  ✓ transmit() returns true when connection accepts payload" << std::endl;
 }
 
 } // namespace
