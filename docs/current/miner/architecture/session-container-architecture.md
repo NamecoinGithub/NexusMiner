@@ -77,10 +77,17 @@ and future refactors should treat these fields as a package:
 - Genesis/Falcon/ChaCha20 identity (`session_genesis`, `falcon_key_id`,
   `chacha20_key_fingerprint`)
 - reward identity (`reward_address_string`, `reward_hash`, `reward_bound`)
-- submit readiness (`channel`, `ready_for_submit`, `ready_for_get_block`)
+- readiness and recovery gates (`channel`, `ready_for_submit`,
+  `ready_for_get_block`, `full_recovery_required`, `work_request_allowed`,
+  `mining_ready`)
 
 That framing prevents future changes from passing these values piecemeal and
 reintroducing ownership bugs.
+
+The important consequence is that recovery exit must consult the binding-level
+predicates, not just raw template availability.  Local orchestration can say
+“fresh work arrived,” but only the authoritative session container can say
+whether that work is actually usable by a restored session.
 
 ## Remaining C++ refactor direction
 

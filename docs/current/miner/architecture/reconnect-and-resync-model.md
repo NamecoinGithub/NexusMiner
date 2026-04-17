@@ -92,6 +92,28 @@ Template refresh / GET_BLOCK recovery is still valid while a session remains
 authenticated, but once the session is gone the miner must treat all previous
 session-bound work as stale.
 
+## Local recovery phases vs authoritative session truth
+
+The local `Worker_manager` recovery phase and the authoritative
+`SessionManager` recovery state now have distinct roles:
+
+- `WAITING_TEMPLATE` means the session is still authoritative enough to request
+  fresh work, but the miner is waiting for a valid replacement template.
+- `SESSION_RECOVERY` means the authoritative session itself is being restored
+  (for example, after `SESSION_EXPIRED` or during an in-band re-auth flow).
+- `RECONNECTING` means transport reconnect / failover is underway.
+
+Healthy exit requires both layers to agree.  A template arriving during
+`SESSION_RECOVERY` is cached and may still be distributed to workers, but it
+must **not** clear degraded state until the authoritative session reports:
+
+1. no full-recovery requirement
+2. work requests allowed
+3. a live authenticated session on the active lane
+
+That prevents the miner from treating “I have a template” as equivalent to
+“I have a valid session.”
+
 ## Roadmap items still open
 
 ### Conflict resolution

@@ -506,9 +506,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* the TCP connection. Uses existing session auth backoff infrastructure.    */
         m_primary_node_session->set_session_expired_handler(
             [this]() {
-                // Bug 7 fix: Use atomic recovery_in_progress flag instead of epoch-based
-                // guard to prevent re-entrance during the window between phase transition
-                // and epoch advance in transition_to().
+                // recovery_in_progress tracks the authoritative session-restoration
+                // window so template-only recovery never masks SESSION_EXPIRED.
                 if (is_reconnecting() || is_session_recovery() ||
                     m_recovery.recovery_in_progress.load(std::memory_order_acquire)) {
                     m_logger->warn("[Worker_manager] Session EXPIRED ignored: authoritative session restoration already in progress "
@@ -1764,8 +1763,8 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
 
 void Worker_manager::mark_soft_refresh_requested(const char* reason)
 {
-    // Both soft refresh and hard recovery now map to WAITING_TEMPLATE.
-    // Workers keep running; no submissions withheld in the new model.
+    // Template-only refresh maps to WAITING_TEMPLATE.
+    // Workers keep running; no submissions withheld in the current model.
     mark_recovery_initiated(reason);
 }
 

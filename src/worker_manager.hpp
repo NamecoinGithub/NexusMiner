@@ -54,9 +54,9 @@ struct RecoveryContext {
     // recovery paths.
     std::atomic<RecoveryPhase> phase{RecoveryPhase::HEALTHY};
 
-    // Bug 7 fix: Atomic flag set immediately when recovery begins, before
-    // epoch advance.  Guards SESSION_EXPIRED handler against re-entrance
-    // during the window between phase transition and epoch advance.
+    // Tracks the authoritative session-restoration window.  Used so
+    // SESSION_EXPIRED can preempt template-only recovery but still avoid
+    // re-entrance while full session restoration is already underway.
     std::atomic<bool> recovery_in_progress{false};
 
     std::chrono::steady_clock::time_point entered_at{};            // When current epoch (recovery start) began
@@ -151,8 +151,8 @@ private:
     ///  - retry_template_request(GetBlockReason) (health monitor or validation failure path).
     void mark_recovery_initiated(const char* reason);
 
-    /// Mark that a soft refresh is now in progress.
-    /// Both soft refresh and hard recovery now map to WAITING_TEMPLATE.
+    /// Mark that a template-only refresh is now in progress.
+    /// WAITING_TEMPLATE is reserved for "session alive, waiting for fresh work".
     /// Workers keep running; no submissions are withheld in the current model.
     void mark_soft_refresh_requested(const char* reason);
 

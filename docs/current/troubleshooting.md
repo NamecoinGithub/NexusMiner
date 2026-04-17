@@ -451,15 +451,23 @@ an early signal.
 
 **Explanation:**
 
-Degraded mode is entered when the miner has no valid mining template (e.g., after a node restart, session expiry, or network interruption). The miner uses a **3-stage escape ladder** with a hard time limit to guarantee recovery within 300 seconds.
+Degraded mode is entered when the miner has no valid mining template or no
+usable authoritative session (for example after a node restart, `SESSION_EXPIRED`,
+or a network interruption). Recovery is now **authoritative-session-first**:
+the miner distinguishes “session alive, waiting for template” from “session
+must be restored,” and it only exits degraded state when both the template layer
+and the authoritative session layer agree the miner is ready again.
+
+The miner still uses a **3-stage escape ladder** with a hard time limit to
+guarantee recovery within 300 seconds.
 
 ### Escape Ladder Stages
 
 | Stage | Trigger | Action |
 |-------|---------|--------|
-| **Stage 1** | 0–60 s in degraded | Retry GET_BLOCK (template request) — allow in-flight re-auth to complete |
-| **Stage 2** | 60–180 s, both keepalive ACK **and** push signals stale | Attempt explicit in-band re-authentication via `login()`, then retry GET_BLOCK |
-| **Stage 3** | > 180 s **and** both signals dead | Force full TCP reconnect via `retry_connect()` |
+| **Stage 1** | 0–60 s in degraded | Retry GET_BLOCK while the session is still authoritative, or wait for explicit session recovery to complete |
+| **Stage 2** | authoritative session expired / dead but TCP still usable | Enter local `SESSION_RECOVERY`, perform in-band re-authentication, then request fresh work |
+| **Stage 3** | transport dead, reconnect timeout, or both liveness signals stale long enough | Force full TCP reconnect / configured failover via `retry_connect()` |
 | **Hard Limit** | > 300 s in degraded (any state) | **Unconditional** `retry_connect()` — no miner should be stuck longer than this |
 
 ### Two-Signal Liveness Model
@@ -498,7 +506,9 @@ This prevents premature session expiry due to late/replayed ACKs or node-side ra
 
 1. **Node restarted:** The miner detects SESSION_EXPIRED and re-authenticates. Should recover within Stage 1 (< 60 s). If not, check node is accepting connections.
 
-2. **Network intermittent:** Push signals will be stale. Stage 2 triggers in-band re-auth; Stage 3 reconnects. Check network stability.
+2. **Network intermittent:** Push signals will be stale. The miner first tries
+   authoritative session recovery if the TCP session is still usable, then
+   reconnects / fails over when transport health is no longer good enough.
 
 3. **Node keepalive responder silent:** If push notifications still arrive but keepalive ACKs are silent, this is a node-side issue. The miner will NOT reconnect while pushes are arriving — it retries GET_BLOCK on the live session. Update the node software.
 
