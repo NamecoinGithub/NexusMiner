@@ -137,7 +137,7 @@ public:
      * @param degraded True if workers are in degraded mode
      * @param has_template True if valid mining template is held
      * @param workers_running True if mining workers are active
-     * @param secondary_up True if secondary lane is connected
+     * @param secondary_up Compatibility status bit for any optional secondary path
      * @return Shared payload for transmission
      */
     network::Shared_payload build_session_status_packet(

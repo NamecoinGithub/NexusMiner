@@ -36,7 +36,7 @@ namespace ProtocolConstants {
 
     /**
      * Maximum number of consecutive session authentication failures before halting
-     * Applies to both primary and secondary lane authentication retries
+     * Applies to the active configured session lane and any compatibility retry path
      */
     constexpr uint32_t MAX_SESSION_AUTH_RETRIES = 10;
 
@@ -58,13 +58,13 @@ namespace ProtocolConstants {
 
     /**
      * Maximum delay for connection retry exponential backoff (seconds)
-     * Used for both primary and secondary connection retries
+     * Used for primary reconnects and optional failover/secondary retry plumbing
      */
     constexpr uint32_t MAX_RETRY_DELAY_SECONDS = 60;
 
     /**
-     * Maximum delay for secondary lane retry during degraded mode (seconds)
-     * Forces aggressive reconnection when primary lane is down
+     * Maximum delay for optional secondary-path retry during degraded mode (seconds)
+     * Retained for compatibility with lane-health / degraded-mode recovery wiring
      */
     constexpr uint32_t DEGRADED_SECONDARY_RETRY_DELAY_SECONDS = 5;
 

@@ -37,16 +37,16 @@ namespace stats { class Collector; }
  * by the configured endpoint instead of assuming a paired same-node opposite lane.
  *
  * Design Principles:
- * - Outer Wrapper, Not Protocol Replacement: Wraps two Solo protocol instances
- *   and one SessionManager. Does not replace any existing auth logic.
+ * - Outer Wrapper, Not Protocol Replacement: Wraps the active Solo protocol
+ *   path plus compatibility plumbing without replacing existing auth logic.
  * - OPCODE Firewall Preserved: Each Solo instance retains its ProtocolLane.
  *   Packet lane enforcement is never bypassed.
  * - Session ID is Node-Scoped: One Falcon handshake is performed. The resulting
  *   session_id is authoritative for that node.
  * - Simple Surface Area: Worker_manager calls connect(), transmit(),
  *   session_id(), is_authenticated().
- * - Failover Topology Correct: NodeSession primary = Node A, NodeSession
- *   secondary = Node B (optional).
+ * - Failover Topology Correct: Worker_manager chooses when to switch from
+ *   Node A to optional failover Node B; NodeSession itself stays lane-bound.
  */
 class NodeSession : public std::enable_shared_from_this<NodeSession>
 {
@@ -112,7 +112,7 @@ public:
      * @param config Configuration reference
      * @param socket Network socket for connections
      * @param stats_collector Statistics collector
-     * @param node_label Human-readable label for this node (e.g., "PRIMARY", "SECONDARY")
+     * @param node_label Human-readable label for this node (e.g., "PRIMARY", "FAILOVER")
      * @param dcm DualConnectionManager for tracking lane health (optional)
      */
     NodeSession(
@@ -126,7 +126,8 @@ public:
     /**
      * @brief Connect to the configured node/lane
      * @param node_endpoint Endpoint selected from config (legacy or stateless)
-     * @param callback Connection result callback
+     * @param callback Invoked only after the session is fully authenticated and
+     *        ready for session-bound mining flow
      * @return True if connection initiation succeeded
      */
     bool connect(const network::Endpoint& node_endpoint, Connection_callback callback);
@@ -134,7 +135,7 @@ public:
     /**
      * @brief Transmit data on the active connection
      * @param data Data to transmit
-     * @return True if transmission initiated successfully
+     * @return True if transmission was initiated on the configured active lane
      */
     bool transmit(network::Shared_payload data);
 
@@ -269,7 +270,7 @@ public:
 
     /**
      * @brief Get the secondary protocol instance (for direct access if needed)
-     * @return Shared pointer to secondary Solo protocol (may be null)
+     * @return Shared pointer to reserved secondary-path Solo protocol (may be null)
      */
     std::shared_ptr<protocol::Solo> get_secondary_protocol() const { return m_secondary_protocol; }
 
@@ -406,7 +407,7 @@ private:
     std::shared_ptr<protocol::Solo> m_primary_protocol;
     std::shared_ptr<protocol::Solo> m_secondary_protocol; // Reserved for explicit secondary-node use only
 
-    // Session management (shared across both ports) - AUTHORITATIVE source for session state
+    // Session management - AUTHORITATIVE source for session state
     std::shared_ptr<protocol::NodeSessionContext> m_session_context;
 
     // Receive accumulators for TCP stream reassembly
@@ -430,7 +431,7 @@ private:
     uint16_t m_keepalive_interval_hours{24};
     Connection_callback m_pending_connect_callback;
     ProtocolLane m_primary_requested_lane{ProtocolLane::UNKNOWN};
-    ProtocolLane m_secondary_requested_lane{ProtocolLane::LEGACY};
+    ProtocolLane m_secondary_requested_lane{ProtocolLane::UNKNOWN};
 
     // State flags
     std::atomic<bool> m_primary_connected{false};
