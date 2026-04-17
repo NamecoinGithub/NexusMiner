@@ -1057,6 +1057,11 @@ SessionBinding SessionManager::get_session_binding() const
                                  : m_session.reward_address_string;
     binding.reward_hash = m_session.reward_hash;
     binding.reward_bound = m_session.reward_bound;
+    binding.authoritative_reauth_required =
+        m_session.state != SessionState::AUTHENTICATED ||
+        m_session.recovery_state == RecoveryState::RECOVERY_IN_PROGRESS ||
+        m_session.recovery_state == RecoveryState::FORCED_REAUTH ||
+        m_session.recovery_state == RecoveryState::RECONNECT_REQUIRED;
     binding.channel = m_session.channel;
     binding.ready_for_submit = m_session.ready_for_submit;
     binding.ready_for_get_block = m_session.ready_for_get_block;

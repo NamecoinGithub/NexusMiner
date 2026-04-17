@@ -30,6 +30,7 @@ struct SessionBinding
     std::string reward_address;
     RewardHash reward_hash{};
     bool reward_bound{false};
+    bool authoritative_reauth_required{false};
 
     uint32_t channel{0};
     bool ready_for_submit{false};
@@ -50,6 +51,26 @@ struct SessionBinding
     bool can_request_get_block() const
     {
         return ready_for_get_block;
+    }
+
+    bool has_authoritative_session() const
+    {
+        return authenticated && has_session() && identity_matches_session();
+    }
+
+    bool requires_fresh_session() const
+    {
+        return authoritative_reauth_required || !has_authoritative_session();
+    }
+
+    bool ready_for_session_bound_get_block() const
+    {
+        return !requires_fresh_session() && ready_for_get_block;
+    }
+
+    bool ready_for_mining() const
+    {
+        return ready_for_session_bound_get_block() && reward_bound && ready_for_submit;
     }
 
     bool has_crypto_context() const

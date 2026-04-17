@@ -376,9 +376,6 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
                     m_logger->info("[Worker_manager] ✓ Template distributed to {} workers - MINING STARTED", 
                                   workers_fed);
-                    if (solo_protocol) {
-                        solo_protocol->mark_authoritative_recovery_healthy("fresh_template_distributed_to_workers");
-                    }
                     // ✅ Clear degraded mode and all recovery state now that a valid template
                     // has been successfully delivered to workers.  This is intentionally done
                     // AFTER distribution so we only exit recovery state when workers actually
@@ -512,13 +509,19 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // Bug 7 fix: Use atomic recovery_in_progress flag instead of epoch-based
                 // guard to prevent re-entrance during the window between phase transition
                 // and epoch advance in transition_to().
-                if (is_reconnecting() || m_recovery.recovery_in_progress.load(std::memory_order_acquire)) {
-                    m_logger->warn("[Worker_manager] Session EXPIRED ignored: reconnect/recovery already in progress "
+                if (is_reconnecting()) {
+                    m_logger->warn("[Worker_manager] Session EXPIRED ignored: reconnect already in progress "
                                    "(phase={}, recovery_in_progress={}, recovery_epoch={})",
                                    phase_name(m_recovery.phase.load(std::memory_order_relaxed)),
                                    m_recovery.recovery_in_progress.load(std::memory_order_relaxed),
                                    m_epoch_coordinator->recovery_epoch());
                     return;
+                }
+                if (m_recovery.recovery_in_progress.load(std::memory_order_acquire)) {
+                    m_logger->warn("[Worker_manager] Session EXPIRED overrides template-only recovery "
+                                   "(phase={}, recovery_epoch={})",
+                                   phase_name(m_recovery.phase.load(std::memory_order_relaxed)),
+                                   m_epoch_coordinator->recovery_epoch());
                 }
 
                 m_logger->warn("[Worker_manager] Session EXPIRED — stopping workers and requiring a fresh session");
@@ -1766,6 +1769,15 @@ void Worker_manager::clear_recovery_state()
     if (solo_protocol) {
         auto* session_manager = solo_protocol->get_session_manager();
         if (session_manager) {
+            const auto binding = session_manager->get_session_binding();
+            if (binding.requires_fresh_session()) {
+                m_logger->warn("[Worker_manager] clear_recovery_state() deferred: authoritative session still requires re-auth/reconnect");
+                return;
+            }
+            if (!binding.ready_for_session_bound_get_block()) {
+                m_logger->warn("[Worker_manager] clear_recovery_state() deferred: authoritative session not ready for session-bound GET_BLOCK");
+                return;
+            }
             const auto session_snapshot = session_manager->get_runtime_snapshot();
             if (session_snapshot.recovery_state != protocol::SessionManager::RecoveryState::HEALTHY ||
                 !session_snapshot.recovery_reason.empty()) {

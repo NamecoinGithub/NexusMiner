@@ -1093,28 +1093,54 @@ void test_recovery_phase_helpers_equivalence() {
         !phase_is_reconnecting(TestRecoveryPhase::WAITING_TEMPLATE));
 }
 
-// ── Test 20: WAITING_TEMPLATE state — clearing state always exits it ──────
+// ── Test 20: WAITING_TEMPLATE exits only after authoritative session is ready ─
 void test_orphaned_soft_refresh_cleared() {
-    std::cout << "\nTest 20: WAITING_TEMPLATE state is cleared by clear_recovery_state\n";
+    std::cout << "\nTest 20: clear_recovery_state defers until authoritative session is ready\n";
 
-    // Simulate: was in WAITING_TEMPLATE, clear_recovery_state() transitions to HEALTHY
-    TestRecoveryPhase phase = TestRecoveryPhase::WAITING_TEMPLATE;
+    struct RecoveryGate {
+        TestRecoveryPhase phase{TestRecoveryPhase::WAITING_TEMPLATE};
+        bool has_valid_template{true};
+        bool fresh_session_required{true};
+        bool ready_for_get_block{false};
+
+        bool clear_recovery_state() {
+            if (phase != TestRecoveryPhase::WAITING_TEMPLATE || !has_valid_template) {
+                return false;
+            }
+            if (fresh_session_required || !ready_for_get_block) {
+                return false;
+            }
+            phase = TestRecoveryPhase::HEALTHY;
+            return true;
+        }
+    };
+
+    RecoveryGate gate;
 
     // Verify waiting-template is active
     print_test_result("Initial: is_recovery_active() == true (WAITING_TEMPLATE)",
-        phase_is_recovery_active(phase));
+        phase_is_recovery_active(gate.phase));
     print_test_result("Initial: is_degraded() == true (WAITING_TEMPLATE)",
-        phase_is_degraded(phase));
+        phase_is_degraded(gate.phase));
 
-    // clear_recovery_state() logic: transition to HEALTHY
-    phase = TestRecoveryPhase::HEALTHY;
+    bool cleared_while_reauth_required = gate.clear_recovery_state();
+    print_test_result("Authoritative re-auth requirement blocks clear_recovery_state()",
+        !cleared_while_reauth_required && gate.phase == TestRecoveryPhase::WAITING_TEMPLATE);
 
-    print_test_result("After clear: phase == HEALTHY",
-        phase == TestRecoveryPhase::HEALTHY);
+    gate.fresh_session_required = false;
+    bool cleared_before_ready = gate.clear_recovery_state();
+    print_test_result("Authoritative GET_BLOCK readiness also blocks clear_recovery_state()",
+        !cleared_before_ready && gate.phase == TestRecoveryPhase::WAITING_TEMPLATE);
+
+    gate.ready_for_get_block = true;
+    bool cleared = gate.clear_recovery_state();
+
+    print_test_result("After authoritative session is ready: phase == HEALTHY",
+        cleared && gate.phase == TestRecoveryPhase::HEALTHY);
     print_test_result("After clear: is_submissions_withheld() == false",
-        !phase_is_submissions_withheld(phase));
+        !phase_is_submissions_withheld(gate.phase));
     print_test_result("After clear: is_recovery_active() == false",
-        !phase_is_recovery_active(phase));
+        !phase_is_recovery_active(gate.phase));
 }
 
 // ── Test 21: WAITING_TEMPLATE → RECONNECTING escalation path ─────────────
@@ -1144,32 +1170,27 @@ void test_soft_refresh_escalation_to_hard_recovery() {
 
 // ── Test 22: RECONNECTING prevents SESSION_EXPIRED re-entrance ────────────
 void test_reconnecting_guards_session_expired() {
-    std::cout << "\nTest 22: RECONNECTING phase prevents Session EXPIRED from re-entering\n";
+    std::cout << "\nTest 22: Session EXPIRED overrides WAITING_TEMPLATE but not RECONNECTING\n";
 
     TestRecoveryPhase phase = TestRecoveryPhase::RECONNECTING;
 
-    // Session expired handler guard: if reconnecting OR recovery active with epoch > 0
-    uint64_t epoch = 1;
-    bool should_ignore = phase_is_reconnecting(phase) ||
-                         (phase_is_recovery_active(phase) && epoch > 0);
+    // New guard: only RECONNECTING suppresses SESSION_EXPIRED.
+    bool should_ignore = phase_is_reconnecting(phase);
     print_test_result("RECONNECTING: session_expired is ignored",
         should_ignore);
 
     // Verify HEALTHY does NOT suppress session_expired
     TestRecoveryPhase healthy = TestRecoveryPhase::HEALTHY;
-    uint64_t healthy_epoch = 0;
-    bool healthy_ignore = phase_is_reconnecting(healthy) ||
-                          (phase_is_recovery_active(healthy) && healthy_epoch > 0);
+    bool healthy_ignore = phase_is_reconnecting(healthy);
     print_test_result("HEALTHY: session_expired is NOT ignored",
         !healthy_ignore);
 
-    // Verify WAITING_TEMPLATE with epoch 0 does NOT suppress session_expired
+    // Verify WAITING_TEMPLATE with recovery_in_progress still does NOT suppress session_expired
     TestRecoveryPhase waiting = TestRecoveryPhase::WAITING_TEMPLATE;
-    uint64_t waiting_epoch = 0;  // epoch 0 = just entered, no recovery epoch yet
-    bool waiting_ignore = phase_is_reconnecting(waiting) ||
-                          (phase_is_recovery_active(waiting) && waiting_epoch > 0);
-    print_test_result("WAITING_TEMPLATE with epoch=0: session_expired is NOT ignored",
-        !waiting_ignore);
+    bool recovery_in_progress = true;
+    bool waiting_ignore = phase_is_reconnecting(waiting);
+    print_test_result("WAITING_TEMPLATE with recovery_in_progress: session_expired is NOT ignored",
+        recovery_in_progress && !waiting_ignore);
 }
 
 // ── Test 23: Mutual exclusivity — only one phase at a time ───────────────

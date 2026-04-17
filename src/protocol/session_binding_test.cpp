@@ -12,6 +12,10 @@ void test_default_binding()
 {
     SessionBinding binding;
     assert(!binding.has_session());
+    assert(!binding.has_authoritative_session());
+    assert(binding.requires_fresh_session());
+    assert(!binding.ready_for_session_bound_get_block());
+    assert(!binding.ready_for_mining());
     assert(!binding.can_submit_work());
     assert(!binding.can_request_get_block());
     assert(!binding.has_crypto_context());
@@ -57,9 +61,14 @@ void test_context_exposes_batched_binding()
     assert(binding.reward_address == "reward-address");
     assert(binding.reward_hash == RewardHash(reward_hash));
     assert(binding.reward_bound);
+    assert(!binding.authoritative_reauth_required);
     assert(binding.channel == 2);
     assert(binding.can_submit_work());
     assert(binding.can_request_get_block());
+    assert(binding.has_authoritative_session());
+    assert(!binding.requires_fresh_session());
+    assert(binding.ready_for_session_bound_get_block());
+    assert(binding.ready_for_mining());
     assert(binding.has_crypto_context());
     assert(binding.identity.is_valid());
     assert(binding.identity_matches_session());
@@ -89,7 +98,12 @@ void test_binding_clears_crypto_after_session_expiry()
 
     const auto binding = context.get_session_binding();
     assert(binding.session_id == session_id);
+    assert(binding.authoritative_reauth_required);
     assert(!binding.authenticated);
+    assert(!binding.has_authoritative_session());
+    assert(binding.requires_fresh_session());
+    assert(!binding.ready_for_session_bound_get_block());
+    assert(!binding.ready_for_mining());
     assert(!binding.chacha20_ready);
     assert(!binding.has_crypto_context());
     assert(binding.reward_bound);
