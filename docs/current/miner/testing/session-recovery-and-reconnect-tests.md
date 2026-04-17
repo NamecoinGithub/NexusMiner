@@ -2,8 +2,23 @@
 
 ## Goal
 
-Document the reconnect-, resync-, and race-oriented tests still needed to finish
-the current miner session refactor safely.
+Document the reconnect-, resync-, and race-oriented coverage for the current
+authoritative-session-first recovery model, and call out the remaining gaps.
+
+## Coverage now in-tree
+
+The current test suite already covers the highest-value recovery transitions:
+
+- `degraded_recovery_test` exercises the explicit local recovery phases,
+  including:
+  - `SESSION_EXPIRED` escalation out of `WAITING_TEMPLATE`
+  - blocking degraded exit while local state is in `SESSION_RECOVERY`
+  - reconnect / template-recovery phase transitions
+- `node_session_context_test` covers authoritative recovery-state transitions,
+  including `clear_for_reauth()` now entering `RECOVERY_IN_PROGRESS`
+- `session_binding_test` covers the shared authoritative readiness predicates
+  (`session_requires_full_recovery()`, `may_request_work()`,
+  `is_fully_mining_ready()`)
 
 ## Required test buckets
 

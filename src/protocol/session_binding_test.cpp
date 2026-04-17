@@ -12,8 +12,11 @@ void test_default_binding()
 {
     SessionBinding binding;
     assert(!binding.has_session());
+    assert(binding.session_requires_full_recovery());
     assert(!binding.can_submit_work());
     assert(!binding.can_request_get_block());
+    assert(!binding.may_request_work());
+    assert(!binding.is_fully_mining_ready());
     assert(!binding.has_crypto_context());
     assert(binding.identity_matches_session());
     std::cout << "  PASS: default_binding\n";
@@ -58,6 +61,9 @@ void test_context_exposes_batched_binding()
     assert(binding.reward_hash == RewardHash(reward_hash));
     assert(binding.reward_bound);
     assert(binding.channel == 2);
+    assert(!binding.session_requires_full_recovery());
+    assert(binding.may_request_work());
+    assert(binding.is_fully_mining_ready());
     assert(binding.can_submit_work());
     assert(binding.can_request_get_block());
     assert(binding.has_crypto_context());
@@ -90,11 +96,35 @@ void test_binding_clears_crypto_after_session_expiry()
     const auto binding = context.get_session_binding();
     assert(binding.session_id == session_id);
     assert(!binding.authenticated);
+    assert(binding.session_requires_full_recovery());
+    assert(!binding.may_request_work());
+    assert(!binding.is_fully_mining_ready());
     assert(!binding.chacha20_ready);
     assert(!binding.has_crypto_context());
     assert(binding.reward_bound);
     assert(!binding.identity.is_valid());
     std::cout << "  PASS: binding_clears_crypto_after_session_expiry\n";
+}
+
+void test_binding_exposes_reauth_in_progress_as_full_recovery()
+{
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    context.set_protocol_lane(nexusminer::ProtocolLane::STATELESS);
+    context.commit_authenticated_session(SessionId(0x10203040u),
+                                         std::vector<uint8_t>(32, 0x44),
+                                         FalconHashKeyId("reauth-key"),
+                                         SessionGenesisHash(std::vector<uint8_t>(32, 0x11)));
+    context.set_reward_binding("reward-address", RewardHash(std::vector<uint8_t>(32, 0x22)), true, "config");
+    context.set_channel_state(2, true, true);
+    context.clear_for_reauth("reward-address", "config", "reauth requested");
+
+    const auto binding = context.get_session_binding();
+    assert(binding.session_requires_full_recovery());
+    assert(!binding.may_request_work());
+    assert(!binding.is_fully_mining_ready());
+    std::cout << "  PASS: binding_exposes_reauth_in_progress_as_full_recovery\n";
 }
 
 } // namespace
@@ -104,6 +134,7 @@ int main()
     test_default_binding();
     test_context_exposes_batched_binding();
     test_binding_clears_crypto_after_session_expiry();
+    test_binding_exposes_reauth_in_progress_as_full_recovery();
     std::cout << "All SessionBinding tests passed!\n";
     return 0;
 }

@@ -691,16 +691,18 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
 
     context.clear_for_reauth("reward-address", "config", "reauth requested");
     snapshot = context.get_runtime_snapshot();
-    assert(snapshot.state == SessionManager::SessionState::DISCONNECTED);
+    assert(snapshot.state == SessionManager::SessionState::AUTHENTICATING);
     assert(snapshot.reward_state == SessionManager::RewardState::REQUIRED);
-    assert(snapshot.recovery_state == SessionManager::RecoveryState::FORCED_REAUTH);
+    assert(snapshot.recovery_state == SessionManager::RecoveryState::RECOVERY_IN_PROGRESS);
     assert(snapshot.reward_address_string == "reward-address");
     assert(!snapshot.reward_bound);
     assert(!context.allow_deferred_push_replay());
+    assert(!context.can_request_get_block());
+    assert(!context.can_submit_work());
 
     const auto diagnostics = context.build_miner_session_diagnostics();
     assert(diagnostics.find("reward_state: REQUIRED") != std::string::npos);
-    assert(diagnostics.find("recovery_state: FORCED_REAUTH") != std::string::npos);
+    assert(diagnostics.find("recovery_state: RECOVERY_IN_PROGRESS") != std::string::npos);
     assert(diagnostics.find("expiry_state: FRESH") != std::string::npos);
 
     std::cout << "Authoritative transition API test passed!" << std::endl;

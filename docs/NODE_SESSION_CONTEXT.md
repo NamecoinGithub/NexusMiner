@@ -47,7 +47,7 @@ NodeSession
 - **Authoritative runtime snapshot** - queried by all components
 - **Session state machine** - DISCONNECTED → AUTHENTICATING → AUTHENTICATED → ACTIVE → EXPIRED
 - **Reward lifecycle state** - NONE / REQUIRED / BINDING / BOUND / REJECTED / STALE
-- **Recovery lifecycle state** - HEALTHY / SOFT_REFRESH_REQUESTED / RECOVERY_PENDING / FORCED_REAUTH / RECONNECT_REQUIRED
+- **Recovery lifecycle state** - HEALTHY / RECOVERY_PENDING / RECOVERY_IN_PROGRESS / FORCED_REAUTH / RECONNECT_REQUIRED
 - **Expiry/replay bookkeeping** - keepalive ACK state, expiry reason, deferred replay allowances
 - **Lane-aware packet building** - `build_keepalive_packet()`, `build_session_status_packet()`
 - **Session constants** - Keepalive cadence rules, retry caps (from ProtocolConstants)
@@ -177,6 +177,20 @@ static bool parse_session_start(
     uint32_t& out_timeout,
     std::vector<uint8_t>& out_genesis);
 ```
+
+`clear_for_reauth()` now represents **authoritative session restoration in
+progress**, not a generic transport disconnect.  New code should preserve the
+distinction between:
+
+- local template refresh / degraded orchestration
+- authoritative session recovery (`RECOVERY_IN_PROGRESS`)
+- transport reconnect / failover
+
+The corresponding `SessionManager` / `SessionBinding` helpers are:
+
+- `session_requires_full_recovery()`
+- `session_may_request_work()`
+- `session_is_fully_mining_ready()`
 
 ## Benefits
 

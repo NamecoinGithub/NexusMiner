@@ -51,6 +51,37 @@ const char* session_state_name(SessionManager::SessionState state)
     }
 }
 
+bool session_requires_full_recovery_locked(const SessionManager::SessionInfo& session)
+{
+    if (session.state != SessionManager::SessionState::AUTHENTICATED ||
+        !session.authenticated ||
+        session.session_id.is_default() ||
+        session.session_epoch.is_default()) {
+        return true;
+    }
+
+    switch (session.recovery_state) {
+        case SessionManager::RecoveryState::FORCED_REAUTH:
+        case SessionManager::RecoveryState::RECOVERY_IN_PROGRESS:
+        case SessionManager::RecoveryState::RECONNECT_REQUIRED:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool session_may_request_work_locked(const SessionManager::SessionInfo& session)
+{
+    return !session_requires_full_recovery_locked(session) &&
+           session.ready_for_get_block;
+}
+
+bool session_is_fully_mining_ready_locked(const SessionManager::SessionInfo& session)
+{
+    return !session_requires_full_recovery_locked(session) &&
+           session.ready_for_submit;
+}
+
 } // namespace
 
 // ── Static name helpers ───────────────────────────────────────────────────────
@@ -371,6 +402,8 @@ void SessionManager::begin_auth_handshake(const std::string& detail)
     const auto retained_chacha20_session_key = m_session.chacha20_session_key;
     const auto retained_chacha20_key_fingerprint = m_session.chacha20_key_fingerprint;
     const bool retained_chacha20_ready = m_session.chacha20_ready;
+    const auto retained_recovery_state = m_session.recovery_state;
+    const auto retained_recovery_reason = m_session.recovery_reason;
     clear_runtime_session_locked(true, true);
     m_session.reward_address_string = retained_reward_address;
     m_session.reward_address = retained_reward_address_new;
@@ -381,8 +414,14 @@ void SessionManager::begin_auth_handshake(const std::string& detail)
     m_session.reward_state = retained_reward_address.empty() ? RewardState::NONE
                                                              : RewardState::REQUIRED;
     m_session.state = SessionState::AUTHENTICATING;
-    m_session.recovery_state = RecoveryState::HEALTHY;
-    m_session.recovery_reason.clear();
+    if (retained_recovery_state == RecoveryState::RECOVERY_IN_PROGRESS ||
+        retained_recovery_state == RecoveryState::FORCED_REAUTH) {
+        m_session.recovery_state = RecoveryState::RECOVERY_IN_PROGRESS;
+        m_session.recovery_reason = retained_recovery_reason;
+    } else {
+        m_session.recovery_state = RecoveryState::HEALTHY;
+        m_session.recovery_reason.clear();
+    }
     m_session.expiry_state = ExpiryState::FRESH;
     m_session.expiry_reason.clear();
     m_session.last_activity = now_epoch_seconds();
@@ -411,6 +450,10 @@ void SessionManager::commit_authenticated_session(SessionId session_id,
             m_session.falcon_key_id = key_id;
         }
         transition_to_authenticated_locked(session_id, tritium_genesis);
+        m_session.recovery_state = RecoveryState::HEALTHY;
+        m_session.recovery_reason.clear();
+        m_session.expiry_state = ExpiryState::FRESH;
+        m_session.expiry_reason.clear();
         bump_runtime_state_generation_locked();
     }
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
@@ -440,6 +483,10 @@ void SessionManager::start_session(SessionId session_id,
             m_session.session_key = session_key;
         }
         transition_to_authenticated_locked(session_id, tritium_genesis);
+        m_session.recovery_state = RecoveryState::HEALTHY;
+        m_session.recovery_reason.clear();
+        m_session.expiry_state = ExpiryState::FRESH;
+        m_session.expiry_reason.clear();
         bump_runtime_state_generation_locked();
     }
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
@@ -506,6 +553,7 @@ void SessionManager::mark_recovery_healthy(const std::string& reason)
 {
     SessionWriteLock lock(m_session_mutex);
     if (m_session.recovery_state == RecoveryState::FORCED_REAUTH ||
+        m_session.recovery_state == RecoveryState::RECOVERY_IN_PROGRESS ||
         m_session.recovery_state == RecoveryState::RECONNECT_REQUIRED ||
         m_session.state == SessionState::DEGRADED) {
         return;
@@ -564,7 +612,8 @@ void SessionManager::clear_for_reauth(const std::string& reward_address,
     m_session.reward_binding_source = retained_reward_source;
     m_session.reward_state = retained_reward_address.empty() ? RewardState::NONE
                                                              : RewardState::REQUIRED;
-    m_session.recovery_state = RecoveryState::FORCED_REAUTH;
+    m_session.state = SessionState::AUTHENTICATING;
+    m_session.recovery_state = RecoveryState::RECOVERY_IN_PROGRESS;
     m_session.recovery_reason = reason;
     m_session.expiry_state = ExpiryState::FRESH;
     m_session.last_activity = now_epoch_seconds();
@@ -877,19 +926,37 @@ bool SessionManager::is_reward_bound() const
 bool SessionManager::can_submit() const
 {
     SessionReadLock lock(m_session_mutex);
-    return m_session.authenticated && m_session.reward_bound;
+    return session_is_fully_mining_ready_locked(m_session);
 }
 
 bool SessionManager::can_submit_work() const
 {
     SessionReadLock lock(m_session_mutex);
-    return m_session.ready_for_submit;
+    return session_is_fully_mining_ready_locked(m_session);
 }
 
 bool SessionManager::can_request_get_block() const
 {
     SessionReadLock lock(m_session_mutex);
-    return m_session.ready_for_get_block;
+    return session_may_request_work_locked(m_session);
+}
+
+bool SessionManager::session_requires_full_recovery() const
+{
+    SessionReadLock lock(m_session_mutex);
+    return session_requires_full_recovery_locked(m_session);
+}
+
+bool SessionManager::session_may_request_work() const
+{
+    SessionReadLock lock(m_session_mutex);
+    return session_may_request_work_locked(m_session);
+}
+
+bool SessionManager::session_is_fully_mining_ready() const
+{
+    SessionReadLock lock(m_session_mutex);
+    return session_is_fully_mining_ready_locked(m_session);
 }
 
 bool SessionManager::allow_deferred_push_replay() const
@@ -1060,6 +1127,9 @@ SessionBinding SessionManager::get_session_binding() const
     binding.channel = m_session.channel;
     binding.ready_for_submit = m_session.ready_for_submit;
     binding.ready_for_get_block = m_session.ready_for_get_block;
+    binding.full_recovery_required = session_requires_full_recovery_locked(m_session);
+    binding.work_request_allowed = session_may_request_work_locked(m_session);
+    binding.mining_ready = session_is_fully_mining_ready_locked(m_session);
     binding.identity = m_canonical_identity;
     return binding;
 }
