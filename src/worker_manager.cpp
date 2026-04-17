@@ -1442,29 +1442,59 @@ void Worker_manager::poll_get_round()
     // Template recovery is handled separately by Worker_manager via
     // send_recovery_work_request() (GET_BLOCK).
     auto payload = solo_protocol->send_get_round();
-    if (payload && !payload->empty()) {
-        // Re-check generation before transmit: if a session transition happened
-        // while building the packet, the node would reject it anyway.
-        if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry) {
-            m_logger->debug("[Worker_manager] GET_ROUND discarded: session generation changed ({} → {})",
-                           gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
-            return;
-        }
-        if (!m_primary_node_session->transmit(payload)) {
-            m_logger->warn("[Worker_manager] GET_ROUND not queued — skipping unanswered-round shadow-ban check");
-            return;
-        }
+    if (!payload || payload->empty()) {
+        return;  // Build failure (not authenticated, etc.) — counter was not touched.
+    }
 
-        // Shadow-ban detection: if we've sent multiple GET_ROUNDs with no
-        // NEW_ROUND/OLD_ROUND response, the miner is likely shadow-banned
-        // (responses are being silently dropped).  Force recovery.
-        constexpr uint32_t SHADOW_BAN_UNANSWERED_THRESHOLD = 5;
-        const auto unanswered = solo_protocol->get_unanswered_get_round_count();
-        if (unanswered >= SHADOW_BAN_UNANSWERED_THRESHOLD) {
+    // Re-check generation before transmit: if a session transition happened
+    // while building the packet, the node would reject it anyway.
+    if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry) {
+        m_logger->debug("[Worker_manager] GET_ROUND discarded pre-transmit: session generation changed ({} → {})",
+                       gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
+        return;  // Counter not incremented — nothing to roll back.
+    }
+
+    if (!m_primary_node_session->transmit(payload)) {
+        m_logger->warn("[Worker_manager] GET_ROUND not queued — counter untouched (no shadow-ban account)");
+        return;
+    }
+
+    // Commit: packet is on the wire.  Only now do we count it as 'unanswered'.
+    solo_protocol->note_get_round_transmitted();
+
+    // Shadow-ban detection: combine count + elapsed-time + push silence to avoid
+    // false positives from transient network jitter or slow replies.
+    constexpr uint32_t SHADOW_BAN_UNANSWERED_THRESHOLD = 5;
+    constexpr int64_t  SHADOW_BAN_MIN_ELAPSED_SECONDS  = 90;  // At 15s cadence, 5 sends ≈ 60–75s; require >= 90s
+
+    const auto unanswered = solo_protocol->get_unanswered_get_round_count();
+    if (unanswered >= SHADOW_BAN_UNANSWERED_THRESHOLD) {
+        auto earliest = solo_protocol->get_earliest_unanswered_get_round_at();
+        int64_t elapsed_s = (earliest != std::chrono::steady_clock::time_point{})
+            ? std::chrono::duration_cast<std::chrono::seconds>(
+                  std::chrono::steady_clock::now() - earliest).count()
+            : 0;
+
+        auto ht = solo_protocol->get_height_tracker_snapshot();
+        bool push_received = (ht.last_push_notification_at != std::chrono::steady_clock::time_point{});
+        int64_t push_age_s = push_received
+            ? std::chrono::duration_cast<std::chrono::seconds>(
+                  std::chrono::steady_clock::now() - ht.last_push_notification_at).count()
+            : INT64_MAX;
+        bool push_silent = (push_age_s >= PUSH_ALIVE_THRESHOLD_SECONDS);
+
+        if (elapsed_s >= SHADOW_BAN_MIN_ELAPSED_SECONDS && push_silent) {
             m_logger->error("[Worker_manager] SHADOW BAN DETECTED: {} consecutive GET_ROUNDs "
-                           "unanswered — forcing session recovery",
-                           unanswered);
+                            "unanswered over {}s, push silent {}s — forcing session recovery",
+                            unanswered, elapsed_s, push_age_s == INT64_MAX ? -1 : push_age_s);
             mark_recovery_initiated("shadow_ban_unanswered_get_round");
+        } else {
+            m_logger->warn("[Worker_manager] Unanswered GET_ROUND count {} >= threshold {}, "
+                           "but shadow-ban suppressed (elapsed={}s < {}s OR push_age={}s < {}s)",
+                           unanswered, SHADOW_BAN_UNANSWERED_THRESHOLD,
+                           elapsed_s, SHADOW_BAN_MIN_ELAPSED_SECONDS,
+                           push_age_s == INT64_MAX ? -1 : push_age_s,
+                           PUSH_ALIVE_THRESHOLD_SECONDS);
         }
     }
 }
