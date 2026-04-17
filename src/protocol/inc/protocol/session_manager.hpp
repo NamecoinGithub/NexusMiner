@@ -265,6 +265,9 @@ public:
     bool can_submit() const;
     bool can_submit_work() const;
     bool can_request_get_block() const;
+    bool session_requires_full_recovery() const;
+    bool session_may_request_work() const;
+    bool session_is_fully_mining_ready() const;
     bool allow_deferred_push_replay() const;
     bool allow_get_block_replay() const;
     bool reward_binding_required() const;

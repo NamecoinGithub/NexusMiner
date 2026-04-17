@@ -42,6 +42,7 @@ class ColinAgent;
 enum class RecoveryPhase : uint8_t {
     HEALTHY,          // Mining normally
     WAITING_TEMPLATE, // Waiting for new template; workers keep running
+    SESSION_RECOVERY, // Authoritative session restoration / re-auth in progress
     RECONNECTING,     // TCP reconnect in progress
     DEGRADED_MODE,    // Terminal full-stop (signal-driven shutdown path)
 };
@@ -171,11 +172,22 @@ private:
     void on_phase_enter(RecoveryPhase phase);
     void on_phase_exit(RecoveryPhase phase);
     static const char* phase_name(RecoveryPhase phase);
+    bool should_reset_stats_on_recovery_completion() const;
+    void mark_recovery_completion_kind_template_refresh();
+
+    enum class RecoveryCompletionKind : uint8_t {
+        NONE,
+        TEMPLATE_REFRESH,
+        PRIMARY_SESSION_REAUTH,
+        TRANSPORT_RECONNECT,
+        FAILOVER_SESSION
+    };
 
     // ── State query helpers (backward-compat convenience) ─────────────────────
     bool is_degraded()              const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::WAITING_TEMPLATE; }
     bool is_submissions_withheld()  const { return false; }  // Backward-compat stub — no submission withholding in current model
     bool is_recovery_active()       const { return m_recovery.phase.load(std::memory_order_relaxed) != RecoveryPhase::HEALTHY; }
+    bool is_session_recovery()      const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::SESSION_RECOVERY; }
     bool is_reconnecting()          const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::RECONNECTING; }
 
     /// Submit a found block via primary NodeSession (handles dual-lane submission internally).
@@ -320,6 +332,7 @@ private:
     // degraded-mode guard; checked before every subsequent creation attempt.
     // Reset in stop_all_workers() and clear_recovery_state().
     bool m_recovery_workers_spawned{false};
+    RecoveryCompletionKind m_pending_recovery_completion_kind{RecoveryCompletionKind::NONE};
 
     // ── Three-tier mined-block confirmation cache ────────────────────────────
     // Tier 1: last 5 mined blocks (confirmation tracking active)

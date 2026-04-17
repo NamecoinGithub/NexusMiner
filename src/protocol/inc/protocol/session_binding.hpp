@@ -34,6 +34,9 @@ struct SessionBinding
     uint32_t channel{0};
     bool ready_for_submit{false};
     bool ready_for_get_block{false};
+    bool full_recovery_required{true};
+    bool work_request_allowed{false};
+    bool mining_ready{false};
 
     SessionIdentity identity{};
 
@@ -42,14 +45,29 @@ struct SessionBinding
         return !session_id.is_default() && !session_epoch.is_default();
     }
 
+    bool session_requires_full_recovery() const
+    {
+        return full_recovery_required || !authenticated || !has_session();
+    }
+
+    bool may_request_work() const
+    {
+        return work_request_allowed && !session_requires_full_recovery();
+    }
+
+    bool is_fully_mining_ready() const
+    {
+        return mining_ready && !session_requires_full_recovery();
+    }
+
     bool can_submit_work() const
     {
-        return ready_for_submit;
+        return is_fully_mining_ready();
     }
 
     bool can_request_get_block() const
     {
-        return ready_for_get_block;
+        return may_request_work();
     }
 
     bool has_crypto_context() const
