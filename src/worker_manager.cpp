@@ -125,7 +125,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             throw std::runtime_error("Invalid Falcon key format in configuration");
         }
 
-        // Create primary NodeSession (handles both stateless and legacy ports automatically via SIM Link)
+        // Create the primary lane-scoped NodeSession.
+        // Lane selection follows the configured node port; failover happens by
+        // reconnecting to a secondary node endpoint with a full auth cycle.
         m_primary_node_session = std::make_shared<NodeSession>(
             m_io_context,
             m_config,
@@ -519,9 +521,10 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     return;
                 }
 
-                m_logger->warn("[Worker_manager] Session EXPIRED — initiating in-band re-authentication");
+                m_logger->warn("[Worker_manager] Session EXPIRED — stopping workers and requiring a fresh session");
                 ++m_session_generation;  // Invalidate any in-flight timer dispatches for the old session
-                mark_recovery_initiated("session_expired");
+                stop_all_workers();
+                transition_to(RecoveryPhase::RECONNECTING, "session_expired");
 
                 // Use the current session auth fail count to calculate backoff delay.
                 // NOTE: We do NOT increment m_session_auth_fail_count here.
@@ -1169,7 +1172,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
     m_logger->info("[Solo] Port Configuration: Using port {} from miner.conf", configured_port);
     m_logger->debug("[Solo] Connection initiated to endpoint: {}", wallet_endpoint.to_string());
 
-    // Use NodeSession to connect (handles both stateless and legacy ports via SIM Link)
+    // Use NodeSession to connect on the configured lane; no cross-lane fallback.
     std::weak_ptr<Worker_manager> weak_self = shared_from_this();
     return m_primary_node_session->connect(wallet_endpoint, [weak_self, wallet_endpoint](bool success) {
         auto self = weak_self.lock();
@@ -1398,7 +1401,9 @@ void Worker_manager::submit_solution(const std::vector<uint8_t>& full_block_byte
         auto packet = m_primary_node_session->submit_block(full_block_bytes, nNonce);
         if (packet && !packet->empty())
         {
-            m_primary_node_session->transmit(packet);
+            if (!m_primary_node_session->transmit(packet)) {
+                m_logger->error("[Worker_manager] Block submission failed — payload was not queued");
+            }
             return;
         }
     }
@@ -1445,7 +1450,10 @@ void Worker_manager::poll_get_round()
                            gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
             return;
         }
-        m_primary_node_session->transmit(payload);
+        if (!m_primary_node_session->transmit(payload)) {
+            m_logger->warn("[Worker_manager] GET_ROUND not queued — skipping unanswered-round shadow-ban check");
+            return;
+        }
 
         // Shadow-ban detection: if we've sent multiple GET_ROUNDs with no
         // NEW_ROUND/OLD_ROUND response, the miner is likely shadow-banned
@@ -1482,7 +1490,7 @@ void Worker_manager::send_session_status_if_due()
         auto solo_protocol = m_primary_node_session->get_active_protocol();
         if (solo_protocol)
         {
-            // NodeSession handles SIM Link internally, so we don't need to track secondary separately
+            // NodeSession is lane-scoped; lane health is diagnostic only.
             auto pkt = solo_protocol->build_session_status_packet(degraded, workers_run, false);
             if (pkt && !pkt->empty()) {
                 if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry) {
@@ -1490,7 +1498,9 @@ void Worker_manager::send_session_status_if_due()
                                    gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
                     return;
                 }
-                m_primary_node_session->transmit(pkt);
+                if (!m_primary_node_session->transmit(pkt)) {
+                    m_logger->warn("[Worker_manager] SESSION_STATUS not queued on active node session");
+                }
             }
         }
     }
@@ -1758,11 +1768,15 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
 
-    // Notify protocol layer that recovery is required.
-    // Phase transition is handled by the caller (mark_recovery_initiated / transition_to)
-    // before or after stop_all_workers() — this function is a pure physical stop.
+    bool session_active = false;
     if (auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr) {
-        solo_protocol->mark_authoritative_recovery_required("workers_stopped_waiting_for_valid_template");
+        if (auto* session_manager = solo_protocol->get_session_manager()) {
+            const auto binding = session_manager->get_session_binding();
+            session_active = binding.authenticated && binding.has_session();
+        }
+        if (session_active) {
+            solo_protocol->mark_authoritative_recovery_required("workers_stopped_waiting_for_valid_template");
+        }
     }
 
     // Reset all worker instances so that the next create_workers() call starts fresh
@@ -1776,9 +1790,15 @@ void Worker_manager::stop_all_workers()
     // Clear the recovery gate so the next epoch can re-create workers
     m_recovery_workers_spawned = false;
 
-    m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
-    m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
-    m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK (0xD081)");
+    if (session_active) {
+        m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
+        m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
+        m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK (0xD081)");
+    } else {
+        m_logger->warn("[Worker_manager] Mining stopped - session unavailable");
+        m_logger->warn("[Worker_manager] Workers stopped and cleared — waiting for full re-auth or configured failover");
+        m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — no work requests until a fresh session is established");
+    }
     m_logger->warn("[Worker_manager] degraded_enter_total={}", m_degraded_enter_total);
 }
 

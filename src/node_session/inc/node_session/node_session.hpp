@@ -42,7 +42,7 @@ namespace stats { class Collector; }
  * - OPCODE Firewall Preserved: Each Solo instance retains its ProtocolLane.
  *   Packet lane enforcement is never bypassed.
  * - Session ID is Node-Scoped: One Falcon handshake is performed. The resulting
- *   session_id is authoritative for that node.
+ *   session_id is authoritative for that node and lane.
  * - Simple Surface Area: Worker_manager calls connect(), transmit(),
  *   session_id(), is_authenticated().
  * - Failover Topology Correct: Worker_manager chooses when to switch from
@@ -253,7 +253,7 @@ public:
     std::shared_ptr<protocol::Solo> get_primary_protocol() const { return m_primary_protocol; }
 
     /**
-     * @brief Get the protocol instance matching the connection transmit() would use.
+     * @brief Get the protocol instance matching the active connection.
      *
      * Mirrors transmit()'s active-lane selection so callers can build payloads
      * with the correct lane framing.
@@ -340,7 +340,7 @@ private:
     };
 
     /**
-     * @brief Select the active connection+protocol pair using the same logic as transmit().
+     * @brief Select the active connection+protocol pair used by transmit().
      *
      * Returns {primary_connection, primary_protocol} if the configured lane is
      * up, else {nullptr, nullptr}. All three guards (connection, protocol,

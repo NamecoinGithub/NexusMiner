@@ -20,7 +20,7 @@ static_assert(std::is_same_v<BlockHeightField, uint32_t>,
 
 } // namespace
 
-MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t session_id)
+MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, SessionId session_id)
     : m_channel(channel)
     , m_session_id(session_id)
     , m_current_unified_height(0)
@@ -47,7 +47,7 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     
     // Initialize template as empty
     m_current_template.state = TemplateState::INVALID;
-    m_current_template.session_id = SessionId{session_id};
+    m_current_template.session_id = session_id;
     m_current_template.session_epoch = m_session_epoch;
     m_current_template.timestamp_received = 0;
     m_current_template.nChannelHeight = 0;
@@ -64,6 +64,11 @@ MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t sessi
     m_logger->info("[TemplateInterface] Initialized for channel {} ({})", 
         static_cast<int>(m_channel), 
         (m_channel == 1) ? "prime" : "hash");
+}
+
+MiningTemplateInterface::MiningTemplateInterface(uint8_t channel, uint32_t session_id)
+    : MiningTemplateInterface(channel, SessionId{session_id})
+{
 }
 
 MiningTemplateInterface::~MiningTemplateInterface()
@@ -700,6 +705,28 @@ void MiningTemplateInterface::set_session_identity(const SessionIdentity& identi
     m_current_template.session_id = identity.session_id();
     m_current_template.session_epoch = identity.session_epoch();
     m_logger->info("[TemplateInterface] Session identity set: {}", identity.fingerprint());
+}
+
+void MiningTemplateInterface::set_session_binding(const SessionBinding& binding)
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+
+    m_session_id = binding.session_id;
+    m_session_epoch = binding.session_epoch;
+    m_current_template.session_id = binding.session_id;
+    m_current_template.session_epoch = binding.session_epoch;
+
+    if (!binding.identity.is_empty()) {
+        m_session_identity = binding.identity;
+        m_current_template.identity = binding.identity;
+        m_logger->info("[TemplateInterface] Session binding set: {}", binding.identity.fingerprint());
+        return;
+    }
+
+    m_session_identity = SessionIdentity{};
+    m_current_template.identity = SessionIdentity{};
+    m_logger->info("[TemplateInterface] Session binding set without canonical identity: session_id=0x{:08x}, epoch={}",
+                   binding.session_id.get(), binding.session_epoch.get());
 }
 
 SessionIdentity MiningTemplateInterface::get_session_identity() const

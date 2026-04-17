@@ -76,6 +76,22 @@ single state picture:
 The current code already logs this transition through session-start summaries and
 `validate_authoritative_session()` calls.
 
+## Session-loss rule
+
+There is only one authoritative live session at a time. If that session is
+lost, the miner does not keep mining under a "session recovery" model. Instead
+it must:
+
+1. stop workers immediately
+2. establish a fresh authenticated session through in-band re-auth if the
+   current node connection is still usable
+3. reconnect or fail over to a configured alternate node if no active
+   connection remains
+
+Template refresh / GET_BLOCK recovery is still valid while a session remains
+authenticated, but once the session is gone the miner must treat all previous
+session-bound work as stale.
+
 ## Roadmap items still open
 
 ### Conflict resolution

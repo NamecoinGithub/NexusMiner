@@ -162,7 +162,7 @@ namespace nexusminer
 		}
 		else
 		{
-			m_logger->info("[SIM Link] DISABLED (sim_link = false in config)");
+			m_logger->info("[SIM Link] DISABLED (single lane-scoped node session)");
 		}
 
 		m_io_context->run();

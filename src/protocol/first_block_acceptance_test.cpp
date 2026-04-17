@@ -249,6 +249,7 @@ struct HarnessArtifacts
     std::string reward_diagnostics;
     std::string pre_submit_diagnostics;
     std::string post_accept_diagnostics;
+    std::string session_event_journal;
     std::string accept_response;
     std::array<uint8_t, 4> prevblock_suffix{};
     uint32_t session_id{0};
@@ -269,6 +270,8 @@ struct HarnessArtifacts
     bool accept_used_snapshot{false};
     bool fallback_after_snapshot_consumption{false};
     bool post_accept_session_valid{false};
+    bool binding_consistency_valid{false};
+    bool full_validation_event_journal_complete{false};
 };
 
 struct HarnessResult
@@ -297,7 +300,7 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
     const auto falcon_pubkey = make_repeated_bytes(32, 0x20);
     context.set_falcon_identity(falcon_pubkey, "acceptance-harness-key", true);
     auto auth_info = context.get_session_info();
-    if (!auth_info.falcon_authenticated || auth_info.falcon_key_id != "acceptance-harness-key") {
+    if (!auth_info.falcon_authenticated || auth_info.falcon_key_id.get() != "acceptance-harness-key") {
         return fail("auth phase did not persist falcon identity");
     }
 
@@ -410,6 +413,8 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
     submit_context.chain_height = decoded.unified_height;
 
     result.artifacts.phases.push_back("submit");
+    context.record_session_event(SessionManager::SessionEventKind::SUBMIT_SENT,
+                                 "acceptance harness submit prepared");
     auto submit_result = StatelessBlockUtility::encode_submit(
         template_interface,
         solved_block,
@@ -488,6 +493,8 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
         return fail("accept path did not consume the submitted snapshot");
     }
     result.artifacts.accept_response = "ACCEPT";
+    context.record_session_event(SessionManager::SessionEventKind::SUBMIT_ACCEPTED,
+                                 "acceptance harness accept");
 
     if (options.full_validation) {
         auto replacement_payload = make_template_payload(
@@ -530,6 +537,24 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
     if (!result.artifacts.post_accept_session_valid || post_accept_reason != "PASS") {
         return fail("post-accept session validation failed");
     }
+
+    const auto binding = context.get_session_binding();
+    result.artifacts.binding_consistency_valid =
+        binding.has_session() &&
+        binding.authenticated &&
+        binding.has_crypto_context() &&
+        binding.reward_bound &&
+        binding.ready_for_submit &&
+        binding.ready_for_get_block &&
+        binding.identity.is_valid() &&
+        binding.identity_matches_session();
+    result.artifacts.session_event_journal = context.build_session_event_journal();
+    result.artifacts.full_validation_event_journal_complete =
+        result.artifacts.session_event_journal.find("auth_success") != std::string::npos &&
+        result.artifacts.session_event_journal.find("session_start") != std::string::npos &&
+        result.artifacts.session_event_journal.find("reward_bind_result") != std::string::npos &&
+        result.artifacts.session_event_journal.find("submit_sent") != std::string::npos &&
+        result.artifacts.session_event_journal.find("submit_accepted") != std::string::npos;
 
     result.ok = true;
     return result;
@@ -576,12 +601,13 @@ void test_first_block_acceptance_fast_mode()
                  result.artifacts.submitted_payload_height == result.artifacts.authoritative_submit_height);
     print_result("Fast harness: submit decrypt + validation + accept path succeed",
                  result.ok &&
-                 result.artifacts.session_valid_before_submit &&
-                 result.artifacts.submit_validation_matches_template &&
-                 result.artifacts.decrypt_matches_submit &&
-                 result.artifacts.accept_used_snapshot &&
-                 result.artifacts.accept_response == "ACCEPT" &&
-                 result.artifacts.post_accept_session_valid);
+                  result.artifacts.session_valid_before_submit &&
+                  result.artifacts.submit_validation_matches_template &&
+                  result.artifacts.decrypt_matches_submit &&
+                  result.artifacts.accept_used_snapshot &&
+                  result.artifacts.binding_consistency_valid &&
+                  result.artifacts.accept_response == "ACCEPT" &&
+                  result.artifacts.post_accept_session_valid);
 
     if (!result.ok) {
         std::cout << "    Failure: " << result.failure << '\n';
@@ -610,8 +636,13 @@ void test_first_block_acceptance_full_validation_mode()
                  result.artifacts.fallback_after_snapshot_consumption);
     print_result("Full harness: preserves session consistency after accept",
                  result.ok &&
-                 result.artifacts.post_accept_session_valid &&
-                 result.artifacts.post_accept_diagnostics.find("reward-address") != std::string::npos);
+                  result.artifacts.post_accept_session_valid &&
+                  result.artifacts.post_accept_diagnostics.find("reward-address") != std::string::npos);
+    print_result("Full harness: captures event journal for auth/reward/submit lifecycle",
+                 result.ok &&
+                  result.artifacts.binding_consistency_valid &&
+                  result.artifacts.full_validation_event_journal_complete &&
+                  result.artifacts.session_event_journal.find("SESSION EVENT JOURNAL") != std::string::npos);
 
     if (!result.ok) {
         std::cout << "    Failure: " << result.failure << '\n';

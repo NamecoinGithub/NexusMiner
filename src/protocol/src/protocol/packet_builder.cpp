@@ -7,6 +7,9 @@ namespace protocol {
 
 network::Shared_payload PacketBuilder::build(ProtocolLane lane, uint8_t legacy_opcode)
 {
+    if (lane == ProtocolLane::UNKNOWN) {
+        return {};
+    }
     if (lane == ProtocolLane::STATELESS) {
         Packet pkt{ static_cast<uint16_t>(LLP::MirrorOpcode(legacy_opcode)) };
         return pkt.get_bytes();
@@ -19,6 +22,9 @@ network::Shared_payload PacketBuilder::build(ProtocolLane lane, uint8_t legacy_o
 network::Shared_payload PacketBuilder::build(ProtocolLane lane, uint8_t legacy_opcode,
                                               const std::vector<uint8_t>& payload)
 {
+    if (lane == ProtocolLane::UNKNOWN) {
+        return {};
+    }
     auto data = std::make_shared<network::Payload>(payload);
     if (lane == ProtocolLane::STATELESS) {
         Packet pkt{ static_cast<uint16_t>(LLP::MirrorOpcode(legacy_opcode)), data };

@@ -12,6 +12,7 @@
 #include "LLP/block.hpp"
 #include "network/types.hpp"
 #include "protocol/height_tracker.hpp"
+#include "protocol/session_binding.hpp"
 #include "protocol/session_identity.hpp"
 #include "spdlog/spdlog.h"
 
@@ -151,7 +152,8 @@ public:
      * @param channel Mining channel (1 = Prime, 2 = Hash)
      * @param session_id Falcon authentication session ID
      */
-    MiningTemplateInterface(uint8_t channel, uint32_t session_id = 0);
+    MiningTemplateInterface(uint8_t channel, SessionId session_id = {});
+    MiningTemplateInterface(uint8_t channel, uint32_t session_id);
     
     /**
      * @brief Destructor
@@ -477,6 +479,17 @@ public:
      * @param identity Canonical identity bundle from SessionManager
      */
     void set_session_identity(const SessionIdentity& identity);
+
+    /**
+     * @brief Set the authoritative SessionBinding bundle for template ownership.
+     *
+     * This batches session identity, epoch, lane, reward, and readiness semantics
+     * at the call boundary while keeping MiningTemplateInterface's local cached
+     * session fields in sync for backward compatibility.
+     *
+     * @param binding Canonical session binding snapshot from SessionManager
+     */
+    void set_session_binding(const SessionBinding& binding);
 
     /**
      * @brief Get the canonical session identity bound to the current template.

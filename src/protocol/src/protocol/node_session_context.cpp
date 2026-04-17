@@ -38,10 +38,27 @@ SessionManager::SessionState NodeSessionContext::get_state() const
 
 void NodeSessionContext::start_session(SessionId session_id,
                                        const std::vector<uint8_t>& session_key,
-                                       const std::vector<uint8_t>& tritium_genesis)
+                                       SessionGenesisHash tritium_genesis)
 {
     if (m_session_manager) {
         m_session_manager->start_session(session_id, session_key, tritium_genesis);
+    }
+}
+
+void NodeSessionContext::start_session(SessionId session_id,
+                                       const std::vector<uint8_t>& session_key,
+                                       const std::vector<uint8_t>& tritium_genesis)
+{
+    start_session(session_id, session_key, SessionGenesisHash(tritium_genesis));
+}
+
+void NodeSessionContext::commit_authenticated_session(SessionId session_id,
+                                                      const std::vector<uint8_t>& pubkey,
+                                                      FalconHashKeyId key_id,
+                                                      SessionGenesisHash tritium_genesis)
+{
+    if (m_session_manager) {
+        m_session_manager->commit_authenticated_session(session_id, pubkey, key_id, tritium_genesis);
     }
 }
 
@@ -50,9 +67,8 @@ void NodeSessionContext::commit_authenticated_session(SessionId session_id,
                                                       const std::string& key_id,
                                                       const std::vector<uint8_t>& tritium_genesis)
 {
-    if (m_session_manager) {
-        m_session_manager->commit_authenticated_session(session_id, pubkey, key_id, tritium_genesis);
-    }
+    commit_authenticated_session(session_id, pubkey, FalconHashKeyId(key_id),
+                                 SessionGenesisHash(tritium_genesis));
 }
 
 void NodeSessionContext::begin_auth_handshake(const std::string& detail)
@@ -63,7 +79,7 @@ void NodeSessionContext::begin_auth_handshake(const std::string& detail)
 }
 
 void NodeSessionContext::begin_reward_binding(const std::string& reward_address,
-                                              const std::vector<uint8_t>& reward_hash,
+                                              RewardHash reward_hash,
                                               const std::string& source)
 {
     if (m_session_manager) {
@@ -71,13 +87,27 @@ void NodeSessionContext::begin_reward_binding(const std::string& reward_address,
     }
 }
 
+void NodeSessionContext::begin_reward_binding(const std::string& reward_address,
+                                              const std::vector<uint8_t>& reward_hash,
+                                              const std::string& source)
+{
+    begin_reward_binding(reward_address, RewardHash(reward_hash), source);
+}
+
 void NodeSessionContext::commit_reward_bound(const std::string& reward_address,
-                                             const std::vector<uint8_t>& reward_hash,
+                                             RewardHash reward_hash,
                                              const std::string& source)
 {
     if (m_session_manager) {
         m_session_manager->commit_reward_bound(reward_address, reward_hash, source);
     }
+}
+
+void NodeSessionContext::commit_reward_bound(const std::string& reward_address,
+                                             const std::vector<uint8_t>& reward_hash,
+                                             const std::string& source)
+{
+    commit_reward_bound(reward_address, RewardHash(reward_hash), source);
 }
 
 void NodeSessionContext::commit_reward_rejected(const std::string& reward_address,
@@ -206,11 +236,16 @@ void NodeSessionContext::set_connection(std::shared_ptr<network::Connection> con
     }
 }
 
-void NodeSessionContext::set_tritium_genesis(const std::vector<uint8_t>& genesis)
+void NodeSessionContext::set_tritium_genesis(SessionGenesisHash genesis)
 {
     if (m_session_manager) {
         m_session_manager->set_tritium_genesis(genesis);
     }
+}
+
+void NodeSessionContext::set_tritium_genesis(const std::vector<uint8_t>& genesis)
+{
+    set_tritium_genesis(SessionGenesisHash(genesis));
 }
 
 void NodeSessionContext::set_connection_metadata(const std::string& local_endpoint,
@@ -223,12 +258,19 @@ void NodeSessionContext::set_connection_metadata(const std::string& local_endpoi
 }
 
 void NodeSessionContext::set_falcon_identity(const std::vector<uint8_t>& pubkey,
-                                             const std::string& key_id,
+                                             FalconHashKeyId key_id,
                                              bool authenticated)
 {
     if (m_session_manager) {
         m_session_manager->set_falcon_identity(pubkey, key_id, authenticated);
     }
+}
+
+void NodeSessionContext::set_falcon_identity(const std::vector<uint8_t>& pubkey,
+                                             const std::string& key_id,
+                                             bool authenticated)
+{
+    set_falcon_identity(pubkey, FalconHashKeyId(key_id), authenticated);
 }
 
 void NodeSessionContext::reset_session_credentials()
@@ -239,11 +281,28 @@ void NodeSessionContext::reset_session_credentials()
 }
 
 void NodeSessionContext::set_chacha20_session_key(const std::vector<uint8_t>& session_key,
-                                                  const std::string& fingerprint,
+                                                  SessionFingerprint fingerprint,
                                                   bool ready)
 {
     if (m_session_manager) {
         m_session_manager->set_chacha20_session_key(session_key, fingerprint, ready);
+    }
+}
+
+void NodeSessionContext::set_chacha20_session_key(const std::vector<uint8_t>& session_key,
+                                                  const std::string& fingerprint,
+                                                  bool ready)
+{
+    set_chacha20_session_key(session_key, SessionFingerprint(fingerprint), ready);
+}
+
+void NodeSessionContext::set_reward_binding(const std::string& reward_address,
+                                            RewardHash reward_hash,
+                                            bool bound,
+                                            const std::string& source)
+{
+    if (m_session_manager) {
+        m_session_manager->set_reward_binding(reward_address, reward_hash, bound, source);
     }
 }
 
@@ -252,9 +311,7 @@ void NodeSessionContext::set_reward_binding(const std::string& reward_address,
                                             bool bound,
                                             const std::string& source)
 {
-    if (m_session_manager) {
-        m_session_manager->set_reward_binding(reward_address, reward_hash, bound, source);
-    }
+    set_reward_binding(reward_address, RewardHash(reward_hash), bound, source);
 }
 
 void NodeSessionContext::set_channel_state(uint32_t channel,
@@ -340,9 +397,14 @@ std::string NodeSessionContext::build_session_event_journal() const
     return m_session_manager ? m_session_manager->build_session_event_journal() : std::string{};
 }
 
+SessionGenesisHash NodeSessionContext::get_typed_tritium_genesis() const
+{
+    return m_session_manager ? m_session_manager->get_typed_tritium_genesis() : SessionGenesisHash{};
+}
+
 std::vector<uint8_t> NodeSessionContext::get_tritium_genesis() const
 {
-    return m_session_manager ? m_session_manager->get_tritium_genesis() : std::vector<uint8_t>{};
+    return get_typed_tritium_genesis().get();
 }
 
 std::vector<uint8_t> NodeSessionContext::get_session_key() const
@@ -374,6 +436,14 @@ SessionIdentity NodeSessionContext::get_canonical_identity() const
         return m_session_manager->get_canonical_identity();
     }
     return SessionIdentity{};
+}
+
+SessionBinding NodeSessionContext::get_session_binding() const
+{
+    if (m_session_manager) {
+        return m_session_manager->get_session_binding();
+    }
+    return SessionBinding{};
 }
 
 void NodeSessionContext::set_session_expired_handler(SessionManager::SessionExpiredHandler handler)

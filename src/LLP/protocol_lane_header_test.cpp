@@ -243,6 +243,12 @@ int main()
             legacy_wire && legacy_wire->size() == 17);
         print_test_result("Legacy SUBMIT_BLOCK+12b: wire[0] = 0x01 (1-byte header)",
             legacy_wire && (*legacy_wire)[0] == 0x01);
+        print_test_result("Legacy SUBMIT_BLOCK+12b: wire[1:4] = 0x0000000C (BE length)",
+            legacy_wire &&
+            (*legacy_wire)[1] == 0x00 &&
+            (*legacy_wire)[2] == 0x00 &&
+            (*legacy_wire)[3] == 0x00 &&
+            (*legacy_wire)[4] == 0x0C);
         
         // Stateless data packet: [header(2)][length(4)][data(12)] = 18 bytes
         Packet stateless_data(static_cast<uint16_t>(MinerLLP::StatelessMining::SUBMIT_BLOCK), payload_data);
@@ -251,6 +257,12 @@ int main()
             stateless_wire && stateless_wire->size() == 18);
         print_test_result("Stateless SUBMIT_BLOCK+12b: wire[0:1] = 0xD001 (2-byte header)",
             stateless_wire && (*stateless_wire)[0] == 0xD0 && (*stateless_wire)[1] == 0x01);
+        print_test_result("Stateless SUBMIT_BLOCK+12b: wire[2:5] = 0x0000000C (BE length)",
+            stateless_wire &&
+            (*stateless_wire)[2] == 0x00 &&
+            (*stateless_wire)[3] == 0x00 &&
+            (*stateless_wire)[4] == 0x00 &&
+            (*stateless_wire)[5] == 0x0C);
     }
 
     // ====================================================================

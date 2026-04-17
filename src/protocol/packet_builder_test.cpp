@@ -12,7 +12,7 @@
  *  7. GET_ROUND: legacy header-only (opcode 133 = 0x85)
  *  8. GET_ROUND: stateless header-only (0xD085)
  *  9. SUBMIT_BLOCK: stateless with payload (0xD001)
- * 10. Empty payload build returns empty (invalid)
+ * 10. UNKNOWN lane returns empty
  * 11. submit_block plaintext layout size invariant (Disposable Falcon only)
  */
 
@@ -212,11 +212,24 @@ void test_mirror_opcode_invariant() {
 }
 
 // ============================================================================
-// Test 11: submit_block plaintext layout size invariant
+// Test 11: UNKNOWN lane must not silently fall back to legacy framing
+// ============================================================================
+void test_unknown_lane_rejected() {
+    std::cout << "\nTest 11: UNKNOWN lane rejected\n";
+    auto header_only = PacketBuilder::build(ProtocolLane::UNKNOWN, LLP::GET_BLOCK);
+    std::vector<uint8_t> payload = {0xAA, 0xBB};
+    auto with_payload = PacketBuilder::build(ProtocolLane::UNKNOWN, LLP::SUBMIT_BLOCK, payload);
+
+    bool ok = !header_only && !with_payload;
+    print_test_result("UNKNOWN lane build returns empty payload", ok);
+}
+
+// ============================================================================
+// Test 12: submit_block plaintext layout size invariant
 // Verifies the fixed-format plaintext is exactly block(216) + ts(8) + siglen(2) + sig(N)
 // ============================================================================
 void test_plaintext_layout_size() {
-    std::cout << "\nTest 11: Plaintext layout size = 216 + 8 + 2 + sig_size\n";
+    std::cout << "\nTest 12: Plaintext layout size = 216 + 8 + 2 + sig_size\n";
     constexpr size_t BLOCK_SIZE = 216;
     constexpr size_t TIMESTAMP_SIZE = 8;
     constexpr size_t SIGLEN_FIELD_SIZE = 2;
@@ -250,6 +263,7 @@ int main() {
     test_stateless_get_round();
     test_large_payload_stateless();
     test_mirror_opcode_invariant();
+    test_unknown_lane_rejected();
     test_plaintext_layout_size();
 
     std::cout << "\n========================================\n";

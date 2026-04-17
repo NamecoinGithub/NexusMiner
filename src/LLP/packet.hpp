@@ -348,12 +348,19 @@ namespace nexusminer
 				{
 					// Parse length (4 bytes, big-endian, starts at offset 1)
 					m_length = read_be32(buffer->data() + 1);
+					if (m_length > PacketConstants::MAX_REASONABLE_LENGTH)
+					{
+						m_is_valid = false;
+						m_length = 0;
+						return;
+					}
 					
 					// Extract data (starts at offset 5)
-					if (buffer->size() >= 5 + m_length)
+					const std::size_t total_size = 5u + static_cast<std::size_t>(m_length);
+					if (buffer->size() >= total_size)
 					{
 						m_data = std::make_shared<network::Payload>(buffer->begin() + 5, 
-						                                             buffer->begin() + 5 + m_length);
+						                                             buffer->begin() + total_size);
 					}
 					else
 					{
@@ -384,12 +391,19 @@ namespace nexusminer
 					
 					// Parse length (4 bytes, big-endian, starts at offset 2)
 					m_length = read_be32(buffer->data() + 2);
+					if (m_length > PacketConstants::MAX_REASONABLE_LENGTH)
+					{
+						m_is_valid = false;
+						m_length = 0;
+						return;
+					}
 					
 					// Extract data (starts at offset 6)
-					if (buffer->size() >= 6 + m_length)
+					const std::size_t total_size = 6u + static_cast<std::size_t>(m_length);
+					if (buffer->size() >= total_size)
 					{
 						m_data = std::make_shared<network::Payload>(buffer->begin() + 6, 
-						                                             buffer->begin() + 6 + m_length);
+						                                             buffer->begin() + total_size);
 					}
 					else
 					{
@@ -413,12 +427,19 @@ namespace nexusminer
 					{
 						// Parse length (4 bytes, big-endian, starts at offset 1)
 						m_length = read_be32(buffer->data() + 1);
+						if (m_length > PacketConstants::MAX_REASONABLE_LENGTH)
+						{
+							m_is_valid = false;
+							m_length = 0;
+							return;
+						}
 						
 						// Extract data (starts at offset 5)
-						if (buffer->size() >= 5 + m_length)
+						const std::size_t total_size = 5u + static_cast<std::size_t>(m_length);
+						if (buffer->size() >= total_size)
 						{
 							m_data = std::make_shared<network::Payload>(buffer->begin() + 5, 
-							                                             buffer->begin() + 5 + m_length);
+							                                             buffer->begin() + total_size);
 						}
 						else
 						{
@@ -444,12 +465,19 @@ namespace nexusminer
 				{
 					// Parse length (4 bytes, big-endian, starts at offset 1)
 					m_length = read_be32(buffer->data() + 1);
+					if (m_length > PacketConstants::MAX_REASONABLE_LENGTH)
+					{
+						m_is_valid = false;
+						m_length = 0;
+						return;
+					}
 					
 					// Extract data (starts at offset 5)
-					if (buffer->size() >= 5 + m_length)
+					const std::size_t total_size = 5u + static_cast<std::size_t>(m_length);
+					if (buffer->size() >= total_size)
 					{
 						m_data = std::make_shared<network::Payload>(buffer->begin() + 5, 
-						                                             buffer->begin() + 5 + m_length);
+						                                             buffer->begin() + total_size);
 					}
 					else
 					{
@@ -681,10 +709,10 @@ namespace nexusminer
 				// [header (1 byte)] [length (4 bytes, big-endian)] [payload data]
 				if ((m_header < 128 || is_auth_packet()) && m_length > 0)
 				{
-					BYTES.push_back((m_length >> 24));
-					BYTES.push_back((m_length >> 16));
-					BYTES.push_back((m_length >> 8));
-					BYTES.push_back(m_length);
+					BYTES.push_back(static_cast<uint8_t>((m_length >> 24) & 0xFF));
+					BYTES.push_back(static_cast<uint8_t>((m_length >> 16) & 0xFF));
+					BYTES.push_back(static_cast<uint8_t>((m_length >> 8) & 0xFF));
+					BYTES.push_back(static_cast<uint8_t>(m_length & 0xFF));
 
 					BYTES.insert(BYTES.end(), m_data->begin(), m_data->end());
 				}

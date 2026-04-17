@@ -773,6 +773,12 @@ int main()
         test_malformed_packet_does_not_fail_active_lane();
         std::cout << std::endl;
 
+        test_transmit_returns_false_when_connection_rejects_payload();
+        std::cout << std::endl;
+
+        test_transmit_returns_true_when_connection_accepts_payload();
+        std::cout << std::endl;
+
         std::cout << "=== All NodeSession tests passed! ===\n" << std::endl;
         return 0;
 
