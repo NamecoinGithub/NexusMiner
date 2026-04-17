@@ -253,8 +253,18 @@ public:
     uint32_t get_blocks_rejected() const { return m_blocks_rejected.load(); }
 
     // Shadow-ban telemetry: consecutive unanswered GET_ROUNDs and preflight rejections
-    uint32_t get_unanswered_get_round_count() const { return m_unanswered_get_round_count; }
+    uint32_t get_unanswered_get_round_count() const { return m_unanswered_get_round_count.load(std::memory_order_acquire); }
     uint32_t get_preflight_reject_count() const { return m_preflight_reject_count; }
+
+    // Returns the time of the earliest still-unanswered GET_ROUND, or the default
+    // time_point{} if no unanswered GET_ROUNDs are outstanding.
+    std::chrono::steady_clock::time_point get_earliest_unanswered_get_round_at() const {
+        return m_earliest_unanswered_get_round_at;
+    }
+
+    /// Call ONLY after a GET_ROUND packet has been successfully handed to transmit().
+    /// Increments the unanswered counter that feeds shadow-ban detection.
+    void note_get_round_transmitted();
 
     // Block-result callback: invoked on BLOCK_ACCEPTED with (height, hashPrevBlock, channel, nonce).
     // Worker_manager registers this to record accepted blocks in the mined-block cache.
@@ -541,11 +551,17 @@ private:
     uint32_t m_preflight_reject_count{0};
     static constexpr uint32_t SHADOW_BAN_PREFLIGHT_THRESHOLD = 5;
 
-    // Unanswered GET_ROUND counter: incremented on each GET_ROUND send,
-    // reset to zero when a NEW_ROUND / OLD_ROUND response is processed.
-    // If this exceeds the shadow-ban threshold while PUSH is alive,
-    // the session is considered shadow-banned.
-    uint32_t m_unanswered_get_round_count{0};
+    // Unanswered GET_ROUND counter: incremented ONLY after a GET_ROUND packet has
+    // been successfully handed to transmit() (via note_get_round_transmitted()).
+    // Reset to zero when a NEW_ROUND / OLD_ROUND response is processed.
+    // std::atomic because Worker_manager reads via get_unanswered_get_round_count()
+    // from its own thread while Solo modifies it on the io_context thread.
+    std::atomic<uint32_t> m_unanswered_get_round_count{0};
+    // Time of the earliest GET_ROUND that is still unanswered (set by
+    // note_get_round_transmitted() when the counter goes from 0→1; cleared on reset).
+    std::chrono::steady_clock::time_point m_earliest_unanswered_get_round_at{};
+    // Time of the most recent successfully-transmitted GET_ROUND.
+    std::chrono::steady_clock::time_point m_last_get_round_transmitted_at{};
 
     // Consecutive hashPrevBlock mismatch counter (chain-in-flux doom-loop guard).
     // Incremented each time validate_current_template() detects a hashPrevBlock mismatch

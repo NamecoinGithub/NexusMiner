@@ -738,7 +738,9 @@ void Solo::clear_generation_bound_state(const char* reason)
     m_last_submitted_channel = 0;
     m_session_id_mismatch_count = 0;
     m_preflight_reject_count = 0;
-    m_unanswered_get_round_count = 0;
+    m_unanswered_get_round_count.store(0, std::memory_order_release);
+    m_earliest_unanswered_get_round_at = {};
+    m_last_get_round_transmitted_at = {};
     m_last_session_status_ack = {};
     m_last_session_status_ack_time = {};
     m_last_known_hash_prev_block = uint1024_t(0);
@@ -1524,11 +1526,21 @@ network::Shared_payload Solo::send_get_round()
     auto payload = PacketBuilder::build(m_protocol_lane, LLP::GET_ROUND);
     if (payload && !payload->empty()) {
         m_logger->debug("[Solo GET_ROUND] Encoded payload size: {} bytes (header-only)", payload->size());
-        ++m_unanswered_get_round_count;
     } else {
         m_logger->error("[Solo GET_ROUND] PacketBuilder::build returned null or empty payload!");
     }
     return payload;
+}
+
+void Solo::note_get_round_transmitted()
+{
+    auto new_val = m_unanswered_get_round_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    m_last_get_round_transmitted_at = std::chrono::steady_clock::now();
+    if (m_earliest_unanswered_get_round_at == std::chrono::steady_clock::time_point{}) {
+        m_earliest_unanswered_get_round_at = m_last_get_round_transmitted_at;
+    }
+    m_logger->info("[Solo GET_ROUND] \u2192 Sent (unanswered={}, lane={})",
+                   new_val, get_lane_name(m_protocol_lane));
 }
 
 network::Shared_payload Solo::send_recovery_work_request()
@@ -5350,8 +5362,10 @@ void Solo::on_new_round_received(uint32_t new_unified_height)
     m_logger->info("[Solo Poll] ⚡ NEW_ROUND: chain tip changed — poll interval reset to {}ms",
         m_current_poll_interval_ms);
     
-    // GET_ROUND response received — reset unanswered counter
-    m_unanswered_get_round_count = 0;
+    // GET_ROUND response received — reset unanswered counter and timestamps
+    m_unanswered_get_round_count.store(0, std::memory_order_release);
+    m_earliest_unanswered_get_round_at = {};
+    m_last_get_round_transmitted_at = {};
 
     // Check unified height delta
     check_unified_height_delta(new_unified_height);
@@ -5365,8 +5379,10 @@ void Solo::on_old_round_received()
     // m_current_poll_interval_ms stays at POLL_INTERVAL_MIN_MS always.
     m_current_poll_interval_ms = POLL_INTERVAL_MIN_MS;
 
-    // GET_ROUND response received — reset unanswered counter
-    m_unanswered_get_round_count = 0;
+    // GET_ROUND response received — reset unanswered counter and timestamps
+    m_unanswered_get_round_count.store(0, std::memory_order_release);
+    m_earliest_unanswered_get_round_at = {};
+    m_last_get_round_transmitted_at = {};
 }
 
 void Solo::on_template_received(uint32_t template_height)
