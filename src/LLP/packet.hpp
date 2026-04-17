@@ -98,9 +98,16 @@ namespace nexusminer
 		}
 		
 		// Helper to determine if a stateless (mirror-mapped) opcode is header-only
-		// Uses the same logic as legacy, applied to the unmirrored opcode,
-		// EXCEPT for GET_BLOCK (0xD081) which is data-bearing on stateless
-		// (node pushes 228-byte template via this opcode)
+		// (i.e., consumed as a bare 2-byte frame with no length field following).
+		//
+		// Three-way classification:
+		//  1. Framed normal   — length field always present (most data/auth opcodes)
+		//  2. Bare compat     — 0xD002/0xD003: some in-field node builds emit only 2 bytes
+		//  3. Dual-accept     — 0xD0C8/0xD0C9: LLL-TAO commit 206d1a2c emits the full
+		//                       6-byte framed form [opcode:2B][length:4B][0 bytes]; older
+		//                       or dormant builds may still emit the bare 2-byte form.
+		//                       Routed through is_stateless_zero_payload_compat_opcode()
+		//                       which prefers the framed form and falls back to bare form.
 		inline bool is_stateless_header_only_opcode(uint16_t opcode) {
 			if (!is_stateless_opcode(opcode)) return false;
 			// Un-mirrored data opcodes (PING_DIAG=0xD0E0, PONG_DIAG=0xD0E1) are always data-bearing.
@@ -111,6 +118,12 @@ namespace nexusminer
 			// instead of a 2-byte header followed by a zero-length frame.
 			if (opcode == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT ||
 			    opcode == LLP::StatelessMining::BLOCK_REJECTED_COMPAT) return true;
+			// 0xD0C8 / 0xD0C9: LLL-TAO (commit 206d1a2c, src/LLP/stateless_miner_connection.cpp
+			// respond(STATELESS_BLOCK_ACCEPTED)) sends the full 6-byte framed form on the wire.
+			// Route through the zero-payload compat branch which prefers the framed form and
+			// falls back to the bare 2-byte form for any in-field node that still emits it.
+			if (opcode == LLP::StatelessMining::BLOCK_ACCEPTED ||
+			    opcode == LLP::StatelessMining::BLOCK_REJECTED) return false;
 			// GET_BLOCK (0xD081) is ALWAYS data-bearing on stateless lane (228-byte template push)
 			// Legacy GET_BLOCK (129) is header-only request, but stateless repurposes it for push
 			if (opcode == LLP::StatelessMining::GET_BLOCK) return false;
@@ -118,9 +131,16 @@ namespace nexusminer
 			return is_legacy_header_only_opcode(legacy);
 		}
 
+		// Returns true for opcodes whose stateless wire form is EITHER a bare 2-byte
+		// header (legacy compat) OR an explicit zero/one-length framed packet.
+		// The parser prefers the framed form when >= 6 bytes are available and the
+		// length field is 0 (or 1 for BLOCK_REJECTED variants), otherwise it falls
+		// back to treating the 2-byte header as a complete packet.
 		inline bool is_stateless_zero_payload_compat_opcode(uint16_t opcode) {
 			return opcode == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT ||
-			       opcode == LLP::StatelessMining::BLOCK_REJECTED_COMPAT;
+			       opcode == LLP::StatelessMining::BLOCK_REJECTED_COMPAT ||
+			       opcode == LLP::StatelessMining::BLOCK_ACCEPTED ||   // 0xD0C8 — LLL-TAO 206d1a2c emits 6-byte framed form
+			       opcode == LLP::StatelessMining::BLOCK_REJECTED;     // 0xD0C9 — same
 		}
 	}
 	
@@ -1121,7 +1141,8 @@ namespace nexusminer
 				{
 					std::uint32_t const compat_length = read_be32(buffer->data() + start_index + 2);
 					if (compat_length == 0 ||
-					    (header16 == LLP::StatelessMining::BLOCK_REJECTED_COMPAT && compat_length == 1))
+					    ((header16 == LLP::StatelessMining::BLOCK_REJECTED_COMPAT ||
+					      header16 == LLP::StatelessMining::BLOCK_REJECTED) && compat_length == 1))
 					{
 						std::size_t const compat_packet_size = MIN_PACKET_SIZE + compat_length;
 						if (buffer_size < compat_packet_size)
