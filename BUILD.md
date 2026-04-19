@@ -63,7 +63,7 @@ cmake -DCMAKE_BUILD_TYPE=Release -DWITH_PRIME=On .. && make -j$(nproc)
 cmake -DCMAKE_BUILD_TYPE=Release -DWITH_GPU_CUDA=On -DWITH_PRIME=On .. && make -j$(nproc)
 ```
 
-### AMD GPU + Prime
+### AMD GPU + Prime (experimental)
 ```bash
 cmake -DCMAKE_BUILD_TYPE=Release -DWITH_GPU_AMD=On -DWITH_PRIME=On .. && make -j$(nproc)
 ```
@@ -113,7 +113,7 @@ This preset enables:
 
 ## AMD GPU Build Notes
 
-Prime mining with Radeon RX6000 series GPUs is supported on Linux. The [ROCm](https://rocmdocs.amd.com/en/latest/Installation_Guide/Installation_new.html) toolkit is required. ROCm uses a special version of clang whose path must be passed to cmake:
+Prime mining with Radeon RX6000 series GPUs is currently experimental on Linux. The [ROCm](https://rocmdocs.amd.com/en/latest/Installation_Guide/Installation_new.html) toolkit is required. ROCm uses a special version of clang whose path must be passed to cmake:
 
 ```bash
 cmake -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ -DCMAKE_BUILD_TYPE=Release -DWITH_GPU_AMD=On -DWITH_PRIME=On ..

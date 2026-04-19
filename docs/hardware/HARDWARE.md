@@ -13,10 +13,10 @@ Detailed hardware configuration for GPU, FPGA, and CPU mining.
 | Vendor | Series | Channel | Backend |
 |--------|--------|---------|---------|
 | Nvidia | GTX/RTX 10x0, 20x0, 30x0 | Prime & Hash | CUDA |
-| AMD | Radeon RX6000 | Prime | ROCm / HIP |
+| AMD | Radeon RX6000 | Prime | Experimental ROCm / HIP |
 
 RTX 20x0 and 30x0 offer the best performance. Hash-channel mining with Nvidia
-GPUs is also supported.
+GPUs is also supported. AMD hash-channel mining is not currently supported.
 
 ### GPU Quick-Start (Linux, Nvidia)
 

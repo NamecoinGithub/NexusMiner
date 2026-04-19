@@ -41,6 +41,8 @@ public:
 private:
 
     void run();
+    std::uint32_t device_id() const;
+    bool bind_device_context(const char* phase);
 
     std::shared_ptr<asio::io_context> m_io_context;
     std::shared_ptr<spdlog::logger> m_logger;

@@ -10,3 +10,10 @@ target_include_directories(config
 )
 
 target_link_libraries(config spdlog nlohmann_json::nlohmann_json LLC)
+
+add_nexusminer_test(
+    NAME        toml_gpu_worker_enumeration_test
+    SOURCES     toml_gpu_worker_enumeration_test.cpp
+    LINK_LIBS   config spdlog::spdlog
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/inc
+)

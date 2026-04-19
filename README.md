@@ -41,7 +41,7 @@ cmake --preset riscv64-cross && cmake --build build-riscv -j$(nproc)
 | Hardware | Channel | Status |
 |----------|---------|--------|
 | Nvidia GTX/RTX 10x0 – 30x0 | Prime & Hash | ✅ CUDA |
-| AMD Radeon RX6000 | Prime | ✅ ROCm |
+| AMD Radeon RX6000 | Prime | ⚠️ Experimental ROCm/HIP |
 | Blackminer FPGA | Hash | ✅ |
 | CPU (any x86-64, ARM64) | Prime | ✅ |
 | RISC-V (RVV 1.0, rv64gcv\_zk) | Hash & Prime | ✅ |
