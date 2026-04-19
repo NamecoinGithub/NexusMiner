@@ -127,6 +127,32 @@ void test_binding_exposes_reauth_in_progress_as_full_recovery()
     std::cout << "  PASS: binding_exposes_reauth_in_progress_as_full_recovery\n";
 }
 
+void test_channel_state_clear_is_authoritative()
+{
+    auto session_manager = std::make_shared<SessionManager>(24, nullptr);
+    NodeSessionContext context(session_manager);
+
+    context.set_protocol_lane(nexusminer::ProtocolLane::STATELESS);
+    context.commit_authenticated_session(SessionId(0x55667788u),
+                                         std::vector<uint8_t>(32, 0x44),
+                                         FalconHashKeyId("clear-state-key"),
+                                         SessionGenesisHash(std::vector<uint8_t>(32, 0x11)));
+    context.set_reward_binding("reward-address", RewardHash(std::vector<uint8_t>(32, 0x22)), true, "config");
+    context.set_channel_state(2, true, true);
+
+    auto ready_binding = context.get_session_binding();
+    assert(ready_binding.can_request_get_block());
+    assert(ready_binding.can_submit_work());
+
+    context.set_channel_state(2, false, false);
+    const auto cleared_binding = context.get_session_binding();
+    assert(!cleared_binding.ready_for_get_block);
+    assert(!cleared_binding.ready_for_submit);
+    assert(!cleared_binding.can_request_get_block());
+    assert(!cleared_binding.can_submit_work());
+    std::cout << "  PASS: channel_state_clear_is_authoritative\n";
+}
+
 } // namespace
 
 int main()
@@ -135,6 +161,7 @@ int main()
     test_context_exposes_batched_binding();
     test_binding_clears_crypto_after_session_expiry();
     test_binding_exposes_reauth_in_progress_as_full_recovery();
+    test_channel_state_clear_is_authoritative();
     std::cout << "All SessionBinding tests passed!\n";
     return 0;
 }

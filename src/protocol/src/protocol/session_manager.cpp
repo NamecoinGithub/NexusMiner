@@ -844,8 +844,9 @@ void SessionManager::set_channel_state(uint32_t channel,
 {
     SessionWriteLock lock(m_session_mutex);
     m_session.channel = channel;
-    if (ready_for_submit) m_session.ready_for_submit = ready_for_submit;
-    if (ready_for_get_block) m_session.ready_for_get_block = ready_for_get_block;
+    const bool authenticated = (m_session.state == SessionState::AUTHENTICATED);
+    m_session.ready_for_submit = authenticated && m_session.reward_bound && ready_for_submit;
+    m_session.ready_for_get_block = authenticated && ready_for_get_block;
     bump_runtime_state_generation_locked();
 }
 
