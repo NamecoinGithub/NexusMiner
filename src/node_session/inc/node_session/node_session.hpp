@@ -100,6 +100,13 @@ public:
     using Session_start_handler = std::function<void(uint16_t keepalive_hours)>;
 
     /**
+     * @brief Work-ready handler
+     *
+     * Fired after the authoritative session container says outbound GET_BLOCK is allowed again.
+     */
+    using Work_ready_handler = std::function<void()>;
+
+    /**
      * @brief Node shutdown handler: invoked when NODE_SHUTDOWN (0xD0FF) is received from node.
      * Worker_manager registers this to stop workers gracefully.
      * Reconnect backoff is handled automatically by the Solo protocol layer.
@@ -212,6 +219,12 @@ public:
      * @param handler Session authenticated callback
      */
     void set_session_authenticated_handler(Session_authenticated_handler handler);
+
+    /**
+     * @brief Set work-ready handler
+     * @param handler Work-ready callback
+     */
+    void set_work_ready_handler(Work_ready_handler handler);
 
     /**
      * @brief Set session start handler
@@ -424,6 +437,7 @@ private:
     Recovery_handler m_recovery_handler;
     Session_expired_handler m_session_expired_handler;
     Session_authenticated_handler m_session_authenticated_handler;
+    Work_ready_handler m_work_ready_handler;
     Session_start_handler m_session_start_handler;
     Node_shutdown_handler m_node_shutdown_handler;
 

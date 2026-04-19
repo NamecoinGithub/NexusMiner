@@ -100,6 +100,7 @@ public:
     // Fetches the current connection and protocol from NodeSession, avoiding
     // stale weak_ptr captures that killed the timer after reconnection.
     void poll_get_round();
+    void collect_worker_statistics();
 
     /// Session generation: monotonically increasing counter that increments on
     /// every session transition.  Timer callbacks capture this at entry to detect

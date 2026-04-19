@@ -347,8 +347,8 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
     result.artifacts.phases.push_back("channel set");
     context.set_channel_state(ACCEPTANCE_CHANNEL, false, true);
     auto channel_info = context.get_session_info();
-    // In the new model, ready_for_submit is derived from authenticated && reward_bound,
-    // so it may already be true when reward is bound. Only check channel and get_block readiness.
+    // Channel readiness is the authoritative gate for GET_BLOCK after reward binding.
+    // Submit readiness is established separately once the session is fully mining-ready.
     if (channel_info.channel != ACCEPTANCE_CHANNEL ||
         !channel_info.ready_for_get_block) {
         return fail("channel set phase did not establish ready_for_get_block state");

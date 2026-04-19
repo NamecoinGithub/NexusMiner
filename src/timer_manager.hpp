@@ -35,7 +35,7 @@ public:
 
     void start_connection_retry_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager, 
         network::Endpoint const& wallet_endpoint);
-    void start_stats_collector_timer(std::uint16_t timer_interval, std::vector<std::shared_ptr<Worker>> workers, 
+    void start_stats_collector_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager,
         std::shared_ptr<stats::Collector> stats_collector);
     void start_stats_printer_timer(std::uint16_t timer_interval, std::vector<std::shared_ptr<stats::Printer>> stats_printers);
     
@@ -64,7 +64,8 @@ private:
 
     chrono::Timer::Handler connection_retry_handler(std::weak_ptr<Worker_manager> worker_manager,
         network::Endpoint const& wallet_endpoint);
-    chrono::Timer::Handler stats_collector_handler(std::uint16_t stats_collector_interval, std::vector<std::shared_ptr<Worker>> workers, 
+    chrono::Timer::Handler stats_collector_handler(std::uint16_t stats_collector_interval,
+        std::weak_ptr<Worker_manager> worker_manager,
         std::shared_ptr<stats::Collector> stats_collector);
     chrono::Timer::Handler stats_printer_handler(std::uint16_t stats_printer_interval, std::vector<std::shared_ptr<stats::Printer>> stats_printers);
     chrono::Timer::Handler get_round_handler(std::uint16_t get_round_interval,
