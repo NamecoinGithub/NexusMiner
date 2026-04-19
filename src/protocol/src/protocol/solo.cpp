@@ -1413,6 +1413,12 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
         return nullptr;
     }
 
+    if (m_session_context && !m_session_context->can_request_get_block()) {
+        m_last_get_block_request_status.store(GetBlockRequestStatus::SESSION_INVALID);
+        m_logger->info("[Solo] Cannot request work - authoritative session is not yet ready for GET_BLOCK");
+        return nullptr;
+    }
+
     // Only validate reward binding if a reward address was configured
     // (Reward binding is optional for localhost/testing, but required for production)
     if (!m_reward_address.empty() &&
@@ -1479,7 +1485,6 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
     m_logger->debug("[Solo]   Authenticated: {}", is_authenticated() ? "YES" : "NO");
     m_logger->debug("[Solo]   Reward bound: {}", is_reward_bound() ? "YES" : "NO");
     if (m_session_context) {
-        m_session_context->set_channel_state(m_channel, false, true);
         m_session_context->mark_activity();
     }
 
@@ -3569,7 +3574,17 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     return;
                 }
                 m_logger->info("[Solo Protocol] ✓ MINER_READY ({}) transmitted on {} lane", opcode_str, lane_name);
+                if (m_session_context) {
+                    m_session_context->set_channel_state(m_channel, false, true);
+                    m_session_context->mark_activity();
+                }
+                validate_authoritative_session("Solo ChannelAck", false);
+                log_session_container_summary("Solo ChannelAck");
                 flush_pending_push_after_auth(connection, "Solo Protocol");
+                if (m_work_ready_handler &&
+                    (!m_session_context || m_session_context->can_request_get_block())) {
+                    m_work_ready_handler();
+                }
             } else {
                 m_logger->error("[Solo Protocol] No connection available");
                 return;
@@ -5134,7 +5149,7 @@ void Solo::handle_reward_result(const Packet& packet)
         }
         if (m_session_context) {
             m_session_context->commit_reward_bound(m_reward_address, reward_hash, "live bind");
-            m_session_context->set_channel_state(m_channel, false, true);
+            m_session_context->set_channel_state(m_channel, false, false);
             m_session_context->mark_activity();
         }
         validate_authoritative_session("Solo RewardResult", false);

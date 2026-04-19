@@ -451,6 +451,12 @@ void NodeSession::apply_protocol_handlers(LaneSlot slot)
         }
     });
 
+    protocol->set_work_ready_handler([this]() {
+        if (m_work_ready_handler) {
+            m_work_ready_handler();
+        }
+    });
+
     protocol->set_session_start_handler([this](uint16_t hours) {
         if (m_session_start_handler) {
             m_session_start_handler(hours);
@@ -712,6 +718,12 @@ void NodeSession::set_session_expired_handler(Session_expired_handler handler)
 void NodeSession::set_session_authenticated_handler(Session_authenticated_handler handler)
 {
     m_session_authenticated_handler = std::move(handler);
+    rewire_protocol_handlers();
+}
+
+void NodeSession::set_work_ready_handler(Work_ready_handler handler)
+{
+    m_work_ready_handler = std::move(handler);
     rewire_protocol_handlers();
 }
 

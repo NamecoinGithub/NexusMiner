@@ -225,11 +225,10 @@ void test_reward_binding_persists_across_session_restart() {
     assert(info.reward_address_string == "reward-address");
     assert(info.reward_hash.get() == reward_hash);
     assert(info.reward_bound);
-    // After session restart with reward still bound:
-    // update_replay_allowances_locked() sets ready_for_submit = authenticated && reward_bound.
-    // Since reward binding persists across restart and session is authenticated, both are true.
-    assert(info.ready_for_submit);
-    assert(info.ready_for_get_block);
+    // Reward intent persists across restart, but the new session must re-establish
+    // channel/work readiness before GET_BLOCK or submit may resume.
+    assert(!info.ready_for_submit);
+    assert(!info.ready_for_get_block);
 
     std::string reason;
     assert(context.validate_miner_session(&reason));
@@ -649,8 +648,7 @@ void test_authoritative_transition_apis_drive_lifecycle_state() {
     snapshot = context.get_runtime_snapshot();
     assert(snapshot.state == SessionManager::SessionState::AUTHENTICATED);
     assert(context.allow_deferred_push_replay());
-    // After authentication, can_request_get_block = true (requires auth only, not reward binding)
-    assert(context.can_request_get_block());
+    assert(!context.can_request_get_block());
     assert(context.reward_binding_required());
 
     context.begin_reward_binding("reward-address", std::vector<uint8_t>(32, 0x45), "live bind");

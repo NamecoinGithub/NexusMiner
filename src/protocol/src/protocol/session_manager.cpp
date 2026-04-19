@@ -304,14 +304,23 @@ void SessionManager::transition_to_authenticated_locked(SessionId session_id,
 void SessionManager::update_replay_allowances_locked()
 {
     // Derivation rules:
-    //   ready_for_get_block: requires authentication only
-    //   ready_for_submit:    requires authentication AND reward binding
+    //   ready_for_get_block: requires authentication plus the previously established
+    //                        reward/channel readiness path; this helper may clear it
+    //                        when auth/reward preconditions are lost, but never promotes
+    //                        the session to ready on its own
+    //   ready_for_submit:    requires authentication AND reward binding, and likewise
+    //                        remains false until the caller explicitly marks submit-ready
     //   replay allowances mirror the same logic
     const bool authenticated = (m_session.state == SessionState::AUTHENTICATED);
+    const bool reward_required =
+        !m_session.reward_address.empty() || !m_session.reward_address_string.empty();
+    const bool reward_ready = !reward_required || m_session.reward_bound;
     m_session.deferred_push_replay_allowed = authenticated;
     m_session.get_block_replay_allowed = authenticated;
-    m_session.ready_for_get_block = authenticated;
-    m_session.ready_for_submit = authenticated && m_session.reward_bound;
+    if (!authenticated || !reward_ready) {
+        m_session.ready_for_get_block = false;
+        m_session.ready_for_submit = false;
+    }
 }
 
 void SessionManager::bump_runtime_state_generation_locked()
@@ -845,8 +854,11 @@ void SessionManager::set_channel_state(uint32_t channel,
     SessionWriteLock lock(m_session_mutex);
     m_session.channel = channel;
     const bool authenticated = (m_session.state == SessionState::AUTHENTICATED);
+    const bool reward_required =
+        !m_session.reward_address.empty() || !m_session.reward_address_string.empty();
+    const bool reward_ready = !reward_required || m_session.reward_bound;
     m_session.ready_for_submit = authenticated && m_session.reward_bound && ready_for_submit;
-    m_session.ready_for_get_block = authenticated && ready_for_get_block;
+    m_session.ready_for_get_block = authenticated && reward_ready && ready_for_get_block;
     bump_runtime_state_generation_locked();
 }
 

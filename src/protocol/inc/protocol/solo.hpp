@@ -242,6 +242,10 @@ public:
     using Session_authenticated_handler = std::function<void(SessionId session_id)>;
     void set_session_authenticated_handler(Session_authenticated_handler h) { m_session_authenticated_handler = std::move(h); }
 
+    // Work-ready callback: called once the authoritative session container says GET_BLOCK may resume.
+    using Work_ready_handler = std::function<void()>;
+    void set_work_ready_handler(Work_ready_handler h) { m_work_ready_handler = std::move(h); }
+
     // Session-start callback: called when SESSION_START is received and keepalive interval
     // has been auto-adjusted from the node-advertised timeout.
     // Parameter: keepalive_hours (the newly derived interval, e.g. session_timeout / 2 / 3600)
@@ -654,6 +658,7 @@ private:
     // Session-authenticated callback — invoked after MINER_AUTH_RESULT processing is complete.
     // Worker_manager uses this to check session_id=0 and trigger retry if needed.
     Session_authenticated_handler m_session_authenticated_handler;
+    Work_ready_handler m_work_ready_handler;
 
     // Session-start callback — invoked when SESSION_START is received and keepalive interval
     // has been auto-adjusted from the node-advertised timeout.
