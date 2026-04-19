@@ -272,6 +272,8 @@ void SessionManager::transition_to_authenticated_locked(SessionId session_id,
     m_session.session_start = m_session.last_auth_time;
     m_session.session_start_tp = std::chrono::system_clock::now();
     m_session.active_lane = m_protocol_lane;
+    m_session.ready_for_submit = false;
+    m_session.ready_for_get_block = false;
     if (!tritium_genesis.get().empty()) {
         m_session.session_genesis = tritium_genesis;
     }
