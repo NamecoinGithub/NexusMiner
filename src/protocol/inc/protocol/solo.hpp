@@ -841,6 +841,9 @@ private:
     bool queue_payload(const std::shared_ptr<network::Connection>& connection,
                        const network::Shared_payload& payload,
                        const char* context);
+    bool request_and_queue_get_block(const std::shared_ptr<network::Connection>& connection,
+                                     GetBlockReason reason,
+                                     const char* context);
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION

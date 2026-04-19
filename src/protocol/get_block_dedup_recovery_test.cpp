@@ -287,6 +287,34 @@ void test_failed_transmit_does_not_stamp_dedup()
 }
 
 // ============================================================================
+// Test 3c: GET_ROUND handler should only mark "sent in handler" after queue success
+// ============================================================================
+void test_handler_send_flag_requires_successful_queue()
+{
+    std::cout << "\nTest 3c: GET_ROUND handler send flag requires successful queue\n";
+
+    GetBlockDeduplicator dedup;
+    bool sent_in_handler = false;
+
+    auto payload = dedup.build_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
+    bool first_built = (payload != nullptr && !payload->empty());
+    if (first_built && dedup.transmit_built_payload(payload, false)) {
+        sent_in_handler = true;
+    }
+    bool clear_after_failure = !sent_in_handler;
+
+    auto retry_payload = dedup.build_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
+    bool retry_built = (retry_payload != nullptr && !retry_payload->empty());
+    bool retry_sent = dedup.transmit_built_payload(retry_payload, true);
+    if (retry_sent) {
+        sent_in_handler = true;
+    }
+
+    print_test_result("Failed queue leaves handler send flag clear for retry",
+                      first_built && clear_after_failure && retry_built && retry_sent && sent_in_handler);
+}
+
+// ============================================================================
 // Test 4: GET_BLOCK deduplication across push handler and Worker_manager
 // ============================================================================
 void test_dedup_across_callers() {
@@ -855,6 +883,7 @@ int main() {
     test_get_block_after_window();
     test_multiple_rapid_requests();
     test_failed_transmit_does_not_stamp_dedup();
+    test_handler_send_flag_requires_successful_queue();
     test_dedup_across_callers();
     test_dedup_reset();
     test_three_successive_calls();
