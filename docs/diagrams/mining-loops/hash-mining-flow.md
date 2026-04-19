@@ -44,7 +44,7 @@ flowchart TD
 - **Channel:** Hash (channel 2)
 - **Push notification:** `HASH_BLOCK_AVAILABLE` (218) — sent on **any** channel block (universal PoW tip push)
 - **Hashing algorithm:** SK-1024
-- **GPU acceleration:** Supported via CUDA/OpenCL workers
+- **GPU acceleration:** Supported via CUDA workers
 - **Template format:** Same 228-byte structure as prime channel
 - **Stale detection:** Two reasons trigger a template refresh:
   - `channel_advanced`: `channel_height >= channel_target` (own channel found block)

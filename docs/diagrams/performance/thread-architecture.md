@@ -86,4 +86,4 @@ sequenceDiagram
 - **Hyper-threading:** E-core and HT thread filtering supported
 - **Thread priority:** Mining workers run at elevated priority
 - **Single-thread mode:** Prime mining can fall back to single-thread for debugging
-- **GPU workers:** Hash workers can offload to CUDA/OpenCL devices
+- **GPU workers:** Hash workers offload to CUDA devices; PRIME workers use CUDA with partial HIP-oriented support for AMD

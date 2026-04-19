@@ -4,7 +4,6 @@
 #include "stats/stats_collector.hpp"
 #include "prime/prime.hpp"
 #include "prime/sieve.hpp"
-#include "prime/prime_tests.hpp"
 #include "block.hpp"
 #include <asio.hpp>
 #include <primesieve.hpp>
@@ -45,11 +44,6 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 	, m_gpu_initialized{false}
 {
 
-	auto& worker_config_gpu = std::get<config::Worker_config_gpu>(m_config.m_worker_mode);
-	PrimeTests prime_test(worker_config_gpu.m_device);
-	//prime_test.math_test();
-	prime_test.sieve_performance_test();
-	prime_test.fermat_performance_test();
 	m_segmented_sieve->generate_sieving_primes();
 	m_segmented_sieve->generate_small_prime_tables();
 	m_segmented_sieve->generate_trial_divisors();
@@ -104,15 +98,6 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 		m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
 		m_nonce = m_starting_nonce;
 
-		//set the sieve start range
-		uint1k startprime = m_base_hash + m_nonce;
-		m_segmented_sieve->set_sieve_start(startprime);
-		//update the starting nonce to reflect the actual sieve start used
-		m_nonce = static_cast<uint64_t>(m_segmented_sieve->get_sieve_start() - m_base_hash);
-		//m_logger->debug("starting nonce: {}", m_nonce);
-		//clear out any old chains from the last block
-		m_segmented_sieve->clear_chains();
-
 		// Signal new work is available
 		m_stop = true;
 		m_new_work = true;
@@ -158,15 +143,6 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 		//set the starting nonce for each worker to something different that won't overlap with the others
 		m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
 		m_nonce = m_starting_nonce;
-
-		//set the sieve start range
-		uint1k startprime = m_base_hash + m_nonce;
-		m_segmented_sieve->set_sieve_start(startprime);
-		//update the starting nonce to reflect the actual sieve start used
-		m_nonce = static_cast<uint64_t>(m_segmented_sieve->get_sieve_start() - m_base_hash);
-		//m_logger->debug("starting nonce: {}", m_nonce);
-		//clear out any old chains from the last block
-		m_segmented_sieve->clear_chains();
 
 		// Signal new work is available
 		m_stop = true;
@@ -224,8 +200,10 @@ void Worker_prime::run()
 			local_block = m_block;
 			local_base_hash = m_base_hash;
 			local_nonce = m_nonce;
-			// Calculate starting multiples inside mutex to prevent race with set_block()
-			// which calls set_sieve_start() and clear_chains()
+			uint1k startprime = local_base_hash + local_nonce;
+			m_segmented_sieve->set_sieve_start(startprime);
+			local_nonce = static_cast<uint64_t>(m_segmented_sieve->get_sieve_start() - local_base_hash);
+			m_segmented_sieve->clear_chains();
 			m_segmented_sieve->calculate_starting_multiples();
 		}
 		//copy starting multiples to the sieve

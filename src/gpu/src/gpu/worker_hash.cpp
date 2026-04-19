@@ -10,11 +10,38 @@
 #include "LLC/types/uint1024.h"
 #include "LLC/types/bignum.h"
 #include "TAO/Ledger/difficulty.h"
+#include <stdexcept>
 
 namespace nexusminer
 {
 namespace gpu
 {
+
+std::uint32_t Worker_hash::device_id() const
+{
+    return std::get<config::Worker_config_gpu>(m_config.m_worker_mode).m_device;
+}
+
+bool Worker_hash::bind_device_context(const char* phase)
+{
+    const auto gpu_device = device_id();
+    const auto device_count = cuda_num_devices();
+    if (device_count == 0)
+    {
+        m_logger->error("{}No CUDA devices detected during {}", m_log_leader, phase);
+        return false;
+    }
+
+    if (gpu_device >= device_count)
+    {
+        m_logger->error("{}Configured CUDA device {} is out of range during {} ({} device(s) detected)",
+            m_log_leader, gpu_device, phase, device_count);
+        return false;
+    }
+
+    cuda_init(gpu_device);
+    return true;
+}
 
 Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_config& config)
 : m_io_context{std::move(io_context)}
@@ -28,15 +55,28 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
 , m_best_leading_zeros{0}
 , m_met_difficulty_count{0}
 {
-    auto& worker_config_gpu = std::get<config::Worker_config_gpu>(m_config.m_worker_mode);
-    cuda_init(worker_config_gpu.m_device);
+    if (!bind_device_context("worker initialization"))
+    {
+        throw std::runtime_error("GPU hash worker initialization failed");
+    }
 
     // Allocate memory associated with Device Hashing
-    cuda_sk1024_init(worker_config_gpu.m_device);
+    cuda_sk1024_init(device_id());
 
     // Compute the intensity by determining number of multiprocessors
-    m_intensity = 2 * cuda_device_multiprocessors(worker_config_gpu.m_device);
-    m_logger->debug("{} intensity set to {}", cuda_devicename(worker_config_gpu.m_device), m_intensity);
+    const auto multiprocessors = cuda_device_multiprocessors(device_id());
+    if (multiprocessors == 0)
+    {
+        throw std::runtime_error("Configured CUDA device reported zero multiprocessors");
+    }
+
+    m_intensity = 2 * multiprocessors;
+    m_logger->info("{}Using CUDA device {} ({}) with {} multiprocessor(s)",
+        m_log_leader,
+        device_id(),
+        cuda_devicename(device_id()),
+        multiprocessors);
+    m_logger->debug("{} intensity set to {}", cuda_devicename(device_id()), m_intensity);
 
     // Calcluate the throughput for the cuda hash mining
     m_throughput = 256 * m_threads_per_block * m_intensity;
@@ -66,10 +106,13 @@ Worker_hash::~Worker_hash()
     }
 
     // Free the GPU device memory associated with hashing
-    cuda_sk1024_free(m_config.m_internal_id);
+    if (bind_device_context("worker shutdown"))
+    {
+        cuda_sk1024_free(device_id());
 
-    // Free the GPU device memory and reset them
-    cuda_free(m_config.m_internal_id);
+        // Free the GPU device memory and reset them
+        cuda_free(device_id());
+    }
 }
 
 void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result)
@@ -86,6 +129,11 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
         }
 
         // Set the block for this device
+        if (!bind_device_context("set_block"))
+        {
+            m_running = false;
+            return;
+        }
         cuda_sk1024_setBlock(&m_block.nVersion, m_block.nHeight);
 
         /* Get the target difficulty. */
@@ -140,6 +188,11 @@ void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::B
         }
 
         // Set the block for this device
+        if (!bind_device_context("set_block"))
+        {
+            m_running = false;
+            return;
+        }
         cuda_sk1024_setBlock(&m_block.nVersion, m_block.nHeight);
 
         /* Get the target difficulty. */
@@ -179,6 +232,12 @@ void Worker_hash::run()
 {
     m_logger->info(m_log_leader + "Persistent worker thread ready, waiting for work...");
 
+    if (!bind_device_context("worker thread start"))
+    {
+        m_running = false;
+        return;
+    }
+
     // Persistent thread loop - runs until shutdown
     while (true) {
         // Wait for new work or shutdown signal
@@ -215,7 +274,7 @@ void Worker_hash::run()
 
             // Do hashing on a CUDA device
             bool found = cuda_sk1024_hash(
-                m_config.m_internal_id,
+                device_id(),
                 reinterpret_cast<uint32_t*>(&m_block.nVersion),
                 m_target,
                 m_block.nNonce,

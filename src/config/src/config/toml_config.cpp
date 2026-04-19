@@ -384,7 +384,14 @@ namespace config
                         worker_config.m_mode = Worker_mode::GPU;
                         
                         Worker_config_gpu gpu_config{};
-                        gpu_config.m_device = static_cast<std::uint8_t>(gpu_device);
+                        const int enumerated_device = gpu_device + i;
+                        if (enumerated_device > 255)
+                        {
+                            m_logger->warn("GPU worker {} would exceed device index range with enumerated device {}. Stopping GPU worker creation.",
+                                i, enumerated_device);
+                            break;
+                        }
+                        gpu_config.m_device = static_cast<std::uint8_t>(enumerated_device);
                         
                         worker_config.m_worker_mode = gpu_config;
                         config.m_worker_config.push_back(worker_config);
