@@ -1317,6 +1317,45 @@ void test_epoch0_recovery_escalation_on_suppressed_get_block() {
         coordinator->recovery_epoch() == epoch_before);
 }
 
+void test_session_status_cooldown_only_advances_after_successful_queue()
+{
+    std::cout << "\nTest 27b: SESSION_STATUS cooldown advances only after successful queue\n";
+
+    struct SessionStatusSender {
+        std::chrono::steady_clock::time_point last_sent{};
+
+        bool due(std::chrono::steady_clock::time_point now) const {
+            constexpr int64_t interval_seconds = 300;
+            return std::chrono::duration_cast<std::chrono::seconds>(now - last_sent).count() >= interval_seconds;
+        }
+
+        bool attempt(std::chrono::steady_clock::time_point now, bool queue_success) {
+            if (!due(now)) {
+                return false;
+            }
+            if (!queue_success) {
+                return false;
+            }
+            last_sent = now;
+            return true;
+        }
+    };
+
+    SessionStatusSender sender;
+    auto now = std::chrono::steady_clock::now();
+    sender.last_sent = now - std::chrono::seconds(301);
+
+    bool failed_attempt = !sender.attempt(now, false);
+    bool still_due = sender.due(now);
+    bool successful_retry = sender.attempt(now, true);
+    bool no_longer_due = !sender.due(now);
+
+    print_test_result("Failed SESSION_STATUS queue does not consume cooldown",
+                      failed_attempt && still_due);
+    print_test_result("Successful SESSION_STATUS queue consumes cooldown",
+                      successful_retry && no_longer_due);
+}
+
 
 int main() {
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
@@ -1354,6 +1393,7 @@ int main() {
     test_session_recovery_blocks_template_only_exit();
     test_recovery_phase_mutual_exclusivity();
     test_epoch0_recovery_escalation_on_suppressed_get_block();
+    test_session_status_cooldown_only_advances_after_successful_queue();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";

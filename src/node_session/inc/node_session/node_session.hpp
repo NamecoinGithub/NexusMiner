@@ -177,6 +177,9 @@ public:
 
     /**
      * @brief Reset the node session for reconnection
+     *
+     * Clears protocol/session state and closes any open lane sockets so the
+     * next connect() starts from a clean transport state.
      */
     void reset();
 

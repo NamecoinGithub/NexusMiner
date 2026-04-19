@@ -66,10 +66,9 @@ public:
         , m_get_block_call_count(0)
     {}
 
-    // Simulates Solo::get_work() with deduplication logic.
-    // Uses GetBlockReason (mirrors the real Solo::get_work(GetBlockReason)) instead
-    // of the old bool bypass_dedup parameter.
-    network::Shared_payload get_work(GetBlockReason reason = GetBlockReason::INITIAL_REQUEST) {
+    // Simulates Solo::get_work() payload generation without stamping dedup state.
+    // The request becomes "sent" only after transmit_built_payload(true).
+    network::Shared_payload build_work(GetBlockReason reason = GetBlockReason::INITIAL_REQUEST) {
         m_get_block_call_count++;
 
         if (!m_authenticated || !m_reward_bound) {
@@ -92,13 +91,22 @@ public:
         }
 
         // Build GET_BLOCK packet
-        auto payload = PacketBuilder::build(m_protocol_lane, nexusminer::LLP::GET_BLOCK);
+        return PacketBuilder::build(m_protocol_lane, nexusminer::LLP::GET_BLOCK);
+    }
 
-        if (payload && !payload->empty()) {
-            m_last_get_block_transmitted_tp = now_tp;
-            std::cout << "    [Transmitted] GET_BLOCK sent successfully\n";
+    bool transmit_built_payload(const network::Shared_payload& payload, bool transmit_ok = true) {
+        if (!payload || payload->empty() || !transmit_ok) {
+            return false;
         }
+        m_last_get_block_transmitted_tp = std::chrono::steady_clock::now();
+        std::cout << "    [Transmitted] GET_BLOCK sent successfully\n";
+        return true;
+    }
 
+    // Convenience wrapper for the common build+successful-transmit path.
+    network::Shared_payload get_work(GetBlockReason reason = GetBlockReason::INITIAL_REQUEST) {
+        auto payload = build_work(reason);
+        transmit_built_payload(payload, true);
         return payload;
     }
 
@@ -256,6 +264,54 @@ void test_multiple_rapid_requests() {
 
     bool passed = (successful_transmissions == 1) && (suppressed_transmissions == 9);
     print_test_result("Multiple rapid requests deduplicated correctly", passed);
+}
+
+// ============================================================================
+// Test 3b: Failed transmit must not stamp GET_BLOCK dedup state
+// ============================================================================
+void test_failed_transmit_does_not_stamp_dedup()
+{
+    std::cout << "\nTest 3b: failed transmit does not stamp GET_BLOCK dedup state\n";
+
+    GetBlockDeduplicator dedup;
+    auto payload = dedup.build_work(GetBlockReason::VALIDATION_FAILURE);
+    bool built = (payload != nullptr && !payload->empty());
+    bool transmit_failed = !dedup.transmit_built_payload(payload, false);
+    bool unstamped = (dedup.get_last_transmitted_tp() == std::chrono::steady_clock::time_point{});
+
+    auto retry_payload = dedup.build_work(GetBlockReason::VALIDATION_FAILURE);
+    bool retry_allowed = (retry_payload != nullptr && !retry_payload->empty());
+
+    print_test_result("Failed transmit leaves dedup timestamp unset",
+                      built && transmit_failed && unstamped && retry_allowed);
+}
+
+// ============================================================================
+// Test 3c: GET_ROUND handler should only mark "sent in handler" after queue success
+// ============================================================================
+void test_handler_send_flag_requires_successful_queue()
+{
+    std::cout << "\nTest 3c: GET_ROUND handler send flag requires successful queue\n";
+
+    GetBlockDeduplicator dedup;
+    bool sent_in_handler = false;
+
+    auto payload = dedup.build_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
+    bool first_built = (payload != nullptr && !payload->empty());
+    if (first_built && dedup.transmit_built_payload(payload, false)) {
+        sent_in_handler = true;
+    }
+    bool clear_after_failure = !sent_in_handler;
+
+    auto retry_payload = dedup.build_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
+    bool retry_built = (retry_payload != nullptr && !retry_payload->empty());
+    bool retry_sent = dedup.transmit_built_payload(retry_payload, true);
+    if (retry_sent) {
+        sent_in_handler = true;
+    }
+
+    print_test_result("Failed queue leaves handler send flag clear for retry",
+                      first_built && clear_after_failure && retry_built && retry_sent && sent_in_handler);
 }
 
 // ============================================================================
@@ -826,6 +882,8 @@ int main() {
     test_get_block_dedup_within_window();
     test_get_block_after_window();
     test_multiple_rapid_requests();
+    test_failed_transmit_does_not_stamp_dedup();
+    test_handler_send_flag_requires_successful_queue();
     test_dedup_across_callers();
     test_dedup_reset();
     test_three_successive_calls();

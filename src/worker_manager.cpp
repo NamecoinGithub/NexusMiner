@@ -899,12 +899,12 @@ uint16_t Worker_manager::get_effective_keepalive_interval() const
         : m_config.get_keepalive_interval();
 }
 
-void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
+void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint, bool force_transport_reset)
 {
     // Safety guard: if push notifications have been received recently, the TCP
     // connection is demonstrably alive from the node's perspective. Tearing it
     // down here would destroy a valid node session. Use in-band re-auth instead.
-    if (m_primary_node_session) {
+    if (!force_transport_reset && m_primary_node_session) {
         // Use get_active_protocol() so push liveness and auth state are read from
         // the SAME protocol instance that login_on_active_connection() will use.
         // Before this fix, get_primary_protocol() could read stale push/auth data
@@ -1484,18 +1484,36 @@ void Worker_manager::poll_get_round()
             : INT64_MAX;
         bool push_silent = (push_age_s >= PUSH_ALIVE_THRESHOLD_SECONDS);
 
+        constexpr int64_t ONE_WAY_SHADOW_BAN_ELAPSED_SECONDS = 180;
+        const auto last_status_ack_at = solo_protocol->last_session_status_ack_time();
+        const int64_t status_ack_age_s =
+            last_status_ack_at != std::chrono::steady_clock::time_point{}
+                ? std::chrono::duration_cast<std::chrono::seconds>(
+                      std::chrono::steady_clock::now() - last_status_ack_at).count()
+                : -1;
+
         if (elapsed_s >= SHADOW_BAN_MIN_ELAPSED_SECONDS && push_silent) {
             m_logger->error("[Worker_manager] SHADOW BAN DETECTED: {} consecutive GET_ROUNDs "
                             "unanswered over {}s, push silent {}s — forcing session recovery",
                             unanswered, elapsed_s, push_age_s == INT64_MAX ? -1 : push_age_s);
             mark_recovery_initiated("shadow_ban_unanswered_get_round");
+        } else if (elapsed_s >= ONE_WAY_SHADOW_BAN_ELAPSED_SECONDS && !push_silent && !is_reconnecting()) {
+            m_logger->error("[Worker_manager] ONE-WAY SESSION FAILURE SUSPECTED: {} consecutive GET_ROUNDs "
+                            "unanswered over {}s while push is still live (push_age={}s, status_ack_age={}s) "
+                            "— forcing hard transport reconnect",
+                            unanswered,
+                            elapsed_s,
+                            push_age_s == INT64_MAX ? -1 : push_age_s,
+                            status_ack_age_s);
+            mark_recovery_initiated("one_way_shadow_ban");
+            retry_connect(m_primary_endpoint, true);
         } else {
             m_logger->warn("[Worker_manager] Unanswered GET_ROUND count {} >= threshold {}, "
-                           "but shadow-ban suppressed (elapsed={}s < {}s OR push_age={}s < {}s)",
+                           "but shadow-ban suppressed (elapsed={}s, push_age={}s, status_ack_age={}s)",
                            unanswered, SHADOW_BAN_UNANSWERED_THRESHOLD,
-                           elapsed_s, SHADOW_BAN_MIN_ELAPSED_SECONDS,
+                           elapsed_s,
                            push_age_s == INT64_MAX ? -1 : push_age_s,
-                           PUSH_ALIVE_THRESHOLD_SECONDS);
+                           status_ack_age_s);
         }
     }
 }
@@ -1507,7 +1525,6 @@ void Worker_manager::send_session_status_if_due()
     if (std::chrono::duration_cast<std::chrono::seconds>(
             now - m_last_session_status_sent).count() < SESSION_STATUS_INTERVAL_SECONDS)
         return;
-    m_last_session_status_sent = now;
 
     // Session generation guard: don't send status for a session in transition
     const uint64_t gen_at_entry = m_session_generation.load(std::memory_order_acquire);
@@ -1531,7 +1548,9 @@ void Worker_manager::send_session_status_if_due()
                 }
                 if (!m_primary_node_session->transmit(pkt)) {
                     m_logger->warn("[Worker_manager] SESSION_STATUS not queued on active node session");
+                    return;
                 }
+                m_last_session_status_sent = now;
             }
         }
     }
@@ -2057,15 +2076,18 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
             // PendingGetBlock.active is never set when the packet wasn't actually sent
             // (e.g. socket closed between request_work() and transmit()).
             solo_protocol->mark_get_block_pending(reason);
+            m_recovery.last_get_block_at = std::chrono::steady_clock::now();
+            m_recovery.get_block_confirmed = true;
+            m_last_get_block_request_time = std::chrono::steady_clock::now();  // Bug 5: burst guard timestamp
+            ++m_get_block_sent_total;
+            if (is_forced) {
+                ++m_get_block_forced_retry_total;
+            }
+            m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_epoch_coordinator->recovery_epoch());
+        } else {
+            m_logger->warn("[Worker_manager] GET_BLOCK payload built but not queued on transport");
+            return;
         }
-        m_recovery.last_get_block_at = std::chrono::steady_clock::now();
-        m_recovery.get_block_confirmed = true;
-        m_last_get_block_request_time = std::chrono::steady_clock::now();  // Bug 5: burst guard timestamp
-        ++m_get_block_sent_total;
-        if (is_forced) {
-            ++m_get_block_forced_retry_total;
-        }
-        m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_epoch_coordinator->recovery_epoch());
     } else {
         auto last_status = solo_protocol->get_last_get_block_request_status();
         const char* status_str = "request_work_empty";

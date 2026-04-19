@@ -654,6 +654,17 @@ void NodeSession::reset()
     m_logger->info("[NodeSession:{}] Resetting", m_node_label);
     complete_pending_connect(false);
 
+    // Close existing lane sockets so reconnect does not inherit a half-dead
+    // transport that can still receive PUSH traffic while dropping miner TX.
+    if (m_primary_connection) {
+        m_primary_connection->close();
+        m_primary_connection.reset();
+    }
+    if (m_secondary_connection) {
+        m_secondary_connection->close();
+        m_secondary_connection.reset();
+    }
+
     // Reset protocols
     if (m_primary_protocol) {
         m_primary_protocol->reset();

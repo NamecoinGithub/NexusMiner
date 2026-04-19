@@ -161,7 +161,7 @@ private:
     /// guard from check_template_health() when a valid template exists but is_degraded() is set.
     void clear_recovery_state();
 
-    void retry_connect(network::Endpoint const& wallet_endpoint);
+    void retry_connect(network::Endpoint const& wallet_endpoint, bool force_transport_reset = false);
 
     // ── State machine transition API ───────────────────────────────────────────
     /// Transition to a new RecoveryPhase.  Logs the transition, validates legality

@@ -225,10 +225,29 @@ void test_node_session_stop_and_reset()
 
     auto socket = std::make_shared<MockSocket>(io_context);
     auto node_session = make_node_session(io_context, config, socket, "TEST_STOP");
+    configure_valid_auth(*node_session);
+
+    bool connect_result = false;
+    bool connect_callback_invoked = false;
+    const bool connect_started = node_session->connect(
+        make_endpoint(9323),
+        [&connect_result, &connect_callback_invoked](bool success) {
+            connect_callback_invoked = true;
+            connect_result = success;
+        });
+    assert(connect_started);
+    pump_io(io_context);
+    assert(socket->connect_count() == 1);
+    auto first_connection = socket->connection(0);
+    assert(first_connection);
+    assert(first_connection->transmit_count() >= 1);
+    assert(!connect_callback_invoked || !connect_result);  // no auth result injected in this test
 
     node_session->reset();
     assert(!node_session->is_authenticated());
     assert(node_session->session_id() == protocol::SessionId(0u));
+    assert(first_connection->closed());
+    assert(!node_session->is_primary_connected());
 
     node_session->stop();
     assert(!node_session->is_authenticated());

@@ -828,16 +828,22 @@ private:
     PendingGetBlock m_pending_get_block;
 
 public:
-    /// Mark a GET_BLOCK request as in-flight using the current height-tracker snapshot.
-    /// Must be called immediately after the GET_BLOCK payload has been successfully
-    /// handed to Connection::transmit() (fire-and-forget) so that the cross-handler
-    /// dedup guard knows a response is already expected.
+    /// Mark a GET_BLOCK request as successfully transmitted using the current
+    /// height-tracker snapshot. Must be called immediately after the payload has
+    /// been accepted by Connection::transmit() so dedup/pending state only moves
+    /// forward on confirmed outbound progress.
     void mark_get_block_pending(GetBlockReason reason);
 
     /// Clear the in-flight GET_BLOCK marker (exposed for testing / forced reset).
     void clear_get_block_pending() { m_pending_get_block.clear(); }
 
 private:
+    bool queue_payload(const std::shared_ptr<network::Connection>& connection,
+                       const network::Shared_payload& payload,
+                       const char* context);
+    bool request_and_queue_get_block(const std::shared_ptr<network::Connection>& connection,
+                                     GetBlockReason reason,
+                                     const char* context);
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION
