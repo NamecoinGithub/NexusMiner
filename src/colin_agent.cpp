@@ -792,7 +792,12 @@ void ColinAgent::emit_report(
         m_logger->info("[Colin]  🏆 ── Mined Block hashPrevBlock History (Top 5) ─────");
         if (blocks.empty())
         {
-            m_logger->info("[Colin]  💤   (no blocks mined yet)");
+            if (gs.m_accepted_blocks == 0) {
+                m_logger->info("[Colin]  💤   (no blocks mined yet)");
+            } else {
+                m_logger->warn("[Colin]  ⚠️    accepted blocks={} but detailed mined-block history is unavailable in the current cache",
+                               gs.m_accepted_blocks);
+            }
         }
         else
         {
