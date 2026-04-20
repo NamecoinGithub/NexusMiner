@@ -3,16 +3,16 @@
  * @brief Unit tests for PacketBuilder lane-aware outbound packet utility
  *
  * Tests:
- *  1. Legacy header-only → single byte [opcode]
- *  2. Stateless header-only → two bytes [0xD0][opcode]
+ *  1. Legacy zero-length request → [opcode][len4=0]
+ *  2. Stateless zero-length request → [0xD0][opcode][len4=0]
  *  3. Legacy with payload → [opcode][len4 BE][payload]
  *  4. Stateless with payload → [0xD0][opcode][len4 BE][payload]
- *  5. MINER_READY: legacy header-only (opcode 216 = 0xD8)
- *  6. MINER_READY: stateless header-only (0xD0D8)
- *  7. GET_ROUND: legacy header-only (opcode 133 = 0x85)
- *  8. GET_ROUND: stateless header-only (0xD085)
+ *  5. MINER_READY: legacy zero-length frame (opcode 216 = 0xD8)
+ *  6. MINER_READY: stateless zero-length frame (0xD0D8)
+ *  7. GET_ROUND: legacy zero-length frame (opcode 133 = 0x85)
+ *  8. GET_ROUND: stateless zero-length frame (0xD085)
  *  9. SUBMIT_BLOCK: stateless with payload (0xD001)
- * 10. Empty payload build returns empty (invalid)
+ * 10. UNKNOWN lane returns empty
  * 11. submit_block plaintext layout size invariant (Disposable Falcon only)
  */
 
@@ -43,26 +43,31 @@ void print_test_result(const char* name, bool passed) {
 }
 
 // ============================================================================
-// Test 1: Legacy header-only GET_BLOCK (opcode 129 = 0x81)
-// Expected wire: [0x81]  (1 byte, no length field for request packets)
+// Test 1: Legacy zero-length GET_BLOCK (opcode 129 = 0x81)
+// Expected wire: [0x81][0x00000000]
 // ============================================================================
 void test_legacy_header_only() {
-    std::cout << "\nTest 1: Legacy header-only GET_BLOCK\n";
+    std::cout << "\nTest 1: Legacy zero-length GET_BLOCK\n";
     auto bytes = PacketBuilder::build(ProtocolLane::LEGACY, LLP::GET_BLOCK);
-    bool ok = (bytes && bytes->size() == 1 && (*bytes)[0] == 0x81);
-    print_test_result("Legacy GET_BLOCK → [0x81] (1 byte)", ok);
+    bool ok = (bytes && bytes->size() == 5 &&
+               (*bytes)[0] == 0x81 &&
+               (*bytes)[1] == 0x00 && (*bytes)[2] == 0x00 &&
+               (*bytes)[3] == 0x00 && (*bytes)[4] == 0x00);
+    print_test_result("Legacy GET_BLOCK → [0x81][0x00000000]", ok);
 }
 
 // ============================================================================
-// Test 2: Stateless header-only GET_BLOCK (opcode 129 = 0x81 → 0xD081)
-// Expected wire: [0xD0][0x81]  (2 bytes)
+// Test 2: Stateless zero-length GET_BLOCK (opcode 129 = 0x81 → 0xD081)
+// Expected wire: [0xD0][0x81][0x00000000]
 // ============================================================================
 void test_stateless_header_only() {
-    std::cout << "\nTest 2: Stateless header-only GET_BLOCK\n";
+    std::cout << "\nTest 2: Stateless zero-length GET_BLOCK\n";
     auto bytes = PacketBuilder::build(ProtocolLane::STATELESS, LLP::GET_BLOCK);
-    bool ok = (bytes && bytes->size() == 2 &&
-               (*bytes)[0] == 0xD0 && (*bytes)[1] == 0x81);
-    print_test_result("Stateless GET_BLOCK → [0xD0][0x81] (2 bytes)", ok);
+    bool ok = (bytes && bytes->size() == 6 &&
+               (*bytes)[0] == 0xD0 && (*bytes)[1] == 0x81 &&
+               (*bytes)[2] == 0x00 && (*bytes)[3] == 0x00 &&
+               (*bytes)[4] == 0x00 && (*bytes)[5] == 0x00);
+    print_test_result("Stateless GET_BLOCK → [0xD0][0x81][0x00000000]", ok);
 }
 
 // ============================================================================
@@ -112,49 +117,59 @@ void test_stateless_with_payload() {
 }
 
 // ============================================================================
-// Test 5: Legacy MINER_READY (opcode 216 = 0xD8) header-only
-// Expected wire: [0xD8]  (1 byte)
+// Test 5: Legacy MINER_READY (opcode 216 = 0xD8) zero-length frame
+// Expected wire: [0xD8][0x00000000]
 // ============================================================================
 void test_legacy_miner_ready() {
-    std::cout << "\nTest 5: Legacy MINER_READY header-only\n";
+    std::cout << "\nTest 5: Legacy MINER_READY zero-length frame\n";
     auto bytes = PacketBuilder::build(ProtocolLane::LEGACY, LLP::MINER_READY);
-    bool ok = (bytes && bytes->size() == 1 && (*bytes)[0] == 0xD8);
-    print_test_result("Legacy MINER_READY → [0xD8] (1 byte)", ok);
+    bool ok = (bytes && bytes->size() == 5 &&
+               (*bytes)[0] == 0xD8 &&
+               (*bytes)[1] == 0x00 && (*bytes)[2] == 0x00 &&
+               (*bytes)[3] == 0x00 && (*bytes)[4] == 0x00);
+    print_test_result("Legacy MINER_READY → [0xD8][0x00000000]", ok);
 }
 
 // ============================================================================
-// Test 6: Stateless MINER_READY (opcode 216 = 0xD8 → 0xD0D8) header-only
-// Expected wire: [0xD0][0xD8]  (2 bytes)
+// Test 6: Stateless MINER_READY (opcode 216 = 0xD8 → 0xD0D8) zero-length frame
+// Expected wire: [0xD0][0xD8][0x00000000]
 // ============================================================================
 void test_stateless_miner_ready() {
-    std::cout << "\nTest 6: Stateless MINER_READY header-only\n";
+    std::cout << "\nTest 6: Stateless MINER_READY zero-length frame\n";
     auto bytes = PacketBuilder::build(ProtocolLane::STATELESS, LLP::MINER_READY);
-    bool ok = (bytes && bytes->size() == 2 &&
-               (*bytes)[0] == 0xD0 && (*bytes)[1] == 0xD8);
-    print_test_result("Stateless MINER_READY → [0xD0][0xD8] (2 bytes)", ok);
+    bool ok = (bytes && bytes->size() == 6 &&
+               (*bytes)[0] == 0xD0 && (*bytes)[1] == 0xD8 &&
+               (*bytes)[2] == 0x00 && (*bytes)[3] == 0x00 &&
+               (*bytes)[4] == 0x00 && (*bytes)[5] == 0x00);
+    print_test_result("Stateless MINER_READY → [0xD0][0xD8][0x00000000]", ok);
 }
 
 // ============================================================================
-// Test 7: Legacy GET_ROUND (opcode 133 = 0x85) header-only
-// Expected wire: [0x85]  (1 byte)
+// Test 7: Legacy GET_ROUND (opcode 133 = 0x85) zero-length frame
+// Expected wire: [0x85][0x00000000]
 // ============================================================================
 void test_legacy_get_round() {
-    std::cout << "\nTest 7: Legacy GET_ROUND header-only\n";
+    std::cout << "\nTest 7: Legacy GET_ROUND zero-length frame\n";
     auto bytes = PacketBuilder::build(ProtocolLane::LEGACY, LLP::GET_ROUND);
-    bool ok = (bytes && bytes->size() == 1 && (*bytes)[0] == 0x85);
-    print_test_result("Legacy GET_ROUND → [0x85] (1 byte)", ok);
+    bool ok = (bytes && bytes->size() == 5 &&
+               (*bytes)[0] == 0x85 &&
+               (*bytes)[1] == 0x00 && (*bytes)[2] == 0x00 &&
+               (*bytes)[3] == 0x00 && (*bytes)[4] == 0x00);
+    print_test_result("Legacy GET_ROUND → [0x85][0x00000000]", ok);
 }
 
 // ============================================================================
-// Test 8: Stateless GET_ROUND (opcode 133 = 0x85 → 0xD085) header-only
-// Expected wire: [0xD0][0x85]  (2 bytes)
+// Test 8: Stateless GET_ROUND (opcode 133 = 0x85 → 0xD085) zero-length frame
+// Expected wire: [0xD0][0x85][0x00000000]
 // ============================================================================
 void test_stateless_get_round() {
-    std::cout << "\nTest 8: Stateless GET_ROUND header-only\n";
+    std::cout << "\nTest 8: Stateless GET_ROUND zero-length frame\n";
     auto bytes = PacketBuilder::build(ProtocolLane::STATELESS, LLP::GET_ROUND);
-    bool ok = (bytes && bytes->size() == 2 &&
-               (*bytes)[0] == 0xD0 && (*bytes)[1] == 0x85);
-    print_test_result("Stateless GET_ROUND → [0xD0][0x85] (2 bytes)", ok);
+    bool ok = (bytes && bytes->size() == 6 &&
+               (*bytes)[0] == 0xD0 && (*bytes)[1] == 0x85 &&
+               (*bytes)[2] == 0x00 && (*bytes)[3] == 0x00 &&
+               (*bytes)[4] == 0x00 && (*bytes)[5] == 0x00);
+    print_test_result("Stateless GET_ROUND → [0xD0][0x85][0x00000000]", ok);
 }
 
 // ============================================================================
@@ -212,11 +227,24 @@ void test_mirror_opcode_invariant() {
 }
 
 // ============================================================================
-// Test 11: submit_block plaintext layout size invariant
+// Test 11: UNKNOWN lane must not silently fall back to legacy framing
+// ============================================================================
+void test_unknown_lane_rejected() {
+    std::cout << "\nTest 11: UNKNOWN lane rejected\n";
+    auto header_only = PacketBuilder::build(ProtocolLane::UNKNOWN, LLP::GET_BLOCK);
+    std::vector<uint8_t> payload = {0xAA, 0xBB};
+    auto with_payload = PacketBuilder::build(ProtocolLane::UNKNOWN, LLP::SUBMIT_BLOCK, payload);
+
+    bool ok = !header_only && !with_payload;
+    print_test_result("UNKNOWN lane build returns empty payload", ok);
+}
+
+// ============================================================================
+// Test 12: submit_block plaintext layout size invariant
 // Verifies the fixed-format plaintext is exactly block(216) + ts(8) + siglen(2) + sig(N)
 // ============================================================================
 void test_plaintext_layout_size() {
-    std::cout << "\nTest 11: Plaintext layout size = 216 + 8 + 2 + sig_size\n";
+    std::cout << "\nTest 12: Plaintext layout size = 216 + 8 + 2 + sig_size\n";
     constexpr size_t BLOCK_SIZE = 216;
     constexpr size_t TIMESTAMP_SIZE = 8;
     constexpr size_t SIGLEN_FIELD_SIZE = 2;
@@ -250,6 +278,7 @@ int main() {
     test_stateless_get_round();
     test_large_payload_stateless();
     test_mirror_opcode_invariant();
+    test_unknown_lane_rejected();
     test_plaintext_layout_size();
 
     std::cout << "\n========================================\n";

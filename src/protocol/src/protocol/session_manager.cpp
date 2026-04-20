@@ -16,8 +16,9 @@ namespace protocol {
 
 constexpr uint16_t MIN_KEEPALIVE_HOURS = 1;
 constexpr uint16_t MAX_KEEPALIVE_HOURS = 168;
-constexpr auto KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);
-constexpr auto KEEPALIVE_TCP_INTERVAL   = std::chrono::seconds(170);
+
+// First keepalive sent 10 seconds after auth — immediate session liveness proof.
+constexpr auto SESSION_KEEPALIVE_EARLY_INTERVAL = std::chrono::seconds(10);
 
 namespace {
 
@@ -48,6 +49,37 @@ const char* session_state_name(SessionManager::SessionState state)
         case SessionManager::SessionState::DEGRADED:      return "DEGRADED";
         default:                                          return "UNKNOWN";
     }
+}
+
+bool session_requires_full_recovery_locked(const SessionManager::SessionInfo& session)
+{
+    if (session.state != SessionManager::SessionState::AUTHENTICATED ||
+        !session.authenticated ||
+        session.session_id.is_default() ||
+        session.session_epoch.is_default()) {
+        return true;
+    }
+
+    switch (session.recovery_state) {
+        case SessionManager::RecoveryState::FORCED_REAUTH:
+        case SessionManager::RecoveryState::RECOVERY_IN_PROGRESS:
+        case SessionManager::RecoveryState::RECONNECT_REQUIRED:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool session_may_request_work_locked(const SessionManager::SessionInfo& session)
+{
+    return !session_requires_full_recovery_locked(session) &&
+           session.ready_for_get_block;
+}
+
+bool session_is_fully_mining_ready_locked(const SessionManager::SessionInfo& session)
+{
+    return !session_requires_full_recovery_locked(session) &&
+           session.ready_for_submit;
 }
 
 } // namespace
@@ -170,7 +202,7 @@ void SessionManager::set_epoch_coordinator(std::shared_ptr<EpochCoordinator> coo
     // value so the monotonic invariant is preserved in both directions.
     if (m_epoch_coordinator) {
         const auto coord_epoch = m_epoch_coordinator->session_epoch();
-        m_session.session_epoch = std::max(m_session.session_epoch, coord_epoch);
+        m_session.session_epoch = SessionEpoch(std::max(m_session.session_epoch.get(), coord_epoch.get()));
     }
     bump_runtime_state_generation_locked();
 }
@@ -203,7 +235,7 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     // regress to 0.
     if (m_epoch_coordinator) {
         const auto coord_epoch = m_epoch_coordinator->session_epoch();
-        m_session.session_epoch = std::max(saved_epoch, coord_epoch);
+        m_session.session_epoch = SessionEpoch(std::max(saved_epoch.get(), coord_epoch.get()));
     } else {
         m_session.session_epoch = saved_epoch;
     }
@@ -219,19 +251,19 @@ void SessionManager::clear_runtime_session_locked(bool preserve_genesis,
     m_canonical_identity = SessionIdentity{};
 }
 
-void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
-                                                         const std::vector<uint8_t>& tritium_genesis)
+void SessionManager::transition_to_authenticated_locked(SessionId session_id,
+                                                         SessionGenesisHash tritium_genesis)
 {
     if (m_epoch_coordinator) {
-        m_session.session_epoch = m_epoch_coordinator->advance_session_epoch("authenticated");
+        m_session.session_epoch = SessionEpoch(m_epoch_coordinator->advance_session_epoch("authenticated"));
     } else {
         if (m_logger) {
             m_logger->warn("[SessionManager] EpochCoordinator not wired — using local session_epoch counter. "
                            "Call set_epoch_coordinator() before sessions begin to enable global epoch sync.");
         }
-        ++m_session.session_epoch;
+        m_session.session_epoch = m_session.session_epoch.next();
     }
-    m_session.session_id = session_id;
+    m_session.session_id = SessionId(session_id);
     m_session.state = SessionState::AUTHENTICATED;
     m_session.authenticated = true;
     m_session.falcon_authenticated = true;
@@ -240,7 +272,9 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
     m_session.session_start = m_session.last_auth_time;
     m_session.session_start_tp = std::chrono::system_clock::now();
     m_session.active_lane = m_protocol_lane;
-    if (!tritium_genesis.empty()) {
+    m_session.ready_for_submit = false;
+    m_session.ready_for_get_block = false;
+    if (!tritium_genesis.get().empty()) {
         m_session.session_genesis = tritium_genesis;
     }
     update_replay_allowances_locked();
@@ -256,28 +290,39 @@ void SessionManager::transition_to_authenticated_locked(uint32_t session_id,
     m_canonical_identity = SessionIdentity(
         session_id,
         m_session.session_epoch,
-        m_session.session_genesis,
+        m_session.session_genesis.get(),
         m_session.chacha20_session_key,
         std::move(pubkey_hash),
-        m_protocol_lane);
+        m_protocol_lane,
+        m_session.falcon_key_id,
+        m_session.chacha20_key_fingerprint);
 
     record_session_event_locked(SessionEventKind::AUTH_SUCCESS, "authenticated");
     std::ostringstream sid_oss;
-    sid_oss << "session_id=0x" << std::hex << std::setw(8) << std::setfill('0') << session_id;
+    sid_oss << "session_id=0x" << std::hex << std::setw(8) << std::setfill('0') << session_id.get();
     record_session_event_locked(SessionEventKind::SESSION_START, sid_oss.str());
 }
 
 void SessionManager::update_replay_allowances_locked()
 {
     // Derivation rules:
-    //   ready_for_get_block: requires authentication only
-    //   ready_for_submit:    requires authentication AND reward binding
+    //   ready_for_get_block: requires authentication plus the previously established
+    //                        reward/channel readiness path; this helper may clear it
+    //                        when auth/reward preconditions are lost, but never promotes
+    //                        the session to ready on its own
+    //   ready_for_submit:    requires authentication AND reward binding, and likewise
+    //                        remains false until the caller explicitly marks submit-ready
     //   replay allowances mirror the same logic
     const bool authenticated = (m_session.state == SessionState::AUTHENTICATED);
+    const bool reward_required =
+        !m_session.reward_address.empty() || !m_session.reward_address_string.empty();
+    const bool reward_ready = !reward_required || m_session.reward_bound;
     m_session.deferred_push_replay_allowed = authenticated;
     m_session.get_block_replay_allowed = authenticated;
-    m_session.ready_for_get_block = authenticated;
-    m_session.ready_for_submit = authenticated && m_session.reward_bound;
+    if (!authenticated || !reward_ready) {
+        m_session.ready_for_get_block = false;
+        m_session.ready_for_submit = false;
+    }
 }
 
 void SessionManager::bump_runtime_state_generation_locked()
@@ -288,6 +333,16 @@ void SessionManager::bump_runtime_state_generation_locked()
 
 void SessionManager::clear_session_event_journal_locked()
 {
+    // Bug 10 fix: Archive previous journal entries instead of dropping them.
+    // This preserves the failure/degradation events that triggered re-auth
+    // for post-mortem debugging.
+    for (auto& event : m_session_event_journal) {
+        m_archived_event_journal.push_back(std::move(event));
+    }
+    // Cap archived events to prevent unbounded growth
+    while (m_archived_event_journal.size() > MAX_ARCHIVED_EVENTS) {
+        m_archived_event_journal.pop_front();
+    }
     m_session_event_journal.clear();
 }
 
@@ -296,8 +351,8 @@ void SessionManager::record_session_event_locked(SessionEventKind kind, const st
     m_session_event_journal.push_back(SessionEvent{
         now_epoch_seconds(),
         kind,
-        SessionId(m_session.session_id),
-        SessionEpoch(m_session.session_epoch),
+        m_session.session_id,
+        m_session.session_epoch,
         detail
     });
     while (m_session_event_journal.size() > SESSION_EVENT_JOURNAL_CAPACITY) {
@@ -312,7 +367,7 @@ void SessionManager::begin_auth()
     begin_auth_handshake("auth started");
 }
 
-void SessionManager::commit_authenticated(uint32_t session_id, ProtocolLane lane,
+void SessionManager::commit_authenticated(SessionId session_id, ProtocolLane lane,
                                           const std::string& reward_address)
 {
     {
@@ -321,7 +376,10 @@ void SessionManager::commit_authenticated(uint32_t session_id, ProtocolLane lane
         m_session.active_lane = lane;
         bump_runtime_state_generation_locked();
     }
-    commit_authenticated_session(session_id, {}, {}, {});
+    commit_authenticated_session(session_id,
+                                 std::vector<uint8_t>{},
+                                 FalconHashKeyId{},
+                                 SessionGenesisHash{});
     if (!reward_address.empty()) {
         SessionWriteLock lock(m_session_mutex);
         m_session.reward_address = reward_address;
@@ -355,6 +413,8 @@ void SessionManager::begin_auth_handshake(const std::string& detail)
     const auto retained_chacha20_session_key = m_session.chacha20_session_key;
     const auto retained_chacha20_key_fingerprint = m_session.chacha20_key_fingerprint;
     const bool retained_chacha20_ready = m_session.chacha20_ready;
+    const auto retained_recovery_state = m_session.recovery_state;
+    const auto retained_recovery_reason = m_session.recovery_reason;
     clear_runtime_session_locked(true, true);
     m_session.reward_address_string = retained_reward_address;
     m_session.reward_address = retained_reward_address_new;
@@ -365,8 +425,14 @@ void SessionManager::begin_auth_handshake(const std::string& detail)
     m_session.reward_state = retained_reward_address.empty() ? RewardState::NONE
                                                              : RewardState::REQUIRED;
     m_session.state = SessionState::AUTHENTICATING;
-    m_session.recovery_state = RecoveryState::HEALTHY;
-    m_session.recovery_reason.clear();
+    if (retained_recovery_state == RecoveryState::RECOVERY_IN_PROGRESS ||
+        retained_recovery_state == RecoveryState::FORCED_REAUTH) {
+        m_session.recovery_state = RecoveryState::RECOVERY_IN_PROGRESS;
+        m_session.recovery_reason = retained_recovery_reason;
+    } else {
+        m_session.recovery_state = RecoveryState::HEALTHY;
+        m_session.recovery_reason.clear();
+    }
     m_session.expiry_state = ExpiryState::FRESH;
     m_session.expiry_reason.clear();
     m_session.last_activity = now_epoch_seconds();
@@ -377,10 +443,10 @@ void SessionManager::begin_auth_handshake(const std::string& detail)
     bump_runtime_state_generation_locked();
 }
 
-void SessionManager::commit_authenticated_session(uint32_t session_id,
+void SessionManager::commit_authenticated_session(SessionId session_id,
                                                    const std::vector<uint8_t>& pubkey,
-                                                   const std::string& key_id,
-                                                   const std::vector<uint8_t>& tritium_genesis)
+                                                   FalconHashKeyId key_id,
+                                                   SessionGenesisHash tritium_genesis)
 {
     stop_keepalive_timer();
     {
@@ -391,19 +457,32 @@ void SessionManager::commit_authenticated_session(uint32_t session_id,
         if (!pubkey.empty()) {
             m_session.falcon_pubkey = pubkey;
         }
-        if (!key_id.empty()) {
+        if (!key_id.get().empty()) {
             m_session.falcon_key_id = key_id;
         }
         transition_to_authenticated_locked(session_id, tritium_genesis);
+        m_session.recovery_state = RecoveryState::HEALTHY;
+        m_session.recovery_reason.clear();
+        m_session.expiry_state = ExpiryState::FRESH;
+        m_session.expiry_reason.clear();
         bump_runtime_state_generation_locked();
     }
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
-                   session_id, get_session_epoch());
+                   session_id.get(), get_session_epoch().get());
 }
 
-void SessionManager::start_session(uint32_t session_id,
+void SessionManager::commit_authenticated_session(SessionId session_id,
+                                                   const std::vector<uint8_t>& pubkey,
+                                                   const std::string& key_id,
+                                                   const std::vector<uint8_t>& tritium_genesis)
+{
+    commit_authenticated_session(session_id, pubkey, FalconHashKeyId(key_id),
+                                 SessionGenesisHash(tritium_genesis));
+}
+
+void SessionManager::start_session(SessionId session_id,
                                     const std::vector<uint8_t>& session_key,
-                                    const std::vector<uint8_t>& tritium_genesis)
+                                    SessionGenesisHash tritium_genesis)
 {
     stop_keepalive_timer();
     {
@@ -415,10 +494,21 @@ void SessionManager::start_session(uint32_t session_id,
             m_session.session_key = session_key;
         }
         transition_to_authenticated_locked(session_id, tritium_genesis);
+        m_session.recovery_state = RecoveryState::HEALTHY;
+        m_session.recovery_reason.clear();
+        m_session.expiry_state = ExpiryState::FRESH;
+        m_session.expiry_reason.clear();
         bump_runtime_state_generation_locked();
     }
     m_logger->info("[SessionManager] Session started - ID: 0x{:08X}, epoch={}",
-                   session_id, get_session_epoch());
+                   session_id.get(), get_session_epoch().get());
+}
+
+void SessionManager::start_session(SessionId session_id,
+                                    const std::vector<uint8_t>& session_key,
+                                    const std::vector<uint8_t>& tritium_genesis)
+{
+    start_session(session_id, session_key, SessionGenesisHash(tritium_genesis));
 }
 
 void SessionManager::mark_session_expired(const std::string& reason)
@@ -429,6 +519,11 @@ void SessionManager::mark_session_expired(const std::string& reason)
         notify = (m_session.state != SessionState::DEGRADED);
         m_session.state = SessionState::DEGRADED;
         m_session.authenticated = false;
+        m_session.falcon_authenticated = false;
+        m_session.session_key.clear();
+        m_session.chacha20_session_key.clear();
+        m_session.chacha20_key_fingerprint = SessionFingerprint{};
+        m_session.chacha20_ready = false;
         m_session.expiry_state = ExpiryState::EXPIRED_ACCEPTED;
         m_session.expiry_reason = reason;
         m_session.recovery_state = RecoveryState::FORCED_REAUTH;
@@ -440,6 +535,10 @@ void SessionManager::mark_session_expired(const std::string& reason)
         if (m_session.reward_bound) {
             m_session.reward_state = RewardState::STALE;
         }
+        // Bug 4 fix: Clear canonical identity so downstream code checking
+        // session_id validity (non-zero) does not proceed with stale identity
+        // while session state is DEGRADED.
+        m_canonical_identity = SessionIdentity{};
         m_session.last_activity = now_epoch_seconds();
         record_session_event_locked(SessionEventKind::DEGRADED,
                                     reason.empty() ? "session marked expired" : reason);
@@ -465,6 +564,7 @@ void SessionManager::mark_recovery_healthy(const std::string& reason)
 {
     SessionWriteLock lock(m_session_mutex);
     if (m_session.recovery_state == RecoveryState::FORCED_REAUTH ||
+        m_session.recovery_state == RecoveryState::RECOVERY_IN_PROGRESS ||
         m_session.recovery_state == RecoveryState::RECONNECT_REQUIRED ||
         m_session.state == SessionState::DEGRADED) {
         return;
@@ -482,6 +582,7 @@ void SessionManager::clear_for_disconnect(const std::string& reward_address,
                                           const std::string& reason,
                                           bool preserve_genesis)
 {
+    stop_keepalive_timer();
     {
         SessionWriteLock lock(m_session_mutex);
         const auto retained_reward_address =
@@ -503,7 +604,6 @@ void SessionManager::clear_for_disconnect(const std::string& reward_address,
                                     reason.empty() ? "session cleared for disconnect" : reason);
         bump_runtime_state_generation_locked();
     }
-    stop_keepalive_timer();
 }
 
 void SessionManager::clear_for_reauth(const std::string& reward_address,
@@ -523,7 +623,8 @@ void SessionManager::clear_for_reauth(const std::string& reward_address,
     m_session.reward_binding_source = retained_reward_source;
     m_session.reward_state = retained_reward_address.empty() ? RewardState::NONE
                                                              : RewardState::REQUIRED;
-    m_session.recovery_state = RecoveryState::FORCED_REAUTH;
+    m_session.state = SessionState::AUTHENTICATING;
+    m_session.recovery_state = RecoveryState::RECOVERY_IN_PROGRESS;
     m_session.recovery_reason = reason;
     m_session.expiry_state = ExpiryState::FRESH;
     m_session.last_activity = now_epoch_seconds();
@@ -541,7 +642,7 @@ void SessionManager::end_session()
 // ── Reward binding ────────────────────────────────────────────────────────────
 
 void SessionManager::begin_reward_binding(const std::string& addr,
-                                          const std::vector<uint8_t>& hash,
+                                          RewardHash hash,
                                           const std::string& src)
 {
     SessionWriteLock lock(m_session_mutex);
@@ -559,8 +660,15 @@ void SessionManager::begin_reward_binding(const std::string& addr,
     bump_runtime_state_generation_locked();
 }
 
+void SessionManager::begin_reward_binding(const std::string& addr,
+                                          const std::vector<uint8_t>& hash,
+                                          const std::string& src)
+{
+    begin_reward_binding(addr, RewardHash(hash), src);
+}
+
 void SessionManager::commit_reward_bound(const std::string& reward_address,
-                                         const std::vector<uint8_t>& reward_hash,
+                                         RewardHash reward_hash,
                                          const std::string& source)
 {
     SessionWriteLock lock(m_session_mutex);
@@ -576,6 +684,13 @@ void SessionManager::commit_reward_bound(const std::string& reward_address,
     record_session_event_locked(SessionEventKind::REWARD_BOUND,
                                 "accepted" + (source.empty() ? "" : " via " + source));
     bump_runtime_state_generation_locked();
+}
+
+void SessionManager::commit_reward_bound(const std::string& reward_address,
+                                         const std::vector<uint8_t>& reward_hash,
+                                         const std::string& source)
+{
+    commit_reward_bound(reward_address, RewardHash(reward_hash), source);
 }
 
 void SessionManager::commit_reward_rejected(const std::string& addr,
@@ -660,13 +775,19 @@ void SessionManager::set_connection_metadata(const std::string& local,
 }
 
 void SessionManager::set_falcon_identity(const std::vector<uint8_t>& pubkey,
-                                          const std::string& key_id, bool authenticated)
+                                          FalconHashKeyId key_id, bool authenticated)
 {
     SessionWriteLock lock(m_session_mutex);
     m_session.falcon_pubkey = pubkey;
     m_session.falcon_key_id = key_id;
     m_session.falcon_authenticated = authenticated;
     bump_runtime_state_generation_locked();
+}
+
+void SessionManager::set_falcon_identity(const std::vector<uint8_t>& pubkey,
+                                          const std::string& key_id, bool authenticated)
+{
+    set_falcon_identity(pubkey, FalconHashKeyId(key_id), authenticated);
 }
 
 void SessionManager::reset_session_credentials()
@@ -684,7 +805,7 @@ void SessionManager::reset_session_credentials()
 }
 
 void SessionManager::set_chacha20_session_key(const std::vector<uint8_t>& key,
-                                               const std::string& fingerprint, bool ready)
+                                               SessionFingerprint fingerprint, bool ready)
 {
     SessionWriteLock lock(m_session_mutex);
     m_session.chacha20_session_key = key;
@@ -693,8 +814,14 @@ void SessionManager::set_chacha20_session_key(const std::vector<uint8_t>& key,
     bump_runtime_state_generation_locked();
 }
 
+void SessionManager::set_chacha20_session_key(const std::vector<uint8_t>& key,
+                                               const std::string& fingerprint, bool ready)
+{
+    set_chacha20_session_key(key, SessionFingerprint(fingerprint), ready);
+}
+
 void SessionManager::set_reward_binding(const std::string& addr,
-                                        const std::vector<uint8_t>& hash,
+                                        RewardHash hash,
                                         bool bound,
                                         const std::string& src)
 {
@@ -714,14 +841,26 @@ void SessionManager::set_reward_binding(const std::string& addr,
     }
 }
 
+void SessionManager::set_reward_binding(const std::string& addr,
+                                        const std::vector<uint8_t>& hash,
+                                        bool bound,
+                                        const std::string& src)
+{
+    set_reward_binding(addr, RewardHash(hash), bound, src);
+}
+
 void SessionManager::set_channel_state(uint32_t channel,
                                        bool ready_for_submit,
                                        bool ready_for_get_block)
 {
     SessionWriteLock lock(m_session_mutex);
     m_session.channel = channel;
-    if (ready_for_submit) m_session.ready_for_submit = ready_for_submit;
-    if (ready_for_get_block) m_session.ready_for_get_block = ready_for_get_block;
+    const bool authenticated = (m_session.state == SessionState::AUTHENTICATED);
+    const bool reward_required =
+        !m_session.reward_address.empty() || !m_session.reward_address_string.empty();
+    const bool reward_ready = !reward_required || m_session.reward_bound;
+    m_session.ready_for_submit = authenticated && m_session.reward_bound && ready_for_submit;
+    m_session.ready_for_get_block = authenticated && reward_ready && ready_for_get_block;
     bump_runtime_state_generation_locked();
 }
 
@@ -731,11 +870,16 @@ void SessionManager::mark_activity()
     m_session.last_activity = now_epoch_seconds();
 }
 
-void SessionManager::set_tritium_genesis(const std::vector<uint8_t>& genesis)
+void SessionManager::set_tritium_genesis(SessionGenesisHash genesis)
 {
     SessionWriteLock lock(m_session_mutex);
     m_session.session_genesis = genesis;
     bump_runtime_state_generation_locked();
+}
+
+void SessionManager::set_tritium_genesis(const std::vector<uint8_t>& genesis)
+{
+    set_tritium_genesis(SessionGenesisHash(genesis));
 }
 
 void SessionManager::set_keepalive_interval(uint16_t hours)
@@ -745,11 +889,6 @@ void SessionManager::set_keepalive_interval(uint16_t hours)
         m_keepalive_interval_hours = MIN_KEEPALIVE_HOURS;
     if (m_keepalive_interval_hours > MAX_KEEPALIVE_HOURS)
         m_keepalive_interval_hours = MAX_KEEPALIVE_HOURS;
-}
-
-void SessionManager::set_keepalive_interval_seconds(uint32_t /*seconds*/)
-{
-    // no-op in minimal design — TCP keepalive is fixed at 45s
 }
 
 void SessionManager::set_prevblock_suffix(const std::array<uint8_t, 4>& suffix)
@@ -802,19 +941,37 @@ bool SessionManager::is_reward_bound() const
 bool SessionManager::can_submit() const
 {
     SessionReadLock lock(m_session_mutex);
-    return m_session.authenticated && m_session.reward_bound;
+    return session_is_fully_mining_ready_locked(m_session);
 }
 
 bool SessionManager::can_submit_work() const
 {
     SessionReadLock lock(m_session_mutex);
-    return m_session.ready_for_submit;
+    return session_is_fully_mining_ready_locked(m_session);
 }
 
 bool SessionManager::can_request_get_block() const
 {
     SessionReadLock lock(m_session_mutex);
-    return m_session.ready_for_get_block;
+    return session_may_request_work_locked(m_session);
+}
+
+bool SessionManager::session_requires_full_recovery() const
+{
+    SessionReadLock lock(m_session_mutex);
+    return session_requires_full_recovery_locked(m_session);
+}
+
+bool SessionManager::session_may_request_work() const
+{
+    SessionReadLock lock(m_session_mutex);
+    return session_may_request_work_locked(m_session);
+}
+
+bool SessionManager::session_is_fully_mining_ready() const
+{
+    SessionReadLock lock(m_session_mutex);
+    return session_is_fully_mining_ready_locked(m_session);
 }
 
 bool SessionManager::allow_deferred_push_replay() const
@@ -878,7 +1035,7 @@ bool SessionManager::validate_miner_session_container_locked(const SessionInfo& 
     if (!session.authenticated) {
         return fail("session not authenticated");
     }
-    if (session.session_id == 0) {
+    if (session.session_id.is_default()) {
         return fail("authenticated session missing session_id");
     }
     if (reason) *reason = "PASS";
@@ -896,8 +1053,8 @@ std::string SessionManager::build_miner_session_diagnostics() const
         << "- active lane: "   << lane_name(m_session.active_lane) << '\n'
         << "- authenticated: " << (m_session.authenticated ? "YES" : "NO") << '\n'
         << "- session_id: 0x"  << std::hex << std::setw(8) << std::setfill('0')
-                               << m_session.session_id << std::dec << '\n'
-        << "- session_epoch: " << m_session.session_epoch << '\n'
+                               << m_session.session_id.get() << std::dec << '\n'
+        << "- session_epoch: " << m_session.session_epoch.get() << '\n'
         << "- reward_address: " << (m_session.reward_address_string.empty()
                                      ? "<unset>" : m_session.reward_address_string) << '\n'
         << "- reward_bound: "  << (m_session.reward_bound ? "YES" : "NO") << '\n'
@@ -923,13 +1080,13 @@ std::string SessionManager::build_miner_session_diagnostics() const
     return oss.str();
 }
 
-uint32_t SessionManager::get_session_id() const
+SessionId SessionManager::get_session_id() const
 {
     SessionReadLock lock(m_session_mutex);
     return m_session.session_id;
 }
 
-uint64_t SessionManager::get_session_epoch() const
+SessionEpoch SessionManager::get_session_epoch() const
 {
     SessionReadLock lock(m_session_mutex);
     return m_session.session_epoch;
@@ -963,6 +1120,35 @@ SessionIdentity SessionManager::get_canonical_identity() const
     return m_canonical_identity;
 }
 
+SessionBinding SessionManager::get_session_binding() const
+{
+    SessionReadLock lock(m_session_mutex);
+
+    SessionBinding binding;
+    binding.session_id = m_session.session_id;
+    binding.session_epoch = m_session.session_epoch;
+    binding.session_genesis = m_session.session_genesis;
+    binding.falcon_key_id = m_session.falcon_key_id;
+    binding.chacha20_session_key = m_session.chacha20_session_key;
+    binding.chacha20_key_fingerprint = m_session.chacha20_key_fingerprint;
+    binding.active_lane = m_session.active_lane;
+    binding.authenticated = m_session.authenticated;
+    binding.chacha20_ready = m_session.chacha20_ready;
+    binding.reward_address = !m_session.reward_address.empty()
+                                 ? m_session.reward_address
+                                 : m_session.reward_address_string;
+    binding.reward_hash = m_session.reward_hash;
+    binding.reward_bound = m_session.reward_bound;
+    binding.channel = m_session.channel;
+    binding.ready_for_submit = m_session.ready_for_submit;
+    binding.ready_for_get_block = m_session.ready_for_get_block;
+    binding.full_recovery_required = session_requires_full_recovery_locked(m_session);
+    binding.work_request_allowed = session_may_request_work_locked(m_session);
+    binding.mining_ready = session_is_fully_mining_ready_locked(m_session);
+    binding.identity = m_canonical_identity;
+    return binding;
+}
+
 std::chrono::seconds SessionManager::get_session_uptime_locked() const
 {
     if (m_session.session_start == 0) return std::chrono::seconds(0);
@@ -983,10 +1169,15 @@ std::vector<uint8_t> SessionManager::get_session_key() const
     return m_session.chacha20_session_key;
 }
 
-std::vector<uint8_t> SessionManager::get_tritium_genesis() const
+SessionGenesisHash SessionManager::get_typed_tritium_genesis() const
 {
     SessionReadLock lock(m_session_mutex);
     return m_session.session_genesis;
+}
+
+std::vector<uint8_t> SessionManager::get_tritium_genesis() const
+{
+    return get_typed_tritium_genesis().get();
 }
 
 uint16_t SessionManager::map_auth_opcode(uint8_t legacy_opcode) const
@@ -1018,6 +1209,24 @@ std::string SessionManager::build_session_event_journal() const
     const auto journal = get_session_event_journal();
     std::ostringstream oss;
     oss << "SESSION EVENT JOURNAL";
+
+    // Bug 10: Include archived events from previous sessions for debugging
+    {
+        SessionReadLock lock(m_session_mutex);
+        if (!m_archived_event_journal.empty()) {
+            oss << "\n--- ARCHIVED (previous sessions) ---";
+            for (const auto& ev : m_archived_event_journal) {
+                oss << "\n- [" << ev.timestamp << "] "
+                    << session_event_kind_name(ev.kind)
+                    << " sid=0x" << std::hex << std::setw(8) << std::setfill('0')
+                    << ev.session_id.get() << std::dec
+                    << " epoch=" << ev.session_epoch.get();
+                if (!ev.detail.empty()) oss << " detail=" << ev.detail;
+            }
+            oss << "\n--- CURRENT SESSION ---";
+        }
+    }
+
     if (journal.empty()) {
         oss << "\n- <empty>";
         return oss.str();
@@ -1034,6 +1243,19 @@ std::string SessionManager::build_session_event_journal() const
 }
 
 // ── Keepalive timer ───────────────────────────────────────────────────────────
+//
+// Sends SESSION_KEEPALIVE packets to the node to extend the session timeout.
+//
+// Timing is derived from the node's advertised session timeout (from
+// SESSION_START) divided by KEEPALIVE_SAFETY_DIVISOR (4):
+//   e.g. 24-hour timeout → keepalive every 6 hours (4 pings per window).
+//
+// Sequence:
+//   1) Early ping at +10s after auth (immediate session liveness proof)
+//   2) Regular pings at m_keepalive_interval_hours intervals thereafter
+//
+// This replaced the previous 170s "TCP keepalive" timer which was a confusing
+// AI-generated artifact unrelated to actual TCP SO_KEEPALIVE.
 
 void SessionManager::start_keepalive_timer()
 {
@@ -1047,15 +1269,19 @@ void SessionManager::start_keepalive_timer()
     m_keepalive_active = true;
     auto self = shared_from_this();
     uint64_t generation = m_keepalive_generation.load();
-    m_keepalive_timer->expires_after(KEEPALIVE_EARLY_INTERVAL);
+    m_keepalive_timer->expires_after(SESSION_KEEPALIVE_EARLY_INTERVAL);
     m_keepalive_timer->async_wait([self, generation](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) return;
         if (generation != self->m_keepalive_generation.load()) return;
         self->send_keepalive("early");
         self->schedule_regular_keepalives(self);
     });
-    m_logger->info("[SessionManager] Keepalive timer started (early: {}s, TCP ping: {}s)",
-                  KEEPALIVE_EARLY_INTERVAL.count(), KEEPALIVE_TCP_INTERVAL.count());
+
+    auto regular_interval = get_keepalive_timer_interval();
+    m_logger->info("[SessionManager] Keepalive timer started (early: {}s, regular: {}s / {} hours)",
+                  SESSION_KEEPALIVE_EARLY_INTERVAL.count(),
+                  regular_interval.count(),
+                  m_keepalive_interval_hours);
 }
 
 void SessionManager::stop_keepalive_timer()
@@ -1071,13 +1297,25 @@ void SessionManager::schedule_regular_keepalives(const std::shared_ptr<SessionMa
 {
     if (!m_keepalive_timer || !m_keepalive_active) return;
     uint64_t generation = m_keepalive_generation.load();
-    m_keepalive_timer->expires_after(KEEPALIVE_TCP_INTERVAL);
+    auto interval = get_keepalive_timer_interval();
+    m_keepalive_timer->expires_after(interval);
     m_keepalive_timer->async_wait([self, generation](const asio::error_code& error) {
         if (error || !self->m_keepalive_active || !self->is_active()) return;
         if (generation != self->m_keepalive_generation.load()) return;
         self->send_keepalive("regular");
         self->schedule_regular_keepalives(self);
     });
+}
+
+std::chrono::seconds SessionManager::get_keepalive_timer_interval() const
+{
+    // Convert hours to seconds.  m_keepalive_interval_hours is derived from
+    // the node's SESSION_START timeout_seconds / KEEPALIVE_SAFETY_DIVISOR.
+    // Overflow safe: MAX_KEEPALIVE_HOURS=168 → 168*3600=604800, well within int64_t.
+    auto seconds = static_cast<int64_t>(m_keepalive_interval_hours) * 3600;
+    // Floor at 60s to prevent tight-loop keepalives on misconfiguration
+    if (seconds < 60) seconds = 60;
+    return std::chrono::seconds(seconds);
 }
 
 void SessionManager::send_keepalive(const char* cadence)
@@ -1093,29 +1331,29 @@ void SessionManager::send_keepalive(const char* cadence)
         m_logger->warn("[SessionManager] Keepalive skipped - no session packet");
         return;
     }
-    uint32_t session_id;
+    uint32_t session_id_raw;
     {
         SessionWriteLock lock(m_session_mutex);
-        session_id = m_session.session_id;
+        session_id_raw = m_session.session_id.get();
         m_session.last_activity = now_epoch_seconds();
     }
     connection->transmit(payload);
-    m_logger->info("[SessionManager] SESSION_KEEPALIVE sent ({}) for session 0x{:08X}",
-                  cadence, session_id);
+    m_logger->info("[SessionManager] SESSION_KEEPALIVE sent ({}, next in {}h) for session 0x{:08X}",
+                  cadence, m_keepalive_interval_hours, session_id_raw);
 }
 
 network::Shared_payload SessionManager::build_keepalive_packet() const
 {
-    uint32_t session_id;
+    uint32_t session_id_raw;
     ProtocolLane lane;
     std::array<uint8_t, 4> prevblock_suffix;
     {
         SessionReadLock lock(m_session_mutex);
-        session_id = m_session.session_id;
+        session_id_raw = m_session.session_id.get();
         lane = m_protocol_lane;
         prevblock_suffix = m_session.prevblock_suffix;
     }
-    if (session_id == 0) return {};
+    if (session_id_raw == 0) return {};
     if (lane == ProtocolLane::UNKNOWN) {
         m_logger->error("[SessionManager] build_keepalive_packet(): UNKNOWN protocol lane");
         return {};
@@ -1126,10 +1364,10 @@ network::Shared_payload SessionManager::build_keepalive_packet() const
     //   [4-7] hashPrevBlock_lo32  (raw prevblock_suffix bytes)
     std::vector<uint8_t> payload;
     payload.reserve(8);
-    payload.push_back(static_cast<uint8_t>( session_id        & 0xFF));
-    payload.push_back(static_cast<uint8_t>((session_id >>  8) & 0xFF));
-    payload.push_back(static_cast<uint8_t>((session_id >> 16) & 0xFF));
-    payload.push_back(static_cast<uint8_t>((session_id >> 24) & 0xFF));
+    payload.push_back(static_cast<uint8_t>( session_id_raw        & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id_raw >>  8) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id_raw >> 16) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((session_id_raw >> 24) & 0xFF));
     payload.insert(payload.end(), prevblock_suffix.begin(), prevblock_suffix.end());
 
     Packet packet = (lane == ProtocolLane::STATELESS)
@@ -1145,14 +1383,14 @@ network::Shared_payload SessionManager::build_session_status_packet(
     bool degraded, bool has_template, bool workers_running, bool secondary_up) const
 {
     using namespace ::LLP::SessionStatusOpcodes;
-    uint32_t session_id;
+    uint32_t session_id_raw;
     ProtocolLane lane;
     {
         SessionReadLock lock(m_session_mutex);
-        session_id = m_session.session_id;
+        session_id_raw = m_session.session_id.get();
         lane = m_protocol_lane;
     }
-    if (session_id == 0) return {};
+    if (session_id_raw == 0) return {};
     if (lane == ProtocolLane::UNKNOWN) {
         m_logger->error("[SessionManager] build_session_status_packet(): UNKNOWN protocol lane");
         return {};
@@ -1165,7 +1403,7 @@ network::Shared_payload SessionManager::build_session_status_packet(
     if (secondary_up)    status_flags |= MINER_SECONDARY_UP;
 
     ::LLP::SessionStatusFrame frame;
-    frame.session_id   = session_id;
+    frame.session_id   = session_id_raw;
     frame.status_flags = status_flags;
     auto payload = frame.Serialize();
 

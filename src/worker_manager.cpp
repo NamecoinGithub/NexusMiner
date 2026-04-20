@@ -69,11 +69,12 @@ namespace {
     // signal for session liveness — keepalive ACK is diagnostic only.
     constexpr int64_t PUSH_ALIVE_THRESHOLD_SECONDS = protocol::ProtocolConstants::PUSH_LIVENESS_THRESHOLD_SECONDS;
 
-    // Fix A: push-alive guard in retry_connect() uses a much shorter window (30s).
-    // A push received in the last 30s proves the TCP connection is alive RIGHT NOW.
-    // A push received 5 minutes ago proves nothing about current TCP state and must
-    // not suppress a TCP reconnect — that causes the doom loop.
-    constexpr int64_t RETRY_CONNECT_PUSH_LIVE_SECONDS = 30;
+    // Push-alive guard in retry_connect(): suppress TCP reconnect if a push
+    // notification was received within this window, proving the connection is alive.
+    // Aligned with PUSH_ALIVE_THRESHOLD_SECONDS to prevent conflicting liveness
+    // decisions: retry_connect() must not tear down a session that
+    // check_template_health() still considers alive (Bug 2 fix).
+    constexpr int64_t RETRY_CONNECT_PUSH_LIVE_SECONDS = PUSH_ALIVE_THRESHOLD_SECONDS;
 
     // Aggressive secondary reconnect delay during degraded mode.
     // Unified height drift threshold: if HeightTracker.unified_height exceeds
@@ -124,7 +125,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             throw std::runtime_error("Invalid Falcon key format in configuration");
         }
 
-        // Create primary NodeSession (handles both stateless and legacy ports automatically via SIM Link)
+        // Create the primary lane-scoped NodeSession.
+        // Lane selection follows the configured node port; failover happens by
+        // reconnecting to a secondary node endpoint with a full auth cycle.
         m_primary_node_session = std::make_shared<NodeSession>(
             m_io_context,
             m_config,
@@ -370,12 +373,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 }
                 
                 if (workers_fed > 0) {
-                    auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
                     m_logger->info("[Worker_manager] ✓ Template distributed to {} workers - MINING STARTED", 
                                   workers_fed);
-                    if (solo_protocol) {
-                        solo_protocol->mark_authoritative_recovery_healthy("fresh_template_distributed_to_workers");
-                    }
                     // ✅ Clear degraded mode and all recovery state now that a valid template
                     // has been successfully delivered to workers.  This is intentionally done
                     // AFTER distribution so we only exit recovery state when workers actually
@@ -395,6 +394,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // After prolonged push silence the node's push subscription may have been
                     // lost during TCP disruption or session cycling.  Sending MINER_READY
                     // re-establishes the subscription and prevents the 600s timeout cycle.
+                    auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
                     if (solo_protocol) {
                         auto ht_snap = solo_protocol->get_height_tracker_snapshot();
                         bool push_ever_received = (ht_snap.last_push_notification_at != std::chrono::steady_clock::time_point{});
@@ -506,18 +506,23 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* the TCP connection. Uses existing session auth backoff infrastructure.    */
         m_primary_node_session->set_session_expired_handler(
             [this]() {
-                if (is_reconnecting() || (is_recovery_active() && m_epoch_coordinator->recovery_epoch() > 0)) {
-                    m_logger->warn("[Worker_manager] Session EXPIRED ignored: reconnect/recovery already in progress "
-                                   "(phase={}, recovery_active={}, recovery_epoch={})",
+                // recovery_in_progress tracks the authoritative session-restoration
+                // window so template-only recovery never masks SESSION_EXPIRED.
+                if (is_reconnecting() || is_session_recovery() ||
+                    m_recovery.recovery_in_progress.load(std::memory_order_acquire)) {
+                    m_logger->warn("[Worker_manager] Session EXPIRED ignored: authoritative session restoration already in progress "
+                                   "(phase={}, recovery_in_progress={}, recovery_epoch={})",
                                    phase_name(m_recovery.phase.load(std::memory_order_relaxed)),
-                                   is_recovery_active(),
+                                   m_recovery.recovery_in_progress.load(std::memory_order_relaxed),
                                    m_epoch_coordinator->recovery_epoch());
                     return;
                 }
 
-                m_logger->warn("[Worker_manager] Session EXPIRED — initiating in-band re-authentication");
+                m_logger->warn("[Worker_manager] Session EXPIRED — stopping workers and requiring a fresh session");
                 ++m_session_generation;  // Invalidate any in-flight timer dispatches for the old session
-                mark_recovery_initiated("session_expired");
+                stop_all_workers();
+                m_pending_recovery_completion_kind = RecoveryCompletionKind::PRIMARY_SESSION_REAUTH;
+                transition_to(RecoveryPhase::SESSION_RECOVERY, "session_expired");
 
                 // Use the current session auth fail count to calculate backoff delay.
                 // NOTE: We do NOT increment m_session_auth_fail_count here.
@@ -602,11 +607,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* This is the correct place to check session_id=0 (not in the login callback which */
         /* fires before MINER_AUTH_RESULT arrives). Triggers retry with exponential backoff. */
         m_primary_node_session->set_session_authenticated_handler(
-            [this](uint32_t session_id) {
+            [this](protocol::SessionId session_id) {
                 // CRITICAL: If session_id = 0, the node rejected authentication or didn't provide a session.
                 // Mining cannot proceed without a valid session_id (work submissions will be silently rejected).
                 // Use exponential backoff with max retry limit to prevent infinite tight retry loops.
-                if (session_id == 0)
+                if (session_id.is_default())
                 {
                     ++m_session_auth_fail_count;
                     ++m_session_generation;  // Failed auth is still a session transition
@@ -643,42 +648,50 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // Successful authentication: reset session auth failure counter
                 m_session_auth_fail_count = 0;
                 ++m_session_generation;  // New session — invalidate stale timer dispatches
-                // Clear reconnect guard if we're in RECONNECTING phase (in-band re-auth path).
-                // For the TCP reconnect path, the connection callback already cleared it.
-                if (is_reconnecting()) {
-                    // Transition back to WAITING_TEMPLATE — still need fresh BLOCK_DATA.
-                    transition_to(RecoveryPhase::WAITING_TEMPLATE, "in_band_reauth_complete");
-                    m_logger->info("[Worker_manager] In-band re-auth complete — back in WAITING_TEMPLATE");
-                }
 
                 if (m_using_failover)
                 {
                     m_logger->info("[Failover] Fresh session established on failover node: session_id=0x{:08x}",
-                        session_id);
+                        session_id.get());
                 }
                 else
                 {
                     m_logger->info("[Primary] Fresh session established on primary node: session_id=0x{:08x}",
-                        session_id);
-                }
-
-                // Bug 4 fix: If we are in degraded/recovery mode (e.g. after in-band
-                // re-authentication following SESSION_EXPIRED), explicitly send GET_BLOCK
-                // to acquire fresh BLOCK_DATA and exit degraded mode. Without this call
-                // the miner has no way to escape degraded mode because workers can't be
-                // fed without BLOCK_DATA and BLOCK_DATA won't arrive without GET_BLOCK.
-                if (is_degraded() || is_recovery_active()) {
-                    m_logger->info("[Worker_manager] Re-authentication SUCCESS — "
-                                   "requesting fresh work/GET_BLOCK to exit degraded mode");
-                    // Reset m_recovery.degraded_since so the escape ladder timer restarts cleanly
-                    // for this new authenticated session (avoids Stage 3 immediately firing).
-                    m_recovery.degraded_since = {};
-                    restart_recovery_window("session_reauthenticated");
-                    retry_template_request(protocol::GetBlockReason::SESSION_REAUTH);
+                        session_id.get());
                 }
             }
         );
         m_logger->info("[Worker_manager] Session authenticated handler registered");
+
+        m_primary_node_session->set_work_ready_handler(
+            [this]() {
+                auto solo_protocol = m_primary_node_session
+                    ? m_primary_node_session->get_active_protocol()
+                    : nullptr;
+                if (!solo_protocol || has_valid_template_available(solo_protocol)) {
+                    return;
+                }
+
+                const bool recovering_session = is_session_recovery();
+                if (recovering_session || is_reconnecting()) {
+                    m_pending_recovery_completion_kind = recovering_session
+                        ? RecoveryCompletionKind::PRIMARY_SESSION_REAUTH
+                        : RecoveryCompletionKind::TRANSPORT_RECONNECT;
+                    transition_to(RecoveryPhase::WAITING_TEMPLATE, "authoritative_work_ready");
+                }
+
+                if (is_recovery_active()) {
+                    m_recovery.degraded_since = {};
+                    restart_recovery_window("authoritative_work_ready");
+                }
+
+                const auto reason = recovering_session
+                    ? protocol::GetBlockReason::SESSION_REAUTH
+                    : protocol::GetBlockReason::INITIAL_REQUEST;
+                retry_template_request(reason);
+            }
+        );
+        m_logger->info("[Worker_manager] Work-ready handler registered");
 
         /* ========== REGISTER SESSION START HANDLER ========== */
         /* Called by Solo when SESSION_START is received and keepalive interval has been  */
@@ -879,6 +892,16 @@ void Worker_manager::stop()
     m_workers.clear();
 }
 
+void Worker_manager::collect_worker_statistics()
+{
+    std::lock_guard<std::mutex> lock(m_worker_mutex);
+    for (auto& worker : m_workers) {
+        if (worker) {
+            worker->update_statistics(*m_stats_collector);
+        }
+    }
+}
+
 void Worker_manager::enter_terminal_degraded_mode(int signal_number)
 {
     m_recovery.degraded_signal.store(signal_number, std::memory_order_relaxed);
@@ -895,12 +918,12 @@ uint16_t Worker_manager::get_effective_keepalive_interval() const
         : m_config.get_keepalive_interval();
 }
 
-void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint)
+void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint, bool force_transport_reset)
 {
     // Safety guard: if push notifications have been received recently, the TCP
     // connection is demonstrably alive from the node's perspective. Tearing it
     // down here would destroy a valid node session. Use in-band re-auth instead.
-    if (m_primary_node_session) {
+    if (!force_transport_reset && m_primary_node_session) {
         // Use get_active_protocol() so push liveness and auth state are read from
         // the SAME protocol instance that login_on_active_connection() will use.
         // Before this fix, get_primary_protocol() could read stale push/auth data
@@ -1140,9 +1163,17 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         if (m_config.has_failover())
         {
             auto const fo_ip   = m_config.get_failover_wallet_ip();
-            auto const fo_port = m_config.get_failover_port() != 0
-                                     ? m_config.get_failover_port()
-                                     : m_config.get_port();
+            auto fo_port = m_config.get_failover_port() != 0
+                               ? m_config.get_failover_port()
+                               : wallet_endpoint.port();
+            if (fo_port != wallet_endpoint.port())
+            {
+                m_logger->warn("[Failover] Ignoring configured failover port {} and pinning failover lane "
+                               "to primary port {} so reconnect/failover stay on the configured lane",
+                               fo_port,
+                               wallet_endpoint.port());
+                fo_port = wallet_endpoint.port();
+            }
             m_failover_endpoint = network::Endpoint{network::Transport_protocol::tcp, fo_ip, fo_port};
             m_logger->info("[Failover] Configured: {}:{} (switch after {} primary failures)",
                            fo_ip, fo_port, m_config.get_failover_max_retries());
@@ -1157,7 +1188,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
     m_logger->info("[Solo] Port Configuration: Using port {} from miner.conf", configured_port);
     m_logger->debug("[Solo] Connection initiated to endpoint: {}", wallet_endpoint.to_string());
 
-    // Use NodeSession to connect (handles both stateless and legacy ports via SIM Link)
+    // Use NodeSession to connect on the configured lane; no cross-lane fallback.
     std::weak_ptr<Worker_manager> weak_self = shared_from_this();
     return m_primary_node_session->connect(wallet_endpoint, [weak_self, wallet_endpoint](bool success) {
         auto self = weak_self.lock();
@@ -1177,11 +1208,12 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         self->m_connection_backoff.reset();
         self->m_primary_fail_count = 0;
 
-        // Clear reconnect guard now that connection is fully authenticated.
-        // Transition back from RECONNECTING to WAITING_TEMPLATE to request fresh BLOCK_DATA.
         if (self->is_reconnecting()) {
-            self->transition_to(RecoveryPhase::WAITING_TEMPLATE, "reconnect_complete");
-            self->m_logger->info("[Worker_manager] Reconnect complete — entering WAITING_TEMPLATE to obtain fresh BLOCK_DATA");
+            self->m_pending_recovery_completion_kind =
+                self->m_using_failover
+                    ? RecoveryCompletionKind::FAILOVER_SESSION
+                    : RecoveryCompletionKind::TRANSPORT_RECONNECT;
+            self->m_logger->info("[Worker_manager] Transport reconnected — waiting for authoritative work readiness");
         }
 
         // Start timers once only (guarded by flags)
@@ -1189,7 +1221,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         if (!self->m_stats_timers_started)
         {
             self->m_stats_timers_started = true;
-            self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self->m_workers, self->m_stats_collector);
+            self->m_timer_manager.start_stats_collector_timer(print_statistics_interval, self, self->m_stats_collector);
             self->m_timer_manager.start_stats_printer_timer(print_statistics_interval, self->m_stats_printers);
         }
 
@@ -1386,7 +1418,9 @@ void Worker_manager::submit_solution(const std::vector<uint8_t>& full_block_byte
         auto packet = m_primary_node_session->submit_block(full_block_bytes, nNonce);
         if (packet && !packet->empty())
         {
-            m_primary_node_session->transmit(packet);
+            if (!m_primary_node_session->transmit(packet)) {
+                m_logger->error("[Worker_manager] Block submission failed — payload was not queued");
+            }
             return;
         }
     }
@@ -1425,15 +1459,78 @@ void Worker_manager::poll_get_round()
     // Template recovery is handled separately by Worker_manager via
     // send_recovery_work_request() (GET_BLOCK).
     auto payload = solo_protocol->send_get_round();
-    if (payload && !payload->empty()) {
-        // Re-check generation before transmit: if a session transition happened
-        // while building the packet, the node would reject it anyway.
-        if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry) {
-            m_logger->debug("[Worker_manager] GET_ROUND discarded: session generation changed ({} → {})",
-                           gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
-            return;
+    if (!payload || payload->empty()) {
+        return;  // Build failure (not authenticated, etc.) — counter was not touched.
+    }
+
+    // Re-check generation before transmit: if a session transition happened
+    // while building the packet, the node would reject it anyway.
+    if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry) {
+        m_logger->debug("[Worker_manager] GET_ROUND discarded pre-transmit: session generation changed ({} → {})",
+                       gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
+        return;  // Counter not incremented — nothing to roll back.
+    }
+
+    if (!m_primary_node_session->transmit(payload)) {
+        m_logger->warn("[Worker_manager] GET_ROUND not queued — counter untouched (no shadow-ban account)");
+        return;
+    }
+
+    // Commit: packet is on the wire.  Only now do we count it as 'unanswered'.
+    solo_protocol->note_get_round_transmitted();
+
+    // Shadow-ban detection: combine count + elapsed-time + push silence to avoid
+    // false positives from transient network jitter or slow replies.
+    constexpr uint32_t SHADOW_BAN_UNANSWERED_THRESHOLD = 5;
+    constexpr int64_t  SHADOW_BAN_MIN_ELAPSED_SECONDS  = 90;  // At 15s cadence, 5 sends ≈ 60–75s; require >= 90s
+
+    const auto unanswered = solo_protocol->get_unanswered_get_round_count();
+    if (unanswered >= SHADOW_BAN_UNANSWERED_THRESHOLD) {
+        auto earliest = solo_protocol->get_earliest_unanswered_get_round_at();
+        int64_t elapsed_s = (earliest != std::chrono::steady_clock::time_point{})
+            ? std::chrono::duration_cast<std::chrono::seconds>(
+                  std::chrono::steady_clock::now() - earliest).count()
+            : 0;
+
+        auto ht = solo_protocol->get_height_tracker_snapshot();
+        bool push_received = (ht.last_push_notification_at != std::chrono::steady_clock::time_point{});
+        int64_t push_age_s = push_received
+            ? std::chrono::duration_cast<std::chrono::seconds>(
+                  std::chrono::steady_clock::now() - ht.last_push_notification_at).count()
+            : INT64_MAX;
+        bool push_silent = (push_age_s >= PUSH_ALIVE_THRESHOLD_SECONDS);
+
+        constexpr int64_t ONE_WAY_SHADOW_BAN_ELAPSED_SECONDS = 180;
+        const auto last_status_ack_at = solo_protocol->last_session_status_ack_time();
+        const int64_t status_ack_age_s =
+            last_status_ack_at != std::chrono::steady_clock::time_point{}
+                ? std::chrono::duration_cast<std::chrono::seconds>(
+                      std::chrono::steady_clock::now() - last_status_ack_at).count()
+                : -1;
+
+        if (elapsed_s >= SHADOW_BAN_MIN_ELAPSED_SECONDS && push_silent) {
+            m_logger->error("[Worker_manager] SHADOW BAN DETECTED: {} consecutive GET_ROUNDs "
+                            "unanswered over {}s, push silent {}s — forcing session recovery",
+                            unanswered, elapsed_s, push_age_s == INT64_MAX ? -1 : push_age_s);
+            mark_recovery_initiated("shadow_ban_unanswered_get_round");
+        } else if (elapsed_s >= ONE_WAY_SHADOW_BAN_ELAPSED_SECONDS && !push_silent && !is_reconnecting()) {
+            m_logger->error("[Worker_manager] ONE-WAY SESSION FAILURE SUSPECTED: {} consecutive GET_ROUNDs "
+                            "unanswered over {}s while push is still live (push_age={}s, status_ack_age={}s) "
+                            "— forcing hard transport reconnect",
+                            unanswered,
+                            elapsed_s,
+                            push_age_s == INT64_MAX ? -1 : push_age_s,
+                            status_ack_age_s);
+            mark_recovery_initiated("one_way_shadow_ban");
+            retry_connect(m_primary_endpoint, true);
+        } else {
+            m_logger->warn("[Worker_manager] Unanswered GET_ROUND count {} >= threshold {}, "
+                           "but shadow-ban suppressed (elapsed={}s, push_age={}s, status_ack_age={}s)",
+                           unanswered, SHADOW_BAN_UNANSWERED_THRESHOLD,
+                           elapsed_s,
+                           push_age_s == INT64_MAX ? -1 : push_age_s,
+                           status_ack_age_s);
         }
-        m_primary_node_session->transmit(payload);
     }
 }
 
@@ -1444,7 +1541,6 @@ void Worker_manager::send_session_status_if_due()
     if (std::chrono::duration_cast<std::chrono::seconds>(
             now - m_last_session_status_sent).count() < SESSION_STATUS_INTERVAL_SECONDS)
         return;
-    m_last_session_status_sent = now;
 
     // Session generation guard: don't send status for a session in transition
     const uint64_t gen_at_entry = m_session_generation.load(std::memory_order_acquire);
@@ -1458,7 +1554,7 @@ void Worker_manager::send_session_status_if_due()
         auto solo_protocol = m_primary_node_session->get_active_protocol();
         if (solo_protocol)
         {
-            // NodeSession handles SIM Link internally, so we don't need to track secondary separately
+            // NodeSession is lane-scoped; lane health is diagnostic only.
             auto pkt = solo_protocol->build_session_status_packet(degraded, workers_run, false);
             if (pkt && !pkt->empty()) {
                 if (m_session_generation.load(std::memory_order_acquire) != gen_at_entry) {
@@ -1466,7 +1562,11 @@ void Worker_manager::send_session_status_if_due()
                                    gen_at_entry, m_session_generation.load(std::memory_order_relaxed));
                     return;
                 }
-                m_primary_node_session->transmit(pkt);
+                if (!m_primary_node_session->transmit(pkt)) {
+                    m_logger->warn("[Worker_manager] SESSION_STATUS not queued on active node session");
+                    return;
+                }
+                m_last_session_status_sent = now;
             }
         }
     }
@@ -1482,6 +1582,7 @@ const char* Worker_manager::phase_name(RecoveryPhase phase) {
     switch (phase) {
         case RecoveryPhase::HEALTHY:          return "HEALTHY";
         case RecoveryPhase::WAITING_TEMPLATE: return "WAITING_TEMPLATE";
+        case RecoveryPhase::SESSION_RECOVERY: return "SESSION_RECOVERY";
         case RecoveryPhase::RECONNECTING:     return "RECONNECTING";
         case RecoveryPhase::DEGRADED_MODE:    return "DEGRADED_MODE";
     }
@@ -1495,9 +1596,14 @@ bool Worker_manager::is_valid_transition(RecoveryPhase from, RecoveryPhase to) {
     switch (from) {
         case RecoveryPhase::HEALTHY:
             return to == RecoveryPhase::WAITING_TEMPLATE ||
+                   to == RecoveryPhase::SESSION_RECOVERY ||
                    to == RecoveryPhase::RECONNECTING;
         case RecoveryPhase::WAITING_TEMPLATE:
             return to == RecoveryPhase::HEALTHY ||
+                   to == RecoveryPhase::SESSION_RECOVERY ||
+                   to == RecoveryPhase::RECONNECTING;
+        case RecoveryPhase::SESSION_RECOVERY:
+            return to == RecoveryPhase::WAITING_TEMPLATE ||
                    to == RecoveryPhase::RECONNECTING;
         case RecoveryPhase::RECONNECTING:
             return to == RecoveryPhase::HEALTHY ||
@@ -1508,6 +1614,9 @@ bool Worker_manager::is_valid_transition(RecoveryPhase from, RecoveryPhase to) {
 
 void Worker_manager::on_phase_exit(RecoveryPhase old_phase) {
     switch (old_phase) {
+        case RecoveryPhase::SESSION_RECOVERY:
+            m_recovery.recovery_in_progress.store(false, std::memory_order_release);
+            break;
         case RecoveryPhase::RECONNECTING:
             m_recovery.reconnect_started_at = {};
             break;
@@ -1523,13 +1632,13 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
             m_recovery.degraded_since = {};
             m_recovery.last_completed_at = now;
             m_recovery.entered_at = {};
+            m_recovery.recovery_in_progress.store(false, std::memory_order_release);
             // Template successfully adopted — reset GET_BLOCK mismatch backoff.
             m_get_block_backoff_ms    = 0;
             m_get_block_backoff_until = {};
             auto global_stats = m_stats_collector->get_global_stats();
             global_stats.m_degraded_mode = false;
             m_stats_collector->update_global_stats(global_stats);
-            m_stats_collector->reset_start_time();
             break;
         }
         case RecoveryPhase::WAITING_TEMPLATE: {
@@ -1539,6 +1648,19 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
                 m_recovery.degraded_since = now;
                 ++m_degraded_enter_total;
             }
+            auto global_stats = m_stats_collector->get_global_stats();
+            global_stats.m_degraded_mode = true;
+            m_stats_collector->update_global_stats(global_stats);
+            break;
+        }
+        case RecoveryPhase::SESSION_RECOVERY: {
+            auto now = std::chrono::steady_clock::now();
+            bool is_new_outage = (m_recovery.degraded_since == std::chrono::steady_clock::time_point{});
+            if (is_new_outage) {
+                m_recovery.degraded_since = now;
+                ++m_degraded_enter_total;
+            }
+            m_recovery.recovery_in_progress.store(true, std::memory_order_release);
             auto global_stats = m_stats_collector->get_global_stats();
             global_stats.m_degraded_mode = true;
             m_stats_collector->update_global_stats(global_stats);
@@ -1554,6 +1676,39 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
             m_stats_collector->update_global_stats(global_stats);
             break;
         }
+    }
+}
+
+bool Worker_manager::should_reset_stats_on_recovery_completion() const
+{
+    const auto kind = m_pending_recovery_completion_kind;
+    auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
+    auto* session_manager = solo_protocol ? solo_protocol->get_session_manager() : nullptr;
+    const auto recovery_state = session_manager
+        ? session_manager->get_runtime_snapshot().recovery_state
+        : protocol::SessionManager::RecoveryState::HEALTHY;
+
+    switch (kind) {
+        case RecoveryCompletionKind::FAILOVER_SESSION:
+            return true;
+        case RecoveryCompletionKind::PRIMARY_SESSION_REAUTH:
+            return true; // Safe default until same-node preservation policy is refined.
+        case RecoveryCompletionKind::TRANSPORT_RECONNECT:
+            return true;
+        case RecoveryCompletionKind::TEMPLATE_REFRESH:
+        case RecoveryCompletionKind::NONE:
+            return recovery_state == protocol::SessionManager::RecoveryState::RECOVERY_IN_PROGRESS ||
+                   recovery_state == protocol::SessionManager::RecoveryState::FORCED_REAUTH ||
+                   recovery_state == protocol::SessionManager::RecoveryState::RECONNECT_REQUIRED;
+    }
+    return false;
+}
+
+void Worker_manager::mark_recovery_completion_kind_template_refresh()
+{
+    if (m_pending_recovery_completion_kind == RecoveryCompletionKind::NONE ||
+        m_pending_recovery_completion_kind == RecoveryCompletionKind::TEMPLATE_REFRESH) {
+        m_pending_recovery_completion_kind = RecoveryCompletionKind::TEMPLATE_REFRESH;
     }
 }
 
@@ -1576,7 +1731,9 @@ void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) 
 
     // Pre-transition accounting: if exiting WAITING_TEMPLATE to HEALTHY,
     // accumulate total time spent in degraded mode.
-    if (new_phase == RecoveryPhase::HEALTHY && old_phase == RecoveryPhase::WAITING_TEMPLATE) {
+    if (new_phase == RecoveryPhase::HEALTHY &&
+        old_phase != RecoveryPhase::HEALTHY &&
+        old_phase != RecoveryPhase::DEGRADED_MODE) {
         auto now = std::chrono::steady_clock::now();
         if (m_recovery.degraded_since != std::chrono::steady_clock::time_point{}) {
             auto elapsed_ms = static_cast<uint64_t>(
@@ -1607,6 +1764,13 @@ void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) 
 
     on_phase_enter(new_phase);
 
+    if (new_phase == RecoveryPhase::HEALTHY && should_reset_stats_on_recovery_completion()) {
+        m_stats_collector->reset_start_time();
+    }
+    if (new_phase == RecoveryPhase::HEALTHY) {
+        m_pending_recovery_completion_kind = RecoveryCompletionKind::NONE;
+    }
+
     m_logger->info("[Worker_manager] ⚡ TRANSITION: {} → {} (epoch={}, reason={})",
                    phase_name(old_phase), phase_name(new_phase),
                    m_epoch_coordinator->recovery_epoch(), reason ? reason : "unknown");
@@ -1625,6 +1789,7 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
         return;
     }
     // From HEALTHY → WAITING_TEMPLATE (new epoch; workers keep running)
+    mark_recovery_completion_kind_template_refresh();
     transition_to(RecoveryPhase::WAITING_TEMPLATE, reason);
     m_logger->warn("[Worker_manager] ⚑ RECOVERY INITIATED — epoch {} (reason: {})",
                    m_epoch_coordinator->recovery_epoch(), reason ? reason : "unknown");
@@ -1633,8 +1798,8 @@ void Worker_manager::mark_recovery_initiated(const char* reason)
 
 void Worker_manager::mark_soft_refresh_requested(const char* reason)
 {
-    // Both soft refresh and hard recovery now map to WAITING_TEMPLATE.
-    // Workers keep running; no submissions withheld in the new model.
+    // Template-only refresh maps to WAITING_TEMPLATE.
+    // Workers keep running; no submissions withheld in the current model.
     mark_recovery_initiated(reason);
 }
 
@@ -1678,8 +1843,28 @@ void Worker_manager::clear_recovery_state()
 
     auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
     bool has_valid_template_now = has_valid_template_available(solo_protocol);
-    if (is_degraded() && !has_valid_template_now) {
+    if (!has_valid_template_now) {
         m_logger->warn("[Worker_manager] clear_recovery_state() deferred: no valid template accepted yet");
+        return;
+    }
+
+    auto* session_manager = solo_protocol ? solo_protocol->get_session_manager() : nullptr;
+    if (!session_manager) {
+        m_logger->warn("[Worker_manager] clear_recovery_state() deferred: authoritative session manager unavailable");
+        return;
+    }
+
+    const auto binding = session_manager->get_session_binding();
+    if (binding.active_lane == nexusminer::ProtocolLane::UNKNOWN ||
+        binding.session_requires_full_recovery() ||
+        !binding.may_request_work()) {
+        m_logger->warn("[Worker_manager] clear_recovery_state() deferred: authoritative session not restored "
+                       "(session_requires_full_recovery={}, may_request_work={}, authenticated={}, has_session={}, active_lane={})",
+                       binding.session_requires_full_recovery(),
+                       binding.may_request_work(),
+                       binding.authenticated,
+                       binding.has_session(),
+                       static_cast<int>(binding.active_lane));
         return;
     }
 
@@ -1693,15 +1878,10 @@ void Worker_manager::clear_recovery_state()
                    recovery_age_s,
                    phase_name(m_recovery.phase.load(std::memory_order_relaxed)));
 
-    if (solo_protocol) {
-        auto* session_manager = solo_protocol->get_session_manager();
-        if (session_manager) {
-            const auto session_snapshot = session_manager->get_runtime_snapshot();
-            if (session_snapshot.recovery_state != protocol::SessionManager::RecoveryState::HEALTHY ||
-                !session_snapshot.recovery_reason.empty()) {
-                solo_protocol->mark_authoritative_recovery_healthy("worker_manager_clear_recovery_state");
-            }
-        }
+    const auto session_snapshot = session_manager->get_runtime_snapshot();
+    if (session_snapshot.recovery_state != protocol::SessionManager::RecoveryState::HEALTHY ||
+        !session_snapshot.recovery_reason.empty()) {
+        solo_protocol->mark_authoritative_recovery_healthy("worker_manager_clear_recovery_state");
     }
 
     m_logger->info("[Worker_manager] Clearing recovery state — exiting {} phase",
@@ -1728,11 +1908,15 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
 
-    // Notify protocol layer that recovery is required.
-    // Phase transition is handled by the caller (mark_recovery_initiated / transition_to)
-    // before or after stop_all_workers() — this function is a pure physical stop.
+    bool session_active = false;
     if (auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr) {
-        solo_protocol->mark_authoritative_recovery_required("workers_stopped_waiting_for_valid_template");
+        if (auto* session_manager = solo_protocol->get_session_manager()) {
+            const auto binding = session_manager->get_session_binding();
+            session_active = !binding.session_requires_full_recovery() && binding.has_session();
+        }
+        if (session_active) {
+            solo_protocol->mark_authoritative_recovery_required("workers_stopped_waiting_for_valid_template");
+        }
     }
 
     // Reset all worker instances so that the next create_workers() call starts fresh
@@ -1746,9 +1930,15 @@ void Worker_manager::stop_all_workers()
     // Clear the recovery gate so the next epoch can re-create workers
     m_recovery_workers_spawned = false;
 
-    m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
-    m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
-    m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK (0xD081)");
+    if (session_active) {
+        m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
+        m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
+        m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK (0xD081)");
+    } else {
+        m_logger->warn("[Worker_manager] Mining stopped - session unavailable");
+        m_logger->warn("[Worker_manager] Workers stopped and cleared — waiting for full re-auth or configured failover");
+        m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — no work requests until a fresh session is established");
+    }
     m_logger->warn("[Worker_manager] degraded_enter_total={}", m_degraded_enter_total);
 }
 
@@ -1756,6 +1946,23 @@ void Worker_manager::stop_all_workers()
 void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
 {
     auto now = std::chrono::steady_clock::now();
+
+    // Bug 5 fix: Prevent burst duplicate GET_BLOCK requests when both the forced
+    // retry timer (100-250ms jitter) and health monitor (5s cycle) fire within
+    // the same short window.  Suppress if the last request was sent < 500ms ago,
+    // unless the reason bypasses all dedup (recovery-critical).
+    constexpr int64_t GET_BLOCK_BURST_GUARD_MS = 500;
+    if (!should_bypass_all_dedup(reason) &&
+        m_last_get_block_request_time != std::chrono::steady_clock::time_point{}) {
+        auto since_last_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - m_last_get_block_request_time).count();
+        if (since_last_ms < GET_BLOCK_BURST_GUARD_MS) {
+            m_logger->debug("[Worker_manager] GET_BLOCK burst-suppressed: {}ms since last request "
+                           "(guard={}ms, reason={})", since_last_ms, GET_BLOCK_BURST_GUARD_MS, reason_name(reason));
+            return;
+        }
+    }
+
     m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK... (reason={})", reason_name(reason));
 
     // Domain-isolation contract:
@@ -1865,14 +2072,10 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
     // so the recovery ladder can always make progress even when push notifications are absent
     // (no PUSH subscription, post-reorg push silence, or initial connection before first push).
     if (!solo_protocol->can_request_get_block()) {
-        if (should_bypass_height_dedup(reason)) {
-            m_logger->info("[Worker_manager] GET_BLOCK can_request_get_block=false bypassed by forced live-session request");
-        } else {
-            m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=session_not_ready_for_get_block");
-            m_logger->info("[Worker_manager] GET_BLOCK deferred — session not ready for GET_BLOCK; "
-                           "health monitor will retry at next tick");
-            return;
-        }
+        m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=session_not_ready_for_get_block");
+        m_logger->info("[Worker_manager] GET_BLOCK deferred — session not ready for GET_BLOCK; "
+                       "health monitor will retry at next tick");
+        return;
     }
 
     // Request fresh work via NodeSession (wire-level GET_BLOCK)
@@ -1885,14 +2088,18 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
             // PendingGetBlock.active is never set when the packet wasn't actually sent
             // (e.g. socket closed between request_work() and transmit()).
             solo_protocol->mark_get_block_pending(reason);
+            m_recovery.last_get_block_at = std::chrono::steady_clock::now();
+            m_recovery.get_block_confirmed = true;
+            m_last_get_block_request_time = std::chrono::steady_clock::now();  // Bug 5: burst guard timestamp
+            ++m_get_block_sent_total;
+            if (is_forced) {
+                ++m_get_block_forced_retry_total;
+            }
+            m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_epoch_coordinator->recovery_epoch());
+        } else {
+            m_logger->warn("[Worker_manager] GET_BLOCK payload built but not queued on transport");
+            return;
         }
-        m_recovery.last_get_block_at = std::chrono::steady_clock::now();
-        m_recovery.get_block_confirmed = true;
-        ++m_get_block_sent_total;
-        if (is_forced) {
-            ++m_get_block_forced_retry_total;
-        }
-        m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_epoch_coordinator->recovery_epoch());
     } else {
         auto last_status = solo_protocol->get_last_get_block_request_status();
         const char* status_str = "request_work_empty";
@@ -1918,8 +2125,8 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
         if (solo_protocol->is_authenticated() && no_valid_template) {
             // Epoch 0 fix: when HEALTHY (recovery_epoch == 0) but no valid template
             // and GET_BLOCK was just suppressed by the dedup guard, the miner is stuck:
-            // the health monitor retries with non-bypassing reasons (HEALTH_TIP_MOVED,
-            // HEALTH_CHANNEL_ADVANCE) which the dedup guard blocks at the same height,
+            // the health monitor retries with non-bypassing reasons (HEALTH_CHANNEL_ADVANCE)
+            // which the dedup guard blocks at the same height,
             // and no forced retry is scheduled because is_recovery_active() is false.
             // Initiate recovery so the epoch advances (0 → 1), enabling
             // RECOVERY_FORCED/RECOVERY_TIMER which bypass ALL dedup guards.
@@ -1938,6 +2145,35 @@ void Worker_manager::check_template_health()
         return;
     }
 
+    // ── Session health summary (every 60s) ──────────────────────────────────
+    {
+        auto now = std::chrono::steady_clock::now();
+        constexpr int64_t HEALTH_LOG_INTERVAL_SECONDS = 60;
+        auto since_last_log = std::chrono::duration_cast<std::chrono::seconds>(
+            now - m_last_session_health_log).count();
+        if (since_last_log >= HEALTH_LOG_INTERVAL_SECONDS) {
+            m_last_session_health_log = now;
+            auto ht = solo_protocol->get_height_tracker_snapshot();
+            bool push_received = (ht.last_push_notification_at != std::chrono::steady_clock::time_point{});
+            int64_t push_age_s = push_received
+                ? std::chrono::duration_cast<std::chrono::seconds>(now - ht.last_push_notification_at).count()
+                : -1;
+            m_logger->info("[Session Health] authenticated={} session=0x{:08x}"
+                           " push={}s_ago unanswered_rounds={}"
+                           " preflight_drops={} phase={}"
+                           " get_blocks_sent={} accepted={} rejected={}",
+                           solo_protocol->is_authenticated(),
+                           solo_protocol->get_session_id().get(),
+                           push_age_s,
+                           solo_protocol->get_unanswered_get_round_count(),
+                           solo_protocol->get_preflight_reject_count(),
+                           phase_name(m_recovery.phase.load(std::memory_order_relaxed)),
+                           m_get_block_sent_total,
+                           solo_protocol->get_blocks_accepted(),
+                           solo_protocol->get_blocks_rejected());
+        }
+    }
+
     // Guard against a stalled reconnect. If RECONNECTING phase has been active for
     // more than 60 seconds, the TCP connect attempt itself has likely failed silently.
     // Transition back to WAITING_TEMPLATE so the escape ladder is not indefinitely suppressed.
@@ -1949,7 +2185,10 @@ void Worker_manager::check_template_health()
         }
         auto reconnect_age_s = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - m_recovery.reconnect_started_at).count();
-        constexpr int64_t MAX_RECONNECT_WAIT_SECONDS = 60;
+        // Bug 6 fix: Extended from 60s to 90s to avoid racing exponential backoff
+        // retries that may have a scheduled attempt at 60-65s.  The extra 30s margin
+        // ensures the stall guard only fires when retries have genuinely stalled.
+        constexpr int64_t MAX_RECONNECT_WAIT_SECONDS = 90;
         if (reconnect_age_s > MAX_RECONNECT_WAIT_SECONDS) {
             m_logger->warn("[Worker_manager] Reconnect stalled for {}s > {}s — clearing RECONNECTING phase",
                            reconnect_age_s, MAX_RECONNECT_WAIT_SECONDS);
@@ -2054,11 +2293,13 @@ void Worker_manager::check_template_health()
     // advances target = channel + 1, so channel_height >= channel_target never holds).
     // Staleness detection lives in PUSH, GET_ROUND, and Health Monitor trigger paths.
 
-    // Unified tip moved on another channel — request fresh work opportunistically
+    // Unified tip moved on another channel — log it but do NOT send GET_BLOCK.
+    // GET_ROUND is the backup to PUSH for tip changes, and GET_ROUND triggers
+    // GET_BLOCK on tip changes.  Health monitor should not send GET_BLOCK directly.
     if (ht_snap.is_tip_moved()) {
-        m_logger->debug("[Worker_manager] Unified tip moved (template_unified_height {} → unified_height {}) — requesting fresh work; workers continue on valid channel template",
+        m_logger->info("[Worker_manager] Unified tip moved (template_unified_height {} → unified_height {}) — "
+                       "node will auto-send via PUSH; GET_ROUND backup active; workers continue on valid channel template",
                        ht_snap.template_unified_height, ht_snap.unified_height);
-        retry_template_request(protocol::GetBlockReason::HEALTH_TIP_MOVED);
         return;
     }
 

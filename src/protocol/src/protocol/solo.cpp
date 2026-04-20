@@ -15,6 +15,7 @@
 #include "LLP/block_utils.hpp"
 #include "LLP/llp_logging.hpp"
 #include "LLP/utils.hpp"
+#include <LLC/hash/SK.h>
 #include "include/stateless_block_utility.hpp"
 #include "../miner_keys.hpp"
 #include "hex_utils.h"
@@ -31,11 +32,70 @@ namespace nexusminer
 namespace protocol
 {
 
+bool Solo::queue_payload(const std::shared_ptr<network::Connection>& connection,
+                         const network::Shared_payload& payload,
+                         const char* context)
+{
+    if (!connection) {
+        m_logger->error("{} transmit failed: no connection available", context ? context : "[Solo]");
+        return false;
+    }
+    if (!payload || payload->empty()) {
+        m_logger->error("{} transmit failed: payload is null or empty", context ? context : "[Solo]");
+        return false;
+    }
+
+    try {
+        if (connection->transmit(payload)) {
+            return true;
+        }
+        m_logger->warn("{} transmit rejected — payload was not queued", context ? context : "[Solo]");
+    } catch (const std::exception& e) {
+        m_logger->error("{} transmit failed: {}", context ? context : "[Solo]", e.what());
+    }
+    return false;
+}
+
+bool Solo::request_and_queue_get_block(const std::shared_ptr<network::Connection>& connection,
+                                       GetBlockReason reason,
+                                       const char* context)
+{
+    auto payload = get_work(reason);
+    if (!payload || payload->empty()) {
+        return false;
+    }
+    if (!queue_payload(connection, payload, context)) {
+        return false;
+    }
+    mark_get_block_pending(reason);
+    return true;
+}
+
 namespace {
 
 bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_has_state)
 {
     return !local_has_state && authoritative_has_state;
+}
+
+FalconHashKeyId falcon_pubkey_to_hash_key_id(const std::vector<uint8_t>& pubkey)
+{
+    if (pubkey.empty()) {
+        return FalconHashKeyId{};
+    }
+
+    return FalconHashKeyId(keys::to_hex(LLC::SK256(pubkey).GetBytes()));
+}
+
+std::vector<uint8_t> strip_submit_wire_header(const network::Payload& framed,
+                                              ProtocolLane lane)
+{
+    const std::size_t header_size = (lane == ProtocolLane::STATELESS) ? 6u : 5u;
+    if (framed.size() <= header_size) {
+        return {};
+    }
+
+    return std::vector<uint8_t>(framed.begin() + header_size, framed.end());
 }
 
 }
@@ -171,7 +231,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     // Initialize the Mining Template Interface for unified READ/FEED operations
     // Session ID starts at 0 (unauthenticated) and will be updated after MINER_AUTH_RESULT
     // The session ID binds the template interface to the FALCON authenticated tunnel
-    m_template_interface = std::make_unique<MiningTemplateInterface>(m_channel, 0);
+    m_template_interface = std::make_unique<MiningTemplateInterface>(m_channel, SessionId{});
     m_logger->info("[Solo] Mining Template Interface initialized for unified READ/FEED system");
     
     // Wire centralized HeightTracker into MiningTemplateInterface (non-owning pointer)
@@ -250,8 +310,178 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             }
         }
     );
+
+    // Register all packet handlers with the table-driven router
+    register_packet_handlers();
 }
 
+void Solo::register_packet_handlers()
+{
+    using Pkt = Packet;
+
+    // Auth-related opcodes all route to the same handler (on_miner_auth_response
+    // discriminates internally based on the opcode).
+    auto auth_handler = [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_miner_auth_response(p, c);
+    };
+    m_packet_router.register_handler(Pkt::MINER_AUTH_CHALLENGE, auth_handler);
+    m_packet_router.register_handler(Pkt::MINER_AUTH_RESULT,    auth_handler);
+    m_packet_router.register_handler(Pkt::CHANNEL_ACK,          auth_handler);
+    m_packet_router.register_handler(Pkt::SESSION_START,        auth_handler);
+    m_packet_router.register_handler(Pkt::SESSION_KEEPALIVE,    auth_handler);
+    m_packet_router.register_handler(Pkt::MINER_REWARD_RESULT,  auth_handler);
+
+    // BLOCK_DATA → on_block_data
+    m_packet_router.register_handler(Pkt::BLOCK_DATA, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_block_data(p, c);
+    });
+
+    // ACCEPT / GOOD_BLOCK → on_block_accepted
+    auto accept_handler = [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_block_accepted(p, c);
+    };
+    m_packet_router.register_handler(Pkt::ACCEPT, accept_handler);
+    m_packet_router.register_handler(LLP::GOOD_BLOCK, accept_handler);
+
+    // REJECT / ORPHAN_BLOCK → on_block_rejected
+    auto reject_handler = [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_block_rejected(p, c);
+    };
+    m_packet_router.register_handler(Pkt::REJECT, reject_handler);
+    m_packet_router.register_handler(LLP::ORPHAN_BLOCK, reject_handler);
+
+    // NEW_ROUND / OLD_ROUND → on_get_round_response
+    auto round_handler = [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_get_round_response(p, c);
+    };
+    m_packet_router.register_handler(Pkt::NEW_ROUND, round_handler);
+    m_packet_router.register_handler(Pkt::OLD_ROUND, round_handler);
+
+    // SESSION_EXPIRED → on_session_expired
+    m_packet_router.register_handler(Pkt::SESSION_EXPIRED, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_session_expired(p, c);
+    });
+
+    // Push notifications → on_push_notification with channel
+    m_packet_router.register_handler(Pkt::PRIME_BLOCK_AVAILABLE, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_push_notification(p, c, mining::CHANNEL_PRIME);
+    });
+    m_packet_router.register_handler(Pkt::HASH_BLOCK_AVAILABLE, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_push_notification(p, c, mining::CHANNEL_HASH);
+    });
+
+    // Stateless GET_BLOCK response (uint16_t only — no legacy mirror)
+    m_packet_router.register_handler(Pkt::GET_BLOCK, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        // Only stateless-lane packets (the handler itself checks internally)
+        if (p.m_is_uint16_opcode) {
+            on_stateless_get_block(p, c);
+        }
+    });
+
+    // Colin AI Diagnostic PING (0xE0)
+    m_packet_router.register_handler(0xE0, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_ping_diag(p, c);
+    });
+
+    // SESSION_STATUS_ACK (raw handlers — these opcodes have no legacy mirror)
+    auto status_ack_handler = [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        on_session_status_ack(p, c);
+    };
+    m_packet_router.register_raw_handler(
+        static_cast<uint16_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK), status_ack_handler);
+    m_packet_router.register_raw_handler(
+        static_cast<uint16_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY), status_ack_handler);
+
+    // NODE_SHUTDOWN → handled inline in process_messages (it reads frame data and
+    // fires the m_node_shutdown_handler callback, which is tightly coupled to the
+    // pre-dispatch preamble).  Registered here for completeness so the router
+    // recognizes it and does not log "invalid header".
+    m_packet_router.register_handler(Pkt::NODE_SHUTDOWN, [this](Pkt const& p, std::shared_ptr<network::Connection> /*c*/) {
+        ::LLP::NodeShutdownFrame frame;
+        static const std::vector<uint8_t> empty_vec;
+        const auto& payload = p.m_data ? *p.m_data : empty_vec;
+        if (frame.Parse(payload)) {
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason={}) — stopping workers",
+                frame.ReasonString());
+            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+        } else {
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason=UNKNOWN, no payload) — stopping workers");
+            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
+            m_logger->warn("[Solo] ════════════════════════════════════════════════");
+        }
+        if (m_node_shutdown_handler)
+            m_node_shutdown_handler(frame.reason);
+    });
+
+    // BLOCK_REWARD → inline (small, self-contained)
+    m_packet_router.register_handler(Pkt::BLOCK_REWARD, [this](Pkt const& p, std::shared_ptr<network::Connection> /*c*/) {
+        if (!p.m_data || p.m_length < 8) {
+            m_logger->warn("Solo::process_messages: BLOCK_REWARD packet has invalid data or length < 8");
+            return;
+        }
+        m_current_reward = bytes2uint64(*p.m_data);
+        m_logger->info("[Solo] Received BLOCK_REWARD: reward={}", m_current_reward);
+    });
+
+    // BLOCK_HEIGHT (opcode 0x02 / 0xD002) — with compat disambiguation.
+    // 0xD002 with length 0 is BLOCK_ACCEPTED_COMPAT (routed to on_block_accepted).
+    // 0xD003 with length ≤ 1 is BLOCK_REJECTED_COMPAT — but 0xD003 unmirrors to
+    // SET_CHANNEL (0x03), so it doesn't collide with BLOCK_HEIGHT (0x02).
+    // We only need to check for BLOCK_ACCEPTED_COMPAT here.
+    m_packet_router.register_handler(Pkt::BLOCK_HEIGHT, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        // Check for BLOCK_ACCEPTED_COMPAT (0xD002 with zero-length payload)
+        if (p.m_is_uint16_opcode &&
+            p.m_header == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT &&
+            p.m_length == 0) {
+            on_block_accepted(p, c);
+            return;
+        }
+
+        // Normal BLOCK_HEIGHT processing
+        if (!p.m_data || p.m_length < 4) {
+            m_logger->warn("Solo::process_messages: BLOCK_HEIGHT packet has invalid data or length < 4");
+            return;
+        }
+
+        auto const height = bytes2uint(*p.m_data);
+        m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
+
+        auto snap = m_height_tracker.GetSnapshot();
+        uint32_t known_height = snap.unified_height > 0 ? snap.unified_height : m_current_height;
+
+        if (height > known_height) {
+            m_logger->info("Nexus Network: New height {} (old height: {})", height, known_height);
+            m_current_height = height;  // diagnostic only
+
+            m_logger->info("[Solo] Height updated, requesting work via GET_BLOCK");
+            if (!request_and_queue_get_block(c, GetBlockReason::INITIAL_REQUEST, "[Solo] GET_BLOCK")) {
+                m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
+            }
+        } else if (height == known_height) {
+            m_logger->debug("[Solo] Height unchanged ({}), no action needed", height);
+        } else {
+            m_logger->warn("[Solo] Received older height {} (current: {})", height, known_height);
+        }
+    });
+
+    // SET_CHANNEL (opcode 0x03 / 0xD003) — with BLOCK_REJECTED_COMPAT disambiguation.
+    // 0xD003 with length ≤ 1 is BLOCK_REJECTED_COMPAT (routed to on_block_rejected).
+    // Normal SET_CHANNEL packets have different lengths and are not currently handled,
+    // but this registration ensures the compat case is dispatched correctly.
+    m_packet_router.register_handler(Pkt::SET_CHANNEL, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+        if (p.m_is_uint16_opcode &&
+            p.m_header == LLP::StatelessMining::BLOCK_REJECTED_COMPAT &&
+            p.m_length <= 1) {
+            on_block_rejected(p, c);
+            return;
+        }
+        // Normal SET_CHANNEL — currently no handler (node-initiated channel acknowledgement)
+        m_logger->debug("[Solo] Received SET_CHANNEL packet — no action");
+    });
+}
 std::vector<uint8_t> Solo::derive_chacha20_session_key(const std::vector<uint8_t>& genesis)
 {
     // IMPORTANT: Use genesis bytes exactly as parsed/configured; do not reverse them
@@ -346,7 +576,7 @@ void Solo::reset()
     m_current_height = 0;
     m_current_reward = 0;
     m_authenticated = false;
-    m_session_id = 0;
+    m_session_id.clear();
     m_auth_timestamp = 0;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_auth_in_flight_since = {};
@@ -391,16 +621,20 @@ void Solo::propagate_session_to_template_interface(const char* log_scope)
         return;
     }
 
-    m_template_interface->set_session_epoch(m_session_epoch);
-    m_template_interface->set_session_id(m_session_id);
-
-    // Propagate canonical identity bundle for hardened template ownership
-    if (m_cached_identity.is_valid()) {
-        m_template_interface->set_session_identity(m_cached_identity);
+    SessionBinding binding;
+    if (m_session_context) {
+        binding = m_session_context->get_session_binding();
+    } else {
+        binding.session_id = get_session_id();
+        binding.session_epoch = m_session_epoch;
+        binding.active_lane = m_protocol_lane;
+        binding.identity = m_cached_identity;
     }
 
+    m_template_interface->set_session_binding(binding);
+
     m_logger->debug("[{}] Propagated session binding to MiningTemplateInterface: session_id=0x{:08x}, epoch={}",
-                    log_scope, m_session_id, m_session_epoch);
+                    log_scope, binding.session_id.get(), binding.session_epoch.get());
 }
 
 void Solo::resync_auth_from_session_context(const char* log_scope)
@@ -416,7 +650,7 @@ void Solo::resync_auth_from_session_context(const char* log_scope)
                    log_scope);
 
     refresh_cached_session_state(log_scope);
-    if (m_session_id != 0) {
+    if (!m_session_id.is_default()) {
         propagate_session_to_template_interface(log_scope);
     }
 }
@@ -436,77 +670,40 @@ void Solo::refresh_cached_session_state(const char* log_scope)
     }
 
     const auto session = m_session_context->get_runtime_snapshot();
+    const auto binding = m_session_context->get_session_binding();
     m_cached_runtime_state_generation = session.runtime_state_generation;
 
-    if (!m_has_seen_session_epoch || m_session_epoch != session.session_epoch) {
+    if (!m_has_seen_session_epoch || m_session_epoch != binding.session_epoch) {
         if (!m_has_seen_session_epoch) {
             m_logger->info("[{}] Resyncing local session epoch from authoritative session container: local={} authoritative={}",
-                           log_scope, m_session_epoch, session.session_epoch);
+                           log_scope, m_session_epoch.get(), binding.session_epoch.get());
         } else {
             m_logger->warn("[{}] Session epoch advanced: local={} authoritative={} — invalidating generation-bound cached state",
-                           log_scope, m_session_epoch, session.session_epoch);
+                           log_scope, m_session_epoch.get(), binding.session_epoch.get());
             clear_generation_bound_state("authoritative session epoch advanced");
         }
 
-        m_session_epoch = session.session_epoch;
+        m_session_epoch = binding.session_epoch;
         m_has_seen_session_epoch = true;
         m_height_tracker.set_session_epoch(m_session_epoch);
     }
 
-    if (m_authenticated != session.authenticated) {
-        if (is_expected_cached_session_resync(m_authenticated, session.authenticated)) {
-            m_logger->info("[{}] Resyncing local auth flag from authoritative session container after reconnect: local={} authoritative={}",
-                           log_scope, m_authenticated ? "true" : "false", session.authenticated ? "true" : "false");
-        } else {
-            m_logger->warn("[{}] Local auth flag drifted from authoritative session container mid-session: local={} authoritative={}",
-                           log_scope, m_authenticated ? "true" : "false", session.authenticated ? "true" : "false");
-        }
-        m_authenticated = session.authenticated;
+    if (m_authenticated != binding.authenticated) {
+        m_authenticated = binding.authenticated;
     }
 
-    if (m_session_id != session.session_id) {
-        if (is_expected_cached_session_resync(m_session_id != 0, session.session_id != 0)) {
-            m_logger->info("[{}] Resyncing local session_id from authoritative session container after reconnect: local=0x{:08x} authoritative=0x{:08x}",
-                           log_scope, m_session_id, session.session_id);
-        } else {
-            m_logger->warn("[{}] Local session_id drifted from authoritative session container mid-session: local=0x{:08x} authoritative=0x{:08x}",
-                           log_scope, m_session_id, session.session_id);
-        }
-        m_session_id = session.session_id;
-    }
+    m_session_id = binding.session_id;
+    m_cached_identity = binding.identity;
 
-    // Resync canonical identity bundle from the authoritative session container.
-    // This is a value copy — cheap and thread-safe.
-    const auto authoritative_identity = m_session_context->get_canonical_identity();
-    if (m_cached_identity != authoritative_identity) {
-        m_cached_identity = authoritative_identity;
-        if (m_cached_identity.is_valid()) {
-            m_logger->debug("[{}] Resynced canonical identity: {}",
-                            log_scope, m_cached_identity.fingerprint());
-        }
-    }
-
-    if (session.authenticated && session.session_id != 0) {
+    if (binding.authenticated && !binding.session_id.is_default()) {
         propagate_session_to_template_interface(log_scope);
     }
 
-    if (m_reward_bound != session.reward_bound) {
-        if (is_expected_cached_session_resync(m_reward_bound, session.reward_bound)) {
-            m_logger->info("[{}] Resyncing local reward_bound from authoritative session container after reconnect: local={} authoritative={}",
-                           log_scope, m_reward_bound ? "true" : "false", session.reward_bound ? "true" : "false");
-        } else {
-            m_logger->warn("[{}] Local reward_bound drifted from authoritative session container mid-session: local={} authoritative={}",
-                           log_scope, m_reward_bound ? "true" : "false", session.reward_bound ? "true" : "false");
-        }
-        m_reward_bound = session.reward_bound;
-    }
+    m_reward_bound = binding.reward_bound;
 
-    if (m_protocol_lane != session.active_lane &&
-        session.active_lane != ProtocolLane::UNKNOWN &&
-        m_protocol_lane == ProtocolLane::UNKNOWN) {
-        m_logger->info("[{}] Resyncing protocol lane from authoritative session container after reconnect because local lane was UNKNOWN: authoritative={}",
-                       log_scope, get_lane_name(session.active_lane));
-        m_protocol_lane = session.active_lane;
+    if (m_protocol_lane == ProtocolLane::UNKNOWN &&
+        binding.active_lane != ProtocolLane::UNKNOWN) {
+        m_protocol_lane = binding.active_lane;
     }
 }
 
@@ -518,8 +715,8 @@ SessionOwnershipStamp Solo::capture_session_ownership() const
         return {};
     }
 
-    const auto session = m_session_context->get_runtime_snapshot();
-    return { SessionId(session.session_id), SessionEpoch(session.session_epoch) };
+    const auto binding = m_session_context->get_session_binding();
+    return { binding.session_id, binding.session_epoch };
 }
 
 SubmitContext Solo::capture_submit_context(uint32_t template_height,
@@ -533,10 +730,10 @@ SubmitContext Solo::capture_submit_context(uint32_t template_height,
         return context;
     }
 
-    const auto session = m_session_context->get_runtime_snapshot();
-    context.session_id = SessionId(session.session_id);
-    context.session_epoch = SessionEpoch(session.session_epoch);
-    context.identity = m_session_context->get_canonical_identity();
+    const auto binding = m_session_context->get_session_binding();
+    context.session_id = binding.session_id;
+    context.session_epoch = binding.session_epoch;
+    context.identity = binding.identity;
     return context;
 }
 
@@ -571,11 +768,19 @@ void Solo::clear_generation_bound_state(const char* reason)
     m_last_submitted_height = 0;
     m_last_submitted_channel = 0;
     m_session_id_mismatch_count = 0;
+    m_preflight_reject_count = 0;
+    m_unanswered_get_round_count.store(0, std::memory_order_release);
+    m_earliest_unanswered_get_round_at = {};
+    m_last_get_round_transmitted_at = {};
     m_last_session_status_ack = {};
     m_last_session_status_ack_time = {};
     m_last_known_hash_prev_block = uint1024_t(0);
     m_last_keepalive_prevhash_lo32 = 0;
     m_get_round_push_silent_fallback_active = false;
+
+    // Bug 1 fix: Clear in-flight GET_BLOCK flag so recovery is not blocked
+    // for up to TIMEOUT_SECONDS (4s) after session invalidation.
+    m_pending_get_block.clear();
 
     if (m_template_interface) {
         m_template_interface->discard_template(reason);
@@ -782,7 +987,7 @@ void Solo::set_epoch_coordinator(std::shared_ptr<EpochCoordinator> coordinator)
 const Solo::PacketIngressPreflightOptions Solo::kDefaultPacketIngressPreflightOptions{};
 
 bool Solo::run_packet_ingress_preflight(const char* log_scope,
-                                        const PacketIngressPreflightOptions& options) const
+                                        const PacketIngressPreflightOptions& options)
 {
     if (!m_session_context) {
         return true;
@@ -790,15 +995,15 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
 
     std::string validation_reason;
     const bool session_valid = m_session_context->validate_miner_session(&validation_reason);
-    const auto session = m_session_context->get_runtime_snapshot();
-    const uint64_t owner_epoch     = options.owner ? options.owner->session_epoch.get() : uint64_t{0};
-    const uint32_t owner_session_id = options.owner ? options.owner->session_id.get() : uint32_t{0};
+    const auto binding = m_session_context->get_session_binding();
+    const SessionEpoch owner_epoch     = options.owner ? options.owner->session_epoch : SessionEpoch{};
+    const SessionId owner_session_id = options.owner ? options.owner->session_id : SessionId{};
     const auto decision = PacketIngressPreflight::evaluate({
         true,
-        session.authenticated,
-        session.session_id,
-        session.session_epoch,
-        session.active_lane,
+        binding.authenticated,
+        binding.session_id,
+        binding.session_epoch,
+        binding.active_lane,
         m_protocol_lane,
         options.validate_lane,
         options.allow_without_active_session,
@@ -808,10 +1013,18 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
     });
 
     if (decision.allow_processing) {
+        // Reset preflight reject counter on any successful pass
+        m_preflight_reject_count = 0;
         return true;
     }
 
-    m_logger->warn("[{}] Session ingress preflight rejected packet: {}", log_scope, decision.reason);
+    // ── Shadow-ban detection ────────────────────────────────────────────
+    // Track consecutive preflight rejections.  When the threshold is
+    // exceeded, force re-auth to break out of the silent drop cycle.
+    ++m_preflight_reject_count;
+
+    m_logger->warn("[{}] Session ingress preflight rejected packet: {} (reject_count={})",
+                   log_scope, decision.reason, m_preflight_reject_count);
     if (decision.drop_as_stale) {
         const auto kind = decision.stale_reason == PacketStaleReason::OWNERSHIP_EPOCH_MISMATCH
                         ? SessionManager::SessionEventKind::EPOCH_MISMATCH
@@ -823,7 +1036,24 @@ bool Solo::run_packet_ingress_preflight(const char* log_scope,
         m_logger->warn("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
     }
 
-    if (decision.force_reauth && options.trigger_reauth && m_session_expired_handler) {
+    // Clear pending GET_BLOCK so recovery is not blocked by a stale
+    // in-flight marker when the response was preflight-rejected.
+    if (m_pending_get_block.active) {
+        m_logger->warn("[{}] Clearing stale pending GET_BLOCK after preflight rejection", log_scope);
+        m_pending_get_block.clear();
+    }
+
+    // Force re-auth on threshold-triggered escalation or explicit force_reauth
+    const bool threshold_exceeded = m_preflight_reject_count >= SHADOW_BAN_PREFLIGHT_THRESHOLD;
+    if (threshold_exceeded && m_session_expired_handler) {
+        m_logger->error("[{}] SHADOW BAN DETECTED: {} consecutive preflight rejections — forcing re-auth",
+                        log_scope, m_preflight_reject_count);
+        record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
+                             "shadow_ban_detected: " + std::to_string(m_preflight_reject_count) +
+                             " consecutive preflight rejections");
+        m_preflight_reject_count = 0;
+        m_session_expired_handler();
+    } else if (decision.force_reauth && options.trigger_reauth && m_session_expired_handler) {
         record_session_event(SessionManager::SessionEventKind::FORCED_REAUTH,
                              std::string(log_scope) + ": " + decision.reason);
         m_logger->warn("[{}] Triggering session-expired handler after preflight rejection", log_scope);
@@ -847,7 +1077,7 @@ bool Solo::ensure_session_ready_for_ingress(const char* log_scope,
     const auto decision = SessionRecoveryPolicy::evaluate_ingress_readiness({
         m_session_context != nullptr,                              // has_session_context
         authoritative_authenticated,                               // authoritative_authenticated
-        !m_authenticated && authoritative_authenticated,           // local_auth_stale
+        false,                                                     // local_auth_stale (eliminated: single source of truth)
         m_auth_state == AuthState::NOT_AUTHENTICATED               // auth_not_in_flight
     });
 
@@ -877,7 +1107,7 @@ bool Solo::ensure_session_ready_for_ingress(const char* log_scope,
         m_logger->info("[{}] Session ingress resyncing stale local auth cache before processing {}",
                        log_scope, packet_name);
         resync_auth_from_session_context(log_scope);
-        if (!m_authenticated) {
+        if (!is_authenticated()) {
             m_logger->warn("[{}] Session ingress deferred: failed to resync local auth cache for {}",
                            log_scope, packet_name);
             if (m_session_context) {
@@ -907,52 +1137,12 @@ void Solo::flush_pending_push_after_auth(const std::shared_ptr<network::Connecti
         return;
     }
 
-    if (!connection) {
-        m_logger->warn("[{}] Pending post-auth GET_BLOCK still queued: no connection available", log_scope);
-        return;
-    }
-
-    refresh_cached_session_state(log_scope);
-
-    if (!m_authenticated) {
-        m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: canonical session not authenticated yet",
-                       log_scope);
-        return;
-    }
-
-    if (!validate_authoritative_session(log_scope, !m_reward_address.empty())) {
-        m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: authoritative session is not ready yet",
-                       log_scope);
-        return;
-    }
-
-    if (!m_reward_address.empty() && !m_reward_bound) {
-        m_logger->info("[{}] Pending post-auth GET_BLOCK still queued: reward binding not finished yet",
-                       log_scope);
-        return;
-    }
-
-    m_logger->info("[{}] Push arrived during auth handshake — sending queued GET_BLOCK now", log_scope);
-
-    auto work_payload = get_work(GetBlockReason::PUSH_NO_TEMPLATE);
-    if (work_payload && !work_payload->empty()) {
-        m_pending_push_after_auth = false;
-        try {
-            connection->transmit(work_payload);
-            mark_get_block_pending(GetBlockReason::PUSH_NO_TEMPLATE);
-        } catch (const std::exception& e) {
-            m_logger->error("[Solo] reward transmit failed: {}", e.what());
-        }
-        return;
-    }
-
-    if (m_last_get_block_request_status.load() == GetBlockRequestStatus::DUPLICATE_WINDOW) {
-        m_pending_push_after_auth = false;
-        m_logger->info("[{}] Queued post-auth GET_BLOCK already satisfied by a recent request", log_scope);
-        return;
-    }
-
-    m_logger->warn("[{}] Queued post-auth GET_BLOCK is still pending after readiness check", log_scope);
+    // NODE auto-sends BLOCK_DATA after PUSH — no GET_BLOCK request needed.
+    // The push arrived during the auth handshake; the node will auto-send
+    // fresh block data now that the miner is authenticated and ready.
+    m_pending_push_after_auth = false;
+    m_logger->info("[{}] Push arrived during auth handshake — node will auto-send block data (no GET_BLOCK needed)",
+                   log_scope);
 }
 
 void Solo::update_connection_metadata(const std::shared_ptr<network::Connection>& connection)
@@ -984,8 +1174,8 @@ bool Solo::validate_authoritative_session(const char* log_scope, bool require_re
         return false;
     }
 
-    const auto session = m_session_context->get_runtime_snapshot();
-    if (require_reward_binding && !session.reward_address.empty() && !session.reward_bound) {
+    const auto binding = m_session_context->get_session_binding();
+    if (require_reward_binding && !binding.reward_address.empty() && !binding.reward_bound) {
         m_logger->error("[{}] Authoritative miner session container requires reward binding before continuing", log_scope);
         m_logger->error("[{}] {}", log_scope, m_session_context->build_miner_session_diagnostics());
         return false;
@@ -1054,7 +1244,7 @@ network::Shared_payload Solo::login(Login_handler handler)
     std::vector<uint8_t> tritium_genesis = load_tritium_genesis();
     if (m_session_context) {
         m_session_context->set_tritium_genesis(tritium_genesis);
-        m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), false);
+        m_session_context->set_falcon_identity(m_miner_pubkey, falcon_pubkey_to_hash_key_id(m_miner_pubkey), false);
         m_session_context->set_channel_state(m_channel, false, false);
         m_session_context->mark_activity();
     }
@@ -1206,7 +1396,7 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
     refresh_cached_session_state("Solo GET_BLOCK");
 
     /* Validate prerequisites */
-    if (!m_authenticated) {
+    if (!is_authenticated()) {
         m_last_get_block_request_status.store(GetBlockRequestStatus::UNAUTHENTICATED);
         m_logger->error("[Solo] Cannot request work - not authenticated");
         m_logger->error("[Solo]   Current auth state: {}",
@@ -1220,6 +1410,12 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
 
     if (!validate_authoritative_session("Solo GET_BLOCK", !m_reward_address.empty())) {
         m_last_get_block_request_status.store(GetBlockRequestStatus::SESSION_INVALID);
+        return nullptr;
+    }
+
+    if (m_session_context && !m_session_context->can_request_get_block()) {
+        m_last_get_block_request_status.store(GetBlockRequestStatus::SESSION_INVALID);
+        m_logger->info("[Solo] Cannot request work - authoritative session is not yet ready for GET_BLOCK");
         return nullptr;
     }
 
@@ -1285,11 +1481,10 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
     }
 
     m_logger->debug("[Solo] Requesting mining template via GET_BLOCK");
-    m_logger->debug("[Solo]   Session ID: 0x{:08x}", m_session_id);
-    m_logger->debug("[Solo]   Authenticated: {}", m_authenticated ? "YES" : "NO");
-    m_logger->debug("[Solo]   Reward bound: {}", m_reward_bound ? "YES" : "NO");
+    m_logger->debug("[Solo]   Session ID: 0x{:08x}", get_session_id().get());
+    m_logger->debug("[Solo]   Authenticated: {}", is_authenticated() ? "YES" : "NO");
+    m_logger->debug("[Solo]   Reward bound: {}", is_reward_bound() ? "YES" : "NO");
     if (m_session_context) {
-        m_session_context->set_channel_state(m_channel, false, true);
         m_session_context->mark_activity();
     }
 
@@ -1297,25 +1492,6 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
     auto payload = PacketBuilder::build(m_protocol_lane, LLP::GET_BLOCK);
 
     if (payload && !payload->empty()) {
-        m_last_get_block_request_owner = capture_session_ownership();
-        // Record transmission for dedup guard (prevents rapid duplicate requests).
-        // NOTE: m_pending_get_block is NOT marked here — the caller must call
-        // mark_get_block_pending() AFTER the payload has been handed to
-        // Connection::transmit().  This prevents a stall when transmit fails
-        // (socket closed, null handler, etc.) from keeping the pending flag set
-        // without being cleared (clear() only fires in on_block_data /
-        // on_stateless_get_block).
-        {
-            auto snap = m_height_tracker.GetSnapshot();
-            uint1024_t hash_prev{};
-            if (m_template_interface) {
-                auto const* tmpl = m_template_interface->get_current_template();
-                if (tmpl) hash_prev = tmpl->block.hashPrevBlock;
-            }
-            m_dedup_guard.record_transmission(snap.canonical_unified_height, hash_prev);
-        }
-        m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
-
         m_logger->debug("[Solo] GET_BLOCK encoded payload size: {} bytes", payload->size());
         // TRAINING WHEELS: Show GET_BLOCK packet (should be just header byte)
         m_logger->debug("[Solo] GET_BLOCK packet hex dump:");
@@ -1336,6 +1512,16 @@ void Solo::reset_get_block_dedup_state()
 void Solo::mark_get_block_pending(GetBlockReason reason)
 {
     auto snap = m_height_tracker.GetSnapshot();
+    uint1024_t hash_prev{};
+    if (m_template_interface) {
+        auto const* tmpl = m_template_interface->get_current_template();
+        if (tmpl) {
+            hash_prev = tmpl->block.hashPrevBlock;
+        }
+    }
+    m_last_get_block_request_owner = capture_session_ownership();
+    m_dedup_guard.record_transmission(snap.canonical_unified_height, hash_prev);
+    m_last_get_block_request_status.store(GetBlockRequestStatus::SENT);
     m_pending_get_block.mark_pending(snap.unified_height, reason);
     m_logger->debug("[Solo] GET_BLOCK in-flight marked: unified={} reason={}",
                     snap.unified_height, reason_name(reason));
@@ -1351,7 +1537,7 @@ network::Shared_payload Solo::send_get_round()
     //
     // To request a fresh mining template use send_recovery_work_request() instead.
 
-    if (!m_authenticated) {
+    if (!is_authenticated()) {
         m_logger->warn("[Solo GET_ROUND] Cannot send GET_ROUND - not authenticated yet");
         m_logger->debug("[Solo GET_ROUND]   Current auth state: {}",
             m_auth_state == AuthState::NOT_AUTHENTICATED ? "NOT_AUTHENTICATED" :
@@ -1371,6 +1557,17 @@ network::Shared_payload Solo::send_get_round()
         m_logger->error("[Solo GET_ROUND] PacketBuilder::build returned null or empty payload!");
     }
     return payload;
+}
+
+void Solo::note_get_round_transmitted()
+{
+    auto new_val = m_unanswered_get_round_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    m_last_get_round_transmitted_at = std::chrono::steady_clock::now();
+    if (m_earliest_unanswered_get_round_at == std::chrono::steady_clock::time_point{}) {
+        m_earliest_unanswered_get_round_at = m_last_get_round_transmitted_at;
+    }
+    m_logger->info("[Solo GET_ROUND] \u2192 Sent (unanswered={}, lane={})",
+                   new_val, get_lane_name(m_protocol_lane));
 }
 
 network::Shared_payload Solo::send_recovery_work_request()
@@ -1446,9 +1643,16 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     m_logger->info("[Solo Submit][Authoritative]   template_age         = {}s", template_age_seconds);
     if (const auto* session_manager = get_session_manager()) {
         const auto current_epoch = session_manager->get_session_epoch();
-        if (current_epoch != submit_context.session_epoch.get()) {
-            m_logger->warn("[Solo Submit] Session epoch advanced after submit snapshot: snap={} current={}",
-                           submit_context.session_epoch.get(), current_epoch);
+        if (current_epoch != submit_context.session_epoch) {
+            // Bug 8 fix: Reject submit with stale epoch — NODE may silently drop
+            // the block if session credentials don't match the current epoch.
+            const std::string detail =
+                "snap_epoch=" + std::to_string(submit_context.session_epoch.get()) +
+                " current_epoch=" + std::to_string(current_epoch.get()) +
+                " height=" + std::to_string(block_to_submit.nHeight);
+            m_logger->error("[Solo Submit] Session epoch mismatch — rejecting stale submit: {}", detail);
+            record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED, detail);
+            return network::Shared_payload{};
         }
     }
 
@@ -1507,14 +1711,17 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // ── Extract plaintext payload from PacketBuilder-framed wire_bytes ────────
     // STATELESS wire format: [opcode(2 BE)][length(4 BE)][plaintext_payload]
     // LEGACY wire format:    [opcode(1)   ][length(4 BE)][plaintext_payload]
-    const size_t header_size = lane_header_size(m_protocol_lane);
+    // The ChaCha20 submit payload must exclude BOTH the opcode and the LLP length
+    // prefix.  Encrypting the 4-byte length field breaks the node-side submit
+    // parser and causes lane-specific framing drift.
     const auto& framed = *submit_result.wire_bytes;
-    if (framed.size() <= header_size) {
-        m_logger->error("[Solo Submit] Wire frame too small: {} bytes (header={})",
+    auto plaintextPayload = strip_submit_wire_header(framed, m_protocol_lane);
+    if (plaintextPayload.empty()) {
+        const size_t header_size = (m_protocol_lane == ProtocolLane::STATELESS) ? 6u : 5u;
+        m_logger->error("[Solo Submit] Wire frame too small: {} bytes (header+length={})",
                         framed.size(), header_size);
         return network::Shared_payload{};
     }
-    std::vector<uint8_t> plaintextPayload(framed.begin() + header_size, framed.end());
     record_session_event(SessionManager::SessionEventKind::SUBMIT_SENT,
                          "unified_height=" + std::to_string(m_last_submitted_height) +
                          " channel_height=" + std::to_string(tracker_channel_tip) +
@@ -1559,12 +1766,12 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         return network::Shared_payload{};
     }
 
-    const auto session = m_session_context ? m_session_context->get_runtime_snapshot()
-                                           : SessionManager::SessionInfo{};
-    const auto& submit_session_key = session.chacha20_session_key;
+    const auto binding = m_session_context ? m_session_context->get_session_binding()
+                                           : SessionBinding{};
+    const auto& submit_session_key = binding.chacha20_session_key;
 
     // Use the authoritative session key from the session container.
-    if (!session.chacha20_ready || submit_session_key.empty()) {
+    if (!binding.has_crypto_context()) {
         m_logger->critical("[Solo Submit] CRITICAL: authoritative session.chacha20_session_key is not ready");
         return network::Shared_payload{};
     }
@@ -1742,166 +1949,14 @@ void Solo::process_messages(Packet packet, std::shared_ptr<network::Connection> 
         m_logger->info("[Solo] ══════════════════════════════════════════════");
     }
     
-    const bool is_block_accepted_compat =
-        packet.m_is_uint16_opcode &&
-        packet.m_header == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT &&
-        packet.m_length == 0;
-    // Some nodes include a 1-byte rejection reason with 0xD003.
-    const bool is_block_rejected_compat =
-        packet.m_is_uint16_opcode &&
-        packet.m_header == LLP::StatelessMining::BLOCK_REJECTED_COMPAT &&
-        packet.m_length <= 1;
-    
-    // 0xD002/0xD003 may be used as stateless response aliases by some nodes.
-    // Exclude those compatibility responses from normal BLOCK_HEIGHT parsing.
-    if (matches_opcode(packet, Packet::BLOCK_HEIGHT) &&
-        !is_block_accepted_compat &&
-        !is_block_rejected_compat)
-    {
-        // Validate packet data before processing
-        if (!packet.m_data || packet.m_length < 4) {
-            m_logger->warn("Solo::process_messages: BLOCK_HEIGHT packet has invalid data or length < 4");
-            return;
-        }
-        
-        auto const height = bytes2uint(*packet.m_data);
-        
-        // Log the received height information
-        m_logger->info("[Solo] Received BLOCK_HEIGHT: height={}", height);
-        
-        // Use HeightTracker snapshot for comparison (single source of truth).
-        // Fall back to m_current_height only during startup before any GET_ROUND/push
-        // notification has been received (unified_height == 0 in that case).
-        // m_current_height is kept as a diagnostic-only reference.
-        auto snap = m_height_tracker.GetSnapshot();
-        uint32_t known_height = snap.unified_height > 0 ? snap.unified_height : m_current_height;
-        
-        if (height > known_height)
-        {
-            m_logger->info("Nexus Network: New height {} (old height: {})", height, known_height);
-            m_current_height = height;  // diagnostic only
-            
-            // After receiving height, request actual work via GET_BLOCK
-            m_logger->info("[Solo] Height updated, requesting work via GET_BLOCK");
-            auto work_payload = get_work(GetBlockReason::INITIAL_REQUEST);
-            if (work_payload && !work_payload->empty()) {
-                try {
-                    connection->transmit(work_payload);
-                    mark_get_block_pending(GetBlockReason::INITIAL_REQUEST);
-                } catch (const std::exception& e) {
-                    m_logger->error("[Solo] transmit failed: {}", e.what());
-                }
-            } else {
-                m_logger->warn("[Solo] GET_BLOCK rate-limited or unavailable — will wait for next node push");
-            }
-        }
-        else
-        {
-            // Height is unchanged or older than current
-            if (height == known_height) {
-                m_logger->debug("[Solo] Height unchanged ({}), no action needed", height);
-            } else {
-                m_logger->warn("[Solo] Received older height {} (current: {})", height, known_height);
-            }
-        }
-    }
-    // Handle BLOCK_REWARD response
-    else if (matches_opcode(packet, Packet::BLOCK_REWARD))
-    {
-        // Validate packet data before processing
-        if (!packet.m_data || packet.m_length < 8) {
-            m_logger->warn("Solo::process_messages: BLOCK_REWARD packet has invalid data or length < 8");
-            return;
-        }
-        
-        // Parse reward using bytes2uint64 (consistent with bytes2uint - big-endian byte order)
-        m_current_reward = bytes2uint64(*packet.m_data);
-        
-        m_logger->info("[Solo] Received BLOCK_REWARD: reward={}", m_current_reward);
-    }
-    // Block from wallet received
-    else if (matches_opcode(packet, Packet::BLOCK_DATA))
-    {
-        on_block_data(packet, connection);
-    }
-    else if (matches_opcode(packet, Packet::ACCEPT) || is_block_accepted_compat ||
-             matches_opcode(packet, LLP::GOOD_BLOCK))
-    {
-        on_block_accepted(packet, connection);
-    }
-    else if (matches_opcode(packet, Packet::REJECT) || is_block_rejected_compat ||
-             matches_opcode(packet, LLP::ORPHAN_BLOCK))
-    {
-        on_block_rejected(packet, connection);
-    }
-    else if (matches_opcode(packet, Packet::NEW_ROUND) || matches_opcode(packet, Packet::OLD_ROUND))
-    {
-        on_get_round_response(packet, connection);
-    }
-    else if (matches_opcode(packet, Packet::MINER_AUTH_CHALLENGE) ||
-             matches_opcode(packet, Packet::MINER_AUTH_RESULT)    ||
-             matches_opcode(packet, Packet::CHANNEL_ACK)          ||
-             matches_opcode(packet, Packet::SESSION_START)        ||
-             matches_opcode(packet, Packet::SESSION_KEEPALIVE)    ||
-             matches_opcode(packet, Packet::MINER_REWARD_RESULT))
-    {
-        on_miner_auth_response(packet, connection);
-    }
-    else if (matches_opcode(packet, Packet::SESSION_EXPIRED))
-    {
-        on_session_expired(packet, connection);
-    }
-    else if (matches_opcode(packet, Packet::PRIME_BLOCK_AVAILABLE))
-    {
-        on_push_notification(packet, connection, mining::CHANNEL_PRIME);
-    }
-    else if (matches_opcode(packet, Packet::HASH_BLOCK_AVAILABLE))
-    {
-        on_push_notification(packet, connection, mining::CHANNEL_HASH);
-    }
-    else if (matches_stateless_opcode(packet, Packet::GET_BLOCK))
-    {
-        on_stateless_get_block(packet, connection);
-    }
-    else if (matches_opcode(packet, 0xE0))
-    {
-        on_ping_diag(packet, connection);
-    }
-    else if (packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK)
-          || packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY))
-    {
-        on_session_status_ack(packet, connection);
-    }
     // ═══════════════════════════════════════════════════════════════════════
-    // NODE_SHUTDOWN (0xD0FF / legacy 0xFF) — graceful shutdown notice from node
+    // TABLE-DRIVEN DISPATCH (via PacketRouter)
     // ═══════════════════════════════════════════════════════════════════════
-    else if(matches_opcode(packet, Packet::NODE_SHUTDOWN))
-    {
-        ::LLP::NodeShutdownFrame frame;
-        static const std::vector<uint8_t> empty_vec;
-        const auto& payload = packet.m_data ? *packet.m_data : empty_vec;
-        if(frame.Parse(payload))
-        {
-            m_logger->warn("[Solo] ════════════════════════════════════════════════");
-            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason={}) — stopping workers",
-                frame.ReasonString());
-            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
-            m_logger->warn("[Solo] ════════════════════════════════════════════════");
-        }
-        else
-        {
-            m_logger->warn("[Solo] ════════════════════════════════════════════════");
-            m_logger->warn("[Solo] Node sent graceful shutdown notice (reason=UNKNOWN, no payload) — stopping workers");
-            m_logger->warn("[Solo] Reconnect backoff: {}s", NODE_SHUTDOWN_BACKOFF_S);
-            m_logger->warn("[Solo] ════════════════════════════════════════════════");
-        }
-
-        // Notify Worker_manager to stop workers and set reconnect backoff
-        if(m_node_shutdown_handler)
-            m_node_shutdown_handler(frame.reason);
-    }
-    else
-    {
+    // All handler registrations live in register_packet_handlers() (called
+    // once from the constructor).  The router canonicalizes uint16_t opcodes
+    // to their legacy mirror before lookup, and handles raw (unmirror-able)
+    // opcodes via a separate table.
+    if (!m_packet_router.dispatch(packet, connection)) {
         m_logger->debug("Invalid header received: 0x{:04x}", packet.m_header);
     } 
 }
@@ -1956,15 +2011,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
 
             // Immediate retry after notifying recovery handler
             if (connection) {
-                auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
-                if (work_payload && !work_payload->empty()) {
-                    try {
-                        connection->transmit(work_payload);
-                        mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
-                    } catch (const std::exception& e) {
-                        m_logger->error("[Solo] transmit failed: {}", e.what());
-                    }
-                } else {
+                if (!request_and_queue_get_block(connection,
+                                                 GetBlockReason::VALIDATION_FAILURE,
+                                                 "[Solo] Recovery GET_BLOCK")) {
                     m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
                 }
             }
@@ -2010,19 +2059,13 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
             }
 
             // Immediate retry after notifying recovery handler
-            if (connection) {
-                auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
-                if (work_payload && !work_payload->empty()) {
-                    try {
-                        connection->transmit(work_payload);
-                        mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
-                    } catch (const std::exception& e) {
-                        m_logger->error("[Solo] transmit failed: {}", e.what());
+                if (connection) {
+                    if (!request_and_queue_get_block(connection,
+                                                     GetBlockReason::VALIDATION_FAILURE,
+                                                     "[Solo] Recovery GET_BLOCK")) {
+                        m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
                     }
-                } else {
-                    m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
                 }
-            }
             return;
         }
         
@@ -2086,15 +2129,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 }
                 
                 if (connection) {
-                    auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
-                    if (work_payload && !work_payload->empty()) {
-                        try {
-                            connection->transmit(work_payload);
-                            mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
-                        } catch (const std::exception& e) {
-                            m_logger->error("[Solo] transmit failed: {}", e.what());
-                        }
-                    }
+                    request_and_queue_get_block(connection,
+                                                GetBlockReason::VALIDATION_FAILURE,
+                                                "[Solo] Validation recovery GET_BLOCK");
                 }
                 return;
             }
@@ -2107,15 +2144,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                                                     true)) {
                 m_logger->error("[Solo FEED] Recovery: Block will be discarded, requesting new work");
                 if (connection) {
-                    auto work_payload = get_work(GetBlockReason::TEMPLATE_FEED_FAILURE);
-                    if (work_payload && !work_payload->empty()) {
-                        try {
-                            connection->transmit(work_payload);
-                            mark_get_block_pending(GetBlockReason::TEMPLATE_FEED_FAILURE);
-                        } catch (const std::exception& e) {
-                            m_logger->error("[Solo] transmit failed: {}", e.what());
-                        }
-                    }
+                    request_and_queue_get_block(connection,
+                                                GetBlockReason::TEMPLATE_FEED_FAILURE,
+                                                "[Solo] Template feed recovery GET_BLOCK");
                 }
                 return;
             }
@@ -2138,9 +2169,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 
                 // Phase 2: In stateless mining, we always accept the block from GET_BLOCK response
                 // Update our height tracking to match
-                if (block.nHeight > m_current_height || m_authenticated)
+                if (block.nHeight > m_current_height || is_authenticated())
                 {
-                    if (m_authenticated && block.nHeight != m_current_height) {
+                    if (is_authenticated() && block.nHeight != m_current_height) {
                         m_logger->debug("[Solo Phase 2] Stateless mining - accepting block at height {}", block.nHeight);
                     }
                     m_current_height = block.nHeight;  // diagnostic only
@@ -2152,15 +2183,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                         m_logger->error("[Solo]   - This indicates an initialization failure");
                         m_logger->error("[Solo] Recovery: Block will be discarded, requesting new work");
                         if (connection) {
-                            auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
-                            if (work_payload && !work_payload->empty()) {
-                                try {
-                                    connection->transmit(work_payload);
-                                    mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
-                                } catch (const std::exception& e) {
-                                    m_logger->error("[Solo] transmit failed: {}", e.what());
-                                }
-                            }
+                            request_and_queue_get_block(connection,
+                                                        GetBlockReason::VALIDATION_FAILURE,
+                                                        "[Solo] Missing handler recovery GET_BLOCK");
                         }
                         return;
                     }
@@ -2177,15 +2202,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                     m_logger->warn("[Solo]   - Current height: {}", m_current_height);
                     m_logger->info("[Solo] Recovery: Requesting new work at current height");
                     if (connection) {
-                        auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
-                        if (work_payload && !work_payload->empty()) {
-                            try {
-                                connection->transmit(work_payload);
-                                mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
-                            } catch (const std::exception& e) {
-                                m_logger->error("[Solo] transmit failed: {}", e.what());
-                            }
-                        } else {
+                        if (!request_and_queue_get_block(connection,
+                                                         GetBlockReason::VALIDATION_FAILURE,
+                                                         "[Solo] Height mismatch recovery GET_BLOCK")) {
                             m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK returned empty payload");
                         }
                     }
@@ -2197,15 +2216,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 m_logger->error("[Solo]   - This may indicate protocol mismatch or data corruption");
                 m_logger->error("[Solo] Recovery: Requesting new work to recover from deserialization failure");
                 if (connection) {
-                    auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
-                    if (work_payload && !work_payload->empty()) {
-                        try {
-                            connection->transmit(work_payload);
-                            mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
-                        } catch (const std::exception& e) {
-                            m_logger->error("[Solo] transmit failed: {}", e.what());
-                        }
-                    } else {
+                    if (!request_and_queue_get_block(connection,
+                                                     GetBlockReason::VALIDATION_FAILURE,
+                                                     "[Solo] Deserialize recovery GET_BLOCK")) {
                         m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
                     }
                 }
@@ -2292,20 +2305,16 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
             if (!work_payload || work_payload->empty()) {
                 m_logger->error("[Solo] CRITICAL: GET_BLOCK retry also failed - mining may stall");
             } else {
-                try {
-                    connection->transmit(work_payload);
-                    mark_get_block_pending(GetBlockReason::RECOVERY_FORCED);
-                } catch (const std::exception& e) {
-                    m_logger->error("[Solo] transmit failed: {}", e.what());
+                if (!queue_payload(connection, work_payload, "[Solo] Accepted-block GET_BLOCK")) {
+                    return;
                 }
+                mark_get_block_pending(GetBlockReason::RECOVERY_FORCED);
             }
         } else {
-            try {
-                connection->transmit(work_payload);
-                mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
-            } catch (const std::exception& e) {
-                m_logger->error("[Solo] transmit failed: {}", e.what());
+            if (!queue_payload(connection, work_payload, "[Solo] Accepted-block GET_BLOCK")) {
+                return;
             }
+            mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
         }
     }
     // Handle legacy GOOD_BLOCK (opcode 6): some legacy nodes send this for valid-but-not-best blocks.
@@ -2349,15 +2358,9 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
 
         reset_get_block_dedup_state();
         // VALIDATION_FAILURE bypasses height dedup: the accepted template is spent.
-        auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
-        if (work_payload && !work_payload->empty()) {
-            try {
-                connection->transmit(work_payload);
-                mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
-            } catch (const std::exception& e) {
-                m_logger->error("[Solo] transmit failed: {}", e.what());
-            }
-        }
+        request_and_queue_get_block(connection,
+                                    GetBlockReason::VALIDATION_FAILURE,
+                                    "[Solo] GOOD_BLOCK GET_BLOCK");
     }
 }
 
@@ -2474,20 +2477,16 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
                 // handshake; the node keeps the miner subscribed for the session lifetime.
                 // The next push from the node will trigger a fresh GET_BLOCK request.
             } else {
-                try {
-                    connection->transmit(work_payload);
-                    mark_get_block_pending(GetBlockReason::RECOVERY_FORCED);
-                } catch (const std::exception& e) {
-                    m_logger->error("[Solo] MINER_READY transmit failed: {}", e.what());
+                if (!queue_payload(connection, work_payload, "[Solo] Rejected-block GET_BLOCK")) {
+                    return;
                 }
+                mark_get_block_pending(GetBlockReason::RECOVERY_FORCED);
             }
         } else {
-            try {
-                connection->transmit(work_payload);
-                mark_get_block_pending(GetBlockReason::BLOCK_REJECTED);
-            } catch (const std::exception& e) {
-                m_logger->error("[Solo] MINER_READY transmit failed: {}", e.what());
+            if (!queue_payload(connection, work_payload, "[Solo] Rejected-block GET_BLOCK")) {
+                return;
             }
+            mark_get_block_pending(GetBlockReason::BLOCK_REJECTED);
         }
     }
     // Handle legacy ORPHAN_BLOCK (opcode 7): some legacy nodes send this for orphaned blocks.
@@ -2512,15 +2511,9 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
             rejected_height, rejected_channel);
 
         reset_get_block_dedup_state();
-        auto work_payload = get_work(GetBlockReason::BLOCK_REJECTED);
-        if (work_payload && !work_payload->empty()) {
-            try {
-                connection->transmit(work_payload);
-                mark_get_block_pending(GetBlockReason::BLOCK_REJECTED);
-            } catch (const std::exception& e) {
-                m_logger->error("[Solo] transmit failed: {}", e.what());
-            }
-        }
+        request_and_queue_get_block(connection,
+                                    GetBlockReason::BLOCK_REJECTED,
+                                    "[Solo] ORPHAN_BLOCK GET_BLOCK");
     }
 }
 
@@ -2537,7 +2530,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 m_logger->error("[Solo GET_ROUND] NEW_ROUND received but no active session");
             } else {
                 auto session_id = get_session_manager()->get_session_id();
-                m_logger->info("[Solo GET_ROUND] NEW_ROUND received, keeping session 0x{:08X}", session_id);
+                m_logger->info("[Solo GET_ROUND] NEW_ROUND received, keeping session 0x{:08X}", session_id.get());
             }
         }
         
@@ -2644,14 +2637,9 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced (awaiting finalization → GET_BLOCK)",
                         get_channel_name(m_channel));
                     if (connection) {
-                        auto work_payload = get_work(GetBlockReason::GET_ROUND_STALE);
-                        if (work_payload && !work_payload->empty()) {
-                            try {
-                                connection->transmit(work_payload);
-                                mark_get_block_pending(GetBlockReason::GET_ROUND_STALE);
-                            } catch (const std::exception& e) {
-                                m_logger->error("[Solo GET_ROUND] transmit failed (staleness path): {}", e.what());
-                            }
+                        if (request_and_queue_get_block(connection,
+                                                        GetBlockReason::GET_ROUND_STALE,
+                                                        "[Solo GET_ROUND] GET_BLOCK")) {
                             get_block_sent_in_handler = true;
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                         } else {
@@ -2670,21 +2658,22 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 channel_height, get_channel_name(m_channel));
         }
 
-        // ── WHY GET_ROUND IS THE PRIMARY STAKE-BLOCK DETECTOR ─────────────────────────
+        // ── WHY GET_ROUND REMAINS USEFUL EVEN WITH PUSH/BLOCK_DATA ────────────────────
         //
         // The Nexus node currently sends PUSH notifications (PRIME/HASH_BLOCK_AVAILABLE)
         // only when Prime or Hash channel blocks are found. Stake blocks DO advance the
         // unified blockchain height (and change hashPrevBlock), but they do NOT trigger
         // a PUSH to mining channels.
         //
-        // GET_ROUND is therefore the ONLY reliable mechanism for a PoW miner to learn
-        // about Stake block tip advances. The 15-second fixed polling interval (no backoff)
-        // is intentional: Stake blocks appear more frequently than Hash/Prime blocks and
-        // each one stales the current template.
+        // GET_ROUND is therefore still the miner's backstop for discovering unified-tip
+        // advances that arrive without a matching PUSH/BLOCK_DATA autosend. In the common
+        // case PUSH/BLOCK_DATA keep templates fresh and GET_ROUND remains informational.
+        // When PUSH is absent or local template state says stale, the same poll stream can
+        // still trigger a corrective GET_BLOCK.
         //
         // Future improvement: Add node-side PUSH subscription that fires on ANY unified
         // height change (including Stake), eliminating the need for polling entirely.
-        // Until then, GET_ROUND is the backstop for cross-channel tip detection.
+        // Until then, GET_ROUND remains the fallback signal for cross-channel tip detection.
         // ────────────────────────────────────────────────────────────────────────────────
 
         // ── Stake/cross-channel unified tip detection ──────────────────────────────
@@ -2725,14 +2714,9 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 reset_get_block_dedup_state();
 
                 if (connection) {
-                    auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
-                    if (work_payload && !work_payload->empty()) {
-                        try {
-                            connection->transmit(work_payload);
-                            mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
-                        } catch (const std::exception& e) {
-                            m_logger->error("[Solo GET_ROUND] transmit failed (Stake/cross-channel): {}", e.what());
-                        }
+                    if (request_and_queue_get_block(connection,
+                                                    GetBlockReason::GET_ROUND_NO_TEMPLATE,
+                                                    "[Solo GET_ROUND] Stake refresh GET_BLOCK")) {
                         get_block_sent_in_handler = true;
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
                     }
@@ -2762,9 +2746,9 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         bool needs_template = !template_valid || 
                              (m_template_interface && !m_template_interface->has_valid_template());
 
-        // BUG #5 fix: Log when a previous GET_BLOCK request timed out without a
-        // BLOCK_DATA response.  Previously this expired silently, leaving operators
-        // with no diagnostic trail for lost requests.
+        // Log when a previous GET_BLOCK request timed out without a replacement
+        // template arriving via PUSH/BLOCK_DATA/GET_BLOCK response. Previously this
+        // expired silently, leaving operators with no diagnostic trail for lost requests.
         if (m_pending_get_block.has_timed_out()) {
             m_logger->warn("[Solo GET_ROUND] ⏱️  Previous GET_BLOCK timed out after {}ms "
                            "(reason={}, height={}) — allowing new request",
@@ -2786,14 +2770,9 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             
             // Request template via legacy GET_BLOCK
             if (connection) {
-                auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
-                if (work_payload && !work_payload->empty()) {
-                    try {
-                        connection->transmit(work_payload);
-                        mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
-                    } catch (const std::exception& e) {
-                        m_logger->error("[Solo GET_ROUND] transmit failed (staleness path): {}", e.what());
-                    }
+                if (request_and_queue_get_block(connection,
+                                                GetBlockReason::GET_ROUND_NO_TEMPLATE,
+                                                "[Solo GET_ROUND] Template refresh GET_BLOCK")) {
                     get_block_sent_in_handler = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 } else {
@@ -2813,8 +2792,8 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             m_logger->debug("[Solo GET_ROUND] ✓ Template valid, continuing to mine");
         }
 
-        // Event-driven: only request GET_BLOCK when template is actually stale (handled above).
-        // No unconditional GET_BLOCK here - avoids feedback loop with template reception.
+        // Event-driven: only request GET_BLOCK when template state or missing PUSH/BLOCK_DATA
+        // says we truly need one. No unconditional GET_BLOCK here - avoids feedback loops.
         if (!get_block_sent_in_handler) {
             m_logger->debug("[Solo GET_ROUND] ✓ Template valid after NEW_ROUND, no GET_BLOCK needed");
         }
@@ -2849,14 +2828,9 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     m_template_interface->discard_template(
                         "GET_ROUND height parity: node tip met template target");
                     if (connection) {
-                        auto work_payload = get_work(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
-                        if (work_payload && !work_payload->empty()) {
-                            try {
-                                connection->transmit(work_payload);
-                                mark_get_block_pending(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
-                            } catch (const std::exception& e) {
-                                m_logger->error("[Solo GET_ROUND] transmit failed (height parity): {}", e.what());
-                            }
+                        if (request_and_queue_get_block(connection,
+                                                        GetBlockReason::GET_ROUND_HEIGHT_PARITY,
+                                                        "[Solo GET_ROUND] Height parity GET_BLOCK")) {
                             get_block_sent_in_handler = true;
                             mark_authoritative_recovery_required("get_round_height_parity");
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent (height parity backup)");
@@ -2973,14 +2947,9 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced (awaiting finalization → GET_BLOCK)",
                         get_channel_name(m_channel));
                     if (connection) {
-                        auto work_payload = get_work(GetBlockReason::GET_ROUND_STALE);
-                        if (work_payload && !work_payload->empty()) {
-                            try {
-                                connection->transmit(work_payload);
-                                mark_get_block_pending(GetBlockReason::GET_ROUND_STALE);
-                            } catch (const std::exception& e) {
-                                m_logger->error("[Solo GET_ROUND] transmit failed (staleness path): {}", e.what());
-                            }
+                        if (request_and_queue_get_block(connection,
+                                                        GetBlockReason::GET_ROUND_STALE,
+                                                        "[Solo GET_ROUND] OLD_ROUND GET_BLOCK")) {
                             get_block_sent_in_handler = true;
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                         } else {
@@ -3029,14 +2998,9 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 reset_get_block_dedup_state();
 
                 if (connection) {
-                    auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
-                    if (work_payload && !work_payload->empty()) {
-                        try {
-                            connection->transmit(work_payload);
-                            mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
-                        } catch (const std::exception& e) {
-                            m_logger->error("[Solo GET_ROUND] transmit failed (Stake/cross-channel): {}", e.what());
-                        }
+                    if (request_and_queue_get_block(connection,
+                                                    GetBlockReason::GET_ROUND_NO_TEMPLATE,
+                                                    "[Solo GET_ROUND] OLD_ROUND stake refresh")) {
                         get_block_sent_in_handler = true;
                         m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
                     }
@@ -3068,14 +3032,9 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             
             // Request fresh template
             if (connection) {
-                auto work_payload = get_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
-                if (work_payload && !work_payload->empty()) {
-                    try {
-                        connection->transmit(work_payload);
-                        mark_get_block_pending(GetBlockReason::GET_ROUND_NO_TEMPLATE);
-                    } catch (const std::exception& e) {
-                        m_logger->error("[Solo GET_ROUND] transmit failed (Stake/cross-channel): {}", e.what());
-                    }
+                if (request_and_queue_get_block(connection,
+                                                GetBlockReason::GET_ROUND_NO_TEMPLATE,
+                                                "[Solo GET_ROUND] OLD_ROUND template refresh")) {
                     get_block_sent_in_handler = true;
                     m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
                 } else {
@@ -3085,7 +3044,8 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         }
         
         // Event-driven: only request GET_BLOCK when template is actually stale (handled above).
-        // OLD_ROUND means nothing changed - no need to request a new template.
+        // OLD_ROUND alone does not force a template refresh; only stale-template / parity /
+        // push-silence paths above may escalate to GET_BLOCK.
         if (!get_block_sent_in_handler) {
             m_logger->debug("[Solo GET_ROUND] ✓ OLD_ROUND: no change, no GET_BLOCK needed");
         }
@@ -3120,14 +3080,9 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     m_template_interface->discard_template(
                         "GET_ROUND height parity: node tip met template target");
                     if (connection) {
-                        auto work_payload = get_work(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
-                        if (work_payload && !work_payload->empty()) {
-                            try {
-                                connection->transmit(work_payload);
-                                mark_get_block_pending(GetBlockReason::GET_ROUND_HEIGHT_PARITY);
-                            } catch (const std::exception& e) {
-                                m_logger->error("[Solo GET_ROUND] transmit failed (height parity): {}", e.what());
-                            }
+                        if (request_and_queue_get_block(connection,
+                                                        GetBlockReason::GET_ROUND_HEIGHT_PARITY,
+                                                        "[Solo GET_ROUND] OLD_ROUND height parity")) {
                             get_block_sent_in_handler = true;
                             mark_authoritative_recovery_required("get_round_height_parity");
                             m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent (height parity backup)");
@@ -3194,14 +3149,14 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             // Extract session ID if present (4 bytes, little-endian)
             if (packet.m_length >= 5) {
                 // Read little-endian uint32
-                m_session_id = static_cast<uint32_t>((*packet.m_data)[1]) |
+                m_session_id = SessionId(static_cast<uint32_t>((*packet.m_data)[1]) |
                                (static_cast<uint32_t>((*packet.m_data)[2]) << 8) |
                                (static_cast<uint32_t>((*packet.m_data)[3]) << 16) |
-                               (static_cast<uint32_t>((*packet.m_data)[4]) << 24);
+                               (static_cast<uint32_t>((*packet.m_data)[4]) << 24));
 
                 // Validate session ID: must be non-zero for a valid session
                 // Zero session ID indicates a protocol error or node-side issue
-                if (m_session_id == 0) {
+                if (m_session_id.is_default()) {
                     m_logger->error("[Solo Auth] CRITICAL: Node sent session_id = 0 (invalid)");
                     m_logger->error("[Solo Auth] This indicates a node-side bug or protocol violation");
                     m_logger->error("[Solo Auth] Valid session IDs must be non-zero");
@@ -3216,7 +3171,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                         m_session_context->reset_session_credentials();
                         m_session_context->set_falcon_identity(
                             m_miner_pubkey,
-                            format_hex_prefix(m_miner_pubkey, 16),
+                            falcon_pubkey_to_hash_key_id(m_miner_pubkey),
                             false);
                         m_session_context->set_chacha20_session_key({}, "", false);
                     }
@@ -3267,8 +3222,8 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                     m_session_context->commit_authenticated_session(
                         m_session_id,
                         m_miner_pubkey,
-                        format_hex_prefix(m_miner_pubkey, 16),
-                        load_tritium_genesis());
+                        falcon_pubkey_to_hash_key_id(m_miner_pubkey),
+                        SessionGenesisHash(load_tritium_genesis()));
                     refresh_cached_session_state("Solo Auth");
                     m_session_context->set_channel_state(m_channel, false, false);
                     m_session_context->start_keepalive_timer();
@@ -3302,7 +3257,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 m_logger->warn("[Solo Auth]   - WARNING: No session ID provided by node (expected 5 bytes, got {})",
                     packet.m_length);
                 if (m_session_context) {
-                    m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), true);
+                    m_session_context->set_falcon_identity(m_miner_pubkey, falcon_pubkey_to_hash_key_id(m_miner_pubkey), true);
                     m_session_context->set_channel_state(m_channel, false, false);
                 }
 
@@ -3332,7 +3287,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 m_logger->info("[Solo Connection] Session details:");
                 m_logger->info("[Solo Connection]   - Local endpoint: {}:{}", local_addr, local_port);
                 m_logger->info("[Solo Connection]   - Remote endpoint: {}:{}", remote_addr, actual_port);
-                m_logger->info("[Solo Connection]   - Session ID: 0x{:08x}", m_session_id);
+                m_logger->info("[Solo Connection]   - Session ID: 0x{:08x}", m_session_id.get());
             }
             
             // Check if we have a reward address to bind
@@ -3343,10 +3298,12 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 auto reward_payload = send_set_reward();
                 if (reward_payload && !reward_payload->empty() && connection)
                 {
-                    try {
-                        connection->transmit(reward_payload);
-                    } catch (const std::exception& e) {
-                        m_logger->error("[Solo] reward transmit failed: {}", e.what());
+                    if (!queue_payload(connection, reward_payload, "[Solo Reward]")) {
+                        m_logger->error("[Solo Reward] Failed to queue MINER_SET_REWARD payload");
+                        if (connection) {
+                            connection->close();
+                        }
+                        return;
                     }
                     // Note: SET_CHANNEL and GET_BLOCK will be sent after receiving MINER_REWARD_RESULT
                     // This is handled in handle_reward_result()
@@ -3383,7 +3340,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                 m_session_context->reset_session_credentials();
                 m_session_context->set_falcon_identity(
                     m_miner_pubkey,
-                    format_hex_prefix(m_miner_pubkey, 16),
+                    falcon_pubkey_to_hash_key_id(m_miner_pubkey),
                     false);
                 m_session_context->set_chacha20_session_key({}, "", false);
                 m_session_context->set_channel_state(m_channel, false, false);
@@ -3612,13 +3569,22 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             }
 
             if (connection) {
-                try {
-                    connection->transmit(miner_ready_payload);
-                } catch (const std::exception& e) {
-                    m_logger->error("[Solo] MINER_READY transmit failed: {}", e.what());
+                if (!queue_payload(connection, miner_ready_payload, "[Solo Push] MINER_READY")) {
+                    m_logger->error("[Solo Protocol] MINER_READY payload was not queued on {} lane", lane_name);
+                    return;
                 }
                 m_logger->info("[Solo Protocol] ✓ MINER_READY ({}) transmitted on {} lane", opcode_str, lane_name);
+                if (m_session_context) {
+                    m_session_context->set_channel_state(m_channel, false, true);
+                    m_session_context->mark_activity();
+                }
+                validate_authoritative_session("Solo ChannelAck", false);
+                log_session_container_summary("Solo ChannelAck");
                 flush_pending_push_after_auth(connection, "Solo Protocol");
+                if (m_work_ready_handler &&
+                    (!m_session_context || m_session_context->can_request_get_block())) {
+                    m_work_ready_handler();
+                }
             } else {
                 m_logger->error("[Solo Protocol] No connection available");
                 return;
@@ -3635,7 +3601,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
 
         // Defensive check: SESSION_START should only be processed after successful authentication
         // This guards against node-side bugs where SESSION_START might be sent after auth rejection
-        if (!m_authenticated) {
+        if (!is_authenticated()) {
             m_logger->error("[Solo Session] Rejecting SESSION_START - not authenticated");
             m_logger->error("[Solo Session] This indicates a node-side protocol violation");
             m_logger->error("[Solo Session] SESSION_START should only be sent after MINER_AUTH_RESULT success");
@@ -3664,17 +3630,17 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
         }
 
         // Validate session ID matches what we received in MINER_AUTH_RESULT
-        if (parsed->session_id != m_session_id) {
+        if (parsed->session_id != get_session_id()) {
             m_logger->error("[Solo Session] Session ID mismatch in SESSION_START:");
-            m_logger->error("[Solo Session]   - Expected: 0x{:08x} (from MINER_AUTH_RESULT)", m_session_id);
-            m_logger->error("[Solo Session]   - Received: 0x{:08x} (from SESSION_START)", parsed->session_id);
+            m_logger->error("[Solo Session]   - Expected: 0x{:08x} (from MINER_AUTH_RESULT)", m_session_id.get());
+            m_logger->error("[Solo Session]   - Received: 0x{:08x} (from SESSION_START)", parsed->session_id.get());
             return;
         }
 
         // Log parsed session parameters
         m_logger->info("[Solo Session] Session parameters:");
         m_logger->info("[Solo Session]   - Success: 0x{:02x}", parsed->success);
-        m_logger->info("[Solo Session]   - Session ID: 0x{:08x}", parsed->session_id);
+        m_logger->info("[Solo Session]   - Session ID: 0x{:08x}", parsed->session_id.get());
         m_logger->info("[Solo Session]   - Timeout: {} seconds ({} hours)",
                       parsed->timeout_seconds, parsed->timeout_seconds / 3600);
 
@@ -3719,7 +3685,7 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             {
                 PacketIngressPreflightOptions preflight;
                 preflight.owner = &m_last_keepalive_request_owner;
-                preflight.packet_session_id = unified.session_id;
+                preflight.packet_session_id = SessionId(unified.session_id);
                 if (!run_packet_ingress_preflight("Solo SessionKeepalive", preflight)) {
                     return;
                 }
@@ -3780,10 +3746,10 @@ void Solo::on_session_expired(Packet const& packet, std::shared_ptr<network::Con
         }
 
         // Parse session_id (little-endian uint32)
-        uint32_t expired_sid = static_cast<uint32_t>((*packet.m_data)[0]) |
+        SessionId expired_sid(static_cast<uint32_t>((*packet.m_data)[0]) |
                                (static_cast<uint32_t>((*packet.m_data)[1]) << 8) |
                                (static_cast<uint32_t>((*packet.m_data)[2]) << 16) |
-                               (static_cast<uint32_t>((*packet.m_data)[3]) << 24);
+                               (static_cast<uint32_t>((*packet.m_data)[3]) << 24));
 
         // Parse reason code
         uint8_t reason = (*packet.m_data)[4];
@@ -3796,88 +3762,38 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
 {
     disarm_get_round_fallback("PUSH re-established");
 
+    // Bug 11 fix: Lightweight session validation for PUSH notifications.
+    // PUSH is processed regardless (it's a broadcast), but log a warning if the
+    // session is not authenticated — this detects stale/mismatched PUSH data
+    // from a previous session that could inject incorrect template data.
+    if (!is_authenticated()) {
+        m_logger->warn("[Solo PUSH] Received push notification while NOT authenticated — "
+                       "data may be from a stale session (session_id=0x{:08x})", get_session_id().get());
+    }
+
     const char* push_opcode_name = (channel == mining::CHANNEL_PRIME) ? "PRIME_BLOCK_AVAILABLE"
                                  : (channel == mining::CHANNEL_HASH)  ? "HASH_BLOCK_AVAILABLE"
                                  : "STAKE_BLOCK_AVAILABLE";
 
-    // Capture whether the handler actually requested work.
-    // Same-channel: always true (every same-channel PUSH is a tip advance).
-    // Cross-channel tip advance: true (unified height moved → hashPrevBlock changed).
-    // Cross-channel liveness-only (same unified height): false — no tip anchor change,
-    //   so the dedup guard must NOT be reset.
-    bool work_requested = m_push_handler->handle_push_notification(
+    // Capture whether the handler substantively processed the push
+    // (heights/state updated) vs just recorded liveness.
+    // Same-channel: always true (every same-channel PUSH updates state).
+    // Cross-channel tip advance: true (unified height moved → state updated).
+    // Cross-channel liveness-only (same unified height): false — no state change.
+    //
+    // NODE auto-sends BLOCK_DATA after PUSH — no GET_BLOCK request needed.
+    bool push_processed = m_push_handler->handle_push_notification(
         packet, channel, m_protocol_lane,
         m_template_interface.get(),
         &m_height_tracker,
-        // CALLBACK 1: update_height_fn — Updates cached height state
+        // update_height_fn — Updates cached height state
         [this](uint32_t u, uint32_t c, uint32_t d) {
             update_height_state(u, c, d, HeightTracker::UpdateSource::PUSH);
-        },
-        // CALLBACK 2: request_work_fn — Same-channel path: GET_BLOCK with PUSH_STALE reason.
-        // PUSH reasons bypass height dedup in GetBlockDedupGuard so this
-        // is never suppressed by stale cached heights.
-        // Returns true only when GET_BLOCK was actually transmitted (not suppressed
-        // by dedup guard), so that the caller knows a real send occurred.
-        [connection, this, push_opcode_name]() -> bool {
-            if (connection) {
-                auto work_payload = get_work(GetBlockReason::PUSH_STALE);
-                if (work_payload && !work_payload->empty()) {
-                    try {
-                        connection->transmit(work_payload);
-                    } catch (const std::exception& e) {
-                        m_logger->error("[Solo] GET_BLOCK transmit failed: {}", e.what());
-                        return false;
-                    }
-                    mark_get_block_pending(GetBlockReason::PUSH_STALE);
-                    return true;
-                } else {
-                    m_logger->warn("[Solo] GET_BLOCK unavailable — will wait for next node push");
-                }
-            }
-            return false;
-        },
-        // CALLBACK 3: cross_channel_request_fn — Cross-channel tip advance: GET_BLOCK with
-        // PUSH_CROSS_CHANNEL reason (same dedup tier as PUSH_STALE, semantically distinct).
-        [connection, this]() -> bool {
-            if (connection) {
-                auto work_payload = get_work(GetBlockReason::PUSH_CROSS_CHANNEL);
-                if (work_payload && !work_payload->empty()) {
-                    try {
-                        connection->transmit(work_payload);
-                    } catch (const std::exception& e) {
-                        m_logger->error("[Solo] GET_BLOCK (cross-channel) transmit failed: {}", e.what());
-                        return false;
-                    }
-                    mark_get_block_pending(GetBlockReason::PUSH_CROSS_CHANNEL);
-                    return true;
-                } else {
-                    m_logger->warn("[Solo] GET_BLOCK (cross-channel) unavailable — will wait for next node push");
-                }
-            }
-            return false;
         });
 
-    // Do NOT reset dedup state here.  record_transmission() inside get_work()
-    // already armed the 100ms rapid-burst guard; resetting it immediately after
-    // the callback returns clears m_last_transmitted_tp, allowing a second PUSH
-    // arriving <100ms later to bypass the burst guard entirely.  When the node's
-    // 1-second per-request cooldown silently drops that second GET_BLOCK, the
-    // m_pending_get_block flag strands for up to TIMEOUT_SECONDS with no
-    // BLOCK_DATA response, suppressing GET_ROUND-driven retries.
-    //
-    // PUSH reasons already bypass the height-based guard via
-    // should_bypass_height_dedup(), so removing this reset does not block
-    // legitimate subsequent PUSH-triggered requests — only the rapid-burst
-    // guard remains active, which is exactly the protection we need.
-    //
-    // The dedup state is properly reset when the canonical tip actually changes:
-    //   - on_block_data() / on_stateless_get_block() response handlers
-    //   - on_block_accepted() / on_block_rejected()
-    //   - on_new_round_received() (GET_ROUND detects tip change)
-    //   - Stake-advance and template-discard paths
-    if (work_requested) {
-        m_logger->debug("[Solo Push] GET_BLOCK transmitted ({} channel tip advance) — "
-                        "burst guard remains armed to protect against rapid duplicate pushes",
+    if (push_processed) {
+        m_logger->debug("[Solo Push] PUSH processed ({} channel) — "
+                        "node will auto-send fresh BLOCK_DATA",
             (channel == m_channel) ? "same" : "cross");
     }
 }
@@ -3937,15 +3853,9 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
 
             // Immediate retry after notifying recovery handler
             if (connection) {
-                auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
-                if (work_payload && !work_payload->empty()) {
-                    try {
-                        connection->transmit(work_payload);
-                        mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
-                    } catch (const std::exception& e) {
-                        m_logger->error("[Solo] transmit failed: {}", e.what());
-                    }
-                } else {
+                if (!request_and_queue_get_block(connection,
+                                                 GetBlockReason::VALIDATION_FAILURE,
+                                                 "[Solo Stateless] Recovery GET_BLOCK")) {
                     m_logger->error("[Solo Stateless] Recovery failed - GET_BLOCK returned empty payload");
                 }
             }
@@ -3966,15 +3876,9 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
 
             // Immediate retry after notifying recovery handler
             if (connection) {
-                auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
-                if (work_payload && !work_payload->empty()) {
-                    try {
-                        connection->transmit(work_payload);
-                        mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
-                    } catch (const std::exception& e) {
-                        m_logger->error("[Solo] transmit failed: {}", e.what());
-                    }
-                } else {
+                if (!request_and_queue_get_block(connection,
+                                                 GetBlockReason::VALIDATION_FAILURE,
+                                                 "[Solo Stateless] Decode recovery GET_BLOCK")) {
                     m_logger->error("[Solo Stateless] Recovery failed - GET_BLOCK returned empty payload");
                 }
             }
@@ -4052,13 +3956,12 @@ void Solo::on_ping_diag(Packet const& packet, std::shared_ptr<network::Connectio
         if(!pong_bytes.empty() && connection)
         {
             /* PONG opcode: 0xD0E1 stateless (mirror-mapped by PacketBuilder) */
-            try {
-                connection->transmit(PacketBuilder::build(m_protocol_lane, 0xE1, pong_bytes));
-            } catch (const std::exception& e) {
-                m_logger->error("[Solo PONG] transmit failed: {}", e.what());
+            if (queue_payload(connection,
+                              PacketBuilder::build(m_protocol_lane, 0xE1, pong_bytes),
+                              "[Solo PONG]")) {
+                m_logger->debug("[Colin PING] PongFrame transmitted (seq #{})",
+                    m_colin_ping_handler.last_received_ping().sequence);
             }
-            m_logger->debug("[Colin PING] PongFrame transmitted (seq #{})",
-                m_colin_ping_handler.last_received_ping().sequence);
         }
 }
 
@@ -4158,7 +4061,7 @@ void Solo::set_protocol_lane(ProtocolLane lane)
 
 network::Shared_payload Solo::send_session_keepalive()
 {
-    m_logger->debug("[Solo Session] Sending SESSION_KEEPALIVE for session 0x{:08x}", m_session_id);
+    m_logger->debug("[Solo Session] Sending SESSION_KEEPALIVE for session 0x{:08x}", get_session_id().get());
 
     // Delegate to SessionManager which builds the correct 8-byte v2 payload:
     //   [0..3] session_id             (u32 little-endian)
@@ -4195,10 +4098,9 @@ void Solo::send_set_channel(std::shared_ptr<network::Connection> connection)
     }
     
     std::vector<uint8_t> channel_data(1, m_channel);
-    try {
-        connection->transmit(PacketBuilder::build(m_protocol_lane, LLP::SET_CHANNEL, channel_data));
-    } catch (const std::exception& e) {
-        m_logger->error("[Solo] SET_CHANNEL transmit failed: {}", e.what());
+    auto payload = PacketBuilder::build(m_protocol_lane, LLP::SET_CHANNEL, channel_data);
+    if (!queue_payload(connection, payload, "[Solo] SET_CHANNEL")) {
+        m_logger->error("[Solo] SET_CHANNEL payload was not queued");
     }
 }
 
@@ -4222,7 +4124,10 @@ void Solo::set_reward_address(std::string const& address)
 {
     m_reward_address = address;
     if (m_session_context) {
-        m_session_context->set_reward_binding(address, {}, false, address.empty() ? "" : "config");
+        m_session_context->set_reward_binding(address,
+                                              RewardHash{},
+                                              false,
+                                              address.empty() ? "" : "config");
     }
 }
 
@@ -4247,20 +4152,22 @@ void Solo::set_keepalive_interval(std::uint16_t hours)
     }
 }
 
-std::uint32_t Solo::get_session_id() const
+SessionId Solo::get_session_id() const
 {
-    if (get_session_manager()) {
-        return get_session_manager()->get_session_id();
+    if (m_session_context) {
+        auto* sm = m_session_context->get_session_manager().get();
+        if (sm) return sm->get_session_id();
     }
-    return m_session_id;  // Fallback to legacy session ID
+    return m_session_id;  // Fallback (pre-commit or no session context)
 }
 
 bool Solo::is_session_active() const
 {
-    if (get_session_manager()) {
-        return get_session_manager()->is_active();
+    if (m_session_context) {
+        auto* sm = m_session_context->get_session_manager().get();
+        if (sm) return sm->is_active();
     }
-    return m_authenticated;  // Fallback to legacy auth status
+    return m_authenticated;  // Fallback
 }
 
 void Solo::set_connection(std::shared_ptr<network::Connection> connection)
@@ -4281,7 +4188,7 @@ void Solo::reset_auth_state()
         m_session_context->reset_session_credentials();
         m_session_context->set_falcon_identity(
             m_miner_pubkey,
-            format_hex_prefix(m_miner_pubkey, 16),
+            falcon_pubkey_to_hash_key_id(m_miner_pubkey),
             false);
     }
     m_logger->info("[Solo] Auth state reset (in-band re-auth prep)");
@@ -4301,10 +4208,10 @@ bool Solo::check_auth_in_flight_timeout(const char* context)
     return false;
 }
 
-bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
+bool Solo::handle_session_id_mismatch(SessionId ack_session_id)
 {
     auto* session_manager = get_session_manager();
-    const uint32_t authoritative_session_id = session_manager ? session_manager->get_session_id() : 0;
+    const SessionId authoritative_session_id = session_manager ? session_manager->get_session_id() : SessionId{};
     const auto decision = SessionStatusPolicy::validate_ack({
         session_manager != nullptr,
         authoritative_session_id,
@@ -4323,18 +4230,33 @@ bool Solo::handle_session_id_mismatch(uint32_t ack_session_id)
         m_session_context->note_keepalive_ack(false, decision.reason);
     }
 
-    // ACK mismatch is diagnostic only — PUSH notification liveness is the sole
-    // authoritative signal for session health.  Log for observability but do NOT
-    // expire the session or invoke session_expired_handler(); the node-side ACK
-    // responder can lag or fail independently of the PUSH path.
-    m_logger->warn("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != authoritative=0x{:08x}"
-                   " — diagnostic only, PUSH is authoritative (not self-expiring)",
-        decision.reason, m_session_id_mismatch_count, ack_session_id, authoritative_session_id);
+    // Bug 3 fix: After N consecutive mismatches, trigger soft re-authentication.
+    // Persistent mismatches indicate the NODE assigned a new session_id (e.g., after
+    // a session sweep) and the miner's cached session is stale.  Without re-auth,
+    // the session silently dies once PUSH notifications also stop.
+    if (m_session_id_mismatch_count >= protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD) {
+        m_logger->error("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != authoritative=0x{:08x}"
+                       " — threshold reached, triggering re-authentication",
+            decision.reason, m_session_id_mismatch_count, ack_session_id.get(), authoritative_session_id.get());
+
+        // Reset counter to prevent re-triggering on every subsequent mismatch
+        m_session_id_mismatch_count = 0;
+
+        // Force re-auth via the same path as SESSION_EXPIRED
+        if (m_session_expired_handler) {
+            m_session_expired_handler();
+        }
+    } else {
+        m_logger->warn("[KEEPALIVE_V2] {} #{}: ack=0x{:08x} != authoritative=0x{:08x}"
+                       " — tracking mismatch (threshold={})",
+            decision.reason, m_session_id_mismatch_count, ack_session_id.get(), authoritative_session_id.get(),
+            protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD);
+    }
 
     return true;  // mismatch detected — caller must return to skip further ACK processing
 }
 
-void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection)
+void Solo::handle_session_expired(SessionId expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection)
 {
     // ═══════════════════════════════════════════════════════════════════════════
     // SESSION_EXPIRED HANDLER (5-step response flow per LLL-TAO PR #354)
@@ -4344,9 +4266,9 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
     // Use SessionRecoveryPolicy to make the stale-replay guard explicit and
     // consistent with the authoritative session machine.
     m_logger->warn("[Solo] SESSION_EXPIRED received: session_id=0x{:08x} reason=0x{:02x}",
-                   expired_sid, reason);
+                   expired_sid.get(), reason);
 
-    const uint32_t authoritative_session_id = get_session_id();
+    const SessionId authoritative_session_id = get_session_id();
     const auto recovery_decision = SessionRecoveryPolicy::evaluate_session_expired({
         m_session_context != nullptr,  // has_authoritative_session
         expired_sid,                   // expired_session_id
@@ -4357,7 +4279,7 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
     if (recovery_decision.is_stale_replay) {
         m_logger->warn("[Solo] SESSION_EXPIRED stale or replay — ignoring: {} "
                        "(expired=0x{:08x} authoritative=0x{:08x})",
-                       recovery_decision.reason, expired_sid, authoritative_session_id);
+                       recovery_decision.reason, expired_sid.get(), authoritative_session_id.get());
         return;
     }
 
@@ -4367,21 +4289,29 @@ void Solo::handle_session_expired(uint32_t expired_sid, uint8_t reason, std::sha
         reason_str = "EXPIRED_INACTIVITY";
     }
     m_logger->warn("[Solo] Session 0x{:08x} expired: reason={} ({}) — {}",
-                  authoritative_session_id, reason_str, reason, recovery_decision.reason);
+                  authoritative_session_id.get(), reason_str, reason, recovery_decision.reason);
 
     // STEP 2: CLEAR LOCAL SESSION STATE (mirror reset_auth_state)
     m_logger->info("[Solo] Clearing local session state");
-    m_session_id = 0;
+    m_current_height = 0;
+    m_current_reward = 0;
+    m_session_id.clear();
     m_authenticated = false;
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_auth_in_flight_since = {};
+    m_current_height = 0;
+    m_current_reward = 0;
     m_reward_bound = false;  // Reward binding dies with session
     m_subscribed_to_notifications = false;
+
+    // Bug 1 fix: Clear in-flight GET_BLOCK so recovery can immediately
+    // request a new template instead of being blocked for up to 4 seconds.
+    m_pending_get_block.clear();
 
     // Clear the authoritative session context
     if (m_session_context) {
         m_session_context->set_chacha20_session_key({}, "", false);
-        m_session_context->set_falcon_identity(m_miner_pubkey, format_hex_prefix(m_miner_pubkey, 16), false);
+        m_session_context->set_falcon_identity(m_miner_pubkey, falcon_pubkey_to_hash_key_id(m_miner_pubkey), false);
         m_session_context->clear_for_reauth(m_reward_address,
                                             m_reward_address.empty() ? "" : "config",
                                             "node signalled session expiry");
@@ -4536,10 +4466,8 @@ void Solo::handle_miner_auth_challenge(const Packet& packet)
     
     // Transmit the response using stored connection
     if (m_connection) {
-        try {
-            m_connection->transmit(bytes);
-        } catch (const std::exception& e) {
-            m_logger->error("[Solo] transmit failed: {}", e.what());
+        if (!queue_payload(m_connection, bytes, "[Solo Auth] MINER_AUTH_RESPONSE")) {
+            reset_auth_state();
         }
     } else {
         m_logger->error("[Solo Phase 2] Cannot send MINER_AUTH_RESPONSE - no connection stored");
@@ -4558,7 +4486,7 @@ network::Shared_payload Solo::send_set_reward()
     }
     
     // Verify we are authenticated (ChaCha20 encryption requires established session)
-    if (!m_authenticated) {
+    if (!is_authenticated()) {
         m_logger->error("[Solo Reward] Cannot send reward address - not authenticated");
         return nullptr;
     }
@@ -4620,10 +4548,10 @@ network::Shared_payload Solo::send_set_reward()
                             reward_readiness.reason);
             return nullptr;
         }
-        const auto session = m_session_context ? m_session_context->get_runtime_snapshot()
-                                               : SessionManager::SessionInfo{};
-        const auto& reward_session_key = session.chacha20_session_key;
-        if (!session.chacha20_ready || reward_session_key.empty()) {
+        const auto binding = m_session_context ? m_session_context->get_session_binding()
+                                               : SessionBinding{};
+        const auto& reward_session_key = binding.chacha20_session_key;
+        if (!binding.has_crypto_context()) {
             m_logger->error("[Solo Reward] Cannot send MINER_SET_REWARD: authoritative session key is not ready");
             return nullptr;
         }
@@ -4719,12 +4647,9 @@ void Solo::resubscribe_push_notifications()
     m_logger->warn("[Solo Push] Re-subscribing to push notifications (MINER_READY re-send)");
     auto payload = send_miner_ready();
     if (payload && !payload->empty()) {
-        try {
-            m_connection->transmit(payload);
-        } catch (const std::exception& e) {
-            m_logger->error("[Solo] MINER_READY transmit failed: {}", e.what());
+        if (queue_payload(m_connection, payload, "[Solo Push] MINER_READY re-subscription")) {
+            m_logger->warn("[Solo Push] ✓ MINER_READY re-subscription transmitted");
         }
-        m_logger->warn("[Solo Push] ✓ MINER_READY re-subscription transmitted");
     } else {
         m_logger->error("[Solo Push] Failed to build MINER_READY for re-subscription");
     }
@@ -5224,7 +5149,7 @@ void Solo::handle_reward_result(const Packet& packet)
         }
         if (m_session_context) {
             m_session_context->commit_reward_bound(m_reward_address, reward_hash, "live bind");
-            m_session_context->set_channel_state(m_channel, false, true);
+            m_session_context->set_channel_state(m_channel, false, false);
             m_session_context->mark_activity();
         }
         validate_authoritative_session("Solo RewardResult", false);
@@ -5356,6 +5281,11 @@ void Solo::on_new_round_received(uint32_t new_unified_height)
     m_logger->info("[Solo Poll] ⚡ NEW_ROUND: chain tip changed — poll interval reset to {}ms",
         m_current_poll_interval_ms);
     
+    // GET_ROUND response received — reset unanswered counter and timestamps
+    m_unanswered_get_round_count.store(0, std::memory_order_release);
+    m_earliest_unanswered_get_round_at = {};
+    m_last_get_round_transmitted_at = {};
+
     // Check unified height delta
     check_unified_height_delta(new_unified_height);
 }
@@ -5367,6 +5297,11 @@ void Solo::on_old_round_received()
     // interval ensures the miner polls for template freshness consistently.
     // m_current_poll_interval_ms stays at POLL_INTERVAL_MIN_MS always.
     m_current_poll_interval_ms = POLL_INTERVAL_MIN_MS;
+
+    // GET_ROUND response received — reset unanswered counter and timestamps
+    m_unanswered_get_round_count.store(0, std::memory_order_release);
+    m_earliest_unanswered_get_round_at = {};
+    m_last_get_round_transmitted_at = {};
 }
 
 void Solo::on_template_received(uint32_t template_height)
@@ -5385,32 +5320,17 @@ void Solo::check_unified_height_delta(uint32_t current_unified_height)
     }
     
     // When the unified tip moves, hashPrevBlock in the current template becomes
-    // stale even if the channel height hasn't changed. Request a fresh template
-    // so mining doesn't waste work on an orphan-prone block.
-    // Rate limiting in get_work() (6500ms) prevents spamming the node.
+    // stale even if the channel height hasn't changed.  The NODE auto-sends
+    // BLOCK_DATA after PUSH, and GET_ROUND is the backup for tip changes.
+    // Health monitor logs the tip movement but does NOT send GET_BLOCK.
     if (current_unified_height > m_template_unified_height) {
         uint32_t delta = current_unified_height - m_template_unified_height;
         
-        m_logger->info("[Solo Poll] ↑ Unified tip moved {} blocks ({} → {}) [reason: tip_moved] — requesting fresh template",
+        m_logger->info("[Solo Poll] ↑ Unified tip moved {} blocks ({} → {}) [reason: tip_moved] — "
+                       "node will auto-send fresh template via PUSH; GET_ROUND backup active",
             delta, m_template_unified_height, current_unified_height);
         // Update to avoid repeated log spam
         m_template_unified_height = current_unified_height;
-
-        // Request fresh template via GET_BLOCK (rate-limited)
-        if (m_connection) {
-            auto work = get_work(GetBlockReason::HEALTH_TIP_MOVED);
-            if (work && !work->empty()) {
-                try {
-                    m_connection->transmit(work);
-                    mark_get_block_pending(GetBlockReason::HEALTH_TIP_MOVED);
-                } catch (const std::exception& e) {
-                    m_logger->error("[Solo] transmit failed: {}", e.what());
-                }
-                m_logger->info("[Solo Poll] ✓ GET_BLOCK sent for tip refresh");
-            } else {
-                m_logger->debug("[Solo Poll] GET_BLOCK rate-limited — tip refresh deferred");
-            }
-        }
     }
 }
 

@@ -39,7 +39,8 @@ namespace nexusminer
 // Warning-catalog threshold constants
 static constexpr uint32_t WARN_CONNECTION_RETRIES = 100;
 static constexpr uint64_t WARN_TEMPLATE_AGE_SECONDS = 150;
-static constexpr int64_t DIAG_KEEPALIVE_ACK_STALE_SECONDS = 360;  // 6 min without keepalive ACK (diagnostic only); ~2.1× the 170s TCP keepalive interval
+static constexpr int64_t DIAG_KEEPALIVE_ACK_STALE_SECONDS = 32400;  // 9h without keepalive ACK (diagnostic only); 1.5× default 6h keepalive cadence
+static constexpr int64_t DIAG_SESSION_STATUS_ACK_STALE_SECONDS = 750;  // 12.5 min; 2.5× 5 min SESSION_STATUS_ACK cadence
 static constexpr int32_t WARN_CANONICAL_DRIFT_THRESHOLD = 500;    // blocks ahead before warning
 static constexpr uint64_t WARN_DIAGNOSTIC_STALE_SECONDS = 180;    // 3 min without any diagnostic update
 static constexpr uint64_t WARN_DIAGNOSTIC_INIT_GRACE_SECONDS = 30; // grace period before warning about uninit diagnostic
@@ -298,7 +299,7 @@ void ColinAgent::run_diagnostics()
                 if (!w.empty()) {
                     warnings.push_back(w);
                     recommendations.push_back(
-                        "Check node block propagation; verify keepalive interval is ≤60s");
+                        "Check node block propagation; verify session keepalive is active");
                 }
             }
         }
@@ -393,7 +394,7 @@ void ColinAgent::emit_report(
             m_logger->info("[Colin]    SIM Link active: {}", ack.IsSimLinkActive()  ? "✅" : "❌");
             m_logger->info("[Colin]    Authenticated:   {}", ack.IsAuthenticated()  ? "✅" : "❌");
             m_logger->info("[Colin]    Node uptime:     {}s", ack.uptime_seconds);
-            if (age_s > 360)
+            if (age_s > DIAG_SESSION_STATUS_ACK_STALE_SECONDS)
                 warnings.push_back("No SESSION_STATUS_ACK for >" + std::to_string(age_s) +
                                    "s — node may have dropped session or lane is silent");
         }
@@ -791,7 +792,12 @@ void ColinAgent::emit_report(
         m_logger->info("[Colin]  🏆 ── Mined Block hashPrevBlock History (Top 5) ─────");
         if (blocks.empty())
         {
-            m_logger->info("[Colin]  💤   (no blocks mined yet)");
+            if (gs.m_accepted_blocks == 0) {
+                m_logger->info("[Colin]  💤   (no blocks mined yet)");
+            } else {
+                m_logger->warn("[Colin]  ⚠️    accepted blocks={} but detailed mined-block history is unavailable in the current cache",
+                               gs.m_accepted_blocks);
+            }
         }
         else
         {

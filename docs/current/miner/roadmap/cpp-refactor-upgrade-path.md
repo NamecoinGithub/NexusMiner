@@ -63,6 +63,41 @@ This roadmap focuses on what remains.
 3. Add cross-architecture serialization stability checks.
 4. Validate accepted-submission snapshot lifecycle under template churn.
 
+## Current implementation status
+
+- A shared `SessionBinding` value object now batches authoritative session,
+  crypto, reward, and readiness semantics.
+- `SessionManager` and `NodeSessionContext` now expose typed session-binding
+  accessors so callers can consume one canonical bundle instead of piecemeal
+  fields.
+- `MiningTemplateInterface` now accepts typed `SessionId` construction and a
+  batched `SessionBinding` update path while retaining backward-compatible raw
+  overloads.
+- `Solo` now propagates template ownership through the canonical binding bundle
+  rather than separate session-id / epoch / identity calls.
+- `SessionBinding` now also carries authoritative auth and ChaCha20 crypto
+  state so reward-send and submit paths can batch their reads from one
+  canonical source.
+- Session-loss handling now treats the old session as non-viable: workers stop,
+  then the miner performs full re-auth on the current connection or reconnects /
+  fails over to a configured node if no active connection remains.
+- The first-block acceptance harness now captures session-event-journal
+  artifacts in full-validation mode and verifies accepted-submission snapshot
+  consumption under template churn.
+- The protocol test suite now includes deterministic cross-architecture
+  serialization replay coverage and multi-miner/session isolation coverage.
+
+## Next coding sequence for phases 5-6
+
+1. Expand acceptance coverage from deterministic protocol fixtures into broader
+   reconnect / failure-injection cases.
+2. Grow the multi-miner matrix from protocol isolation tests into larger mixed
+   lane / reconnect-storm coverage.
+3. Remove transitional raw overloads only after all production and test call
+   sites have switched to typed or batched APIs.
+4. Add targeted observability around binding changes so future sweeps can prove
+   cache resync paths stay aligned with the authoritative session container.
+
 ## Diagram-guided map
 
 | Topic | Diagram |

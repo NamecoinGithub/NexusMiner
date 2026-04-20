@@ -9,6 +9,7 @@ add_library(protocol STATIC src/protocol/solo.cpp
                             src/protocol/height_tracker.cpp
                             src/protocol/packet_builder.cpp
                             src/protocol/epoch_coordinator.cpp
+                            src/protocol/packet_router.cpp
                             ${CMAKE_SOURCE_DIR}/src/LLP/colin_ping_handler.cpp
                             ${CMAKE_SOURCE_DIR}/src/LLP/stateless_block_utility.cpp)
                     
@@ -125,6 +126,18 @@ add_nexusminer_test(NAME first_block_acceptance_test
     LINK_LIBS   protocol network LLP asio spdlog ${OPENSSL_LIBRARIES}
     INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
 
+add_nexusminer_test(NAME cross_architecture_serialization_test
+    SOURCES     cross_architecture_serialization_test.cpp
+                ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp
+    LINK_LIBS   protocol network LLP asio spdlog ${OPENSSL_LIBRARIES}
+    INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
+
+add_nexusminer_test(NAME multi_miner_session_isolation_test
+    SOURCES     multi_miner_session_isolation_test.cpp
+                ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp
+    LINK_LIBS   protocol network LLP asio spdlog ${OPENSSL_LIBRARIES}
+    INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
+
 add_nexusminer_test(NAME mined_block_cache_dedup_test
     SOURCES     ${CMAKE_SOURCE_DIR}/src/stats/mined_block_cache_test.cpp
     LINK_LIBS   protocol LLP stats spdlog
@@ -166,3 +179,14 @@ add_nexusminer_test(NAME session_identity_test
     SOURCES     session_identity_test.cpp
     LINK_LIBS   protocol LLC
     INCLUDE_DIRS ${_LLC_INC})
+
+add_nexusminer_test(NAME session_binding_test
+    SOURCES     session_binding_test.cpp
+    LINK_LIBS   protocol network asio spdlog)
+
+# --- Packet router ---
+add_nexusminer_test(NAME packet_router_test
+    SOURCES     packet_router_test.cpp
+    LINK_LIBS   protocol LLP spdlog
+    INCLUDE_DIRS ${_LLP_INC}
+                 ${CMAKE_SOURCE_DIR}/src/network/inc)

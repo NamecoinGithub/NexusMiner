@@ -98,23 +98,29 @@ int main()
     // ====================================================================
     std::cout << "\nTest 3: Wire format header bytes" << std::endl;
     {
-        // Legacy: header-only GET_BLOCK (opcode 129) → 1 byte on wire
+        // Legacy GET_BLOCK (opcode 129) → 5-byte zero-length frame on wire
         Packet legacy_get_block(static_cast<uint8_t>(MinerLLP::GET_BLOCK));
         auto legacy_bytes = legacy_get_block.get_bytes();
-        print_test_result("Legacy GET_BLOCK wire: 1 byte total",
-            legacy_bytes && legacy_bytes->size() == 1);
+        print_test_result("Legacy GET_BLOCK wire: 5 bytes total",
+            legacy_bytes && legacy_bytes->size() == 5);
         print_test_result("Legacy GET_BLOCK wire: byte[0] == 0x81 (129)",
             legacy_bytes && (*legacy_bytes)[0] == 0x81);
+        print_test_result("Legacy GET_BLOCK wire: zero length field",
+            legacy_bytes && (*legacy_bytes)[1] == 0x00 && (*legacy_bytes)[2] == 0x00 &&
+            (*legacy_bytes)[3] == 0x00 && (*legacy_bytes)[4] == 0x00);
 
-        // Stateless: header-only MINER_READY (0xD0D8) → 2 bytes on wire
+        // Stateless MINER_READY (0xD0D8) → 6-byte zero-length frame on wire
         Packet stateless_ready(static_cast<uint16_t>(MinerLLP::StatelessMining::MINER_READY));
         auto stateless_bytes = stateless_ready.get_bytes();
-        print_test_result("Stateless MINER_READY wire: 2 bytes total",
-            stateless_bytes && stateless_bytes->size() == 2);
+        print_test_result("Stateless MINER_READY wire: 6 bytes total",
+            stateless_bytes && stateless_bytes->size() == 6);
         print_test_result("Stateless MINER_READY wire: byte[0] == 0xD0",
             stateless_bytes && (*stateless_bytes)[0] == 0xD0);
         print_test_result("Stateless MINER_READY wire: byte[1] == 0xD8",
             stateless_bytes && (*stateless_bytes)[1] == 0xD8);
+        print_test_result("Stateless MINER_READY wire: zero length field",
+            stateless_bytes && (*stateless_bytes)[2] == 0x00 && (*stateless_bytes)[3] == 0x00 &&
+            (*stateless_bytes)[4] == 0x00 && (*stateless_bytes)[5] == 0x00);
     }
 
     // ====================================================================
@@ -136,10 +142,13 @@ int main()
             auto wire = pkt.get_bytes();
             print_test_result("Port 8323: lane=LEGACY, 1-byte header",
                 lane == ProtocolLane::LEGACY && !pkt.m_is_uint16_opcode);
-            print_test_result("Port 8323: GET_ROUND wire is 1 byte",
-                wire && wire->size() == 1);
+            print_test_result("Port 8323: GET_ROUND wire is 5 bytes",
+                wire && wire->size() == 5);
             print_test_result("Port 8323: GET_ROUND wire[0] == 0x85 (133)",
                 wire && (*wire)[0] == 133);
+            print_test_result("Port 8323: GET_ROUND wire length == 0",
+                wire && (*wire)[1] == 0x00 && (*wire)[2] == 0x00 &&
+                (*wire)[3] == 0x00 && (*wire)[4] == 0x00);
         }
         
         // Scenario B: Stateless miner on port 9323
@@ -156,10 +165,13 @@ int main()
             auto wire = pkt.get_bytes();
             print_test_result("Port 9323: lane=STATELESS, 2-byte header",
                 lane == ProtocolLane::STATELESS && pkt.m_is_uint16_opcode);
-            print_test_result("Port 9323: GET_ROUND wire is 2 bytes",
-                wire && wire->size() == 2);
+            print_test_result("Port 9323: GET_ROUND wire is 6 bytes",
+                wire && wire->size() == 6);
             print_test_result("Port 9323: GET_ROUND wire[0:1] == 0xD085",
                 wire && (*wire)[0] == 0xD0 && (*wire)[1] == 0x85);
+            print_test_result("Port 9323: GET_ROUND wire length == 0",
+                wire && (*wire)[2] == 0x00 && (*wire)[3] == 0x00 &&
+                (*wire)[4] == 0x00 && (*wire)[5] == 0x00);
         }
     }
 
@@ -243,6 +255,12 @@ int main()
             legacy_wire && legacy_wire->size() == 17);
         print_test_result("Legacy SUBMIT_BLOCK+12b: wire[0] = 0x01 (1-byte header)",
             legacy_wire && (*legacy_wire)[0] == 0x01);
+        print_test_result("Legacy SUBMIT_BLOCK+12b: wire[1:4] = 0x0000000C (BE length)",
+            legacy_wire &&
+            (*legacy_wire)[1] == 0x00 &&
+            (*legacy_wire)[2] == 0x00 &&
+            (*legacy_wire)[3] == 0x00 &&
+            (*legacy_wire)[4] == 0x0C);
         
         // Stateless data packet: [header(2)][length(4)][data(12)] = 18 bytes
         Packet stateless_data(static_cast<uint16_t>(MinerLLP::StatelessMining::SUBMIT_BLOCK), payload_data);
@@ -251,6 +269,12 @@ int main()
             stateless_wire && stateless_wire->size() == 18);
         print_test_result("Stateless SUBMIT_BLOCK+12b: wire[0:1] = 0xD001 (2-byte header)",
             stateless_wire && (*stateless_wire)[0] == 0xD0 && (*stateless_wire)[1] == 0x01);
+        print_test_result("Stateless SUBMIT_BLOCK+12b: wire[2:5] = 0x0000000C (BE length)",
+            stateless_wire &&
+            (*stateless_wire)[2] == 0x00 &&
+            (*stateless_wire)[3] == 0x00 &&
+            (*stateless_wire)[4] == 0x00 &&
+            (*stateless_wire)[5] == 0x0C);
     }
 
     // ====================================================================

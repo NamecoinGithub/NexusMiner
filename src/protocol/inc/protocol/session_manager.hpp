@@ -16,6 +16,7 @@
 #include "asio/io_context.hpp"
 #include "asio/steady_timer.hpp"
 #include "network/types.hpp"
+#include "protocol/session_binding.hpp"
 #include "protocol/session_semantic_types.hpp"
 #include "protocol/session_identity.hpp"
 #include "protocol_lane.hpp"
@@ -108,8 +109,8 @@ public:
     // Full session info — new minimal fields plus backward-compat fields
     struct SessionInfo {
         // ── Core minimal fields (new design) ──────────────────────────────
-        uint32_t session_id{0};
-        uint64_t session_epoch{0};
+        SessionId session_id{};
+        SessionEpoch session_epoch{};
         uint64_t runtime_state_generation{0};
         SessionState state{SessionState::DISCONNECTED};
         ProtocolLane active_lane{ProtocolLane::UNKNOWN};
@@ -127,15 +128,15 @@ public:
         std::string local_endpoint;
         bool connected{false};
         std::vector<uint8_t> falcon_pubkey;
-        std::string falcon_key_id;
+        FalconHashKeyId falcon_key_id{};
         bool falcon_authenticated{false};
         std::vector<uint8_t> session_key;
-        std::vector<uint8_t> session_genesis;
+        SessionGenesisHash session_genesis{};
         std::vector<uint8_t> chacha20_session_key;
-        std::string chacha20_key_fingerprint;
+        SessionFingerprint chacha20_key_fingerprint{};
         bool chacha20_ready{false};
         std::string reward_address_string;  // backward-compat alias; prefer reward_address in new code
-        std::vector<uint8_t> reward_hash;
+        RewardHash reward_hash{};
         RewardState reward_state{RewardState::NONE};
         std::string reward_binding_source;
         uint32_t channel{0};
@@ -171,7 +172,7 @@ public:
 
     // ── Core session lifecycle (new minimal API) ──────────────────────────────
     void begin_auth();
-    void commit_authenticated(uint32_t session_id, ProtocolLane lane,
+    void commit_authenticated(SessionId session_id, ProtocolLane lane,
                               const std::string& reward_address = {});
     void commit_reward_bound(const std::string& reward_address,
                              const std::string& source = "");
@@ -180,13 +181,20 @@ public:
 
     // ── Backward-compat lifecycle ─────────────────────────────────────────────
     void begin_auth_handshake(const std::string& detail = "");
-    void commit_authenticated_session(uint32_t session_id,
+    void commit_authenticated_session(SessionId session_id,
                                       const std::vector<uint8_t>& pubkey = {},
-                                      const std::string& key_id = {},
-                                      const std::vector<uint8_t>& tritium_genesis = {});
-    void start_session(uint32_t session_id,
+                                      FalconHashKeyId key_id = {},
+                                      SessionGenesisHash tritium_genesis = {});
+    void commit_authenticated_session(SessionId session_id,
+                                      const std::vector<uint8_t>& pubkey,
+                                      const std::string& key_id,
+                                      const std::vector<uint8_t>& tritium_genesis);
+    void start_session(SessionId session_id,
                        const std::vector<uint8_t>& session_key = {},
-                       const std::vector<uint8_t>& tritium_genesis = {});
+                       SessionGenesisHash tritium_genesis = {});
+    void start_session(SessionId session_id,
+                       const std::vector<uint8_t>& session_key,
+                       const std::vector<uint8_t>& tritium_genesis);
     void mark_session_expired(const std::string& reason);
     void mark_recovery_required(const std::string& reason);
     void mark_recovery_healthy(const std::string& reason = "");
@@ -200,13 +208,19 @@ public:
                           bool preserve_genesis = true);
 
     void begin_reward_binding(const std::string& addr,
-                              const std::vector<uint8_t>& hash = {},
+                              RewardHash hash = {},
                               const std::string& src = "");
+    void begin_reward_binding(const std::string& addr,
+                              const std::vector<uint8_t>& hash,
+                              const std::string& src);
     // Note: commit_reward_bound(addr, source) is the new API
     // Backward-compat overload that also accepts reward_hash
     void commit_reward_bound(const std::string& reward_address,
-                             const std::vector<uint8_t>& reward_hash,
+                             RewardHash reward_hash,
                              const std::string& source = "");
+    void commit_reward_bound(const std::string& reward_address,
+                             const std::vector<uint8_t>& reward_hash,
+                             const std::string& source);
     void commit_reward_rejected(const std::string& addr,
                                 const std::string& src = "",
                                 const std::string& rsn = "");
@@ -218,19 +232,26 @@ public:
     void set_connection_metadata(const std::string& local, const std::string& remote,
                                  bool connected);
     void set_falcon_identity(const std::vector<uint8_t>& pubkey,
+                             FalconHashKeyId key_id, bool authenticated);
+    void set_falcon_identity(const std::vector<uint8_t>& pubkey,
                              const std::string& key_id, bool authenticated);
     void reset_session_credentials();
     void set_chacha20_session_key(const std::vector<uint8_t>& key,
+                                  SessionFingerprint fingerprint, bool ready);
+    void set_chacha20_session_key(const std::vector<uint8_t>& key,
                                   const std::string& fingerprint, bool ready);
+    void set_reward_binding(const std::string& addr,
+                            RewardHash hash,
+                            bool bound, const std::string& src);
     void set_reward_binding(const std::string& addr,
                             const std::vector<uint8_t>& hash,
                             bool bound, const std::string& src);
     void set_channel_state(uint32_t channel, bool ready_for_submit,
                            bool ready_for_get_block);
     void mark_activity();
-    void set_tritium_genesis(const std::vector<uint8_t>&);
+    void set_tritium_genesis(SessionGenesisHash genesis);
+    void set_tritium_genesis(const std::vector<uint8_t>& genesis);
     void set_keepalive_interval(uint16_t hours);
-    void set_keepalive_interval_seconds(uint32_t seconds);
     void set_prevblock_suffix(const std::array<uint8_t, 4>& suffix);
     void set_protocol_lane(ProtocolLane lane);
     void set_connection(std::shared_ptr<network::Connection> connection);
@@ -244,27 +265,35 @@ public:
     bool can_submit() const;
     bool can_submit_work() const;
     bool can_request_get_block() const;
+    bool session_requires_full_recovery() const;
+    bool session_may_request_work() const;
+    bool session_is_fully_mining_ready() const;
     bool allow_deferred_push_replay() const;
     bool allow_get_block_replay() const;
     bool reward_binding_required() const;
     RewardBindReadiness get_reward_bind_readiness() const;
     bool validate_miner_session(std::string* reason = nullptr) const;
     std::string build_miner_session_diagnostics() const;
-    uint32_t get_session_id() const;
-    uint64_t get_session_epoch() const;
+    SessionId get_session_id() const;
+    SessionEpoch get_session_epoch() const;
     uint64_t peek_runtime_state_generation() const noexcept;
     SessionState get_state() const;
     SessionInfo get_session_info() const;
     RuntimeSessionSnapshot get_runtime_snapshot() const;
     SessionIdentity get_canonical_identity() const;
+    SessionBinding get_session_binding() const;
     std::chrono::seconds get_session_uptime() const;
     std::vector<uint8_t> get_session_key() const;
+    SessionGenesisHash get_typed_tritium_genesis() const;
     std::vector<uint8_t> get_tritium_genesis() const;
     std::chrono::seconds get_time_until_keepalive() const { return std::chrono::seconds(0); }
     uint16_t get_keepalive_interval() const { return m_keepalive_interval_hours; }
+    std::chrono::seconds get_keepalive_timer_interval() const;
     uint16_t map_auth_opcode(uint8_t legacy_opcode) const;
 
-    // ── Keepalive ─────────────────────────────────────────────────────────────
+    // ── Session Keepalive ────────────────────────────────────────────────────
+    // Single keepalive system: SESSION_KEEPALIVE packets at node-derived interval.
+    // Early ping at +10s after auth, then every m_keepalive_interval_hours.
     void start_keepalive_timer();
     void stop_keepalive_timer();
     network::Shared_payload build_keepalive_packet() const;
@@ -292,8 +321,8 @@ public:
     void set_epoch_coordinator(std::shared_ptr<EpochCoordinator> coordinator);
 
 private:
-    void transition_to_authenticated_locked(uint32_t session_id,
-                                            const std::vector<uint8_t>& tritium_genesis);
+    void transition_to_authenticated_locked(SessionId session_id,
+                                            SessionGenesisHash tritium_genesis);
     void clear_runtime_session_locked(bool preserve_genesis, bool clear_prevblock_suffix);
     void update_replay_allowances_locked();
     void bump_runtime_state_generation_locked();
@@ -309,6 +338,13 @@ private:
     SessionInfo m_session;
     SessionIdentity m_canonical_identity;   // Frozen at auth time; cleared on disconnect/reauth
     std::deque<SessionEvent> m_session_event_journal;
+
+    // Bug 10 fix: Archive previous journal entries across re-auth instead of
+    // dropping them.  Preserves the failure/degradation events that triggered
+    // re-auth for post-mortem debugging.  Capped at MAX_ARCHIVED_EVENTS to
+    // prevent unbounded memory growth.
+    static constexpr size_t MAX_ARCHIVED_EVENTS = 64;
+    std::deque<SessionEvent> m_archived_event_journal;
 
     uint16_t m_keepalive_interval_hours{12};
     bool m_preserve_genesis_on_disconnect{true};

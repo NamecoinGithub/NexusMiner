@@ -113,8 +113,7 @@ static void test_push_handler_callback_values()
         ProtocolLane::LEGACY,
         nullptr,   // no template_interface
         nullptr,   // no height_tracker (not needed for this check)
-        update_fn,
-        []() -> bool { return true; }    // no-op request_work_fn
+        update_fn
     );
 
     print_test_result("callback invoked", callback_invoked);
@@ -149,7 +148,7 @@ static void test_height_tracker_updated_via_callback()
 
     handler.handle_push_notification(
         pkt, CHANNEL_PRIME, ProtocolLane::LEGACY,
-        nullptr, &tracker, update_fn, []() -> bool { return true; }
+        nullptr, &tracker, update_fn
     );
 
     auto snap = tracker.GetSnapshot();
@@ -188,8 +187,7 @@ static void test_channel_mismatch_refreshes_push_liveness_only()
     handler.handle_push_notification(
         pkt, CHANNEL_HASH, ProtocolLane::LEGACY,
         nullptr, &tracker,
-        [&](uint32_t, uint32_t, uint32_t) { callback_invoked = true; },
-        []() -> bool { return true; }
+        [&](uint32_t, uint32_t, uint32_t) { callback_invoked = true; }
     );
     auto after_push = std::chrono::steady_clock::now();
 
@@ -237,7 +235,7 @@ static void test_channel_manager_same_data_as_height_tracker()
 
     handler.handle_push_notification(
         pkt, CHANNEL_HASH, ProtocolLane::LEGACY,
-        nullptr, &tracker, update_fn, []() -> bool { return true; }
+        nullptr, &tracker, update_fn
     );
 
     auto snap = tracker.GetSnapshot();

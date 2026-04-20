@@ -34,9 +34,11 @@ public:
     //  Returns the local endpoint of the connection
     virtual Endpoint const& local_endpoint() const = 0;
 
-    //  Transmit payload on the connection
-    //  If the connection is in state connected, transmit() asynchronously initiates a transmission of the payload over this connection.
-    virtual void transmit(Shared_payload tx_buffer) = 0;
+    //  Transmit payload on the connection.
+    //  Returns true if the payload was accepted into the connection's TX path,
+    //  false if it was rejected locally (e.g. null/empty payload, closed
+    //  connection, missing socket/handler, or TX queue overflow).
+    virtual bool transmit(Shared_payload tx_buffer) = 0;
 
     // Closes the connection
     virtual void close() = 0;

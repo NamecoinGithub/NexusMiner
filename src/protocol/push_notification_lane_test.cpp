@@ -404,7 +404,7 @@ int main()
     std::cout << "\nTest 9: Unified-height-driven push handler decision logic" << std::endl;
     {
         struct HandlerDecision {
-            bool request_work_called{false};
+            bool push_processed{false};
             bool discard_template_called{false};
             bool recovery_triggered{false};
         };
@@ -431,8 +431,8 @@ int main()
                 d.discard_template_called = true;
             }
 
-            // Every PUSH means unified tip moved → ALWAYS request fresh template
-            d.request_work_called = true;
+            // Every same-channel PUSH is substantively processed (heights/state updated)
+            d.push_processed = true;
             return d;
         };
 
@@ -443,8 +443,8 @@ int main()
                                        /*has_hash=*/true, /*hash_matches=*/false,
                                        /*burst_grace_active=*/false,
                                        /*tip_moved=*/false);
-            print_test_result("Scenario A1: 1-block lag → request_work called",
-                d.request_work_called);
+            print_test_result("Scenario A1: 1-block lag → push processed",
+                d.push_processed);
             print_test_result("Scenario A2: 1-block lag → discard_template NOT called",
                 !d.discard_template_called);
             print_test_result("Scenario A3: 1-block lag → recovery NOT triggered (workers keep mining)",
@@ -458,8 +458,8 @@ int main()
                                        /*has_hash=*/true, /*hash_matches=*/false,
                                        /*burst_grace_active=*/false,
                                        /*tip_moved=*/false);
-            print_test_result("Scenario B1: 3-block lag → request_work called",
-                d.request_work_called);
+            print_test_result("Scenario B1: 3-block lag → push processed",
+                d.push_processed);
             print_test_result("Scenario B2: 3-block lag → discard_template NOT called",
                 !d.discard_template_called);
             print_test_result("Scenario B3: 3-block lag → recovery NOT triggered",
@@ -473,8 +473,8 @@ int main()
                                        /*has_hash=*/true, /*hash_matches=*/true,
                                        /*burst_grace_active=*/true,
                                        /*tip_moved=*/false);
-            print_test_result("Scenario C1: 2-block burst within grace → request_work called",
-                d.request_work_called);
+            print_test_result("Scenario C1: 2-block burst within grace → push processed",
+                d.push_processed);
             print_test_result("Scenario C2: 2-block burst within grace → discard_template NOT called",
                 !d.discard_template_called);
             print_test_result("Scenario C3: 2-block burst within grace → recovery NOT triggered",
@@ -488,8 +488,8 @@ int main()
                                        /*has_hash=*/true, /*hash_matches=*/true,
                                        /*burst_grace_active=*/false,
                                        /*tip_moved=*/false);
-            print_test_result("Scenario D1: 2-block lag after grace → request_work called",
-                d.request_work_called);
+            print_test_result("Scenario D1: 2-block lag after grace → push processed",
+                d.push_processed);
             print_test_result("Scenario D2: 2-block lag after grace → discard_template NOT called",
                 !d.discard_template_called);
             print_test_result("Scenario D3: 2-block lag after grace → recovery NOT triggered",
@@ -503,8 +503,8 @@ int main()
                                        /*has_hash=*/false, /*hash_matches=*/false,
                                        /*burst_grace_active=*/false,
                                        /*tip_moved=*/false);
-            print_test_result("Scenario E1: 2-block lag, compact payload → request_work called",
-                d.request_work_called);
+            print_test_result("Scenario E1: 2-block lag, compact payload → push processed",
+                d.push_processed);
             print_test_result("Scenario E2: 2-block lag, compact payload → discard NOT called",
                 !d.discard_template_called);
         }
@@ -518,8 +518,8 @@ int main()
                                        /*tip_moved=*/false);
             print_test_result("Scenario F1: Same-height tip replacement → discard_template called",
                 d.discard_template_called);
-            print_test_result("Scenario F2: Same-height tip replacement → request_work called",
-                d.request_work_called);
+            print_test_result("Scenario F2: Same-height tip replacement → push processed",
+                d.push_processed);
             print_test_result("Scenario F3: Same-height tip replacement → hard recovery NOT triggered",
                 !d.recovery_triggered);
         }
@@ -532,8 +532,8 @@ int main()
                                        /*has_hash=*/true, /*hash_matches=*/true,
                                        /*burst_grace_active=*/false,
                                        /*tip_moved=*/false);
-            print_test_result("Scenario G1: Healthy template → request_work called (PUSH = unified tip moved)",
-                d.request_work_called);
+            print_test_result("Scenario G1: Healthy template → push processed (heights/state updated)",
+                d.push_processed);
             print_test_result("Scenario G2: Healthy template → discard NOT called",
                 !d.discard_template_called);
         }
@@ -545,8 +545,8 @@ int main()
                                        /*has_hash=*/true, /*hash_matches=*/true,
                                        /*burst_grace_active=*/false,
                                        /*tip_moved=*/true);
-            print_test_result("Scenario H1: Tip moved → request_work called",
-                d.request_work_called);
+            print_test_result("Scenario H1: Tip moved → push processed",
+                d.push_processed);
             print_test_result("Scenario H2: Tip moved → discard_template NOT called",
                 !d.discard_template_called);
             print_test_result("Scenario H3: Tip moved → hard recovery NOT triggered",
@@ -604,21 +604,19 @@ int main()
 
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
-        bool request_work_called = false;
 
         network::Payload payload = create_extended_push_payload(5000, 100, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
 
-        handler.handle_push_notification(
+        bool push_processed = handler.handle_push_notification(
             packet,
             mining::CHANNEL_HASH,
             ProtocolLane::STATELESS,
             &tmpl_interface,
             &tracker,
-            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() -> bool { request_work_called = true; return true; });
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); });
 
-        print_test_result("Same-height tip replacement requests fresh work", request_work_called);
+        print_test_result("Same-height tip replacement: push substantively processed", push_processed);
         print_test_result("Same-height tip replacement discards active template", !tmpl_interface.has_valid_template());
     }
 
@@ -643,22 +641,20 @@ int main()
 
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
-        bool request_work_called = false;
 
         network::Payload payload = create_extended_push_payload(5049, 99, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
 
-        handler.handle_push_notification(
+        bool push_processed = handler.handle_push_notification(
             packet,
             mining::CHANNEL_HASH,
             ProtocolLane::STATELESS,
             &tmpl_interface,
             &tracker,
-            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() -> bool { request_work_called = true; return true; });
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); });
 
-        print_test_result("Out-of-order push requests work (every PUSH = unified tip moved)",
-            request_work_called);
+        print_test_result("Out-of-order push: push substantively processed (heights updated)",
+            push_processed);
         print_test_result("Out-of-order push keeps active template valid (no discard)",
             tmpl_interface.has_valid_template());
     }
@@ -671,25 +667,23 @@ int main()
         protocol::HeightTracker tracker;
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
-        bool request_work_called = false;
 
         network::Payload payload = create_extended_push_payload(7000, 100, 0x1d00ffff, 0x42);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
 
-        handler.handle_push_notification(
+        bool push_processed = handler.handle_push_notification(
             packet,
             mining::CHANNEL_HASH,
             ProtocolLane::STATELESS,
             nullptr,
             &tracker,
-            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() -> bool { request_work_called = true; return true; });
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); });
 
         protocol::MiningTemplateInterface stale_template(2, 0);
         stale_template.set_height_tracker(&tracker);
         auto stale_data = create_mock_template(7001, 0x1d00ffff, 2); // hashPrevBlock is all zeros
         auto stale_res = stale_template.read_template(stale_data, "test_node");
-        print_test_result("Extended push still requests initial work when no template exists", request_work_called);
+        print_test_result("Extended push still processes when no template exists", push_processed);
         print_test_result("Obsolete-on-arrival setup template validates structurally", stale_res.is_valid);
         stale_template.set_channel_height(101);
 
@@ -734,21 +728,19 @@ int main()
 
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
-        bool request_work_called = false;
 
         network::Payload payload = create_extended_push_payload(6002, 102, 0x1d00ffff, 0x00);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
 
-        handler.handle_push_notification(
+        bool push_processed = handler.handle_push_notification(
             packet,
             mining::CHANNEL_HASH,
             ProtocolLane::STATELESS,
             &tmpl_interface,
             &tracker,
-            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() -> bool { request_work_called = true; return true; });
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); });
 
-        print_test_result("2-block burst within grace requests fresh work", request_work_called);
+        print_test_result("2-block burst within grace: push substantively processed", push_processed);
         print_test_result("2-block burst within grace keeps active template valid", tmpl_interface.has_valid_template());
     }
 
@@ -769,21 +761,19 @@ int main()
 
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_HASH);
         protocol::PushNotificationHandler handler(logger, current_channel);
-        bool request_work_called = false;
 
         network::Payload payload = create_extended_push_payload(8002, 100, 0x1d00ffff, 0x00);
         Packet packet(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
 
-        handler.handle_push_notification(
+        bool push_processed = handler.handle_push_notification(
             packet,
             mining::CHANNEL_HASH,
             ProtocolLane::STATELESS,
             &tmpl_interface,
             &tracker,
-            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() -> bool { request_work_called = true; return true; });
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); });
 
-        print_test_result("Tip moved requests fresh work", request_work_called);
+        print_test_result("Tip moved: push substantively processed", push_processed);
         print_test_result("Tip moved keeps active template valid", tmpl_interface.has_valid_template());
     }
 
@@ -794,7 +784,7 @@ int main()
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
-        session_manager->start_session(0x12345678);
+        session_manager->start_session(protocol::SessionId(0x12345678u));
         session_manager->set_falcon_identity({0x01}, "push-lane-test-key", true);
         protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
         solo.set_protocol_lane(ProtocolLane::STATELESS);
@@ -823,7 +813,7 @@ int main()
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
-        session_manager->start_session(0x87654321);
+        session_manager->start_session(protocol::SessionId(0x87654321u));
         session_manager->set_falcon_identity({0x02}, "push-lane-test-key", true);
         protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
         solo.set_protocol_lane(ProtocolLane::STATELESS);
@@ -1021,7 +1011,7 @@ int main()
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
-        session_manager->start_session(0xAABBCCDD);
+        session_manager->start_session(protocol::SessionId(0xAABBCCDDu));
         session_manager->set_falcon_identity({0x21}, "get-round-fallback-test-key", true);
 
         protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
@@ -1089,7 +1079,7 @@ int main()
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
-        session_manager->start_session(0x13572468);
+        session_manager->start_session(protocol::SessionId(0x13572468u));
 
         protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_PRIME), nullptr, session_context);
         solo.set_protocol_lane(ProtocolLane::STATELESS);
@@ -1131,7 +1121,6 @@ int main()
 
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_PRIME);
         protocol::PushNotificationHandler handler(logger, current_channel);
-        bool request_work_called = false;
 
         // Hash block found: unified advances to 6650429, Prime channel stays at 2347879.
         // This PUSH arrives on the Hash channel (expected_channel=HASH), so it is
@@ -1145,12 +1134,9 @@ int main()
             ProtocolLane::STATELESS,
             &tmpl_interface,
             &tracker,
-            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&request_work_called]() -> bool { request_work_called = true; return true; });
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); });
 
-        print_test_result("Cross-channel Hash PUSH requests work for Prime miner (hashPrevBlock changed)",
-            request_work_called);
-        print_test_result("Cross-channel Hash PUSH returns true (work was requested)",
+        print_test_result("Cross-channel Hash PUSH returns true (tip advance)",
             work_requested_25);
         print_test_result("Cross-channel Hash PUSH keeps Prime template valid (no discard)",
             tmpl_interface.has_valid_template());
@@ -1158,7 +1144,7 @@ int main()
 
     // ====================================================================
     // Test 26: Cross-channel push with tip advance — update_height_fn called,
-    //          request_work_fn called, height state updated (Bug 1 regression)
+    //          height state updated, returns true (Bug 1 regression)
     // ====================================================================
     std::cout << "\nTest 26: Cross-channel tip advance updates height state via update_height_fn" << std::endl;
     {
@@ -1174,7 +1160,6 @@ int main()
         protocol::PushNotificationHandler handler(logger, current_channel);
 
         bool update_height_called = false;
-        bool request_work_called  = false;
         uint32_t updated_unified  = 0;
 
         // Hash block found: unified advances to 101
@@ -1191,14 +1176,11 @@ int main()
                 update_height_called = true;
                 updated_unified = u;
                 tracker.OnPushNotification(u, c, d);
-            },
-            [&]() -> bool { request_work_called = true; return true; });
+            });
 
         print_test_result("Cross-channel tip advance: update_height_fn called",
             update_height_called);
-        print_test_result("Cross-channel tip advance: request_work_fn called",
-            request_work_called);
-        print_test_result("Cross-channel tip advance: returns true (work was requested)",
+        print_test_result("Cross-channel tip advance: returns true (push substantively processed)",
             work_requested_26);
         print_test_result("Cross-channel tip advance: update_height_fn received correct unified height",
             updated_unified == 101);
@@ -1210,9 +1192,9 @@ int main()
 
     // ====================================================================
     // Test 27: Cross-channel push with same height (liveness) — update_height_fn
-    //          NOT called, request_work_fn NOT called (Bug 1 — dedup working)
+    //          NOT called, returns false (Bug 1 — dedup working)
     // ====================================================================
-    std::cout << "\nTest 27: Cross-channel liveness push (same height) does not call update_height_fn or request_work_fn" << std::endl;
+    std::cout << "\nTest 27: Cross-channel liveness push (same height) does not call update_height_fn and returns false" << std::endl;
     {
         protocol::HeightTracker tracker;
         // Seed canonical state so push at same height is treated as liveness
@@ -1222,7 +1204,6 @@ int main()
         protocol::PushNotificationHandler handler(logger, current_channel);
 
         bool update_height_called = false;
-        bool request_work_called  = false;
 
         // Liveness push: unified height is the same (100), no tip advance
         network::Payload payload = create_extended_push_payload(100, 50, 0x1d00ffff, 0x00);
@@ -1234,14 +1215,11 @@ int main()
             ProtocolLane::STATELESS,
             nullptr,
             &tracker,
-            [&](uint32_t, uint32_t, uint32_t) { update_height_called = true; },
-            [&]() -> bool { request_work_called = true; return true; });
+            [&](uint32_t, uint32_t, uint32_t) { update_height_called = true; });
 
         print_test_result("Liveness cross-channel push: update_height_fn NOT called",
             !update_height_called);
-        print_test_result("Liveness cross-channel push: request_work_fn NOT called",
-            !request_work_called);
-        print_test_result("Liveness cross-channel push: returns false (no work requested)",
+        print_test_result("Liveness cross-channel push: returns false (no state change)",
             !work_requested_27);
     }
 
@@ -1286,8 +1264,7 @@ int main()
             ProtocolLane::STATELESS,
             nullptr,
             &tracker,
-            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); },
-            [&]() -> bool { return true; });
+            [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); });
 
         // Verify the hash was stored in the diagnostic state
         auto diag = tracker.GetDiagnosticSnapshot();
@@ -1298,21 +1275,19 @@ int main()
 
     // ====================================================================
     // Test 29: Two sequential cross-channel pushes at same height — second
-    //          push does NOT call request_work_fn (dedup working after Bug 1 fix)
+    //          push returns false (dedup working after Bug 1 fix)
     // ====================================================================
-    std::cout << "\nTest 29: Two sequential cross-channel pushes at same height — second does NOT request work" << std::endl;
+    std::cout << "\nTest 29: Two sequential cross-channel pushes at same height — second returns false" << std::endl;
     {
         // After Bug 1 fix, update_height_fn is called on the first cross-channel push,
         // so HeightTracker records unified=101.  The second push at unified=101 must
-        // see snap.unified_height == notification_unified_height and skip request_work_fn.
+        // see snap.unified_height == notification_unified_height and return false.
         protocol::HeightTracker tracker;
         // Seed canonical state so cross-channel dedup works against canonical unified_height
         tracker.OnBlockDataReceived(100, 50, 0x1d00ffff, uint1024_t{});
 
         uint8_t current_channel = static_cast<uint8_t>(mining::CHANNEL_PRIME);
         protocol::PushNotificationHandler handler(logger, current_channel);
-
-        int request_work_count = 0;
 
         network::Payload payload = create_extended_push_payload(101, 50, 0x1d00ffff, 0x00);
         Packet pkt(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
@@ -1321,26 +1296,21 @@ int main()
             tracker.OnPushNotification(u, c, d);
             tracker.OnBlockDataReceived(u, c, d, uint1024_t{});
         };
-        auto request_fn    = [&request_work_count]() -> bool { request_work_count++; return true; };
 
-        // First push at unified=101: tip advance, request_work_fn called once
+        // First push at unified=101: tip advance, returns true
         bool work_29_first = handler.handle_push_notification(
             pkt, mining::CHANNEL_HASH, ProtocolLane::STATELESS,
-            nullptr, &tracker, update_fn, request_fn);
+            nullptr, &tracker, update_fn);
 
-        print_test_result("First cross-channel push at unified=101 calls request_work_fn",
-            request_work_count == 1);
-        print_test_result("First cross-channel push at unified=101 returns true",
+        print_test_result("First cross-channel push at unified=101 returns true (tip advance)",
             work_29_first);
 
-        // Second push at same unified=101: liveness only, no request_work_fn
+        // Second push at same unified=101: liveness only, returns false
         bool work_29_second = handler.handle_push_notification(
             pkt, mining::CHANNEL_HASH, ProtocolLane::STATELESS,
-            nullptr, &tracker, update_fn, request_fn);
+            nullptr, &tracker, update_fn);
 
-        print_test_result("Second cross-channel push at same unified=101 does NOT call request_work_fn",
-            request_work_count == 1);
-        print_test_result("Second cross-channel push at same unified=101 returns false",
+        print_test_result("Second cross-channel push at same unified=101 returns false (liveness only)",
             !work_29_second);
     }
 

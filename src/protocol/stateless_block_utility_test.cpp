@@ -279,11 +279,15 @@ static void test_encode_legacy_opcode() {
         *mti, blk, {}, nullptr, ProtocolLane::LEGACY, snap, nullptr);
 
     bool ok = false;
-    if (result.valid && result.wire_bytes && !result.wire_bytes->empty()) {
+    if (result.valid && result.wire_bytes && result.wire_bytes->size() >= 5) {
         const auto& w = *result.wire_bytes;
-        ok = (w[0] == 0x01);
+        ok = (w[0] == 0x01) &&
+             (w[1] == 0x00) &&
+             (w[2] == 0x00) &&
+             (w[3] == 0x00) &&
+             (w[4] == StatelessBlockUtility::BLOCK_BODY_SIZE);
     }
-    print_result("encode_submit(): LEGACY lane produces opcode 0x01", ok);
+    print_result("encode_submit(): LEGACY lane produces opcode+length header [0x01][0x000000D8]", ok);
 }
 
 // Test 9 -- encode_submit(): falcon=nullptr -> no signature suffix

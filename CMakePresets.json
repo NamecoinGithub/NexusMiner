@@ -9,7 +9,7 @@
     {
       "name": "debug",
       "displayName": "Debug",
-      "description": "Debug build with sanitizers",
+      "description": "Debug build with compile commands export",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {

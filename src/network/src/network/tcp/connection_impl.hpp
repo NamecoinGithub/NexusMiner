@@ -41,7 +41,7 @@ public:
     // Connection interface
     Endpoint const& remote_endpoint() const override { return m_remote_endpoint; }
     Endpoint const& local_endpoint() const override { return m_local_endpoint; }
-    void transmit(Shared_payload tx_buffer) override;
+    bool transmit(Shared_payload tx_buffer) override;
     void close() override;
     ProtocolLane get_protocol_lane() const override { return m_protocol_lane; }
 
@@ -57,8 +57,8 @@ private:
     void change(Result::Code code);
     void close_internal(Result::Code code);
 
-    // Maximum TX queue depth.  During burst blocks rapid transmit() calls can
-    // outpace async_write completions; drop the oldest payload when exceeded.
+    // Maximum TX queue depth. During burst blocks rapid transmit() calls can
+    // outpace async_write completions; when full, drop the newest payload.
     static constexpr std::size_t MAX_TX_QUEUE_SIZE = 64;
 
     std::shared_ptr<::asio::io_context> m_io_context;
@@ -118,6 +118,14 @@ Connection_impl<ProtocolDescriptionType>::initialise_socket()
     if (error) 
 	{
         return Result::error;
+    }
+
+    // Disable Nagle's algorithm — mining is latency-sensitive and LLP
+    // packets are small.  Nagle can add up to 40ms per small packet.
+    this->m_asio_socket->set_option(::asio::ip::tcp::no_delay(true), error);
+    if (error && m_logger)
+    {
+        m_logger->warn("[LLP] Failed to set TCP_NODELAY: {}", error.message());
     }
 
     this->m_asio_socket->bind(get_endpoint_base<Protocol_endpoint>(m_local_endpoint), error);
@@ -226,6 +234,16 @@ inline void Connection_impl<ProtocolDescriptionType>::receive()
                                            ((*receive_buffer)[length_offset + 1] << 16) + 
                                            ((*receive_buffer)[length_offset + 2] << 8) + 
                                            (*receive_buffer)[length_offset + 3];
+
+                                // Bounds-check: reject obviously oversized packets
+                                // (max reasonable LLP payload is ~4 MB for block data)
+                                static constexpr std::uint32_t MAX_LLP_PACKET_SIZE = 4u * 1024u * 1024u;
+                                if (pkt_length > MAX_LLP_PACKET_SIZE)
+                                {
+                                    self->m_logger->warn("[LLP RECV] Oversized packet length {} (max {}), skipping parse",
+                                        pkt_length, MAX_LLP_PACKET_SIZE);
+                                    break;
+                                }
                             }
                             
                             // Create data payload for hex preview
@@ -241,23 +259,24 @@ inline void Connection_impl<ProtocolDescriptionType>::receive()
                                 }
                             }
                             
-                            // Log with appropriate format
+                            // Log with appropriate format (debug level — payload hex
+                            // can be noisy and may expose sensitive data at info).
                             std::string hex_preview = format_llp_payload_hex(data_payload, 16);
                             if (is_stateless) {
                                 if (!hex_preview.empty()) {
-                                    self->m_logger->info("[LLP RECV] header=0x{:04x} {} length={} payload=[{}]", 
+                                    self->m_logger->debug("[LLP RECV] header=0x{:04x} {} length={} payload=[{}]", 
                                         header, get_llp_header_name(header), pkt_length, hex_preview);
                                 } else {
-                                    self->m_logger->info("[LLP RECV] header=0x{:04x} {} length={}", 
+                                    self->m_logger->debug("[LLP RECV] header=0x{:04x} {} length={}", 
                                         header, get_llp_header_name(header), pkt_length);
                                 }
                             } else {
                                 if (!hex_preview.empty()) {
-                                    self->m_logger->info("[LLP RECV] header=0x{:02x} {} length={} payload=[{}]", 
+                                    self->m_logger->debug("[LLP RECV] header=0x{:02x} {} length={} payload=[{}]", 
                                         static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)), 
                                         pkt_length, hex_preview);
                                 } else {
-                                    self->m_logger->info("[LLP RECV] header=0x{:02x} {} length={}", 
+                                    self->m_logger->debug("[LLP RECV] header=0x{:02x} {} length={}", 
                                         static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)), 
                                         pkt_length);
                                 }
@@ -397,7 +416,7 @@ inline void Connection_impl<ProtocolDescriptionType>::handle_accept(Connection::
 
 
 template<typename ProtocolDescriptionType>
-void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer)
+bool Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer)
 {
     // Early-return if connection handler is null (connection already closed/uninitialised)
     if (!m_connection_handler) 
@@ -406,7 +425,7 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
         {
             m_logger->warn("[LLP SEND] Cannot transmit - connection handler is null (connection closed/uninitialised)");
         }
-        return;
+        return false;
     }
     
     // Early-return if socket is null
@@ -416,7 +435,7 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
         {
             m_logger->error("[LLP SEND] Cannot transmit - socket is null");
         }
-        return;
+        return false;
     }
     
     // Early-return if buffer is null or empty (no header/payload to send)
@@ -426,7 +445,7 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
         {
             m_logger->error("[LLP SEND] Cannot transmit - payload is null or empty");
         }
-        return;
+        return false;
     }
     
     // TX queue overflow protection: during burst blocks rapid transmit() calls
@@ -439,10 +458,15 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
     {
         if (m_logger)
         {
-            m_logger->warn("[LLP SEND] TX queue full ({}/{}), dropping outgoing payload",
-                m_tx_queue.size(), MAX_TX_QUEUE_SIZE);
+            // Log the dropped payload size for shadow-ban diagnostics: if
+            // recovery logic floods the queue, GET_ROUND/SUBMIT_BLOCK packets
+            // are silently lost (PUSH is unaffected — uses node's TX queue).
+            m_logger->error("[LLP SEND] TX QUEUE OVERFLOW ({}/{}) — DROPPING outgoing payload "
+                "({} bytes). Recovery flooding may cause silent shadow ban!",
+                m_tx_queue.size(), MAX_TX_QUEUE_SIZE,
+                tx_buffer ? tx_buffer->size() : 0);
         }
-        return;
+        return false;
     }
 
     // Enqueue the payload and trigger transmission if queue was previously empty
@@ -452,6 +476,8 @@ void Connection_impl<ProtocolDescriptionType>::transmit(Shared_payload tx_buffer
     {
         transmit_trigger();
     }
+
+    return true;
 }
 
 template<typename ProtocolDescriptionType>
@@ -528,10 +554,10 @@ void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
             {
                 // Header-only packet
                 if (is_stateless) {
-                    m_logger->info("[LLP SEND] header=0x{:04x} {} length=0 (header-only)", 
+                    m_logger->debug("[LLP SEND] header=0x{:04x} {} length=0 (header-only)", 
                         header, get_llp_header_name(header));
                 } else {
-                    m_logger->info("[LLP SEND] header=0x{:02x} {} length=0 (header-only)", 
+                    m_logger->debug("[LLP SEND] header=0x{:02x} {} length=0 (header-only)", 
                         static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)));
                 }
             }
@@ -560,19 +586,19 @@ void Connection_impl<ProtocolDescriptionType>::transmit_trigger()
                 std::string hex_preview = format_llp_payload_hex(data_payload, 16);
                 if (is_stateless) {
                     if (!hex_preview.empty()) {
-                        m_logger->info("[LLP SEND] header=0x{:04x} {} length={} payload=[{}]", 
+                        m_logger->debug("[LLP SEND] header=0x{:04x} {} length={} payload=[{}]", 
                             header, get_llp_header_name(header), length, hex_preview);
                     } else {
-                        m_logger->info("[LLP SEND] header=0x{:04x} {} length={}", 
+                        m_logger->debug("[LLP SEND] header=0x{:04x} {} length={}", 
                             header, get_llp_header_name(header), length);
                     }
                 } else {
                     if (!hex_preview.empty()) {
-                        m_logger->info("[LLP SEND] header=0x{:02x} {} length={} payload=[{}]", 
+                        m_logger->debug("[LLP SEND] header=0x{:02x} {} length={} payload=[{}]", 
                             static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)), 
                             length, hex_preview);
                     } else {
-                        m_logger->info("[LLP SEND] header=0x{:02x} {} length={}", 
+                        m_logger->debug("[LLP SEND] header=0x{:02x} {} length={}", 
                             static_cast<uint8_t>(header), get_llp_header_name(static_cast<uint8_t>(header)), 
                             length);
                     }

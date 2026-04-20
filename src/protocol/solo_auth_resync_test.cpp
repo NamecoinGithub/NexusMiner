@@ -93,6 +93,7 @@ struct SimulatedSoloAuthGuard
     uint32_t m_session_id{0};
     uint64_t m_session_epoch{0};
     bool m_reward_bound{false};
+    bool m_ready_for_get_block{false};
     std::vector<unsigned char> m_chacha_key;
     uint32_t template_interface_session_id{0};
     uint64_t template_interface_session_epoch{0};
@@ -213,6 +214,7 @@ struct SimulatedSoloAuthGuard
             m_has_seen_session_epoch = true;
             m_auth_state = AuthState::AUTHENTICATED;
             m_auth_in_flight_since = {};
+            m_ready_for_get_block = false;
             clear_push_lifeline();
             if (m_session_id != 0) {
                 propagate_session_to_template_interface();
@@ -223,6 +225,7 @@ struct SimulatedSoloAuthGuard
         m_authenticated = false;
         m_auth_state = AuthState::NOT_AUTHENTICATED;
         m_auth_in_flight_since = {};
+        m_ready_for_get_block = false;
         m_pending_push_after_auth = false;
         clear_push_lifeline();
     }
@@ -298,7 +301,7 @@ struct SimulatedSoloAuthGuard
 
     bool flush_pending_push_after_auth()
     {
-        if (!m_pending_push_after_auth || !m_authenticated || !m_reward_bound) {
+        if (!m_pending_push_after_auth || !m_authenticated || !m_reward_bound || !m_ready_for_get_block) {
             return false;
         }
 
@@ -373,8 +376,8 @@ struct SimulatedSessionStatusAckHandler
     {
         const auto decision = nexusminer::protocol::SessionStatusPolicy::validate_ack({
             true,
-            local_session_id,
-            ack_session_id,
+            nexusminer::protocol::SessionId(local_session_id),
+            nexusminer::protocol::SessionId(ack_session_id),
             mismatch_count,
             nexusminer::protocol::ProtocolConstants::SESSION_MISMATCH_EXPIRE_THRESHOLD
         });
@@ -637,6 +640,7 @@ void test_push_during_handshake_is_queued_until_auth_completes()
     print_test_result("Push during handshake does not send GET_BLOCK early", guard.get_block_requests == 0);
 
     guard.handle_auth_result(true);
+    guard.m_ready_for_get_block = true;
     const bool flushed = guard.flush_pending_push_after_auth();
 
     print_test_result("Queued push flushes immediately after auth completes", flushed);
@@ -700,6 +704,7 @@ void test_push_triggered_reauth_queues_followup_get_block()
     print_test_result("Push-triggered re-auth requests exactly one re-auth", guard.reauth_requests == 1);
 
     guard.handle_auth_result(true);
+    guard.m_ready_for_get_block = true;
     const bool flushed = guard.flush_pending_push_after_auth();
 
     print_test_result("Queued GET_BLOCK flushes after re-auth completes", flushed);
@@ -725,6 +730,7 @@ void test_multiple_pushes_during_handshake_queue_single_followup_get_block()
     print_test_result("Multiple pushes during handshake do not send GET_BLOCK early", guard.get_block_requests == 0);
 
     guard.handle_auth_result(true);
+    guard.m_ready_for_get_block = true;
     const bool flushed = guard.flush_pending_push_after_auth();
 
     print_test_result("Queued follow-up flushes once after auth completes", flushed);
@@ -760,6 +766,7 @@ void test_queued_push_waits_for_reward_binding_before_flushing()
     guard.m_pending_push_after_auth = true;
     guard.m_authenticated = true;
     guard.m_reward_bound = false;
+    guard.m_ready_for_get_block = true;
 
     const bool flushed_before_binding = guard.flush_pending_push_after_auth();
 
@@ -773,6 +780,30 @@ void test_queued_push_waits_for_reward_binding_before_flushing()
     print_test_result("Queued push flushes once reward binding completes", flushed_after_binding);
     print_test_result("Queued push sends exactly one GET_BLOCK after reward binding", guard.get_block_requests == 1);
     print_test_result("Queued push clears after successful flush", !guard.m_pending_push_after_auth);
+}
+
+void test_queued_push_waits_for_channel_ready_before_flushing()
+{
+    std::cout << "\nTest 11b: queued push waits for channel readiness before flushing\n";
+
+    SimulatedSoloAuthGuard guard;
+    guard.m_pending_push_after_auth = true;
+    guard.m_authenticated = true;
+    guard.m_reward_bound = true;
+    guard.m_ready_for_get_block = false;
+
+    const bool flushed_before_channel_ready = guard.flush_pending_push_after_auth();
+
+    print_test_result("Queued push does not flush before channel readiness completes", !flushed_before_channel_ready);
+    print_test_result("Queued push stays queued until channel readiness completes", guard.m_pending_push_after_auth);
+    print_test_result("Queued push does not send GET_BLOCK before channel readiness", guard.get_block_requests == 0);
+
+    guard.m_ready_for_get_block = true;
+    const bool flushed_after_channel_ready = guard.flush_pending_push_after_auth();
+
+    print_test_result("Queued push flushes once channel readiness completes", flushed_after_channel_ready);
+    print_test_result("Queued push sends exactly one GET_BLOCK after channel readiness", guard.get_block_requests == 1);
+    print_test_result("Queued push clears after channel-ready flush", !guard.m_pending_push_after_auth);
 }
 
 void test_cached_session_state_logging_downgrades_expected_reconnect_resyncs()
@@ -990,6 +1021,7 @@ int main()
     test_multiple_pushes_during_handshake_queue_single_followup_get_block();
     test_multiple_pushes_during_auth_limbo_continue_driving_get_block();
     test_queued_push_waits_for_reward_binding_before_flushing();
+    test_queued_push_waits_for_channel_ready_before_flushing();
     test_cached_session_state_logging_downgrades_expected_reconnect_resyncs();
     test_submit_requires_authoritative_chacha20_key();
     test_block_accepted_consumes_snapshot_before_future_fallback();

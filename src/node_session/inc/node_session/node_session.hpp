@@ -16,6 +16,7 @@
 #include <string>
 #include <functional>
 #include <atomic>
+#include <chrono>
 #include <deque>
 
 namespace asio { class io_context; }
@@ -32,21 +33,21 @@ namespace stats { class Collector; }
 /**
  * @brief NodeSession — Unified Active Session Outer Wrapper
  *
- * NodeSession is the outer wrapper that owns both port connections (Stateless 9323
- * and Legacy 8323) to a single mining node. It presents a single authenticated
- * identity to Worker_manager regardless of which port is active.
+ * NodeSession is the outer wrapper for one configured mining-node session. It
+ * presents a single authenticated identity to Worker_manager on the lane selected
+ * by the configured endpoint instead of assuming a paired same-node opposite lane.
  *
  * Design Principles:
- * - Outer Wrapper, Not Protocol Replacement: Wraps two Solo protocol instances
- *   and one SessionManager. Does not replace any existing auth logic.
+ * - Outer Wrapper, Not Protocol Replacement: Wraps the active Solo protocol
+ *   path plus compatibility plumbing without replacing existing auth logic.
  * - OPCODE Firewall Preserved: Each Solo instance retains its ProtocolLane.
  *   Packet lane enforcement is never bypassed.
  * - Session ID is Node-Scoped: One Falcon handshake is performed. The resulting
- *   session_id is authoritative for that node.
+ *   session_id is authoritative for that node and lane.
  * - Simple Surface Area: Worker_manager calls connect(), transmit(),
  *   session_id(), is_authenticated().
- * - Failover Topology Correct: NodeSession primary = Node A, NodeSession
- *   secondary = Node B (optional).
+ * - Failover Topology Correct: Worker_manager chooses when to switch from
+ *   Node A to optional failover Node B; NodeSession itself stays lane-bound.
  */
 class NodeSession : public std::enable_shared_from_this<NodeSession>
 {
@@ -90,13 +91,20 @@ public:
      * @brief Session authenticated handler
      * @param session_id Session ID (0 if authentication failed)
      */
-    using Session_authenticated_handler = std::function<void(uint32_t session_id)>;
+    using Session_authenticated_handler = std::function<void(protocol::SessionId session_id)>;
 
     /**
      * @brief Session start handler
      * @param keepalive_hours Keepalive interval in hours
      */
     using Session_start_handler = std::function<void(uint16_t keepalive_hours)>;
+
+    /**
+     * @brief Work-ready handler
+     *
+     * Fired after the authoritative session container says outbound GET_BLOCK is allowed again.
+     */
+    using Work_ready_handler = std::function<void()>;
 
     /**
      * @brief Node shutdown handler: invoked when NODE_SHUTDOWN (0xD0FF) is received from node.
@@ -112,7 +120,7 @@ public:
      * @param config Configuration reference
      * @param socket Network socket for connections
      * @param stats_collector Statistics collector
-     * @param node_label Human-readable label for this node (e.g., "PRIMARY", "SECONDARY")
+     * @param node_label Human-readable label for this node (e.g., "PRIMARY", "FAILOVER")
      * @param dcm DualConnectionManager for tracking lane health (optional)
      */
     NodeSession(
@@ -124,9 +132,10 @@ public:
         DualConnectionManager* dcm = nullptr);
 
     /**
-     * @brief Connect to the node (both ports)
-     * @param node_endpoint Primary endpoint (typically stateless port 9323)
-     * @param callback Connection result callback
+     * @brief Connect to the configured node/lane
+     * @param node_endpoint Endpoint selected from config (legacy or stateless)
+     * @param callback Invoked only after the session is fully authenticated and
+     *        ready for session-bound mining flow
      * @return True if connection initiation succeeded
      */
     bool connect(const network::Endpoint& node_endpoint, Connection_callback callback);
@@ -134,7 +143,7 @@ public:
     /**
      * @brief Transmit data on the active connection
      * @param data Data to transmit
-     * @return True if transmission initiated successfully
+     * @return True if transmission was initiated on the configured active lane
      */
     bool transmit(network::Shared_payload data);
 
@@ -142,11 +151,11 @@ public:
      * @brief Get the session ID
      * @return Session ID (0 if not authenticated)
      */
-    uint32_t session_id() const;
+    protocol::SessionId session_id() const;
 
     /**
      * @brief Check if authenticated
-     * @return True if at least one connection is authenticated
+     * @return True if the configured session lane is authenticated
      */
     bool is_authenticated() const;
 
@@ -175,6 +184,9 @@ public:
 
     /**
      * @brief Reset the node session for reconnection
+     *
+     * Clears protocol/session state and closes any open lane sockets so the
+     * next connect() starts from a clean transport state.
      */
     void reset();
 
@@ -207,6 +219,12 @@ public:
      * @param handler Session authenticated callback
      */
     void set_session_authenticated_handler(Session_authenticated_handler handler);
+
+    /**
+     * @brief Set work-ready handler
+     * @param handler Work-ready callback
+     */
+    void set_work_ready_handler(Work_ready_handler handler);
 
     /**
      * @brief Set session start handler
@@ -252,11 +270,10 @@ public:
     std::shared_ptr<protocol::Solo> get_primary_protocol() const { return m_primary_protocol; }
 
     /**
-     * @brief Get the protocol instance matching the connection transmit() would use.
+     * @brief Get the protocol instance matching the active connection.
      *
-     * Mirrors transmit()'s primary→secondary fallback logic — including the
-     * m_primary_connection / m_secondary_connection presence checks — so that
-     * callers can build payloads with the correct lane framing.
+     * Mirrors transmit()'s active-lane selection so callers can build payloads
+     * with the correct lane framing.
      *
      * @return Protocol instance matching the active connection, or nullptr if none available
      */
@@ -270,7 +287,7 @@ public:
 
     /**
      * @brief Get the secondary protocol instance (for direct access if needed)
-     * @return Shared pointer to secondary Solo protocol (may be null)
+     * @return Shared pointer to reserved secondary-path Solo protocol (may be null)
      */
     std::shared_ptr<protocol::Solo> get_secondary_protocol() const { return m_secondary_protocol; }
 
@@ -304,11 +321,9 @@ public:
     /**
      * @brief Perform in-band re-authentication on the active connection.
      *
-     * Selects the protocol+connection pairing via select_active_pair(), calls
-     * login() on that protocol, and transmits the resulting auth payload on the
-     * matching connection.  This avoids the lane mismatch that occurs when
-     * callers use get_primary_protocol()->login() + transmit() separately,
-     * since transmit() may fall back to the secondary connection.
+     * Selects the configured primary protocol+connection pairing via
+     * select_active_pair(), calls login() on that protocol, and transmits the
+     * resulting auth payload on the matching connection.
      *
      * IMPORTANT: Solo::login() may return an empty payload if PacketBuilder::build()
      * fails without invoking the callback.  When this happens login_on_active_connection()
@@ -327,56 +342,71 @@ public:
     void set_epoch_coordinator(std::shared_ptr<protocol::EpochCoordinator> coordinator);
 
 private:
+    enum class LaneSlot {
+        Primary,
+        Secondary
+    };
+
+    struct LaneDescriptor {
+        LaneSlot slot;
+        const char* label;
+        network::Connection::Sptr* connection;
+        std::shared_ptr<protocol::Solo>* protocol;
+        std::atomic<bool>* connected;
+        ProtocolLane* requested_lane;
+    };
+
     /**
-     * @brief Select the active connection+protocol pair using the same logic as transmit().
+     * @brief Select the active connection+protocol pair used by transmit().
      *
-     * Returns {primary_connection, primary_protocol} if the primary lane is up, else
-     * {secondary_connection, secondary_protocol} if the secondary lane is up, else
-     * {nullptr, nullptr}.  All three guards (connection, protocol, connected flag) are
-     * checked atomically in one place so that transmit(), get_active_protocol(), and
-     * login_on_active_connection() can never diverge.
+     * Returns {primary_connection, primary_protocol} if the configured lane is
+     * up, else {nullptr, nullptr}. All three guards (connection, protocol,
+     * connected flag) are checked atomically in one place so that transmit(),
+     * get_active_protocol(), and login_on_active_connection() can never diverge.
      *
      * @return Pair of (connection, protocol); both are nullptr when no lane is active.
      */
     std::pair<network::Connection::Sptr, std::shared_ptr<protocol::Solo>> select_active_pair() const;
 
-    /**
-     * @brief Initialize primary connection (stateless port 9323)
-     * @param node_endpoint Node endpoint
-     * @param callback Connection callback
-     */
-    void connect_primary(const network::Endpoint& node_endpoint, Connection_callback callback);
+    LaneDescriptor lane(LaneSlot slot);
+    ProtocolLane resolve_lane(LaneSlot slot) const;
+    std::shared_ptr<protocol::Solo> ensure_protocol(LaneSlot slot);
+    void sync_protocol_state(LaneSlot slot);
+    void rewire_protocol_handlers();
+    void connect_lane(LaneSlot slot, const network::Endpoint& node_endpoint);
+    void handle_lane_event(LaneSlot slot, network::Result::Code result, network::Shared_payload&& receive_buffer);
+    void finalize_lane_connection(LaneSlot slot, bool deferred);
+    void apply_protocol_handlers(LaneSlot slot);
+    void mark_lane_socket_connected(LaneSlot slot);
+    void mark_lane_socket_failed(LaneSlot slot);
+    void mark_lane_authenticated(LaneSlot slot, protocol::SessionId sid);
+    bool begin_lane_authentication(LaneSlot slot);
+    void complete_pending_connect(bool success);
+    void mark_all_lanes_down(const char* reason);
 
     /**
-     * @brief Initialize secondary connection (legacy port 8323)
-     * @param node_endpoint Node endpoint (port will be adjusted to 8323)
+     * @brief Initialize the configured primary connection lane
+     * @param node_endpoint Node endpoint
+     */
+    void connect_primary(const network::Endpoint& node_endpoint);
+
+    /**
+     * @brief Initialize the secondary connection lane
+     * @param node_endpoint Explicit secondary-node endpoint (if ever used)
      */
     void connect_secondary(const network::Endpoint& node_endpoint);
 
     /**
-     * @brief Process data received on primary connection
-     * @param receive_buffer Received data
+     * @brief Process data received on a lane connection (primary or secondary)
+     *
+     * Unified RX processing: accumulates bytes, extracts framed packets using
+     * the connection's protocol lane, applies one-byte resync on malformed frames,
+     * and dispatches to the lane's Solo protocol instance.
+     *
+     * @param slot  Which lane (Primary or Secondary)
+     * @param receive_buffer  Received data
      */
-    void process_primary_data(network::Shared_payload&& receive_buffer);
-
-    /**
-     * @brief Process data received on secondary connection
-     * @param receive_buffer Received data
-     */
-    void process_secondary_data(network::Shared_payload&& receive_buffer);
-
-    /**
-     * @brief Handle primary connection result
-     * @param result Connection result
-     * @param callback User callback
-     */
-    void handle_primary_connection_result(network::Result::Code result, Connection_callback callback);
-
-    /**
-     * @brief Handle secondary connection result
-     * @param result Connection result
-     */
-    void handle_secondary_connection_result(network::Result::Code result);
+    void process_lane_data(LaneSlot slot, network::Shared_payload&& receive_buffer);
 
     // Core components
     std::shared_ptr<asio::io_context> m_io_context;
@@ -387,14 +417,14 @@ private:
     std::string m_node_label;
 
     // Connections
-    network::Connection::Sptr m_primary_connection;    // Stateless port (9323)
-    network::Connection::Sptr m_secondary_connection;  // Legacy port (8323)
+    network::Connection::Sptr m_primary_connection;    // Configured mining lane/session
+    network::Connection::Sptr m_secondary_connection;  // Reserved for explicit secondary-node use only
 
     // Protocol instances
     std::shared_ptr<protocol::Solo> m_primary_protocol;
-    std::shared_ptr<protocol::Solo> m_secondary_protocol;
+    std::shared_ptr<protocol::Solo> m_secondary_protocol; // Reserved for explicit secondary-node use only
 
-    // Session management (shared across both ports) - AUTHORITATIVE source for session state
+    // Session management - AUTHORITATIVE source for session state
     std::shared_ptr<protocol::NodeSessionContext> m_session_context;
 
     // Receive accumulators for TCP stream reassembly
@@ -407,6 +437,7 @@ private:
     Recovery_handler m_recovery_handler;
     Session_expired_handler m_session_expired_handler;
     Session_authenticated_handler m_session_authenticated_handler;
+    Work_ready_handler m_work_ready_handler;
     Session_start_handler m_session_start_handler;
     Node_shutdown_handler m_node_shutdown_handler;
 
@@ -416,6 +447,9 @@ private:
     std::string m_reward_address;
     std::vector<uint8_t> m_tritium_genesis;
     uint16_t m_keepalive_interval_hours{24};
+    Connection_callback m_pending_connect_callback;
+    ProtocolLane m_primary_requested_lane{ProtocolLane::UNKNOWN};
+    ProtocolLane m_secondary_requested_lane{ProtocolLane::UNKNOWN};
 
     // State flags
     std::atomic<bool> m_primary_connected{false};
@@ -424,6 +458,15 @@ private:
 
     // Lane health tracking
     DualConnectionManager* m_dcm{nullptr};
+
+    // Post-accept zero-pad window: after a BLOCK_ACCEPTED/BLOCK_REJECTED parse the
+    // node (LLL-TAO commit 206d1a2c) emits a 6-byte framed packet; Fix A routes these
+    // through the compat parser so no orphan bytes remain.  This state machine is the
+    // belt-and-braces safety net: if a future or older node build ever leaves zero
+    // padding in the RX accumulator, the MALFORMED logs are demoted to DEBUG instead
+    // of ERROR/WARN, since the bytes are harmless.
+    std::chrono::steady_clock::time_point m_last_block_result_parsed_at{};
+    static constexpr std::chrono::milliseconds POST_ACCEPT_ZERO_PAD_WINDOW{10};
 };
 
 } // namespace nexusminer

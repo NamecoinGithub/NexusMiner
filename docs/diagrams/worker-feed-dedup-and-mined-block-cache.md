@@ -123,9 +123,9 @@ Layered architecture showing all four defense layers stacked vertically.
 
 ```mermaid
 flowchart TB
-    subgraph L4["Layer 4 — Node sends dual push (race source)"]
+    subgraph L4["Layer 4 — Historical / compatibility dual-feed race source"]
         N1[SendChannelNotification — primary lane]
-        N2[GET_BLOCK response — secondary lane]
+        N2[GET_BLOCK response — optional secondary compatibility path]
     end
 
     subgraph L3["Layer 3 — Worker-feed dedup guard (miner side)"]

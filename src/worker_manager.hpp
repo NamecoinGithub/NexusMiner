@@ -42,6 +42,7 @@ class ColinAgent;
 enum class RecoveryPhase : uint8_t {
     HEALTHY,          // Mining normally
     WAITING_TEMPLATE, // Waiting for new template; workers keep running
+    SESSION_RECOVERY, // Authoritative session restoration / re-auth in progress
     RECONNECTING,     // TCP reconnect in progress
     DEGRADED_MODE,    // Terminal full-stop (signal-driven shutdown path)
 };
@@ -52,6 +53,11 @@ struct RecoveryContext {
     // to avoid data races without adding mutex overhead that could block
     // recovery paths.
     std::atomic<RecoveryPhase> phase{RecoveryPhase::HEALTHY};
+
+    // Tracks the authoritative session-restoration window.  Used so
+    // SESSION_EXPIRED can preempt template-only recovery but still avoid
+    // re-entrance while full session restoration is already underway.
+    std::atomic<bool> recovery_in_progress{false};
 
     std::chrono::steady_clock::time_point entered_at{};            // When current epoch (recovery start) began
     std::chrono::steady_clock::time_point degraded_since{};        // When current outage started (set once per outage)
@@ -94,6 +100,7 @@ public:
     // Fetches the current connection and protocol from NodeSession, avoiding
     // stale weak_ptr captures that killed the timer after reconnection.
     void poll_get_round();
+    void collect_worker_statistics();
 
     /// Session generation: monotonically increasing counter that increments on
     /// every session transition.  Timer callbacks capture this at entry to detect
@@ -145,8 +152,8 @@ private:
     ///  - retry_template_request(GetBlockReason) (health monitor or validation failure path).
     void mark_recovery_initiated(const char* reason);
 
-    /// Mark that a soft refresh is now in progress.
-    /// Both soft refresh and hard recovery now map to WAITING_TEMPLATE.
+    /// Mark that a template-only refresh is now in progress.
+    /// WAITING_TEMPLATE is reserved for "session alive, waiting for fresh work".
     /// Workers keep running; no submissions are withheld in the current model.
     void mark_soft_refresh_requested(const char* reason);
 
@@ -155,7 +162,7 @@ private:
     /// guard from check_template_health() when a valid template exists but is_degraded() is set.
     void clear_recovery_state();
 
-    void retry_connect(network::Endpoint const& wallet_endpoint);
+    void retry_connect(network::Endpoint const& wallet_endpoint, bool force_transport_reset = false);
 
     // ── State machine transition API ───────────────────────────────────────────
     /// Transition to a new RecoveryPhase.  Logs the transition, validates legality
@@ -166,11 +173,22 @@ private:
     void on_phase_enter(RecoveryPhase phase);
     void on_phase_exit(RecoveryPhase phase);
     static const char* phase_name(RecoveryPhase phase);
+    bool should_reset_stats_on_recovery_completion() const;
+    void mark_recovery_completion_kind_template_refresh();
+
+    enum class RecoveryCompletionKind : uint8_t {
+        NONE,
+        TEMPLATE_REFRESH,
+        PRIMARY_SESSION_REAUTH,
+        TRANSPORT_RECONNECT,
+        FAILOVER_SESSION
+    };
 
     // ── State query helpers (backward-compat convenience) ─────────────────────
     bool is_degraded()              const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::WAITING_TEMPLATE; }
     bool is_submissions_withheld()  const { return false; }  // Backward-compat stub — no submission withholding in current model
     bool is_recovery_active()       const { return m_recovery.phase.load(std::memory_order_relaxed) != RecoveryPhase::HEALTHY; }
+    bool is_session_recovery()      const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::SESSION_RECOVERY; }
     bool is_reconnecting()          const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::RECONNECTING; }
 
     /// Submit a found block via primary NodeSession (handles dual-lane submission internally).
@@ -206,6 +224,14 @@ private:
     uint64_t m_degraded_enter_total{0};
     uint64_t m_degraded_exit_total{0};
     uint64_t m_time_in_degraded_ms{0};
+
+    // Bug 5 fix: Track last GET_BLOCK request time to prevent burst duplicate
+    // requests from forced retry timer (100-250ms) and health monitor (5s cycle)
+    // both firing within the same short window.
+    std::chrono::steady_clock::time_point m_last_get_block_request_time{};
+
+    // Session health summary log: throttled to once per 60s
+    std::chrono::steady_clock::time_point m_last_session_health_log{};
 
     // Connection retry state for exponential backoff
     uint32_t m_connection_retry_count{0};
@@ -263,8 +289,8 @@ private:
     std::vector<std::shared_ptr<stats::Printer>> m_stats_printers;
     std::vector<std::shared_ptr<Worker>> m_workers;
 
-    // ── SIM Link and diagnostic tools ─────────────────────────────────────────
-    DualConnectionManager m_sim_link;  // Lane state bookkeeper
+    // ── Lane Health Monitor and diagnostic tools ────────────────────────────
+    DualConnectionManager m_sim_link;  // Lane state bookkeeper (SIM Link removed; lane monitor only)
     std::shared_ptr<ColinAgent> m_colin_agent;  // Diagnostic agent (started after first connect)
 
     // Time of the most recent SESSION_STATUS sent on any lane.
@@ -307,6 +333,7 @@ private:
     // degraded-mode guard; checked before every subsequent creation attempt.
     // Reset in stop_all_workers() and clear_recovery_state().
     bool m_recovery_workers_spawned{false};
+    RecoveryCompletionKind m_pending_recovery_completion_kind{RecoveryCompletionKind::NONE};
 
     // ── Three-tier mined-block confirmation cache ────────────────────────────
     // Tier 1: last 5 mined blocks (confirmation tracking active)

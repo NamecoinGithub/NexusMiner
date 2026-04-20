@@ -17,6 +17,7 @@
 #include "protocol/get_block_dedup_guard.hpp"
 #include "protocol/hash_checkpoint_guard.hpp"
 #include "protocol/merkle_root_feed_guard.hpp"
+#include "protocol/packet_router.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "LLP/colin_ping_handler.h"
@@ -171,7 +172,7 @@ public:
     // Sends SESSION_KEEPALIVE via SessionManager (8-byte v2 payload: session_id + prevhash_lo32).
     // Node replies with the 32-byte unified KeepAliveV2AckFrame carrying all channel heights.
     network::Shared_payload send_session_keepalive();
-    std::uint32_t get_session_id() const;
+    SessionId get_session_id() const;
     bool is_session_active() const;
 
     // Build a SESSION_STATUS packet for transmission on this lane.
@@ -191,7 +192,7 @@ public:
     void set_reward_address(std::string const& address);
     bool has_reward_address() const { return !m_reward_address.empty(); }
     bool is_reward_bound() const {
-        return m_session_context ? m_session_context->get_runtime_snapshot().reward_bound : m_reward_bound;
+        return m_session_context ? m_session_context->get_session_binding().reward_bound : m_reward_bound;
     }
     network::Shared_payload send_set_reward();
     
@@ -238,8 +239,12 @@ public:
     // Session-authenticated callback: called after MINER_AUTH_RESULT is fully processed and session_id is set.
     // Worker_manager registers this to check session_id=0 and trigger retry if needed.
     // Parameter: session_id (0 if node rejected authentication).
-    using Session_authenticated_handler = std::function<void(uint32_t session_id)>;
+    using Session_authenticated_handler = std::function<void(SessionId session_id)>;
     void set_session_authenticated_handler(Session_authenticated_handler h) { m_session_authenticated_handler = std::move(h); }
+
+    // Work-ready callback: called once the authoritative session container says GET_BLOCK may resume.
+    using Work_ready_handler = std::function<void()>;
+    void set_work_ready_handler(Work_ready_handler h) { m_work_ready_handler = std::move(h); }
 
     // Session-start callback: called when SESSION_START is received and keepalive interval
     // has been auto-adjusted from the node-advertised timeout.
@@ -250,6 +255,20 @@ public:
     // Block-result counters (Gap 3)
     uint32_t get_blocks_accepted() const { return m_blocks_accepted.load(); }
     uint32_t get_blocks_rejected() const { return m_blocks_rejected.load(); }
+
+    // Shadow-ban telemetry: consecutive unanswered GET_ROUNDs and preflight rejections
+    uint32_t get_unanswered_get_round_count() const { return m_unanswered_get_round_count.load(std::memory_order_acquire); }
+    uint32_t get_preflight_reject_count() const { return m_preflight_reject_count; }
+
+    // Returns the time of the earliest still-unanswered GET_ROUND, or the default
+    // time_point{} if no unanswered GET_ROUNDs are outstanding.
+    std::chrono::steady_clock::time_point get_earliest_unanswered_get_round_at() const {
+        return m_earliest_unanswered_get_round_at;
+    }
+
+    /// Call ONLY after a GET_ROUND packet has been successfully handed to transmit().
+    /// Increments the unanswered counter that feeds shadow-ban detection.
+    void note_get_round_transmitted();
 
     // Block-result callback: invoked on BLOCK_ACCEPTED with (height, hashPrevBlock, channel, nonce).
     // Worker_manager registers this to record accepted blocks in the mined-block cache.
@@ -327,11 +346,11 @@ private:
     // Session ID mismatch check — shared by KEEPALIVE_V2_ACK and SESSION_STATUS_ACK handlers.
     // Returns true if a mismatch was detected (state set to EXPIRED, handler called);
     // caller must return immediately when true is returned.
-    bool handle_session_id_mismatch(uint32_t ack_session_id);
+    bool handle_session_id_mismatch(SessionId ack_session_id);
 
     // Session expired handler — called when SESSION_EXPIRED (0xDD / 0xD0DD) packet is received
     // Implements 5-step response: log, clear state, stop workers, prepare for re-auth
-    void handle_session_expired(uint32_t expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection);
+    void handle_session_expired(SessionId expired_sid, uint8_t reason, std::shared_ptr<network::Connection> connection);
 
     // Challenge-response authentication methods
     void handle_miner_auth_challenge(const Packet& packet);
@@ -361,7 +380,7 @@ private:
     void log_session_container_summary(const char* log_scope) const;
     struct PacketIngressPreflightOptions {
         const SessionOwnershipStamp* owner{nullptr};
-        uint32_t packet_session_id{0};
+        SessionId packet_session_id{};
         bool allow_without_active_session{false};
         bool validate_lane{false};
         bool require_crypto_ready{false};
@@ -382,7 +401,7 @@ private:
     static const PacketIngressPreflightOptions kDefaultPacketIngressPreflightOptions;
     bool run_packet_ingress_preflight(
         const char* log_scope,
-        const PacketIngressPreflightOptions& options = kDefaultPacketIngressPreflightOptions) const;
+        const PacketIngressPreflightOptions& options = kDefaultPacketIngressPreflightOptions);
     bool ensure_session_ready_for_ingress(const char* log_scope,
                                           const char* packet_name,
                                           bool queue_post_auth_get_block);
@@ -472,6 +491,9 @@ private:
     static bool matches_stateless_opcode(Packet const& packet, uint16_t legacy_opcode);
     static bool requires_active_session_packet(Packet const& packet);
 
+    /// Register all packet handlers with m_packet_router (called once from constructor).
+    void register_packet_handlers();
+
     // Called from process_messages() after the lane/validity guards pass
     void on_miner_auth_response(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_session_expired(Packet const& packet, std::shared_ptr<network::Connection> connection);
@@ -504,8 +526,8 @@ private:
     std::vector<uint8_t> m_miner_pubkey;
     std::vector<uint8_t> m_miner_privkey;
     bool m_authenticated;
-    std::uint32_t m_session_id;
-    uint64_t m_session_epoch{0};
+    SessionId m_session_id;
+    SessionEpoch m_session_epoch{};
     bool m_has_seen_session_epoch{false};
     uint64_t m_cached_runtime_state_generation{0};
     SessionIdentity m_cached_identity{};  // Cached canonical identity from SessionManager
@@ -522,6 +544,28 @@ private:
     // self-expired once this reaches SESSION_MISMATCH_EXPIRE_THRESHOLD,
     // preventing premature expiry on late/replayed ACKs or node-side races.
     uint32_t m_session_id_mismatch_count{0};
+
+    // ── Shadow-ban detection ────────────────────────────────────────────────
+    // Counts consecutive packet-ingress preflight rejections for response
+    // packets (GET_ROUND replies, BLOCK_ACCEPTED/REJECTED, keepalive ACK).
+    // When the counter reaches SHADOW_BAN_PREFLIGHT_THRESHOLD the miner
+    // forces a full re-auth to break out of the "shadow ban" state where
+    // PUSH still arrives but all miner-initiated round-trips are silently
+    // dropped by the miner's own preflight logic.
+    uint32_t m_preflight_reject_count{0};
+    static constexpr uint32_t SHADOW_BAN_PREFLIGHT_THRESHOLD = 5;
+
+    // Unanswered GET_ROUND counter: incremented ONLY after a GET_ROUND packet has
+    // been successfully handed to transmit() (via note_get_round_transmitted()).
+    // Reset to zero when a NEW_ROUND / OLD_ROUND response is processed.
+    // std::atomic because Worker_manager reads via get_unanswered_get_round_count()
+    // from its own thread while Solo modifies it on the io_context thread.
+    std::atomic<uint32_t> m_unanswered_get_round_count{0};
+    // Time of the earliest GET_ROUND that is still unanswered (set by
+    // note_get_round_transmitted() when the counter goes from 0→1; cleared on reset).
+    std::chrono::steady_clock::time_point m_earliest_unanswered_get_round_at{};
+    // Time of the most recent successfully-transmitted GET_ROUND.
+    std::chrono::steady_clock::time_point m_last_get_round_transmitted_at{};
 
     // Consecutive hashPrevBlock mismatch counter (chain-in-flux doom-loop guard).
     // Incremented each time validate_current_template() detects a hashPrevBlock mismatch
@@ -614,6 +658,7 @@ private:
     // Session-authenticated callback — invoked after MINER_AUTH_RESULT processing is complete.
     // Worker_manager uses this to check session_id=0 and trigger retry if needed.
     Session_authenticated_handler m_session_authenticated_handler;
+    Work_ready_handler m_work_ready_handler;
 
     // Session-start callback — invoked when SESSION_START is received and keepalive interval
     // has been auto-adjusted from the node-advertised timeout.
@@ -730,6 +775,10 @@ private:
     GetBlockDedupGuard m_dedup_guard;
     std::atomic<GetBlockRequestStatus> m_last_get_block_request_status{GetBlockRequestStatus::NONE};
 
+    // ── Packet dispatch router ──────────────────────────────────────────────
+    // Table-driven dispatch replacing the if/else-if chain in process_messages().
+    PacketRouter m_packet_router;
+
     // ── In-flight GET_BLOCK awareness (cross-handler dedup tier) ────────────
     // Bridges the gap between PUSH and GET_ROUND handlers: when PUSH sends a
     // GET_BLOCK, the pending state tells GET_ROUND (arriving 0.5-3s later) that
@@ -784,16 +833,22 @@ private:
     PendingGetBlock m_pending_get_block;
 
 public:
-    /// Mark a GET_BLOCK request as in-flight using the current height-tracker snapshot.
-    /// Must be called immediately after the GET_BLOCK payload has been successfully
-    /// handed to Connection::transmit() (fire-and-forget) so that the cross-handler
-    /// dedup guard knows a response is already expected.
+    /// Mark a GET_BLOCK request as successfully transmitted using the current
+    /// height-tracker snapshot. Must be called immediately after the payload has
+    /// been accepted by Connection::transmit() so dedup/pending state only moves
+    /// forward on confirmed outbound progress.
     void mark_get_block_pending(GetBlockReason reason);
 
     /// Clear the in-flight GET_BLOCK marker (exposed for testing / forced reset).
     void clear_get_block_pending() { m_pending_get_block.clear(); }
 
 private:
+    bool queue_payload(const std::shared_ptr<network::Connection>& connection,
+                       const network::Shared_payload& payload,
+                       const char* context);
+    bool request_and_queue_get_block(const std::shared_ptr<network::Connection>& connection,
+                                     GetBlockReason reason,
+                                     const char* context);
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION

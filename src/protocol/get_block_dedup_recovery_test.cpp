@@ -66,10 +66,9 @@ public:
         , m_get_block_call_count(0)
     {}
 
-    // Simulates Solo::get_work() with deduplication logic.
-    // Uses GetBlockReason (mirrors the real Solo::get_work(GetBlockReason)) instead
-    // of the old bool bypass_dedup parameter.
-    network::Shared_payload get_work(GetBlockReason reason = GetBlockReason::INITIAL_REQUEST) {
+    // Simulates Solo::get_work() payload generation without stamping dedup state.
+    // The request becomes "sent" only after transmit_built_payload(true).
+    network::Shared_payload build_work(GetBlockReason reason = GetBlockReason::INITIAL_REQUEST) {
         m_get_block_call_count++;
 
         if (!m_authenticated || !m_reward_bound) {
@@ -92,13 +91,22 @@ public:
         }
 
         // Build GET_BLOCK packet
-        auto payload = PacketBuilder::build(m_protocol_lane, nexusminer::LLP::GET_BLOCK);
+        return PacketBuilder::build(m_protocol_lane, nexusminer::LLP::GET_BLOCK);
+    }
 
-        if (payload && !payload->empty()) {
-            m_last_get_block_transmitted_tp = now_tp;
-            std::cout << "    [Transmitted] GET_BLOCK sent successfully\n";
+    bool transmit_built_payload(const network::Shared_payload& payload, bool transmit_ok = true) {
+        if (!payload || payload->empty() || !transmit_ok) {
+            return false;
         }
+        m_last_get_block_transmitted_tp = std::chrono::steady_clock::now();
+        std::cout << "    [Transmitted] GET_BLOCK sent successfully\n";
+        return true;
+    }
 
+    // Convenience wrapper for the common build+successful-transmit path.
+    network::Shared_payload get_work(GetBlockReason reason = GetBlockReason::INITIAL_REQUEST) {
+        auto payload = build_work(reason);
+        transmit_built_payload(payload, true);
         return payload;
     }
 
@@ -259,6 +267,54 @@ void test_multiple_rapid_requests() {
 }
 
 // ============================================================================
+// Test 3b: Failed transmit must not stamp GET_BLOCK dedup state
+// ============================================================================
+void test_failed_transmit_does_not_stamp_dedup()
+{
+    std::cout << "\nTest 3b: failed transmit does not stamp GET_BLOCK dedup state\n";
+
+    GetBlockDeduplicator dedup;
+    auto payload = dedup.build_work(GetBlockReason::VALIDATION_FAILURE);
+    bool built = (payload != nullptr && !payload->empty());
+    bool transmit_failed = !dedup.transmit_built_payload(payload, false);
+    bool unstamped = (dedup.get_last_transmitted_tp() == std::chrono::steady_clock::time_point{});
+
+    auto retry_payload = dedup.build_work(GetBlockReason::VALIDATION_FAILURE);
+    bool retry_allowed = (retry_payload != nullptr && !retry_payload->empty());
+
+    print_test_result("Failed transmit leaves dedup timestamp unset",
+                      built && transmit_failed && unstamped && retry_allowed);
+}
+
+// ============================================================================
+// Test 3c: GET_ROUND handler should only mark "sent in handler" after queue success
+// ============================================================================
+void test_handler_send_flag_requires_successful_queue()
+{
+    std::cout << "\nTest 3c: GET_ROUND handler send flag requires successful queue\n";
+
+    GetBlockDeduplicator dedup;
+    bool sent_in_handler = false;
+
+    auto payload = dedup.build_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
+    bool first_built = (payload != nullptr && !payload->empty());
+    if (first_built && dedup.transmit_built_payload(payload, false)) {
+        sent_in_handler = true;
+    }
+    bool clear_after_failure = !sent_in_handler;
+
+    auto retry_payload = dedup.build_work(GetBlockReason::GET_ROUND_NO_TEMPLATE);
+    bool retry_built = (retry_payload != nullptr && !retry_payload->empty());
+    bool retry_sent = dedup.transmit_built_payload(retry_payload, true);
+    if (retry_sent) {
+        sent_in_handler = true;
+    }
+
+    print_test_result("Failed queue leaves handler send flag clear for retry",
+                      first_built && clear_after_failure && retry_built && retry_sent && sent_in_handler);
+}
+
+// ============================================================================
 // Test 4: GET_BLOCK deduplication across push handler and Worker_manager
 // ============================================================================
 void test_dedup_across_callers() {
@@ -354,11 +410,17 @@ void test_packet_format() {
 
     bool valid_payload = (payload != nullptr && !payload->empty());
 
-    // Stateless GET_BLOCK should be 2 bytes: [0xD0][0x81]
-    bool correct_size = valid_payload && (payload->size() == 2);
+    // Stateless GET_BLOCK should be a 6-byte zero-length frame:
+    // [0xD0][0x81][0x00][0x00][0x00][0x00]
+    bool correct_size = valid_payload && (payload->size() == 6);
     bool correct_header = correct_size &&
-                         ((*payload)[0] == 0xD0) &&
-                         ((*payload)[1] == 0x81);
+                          ((*payload)[0] == 0xD0) &&
+                          ((*payload)[1] == 0x81);
+    bool correct_length = correct_size &&
+                          ((*payload)[2] == 0x00) &&
+                          ((*payload)[3] == 0x00) &&
+                          ((*payload)[4] == 0x00) &&
+                          ((*payload)[5] == 0x00);
 
     if (valid_payload) {
         std::cout << "    [Packet] Size: " << payload->size() << " bytes\n";
@@ -369,7 +431,7 @@ void test_packet_format() {
         std::cout << "\n";
     }
 
-    bool passed = valid_payload && correct_size && correct_header;
+    bool passed = valid_payload && correct_size && correct_header && correct_length;
     print_test_result("GET_BLOCK packet format correct", passed);
 }
 
@@ -711,9 +773,10 @@ void test_cross_channel_unified_advance_resets_dedup() {
 //   1. bypass_all:    RECOVERY_FORCED, RECOVERY_TIMER, HEALTH_NO_TEMPLATE → skip everything
 //   2. bypass_height: TEMPLATE_AGE_WARNING, VALIDATION_FAILURE, BLOCK_REJECTED, etc. → skip height guard
 //   3. full dedup:    INITIAL_REQUEST, HEALTH_STALE_SUPPRESSED, etc. → all guards active
-//   Note: HEALTH_TIP_MOVED and HEALTH_CHANNEL_ADVANCE are in tier 2 (bypass_height)
+//   Note: HEALTH_CHANNEL_ADVANCE is in tier 2 (bypass_height)
 //   because when the unified tip moves the template's hashPrevBlock is stale even
 //   though the DedupGuard has the same unified height recorded.
+//   HEALTH_TIP_MOVED removed — GET_ROUND handles tip changes.
 //
 // This is the core bug fix: TEMPLATE_AGE_WARNING must bypass height-based dedup
 // so the 480s proactive refresh is not suppressed when heights are stagnant.
@@ -772,41 +835,32 @@ void test_get_block_reason_dedup_policy() {
 
     // PUSH reasons: bypass height dedup (PUSH is authoritative) but NOT all dedup
     // (100ms rapid-burst guard still applies).
-    print_test_result("PUSH_STALE bypasses height dedup (authoritative push)",
-        should_bypass_height_dedup(GetBlockReason::PUSH_STALE));
+    // NOTE: PUSH_STALE, PUSH_NO_TEMPLATE, PUSH_CROSS_CHANNEL removed —
+    //       NODE auto-sends BLOCK_DATA after PUSH, so no GET_BLOCK needed.
     print_test_result("PUSH_TIP_MOVED bypasses height dedup (authoritative push)",
         should_bypass_height_dedup(GetBlockReason::PUSH_TIP_MOVED));
     print_test_result("PUSH_SAME_HEIGHT_TIP bypasses height dedup (authoritative push)",
         should_bypass_height_dedup(GetBlockReason::PUSH_SAME_HEIGHT_TIP));
-    print_test_result("PUSH_NO_TEMPLATE bypasses height dedup (authoritative push)",
-        should_bypass_height_dedup(GetBlockReason::PUSH_NO_TEMPLATE));
-    print_test_result("PUSH_CROSS_CHANNEL bypasses height dedup (cross-channel tip advance)",
-        should_bypass_height_dedup(GetBlockReason::PUSH_CROSS_CHANNEL));
-    print_test_result("PUSH_CROSS_CHANNEL does NOT bypass all dedup (burst guard still active)",
-        !should_bypass_all_dedup(GetBlockReason::PUSH_CROSS_CHANNEL));
 
     // Tier 3: full dedup — non-push normal requests respect all guards
-    // Note: HEALTH_TIP_MOVED and HEALTH_CHANNEL_ADVANCE BYPASS height dedup because
+    // Note: HEALTH_CHANNEL_ADVANCE BYPASSES height dedup because
     // when the unified tip moves (e.g. Stake block on another channel), the current
     // template's hashPrevBlock becomes stale even though the DedupGuard already recorded
     // a GET_BLOCK at the same unified height.  Without the bypass, the height-match
     // guard suppresses the refresh and the miner gets stuck on a stale tip.
+    // NOTE: HEALTH_TIP_MOVED removed — GET_ROUND is the backup for tip changes.
     print_test_result("HEALTH_CHANNEL_ADVANCE bypasses height dedup (template stale at same unified height)",
         should_bypass_height_dedup(GetBlockReason::HEALTH_CHANNEL_ADVANCE));
-    print_test_result("HEALTH_TIP_MOVED bypasses height dedup (unified tip moved, template stale)",
-        should_bypass_height_dedup(GetBlockReason::HEALTH_TIP_MOVED));
     print_test_result("HEALTH_CHANNEL_ADVANCE does NOT bypass all dedup (burst guard still active)",
         !should_bypass_all_dedup(GetBlockReason::HEALTH_CHANNEL_ADVANCE));
-    print_test_result("HEALTH_TIP_MOVED does NOT bypass all dedup (burst guard still active)",
-        !should_bypass_all_dedup(GetBlockReason::HEALTH_TIP_MOVED));
     print_test_result("HEALTH_STALE_SUPPRESSED does NOT bypass height dedup",
         !should_bypass_height_dedup(GetBlockReason::HEALTH_STALE_SUPPRESSED));
     print_test_result("INITIAL_REQUEST does NOT bypass height dedup",
         !should_bypass_height_dedup(GetBlockReason::INITIAL_REQUEST));
 
     // PUSH bypasses height but NOT all dedup (burst guard still applies)
-    print_test_result("PUSH_STALE does NOT bypass all dedup",
-        !should_bypass_all_dedup(GetBlockReason::PUSH_STALE));
+    print_test_result("PUSH_TIP_MOVED does NOT bypass all dedup",
+        !should_bypass_all_dedup(GetBlockReason::PUSH_TIP_MOVED));
     print_test_result("INITIAL_REQUEST does NOT bypass all dedup",
         !should_bypass_all_dedup(GetBlockReason::INITIAL_REQUEST));
 
@@ -819,8 +873,8 @@ void test_get_block_reason_dedup_policy() {
         std::string(reason_name(GetBlockReason::GET_ROUND_HEIGHT_PARITY)) == "get_round_height_parity");
     print_test_result("reason_name(BLOCK_REJECTED) returns expected name",
         std::string(reason_name(GetBlockReason::BLOCK_REJECTED)) == "block_rejected");
-    print_test_result("reason_name(PUSH_CROSS_CHANNEL) returns expected name",
-        std::string(reason_name(GetBlockReason::PUSH_CROSS_CHANNEL)) == "push_cross_channel");
+    print_test_result("reason_name(PUSH_TIP_MOVED) returns expected name",
+        std::string(reason_name(GetBlockReason::PUSH_TIP_MOVED)) == "push_tip_moved");
 }
 
 // ============================================================================
@@ -834,6 +888,8 @@ int main() {
     test_get_block_dedup_within_window();
     test_get_block_after_window();
     test_multiple_rapid_requests();
+    test_failed_transmit_does_not_stamp_dedup();
+    test_handler_send_flag_requires_successful_queue();
     test_dedup_across_callers();
     test_dedup_reset();
     test_three_successive_calls();

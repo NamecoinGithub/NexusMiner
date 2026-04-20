@@ -65,6 +65,7 @@ void print_test_result(const char* name, bool passed) {
 enum class TestRecoveryPhase : uint8_t {
     HEALTHY,
     WAITING_TEMPLATE,
+    SESSION_RECOVERY,
     RECONNECTING,
 };
 
@@ -72,6 +73,7 @@ const char* test_phase_name(TestRecoveryPhase p) {
     switch (p) {
         case TestRecoveryPhase::HEALTHY:          return "HEALTHY";
         case TestRecoveryPhase::WAITING_TEMPLATE: return "WAITING_TEMPLATE";
+        case TestRecoveryPhase::SESSION_RECOVERY: return "SESSION_RECOVERY";
         case TestRecoveryPhase::RECONNECTING:     return "RECONNECTING";
     }
     return "UNKNOWN";
@@ -82,9 +84,14 @@ static bool test_is_valid_transition(TestRecoveryPhase from, TestRecoveryPhase t
     switch (from) {
         case TestRecoveryPhase::HEALTHY:
             return to == TestRecoveryPhase::WAITING_TEMPLATE ||
+                   to == TestRecoveryPhase::SESSION_RECOVERY ||
                    to == TestRecoveryPhase::RECONNECTING;
         case TestRecoveryPhase::WAITING_TEMPLATE:
             return to == TestRecoveryPhase::HEALTHY ||
+                   to == TestRecoveryPhase::SESSION_RECOVERY ||
+                   to == TestRecoveryPhase::RECONNECTING;
+        case TestRecoveryPhase::SESSION_RECOVERY:
+            return to == TestRecoveryPhase::WAITING_TEMPLATE ||
                    to == TestRecoveryPhase::RECONNECTING;
         case TestRecoveryPhase::RECONNECTING:
             return to == TestRecoveryPhase::HEALTHY ||
@@ -115,19 +122,19 @@ void test_keepalive_ack_invalidated_on_epoch_change() {
     HeightTracker tracker;
 
     // Epoch 1: receive keepalive
-    tracker.set_session_epoch(1);
+    tracker.set_session_epoch(SessionEpoch(1));
     tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0xDEADBEEFu, 0);
     auto snap1 = tracker.GetSnapshot();
     bool ack_was_set = (snap1.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
     print_test_result("Epoch 1: keepalive ACK timestamp is set after response", ack_was_set);
 
     // Advance to epoch 2 (session re-auth or channel re-init)
-    tracker.set_session_epoch(2);
+    tracker.set_session_epoch(SessionEpoch(2));
     auto snap2 = tracker.GetSnapshot();
     print_test_result("Epoch 2: keepalive ACK timestamp cleared on epoch advance",
                       snap2.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
     print_test_result("Epoch 2: snapshot session_epoch reflects new epoch",
-                      snap2.session_epoch == 2);
+                      snap2.session_epoch == SessionEpoch(2));
 
     // New keepalive in epoch 2 should be accepted
     tracker.OnKeepaliveResponse(5001, 401, 701, 901, 0xCAFEBABEu, 0);
@@ -482,7 +489,7 @@ void test_degraded_exit_normalizes_recovery_state() {
 // Now tests the surviving RecoveryPhase::SOFT_REFRESH transition path.
 // ============================================================================
 void test_authoritative_soft_refresh_backfills_local_state() {
-    std::cout << "\nTest 4e: Template refresh request enters WAITING_TEMPLATE (new 3-state model)\n";
+    std::cout << "\nTest 4e: Template refresh request enters WAITING_TEMPLATE\n";
 
     struct RecoveryTracker {
         TestRecoveryPhase phase{TestRecoveryPhase::HEALTHY};
@@ -664,7 +671,7 @@ void test_keepalive_epoch_isolation_clean_start() {
 
     // Simulate three successive re-auths (epoch 1 → 2 → 3)
     for (uint64_t epoch = 1; epoch <= 3; ++epoch) {
-        tracker.set_session_epoch(epoch);
+        tracker.set_session_epoch(SessionEpoch(epoch));
 
         // At start of each epoch, ack timestamp must be clear
         auto snap_start = tracker.GetSnapshot();
@@ -719,7 +726,7 @@ void test_epoch_advance_suppresses_old_keepalive_signal() {
     std::cout << "\nTest 7: Epoch advance clears keepalive ACK timestamp (diagnostic field)\n";
     HeightTracker tracker;
 
-    tracker.set_session_epoch(10);
+    tracker.set_session_epoch(SessionEpoch(10));
     tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0u, 0);
 
     // Confirm old epoch keepalive is "set"
@@ -728,7 +735,7 @@ void test_epoch_advance_suppresses_old_keepalive_signal() {
     print_test_result("Epoch 10: keepalive ACK timestamp is set", was_set);
 
     // Advance epoch — simulates re-auth or session restart
-    tracker.set_session_epoch(11);
+    tracker.set_session_epoch(SessionEpoch(11));
     auto snap_epoch11 = tracker.GetSnapshot();
 
     // The keepalive ACK timestamp is diagnostic only — PUSH is the sole authoritative
@@ -751,7 +758,7 @@ void test_multiple_rapid_epoch_changes_clean_state() {
     uint64_t current_epoch = 0;
     for (int i = 0; i < 5; ++i) {
         ++current_epoch;
-        tracker.set_session_epoch(current_epoch);
+        tracker.set_session_epoch(SessionEpoch(current_epoch));
 
         // Epoch starts clean
         auto snap_start = tracker.GetSnapshot();
@@ -766,7 +773,7 @@ void test_multiple_rapid_epoch_changes_clean_state() {
     auto snap_final = tracker.GetSnapshot();
     print_test_result("Final epoch (5): keepalive ACK timestamp is set from epoch 5 response",
                       snap_final.last_keepalive_ack_at != std::chrono::steady_clock::time_point{});
-    print_test_result("Final epoch (5): session_epoch == 5", snap_final.session_epoch == 5);
+    print_test_result("Final epoch (5): session_epoch == 5", snap_final.session_epoch == SessionEpoch(5));
 }
 
 // ============================================================================
@@ -777,7 +784,7 @@ void test_push_does_not_clear_keepalive_on_epoch_change() {
     std::cout << "\nTest 9: Push notifications do not clear keepalive timestamp on epoch change\n";
     HeightTracker tracker;
 
-    tracker.set_session_epoch(1);
+    tracker.set_session_epoch(SessionEpoch(1));
     tracker.OnKeepaliveResponse(5000, 400, 700, 900, 0u, 0);
     tracker.OnPushNotification(5000, 100, 0x1d00ffff);
 
@@ -788,7 +795,7 @@ void test_push_does_not_clear_keepalive_on_epoch_change() {
     print_test_result("Epoch 1: keepalive ACK timestamp is set", ack_at_set);
 
     // Epoch change: keepalive clears, push is unchanged
-    tracker.set_session_epoch(2);
+    tracker.set_session_epoch(SessionEpoch(2));
     auto snap2 = tracker.GetSnapshot();
     bool push_unchanged  = (snap2.last_push_notification_at == snap1.last_push_notification_at);
     bool ack_cleared     = (snap2.last_keepalive_ack_at == std::chrono::steady_clock::time_point{});
@@ -805,7 +812,7 @@ void test_epoch_change_clears_push_tip_anchor_hint() {
     std::cout << "\nTest 9b: Session epoch advance clears stale push tip-anchor hint only\n";
     HeightTracker tracker;
 
-    tracker.set_session_epoch(7);
+    tracker.set_session_epoch(SessionEpoch(7));
     tracker.OnPushNotification(5000, 100, 0x1d00ffff);
     tracker.UpdatePushTipAnchor(uint1024_t(0x42));
 
@@ -815,7 +822,7 @@ void test_epoch_change_clears_push_tip_anchor_hint() {
     print_test_result("Epoch 7: push liveness timestamp is present before epoch change",
                       snap_before.last_push_notification_at != std::chrono::steady_clock::time_point{});
 
-    tracker.set_session_epoch(8);
+    tracker.set_session_epoch(SessionEpoch(8));
     auto snap_after = tracker.GetSnapshot();
     print_test_result("Epoch 8: push tip-anchor hint cleared on epoch change",
                       snap_after.push_hash_prev_block == uint1024_t{});
@@ -1038,17 +1045,25 @@ void test_health_policy_distinguishes_normal_refresh_from_multi_block_lag() {
 
 // ── Test 18: Legal transitions succeed, illegal ones are rejected ──────────
 void test_recovery_phase_valid_transitions() {
-    std::cout << "\nTest 18: RecoveryPhase state machine — valid transition matrix (3-state)\n";
+    std::cout << "\nTest 18: RecoveryPhase state machine — valid transition matrix\n";
 
     // Legal transitions
     print_test_result("HEALTHY → WAITING_TEMPLATE is legal",
         test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::WAITING_TEMPLATE));
     print_test_result("HEALTHY → RECONNECTING is legal",
         test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::RECONNECTING));
+    print_test_result("HEALTHY → SESSION_RECOVERY is legal",
+        test_is_valid_transition(TestRecoveryPhase::HEALTHY, TestRecoveryPhase::SESSION_RECOVERY));
     print_test_result("WAITING_TEMPLATE → HEALTHY is legal",
         test_is_valid_transition(TestRecoveryPhase::WAITING_TEMPLATE, TestRecoveryPhase::HEALTHY));
     print_test_result("WAITING_TEMPLATE → RECONNECTING is legal",
         test_is_valid_transition(TestRecoveryPhase::WAITING_TEMPLATE, TestRecoveryPhase::RECONNECTING));
+    print_test_result("WAITING_TEMPLATE → SESSION_RECOVERY is legal",
+        test_is_valid_transition(TestRecoveryPhase::WAITING_TEMPLATE, TestRecoveryPhase::SESSION_RECOVERY));
+    print_test_result("SESSION_RECOVERY → WAITING_TEMPLATE is legal",
+        test_is_valid_transition(TestRecoveryPhase::SESSION_RECOVERY, TestRecoveryPhase::WAITING_TEMPLATE));
+    print_test_result("SESSION_RECOVERY → RECONNECTING is legal",
+        test_is_valid_transition(TestRecoveryPhase::SESSION_RECOVERY, TestRecoveryPhase::RECONNECTING));
     print_test_result("RECONNECTING → HEALTHY is legal",
         test_is_valid_transition(TestRecoveryPhase::RECONNECTING, TestRecoveryPhase::HEALTHY));
     print_test_result("RECONNECTING → WAITING_TEMPLATE is legal",
@@ -1061,13 +1076,14 @@ void test_recovery_phase_valid_transitions() {
         test_is_valid_transition(TestRecoveryPhase::WAITING_TEMPLATE, TestRecoveryPhase::WAITING_TEMPLATE));
 }
 
-// ── Test 19: Phase helper equivalences match new 3-state design ─────────
+// ── Test 19: Phase helper equivalences match explicit session-recovery design ─────────
 void test_recovery_phase_helpers_equivalence() {
-    std::cout << "\nTest 19: Phase helpers match 3-state design\n";
+    std::cout << "\nTest 19: Phase helpers match explicit session-recovery design\n";
 
     // is_degraded() ← WAITING_TEMPLATE only
     print_test_result("HEALTHY: is_degraded() == false",       !phase_is_degraded(TestRecoveryPhase::HEALTHY));
     print_test_result("WAITING_TEMPLATE: is_degraded() == true", phase_is_degraded(TestRecoveryPhase::WAITING_TEMPLATE));
+    print_test_result("SESSION_RECOVERY: is_degraded() == false", !phase_is_degraded(TestRecoveryPhase::SESSION_RECOVERY));
     print_test_result("RECONNECTING: is_degraded() == false",  !phase_is_degraded(TestRecoveryPhase::RECONNECTING));
 
     // is_submissions_withheld() ← always false in new design
@@ -1075,12 +1091,16 @@ void test_recovery_phase_helpers_equivalence() {
         !phase_is_submissions_withheld(TestRecoveryPhase::HEALTHY));
     print_test_result("WAITING_TEMPLATE: is_submissions_withheld() == false",
         !phase_is_submissions_withheld(TestRecoveryPhase::WAITING_TEMPLATE));
+    print_test_result("SESSION_RECOVERY: is_submissions_withheld() == false",
+        !phase_is_submissions_withheld(TestRecoveryPhase::SESSION_RECOVERY));
 
     // is_recovery_active() ← any non-HEALTHY phase
     print_test_result("HEALTHY: is_recovery_active() == false",
         !phase_is_recovery_active(TestRecoveryPhase::HEALTHY));
     print_test_result("WAITING_TEMPLATE: is_recovery_active() == true",
         phase_is_recovery_active(TestRecoveryPhase::WAITING_TEMPLATE));
+    print_test_result("SESSION_RECOVERY: is_recovery_active() == true",
+        phase_is_recovery_active(TestRecoveryPhase::SESSION_RECOVERY));
     print_test_result("RECONNECTING: is_recovery_active() == true",
         phase_is_recovery_active(TestRecoveryPhase::RECONNECTING));
 
@@ -1091,6 +1111,8 @@ void test_recovery_phase_helpers_equivalence() {
         phase_is_reconnecting(TestRecoveryPhase::RECONNECTING));
     print_test_result("WAITING_TEMPLATE: is_reconnecting() == false",
         !phase_is_reconnecting(TestRecoveryPhase::WAITING_TEMPLATE));
+    print_test_result("SESSION_RECOVERY: is_reconnecting() == false",
+        !phase_is_reconnecting(TestRecoveryPhase::SESSION_RECOVERY));
 }
 
 // ── Test 20: WAITING_TEMPLATE state — clearing state always exits it ──────
@@ -1144,32 +1166,63 @@ void test_soft_refresh_escalation_to_hard_recovery() {
 
 // ── Test 22: RECONNECTING prevents SESSION_EXPIRED re-entrance ────────────
 void test_reconnecting_guards_session_expired() {
-    std::cout << "\nTest 22: RECONNECTING phase prevents Session EXPIRED from re-entering\n";
+    std::cout << "\nTest 22: SESSION_EXPIRED preempts template recovery but not reconnect/session recovery\n";
 
     TestRecoveryPhase phase = TestRecoveryPhase::RECONNECTING;
 
-    // Session expired handler guard: if reconnecting OR recovery active with epoch > 0
-    uint64_t epoch = 1;
     bool should_ignore = phase_is_reconnecting(phase) ||
-                         (phase_is_recovery_active(phase) && epoch > 0);
+                         phase == TestRecoveryPhase::SESSION_RECOVERY;
     print_test_result("RECONNECTING: session_expired is ignored",
         should_ignore);
 
     // Verify HEALTHY does NOT suppress session_expired
     TestRecoveryPhase healthy = TestRecoveryPhase::HEALTHY;
-    uint64_t healthy_epoch = 0;
     bool healthy_ignore = phase_is_reconnecting(healthy) ||
-                          (phase_is_recovery_active(healthy) && healthy_epoch > 0);
+                          healthy == TestRecoveryPhase::SESSION_RECOVERY;
     print_test_result("HEALTHY: session_expired is NOT ignored",
         !healthy_ignore);
 
-    // Verify WAITING_TEMPLATE with epoch 0 does NOT suppress session_expired
+    // WAITING_TEMPLATE must not suppress authoritative session recovery anymore.
     TestRecoveryPhase waiting = TestRecoveryPhase::WAITING_TEMPLATE;
-    uint64_t waiting_epoch = 0;  // epoch 0 = just entered, no recovery epoch yet
     bool waiting_ignore = phase_is_reconnecting(waiting) ||
-                          (phase_is_recovery_active(waiting) && waiting_epoch > 0);
-    print_test_result("WAITING_TEMPLATE with epoch=0: session_expired is NOT ignored",
+                          waiting == TestRecoveryPhase::SESSION_RECOVERY;
+    print_test_result("WAITING_TEMPLATE: session_expired is NOT ignored",
         !waiting_ignore);
+
+    if (test_is_valid_transition(waiting, TestRecoveryPhase::SESSION_RECOVERY)) {
+        waiting = TestRecoveryPhase::SESSION_RECOVERY;
+    }
+    print_test_result("WAITING_TEMPLATE escalates to SESSION_RECOVERY",
+        waiting == TestRecoveryPhase::SESSION_RECOVERY);
+}
+
+// ── Test 22b: Template arrival during SESSION_RECOVERY must not imply recovery complete ──
+void test_session_recovery_blocks_template_only_exit() {
+    std::cout << "\nTest 22b: Template arrival during SESSION_RECOVERY does not clear degraded state\n";
+
+    struct ExitGateInput {
+        TestRecoveryPhase phase{TestRecoveryPhase::SESSION_RECOVERY};
+        bool valid_template{true};
+        bool authoritative_full_recovery_required{true};
+        bool authoritative_may_request_work{false};
+
+        bool may_clear() const {
+            return valid_template &&
+                   phase != TestRecoveryPhase::SESSION_RECOVERY &&
+                   !authoritative_full_recovery_required &&
+                   authoritative_may_request_work;
+        }
+    };
+
+    ExitGateInput blocked;
+    print_test_result("SESSION_RECOVERY blocks clear_recovery_state despite valid template",
+        !blocked.may_clear());
+
+    blocked.phase = TestRecoveryPhase::WAITING_TEMPLATE;
+    blocked.authoritative_full_recovery_required = false;
+    blocked.authoritative_may_request_work = true;
+    print_test_result("WAITING_TEMPLATE clears only after authoritative session is restored",
+        blocked.may_clear());
 }
 
 // ── Test 23: Mutual exclusivity — only one phase at a time ───────────────
@@ -1181,12 +1234,13 @@ void test_recovery_phase_mutual_exclusivity() {
     TestRecoveryPhase phases[] = {
         TestRecoveryPhase::HEALTHY,
         TestRecoveryPhase::WAITING_TEMPLATE,
+        TestRecoveryPhase::SESSION_RECOVERY,
         TestRecoveryPhase::RECONNECTING,
     };
 
     bool all_distinct = true;
-    for (size_t i = 0; i < 3; ++i) {
-        for (size_t j = i + 1; j < 3; ++j) {
+    for (size_t i = 0; i < 4; ++i) {
+        for (size_t j = i + 1; j < 4; ++j) {
             if (phases[i] == phases[j]) {
                 all_distinct = false;
                 break;
@@ -1263,6 +1317,45 @@ void test_epoch0_recovery_escalation_on_suppressed_get_block() {
         coordinator->recovery_epoch() == epoch_before);
 }
 
+void test_session_status_cooldown_only_advances_after_successful_queue()
+{
+    std::cout << "\nTest 27b: SESSION_STATUS cooldown advances only after successful queue\n";
+
+    struct SessionStatusSender {
+        std::chrono::steady_clock::time_point last_sent{};
+
+        bool due(std::chrono::steady_clock::time_point now) const {
+            constexpr int64_t interval_seconds = 300;
+            return std::chrono::duration_cast<std::chrono::seconds>(now - last_sent).count() >= interval_seconds;
+        }
+
+        bool attempt(std::chrono::steady_clock::time_point now, bool queue_success) {
+            if (!due(now)) {
+                return false;
+            }
+            if (!queue_success) {
+                return false;
+            }
+            last_sent = now;
+            return true;
+        }
+    };
+
+    SessionStatusSender sender;
+    auto now = std::chrono::steady_clock::now();
+    sender.last_sent = now - std::chrono::seconds(301);
+
+    bool failed_attempt = !sender.attempt(now, false);
+    bool still_due = sender.due(now);
+    bool successful_retry = sender.attempt(now, true);
+    bool no_longer_due = !sender.due(now);
+
+    print_test_result("Failed SESSION_STATUS queue does not consume cooldown",
+                      failed_attempt && still_due);
+    print_test_result("Successful SESSION_STATUS queue consumes cooldown",
+                      successful_retry && no_longer_due);
+}
+
 
 int main() {
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
@@ -1297,8 +1390,10 @@ int main() {
     test_orphaned_soft_refresh_cleared();
     test_soft_refresh_escalation_to_hard_recovery();
     test_reconnecting_guards_session_expired();
+    test_session_recovery_blocks_template_only_exit();
     test_recovery_phase_mutual_exclusivity();
     test_epoch0_recovery_escalation_on_suppressed_get_block();
+    test_session_status_cooldown_only_advances_after_successful_queue();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";

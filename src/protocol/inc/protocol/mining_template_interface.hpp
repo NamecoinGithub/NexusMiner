@@ -12,6 +12,7 @@
 #include "LLP/block.hpp"
 #include "network/types.hpp"
 #include "protocol/height_tracker.hpp"
+#include "protocol/session_binding.hpp"
 #include "protocol/session_identity.hpp"
 #include "spdlog/spdlog.h"
 
@@ -104,8 +105,8 @@ public:
         uint32_t nBits;             // Difficulty bits
         uint64_t timestamp_received;// When template was received
         TemplateState state;        // Current state
-        uint32_t session_id;        // Falcon session ID
-        uint64_t session_epoch{0};  // Authoritative session epoch that owns this template
+        SessionId session_id;       // Falcon session ID
+        SessionEpoch session_epoch{};  // Authoritative session epoch that owns this template
         SessionIdentity identity{}; // Canonical identity bundle that owns this template
         std::string source_endpoint;// Node endpoint that sent template
         BlockFormat format;         // Block format (Tritium/Legacy/Compact)
@@ -151,7 +152,8 @@ public:
      * @param channel Mining channel (1 = Prime, 2 = Hash)
      * @param session_id Falcon authentication session ID
      */
-    MiningTemplateInterface(uint8_t channel, uint32_t session_id = 0);
+    MiningTemplateInterface(uint8_t channel, SessionId session_id = {});
+    MiningTemplateInterface(uint8_t channel, uint32_t session_id);
     
     /**
      * @brief Destructor
@@ -460,14 +462,14 @@ public:
      * 
      * @param session_id Authenticated session ID
      */
-    void set_session_id(uint32_t session_id);
+    void set_session_id(SessionId session_id);
 
     /**
      * @brief Set the authoritative session epoch that owns subsequent templates
      *
      * @param session_epoch Session epoch/generation from SessionManager
      */
-    void set_session_epoch(uint64_t session_epoch);
+    void set_session_epoch(SessionEpoch session_epoch);
 
     /**
      * @brief Set the canonical session identity for template ownership.
@@ -479,22 +481,39 @@ public:
     void set_session_identity(const SessionIdentity& identity);
 
     /**
+     * @brief Set the authoritative SessionBinding bundle for template ownership.
+     *
+     * This batches session identity, epoch, lane, reward, and readiness semantics
+     * at the call boundary while keeping MiningTemplateInterface's local cached
+     * session fields in sync for backward compatibility.
+     *
+     * @param binding Canonical session binding snapshot from SessionManager
+     */
+    void set_session_binding(const SessionBinding& binding);
+
+    /**
      * @brief Get the canonical session identity bound to the current template.
      * @return SessionIdentity (may be empty if no session is active)
      */
     SessionIdentity get_session_identity() const;
     
     /**
-     * @brief Get current session ID
+     * @brief Get current session ID (thread-safe)
      * @return Session ID
      */
-    uint32_t get_session_id() const { return m_session_id; }
+    SessionId get_session_id() const {
+        std::lock_guard<std::mutex> lock(m_template_mutex);
+        return m_session_id;
+    }
     
     /**
-     * @brief Check if session is authenticated
+     * @brief Check if session is authenticated (thread-safe)
      * @return true if session has valid session ID
      */
-    bool is_session_authenticated() const { return m_session_id != 0; }
+    bool is_session_authenticated() const {
+        std::lock_guard<std::mutex> lock(m_template_mutex);
+        return !m_session_id.is_default();
+    }
     
     /**
      * @brief Set the mining channel
@@ -582,8 +601,8 @@ private:
     
     // Member variables
     uint8_t m_channel;
-    uint32_t m_session_id;
-    uint64_t m_session_epoch{0};
+    SessionId m_session_id;
+    SessionEpoch m_session_epoch{};
     SessionIdentity m_session_identity{};  // Canonical identity bound to templates
     uint32_t m_current_unified_height;
     uint32_t m_current_channel_height;

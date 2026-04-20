@@ -3,6 +3,7 @@
 
 #include "protocol/session_manager.hpp"
 #include "protocol/protocol_constants.hpp"
+#include "protocol/session_binding.hpp"
 #include "protocol_lane.hpp"
 #include <memory>
 #include <functional>
@@ -42,13 +43,13 @@ public:
      * @brief Get the current session ID (authoritative)
      * @return Session ID (0 if no active session)
      */
-    uint32_t get_session_id() const;
+    SessionId get_session_id() const;
 
     /**
      * @brief Get the current authoritative session epoch/generation
      * @return Session epoch (0 before the first session is established)
      */
-    uint64_t get_session_epoch() const;
+    SessionEpoch get_session_epoch() const;
 
     /**
      * @brief Check if session is authenticated
@@ -74,21 +75,34 @@ public:
      * @param session_key Falcon session key (optional)
      * @param tritium_genesis Tritium genesis hash (optional)
      */
-    void start_session(uint32_t session_id,
-                      const std::vector<uint8_t>& session_key = {},
-                      const std::vector<uint8_t>& tritium_genesis = {});
+    void start_session(SessionId session_id,
+                       const std::vector<uint8_t>& session_key = {},
+                       SessionGenesisHash tritium_genesis = {});
+    void start_session(SessionId session_id,
+                       const std::vector<uint8_t>& session_key,
+                       const std::vector<uint8_t>& tritium_genesis);
 
-    void commit_authenticated_session(uint32_t session_id,
+    void commit_authenticated_session(SessionId session_id,
+                                      const std::vector<uint8_t>& pubkey,
+                                      FalconHashKeyId key_id,
+                                      SessionGenesisHash tritium_genesis = {});
+    void commit_authenticated_session(SessionId session_id,
                                       const std::vector<uint8_t>& pubkey,
                                       const std::string& key_id,
-                                      const std::vector<uint8_t>& tritium_genesis = {});
+                                      const std::vector<uint8_t>& tritium_genesis);
 
     void begin_auth_handshake(const std::string& detail = "");
 
     void begin_reward_binding(const std::string& reward_address,
-                              const std::vector<uint8_t>& reward_hash = {},
+                              RewardHash reward_hash = {},
+                              const std::string& source = "");
+    void begin_reward_binding(const std::string& reward_address,
+                              const std::vector<uint8_t>& reward_hash,
                               const std::string& source = "");
 
+    void commit_reward_bound(const std::string& reward_address,
+                             RewardHash reward_hash,
+                             const std::string& source = "");
     void commit_reward_bound(const std::string& reward_address,
                              const std::vector<uint8_t>& reward_hash,
                              const std::string& source = "");
@@ -137,7 +151,7 @@ public:
      * @param degraded True if workers are in degraded mode
      * @param has_template True if valid mining template is held
      * @param workers_running True if mining workers are active
-     * @param secondary_up True if secondary lane is connected
+     * @param secondary_up Compatibility status bit for any optional secondary path
      * @return Shared payload for transmission
      */
     network::Shared_payload build_session_status_packet(
@@ -184,6 +198,7 @@ public:
      * @brief Set Tritium genesis hash
      * @param genesis Genesis hash (32 bytes)
      */
+    void set_tritium_genesis(SessionGenesisHash genesis);
     void set_tritium_genesis(const std::vector<uint8_t>& genesis);
 
     void set_connection_metadata(const std::string& local_endpoint,
@@ -191,15 +206,25 @@ public:
                                  bool connected);
 
     void set_falcon_identity(const std::vector<uint8_t>& pubkey,
+                             FalconHashKeyId key_id,
+                             bool authenticated);
+    void set_falcon_identity(const std::vector<uint8_t>& pubkey,
                              const std::string& key_id,
                              bool authenticated);
 
     void reset_session_credentials();
 
     void set_chacha20_session_key(const std::vector<uint8_t>& session_key,
+                                  SessionFingerprint fingerprint,
+                                  bool ready);
+    void set_chacha20_session_key(const std::vector<uint8_t>& session_key,
                                   const std::string& fingerprint,
                                   bool ready);
 
+    void set_reward_binding(const std::string& reward_address,
+                            RewardHash reward_hash,
+                            bool bound,
+                            const std::string& source);
     void set_reward_binding(const std::string& reward_address,
                             const std::vector<uint8_t>& reward_hash,
                             bool bound,
@@ -240,6 +265,7 @@ public:
      * @brief Get Tritium genesis hash
      * @return Genesis hash vector
      */
+    SessionGenesisHash get_typed_tritium_genesis() const;
     std::vector<uint8_t> get_tritium_genesis() const;
 
     /**
@@ -289,6 +315,7 @@ public:
      * @return SessionIdentity (value copy, safe for cross-thread use)
      */
     SessionIdentity get_canonical_identity() const;
+    SessionBinding get_session_binding() const;
 
     /**
      * @brief Get the underlying SessionManager (for advanced use cases)

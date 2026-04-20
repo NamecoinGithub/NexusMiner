@@ -216,11 +216,32 @@ bool TlsContext::enable_hostname_verification(const std::string& hostname)
             m_logger->error("[TLS] Hostname verification only available in CLIENT mode");
             return false;
         }
-        
-        // Enable SNI (Server Name Indication)
+
+        if (hostname.empty()) {
+            m_logger->error("[TLS] Hostname verification requires a non-empty hostname");
+            return false;
+        }
+
         SSL_CTX* ctx = m_context.native_handle();
-        SSL_CTX_set_tlsext_servername_callback(ctx, nullptr);
-        
+
+        // Configure the default X509_VERIFY_PARAM to check the peer
+        // certificate's CN / SAN against the expected hostname.
+        X509_VERIFY_PARAM* param = SSL_CTX_get0_param(ctx);
+        if (!param) {
+            m_logger->error("[TLS] Failed to get X509_VERIFY_PARAM from SSL_CTX");
+            return false;
+        }
+
+        // Enable hostname checking (matches CN and SubjectAltName)
+        X509_VERIFY_PARAM_set_hostflags(param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+        if (X509_VERIFY_PARAM_set1_host(param, hostname.c_str(), hostname.size()) != 1) {
+            m_logger->error("[TLS] Failed to set expected hostname '{}' for verification", hostname);
+            return false;
+        }
+
+        // Ensure peer verification is enabled (hostname check is meaningless without it)
+        m_context.set_verify_mode(asio::ssl::verify_peer);
+
         m_logger->info("[TLS] Hostname verification enabled for: {}", hostname);
         return true;
     }

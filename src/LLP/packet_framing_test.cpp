@@ -287,6 +287,23 @@ void test_malformed_huge_length() {
     print_test_result("Huge length detected as malformed", test_passed);
 }
 
+void test_packet_constructor_rejects_huge_length() {
+    std::cout << "\nTest 6b: Packet constructor rejects unreasonably large length" << std::endl;
+
+    auto malformed = std::make_shared<network::Payload>(network::Payload{
+        0x10,                           // header
+        0x06, 0x40, 0x00, 0x00         // length = 100MB
+    });
+
+    Packet packet(malformed);
+
+    bool test_passed = !packet.m_is_valid &&
+                       packet.m_length == 0 &&
+                       !packet.m_data;
+
+    print_test_result("Constructor huge length detected as malformed", test_passed);
+}
+
 // ============================================================================
 // Test Case 7: Malformed - invalid stateless opcode
 // ============================================================================
@@ -805,6 +822,71 @@ void test_stateless_header_only_two_byte() {
 }
 
 // ============================================================================
+// Test Case 18b: Stateless compat submit-result opcodes accept both header-only
+// and explicit zero/one-length framed forms.
+// ============================================================================
+void test_stateless_submit_result_compat_forms() {
+    std::cout << "\nTest 18b: Stateless compat submit-result opcode wire forms" << std::endl;
+
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+
+    // Header-only BLOCK_ACCEPTED_COMPAT (0xD002)
+    acc.feed({0xD0, 0x02});
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed1 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD002) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("BLOCK_ACCEPTED_COMPAT header-only form parsed immediately", test1);
+
+    // Explicit framed zero-length BLOCK_ACCEPTED_COMPAT
+    acc.feed({0xD0, 0x02, 0x00, 0x00, 0x00, 0x00});
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test2 = parsed2 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD002) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("BLOCK_ACCEPTED_COMPAT explicit zero-length frame parsed", test2);
+
+    // Header-only compat followed immediately by another valid packet should not
+    // be misread as a zero-length frame for the next packet.
+    acc.feed({0xD0, 0x02, 0xD0, 0xD8});
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test3 = parsed3 &&
+                 parsed4 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0D8) &&
+                 acc.empty();
+    print_test_result("Header-only BLOCK_ACCEPTED_COMPAT does not misframe adjacent stateless packets", test3);
+
+    // BLOCK_REJECTED_COMPAT supports zero-length and 1-byte reason payload forms.
+    acc.feed({0xD0, 0x03, 0x00, 0x00, 0x00, 0x00});
+    bool parsed5 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test4 = parsed5 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD003) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("BLOCK_REJECTED_COMPAT explicit zero-length frame parsed", test4);
+
+    acc.feed({0xD0, 0x03, 0x00, 0x00, 0x00, 0x01, 0x04});
+    bool parsed6 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test5 = parsed6 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD003) &&
+                 (packet.m_length == 1) &&
+                 (packet.m_data != nullptr) &&
+                 ((*packet.m_data)[0] == 0x04) &&
+                 acc.empty();
+    print_test_result("BLOCK_REJECTED_COMPAT one-byte reason frame parsed", test5);
+}
+
+// ============================================================================
 // Test Case 19: NEW_ROUND (204) with 12-byte payload
 // NEW_ROUND carries payload: [unified_height][channel_height][difficulty]
 // ============================================================================
@@ -1246,6 +1328,142 @@ void test_legacy_auth_opcode_208_not_rejected() {
 }
 
 // ============================================================================
+// Test Case 26: STATELESS_BLOCK_ACCEPTED (0xD0C8) framed form — Fix A regression
+// LLL-TAO commit 206d1a2c emits the full 6-byte framed form D0 C8 00 00 00 00.
+// Before Fix A the miner consumed only 2 bytes (header-only), leaving 4 orphan
+// zero bytes in the accumulator and triggering a burst of MALFORMED errors.
+// ============================================================================
+void test_stateless_block_accepted_framed_form() {
+    std::cout << "\nTest 26: STATELESS_BLOCK_ACCEPTED (0xD0C8) framed 6-byte form" << std::endl;
+
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+
+    // Wire form emitted by LLL-TAO 206d1a2c: [D0 C8][00 00 00 00]
+    acc.feed({0xD0, 0xC8, 0x00, 0x00, 0x00, 0x00});
+    bool parsed = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0C8) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("STATELESS_BLOCK_ACCEPTED framed form: SUCCESS, bytes_consumed=6, accumulator empty", test1);
+}
+
+// ============================================================================
+// Test Case 27: STATELESS_BLOCK_REJECTED (0xD0C9) framed form
+// ============================================================================
+void test_stateless_block_rejected_framed_form() {
+    std::cout << "\nTest 27: STATELESS_BLOCK_REJECTED (0xD0C9) framed 6-byte form" << std::endl;
+
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+
+    acc.feed({0xD0, 0xC9, 0x00, 0x00, 0x00, 0x00});
+    bool parsed = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0C9) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("STATELESS_BLOCK_REJECTED framed form: SUCCESS, bytes_consumed=6, accumulator empty", test1);
+}
+
+// ============================================================================
+// Test Case 28: STATELESS_BLOCK_REJECTED (0xD0C9) framed form with 1-byte reason
+// ============================================================================
+void test_stateless_block_rejected_framed_with_reason_byte() {
+    std::cout << "\nTest 28: STATELESS_BLOCK_REJECTED (0xD0C9) framed form with 1-byte reason" << std::endl;
+
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+
+    // [D0 C9][00 00 00 01][2A]  — length=1, reason=0x2A (STALE or similar)
+    acc.feed({0xD0, 0xC9, 0x00, 0x00, 0x00, 0x01, 0x2A});
+    bool parsed = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0C9) &&
+                 (packet.m_length == 1) &&
+                 (packet.m_data != nullptr) &&
+                 ((*packet.m_data)[0] == 0x2A) &&
+                 acc.empty();
+    print_test_result("STATELESS_BLOCK_REJECTED framed+reason: SUCCESS, bytes_consumed=7, length=1", test1);
+}
+
+// ============================================================================
+// Test Case 29: STATELESS_BLOCK_ACCEPTED (0xD0C8) bare 2-byte form — compat fallback
+// Some dormant in-field node builds emit only the 2-byte header with no length field.
+// The compat fallback must still accept this so we do not regress those operators.
+// ============================================================================
+void test_stateless_block_accepted_bare_form_still_works() {
+    std::cout << "\nTest 29: STATELESS_BLOCK_ACCEPTED (0xD0C8) bare 2-byte form (compat fallback)" << std::endl;
+
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+
+    // Only 2 bytes — no length field present.
+    acc.feed({0xD0, 0xC8});
+    bool parsed = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0C8) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("STATELESS_BLOCK_ACCEPTED bare form: SUCCESS, bytes_consumed=2, accumulator empty", test1);
+}
+
+// ============================================================================
+// Test Case 30: Full production log pattern regression test
+// Feed D0 C8 00 00 00 00 (BLOCK_ACCEPTED framed) followed immediately by
+// D0 D9 00 00 00 94 <148B> (STATELESS_PRIME_BLOCK_AVAILABLE, 148-byte payload).
+// Both packets must parse successfully, zero MALFORMED results, accumulator empty.
+// This is the exact sequence that triggered the bug reported in the issue.
+// ============================================================================
+void test_stateless_block_accepted_followed_by_prime_available() {
+    std::cout << "\nTest 30: BLOCK_ACCEPTED framed + PRIME_BLOCK_AVAILABLE regression" << std::endl;
+
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+
+    // First packet: STATELESS_BLOCK_ACCEPTED [D0 C8][00 00 00 00]
+    std::vector<uint8_t> stream;
+    stream.insert(stream.end(), {0xD0, 0xC8, 0x00, 0x00, 0x00, 0x00});
+
+    // Second packet: STATELESS_PRIME_BLOCK_AVAILABLE [D0 D9][00 00 00 94][148 bytes]
+    stream.insert(stream.end(), {0xD0, 0xD9, 0x00, 0x00, 0x00, 0x94});
+    for (int i = 0; i < 148; ++i) {
+        stream.push_back(static_cast<uint8_t>(i & 0xFF));
+    }
+
+    acc.feed(stream);
+
+    // Parse first packet — must be BLOCK_ACCEPTED, no MALFORMED
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test1 = parsed1 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0C8) &&
+                 (packet.m_length == 0);
+    print_test_result("First packet: BLOCK_ACCEPTED SUCCESS (no MALFORMED)", test1);
+
+    // Parse second packet — must be PRIME_BLOCK_AVAILABLE with 148-byte payload
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test2 = parsed2 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD0D9) &&
+                 (packet.m_length == 148) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == 148) &&
+                 acc.empty();
+    print_test_result("Second packet: PRIME_BLOCK_AVAILABLE SUCCESS, 148B payload, accumulator empty", test2);
+}
+
+// ============================================================================
 // Main test runner
 // ============================================================================
 int main() {
@@ -1260,6 +1478,7 @@ int main() {
     test_multiple_packets_single_receive();
     test_stateless_header_fragmented();
     test_malformed_huge_length();
+    test_packet_constructor_rejects_huge_length();
     test_malformed_invalid_stateless_opcode();
     test_complex_mixed_scenario();
     test_byte_by_byte_feeding();
@@ -1272,6 +1491,7 @@ int main() {
     test_legacy_auth_packet_single_byte();
     test_stateless_data_packet_two_byte();
     test_stateless_header_only_two_byte();
+    test_stateless_submit_result_compat_forms();
     test_new_round_with_payload();
     test_old_round_with_payload();
     test_round_legacy_16byte_payload();
@@ -1281,6 +1501,11 @@ int main() {
     test_stateless_block_data_with_payload();
     test_stateless_auth_opcodes_with_payload();
     test_legacy_auth_opcode_208_not_rejected();
+    test_stateless_block_accepted_framed_form();
+    test_stateless_block_rejected_framed_form();
+    test_stateless_block_rejected_framed_with_reason_byte();
+    test_stateless_block_accepted_bare_form_still_works();
+    test_stateless_block_accepted_followed_by_prime_available();
     
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Summary" << std::endl;

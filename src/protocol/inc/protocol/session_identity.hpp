@@ -17,9 +17,9 @@ namespace protocol {
  * @brief SessionIdentity — Readonly value object capturing the complete
  *        identity state of an authenticated mining session at a point in time.
  *
- * This is the canonical session identity bundle.  It binds together ALL session
- * credentials (node-assigned session_id, ChaCha20 encryption key, Falcon
- * identity, reward binding, lane) so they cannot diverge.
+ * This is the canonical session identity bundle.  It binds together the
+ * node-assigned session_id, session epoch, Falcon hashKeyID, ChaCha20
+ * fingerprint, and protocol lane so they cannot diverge.
  *
  * SessionIdentity is constructed at authentication time and frozen — individual
  * fields cannot be mutated independently.  A new identity is created on each
@@ -28,8 +28,8 @@ namespace protocol {
  * @invariant Once constructed, a valid SessionIdentity has:
  *   - A non-zero session_id
  *   - A non-zero session_epoch
- *   - A non-empty falcon_pubkey_hash (LLC::SK256 of pubkey, 32 bytes)
- *   - session_id, chacha20_key, falcon identity, and lane are all bound together
+ *   - A non-empty falcon hashKeyID or pubkey hash
+ *   - session_id, epoch, ChaCha20 fingerprint, Falcon identity, and lane are all bound together
  *
  * Identity hashing:  The Falcon public key is canonically hashed using
  * LLC::SK256(vPubKey) → 256-bit Skein-Keccak hash.  This matches the NODE-side
@@ -62,29 +62,35 @@ public:
      *                              Must be computed by the caller via LLC::SK256(vPubKey).GetBytes()
      *                              to match the NODE-side hashKeyID used for miner identity.
      * @param lane                  Active protocol lane (LEGACY or STATELESS)
+     * @param falcon_key_id         Canonical hex hashKeyID for the Falcon public key
+     * @param chacha20_fingerprint  Diagnostic/session fingerprint for the active ChaCha20 key
      */
-    SessionIdentity(uint32_t session_id,
-                    uint64_t session_epoch,
+    SessionIdentity(SessionId session_id,
+                    SessionEpoch session_epoch,
                     std::vector<uint8_t> genesis_hash,
                     std::vector<uint8_t> chacha20_key,
                     std::vector<uint8_t> falcon_pubkey_hash,
-                    ProtocolLane lane)
+                    ProtocolLane lane,
+                    FalconHashKeyId falcon_key_id = {},
+                    SessionFingerprint chacha20_fingerprint = {})
         : m_session_id(session_id)
         , m_session_epoch(session_epoch)
         , m_genesis_hash(std::move(genesis_hash))
         , m_chacha20_key(std::move(chacha20_key))
         , m_falcon_pubkey_hash(std::move(falcon_pubkey_hash))
         , m_lane(lane)
+        , m_falcon_key_id(std::move(falcon_key_id))
+        , m_chacha20_fingerprint(std::move(chacha20_fingerprint))
     {
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────
 
     /// Node-assigned wire protocol session ID.
-    uint32_t session_id() const { return m_session_id; }
+    SessionId session_id() const { return m_session_id; }
 
     /// Monotonic session generation counter (never resets to 0).
-    uint64_t session_epoch() const { return m_session_epoch; }
+    SessionEpoch session_epoch() const { return m_session_epoch; }
 
     /// Tritium genesis hash used for ChaCha20 key derivation (32 bytes).
     const std::vector<uint8_t>& genesis_hash() const { return m_genesis_hash; }
@@ -95,6 +101,12 @@ public:
     /// SK256 hash of the Falcon public key (32 bytes, matches NODE-side hashKeyID).
     /// Used for cross-miner identity comparison and session recovery handshake.
     const std::vector<uint8_t>& falcon_pubkey_hash() const { return m_falcon_pubkey_hash; }
+
+    /// Canonical Falcon hashKeyID string for the authenticated miner identity.
+    FalconHashKeyId falcon_key_id() const { return m_falcon_key_id; }
+
+    /// Fingerprint of the active ChaCha20 session key.
+    SessionFingerprint chacha20_fingerprint() const { return m_chacha20_fingerprint; }
 
     /// Active protocol lane at authentication time.
     ProtocolLane lane() const { return m_lane; }
@@ -115,7 +127,7 @@ public:
      */
     bool is_valid() const
     {
-        return m_session_id != 0 && m_session_epoch != 0;
+        return !m_session_id.is_default() && !m_session_epoch.is_default();
     }
 
     /**
@@ -124,7 +136,7 @@ public:
      */
     bool is_empty() const
     {
-        return m_session_id == 0 && m_session_epoch == 0;
+        return m_session_id.is_default() && m_session_epoch.is_default();
     }
 
     /**
@@ -164,6 +176,9 @@ public:
      */
     bool same_miner(const SessionIdentity& other) const
     {
+        if (!m_falcon_key_id.is_default() && !other.m_falcon_key_id.is_default()) {
+            return m_falcon_key_id == other.m_falcon_key_id;
+        }
         return !m_falcon_pubkey_hash.empty() &&
                m_falcon_pubkey_hash == other.m_falcon_pubkey_hash;
     }
@@ -179,9 +194,15 @@ public:
      */
     bool full_match(const SessionIdentity& other) const
     {
+        bool fingerprint_matches = false;
+        if (!m_chacha20_fingerprint.is_default() && !other.m_chacha20_fingerprint.is_default()) {
+            fingerprint_matches = (m_chacha20_fingerprint == other.m_chacha20_fingerprint);
+        } else if (m_chacha20_fingerprint.is_default() && other.m_chacha20_fingerprint.is_default()) {
+            fingerprint_matches = (m_chacha20_key == other.m_chacha20_key);
+        }
         return matches(other) &&
                same_miner(other) &&
-               m_chacha20_key == other.m_chacha20_key &&
+               fingerprint_matches &&
                m_lane == other.m_lane;
     }
 
@@ -199,7 +220,7 @@ public:
     {
         std::ostringstream oss;
         oss << "sid=0x" << std::hex << std::setw(8) << std::setfill('0')
-            << m_session_id << "/e" << std::dec << m_session_epoch;
+            << m_session_id.get() << "/e" << std::dec << m_session_epoch.get();
         return oss.str();
     }
 
@@ -215,11 +236,13 @@ public:
     {
         std::ostringstream oss;
         oss << "SessionIdentity{"
-            << "sid=0x" << std::hex << std::setw(8) << std::setfill('0') << m_session_id
-            << " epoch=" << std::dec << m_session_epoch
+            << "sid=0x" << std::hex << std::setw(8) << std::setfill('0') << m_session_id.get()
+            << " epoch=" << std::dec << m_session_epoch.get()
             << " lane=" << get_lane_name(m_lane)
             << " genesis=" << hex_prefix(m_genesis_hash, 4)
             << " key=" << hex_prefix(m_chacha20_key, 4)
+            << " chacha_fp=" << printable_semantic(m_chacha20_fingerprint)
+            << " hashkeyid=" << printable_semantic(m_falcon_key_id)
             << " pubkey_hash=" << hex_prefix(m_falcon_pubkey_hash, 4)
             << " valid=" << (is_valid() ? "yes" : "no")
             << "}";
@@ -235,7 +258,9 @@ public:
                lhs.m_genesis_hash == rhs.m_genesis_hash &&
                lhs.m_chacha20_key == rhs.m_chacha20_key &&
                lhs.m_falcon_pubkey_hash == rhs.m_falcon_pubkey_hash &&
-               lhs.m_lane == rhs.m_lane;
+               lhs.m_lane == rhs.m_lane &&
+               lhs.m_falcon_key_id == rhs.m_falcon_key_id &&
+               lhs.m_chacha20_fingerprint == rhs.m_chacha20_fingerprint;
     }
 
     friend bool operator!=(const SessionIdentity& lhs, const SessionIdentity& rhs)
@@ -258,12 +283,20 @@ private:
         return oss.str();
     }
 
-    uint32_t m_session_id{0};
-    uint64_t m_session_epoch{0};
+    template <typename SemanticT>
+    static std::string printable_semantic(const SemanticT& value)
+    {
+        return value.is_default() ? "(empty)" : value.get();
+    }
+
+    SessionId m_session_id{};
+    SessionEpoch m_session_epoch{};
     std::vector<uint8_t> m_genesis_hash;
     std::vector<uint8_t> m_chacha20_key;
     std::vector<uint8_t> m_falcon_pubkey_hash;  // SK256 hash of Falcon pubkey (32 bytes)
     ProtocolLane m_lane{ProtocolLane::UNKNOWN};
+    FalconHashKeyId m_falcon_key_id{};
+    SessionFingerprint m_chacha20_fingerprint{};
 };
 
 } // namespace protocol
