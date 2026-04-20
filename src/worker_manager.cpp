@@ -875,21 +875,23 @@ void Worker_manager::stop()
         m_colin_agent.reset();
     }
 
-    // Stop NodeSessions
+    // Destroy workers before tearing down protocol/session state so no worker can
+    // race a late submit/request against a closing NodeSession.
+    {
+        std::lock_guard<std::mutex> lock(m_worker_mutex);
+        for (auto& worker : m_workers)
+        {
+            worker.reset();
+        }
+        m_workers.clear();
+    }
+
     if (m_primary_node_session) {
         m_primary_node_session->stop();
     }
     if (m_failover_node_session) {
         m_failover_node_session->stop();
     }
-
-    // destroy workers
-    std::lock_guard<std::mutex> lock(m_worker_mutex);
-    for(auto& worker : m_workers)
-    {
-        worker.reset();
-    }
-    m_workers.clear();
 }
 
 void Worker_manager::collect_worker_statistics()

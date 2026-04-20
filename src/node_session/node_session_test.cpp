@@ -104,6 +104,11 @@ public:
         m_handlers.at(index)(network::Result::receive_ok, std::move(payload));
     }
 
+    void emit_event(std::size_t index, network::Result::Code result, network::Shared_payload payload = {})
+    {
+        m_handlers.at(index)(result, std::move(payload));
+    }
+
     std::shared_ptr<MockConnection> connection(std::size_t index) const
     {
         return m_connections.at(index);
@@ -317,6 +322,46 @@ void test_login_on_active_connection_stopped_session()
     assert(!result);
 
     std::cout << "  ✓ Reauth is rejected once the session is stopped" << std::endl;
+}
+
+void test_stop_ignores_late_connection_events()
+{
+    std::cout << "Test: stop() ignores late connection events..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    config::Config config(make_logger("test_logger_late_stop"));
+    config.set_mining_mode(config::Mining_mode::HASH);
+    config.set_enable_sim_link(false);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    socket->m_emit_connect_synchronously = false;
+
+    auto node_session = make_node_session(io_context, config, socket, "TEST_LATE_STOP");
+    configure_valid_auth(*node_session);
+
+    bool connect_callback_invoked = false;
+    bool connect_started = node_session->connect(make_endpoint(ProtocolPorts::STATELESS_PORT),
+                                                 [&connect_callback_invoked](bool) {
+                                                     connect_callback_invoked = true;
+                                                 });
+
+    assert(connect_started);
+    assert(socket->connect_count() == 1);
+    assert(!node_session->is_primary_connected());
+
+    node_session->stop();
+    assert(connect_callback_invoked);
+    assert(!node_session->is_primary_connected());
+    assert(!node_session->is_authenticated());
+
+    socket->emit_event(0, network::Result::connection_ok);
+    pump_io(io_context);
+
+    assert(!node_session->is_primary_connected());
+    assert(!node_session->is_authenticated());
+    assert(node_session->session_id() == protocol::SessionId(0u));
+
+    std::cout << "  ✓ Late connection events are ignored after stop()" << std::endl;
 }
 
 void test_connect_callback_waits_for_full_authentication_stateless()
@@ -828,6 +873,9 @@ int main()
         std::cout << std::endl;
 
         test_login_on_active_connection_stopped_session();
+        std::cout << std::endl;
+
+        test_stop_ignores_late_connection_events();
         std::cout << std::endl;
 
         test_connect_callback_waits_for_full_authentication_stateless();

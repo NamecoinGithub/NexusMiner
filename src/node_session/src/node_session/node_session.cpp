@@ -61,7 +61,7 @@ NodeSession::NodeSession(
 
 bool NodeSession::connect(const network::Endpoint& node_endpoint, Connection_callback callback)
 {
-    if (m_stopped) {
+    if (m_stopped.load(std::memory_order_acquire)) {
         m_logger->warn("[NodeSession:{}] Cannot connect - session is stopped", m_node_label);
         return false;
     }
@@ -85,7 +85,8 @@ void NodeSession::connect_primary(const network::Endpoint& node_endpoint)
 
 void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
 {
-    if (m_secondary_connected || m_stopped) {
+    if (m_secondary_connected.load(std::memory_order_acquire) ||
+        m_stopped.load(std::memory_order_acquire)) {
         return;
     }
 
@@ -223,6 +224,10 @@ void NodeSession::connect_lane(LaneSlot slot, const network::Endpoint& node_endp
 void NodeSession::handle_lane_event(LaneSlot slot, network::Result::Code result,
                                     network::Shared_payload&& receive_buffer)
 {
+    if (m_stopped.load(std::memory_order_acquire)) {
+        return;
+    }
+
     auto descriptor = lane(slot);
 
     if (result == network::Result::connection_ok) {
@@ -230,7 +235,7 @@ void NodeSession::handle_lane_event(LaneSlot slot, network::Result::Code result,
             ::asio::post(*m_io_context, [weak_self = std::weak_ptr<NodeSession>(shared_from_this()),
                                          slot]() {
                 auto self = weak_self.lock();
-                if (!self) return;
+                if (!self || self->m_stopped.load(std::memory_order_acquire)) return;
                 self->finalize_lane_connection(slot, true);
             });
             return;
@@ -261,6 +266,10 @@ void NodeSession::handle_lane_event(LaneSlot slot, network::Result::Code result,
 void NodeSession::finalize_lane_connection(LaneSlot slot, bool deferred)
 {
     auto descriptor = lane(slot);
+    if (m_stopped.load(std::memory_order_acquire) || !*descriptor.connection || !*descriptor.protocol) {
+        return;
+    }
+
     m_logger->info("[NodeSession:{}] {} connection established{}",
                    m_node_label,
                    descriptor.label,
@@ -358,6 +367,10 @@ void NodeSession::mark_lane_authenticated(LaneSlot slot, protocol::SessionId sid
 
 bool NodeSession::begin_lane_authentication(LaneSlot slot)
 {
+    if (m_stopped.load(std::memory_order_acquire)) {
+        return false;
+    }
+
     auto descriptor = lane(slot);
     sync_protocol_state(slot);
     auto connection = *descriptor.connection;
@@ -494,7 +507,7 @@ void NodeSession::process_lane_data(LaneSlot slot, network::Shared_payload&& rec
                             ? m_primary_rx_accumulator
                             : m_secondary_rx_accumulator;
 
-    if (m_stopped || !connection || !protocol || !receive_buffer) {
+    if (m_stopped.load(std::memory_order_acquire) || !connection || !protocol || !receive_buffer) {
         return;
     }
 
@@ -572,7 +585,7 @@ NodeSession::select_active_pair() const
 
 bool NodeSession::transmit(network::Shared_payload data)
 {
-    if (m_stopped || !data || data->empty()) {
+    if (m_stopped.load(std::memory_order_acquire) || !data || data->empty()) {
         return false;
     }
 
@@ -620,7 +633,9 @@ bool NodeSession::is_session_active() const
 
 void NodeSession::stop()
 {
-    m_stopped = true;
+    if (m_stopped.exchange(true)) {
+        return;
+    }
     complete_pending_connect(false);
 
     m_logger->info("[NodeSession:{}] Stopping", m_node_label);
@@ -818,7 +833,7 @@ network::Shared_payload NodeSession::send_session_keepalive()
 
 bool NodeSession::login_on_active_connection(std::function<void(bool)> login_callback)
 {
-    if (m_stopped) {
+    if (m_stopped.load(std::memory_order_acquire)) {
         m_logger->warn("[NodeSession:{}] Cannot login - session is stopped", m_node_label);
         return false;
     }
