@@ -163,6 +163,7 @@ private:
     void clear_recovery_state();
 
     void retry_connect(network::Endpoint const& wallet_endpoint, bool force_transport_reset = false);
+    void enter_terminal_degraded_mode_internal(int signal_number, const char* reason);
 
     // ── State machine transition API ───────────────────────────────────────────
     /// Transition to a new RecoveryPhase.  Logs the transition, validates legality
@@ -186,10 +187,10 @@ private:
 
     // ── State query helpers (backward-compat convenience) ─────────────────────
     bool is_degraded()              const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::WAITING_TEMPLATE; }
-    bool is_submissions_withheld()  const { return false; }  // Backward-compat stub — no submission withholding in current model
     bool is_recovery_active()       const { return m_recovery.phase.load(std::memory_order_relaxed) != RecoveryPhase::HEALTHY; }
     bool is_session_recovery()      const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::SESSION_RECOVERY; }
     bool is_reconnecting()          const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::RECONNECTING; }
+    bool is_terminal_degraded()     const { return m_recovery.phase.load(std::memory_order_relaxed) == RecoveryPhase::DEGRADED_MODE; }
 
     /// Submit a found block via primary NodeSession (handles dual-lane submission internally).
     void submit_solution(const std::vector<uint8_t>& full_block_bytes, uint64_t nNonce);
@@ -203,9 +204,6 @@ private:
 
     // Primary NodeSession (replaces m_connection + m_miner_protocol + m_secondary_connection + m_secondary_protocol)
     std::shared_ptr<NodeSession> m_primary_node_session;
-
-    // Failover NodeSession (optional secondary node)
-    std::shared_ptr<NodeSession> m_failover_node_session;
 
     // ── Recovery state machine ────────────────────────────────────────────────
     // Single authoritative RecoveryContext replaces 15 independent boolean/timestamp
@@ -242,6 +240,7 @@ private:
 
     // ── Session authentication retry state (infinite loop prevention) ─────────
     uint32_t m_session_auth_fail_count{0};          // consecutive session_id=0 failures on primary
+    std::atomic<bool> m_terminal_stop_requested{false};
 
     // Exponential backoff calculator for session authentication retries
     util::ExponentialBackoff m_session_auth_backoff{
