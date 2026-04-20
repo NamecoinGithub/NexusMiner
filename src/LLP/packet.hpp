@@ -700,14 +700,15 @@ namespace nexusminer
 						m_header, header_msb, header_lsb);
 				}
 				
-				// Length (4 bytes, big-endian) - if payload exists
+				// Length (4 bytes, big-endian) is always emitted on outbound packets,
+				// including explicit zero-length frames.
+				BYTES.push_back((m_length >> 24) & 0xFF);
+				BYTES.push_back((m_length >> 16) & 0xFF);
+				BYTES.push_back((m_length >> 8) & 0xFF);
+				BYTES.push_back(m_length & 0xFF);
+
 				if (m_length > 0 && m_data)
 				{
-					BYTES.push_back((m_length >> 24) & 0xFF);
-					BYTES.push_back((m_length >> 16) & 0xFF);
-					BYTES.push_back((m_length >> 8) & 0xFF);
-					BYTES.push_back(m_length & 0xFF);
-					
 					// Data
 					BYTES.insert(BYTES.end(), m_data->begin(), m_data->end());
 				}
@@ -716,7 +717,6 @@ namespace nexusminer
 					// Payload expected but missing - invalid
 					return network::Shared_payload{};
 				}
-				// else: header-only packet, no length/data needed
 			}
 			else
 			{
@@ -724,17 +724,20 @@ namespace nexusminer
 				// Header (1 byte)
 				BYTES.push_back(static_cast<uint8_t>(m_header));
 
-				/** Handle for Data Packets (header < 128) or Authentication Packets (207-212) **/
-				// Both standard data packets and Falcon auth packets use the same wire format:
-				// [header (1 byte)] [length (4 bytes, big-endian)] [payload data]
-				if ((m_header < 128 || is_auth_packet()) && m_length > 0)
-				{
-					BYTES.push_back(static_cast<uint8_t>((m_length >> 24) & 0xFF));
-					BYTES.push_back(static_cast<uint8_t>((m_length >> 16) & 0xFF));
-					BYTES.push_back(static_cast<uint8_t>((m_length >> 8) & 0xFF));
-					BYTES.push_back(static_cast<uint8_t>(m_length & 0xFF));
+				// Outbound legacy packets always carry an explicit big-endian length,
+				// even when the payload length is zero.
+				BYTES.push_back(static_cast<uint8_t>((m_length >> 24) & 0xFF));
+				BYTES.push_back(static_cast<uint8_t>((m_length >> 16) & 0xFF));
+				BYTES.push_back(static_cast<uint8_t>((m_length >> 8) & 0xFF));
+				BYTES.push_back(static_cast<uint8_t>(m_length & 0xFF));
 
+				if (m_length > 0 && m_data)
+				{
 					BYTES.insert(BYTES.end(), m_data->begin(), m_data->end());
+				}
+				else if (m_length > 0)
+				{
+					return network::Shared_payload{};
 				}
 			}
 

@@ -410,11 +410,17 @@ void test_packet_format() {
 
     bool valid_payload = (payload != nullptr && !payload->empty());
 
-    // Stateless GET_BLOCK should be 2 bytes: [0xD0][0x81]
-    bool correct_size = valid_payload && (payload->size() == 2);
+    // Stateless GET_BLOCK should be a 6-byte zero-length frame:
+    // [0xD0][0x81][0x00][0x00][0x00][0x00]
+    bool correct_size = valid_payload && (payload->size() == 6);
     bool correct_header = correct_size &&
-                         ((*payload)[0] == 0xD0) &&
-                         ((*payload)[1] == 0x81);
+                          ((*payload)[0] == 0xD0) &&
+                          ((*payload)[1] == 0x81);
+    bool correct_length = correct_size &&
+                          ((*payload)[2] == 0x00) &&
+                          ((*payload)[3] == 0x00) &&
+                          ((*payload)[4] == 0x00) &&
+                          ((*payload)[5] == 0x00);
 
     if (valid_payload) {
         std::cout << "    [Packet] Size: " << payload->size() << " bytes\n";
@@ -425,7 +431,7 @@ void test_packet_format() {
         std::cout << "\n";
     }
 
-    bool passed = valid_payload && correct_size && correct_header;
+    bool passed = valid_payload && correct_size && correct_header && correct_length;
     print_test_result("GET_BLOCK packet format correct", passed);
 }
 
