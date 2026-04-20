@@ -725,7 +725,13 @@ void MiningTemplateInterface::set_session_binding(const SessionBinding& binding)
 
     m_session_identity = SessionIdentity{};
     m_current_template.identity = SessionIdentity{};
-    m_logger->info("[TemplateInterface] Session binding set without canonical identity: session_id=0x{:08x}, epoch={}",
+    if (!binding.has_session()) {
+        m_logger->debug("[TemplateInterface] Session binding cleared: session_id=0x{:08x}, epoch={}",
+                        binding.session_id.get(), binding.session_epoch.get());
+        return;
+    }
+
+    m_logger->warn("[TemplateInterface] Session binding missing canonical identity: session_id=0x{:08x}, epoch={}",
                    binding.session_id.get(), binding.session_epoch.get());
 }
 
