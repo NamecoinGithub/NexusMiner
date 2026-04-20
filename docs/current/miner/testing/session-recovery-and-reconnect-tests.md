@@ -14,6 +14,10 @@ The current test suite already covers the highest-value recovery transitions:
   - `SESSION_EXPIRED` escalation out of `WAITING_TEMPLATE`
   - blocking degraded exit while local state is in `SESSION_RECOVERY`
   - reconnect / template-recovery phase transitions
+  - the 300-second `WAITING_TEMPLATE` reconnect window used by both Hash and Prime
+- `node_session_test` covers transport-generation fencing, including the
+  regression where a late pre-reset `connection_ok` must not resurrect the old
+  session after `reset()`
 - `node_session_context_test` covers authoritative recovery-state transitions,
   including `clear_for_reauth()` now entering `RECOVERY_IN_PROGRESS`
 - `session_binding_test` covers the shared authoritative readiness predicates
@@ -30,6 +34,16 @@ Verify that reconnect does not lose:
 - reward address string used for diagnostics and rebind intent
 - decoded reward hash used as canonical wire bytes
 - the distinction between “configured” reward intent and “live bind” result
+
+### Controlled auth budget / terminal-stop policy
+
+Add coverage around the bounded recovery policy so the miner cannot drift back
+into silent reconnect churn:
+
+- immediate first in-band auth attempt
+- 90-second buffered retries after subsequent failures
+- hard stop once the 3-attempt budget is exhausted
+- hard stop once dead recovery exceeds the 300-second reconnect window
 
 ### Session ingress resync
 

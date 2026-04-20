@@ -702,7 +702,7 @@ private:
     // 1. MiningTemplateInterface:
     //    - Stores current mining template (MiningTemplate with LLP::CBlock)
     //    - Feeds templates to worker threads
-    //    - Handles template age tracking (for 60s timeout)
+    //    - Handles template age tracking for the WAITING_TEMPLATE recovery window
     //    - Manages channel height (set via set_channel_height())
     // 
     // 2. ClientChannelManagers:

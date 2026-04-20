@@ -41,8 +41,8 @@ namespace nexusminer
 // spurious escalations during normal long Prime blocks. Hash blocks arrive every
 // ~18 s so 60 s (≈ 3 blocks) is appropriate for Hash.
 namespace {
-    constexpr int64_t RECOVERY_WINDOW_SECONDS_HASH  =  60;   // Hash blocks every ~18s; 60s ≈ 3 blocks
-    constexpr int64_t RECOVERY_WINDOW_SECONDS_PRIME = 300;   // Prime blocks take 2-5+ min; 300s gives margin
+    constexpr int64_t RECOVERY_WINDOW_SECONDS_HASH  = 300;   // Hash can still see long burst-driven gaps; allow 5 min before forced reconnect
+    constexpr int64_t RECOVERY_WINDOW_SECONDS_PRIME = 300;   // Prime blocks also tolerate long gaps; align both channels on the same 5 min window
     constexpr int64_t CONTROLLED_RECOVERY_HARD_STOP_SECONDS = 300;
     constexpr uint32_t CONTROLLED_SESSION_AUTH_MAX_ATTEMPTS = 3;
     constexpr uint16_t CONTROLLED_SESSION_AUTH_RETRY_SECONDS = 90;
@@ -2271,7 +2271,7 @@ void Worker_manager::check_template_health()
         retry_template_request(protocol::GetBlockReason::RECOVERY_FORCED);
 
         /* ── Reorg Resubscription Guard ──────────────────────────────────────────
-         * After 60s in WAITING_TEMPLATE with a live authenticated session but no
+         * After the 300s WAITING_TEMPLATE window with a live authenticated session but no
          * incoming push, proactively re-send MINER_READY.  This covers the reorg
          * case: the node recovered the session but the push subscription state was
          * lost during the TCP disconnect, so the node's heartbeat cycle (480s) is

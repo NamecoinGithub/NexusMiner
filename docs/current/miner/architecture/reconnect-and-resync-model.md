@@ -103,6 +103,20 @@ The local `Worker_manager` recovery phase and the authoritative
   (for example, after `SESSION_EXPIRED` or during an in-band re-auth flow).
 - `RECONNECTING` means transport reconnect / failover is underway.
 
+The current reconnect policy keeps both Hash and Prime in `WAITING_TEMPLATE`
+for up to 300 seconds before transport reconnect is forced.  That longer
+window reflects bursty chain behavior: even though the global chain often
+advances faster, channel-specific template replacement can still see multi-
+minute gaps while `hashPrevBlock` remains sensitive to fresh tip changes.
+
+If the session is still alive but `SESSION_EXPIRED` or equivalent authority loss
+is detected, controlled in-band auth is allowed only in a bounded window:
+
+1. immediate first `AUTH_INT`
+2. up to 3 total controlled auth attempts
+3. 90 seconds between buffered retries
+4. full stop after ~5 minutes of dead recovery or retry-budget exhaustion
+
 Healthy exit requires both layers to agree.  A template arriving during
 `SESSION_RECOVERY` is cached and may still be distributed to workers, but it
 must **not** clear degraded state until the authoritative session reports:
@@ -113,6 +127,14 @@ must **not** clear degraded state until the authoritative session reports:
 
 That prevents the miner from treating “I have a template” as equivalent to
 “I have a valid session.”
+
+## Transport generation fencing
+
+`NodeSession` now stamps each connect/reset cycle with a transport generation.
+Every lane callback, deferred connect finalizer, and auth kickoff must match the
+active generation before it can mutate session state.  In practice this acts
+like a TCP epoch: once a reconnect/reset begins, any late event from the old
+socket is ignored instead of resurrecting stale auth or lane state.
 
 ## Roadmap items still open
 
