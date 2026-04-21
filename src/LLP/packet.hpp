@@ -962,7 +962,7 @@ namespace nexusminer
 				{
 					packet.m_data = std::make_shared<network::Payload>(
 						buffer_start + MIN_PACKET_SIZE, buffer_start + MIN_PACKET_SIZE + length);
-					}
+				}
 				remaining_size = buffer_size - (MIN_PACKET_SIZE + length);
 			}
 		}
@@ -1031,7 +1031,7 @@ namespace nexusminer
 				{
 					packet.m_data = std::make_shared<network::Payload>(
 						buffer_start + MIN_PACKET_SIZE, buffer_start + MIN_PACKET_SIZE + length);
-					}
+				}
 				remaining_size = buffer_size - (MIN_PACKET_SIZE + length);
 			}
 		}
