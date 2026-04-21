@@ -718,7 +718,7 @@ void test_legacy_header_only_single_byte() {
                  (packet.m_header == 216) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("MINER_READY (216) header-only packet parsed immediately", test4);
+    print_test_result("MINER_READY (216) explicit zero-length frame parsed correctly", test4);
 }
 
 // ============================================================================
@@ -874,32 +874,40 @@ void test_stateless_submit_result_compat_forms() {
     bool parsed3 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
     bool parsed4 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
     bool test3 = parsed3 &&
-                 parsed4 &&
+                 !parsed4 &&
+                 (result == ParseResult::NEED_MORE_DATA) &&
+                 (acc.size() == 2);
+    print_test_result("Header-only BLOCK_ACCEPTED_COMPAT leaves adjacent stateless header-only packet intact", test3);
+
+    acc.feed({0x00, 0x00, 0x00, 0x00});
+    bool parsed5 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test4 = parsed5 &&
                  (result == ParseResult::SUCCESS) &&
                  (packet.m_header == 0xD0D8) &&
+                 (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("Header-only BLOCK_ACCEPTED_COMPAT does not misframe adjacent stateless packets", test3);
+    print_test_result("Adjacent STATELESS_MINER_READY explicit zero-length frame parsed after compat opcode", test4);
 
     // BLOCK_REJECTED_COMPAT supports zero-length and 1-byte reason payload forms.
     acc.feed({0xD0, 0x03, 0x00, 0x00, 0x00, 0x00});
-    bool parsed5 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
-    bool test4 = parsed5 &&
+    bool parsed6 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test5 = parsed6 &&
                  (result == ParseResult::SUCCESS) &&
                  (packet.m_header == 0xD003) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("BLOCK_REJECTED_COMPAT explicit zero-length frame parsed", test4);
+    print_test_result("BLOCK_REJECTED_COMPAT explicit zero-length frame parsed", test5);
 
     acc.feed({0xD0, 0x03, 0x00, 0x00, 0x00, 0x01, 0x04});
-    bool parsed6 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
-    bool test5 = parsed6 &&
+    bool parsed7 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
+    bool test6 = parsed7 &&
                  (result == ParseResult::SUCCESS) &&
                  (packet.m_header == 0xD003) &&
                  (packet.m_length == 1) &&
                  (packet.m_data != nullptr) &&
                  ((*packet.m_data)[0] == 0x04) &&
                  acc.empty();
-    print_test_result("BLOCK_REJECTED_COMPAT one-byte reason frame parsed", test5);
+    print_test_result("BLOCK_REJECTED_COMPAT one-byte reason frame parsed", test6);
 }
 
 // ============================================================================
@@ -1029,8 +1037,8 @@ void test_accept_reject_still_header_only() {
     Packet packet;
     ParseResult result;
     
-    // ACCEPT (200) should still be header-only
-    acc.feed({200});
+    // ACCEPT (200) should still be accepted as an explicit zero-length frame.
+    acc.feed({200, 0x00, 0x00, 0x00, 0x00});
     
     bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test1 = parsed1 && 
@@ -1038,10 +1046,10 @@ void test_accept_reject_still_header_only() {
                  (packet.m_header == 200) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("ACCEPT (200) still header-only", test1);
+    print_test_result("ACCEPT (200) explicit zero-length frame parsed", test1);
     
-    // REJECT (201) should still be header-only
-    acc.feed({201});
+    // REJECT (201) should still be accepted as an explicit zero-length frame.
+    acc.feed({201, 0x00, 0x00, 0x00, 0x00});
     
     bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test2 = parsed2 && 
@@ -1049,10 +1057,10 @@ void test_accept_reject_still_header_only() {
                  (packet.m_header == 201) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("REJECT (201) still header-only", test2);
+    print_test_result("REJECT (201) explicit zero-length frame parsed", test2);
     
-    // COINBASE_SET (202) should still be header-only
-    acc.feed({202});
+    // COINBASE_SET (202) should still be accepted as an explicit zero-length frame.
+    acc.feed({202, 0x00, 0x00, 0x00, 0x00});
     
     bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test3 = parsed3 && 
@@ -1060,10 +1068,10 @@ void test_accept_reject_still_header_only() {
                  (packet.m_header == 202) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("COINBASE_SET (202) still header-only", test3);
+    print_test_result("COINBASE_SET (202) explicit zero-length frame parsed", test3);
     
-    // COINBASE_FAIL (203) should still be header-only
-    acc.feed({203});
+    // COINBASE_FAIL (203) should still be accepted as an explicit zero-length frame.
+    acc.feed({203, 0x00, 0x00, 0x00, 0x00});
     
     bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test4 = parsed4 && 
@@ -1071,7 +1079,7 @@ void test_accept_reject_still_header_only() {
                  (packet.m_header == 203) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("COINBASE_FAIL (203) still header-only", test4);
+    print_test_result("COINBASE_FAIL (203) explicit zero-length frame parsed", test4);
 }
 
 // ============================================================================
