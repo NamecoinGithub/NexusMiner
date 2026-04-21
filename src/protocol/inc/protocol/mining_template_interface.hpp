@@ -581,8 +581,12 @@ public:
         uint64_t blocks_submitted;
         uint64_t total_read_time_us;
         uint64_t total_validation_time_us;
-        uint64_t templates_expired_age;       // Templates expired due to age (>200s)
-        uint64_t templates_expired_height;    // Templates expired due to height change
+        uint64_t templates_expired_age;               // Templates expired due to age (>200s)
+        uint64_t templates_expired_height;            // Templates expired due to height change
+        // Stateless metadata divergence counters (read-only diagnostics)
+        uint64_t stateless_nbits_divergence_count;    // metadata.nBits != body.nBits
+        uint64_t stateless_height_divergence_count;   // metadata.unified_height+1 != body.nHeight
+        uint64_t stateless_channel_sanity_violations; // metadata.channel_height > metadata.unified_height
     };
     
     /**
@@ -676,6 +680,11 @@ private:
     // Template expiration tracking
     std::atomic<uint64_t> m_templates_expired_age{0};      // Templates expired due to age
     std::atomic<uint64_t> m_templates_expired_height{0};   // Templates expired due to height change
+
+    // Stateless metadata divergence counters (read-only diagnostics — no behavior change)
+    std::atomic<uint64_t> m_stateless_nbits_divergence_count{0};    // metadata.nBits != body.nBits
+    std::atomic<uint64_t> m_stateless_height_divergence_count{0};   // metadata.unified_height+1 != body.nHeight
+    std::atomic<uint64_t> m_stateless_channel_sanity_violations{0}; // metadata.channel_height > metadata.unified_height
 
     // Template feed debounce tracking (unified dedup gate)
     // Prevents duplicate template distribution when the same block arrives via

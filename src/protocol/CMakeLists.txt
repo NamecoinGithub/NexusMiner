@@ -114,6 +114,11 @@ add_nexusminer_test(NAME stateless_block_utility_test
     LINK_LIBS   protocol LLP spdlog
     INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
 
+add_nexusminer_test(NAME stateless_metadata_divergence_test
+    SOURCES     stateless_metadata_divergence_test.cpp
+    LINK_LIBS   protocol LLP spdlog
+    INCLUDE_DIRS ${_LLP_INC})
+
 add_nexusminer_test(NAME e2e_block_submission_test
     SOURCES     e2e_block_submission_test.cpp
                 ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp
