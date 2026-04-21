@@ -86,7 +86,8 @@ void NodeSession::connect_primary(const network::Endpoint& node_endpoint)
 
 void NodeSession::connect_secondary(const network::Endpoint& node_endpoint)
 {
-    if (m_secondary_connected || m_stopped.load(std::memory_order_acquire)) {
+    if (m_secondary_connected.load(std::memory_order_acquire) ||
+        m_stopped.load(std::memory_order_acquire)) {
         return;
     }
 
@@ -331,7 +332,7 @@ void NodeSession::finalize_lane_connection(LaneSlot slot, uint64_t transport_gen
     }
 
     auto descriptor = lane(slot);
-    if (!*descriptor.connection) {
+    if (!*descriptor.connection || !*descriptor.protocol) {
         return;
     }
     m_logger->info("[NodeSession:{}] {} connection established{}",
@@ -576,7 +577,7 @@ void NodeSession::process_lane_data(LaneSlot slot, network::Shared_payload&& rec
                             ? m_primary_rx_accumulator
                             : m_secondary_rx_accumulator;
 
-    if (m_stopped || !connection || !protocol || !receive_buffer) {
+    if (m_stopped.load(std::memory_order_acquire) || !connection || !protocol || !receive_buffer) {
         return;
     }
 
@@ -654,7 +655,7 @@ NodeSession::select_active_pair() const
 
 bool NodeSession::transmit(network::Shared_payload data)
 {
-    if (m_stopped || !data || data->empty()) {
+    if (m_stopped.load(std::memory_order_acquire) || !data || data->empty()) {
         return false;
     }
 
@@ -702,8 +703,7 @@ bool NodeSession::is_session_active() const
 
 void NodeSession::stop()
 {
-    bool expected = false;
-    if (!m_stopped.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+    if (m_stopped.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
 
@@ -849,7 +849,7 @@ network::Shared_payload NodeSession::send_session_keepalive()
 
 bool NodeSession::login_on_active_connection(std::function<void(bool)> login_callback)
 {
-    if (m_stopped) {
+    if (m_stopped.load(std::memory_order_acquire)) {
         m_logger->warn("[NodeSession:{}] Cannot login - session is stopped", m_node_label);
         return false;
     }
