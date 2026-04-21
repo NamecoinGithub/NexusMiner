@@ -18,14 +18,14 @@
 #include "protocol/mining_template_interface.hpp"
 #include "worker/worker.hpp"
 #include "LLP/block.hpp"
-#include <iostream>
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
-#include <algorithm>
-#include <cstring>
 
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/null_sink.h"

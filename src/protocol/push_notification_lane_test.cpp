@@ -33,6 +33,7 @@ namespace MinerLLP = nexusminer::LLP;
 static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
+static constexpr uint8_t ZERO_DIFF_PUSH_PREV_HASH_FILL = 0x42;
 
 void print_test_result(const char* name, bool passed) {
     tests_run++;
@@ -1332,7 +1333,8 @@ int main()
         auto res = tmpl_iface.read_template(template_data, "test_node", false);
         print_test_result("Zero-difficulty push setup template valid", res.is_valid);
 
-        network::Payload payload = create_extended_push_payload(9600, 100, 0x00000000, 0x42);
+        network::Payload payload = create_extended_push_payload(
+            9600, 100, 0x00000000, ZERO_DIFF_PUSH_PREV_HASH_FILL);
         Packet pkt(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
 
         bool update_called = false;

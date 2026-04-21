@@ -16,13 +16,13 @@
 #include "LLP/block.hpp"
 #include "LLP/miner_opcodes.hpp"
 #include "worker/block_header_utils.hpp"
-#include <iostream>
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <memory>
-#include <chrono>
 #include <thread>
 
 // Mock logger for testing
