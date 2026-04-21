@@ -22,6 +22,40 @@ namespace nexusminer
 		NEED_MORE_DATA = 1, // Not enough bytes yet, wait for more data
 		MALFORMED = 2       // Invalid/malformed packet data, disconnect required
 	};
+
+	enum class HeaderOnlyWireForm : uint8_t {
+		BARE_HEADER = 0,
+		EXPLICIT_ZERO_LENGTH = 1,
+		NEED_MORE_DATA = 2
+	};
+
+	inline HeaderOnlyWireForm classify_header_only_wire_form(network::Shared_payload const& buffer,
+	                                                        std::size_t start_index,
+	                                                        std::size_t header_size)
+	{
+		if (!buffer || start_index + header_size >= buffer->size())
+		{
+			return HeaderOnlyWireForm::NEED_MORE_DATA;
+		}
+
+		std::size_t const available_length_bytes =
+			std::min<std::size_t>(4, buffer->size() - (start_index + header_size));
+
+		for (std::size_t i = 0; i < available_length_bytes; ++i)
+		{
+			if ((*buffer)[start_index + header_size + i] != 0)
+			{
+				return HeaderOnlyWireForm::BARE_HEADER;
+			}
+		}
+
+		if (available_length_bytes < 4)
+		{
+			return HeaderOnlyWireForm::NEED_MORE_DATA;
+		}
+
+		return HeaderOnlyWireForm::EXPLICIT_ZERO_LENGTH;
+	}
 	
 	// Packet protocol constants
 	namespace PacketConstants {
@@ -870,6 +904,8 @@ namespace nexusminer
 		{
 			// LEGACY LANE: Always 8-bit header
 			// Format: [header:1B][length:4B][data] or [header:1B] for header-only
+			constexpr std::size_t HEADER_SIZE = 1;
+			constexpr std::size_t MIN_PACKET_SIZE = HEADER_SIZE + 4;
 			packet.m_is_uint16_opcode = false;
 			
 			if (buffer_size < 1)
@@ -884,14 +920,26 @@ namespace nexusminer
 			// Header-only opcodes: complete with just 1 byte
 			if (PacketConstants::is_legacy_header_only_opcode(header_byte))
 			{
-				packet.m_is_valid = true;
-				packet.m_length = 0;
-				remaining_size = buffer_size - 1;
-				return packet;
+				switch (classify_header_only_wire_form(buffer, start_index, HEADER_SIZE))
+				{
+				case HeaderOnlyWireForm::EXPLICIT_ZERO_LENGTH:
+					packet.m_is_valid = true;
+					packet.m_length = 0;
+					remaining_size = buffer_size - MIN_PACKET_SIZE;
+					return packet;
+				case HeaderOnlyWireForm::BARE_HEADER:
+					packet.m_is_valid = true;
+					packet.m_length = 0;
+					remaining_size = buffer_size - 1;
+					return packet;
+				case HeaderOnlyWireForm::NEED_MORE_DATA:
+					packet.m_is_valid = false;
+					return packet;
+				}
 			}
 			
 			// Data/auth packet: need header + 4-byte length field
-			if (buffer_size < 5)
+			if (buffer_size < MIN_PACKET_SIZE)
 			{
 				// Not enough data for length field
 				packet.m_is_valid = false;
@@ -902,7 +950,7 @@ namespace nexusminer
 				// Parse length (4 bytes, big-endian)
 				std::uint32_t const length = read_be32(buffer->data() + start_index + 1);
 				
-				if (length > std::distance(buffer_start + 5, buffer->end()))
+				if (length > std::distance(buffer_start + MIN_PACKET_SIZE, buffer->end()))
 				{
 					packet.m_is_valid = false;
 					return packet;
@@ -913,15 +961,17 @@ namespace nexusminer
 				if (length > 0)
 				{
 					packet.m_data = std::make_shared<network::Payload>(
-						buffer_start + 5, buffer_start + 5 + length);
+						buffer_start + MIN_PACKET_SIZE, buffer_start + MIN_PACKET_SIZE + length);
 				}
-				remaining_size = buffer_size - (5 + length);
+				remaining_size = buffer_size - (MIN_PACKET_SIZE + length);
 			}
 		}
 		else if (lane == ProtocolLane::STATELESS)
 		{
 			// STATELESS LANE: Always 16-bit header
 			// Format: [header:2B][length:4B][data] or [header:2B] for header-only
+			constexpr std::size_t HEADER_SIZE = 2;
+			constexpr std::size_t MIN_PACKET_SIZE = HEADER_SIZE + 4;
 			packet.m_is_uint16_opcode = true;
 			
 			if (buffer_size < 2)
@@ -939,14 +989,26 @@ namespace nexusminer
 			if (PacketConstants::is_stateless_opcode(header16) && 
 			    PacketConstants::is_stateless_header_only_opcode(header16))
 			{
-				packet.m_is_valid = true;
-				packet.m_length = 0;
-				remaining_size = buffer_size - 2;
-				return packet;
+				switch (classify_header_only_wire_form(buffer, start_index, HEADER_SIZE))
+				{
+				case HeaderOnlyWireForm::EXPLICIT_ZERO_LENGTH:
+					packet.m_is_valid = true;
+					packet.m_length = 0;
+					remaining_size = buffer_size - MIN_PACKET_SIZE;
+					return packet;
+				case HeaderOnlyWireForm::BARE_HEADER:
+					packet.m_is_valid = true;
+					packet.m_length = 0;
+					remaining_size = buffer_size - 2;
+					return packet;
+				case HeaderOnlyWireForm::NEED_MORE_DATA:
+					packet.m_is_valid = false;
+					return packet;
+				}
 			}
 			
 			// Data/auth packet: need header + 4-byte length field
-			if (buffer_size < 6)
+			if (buffer_size < MIN_PACKET_SIZE)
 			{
 				// Not enough data for length field
 				packet.m_is_valid = false;
@@ -957,7 +1019,7 @@ namespace nexusminer
 				// Parse length (4 bytes, big-endian)
 				std::uint32_t const length = read_be32(buffer->data() + start_index + 2);
 				
-				if (length > std::distance(buffer_start + 6, buffer->end()))
+				if (length > std::distance(buffer_start + MIN_PACKET_SIZE, buffer->end()))
 				{
 					packet.m_is_valid = false;
 					return packet;
@@ -968,9 +1030,9 @@ namespace nexusminer
 				if (length > 0)
 				{
 					packet.m_data = std::make_shared<network::Payload>(
-						buffer_start + 6, buffer_start + 6 + length);
+						buffer_start + MIN_PACKET_SIZE, buffer_start + MIN_PACKET_SIZE + length);
 				}
-				remaining_size = buffer_size - (6 + length);
+				remaining_size = buffer_size - (MIN_PACKET_SIZE + length);
 			}
 		}
 		else
@@ -1053,12 +1115,24 @@ namespace nexusminer
 			// Request/response packets and MINER_READY/PING are header-only
 			if (PacketConstants::is_legacy_header_only_opcode(header_byte))
 			{
-				// Header-only packet: complete with just the 1-byte header
-				packet.m_is_valid = true;
-				packet.m_length = 0;
-				bytes_consumed = 1;
-				result = ParseResult::SUCCESS;
-				return packet;
+				switch (classify_header_only_wire_form(buffer, start_index, HEADER_SIZE))
+				{
+				case HeaderOnlyWireForm::EXPLICIT_ZERO_LENGTH:
+					packet.m_is_valid = true;
+					packet.m_length = 0;
+					bytes_consumed = MIN_PACKET_SIZE;
+					result = ParseResult::SUCCESS;
+					return packet;
+				case HeaderOnlyWireForm::BARE_HEADER:
+					packet.m_is_valid = true;
+					packet.m_length = 0;
+					bytes_consumed = HEADER_SIZE;
+					result = ParseResult::SUCCESS;
+					return packet;
+				case HeaderOnlyWireForm::NEED_MORE_DATA:
+					result = ParseResult::NEED_MORE_DATA;
+					return packet;
+				}
 			}
 			
 			// Data or auth packet: need header + 4-byte length field minimum
@@ -1178,12 +1252,24 @@ namespace nexusminer
 			// Un-mirrored data opcodes are always data-bearing (never header-only)
 			if (is_valid_stateless && PacketConstants::is_stateless_header_only_opcode(header16))
 			{
-				// Header-only stateless packet: complete with just 2-byte header
-				packet.m_is_valid = true;
-				packet.m_length = 0;
-				bytes_consumed = 2;
-				result = ParseResult::SUCCESS;
-				return packet;
+				switch (classify_header_only_wire_form(buffer, start_index, HEADER_SIZE))
+				{
+				case HeaderOnlyWireForm::EXPLICIT_ZERO_LENGTH:
+					packet.m_is_valid = true;
+					packet.m_length = 0;
+					bytes_consumed = MIN_PACKET_SIZE;
+					result = ParseResult::SUCCESS;
+					return packet;
+				case HeaderOnlyWireForm::BARE_HEADER:
+					packet.m_is_valid = true;
+					packet.m_length = 0;
+					bytes_consumed = HEADER_SIZE;
+					result = ParseResult::SUCCESS;
+					return packet;
+				case HeaderOnlyWireForm::NEED_MORE_DATA:
+					result = ParseResult::NEED_MORE_DATA;
+					return packet;
+				}
 			}
 			
 			// Data or auth packet: need header + 4-byte length field minimum
