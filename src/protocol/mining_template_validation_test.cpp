@@ -29,6 +29,11 @@
 using namespace nexusminer::protocol;
 namespace MinerLLP = nexusminer::LLP;
 
+static std::vector<uint8_t> raw_serialized_bytes(const uint1024_t& value)
+{
+    return std::vector<uint8_t>(value.begin(), value.end());
+}
+
 // Test statistics
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -538,7 +543,7 @@ int main()
             // prepare_block_submission() serializes the solved block (Tritium 216-byte format)
             // Tritium layout: nVersion(4) + hashPrevBlock(128) + hashMerkleRoot(64) +
             //                 nChannel(4) + nHeight(4) + nBits(4) + nNonce(8) = 216 bytes
-            // nHeight is at offset 200 (big-endian uint32)
+            // nHeight is at offset 200 (little-endian uint32 in submit layout)
             uint64_t nonce = 0xDEADBEEFCAFEBABEULL;
             auto payload = tmpl_interface.prepare_block_submission(merkle_root, nonce);
 
@@ -546,12 +551,12 @@ int main()
                 payload.size() == 216);
 
             if (payload.size() >= 204) {
-                // Read nHeight from serialized payload at offset 200 (big-endian)
+                // Read nHeight from serialized payload at offset 200 (little-endian)
                 uint32_t serialized_height =
-                    (static_cast<uint32_t>(payload[200]) << 24) |
-                    (static_cast<uint32_t>(payload[201]) << 16) |
-                    (static_cast<uint32_t>(payload[202]) << 8)  |
-                     static_cast<uint32_t>(payload[203]);
+                    static_cast<uint32_t>(payload[200]) |
+                    (static_cast<uint32_t>(payload[201]) << 8) |
+                    (static_cast<uint32_t>(payload[202]) << 16)  |
+                    (static_cast<uint32_t>(payload[203]) << 24);
 
                 print_test_result("block.nHeight (unified) preserved in payload[200-203]",
                     serialized_height == unified_height);
@@ -637,11 +642,13 @@ int main()
 
             print_test_result("prepare_block_submission() returns 216-byte payload", payload.size() == 216);
 
-            // 5. Verify payload[4..131] matches the original hashPrevBlock bytes.
+            // 5. Verify payload[4..131] matches the canonical serialized hash bytes
+            // emitted by the node-compatible submit serializer.
             if (payload.size() == 216) {
                 bool payload_prev_ok = true;
+                const auto expected_prev = raw_serialized_bytes(tmpl->block.hashPrevBlock);
                 for (int i = 0; i < 128 && payload_prev_ok; ++i) {
-                    payload_prev_ok = (payload[4 + i] == static_cast<uint8_t>((i + 1) & 0xFF));
+                    payload_prev_ok = (payload[4 + i] == expected_prev[static_cast<std::size_t>(i)]);
                 }
                 print_test_result("✓ hashPrevBlock preserved at payload[4-131]", payload_prev_ok);
             } else {

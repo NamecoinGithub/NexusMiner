@@ -579,7 +579,7 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     bool is_tritium = (m_current_template.format == BlockFormat::TRITIUM);
     
     // Serialize the full block
-    auto payload = llp_utils::serialize_full_block(solved_block, is_tritium);
+    auto payload = llp_utils::serialize_submit_block(solved_block, is_tritium);
     
     // SUBMISSION AUDIT: Log solved block fields for ProofHash cross-reference with node.
     // The node calls pBlock->ProofHash() on nVersion..nBits. These must match for
@@ -614,20 +614,21 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
             return {};
         }
         
-        // Verify nHeight survives serialization at offset 200 (Tritium: big-endian uint32 at [200-203])
+        // Verify nHeight survives submit serialization at offset 200
+        // (Tritium: little-endian uint32 at [200-203]).
         if (is_tritium && payload.size() >= 204)
         {
             uint32_t nHeightSerialized =
-                (static_cast<uint32_t>(payload[200]) << 24) |
-                (static_cast<uint32_t>(payload[201]) << 16) |
-                (static_cast<uint32_t>(payload[202]) << 8) |
-                static_cast<uint32_t>(payload[203]);
+                static_cast<uint32_t>(payload[200]) |
+                (static_cast<uint32_t>(payload[201]) << 8) |
+                (static_cast<uint32_t>(payload[202]) << 16) |
+                (static_cast<uint32_t>(payload[203]) << 24);
             if (nHeightSerialized != solved_block.nHeight)
                 m_logger->error("[SUBMIT AUDIT]   ❌ CRITICAL: nHeight serialization mismatch! "
                     "block.nHeight={} but serialized[200-203]={}",
                     solved_block.nHeight, nHeightSerialized);
             else
-                m_logger->info("[SUBMIT AUDIT]   ✅ nHeight verified in serialized payload: {}", nHeightSerialized);
+                m_logger->info("[SUBMIT AUDIT]   ✅ nHeight verified in serialized payload (LE): {}", nHeightSerialized);
         }
         
         // Verify nNonce survives serialization at offset 208 (Tritium: little-endian uint64 at [208-215])

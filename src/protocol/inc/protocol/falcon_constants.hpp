@@ -231,7 +231,7 @@ namespace FalconConstants {
     //==========================================================================
     
     /** Submit Block wrapper - Tritium LOCALHOST (no encryption)
-     *  Format: [compact_header(216)][vOffsets(10)][timestamp(8)][sig_len(2)][signature(1577 max)]
+     *  Format: [canonical_submit_block(216)][vOffsets(10)][timestamp(8)][sig_len(2)][signature(1577 max)]
      *  vOffsets: 10 bytes for Prime channel (6 chain offsets + 4 fraction bytes).
      *            Hash channel carries no vOffsets, so this size also covers Hash (conservative max).
      *  Calculation: 216 + 10 + 8 + 2 + 1577 = 1813 bytes
@@ -251,7 +251,7 @@ namespace FalconConstants {
     
     /** Submit Block wrapper - Legacy LOCALHOST (no encryption)
      *  Legacy (Hash channel) submissions carry no vOffsets.
-     *  Format: [compact_header(220)][timestamp(8)][sig_len(2)][signature(1577 max)]
+     *  Format: [canonical_submit_block(220)][timestamp(8)][sig_len(2)][signature(1577 max)]
      *  Calculation: 220 + 8 + 2 + 1577 = 1807 bytes
      */
     constexpr size_t SUBMIT_BLOCK_WRAPPER_LEGACY_MAX = 

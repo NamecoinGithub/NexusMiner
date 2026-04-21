@@ -22,6 +22,7 @@
  */
 
 #include "include/stateless_block_utility.hpp"
+#include "LLP/block_utils.hpp"
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/height_tracker.hpp"
 #include "worker/block_header_utils.hpp"
@@ -165,6 +166,10 @@ static std::vector<unsigned char> get_raw_block_header_bytes(const ::LLP::CBlock
         ? reinterpret_cast<const unsigned char*>(END(block.nBits))
         : reinterpret_cast<const unsigned char*>(END(block.nNonce));
     return std::vector<unsigned char>(begin, end);
+}
+
+static std::vector<uint8_t> get_raw_hash_bytes(const uint1024_t& value) {
+    return std::vector<uint8_t>(value.begin(), value.end());
 }
 
 /** Return a default (zero) HeightTracker::Snapshot for tests that don't need it. */
@@ -497,6 +502,33 @@ static void test_worker_hash_header_bytes_include_nonce() {
                  nexusminer::GetBlockHeaderBytes(blk_a, true) == nexusminer::GetBlockHeaderBytes(blk_b, true));
 }
 
+// Test 21 -- canonical submit serialization uses little-endian scalar fields
+static void test_submit_serialization_uses_little_endian_scalars() {
+    auto blk = make_patterned_block(0x0123456789ABCDEFULL);
+    const auto payload = nexusminer::llp_utils::serialize_submit_block(blk, true);
+
+    bool ok = (payload.size() == 216);
+    ok = ok && payload[0] == 0x04 && payload[1] == 0x03 && payload[2] == 0x02 && payload[3] == 0x01;
+    ok = ok && payload[196] == 0x01 && payload[197] == 0x00 && payload[198] == 0x00 && payload[199] == 0x00;
+    ok = ok && payload[200] == 0x81 && payload[201] == 0x8d && payload[202] == 0x5b && payload[203] == 0x00;
+    ok = ok && payload[204] == 0x4d && payload[205] == 0x3c && payload[206] == 0x2b && payload[207] == 0x1a;
+    ok = ok && payload[208] == 0xef && payload[209] == 0xcd && payload[210] == 0xab && payload[211] == 0x89 &&
+              payload[212] == 0x67 && payload[213] == 0x45 && payload[214] == 0x23 && payload[215] == 0x01;
+
+    print_result("serialize_submit_block(): canonical submit scalar fields are little-endian", ok);
+}
+
+// Test 22 -- canonical submit serialization uses raw base_uint limb bytes for hashes
+static void test_submit_serialization_uses_canonical_hash_bytes() {
+    auto blk = make_patterned_block();
+    const auto payload = nexusminer::llp_utils::serialize_submit_block(blk, true);
+    const auto expected_prev = get_raw_hash_bytes(blk.hashPrevBlock);
+
+    bool ok = (payload.size() >= 132) &&
+              std::equal(expected_prev.begin(), expected_prev.end(), payload.begin() + 4);
+    print_result("serialize_submit_block(): hashPrevBlock matches canonical raw base_uint bytes", ok);
+}
+
 
 
 int main() {
@@ -526,6 +558,8 @@ int main() {
     test_worker_prime_base_hash_matches_llc_sk1024();
     test_worker_prime_base_hash_ignores_nonce();
     test_worker_hash_header_bytes_include_nonce();
+    test_submit_serialization_uses_little_endian_scalars();
+    test_submit_serialization_uses_canonical_hash_bytes();
 
     std::cout << "\n";
     std::cout << "========================================\n";

@@ -5,6 +5,8 @@
 #include "network/types.hpp"
 #include <stdexcept>
 #include <cstdint>
+#include <cstddef>
+#include <type_traits>
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
@@ -67,31 +69,22 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
             std::to_string(MIN_SIZE));
     }
     
-    // ═══════════════════════════════════════════════════════════════════════
-    // TRAINING WHEELS: Detailed Block Deserialization Logging
-    // Note: Logging at INFO level for debugging. Set log level to WARN in
-    // production to reduce verbosity. The deserialization only happens once
-    // per received block template (typically every few minutes), so performance
-    // impact is minimal.
-    // ═══════════════════════════════════════════════════════════════════════
-    logger->info("╔═══════════════════════════════════════════════════════════════════╗");
-    logger->info("║  BLOCK DESERIALIZATION - Training Wheels Mode                     ║");
-    logger->info("╠═══════════════════════════════════════════════════════════════════╣");
-    logger->info("║  Payload size: {} bytes", data.size());
+    // Keep template deserialization diagnostics at debug level so routine
+    // submits/templates do not emit misleading "training wheels" noise.
+    logger->debug("[Deserialize] Template payload size: {} bytes", data.size());
     
     // Determine block type for logging
     std::string block_type;
     if (data.size() == TRITIUM_BLOCK_SIZE) {
         block_type = "Tritium (216 bytes)";
-        logger->info("║  Block type: {} - nChannel IS serialized at offset 196", block_type);
+        logger->debug("[Deserialize] Block type: {} - nChannel serialized at offset 196", block_type);
     } else if (data.size() >= LEGACY_BLOCK_MIN_SIZE) {
         block_type = "Legacy (220+ bytes)";
-        logger->info("║  Block type: {} - nChannel at offset {}", block_type, LEGACY_CHANNEL_OFFSET);
+        logger->debug("[Deserialize] Block type: {} - nChannel at offset {}", block_type, LEGACY_CHANNEL_OFFSET);
     } else {
         block_type = "Compact (92 bytes)";
-        logger->info("║  Block type: {} - sequential format", block_type);
+        logger->debug("[Deserialize] Block type: {} - sequential format", block_type);
     }
-    logger->info("╚═══════════════════════════════════════════════════════════════════╝");
     
     // Hex dump of first 32 bytes for debugging
     if (data.size() > 0) {
@@ -101,7 +94,7 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
         for (size_t i = 0; i < preview_len; ++i) {
             hex_preview << std::setw(2) << static_cast<unsigned int>(data[i]) << " ";
         }
-        logger->info("[Deserialize] First {} bytes (hex): {}", preview_len, hex_preview.str());
+        logger->debug("[Deserialize] First {} bytes (hex): {}", preview_len, hex_preview.str());
     }
     
     std::size_t offset = 0;
@@ -533,130 +526,98 @@ inline ::LLP::CBlock deserialize_block_header(network::Payload const& data)
     // ═══════════════════════════════════════════════════════════════════════
     // DESERIALIZATION COMPLETE - Summary
     // ═══════════════════════════════════════════════════════════════════════
-    logger->info("╔═══════════════════════════════════════════════════════════════════╗");
-    logger->info("║  DESERIALIZATION COMPLETE - Block Summary                         ║");
-    logger->info("╠═══════════════════════════════════════════════════════════════════╣");
-    logger->info("║  nVersion:  {}", block.nVersion);
-    logger->info("║  nChannel:  {} ({})", block.nChannel, 
+    logger->debug("[Deserialize] Block summary: nVersion={}", block.nVersion);
+    logger->debug("[Deserialize] Block summary: nChannel={} ({})", block.nChannel,
         (block.nChannel == 1) ? "Prime" : (block.nChannel == 2) ? "Hash" : "INVALID");
-    logger->info("║  nHeight:   {}", block.nHeight);
-    logger->info("║  nBits:     0x{:08x}", block.nBits);
-    logger->info("║  nNonce:    0x{:016x}", block.nNonce);
-    logger->info("║  nTime:     {}", block.nTime);
-    logger->info("╚═══════════════════════════════════════════════════════════════════╝");
+    logger->debug("[Deserialize] Block summary: nHeight={}", block.nHeight);
+    logger->debug("[Deserialize] Block summary: nBits=0x{:08x}", block.nBits);
+    logger->debug("[Deserialize] Block summary: nNonce=0x{:016x}", block.nNonce);
+    logger->debug("[Deserialize] Block summary: nTime={}", block.nTime);
     
     return block;
 }
 
 /**
- * Serialize a full block for submission to LLL-TAO node.
+ * Serialize a submit block in the canonical node-compatible layout.
  * 
- * Serializes the block in the format expected by the node based on block type:
- * - Tritium: 216 bytes with 8-byte nNonce (nTime not included in template)
- * - Legacy: 220 bytes with 8-byte nNonce and 4-byte nTime
+ * This intentionally does NOT reuse the inbound BLOCK_DATA/template encoding.
+ * Templates arrive in explicit big-endian field order, but submit payloads must
+ * match the node-side CBlock serialization contract:
+ * - uint32 scalars: little-endian
+ * - base_uint hashes: raw serialized limbs (matches base_uint::Serialize())
+ * - nNonce: little-endian
+ * - Tritium submit body ends at nNonce (216 bytes)
+ * - Legacy submit body includes nTime (220 bytes)
  * 
  * @param block The block to serialize
  * @param is_tritium True for Tritium format, false for Legacy format
  * @return Serialized block bytes
  */
-inline std::vector<std::uint8_t> serialize_full_block(::LLP::CBlock const& block, bool is_tritium)
+inline std::vector<std::uint8_t> serialize_submit_block(::LLP::CBlock const& block, bool is_tritium)
 {
+    static_assert(std::is_standard_layout<::LLP::CBlock>::value,
+                  "CBlock must remain standard-layout for offset-based submit serialization");
+    static_assert(offsetof(::LLP::CBlock, nChannel) == 196, "Unexpected nChannel offset");
+    static_assert(offsetof(::LLP::CBlock, nHeight) == 200, "Unexpected nHeight offset");
+    static_assert(offsetof(::LLP::CBlock, nBits) == 204, "Unexpected nBits offset");
+    static_assert(offsetof(::LLP::CBlock, nNonce) == 208, "Unexpected nNonce offset");
+    static_assert(offsetof(::LLP::CBlock, nTime) == 216, "Unexpected nTime offset");
+
     std::vector<std::uint8_t> data;
-    
-    // Helper to write big-endian uint32
-    auto write_u32 = [&](std::uint32_t value) {
-        data.push_back((value >> 24) & 0xFF);
-        data.push_back((value >> 16) & 0xFF);
-        data.push_back((value >> 8) & 0xFF);
-        data.push_back(value & 0xFF);
-    };
-    
-    // Helper to write big-endian uint64
-    auto write_u64 = [&](std::uint64_t value) {
-        data.push_back((value >> 56) & 0xFF);
-        data.push_back((value >> 48) & 0xFF);
-        data.push_back((value >> 40) & 0xFF);
-        data.push_back((value >> 32) & 0xFF);
-        data.push_back((value >> 24) & 0xFF);
-        data.push_back((value >> 16) & 0xFF);
-        data.push_back((value >> 8) & 0xFF);
-        data.push_back(value & 0xFF);
+
+    auto write_u32_le = [&](std::uint32_t value) {
+        data.push_back(static_cast<std::uint8_t>(value & 0xFF));
+        data.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFF));
+        data.push_back(static_cast<std::uint8_t>((value >> 16) & 0xFF));
+        data.push_back(static_cast<std::uint8_t>((value >> 24) & 0xFF));
     };
 
-    // Helper to write little-endian uint64 (used for nNonce — Nexus node reads nNonce as LE)
-    auto write_u64_le = [&](std::uint64_t value) {
-        data.push_back(value & 0xFF);
-        data.push_back((value >> 8) & 0xFF);
-        data.push_back((value >> 16) & 0xFF);
-        data.push_back((value >> 24) & 0xFF);
-        data.push_back((value >> 32) & 0xFF);
-        data.push_back((value >> 40) & 0xFF);
-        data.push_back((value >> 48) & 0xFF);
-        data.push_back((value >> 56) & 0xFF);
+    auto append_serialized_bytes = [&](const auto& value) {
+        const auto* begin = value.begin();
+        const auto* end = value.end();
+        data.insert(data.end(), begin, end);
     };
-    
+
+    auto write_u64_le = [&](std::uint64_t value) {
+        data.push_back(static_cast<std::uint8_t>(value & 0xFF));
+        data.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFF));
+        data.push_back(static_cast<std::uint8_t>((value >> 16) & 0xFF));
+        data.push_back(static_cast<std::uint8_t>((value >> 24) & 0xFF));
+        data.push_back(static_cast<std::uint8_t>((value >> 32) & 0xFF));
+        data.push_back(static_cast<std::uint8_t>((value >> 40) & 0xFF));
+        data.push_back(static_cast<std::uint8_t>((value >> 48) & 0xFF));
+        data.push_back(static_cast<std::uint8_t>((value >> 56) & 0xFF));
+    };
+
     if (is_tritium) {
-        // Tritium block format (216 bytes) - CORRECTED ORDER
-        // Structure: nVersion(4) + hashPrevBlock(128) + hashMerkleRoot(64) + 
-        //            nChannel(4) + nHeight(4) + nBits(4) + nNonce(8)
-        // Total: 4+128+64+4+4+4+8 = 216 bytes
         data.reserve(216);
-        
-        // 1. nVersion (4 bytes)
-        write_u32(block.nVersion);
-        
-        // 2. hashPrevBlock (128 bytes)
-        auto prev_bytes = block.hashPrevBlock.GetBytes();
-        data.insert(data.end(), prev_bytes.begin(), prev_bytes.end());
-        
-        // 3. hashMerkleRoot (64 bytes)
-        auto merkle_bytes = block.hashMerkleRoot.GetBytes();
-        data.insert(data.end(), merkle_bytes.begin(), merkle_bytes.end());
-        
-        // ✅ 4. nChannel (4 bytes at offset 196) - WRITE THIS FIRST!
-        write_u32(block.nChannel);
-        
-        // ✅ 5. nHeight (4 bytes at offset 200) - THEN THIS!
-        write_u32(block.nHeight);
-        
-        // ✅ 6. nBits (4 bytes at offset 204) - THEN THIS!
-        write_u32(block.nBits);
-        
-        // ✅ 7. nNonce (8 bytes at offset 208) - little-endian (Nexus node reads nNonce as LE)
+
+        write_u32_le(block.nVersion);
+        append_serialized_bytes(block.hashPrevBlock);
+        append_serialized_bytes(block.hashMerkleRoot);
+        write_u32_le(block.nChannel);
+        write_u32_le(block.nHeight);
+        write_u32_le(block.nBits);
         write_u64_le(block.nNonce);
-        
     } else {
-        // Legacy block format (220 bytes)
         data.reserve(220);
-        
-        // 1. nVersion (4 bytes)
-        write_u32(block.nVersion);
-        
-        // 2. hashPrevBlock (128 bytes)
-        auto prev_bytes = block.hashPrevBlock.GetBytes();
-        data.insert(data.end(), prev_bytes.begin(), prev_bytes.end());
-        
-        // 3. hashMerkleRoot (64 bytes)
-        auto merkle_bytes = block.hashMerkleRoot.GetBytes();
-        data.insert(data.end(), merkle_bytes.begin(), merkle_bytes.end());
-        
-        // 4. nChannel (4 bytes)
-        write_u32(block.nChannel);
-        
-        // 5. nHeight (4 bytes)
-        write_u32(block.nHeight);
-        
-        // 6. nBits (4 bytes)
-        write_u32(block.nBits);
-        
-        // 7. nNonce (8 bytes) - little-endian (Nexus node reads nNonce as LE)
+
+        write_u32_le(block.nVersion);
+        append_serialized_bytes(block.hashPrevBlock);
+        append_serialized_bytes(block.hashMerkleRoot);
+        write_u32_le(block.nChannel);
+        write_u32_le(block.nHeight);
+        write_u32_le(block.nBits);
         write_u64_le(block.nNonce);
-        
-        // 8. nTime (4 bytes)
-        write_u32(block.nTime);
+        write_u32_le(block.nTime);
     }
-    
+
     return data;
+}
+
+inline std::vector<std::uint8_t> serialize_full_block(::LLP::CBlock const& block, bool is_tritium)
+{
+    return serialize_submit_block(block, is_tritium);
 }
 
 } // namespace llp_utils
