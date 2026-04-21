@@ -168,7 +168,7 @@ static std::vector<unsigned char> get_raw_block_header_bytes(const ::LLP::CBlock
     return std::vector<unsigned char>(begin, end);
 }
 
-static std::vector<uint8_t> get_raw_hash_bytes(const uint1024_t& value) {
+static std::vector<uint8_t> get_base_uint_serialized_bytes(const uint1024_t& value) {
     return std::vector<uint8_t>(value.begin(), value.end());
 }
 
@@ -522,7 +522,7 @@ static void test_submit_serialization_uses_little_endian_scalars() {
 static void test_submit_serialization_uses_canonical_hash_bytes() {
     auto blk = make_patterned_block();
     const auto payload = nexusminer::llp_utils::serialize_submit_block(blk, true);
-    const auto expected_prev = get_raw_hash_bytes(blk.hashPrevBlock);
+    const auto expected_prev = get_base_uint_serialized_bytes(blk.hashPrevBlock);
 
     bool ok = (payload.size() >= 132) &&
               std::equal(expected_prev.begin(), expected_prev.end(), payload.begin() + 4);

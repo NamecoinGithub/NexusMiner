@@ -29,7 +29,7 @@
 using namespace nexusminer::protocol;
 namespace MinerLLP = nexusminer::LLP;
 
-static std::vector<uint8_t> raw_serialized_bytes(const uint1024_t& value)
+static std::vector<uint8_t> get_base_uint_serialized_bytes(const uint1024_t& value)
 {
     return std::vector<uint8_t>(value.begin(), value.end());
 }
@@ -646,7 +646,7 @@ int main()
             // emitted by the node-compatible submit serializer.
             if (payload.size() == 216) {
                 bool payload_prev_ok = true;
-                const auto expected_prev = raw_serialized_bytes(tmpl->block.hashPrevBlock);
+                const auto expected_prev = get_base_uint_serialized_bytes(tmpl->block.hashPrevBlock);
                 for (int i = 0; i < 128 && payload_prev_ok; ++i) {
                     payload_prev_ok = (payload[4 + i] == expected_prev[static_cast<std::size_t>(i)]);
                 }
