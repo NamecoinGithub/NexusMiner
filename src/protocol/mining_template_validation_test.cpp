@@ -633,12 +633,14 @@ int main()
 
             print_test_result("prepare_block_submission() returns 216-byte payload", payload.size() == 216);
 
-            // 5. Verify payload[4..131] matches the original hashPrevBlock bytes.
+            // 5. Verify payload[4..131] matches the canonical raw CBlock bytes.
             if (payload.size() == 216) {
-                bool payload_prev_ok = true;
-                for (int i = 0; i < 128 && payload_prev_ok; ++i) {
-                    payload_prev_ok = (payload[4 + i] == static_cast<uint8_t>((i + 1) & 0xFF));
-                }
+                ::LLP::CBlock expected_block = tmpl->block;
+                expected_block.hashMerkleRoot.SetBytes(merkle_root);
+                expected_block.nNonce = nonce;
+                const auto expected_payload = nexusminer::GetBlockHeaderBytes(expected_block, false);
+                bool payload_prev_ok = payload.size() == expected_payload.size() &&
+                    std::equal(expected_payload.begin(), expected_payload.end(), payload.begin());
                 print_test_result("✓ hashPrevBlock preserved at payload[4-131]", payload_prev_ok);
             } else {
                 print_test_result("✓ hashPrevBlock preserved at payload[4-131]", false);
