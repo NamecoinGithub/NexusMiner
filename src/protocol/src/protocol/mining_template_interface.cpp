@@ -1,6 +1,7 @@
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/protocol_constants.hpp"
 #include "LLP/block_utils.hpp"
+#include "worker/worker.hpp"
 #include <cassert>
 #include <chrono>
 #include <cstring>
@@ -667,6 +668,141 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     // the prime cluster via GetPrimeDifficulty() / GetOffsets().
     // Hash channel vOffsets are always empty — no-op.
     if (!vOffsets.empty() && m_channel == 1) {
+        payload.insert(payload.end(), vOffsets.begin(), vOffsets.end());
+        m_logger->debug("[TemplateInterface] Appended {} vOffset bytes for Prime channel",
+                        vOffsets.size());
+    }
+
+    return payload;
+}
+
+std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission_from_solved(
+    const Block_data& solved)
+{
+    if (!has_valid_template()) {
+        m_logger->error("[TemplateInterface] Cannot prepare block submission: no valid template");
+        return {};
+    }
+
+    // Build the submit block directly from the worker's snapshot.
+    // These are the exact field values the worker used when performing primality / hash
+    // proof-of-work testing.  Crucially, nHeight comes from the worker, not from
+    // m_current_template, so a concurrent template refresh cannot silently advance it.
+    ::LLP::CBlock submit_block;
+    submit_block.nVersion       = solved.nVersion;
+    submit_block.hashPrevBlock  = solved.previous_hash;
+    submit_block.hashMerkleRoot = solved.merkle_root;
+    submit_block.nChannel       = solved.nChannel;
+    submit_block.nHeight        = solved.nHeight;
+    submit_block.nBits          = solved.nBits;
+    submit_block.nNonce         = solved.nNonce;
+
+    // Snapshot current-template metadata needed for serialization format and drift check.
+    // Hold the mutex only long enough to copy the scalar fields.
+    bool       is_tritium;
+    uint32_t   tmpl_height;
+    uint1024_t tmpl_prev;
+    {
+        std::lock_guard<std::mutex> lock(m_template_mutex);
+        is_tritium  = (m_current_template.format == BlockFormat::TRITIUM);
+        tmpl_height = m_current_template.block.nHeight;
+        tmpl_prev   = m_current_template.block.hashPrevBlock;
+    }
+
+    // Serialize using the worker's snapshot fields.
+    auto payload = llp_utils::serialize_full_block(submit_block, is_tritium);
+
+    // Option C drift guard: non-tautological comparison of worker snapshot vs.
+    // current template.  Logs a warning but does NOT abort — the worker's PoW was
+    // proven against its snapshot, and the node may still accept it if the chain
+    // has not yet advanced past submit_block.nHeight.
+    {
+        const bool height_drift = (submit_block.nHeight != tmpl_height);
+        const bool prev_drift   = (submit_block.hashPrevBlock != tmpl_prev);
+
+        if (height_drift || prev_drift) {
+            m_logger->warn("[SUBMIT AUDIT] ⚠ Template advanced between worker-found and submit-prep:");
+            m_logger->warn("[SUBMIT AUDIT]   worker_height={} current_template_height={}",
+                submit_block.nHeight, tmpl_height);
+            m_logger->warn("[SUBMIT AUDIT]   worker_prev_drift={} (worker block kept; PoW belongs to worker's snapshot)",
+                prev_drift);
+            m_logger->warn("[SUBMIT AUDIT]   This is the failure mode of legacy prepare_block_submission(merkle, nonce).");
+        } else {
+            m_logger->info("[SUBMIT AUDIT] ✓ Worker snapshot matches current template (height={}).",
+                submit_block.nHeight);
+        }
+    }
+
+    // SUBMISSION AUDIT: Log solved block fields for ProofHash cross-reference with node.
+    {
+        m_logger->info("[SUBMIT AUDIT]");
+        m_logger->info("[SUBMIT AUDIT]   block.nVersion     = {}", submit_block.nVersion);
+        auto prev_bytes = submit_block.hashPrevBlock.GetBytes();
+        std::string prev_hex;
+        for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i)
+        {
+            char buf[3];
+            snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
+            prev_hex += buf;
+        }
+        m_logger->info("[SUBMIT AUDIT]   block.hashPrevBlock = {}... (tip anchor)", prev_hex);
+        m_logger->info("[SUBMIT AUDIT]   block.nChannel     = {}", submit_block.nChannel);
+        m_logger->info("[SUBMIT AUDIT]   block.nHeight      = {} (unified blockchain height)", submit_block.nHeight);
+        m_logger->info("[SUBMIT AUDIT]   block.nBits        = 0x{:08x}", submit_block.nBits);
+        m_logger->info("[SUBMIT AUDIT]   block.nNonce       = 0x{:016x}", submit_block.nNonce);
+        m_logger->info("[SUBMIT AUDIT]   serialized size    = {} bytes (expected 216 for Tritium)", payload.size());
+
+        // Verify nHeight survives serialization at offset 200 (Tritium: big-endian uint32 at [200-203])
+        if (is_tritium && payload.size() >= 204)
+        {
+            uint32_t nHeightSerialized =
+                (static_cast<uint32_t>(payload[200]) << 24) |
+                (static_cast<uint32_t>(payload[201]) << 16) |
+                (static_cast<uint32_t>(payload[202]) << 8) |
+                static_cast<uint32_t>(payload[203]);
+            if (nHeightSerialized != submit_block.nHeight)
+                m_logger->error("[SUBMIT AUDIT]   ❌ CRITICAL: nHeight serialization mismatch! "
+                    "block.nHeight={} but serialized[200-203]={}",
+                    submit_block.nHeight, nHeightSerialized);
+            else
+                m_logger->info("[SUBMIT AUDIT]   ✅ nHeight verified in serialized payload: {}", nHeightSerialized);
+        }
+
+        // Verify nNonce survives serialization at offset 208 (Tritium: little-endian uint64 at [208-215])
+        if (is_tritium && payload.size() >= 216)
+        {
+            uint64_t nNonceSerialized = 0;
+            for (int i = 0; i < 8; ++i)
+                nNonceSerialized |= static_cast<uint64_t>(payload[208 + i]) << (i * 8);
+            if (nNonceSerialized != submit_block.nNonce)
+                m_logger->error("[SUBMIT AUDIT]   ❌ CRITICAL: nNonce serialization mismatch! "
+                    "expected=0x{:016x} but serialized[208-215]=0x{:016x}",
+                    submit_block.nNonce, nNonceSerialized);
+            else
+                m_logger->info("[SUBMIT AUDIT]   ✅ nNonce verified in serialized payload[208-215]: 0x{:016x}", nNonceSerialized);
+        }
+    }
+
+    m_blocks_verified.fetch_add(1, std::memory_order_relaxed);
+
+    m_logger->info("[TemplateInterface] Block submission prepared: {} bytes ({} format)",
+        payload.size(), is_tritium ? "Tritium" : "Legacy");
+
+    return payload;
+}
+
+std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission_from_solved(
+    const Block_data& solved,
+    const std::vector<uint8_t>& vOffsets)
+{
+    auto payload = prepare_block_submission_from_solved(solved);
+    if (payload.empty())
+        return payload;
+
+    // For Prime channel, append Cunningham-chain offsets so the node can verify
+    // the prime cluster.  Hash channel vOffsets are always empty — no-op.
+    // Use solved.nChannel (worker's snapshot) as the source of truth, not m_channel.
+    if (!vOffsets.empty() && solved.nChannel == 1) {
         payload.insert(payload.end(), vOffsets.begin(), vOffsets.end());
         m_logger->debug("[TemplateInterface] Appended {} vOffset bytes for Prime channel",
                         vOffsets.size());

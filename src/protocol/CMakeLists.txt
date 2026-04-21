@@ -120,6 +120,12 @@ add_nexusminer_test(NAME e2e_block_submission_test
     LINK_LIBS   protocol LLP spdlog ${OPENSSL_LIBRARIES}
     INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
 
+add_nexusminer_test(NAME prepare_block_submission_from_solved_test
+    SOURCES     prepare_block_submission_from_solved_test.cpp
+    LINK_LIBS   protocol LLP spdlog
+    INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC}
+                 ${CMAKE_SOURCE_DIR}/src/worker)
+
 add_nexusminer_test(NAME first_block_acceptance_test
     SOURCES     first_block_acceptance_test.cpp
                 ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp

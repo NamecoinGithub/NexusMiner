@@ -17,6 +17,10 @@
 #include "spdlog/spdlog.h"
 
 namespace nexusminer {
+
+// Forward declaration — full definition in worker/worker.hpp
+class Block_data;
+
 namespace protocol {
 
 /**
@@ -450,7 +454,40 @@ public:
     std::vector<uint8_t> prepare_block_submission(const std::vector<uint8_t>& merkle_root,
                                                    uint64_t nonce,
                                                    const std::vector<uint8_t>& vOffsets);
-    
+
+    /**
+     * @brief Prepare block submission directly from a worker's solved Block_data snapshot.
+     *
+     * Fixes the race condition in prepare_block_submission(merkle_root, nonce): instead of
+     * re-reading header fields (nHeight, hashPrevBlock, nBits, nVersion) from the current
+     * template — which may have been replaced by a fresh BLOCK_DATA push between "worker
+     * found" and "submit-prep" — this overload builds the serialized payload entirely from
+     * the worker's own Block_data snapshot, which is the exact data the worker tested.
+     *
+     * An Option-C drift guard compares the worker snapshot against the current template and
+     * logs a warning when they differ; submission is NOT aborted so that valid PoW is never
+     * discarded because of a benign template refresh.
+     *
+     * @param solved  Worker's Block_data snapshot (nVersion, previous_hash, merkle_root,
+     *                nChannel, nHeight, nBits, nNonce all come from this).
+     * @return Serialized block bytes (216 bytes Tritium / 220 bytes Legacy), empty on error.
+     */
+    std::vector<uint8_t> prepare_block_submission_from_solved(const Block_data& solved);
+
+    /**
+     * @brief Prepare block submission from worker snapshot, appending Prime channel vOffsets.
+     *
+     * Identical to prepare_block_submission_from_solved(solved) but additionally appends
+     * @p vOffsets to the payload for the Prime channel (nChannel == 1).  For the Hash
+     * channel the vOffsets argument is ignored.
+     *
+     * @param solved    Worker's Block_data snapshot.
+     * @param vOffsets  Cunningham-chain offsets from ValidatePrimeCandidate().
+     * @return Serialized block bytes + vOffsets for Prime, empty on error.
+     */
+    std::vector<uint8_t> prepare_block_submission_from_solved(const Block_data& solved,
+                                                               const std::vector<uint8_t>& vOffsets);
+
     // =========================================================================
     // Session Management (FALCON Tunnel Integration)
     // =========================================================================
