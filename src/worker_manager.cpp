@@ -41,8 +41,11 @@ namespace nexusminer
 // spurious escalations during normal long Prime blocks. Hash blocks arrive every
 // ~18 s so 60 s (≈ 3 blocks) is appropriate for Hash.
 namespace {
-    constexpr int64_t RECOVERY_WINDOW_SECONDS_HASH  =  60;   // Hash blocks every ~18s; 60s ≈ 3 blocks
-    constexpr int64_t RECOVERY_WINDOW_SECONDS_PRIME = 300;   // Prime blocks take 2-5+ min; 300s gives margin
+    constexpr int64_t RECOVERY_WINDOW_SECONDS_HASH  = 300;   // Hash can still see long burst-driven gaps; allow 5 min before forced reconnect
+    constexpr int64_t RECOVERY_WINDOW_SECONDS_PRIME = 300;   // Prime blocks also tolerate long gaps; align both channels on the same 5 min window
+    constexpr int64_t CONTROLLED_RECOVERY_HARD_STOP_SECONDS = 300;
+    constexpr uint32_t CONTROLLED_SESSION_AUTH_MAX_ATTEMPTS = 3;
+    constexpr uint16_t CONTROLLED_SESSION_AUTH_RETRY_SECONDS = 90;
 
     // Minimum interval between successive GET_BLOCK sends by the health monitor
     // during an active recovery.  Prevents rapid-fire GETs while still allowing
@@ -529,25 +532,23 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // The session_authenticated_handler will increment it if the subsequent
                 // authentication fails (session_id == 0), avoiding double-counting.
 
-                // If we've already exceeded max retries, halt re-authentication
-                if (m_session_auth_fail_count >= protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES)
+                // Keep controlled in-band re-auth bounded; after a few spaced tries
+                // the miner goes full-stop so an operator can inspect the node/path.
+                if (m_session_auth_fail_count >= CONTROLLED_SESSION_AUTH_MAX_ATTEMPTS)
                 {
-                    m_logger->error("[Session] Max authentication retries ({}) already reached after SESSION_EXPIRED",
-                        protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
-                    m_logger->error("[Session] Node appears to be persistently expiring or rejecting sessions");
-                    m_logger->error("[Session] Check node logs and session keepalive configuration");
+                    m_logger->error("[Session] Controlled re-auth retry limit ({}) already reached after SESSION_EXPIRED",
+                        CONTROLLED_SESSION_AUTH_MAX_ATTEMPTS);
+                    enter_terminal_degraded_mode_internal(0, "session_expired_retry_budget_exhausted");
                     return;
                 }
 
-                // Calculate backoff delay based on current failure count
-                // (will be 0 delay on first SESSION_EXPIRED if no prior auth failures)
-                auto delay_ms = m_session_auth_fail_count > 0
-                    ? m_session_auth_backoff.calculate_delay_ms(m_session_auth_fail_count)
-                    : 0;
-                auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
+                // First controlled in-band re-auth is immediate; subsequent ones are
+                // deliberately buffered to avoid endless churn on a sick path.
+                auto delay_seconds = static_cast<uint16_t>(
+                    m_session_auth_fail_count > 0 ? CONTROLLED_SESSION_AUTH_RETRY_SECONDS : 0);
 
                 if (delay_seconds > 0) {
-                    m_logger->warn("[Session] Scheduling in-band re-authentication in {}s (based on {} prior failures, exponential backoff)",
+                    m_logger->warn("[Session] Scheduling in-band re-authentication in {}s ({} prior failures, controlled retry window)",
                         delay_seconds, m_session_auth_fail_count);
                 } else {
                     m_logger->info("[Session] Scheduling immediate in-band re-authentication (no prior auth failures)");
@@ -610,31 +611,28 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             [this](protocol::SessionId session_id) {
                 // CRITICAL: If session_id = 0, the node rejected authentication or didn't provide a session.
                 // Mining cannot proceed without a valid session_id (work submissions will be silently rejected).
-                // Use exponential backoff with max retry limit to prevent infinite tight retry loops.
+                // Keep controlled auth retries bounded so failed reconnect loops do not
+                // burn energy indefinitely without operator intervention.
                 if (session_id.is_default())
                 {
                     ++m_session_auth_fail_count;
                     ++m_session_generation;  // Failed auth is still a session transition
                     m_logger->error("[Session] CRITICAL: Node returned session_id=0x00000000 after authentication (attempt #{}/{})",
-                        m_session_auth_fail_count, protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
+                        m_session_auth_fail_count, CONTROLLED_SESSION_AUTH_MAX_ATTEMPTS);
                     m_logger->error("[Session] This indicates the node rejected the session or is misconfigured");
                     m_logger->error("[Session] Work submissions cannot proceed without a valid session ID");
 
-                    // Hard limit: if we've exceeded max retries, halt reconnection to prevent infinite loop
-                    if (m_session_auth_fail_count > protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES)
+                    if (m_session_auth_fail_count >= CONTROLLED_SESSION_AUTH_MAX_ATTEMPTS)
                     {
-                        m_logger->error("[Session] Max authentication retries ({}) exceeded — halting reconnection",
-                            protocol::ProtocolConstants::MAX_SESSION_AUTH_RETRIES);
-                        m_logger->error("[Session] Node appears to be persistently rejecting authentication");
-                        m_logger->error("[Session] Check node logs, miner_auth handler, and mining account configuration");
+                        m_logger->error("[Session] Controlled auth retry limit ({}) reached — halting reconnection",
+                            CONTROLLED_SESSION_AUTH_MAX_ATTEMPTS);
+                        enter_terminal_degraded_mode_internal(0, "session_auth_retry_budget_exhausted");
                         return;
                     }
 
-                    // Exponential backoff: 1s, 2s, 4s, 8s, ..., capped at 60s
-                    auto delay_ms = m_session_auth_backoff.calculate_delay_ms(m_session_auth_fail_count);
-                    auto delay_seconds = static_cast<uint16_t>(delay_ms / 1000);
+                    auto delay_seconds = CONTROLLED_SESSION_AUTH_RETRY_SECONDS;
 
-                    m_logger->warn("[Session] Scheduling reconnection retry in {}s (exponential backoff)",
+                    m_logger->warn("[Session] Scheduling controlled reconnection retry in {}s",
                         delay_seconds);
 
                     // Get the endpoint from the current connection
@@ -867,7 +865,12 @@ void Worker_manager::create_workers()
 
 void Worker_manager::stop()
 {
+    m_terminal_stop_requested.store(true, std::memory_order_release);
     m_timer_manager.stop();
+
+    // Destroy workers before tearing down transport so worker-side submit/request
+    // callbacks cannot race a closing session or cleared connection state.
+    stop_all_workers();
 
     if (m_colin_agent)
     {
@@ -889,9 +892,6 @@ void Worker_manager::stop()
     if (m_primary_node_session) {
         m_primary_node_session->stop();
     }
-    if (m_failover_node_session) {
-        m_failover_node_session->stop();
-    }
 }
 
 void Worker_manager::collect_worker_statistics()
@@ -906,9 +906,23 @@ void Worker_manager::collect_worker_statistics()
 
 void Worker_manager::enter_terminal_degraded_mode(int signal_number)
 {
+    enter_terminal_degraded_mode_internal(signal_number, "signal_terminal_exit");
+}
+
+void Worker_manager::enter_terminal_degraded_mode_internal(int signal_number, const char* reason)
+{
+    if (m_terminal_stop_requested.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
     m_recovery.degraded_signal.store(signal_number, std::memory_order_relaxed);
-    transition_to(RecoveryPhase::DEGRADED_MODE, "signal_terminal_exit");
-    m_logger->critical("[Worker_manager] TERMINAL DEGRADED MODE entered by signal {} — full stop", signal_number);
+    transition_to(RecoveryPhase::DEGRADED_MODE, reason);
+    if (signal_number != 0) {
+        m_logger->critical("[Worker_manager] TERMINAL DEGRADED MODE entered by signal {} — full stop", signal_number);
+    } else {
+        m_logger->critical("[Worker_manager] TERMINAL DEGRADED MODE entered ({}) — full stop",
+                           reason ? reason : "unknown");
+    }
     stop();
 }
 
@@ -922,6 +936,10 @@ uint16_t Worker_manager::get_effective_keepalive_interval() const
 
 void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint, bool force_transport_reset)
 {
+    if (m_terminal_stop_requested.load(std::memory_order_acquire)) {
+        return;
+    }
+
     // Safety guard: if push notifications have been received recently, the TCP
     // connection is demonstrably alive from the node's perspective. Tearing it
     // down here would destroy a valid node session. Use in-band re-auth instead.
@@ -1066,6 +1084,10 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint, boo
         }
     }
 
+    if (effective_endpoint.is_valid()) {
+        m_sim_link.set_failover_active(m_using_failover, effective_endpoint.to_string());
+    }
+
     if (m_connection_retry_count > protocol::ProtocolConstants::CONNECTION_RETRY_ERROR_THRESHOLD)
         m_logger->error("Connection retry #{} - {} consecutive failures",
                         m_connection_retry_count, m_connection_retry_count);
@@ -1158,6 +1180,11 @@ void Worker_manager::schedule_forced_recovery_retry(const char* trigger_reason)
 
 bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
 {
+    if (m_terminal_stop_requested.load(std::memory_order_acquire)) {
+        m_logger->warn("[Worker_manager] connect() ignored - terminal stop requested");
+        return false;
+    }
+
     // Save the primary endpoint on the very first connect() call from Miner::run()
     if (!m_primary_endpoint.is_valid())
     {
@@ -1209,6 +1236,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         self->m_connection_retry_count = 0;
         self->m_connection_backoff.reset();
         self->m_primary_fail_count = 0;
+        self->m_sim_link.set_failover_active(self->m_using_failover, wallet_endpoint.to_string());
 
         if (self->is_reconnecting()) {
             self->m_pending_recovery_completion_kind =
@@ -2142,7 +2170,11 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
 
 void Worker_manager::check_template_health()
 {
-    auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr;
+    if (m_terminal_stop_requested.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_active_protocol() : nullptr;
     if (!solo_protocol) {
         return;
     }
@@ -2219,14 +2251,28 @@ void Worker_manager::check_template_health()
                        push_received ? since_push_s : static_cast<int64_t>(-1),
                        push_recent ? "YES" : "NO");
 
-        // After 60s without template, check connection health.
+        if (!push_recent && degraded_secs >= CONTROLLED_RECOVERY_HARD_STOP_SECONDS) {
+            m_logger->critical("[Worker_manager] Recovery exceeded {}s without live push traffic — entering full stop",
+                               CONTROLLED_RECOVERY_HARD_STOP_SECONDS);
+            enter_terminal_degraded_mode_internal(0, "controlled_recovery_hard_stop");
+            return;
+        }
+
+        const auto recovery_window_seconds =
+            (solo_protocol->get_template_interface() &&
+             solo_protocol->get_template_interface()->get_channel() == mining::CHANNEL_PRIME)
+                ? RECOVERY_WINDOW_SECONDS_PRIME
+                : RECOVERY_WINDOW_SECONDS_HASH;
+
+        // After the channel-aware recovery window without template, check connection health.
         // IMPORTANT: push silence is orchestration-layer only — it may trigger reconnect,
         // but must not suppress authoritative GET_BLOCK refresh attempts.
         // Intentional ordering: when this branch fires we do BOTH operations in the same
         // tick (reconnect attempt + forced GET_BLOCK retry path) so orchestration signals
         // can feed recovery without replacing authoritative refresh/submission decisions.
-        if (degraded_secs > 60 && !push_recent) {
-            m_logger->error("[Worker_manager] ⛔ 60s timeout: no template and push is dead — reconnecting");
+        if (degraded_secs > recovery_window_seconds && !push_recent) {
+            m_logger->error("[Worker_manager] ⛔ {}s timeout: no template and push is dead — reconnecting",
+                            recovery_window_seconds);
             retry_connect(m_primary_endpoint);
             // Fall through intentionally: still run forced GET_BLOCK retry below.
         }
@@ -2235,7 +2281,7 @@ void Worker_manager::check_template_health()
         retry_template_request(protocol::GetBlockReason::RECOVERY_FORCED);
 
         /* ── Reorg Resubscription Guard ──────────────────────────────────────────
-         * After 60s in WAITING_TEMPLATE with a live authenticated session but no
+         * After the 300s WAITING_TEMPLATE window with a live authenticated session but no
          * incoming push, proactively re-send MINER_READY.  This covers the reorg
          * case: the node recovered the session but the push subscription state was
          * lost during the TCP disconnect, so the node's heartbeat cycle (480s) is

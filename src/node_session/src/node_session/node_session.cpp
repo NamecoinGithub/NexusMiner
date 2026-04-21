@@ -66,6 +66,7 @@ bool NodeSession::connect(const network::Endpoint& node_endpoint, Connection_cal
         return false;
     }
 
+    m_transport_generation.fetch_add(1, std::memory_order_acq_rel);
     m_logger->info("[NodeSession:{}] Connecting to node at {}",
                    m_node_label, node_endpoint.to_string());
 
@@ -187,11 +188,12 @@ void NodeSession::connect_lane(LaneSlot slot, const network::Endpoint& node_endp
     };
 
     auto observation = std::make_shared<ConnectObservation>();
+    const auto transport_generation = m_transport_generation.load(std::memory_order_acquire);
     auto weak_self = std::weak_ptr<NodeSession>(shared_from_this());
-    auto connection_callback = [weak_self, slot](auto result, auto receive_buffer) {
+    auto connection_callback = [weak_self, slot, transport_generation](auto result, auto receive_buffer) {
         auto self = weak_self.lock();
         if (!self) return;
-        self->handle_lane_event(slot, result, std::move(receive_buffer));
+        self->handle_lane_event(slot, transport_generation, result, std::move(receive_buffer));
     };
 
     auto observed_callback = [connection_callback, observation](auto result, auto receive_buffer) mutable {
@@ -221,10 +223,69 @@ void NodeSession::connect_lane(LaneSlot slot, const network::Endpoint& node_endp
     }
 }
 
-void NodeSession::handle_lane_event(LaneSlot slot, network::Result::Code result,
+bool NodeSession::is_transport_generation_current(uint64_t transport_generation) const
+{
+    return transport_generation == m_transport_generation.load(std::memory_order_acquire);
+}
+
+NodeSession::SessionResetPlan NodeSession::make_session_reset_plan(const char* log_reason,
+                                                                   const char* lane_down_reason) const
+{
+    SessionResetPlan plan;
+    plan.log_reason = log_reason;
+    plan.lane_down_reason = lane_down_reason;
+    plan.transport_generation =
+        m_transport_generation.load(std::memory_order_acquire) + 1;
+    return plan;
+}
+
+void NodeSession::apply_session_reset(const SessionResetPlan& plan)
+{
+    m_transport_generation.store(plan.transport_generation, std::memory_order_release);
+
+    if (plan.fail_pending_connect) {
+        complete_pending_connect(false);
+    }
+
+    m_logger->info("[NodeSession:{}] {}", m_node_label, plan.log_reason);
+
+    if (plan.close_connections) {
+        if (m_primary_connection) {
+            m_primary_connection->close();
+            m_primary_connection.reset();
+        }
+        if (m_secondary_connection) {
+            m_secondary_connection->close();
+            m_secondary_connection.reset();
+        }
+    }
+
+    if (plan.reset_protocols) {
+        if (m_primary_protocol) {
+            m_primary_protocol->reset();
+        }
+        if (m_secondary_protocol) {
+            m_secondary_protocol->reset();
+        }
+    }
+
+    mark_all_lanes_down(plan.lane_down_reason);
+
+    if (plan.end_session && m_session_context) {
+        m_session_context->end_session();
+    }
+
+    if (plan.clear_accumulators) {
+        m_primary_rx_accumulator.clear();
+        m_secondary_rx_accumulator.clear();
+    }
+}
+
+void NodeSession::handle_lane_event(LaneSlot slot, uint64_t transport_generation, network::Result::Code result,
                                     network::Shared_payload&& receive_buffer)
 {
-    if (m_stopped.load(std::memory_order_acquire)) {
+    if (m_stopped.load(std::memory_order_acquire) ||
+        !is_transport_generation_current(transport_generation)) {
         return;
     }
 
@@ -233,15 +294,15 @@ void NodeSession::handle_lane_event(LaneSlot slot, network::Result::Code result,
     if (result == network::Result::connection_ok) {
         if (!*descriptor.connection) {
             ::asio::post(*m_io_context, [weak_self = std::weak_ptr<NodeSession>(shared_from_this()),
-                                         slot]() {
+                                         slot, transport_generation]() {
                 auto self = weak_self.lock();
-                if (!self || self->m_stopped.load(std::memory_order_acquire)) return;
-                self->finalize_lane_connection(slot, true);
+                if (!self) return;
+                self->finalize_lane_connection(slot, transport_generation, true);
             });
             return;
         }
 
-        finalize_lane_connection(slot, false);
+        finalize_lane_connection(slot, transport_generation, false);
         return;
     }
 
@@ -263,19 +324,23 @@ void NodeSession::handle_lane_event(LaneSlot slot, network::Result::Code result,
     process_lane_data(slot, std::move(receive_buffer));
 }
 
-void NodeSession::finalize_lane_connection(LaneSlot slot, bool deferred)
+void NodeSession::finalize_lane_connection(LaneSlot slot, uint64_t transport_generation, bool deferred)
 {
-    auto descriptor = lane(slot);
-    if (m_stopped.load(std::memory_order_acquire) || !*descriptor.connection || !*descriptor.protocol) {
+    if (m_stopped.load(std::memory_order_acquire) ||
+        !is_transport_generation_current(transport_generation)) {
         return;
     }
 
+    auto descriptor = lane(slot);
+    if (!*descriptor.connection || !*descriptor.protocol) {
+        return;
+    }
     m_logger->info("[NodeSession:{}] {} connection established{}",
                    m_node_label,
                    descriptor.label,
                    deferred ? " (deferred)" : "");
     mark_lane_socket_connected(slot);
-    begin_lane_authentication(slot);
+    begin_lane_authentication(slot, transport_generation);
 }
 
 void NodeSession::complete_pending_connect(bool success)
@@ -365,9 +430,10 @@ void NodeSession::mark_lane_authenticated(LaneSlot slot, protocol::SessionId sid
     }
 }
 
-bool NodeSession::begin_lane_authentication(LaneSlot slot)
+bool NodeSession::begin_lane_authentication(LaneSlot slot, uint64_t transport_generation)
 {
-    if (m_stopped.load(std::memory_order_acquire)) {
+    if (m_stopped.load(std::memory_order_acquire) ||
+        !is_transport_generation_current(transport_generation)) {
         return false;
     }
 
@@ -385,9 +451,13 @@ bool NodeSession::begin_lane_authentication(LaneSlot slot)
     }
 
     auto weak_self = std::weak_ptr<NodeSession>(shared_from_this());
-    auto auth_payload = protocol->login([weak_self, slot](bool login_result) {
+    auto auth_payload = protocol->login([weak_self, slot, transport_generation](bool login_result) {
         auto self = weak_self.lock();
         if (!self) return;
+        if (self->m_stopped.load(std::memory_order_acquire) ||
+            !self->is_transport_generation_current(transport_generation)) {
+            return;
+        }
 
         auto descriptor = self->lane(slot);
         if (!login_result) {
@@ -633,77 +703,23 @@ bool NodeSession::is_session_active() const
 
 void NodeSession::stop()
 {
-    if (m_stopped.exchange(true)) {
+    if (m_stopped.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
-    complete_pending_connect(false);
 
-    m_logger->info("[NodeSession:{}] Stopping", m_node_label);
-
-    // Close connections
-    if (m_primary_connection) {
-        m_primary_connection->close();
-        m_primary_connection.reset();
-    }
-    if (m_secondary_connection) {
-        m_secondary_connection->close();
-        m_secondary_connection.reset();
-    }
-
-    // Reset protocols
-    if (m_primary_protocol) {
-        m_primary_protocol->reset();
-    }
-    if (m_secondary_protocol) {
-        m_secondary_protocol->reset();
-    }
-
-    mark_all_lanes_down("Session stopped");
-
-    // End session in the context (clears session ID and state)
-    if (m_session_context) {
-        m_session_context->end_session();
-    }
-
-    // Clear accumulators
-    m_primary_rx_accumulator.clear();
-    m_secondary_rx_accumulator.clear();
+    auto plan = make_session_reset_plan("Stopping", "Session stopped");
+    apply_session_reset(plan);
 }
 
 void NodeSession::reset()
 {
-    m_logger->info("[NodeSession:{}] Resetting", m_node_label);
-    complete_pending_connect(false);
-
-    // Close existing lane sockets so reconnect does not inherit a half-dead
-    // transport that can still receive PUSH traffic while dropping miner TX.
-    if (m_primary_connection) {
-        m_primary_connection->close();
-        m_primary_connection.reset();
-    }
-    if (m_secondary_connection) {
-        m_secondary_connection->close();
-        m_secondary_connection.reset();
+    if (m_stopped.load(std::memory_order_acquire)) {
+        m_logger->warn("[NodeSession:{}] Reset ignored - session is stopped", m_node_label);
+        return;
     }
 
-    // Reset protocols
-    if (m_primary_protocol) {
-        m_primary_protocol->reset();
-    }
-    if (m_secondary_protocol) {
-        m_secondary_protocol->reset();
-    }
-
-    mark_all_lanes_down("Session reset");
-
-    // End session in the context (clears session ID and state)
-    if (m_session_context) {
-        m_session_context->end_session();
-    }
-
-    // Clear accumulators
-    m_primary_rx_accumulator.clear();
-    m_secondary_rx_accumulator.clear();
+    auto plan = make_session_reset_plan("Resetting", "Session reset");
+    apply_session_reset(plan);
 }
 
 void NodeSession::set_template_handler(Template_handler handler)

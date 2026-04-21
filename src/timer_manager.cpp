@@ -20,7 +20,6 @@ Timer_manager::Timer_manager(chrono::Timer_factory::Sptr timer_factory)
     m_stats_printer_timer = m_timer_factory->create_timer();
     m_get_round_timer = m_timer_factory->create_timer();  // Template Staleness Prevention
     m_template_health_timer = m_timer_factory->create_timer();  // Template Health Monitoring
-    m_secondary_connection_retry_timer = m_timer_factory->create_timer();  // Optional compatibility retry path
     m_lane_health_check_timer = m_timer_factory->create_timer();  // SIM Link lane health log
 }
 
@@ -55,7 +54,6 @@ void Timer_manager::stop()
     m_stats_printer_timer->cancel();
     m_get_round_timer->cancel();  // Template Staleness Prevention
     m_template_health_timer->cancel();  // Template Health Monitoring
-    m_secondary_connection_retry_timer->cancel();  // Optional compatibility retry path
     m_lane_health_check_timer->cancel();  // Lane health log
 }
 

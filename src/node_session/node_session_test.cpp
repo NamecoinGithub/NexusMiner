@@ -104,6 +104,11 @@ public:
         m_handlers.at(index)(network::Result::receive_ok, std::move(payload));
     }
 
+    void emit_connect_result(std::size_t index, network::Result::Code result)
+    {
+        emit_event(index, result);
+    }
+
     void emit_event(std::size_t index, network::Result::Code result, network::Shared_payload payload = {})
     {
         m_handlers.at(index)(result, std::move(payload));
@@ -732,6 +737,75 @@ void test_connect_stays_on_configured_primary_node_and_lane()
     std::cout << "  ✓ NodeSession keeps reconnect/auth on the configured primary node/lane" << std::endl;
 }
 
+void test_reset_ignores_late_connect_events_from_old_transport_generation()
+{
+    std::cout << "Test: reset() ignores late connect events from the previous transport generation..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    config::Config config(make_logger("test_logger_reset_generation"));
+    config.set_mining_mode(config::Mining_mode::HASH);
+    config.set_enable_sim_link(false);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    socket->m_emit_connect_synchronously = false;
+
+    auto node_session = make_node_session(io_context, config, socket, "TEST_RESET_GENERATION");
+    configure_valid_auth(*node_session);
+
+    bool first_callback_invoked = false;
+    bool first_callback_success = true;
+    bool connect_started = node_session->connect(
+        make_endpoint(ProtocolPorts::STATELESS_PORT),
+        [&first_callback_invoked, &first_callback_success](bool success) {
+            first_callback_invoked = true;
+            first_callback_success = success;
+        });
+
+    assert(connect_started);
+    assert(socket->connect_count() == 1);
+    auto first_connection = socket->connection(0);
+    assert(first_connection);
+
+    node_session->reset();
+    assert(first_callback_invoked);
+    assert(!first_callback_success);
+    assert(first_connection->closed());
+    assert(first_connection->transmit_count() == 0);
+
+    socket->emit_connect_result(0, network::Result::connection_ok);
+    pump_io(io_context);
+
+    // Late success from the pre-reset transport must not resurrect auth/setup.
+    assert(first_connection->transmit_count() == 0);
+    assert(!node_session->is_primary_connected());
+    assert(!node_session->is_authenticated());
+
+    bool second_callback_invoked = false;
+    bool second_callback_success = false;
+    connect_started = node_session->connect(
+        make_endpoint(ProtocolPorts::STATELESS_PORT),
+        [&second_callback_invoked, &second_callback_success](bool success) {
+            second_callback_invoked = true;
+            second_callback_success = success;
+        });
+
+    assert(connect_started);
+    assert(socket->connect_count() == 2);
+    socket->emit_connect_result(1, network::Result::connection_ok);
+    pump_io(io_context);
+
+    auto second_connection = socket->connection(1);
+    assert(second_connection->transmit_count() == 1); // auth init only
+    socket->emit_receive(1, build_auth_result_packet(ProtocolLane::STATELESS, 0x01, 0x13572468u));
+
+    assert(second_callback_invoked);
+    assert(second_callback_success);
+    assert(node_session->is_authenticated());
+    assert(node_session->session_id() == protocol::SessionId(0x13572468u));
+
+    std::cout << "  ✓ Late pre-reset connect events are ignored and the next reconnect stays clean" << std::endl;
+}
+
 void test_malformed_packet_does_not_fail_active_lane()
 {
     std::cout << "Test: malformed packet stays diagnostic-only and does not fail the active lane..." << std::endl;
@@ -900,6 +974,9 @@ int main()
         std::cout << std::endl;
 
         test_connect_stays_on_configured_primary_node_and_lane();
+        std::cout << std::endl;
+
+        test_reset_ignores_late_connect_events_from_old_transport_generation();
         std::cout << std::endl;
 
         test_malformed_packet_does_not_fail_active_lane();

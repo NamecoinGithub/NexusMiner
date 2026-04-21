@@ -49,11 +49,6 @@ public:
     // Template Health Monitoring (Template Validation & Worker Protection)
     void start_template_health_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager);
 
-    // Optional secondary-path retry timer retained for compatibility wiring.
-    void start_secondary_connection_retry_timer(std::uint16_t timer_interval,
-        std::weak_ptr<Worker_manager> worker_manager,
-        network::Endpoint const& secondary_endpoint);
-
     // Periodic lane health-check / diagnostics timer.
     void start_lane_health_check_timer(std::uint16_t timer_interval,
         std::weak_ptr<Worker_manager> worker_manager);
@@ -73,10 +68,6 @@ private:
     chrono::Timer::Handler template_health_handler(std::uint16_t health_check_interval, 
         std::weak_ptr<Worker_manager> worker_manager);
 
-    chrono::Timer::Handler secondary_connection_retry_handler(
-        std::weak_ptr<Worker_manager> worker_manager,
-        network::Endpoint const& secondary_endpoint);
-
     chrono::Timer::Handler lane_health_check_handler(std::uint16_t health_check_interval,
         std::weak_ptr<Worker_manager> worker_manager);
 
@@ -86,7 +77,6 @@ private:
     chrono::Timer::Uptr m_stats_printer_timer;
     chrono::Timer::Uptr m_get_round_timer;  // Template Staleness Prevention
     chrono::Timer::Uptr m_template_health_timer;  // Template Health Monitoring
-    chrono::Timer::Uptr m_secondary_connection_retry_timer;  // Optional compatibility retry path
     chrono::Timer::Uptr m_lane_health_check_timer;  // Periodic lane health log
 };
 }

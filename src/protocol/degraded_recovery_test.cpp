@@ -385,7 +385,7 @@ void test_successful_reauth_restarts_recovery_epoch() {
 // ============================================================================
 void test_same_height_soft_refresh_escalates_only_after_timeout() {
     std::cout << "\nTest 4c: Template request enters WAITING_TEMPLATE until timeout triggers reconnect\n";
-    constexpr int64_t RECOVERY_WINDOW_SECONDS = 60;
+    constexpr int64_t RECOVERY_WINDOW_SECONDS = 300;
     constexpr int64_t TIMEOUT_TEST_SECONDS = RECOVERY_WINDOW_SECONDS + 1;
 
     struct RecoveryTracker {
@@ -429,7 +429,7 @@ void test_same_height_soft_refresh_escalates_only_after_timeout() {
     print_test_result("WAITING_TEMPLATE does not reconnect immediately", !rt.should_reconnect(RECOVERY_WINDOW_SECONDS));
 
     rt.entered_at = std::chrono::steady_clock::now() - std::chrono::seconds(TIMEOUT_TEST_SECONDS);
-    print_test_result("WAITING_TEMPLATE triggers reconnect after 60s timeout", rt.should_reconnect(RECOVERY_WINDOW_SECONDS));
+    print_test_result("WAITING_TEMPLATE triggers reconnect after 300s timeout", rt.should_reconnect(RECOVERY_WINDOW_SECONDS));
     rt.do_reconnect();
     print_test_result("After timeout: phase is RECONNECTING", phase_is_reconnecting(rt.phase));
     print_test_result("After timeout: submissions still not withheld", !phase_is_submissions_withheld(rt.phase));
@@ -1141,7 +1141,7 @@ void test_orphaned_soft_refresh_cleared() {
 
 // ── Test 21: WAITING_TEMPLATE → RECONNECTING escalation path ─────────────
 void test_soft_refresh_escalation_to_hard_recovery() {
-    std::cout << "\nTest 21: WAITING_TEMPLATE → RECONNECTING after 60s timeout\n";
+    std::cout << "\nTest 21: WAITING_TEMPLATE → RECONNECTING after 300s timeout\n";
 
     TestRecoveryPhase phase = TestRecoveryPhase::HEALTHY;
 
@@ -1155,7 +1155,7 @@ void test_soft_refresh_escalation_to_hard_recovery() {
     print_test_result("WAITING_TEMPLATE: is_submissions_withheld() == false (workers keep running)",
         !phase_is_submissions_withheld(phase));
 
-    // After 60s timeout → enter RECONNECTING
+    // After 300s timeout → enter RECONNECTING
     assert(test_is_valid_transition(phase, TestRecoveryPhase::RECONNECTING));
     phase = TestRecoveryPhase::RECONNECTING;
     print_test_result("After timeout: RECONNECTING phase active",

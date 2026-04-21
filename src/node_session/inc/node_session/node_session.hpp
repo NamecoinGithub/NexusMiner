@@ -356,6 +356,17 @@ private:
         ProtocolLane* requested_lane;
     };
 
+    struct SessionResetPlan {
+        const char* log_reason;
+        const char* lane_down_reason;
+        bool fail_pending_connect{true};
+        bool close_connections{true};
+        bool reset_protocols{true};
+        bool end_session{true};
+        bool clear_accumulators{true};
+        uint64_t transport_generation{0};
+    };
+
     /**
      * @brief Select the active connection+protocol pair used by transmit().
      *
@@ -369,18 +380,22 @@ private:
     std::pair<network::Connection::Sptr, std::shared_ptr<protocol::Solo>> select_active_pair() const;
 
     LaneDescriptor lane(LaneSlot slot);
+    bool is_transport_generation_current(uint64_t transport_generation) const;
+    SessionResetPlan make_session_reset_plan(const char* log_reason, const char* lane_down_reason) const;
+    void apply_session_reset(const SessionResetPlan& plan);
     ProtocolLane resolve_lane(LaneSlot slot) const;
     std::shared_ptr<protocol::Solo> ensure_protocol(LaneSlot slot);
     void sync_protocol_state(LaneSlot slot);
     void rewire_protocol_handlers();
     void connect_lane(LaneSlot slot, const network::Endpoint& node_endpoint);
-    void handle_lane_event(LaneSlot slot, network::Result::Code result, network::Shared_payload&& receive_buffer);
-    void finalize_lane_connection(LaneSlot slot, bool deferred);
+    void handle_lane_event(LaneSlot slot, uint64_t transport_generation,
+                           network::Result::Code result, network::Shared_payload&& receive_buffer);
+    void finalize_lane_connection(LaneSlot slot, uint64_t transport_generation, bool deferred);
     void apply_protocol_handlers(LaneSlot slot);
     void mark_lane_socket_connected(LaneSlot slot);
     void mark_lane_socket_failed(LaneSlot slot);
     void mark_lane_authenticated(LaneSlot slot, protocol::SessionId sid);
-    bool begin_lane_authentication(LaneSlot slot);
+    bool begin_lane_authentication(LaneSlot slot, uint64_t transport_generation);
     void complete_pending_connect(bool success);
     void mark_all_lanes_down(const char* reason);
 
@@ -455,6 +470,7 @@ private:
     std::atomic<bool> m_primary_connected{false};
     std::atomic<bool> m_secondary_connected{false};
     std::atomic<bool> m_stopped{false};
+    std::atomic<uint64_t> m_transport_generation{0};
 
     // Lane health tracking
     DualConnectionManager* m_dcm{nullptr};
