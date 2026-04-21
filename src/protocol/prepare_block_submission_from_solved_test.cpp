@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cstring>
 
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/null_sink.h"
@@ -132,14 +133,17 @@ static nexusminer::Block_data make_worker_snapshot(uint32_t nHeight,
     return bd;
 }
 
-/**
- * Decode the big-endian uint32 at payload[offset..offset+3].
- */
-static uint32_t read_be_u32(const std::vector<uint8_t>& payload, size_t offset) {
-    return (static_cast<uint32_t>(payload[offset])     << 24)
-         | (static_cast<uint32_t>(payload[offset + 1]) << 16)
-         | (static_cast<uint32_t>(payload[offset + 2]) <<  8)
-         |  static_cast<uint32_t>(payload[offset + 3]);
+static ::LLP::CBlock make_block_from_snapshot(const nexusminer::Block_data& bd)
+{
+    ::LLP::CBlock block;
+    block.nVersion = bd.nVersion;
+    block.hashPrevBlock = bd.previous_hash;
+    block.hashMerkleRoot = bd.merkle_root;
+    block.nChannel = bd.nChannel;
+    block.nHeight = bd.nHeight;
+    block.nBits = bd.nBits;
+    block.nNonce = bd.nNonce;
+    return block;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -179,9 +183,11 @@ static void test_preserves_worker_nheight_under_template_advance() {
     auto payload = mti.prepare_block_submission_from_solved(worker_snap);
 
     bool not_empty = !payload.empty();
-    // Tritium: nHeight is big-endian uint32 at bytes [200-203].
+    // Canonical submit serialization mirrors raw CBlock bytes at [200..203].
     bool height_ok = not_empty && (payload.size() >= 204) &&
-                     (read_be_u32(payload, 200) == WORKER_HEIGHT);
+                     (std::memcmp(payload.data() + 200,
+                                  &worker_snap.nHeight,
+                                  sizeof(worker_snap.nHeight)) == 0);
 
     print_result("Test 1: worker nHeight preserved in payload under template advance", height_ok);
 }
@@ -216,11 +222,9 @@ static void test_preserves_worker_prev_block_under_template_advance() {
         return;
     }
 
-    // Tritium: hashPrevBlock is 128 bytes at [4..131].
-    bool prev_ok = true;
-    for (size_t i = 0; i < 128; ++i) {
-        if (payload[4 + i] != WORKER_PREV_FILL) { prev_ok = false; break; }
-    }
+    const auto expected = nexusminer::GetBlockHeaderBytes(make_block_from_snapshot(worker_snap), false);
+    bool prev_ok = payload.size() >= expected.size() &&
+                   std::equal(expected.begin(), expected.end(), payload.begin());
     print_result("Test 2: worker hashPrevBlock preserved in payload under template advance", prev_ok);
 }
 

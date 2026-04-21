@@ -2087,6 +2087,25 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
             nBitsMeta      = (uint32_t(d[8]) << 24) | (uint32_t(d[9]) << 16)
                            | (uint32_t(d[10]) << 8) |  uint32_t(d[11]);
         }
+
+        if (nBitsMeta == 0) {
+            m_logger->error("[Solo BLOCK_DATA] Invalid metadata difficulty 0x00000000 — discarding template and requesting fresh work");
+            if (m_template_interface) {
+                m_template_interface->discard_template("zero_difficulty_block_data_metadata");
+            }
+            if (m_recovery_handler) {
+                m_logger->info("[Solo BLOCK_DATA] Invoking recovery handler after zero-difficulty metadata");
+                m_recovery_handler();
+            }
+            if (connection) {
+                if (!request_and_queue_get_block(connection,
+                                                 GetBlockReason::VALIDATION_FAILURE,
+                                                 "[Solo BLOCK_DATA] Zero-difficulty recovery GET_BLOCK")) {
+                    m_logger->error("[Solo BLOCK_DATA] Recovery failed after zero-difficulty metadata");
+                }
+            }
+            return;
+        }
         // ── HeightTracker BLOCK_DATA feed (Step 1/2) ───────────────────────────────
         // Feed unified_height, channel_height, nBits from the authoritative node
         // BLOCK_DATA metadata prefix.  This is the canonical source of truth for

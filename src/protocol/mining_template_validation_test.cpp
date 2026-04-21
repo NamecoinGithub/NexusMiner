@@ -15,9 +15,12 @@
 #include "protocol/height_tracker.hpp"
 #include "LLP/block.hpp"
 #include "LLP/miner_opcodes.hpp"
+#include "worker/block_header_utils.hpp"
 #include <iostream>
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <chrono>
 #include <thread>
@@ -535,33 +538,26 @@ int main()
             // Prepare a fake 64-byte merkle root (non-zero)
             std::vector<uint8_t> merkle_root(64, 0xAB);
 
-            // prepare_block_submission() serializes the solved block (Tritium 216-byte format)
-            // Tritium layout: nVersion(4) + hashPrevBlock(128) + hashMerkleRoot(64) +
-            //                 nChannel(4) + nHeight(4) + nBits(4) + nNonce(8) = 216 bytes
-            // nHeight is at offset 200 (big-endian uint32)
+            // prepare_block_submission() emits the canonical raw CBlock bytes.
             uint64_t nonce = 0xDEADBEEFCAFEBABEULL;
             auto payload = tmpl_interface.prepare_block_submission(merkle_root, nonce);
 
             print_test_result("prepare_block_submission() returns 216-byte payload",
                 payload.size() == 216);
 
-            if (payload.size() >= 204) {
-                // Read nHeight from serialized payload at offset 200 (big-endian)
-                uint32_t serialized_height =
-                    (static_cast<uint32_t>(payload[200]) << 24) |
-                    (static_cast<uint32_t>(payload[201]) << 16) |
-                    (static_cast<uint32_t>(payload[202]) << 8)  |
-                     static_cast<uint32_t>(payload[203]);
+            if (payload.size() >= 216) {
+                ::LLP::CBlock expected_block = tmpl_interface.get_current_template()->block;
+                expected_block.hashMerkleRoot.SetBytes(merkle_root);
+                expected_block.nNonce = nonce;
+                const auto expected_payload = nexusminer::GetBlockHeaderBytes(expected_block, false);
 
                 print_test_result("block.nHeight (unified) preserved in payload[200-203]",
-                    serialized_height == unified_height);
-
-                // Also verify nNonce at offset 208 (little-endian uint64 — Nexus node reads nNonce as LE)
-                uint64_t serialized_nonce = 0;
-                for (int i = 0; i < 8; ++i)
-                    serialized_nonce |= static_cast<uint64_t>(payload[208 + i]) << (i * 8);
+                    std::memcmp(payload.data() + 200, &expected_block.nHeight, sizeof(expected_block.nHeight)) == 0);
                 print_test_result("nNonce preserved in payload[208-215] (little-endian)",
-                    serialized_nonce == nonce);
+                    std::memcmp(payload.data() + 208, &expected_block.nNonce, sizeof(expected_block.nNonce)) == 0);
+                print_test_result("Canonical submit payload matches raw CBlock bytes",
+                    payload.size() == expected_payload.size() &&
+                    std::equal(expected_payload.begin(), expected_payload.end(), payload.begin()));
             }
         }
     }
