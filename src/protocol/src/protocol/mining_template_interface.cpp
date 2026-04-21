@@ -336,6 +336,57 @@ MiningTemplateInterface::read_stateless_payload(const network::Payload& payload2
         // m_last_unified_height with nUnifiedHeightMeta (the CURRENT tip, i.e. one less)
         // would cause the guard to always fire for stateless templates, silently
         // discarding every template received via read_stateless_payload().
+
+        // ── Post-decode metadata divergence diagnostics (read-only, no behavior change) ─
+        // These run after validate_template() has already accepted the body (including the
+        // existing nBits==0 reject), so they are pure audit — they do NOT gate acceptance.
+
+        // Diagnostic 1: metadata nBits vs body nBits
+        // Contract: nDifficultyMetaEcho is an echo of body.nBits; they must agree.
+        // (validate_template() already rejects body.nBits==0, so body_nbits is non-zero here.)
+        const uint32_t body_nbits = m_current_template.block.nBits;
+        if (body_nbits != nDifficultyMetaEcho) {
+            m_stateless_nbits_divergence_count.fetch_add(1, std::memory_order_relaxed);
+            m_logger->warn("[TemplateInterface] \u26a0 STATELESS METADATA DIVERGENCE (nBits): "
+                           "body=0x{:08x} metadata=0x{:08x} delta=0x{:08x} \u2014 "
+                           "node may be composing stateless BLOCK_DATA from mismatched sources "
+                           "(cached body + fresh metadata). Miner uses body.nBits \u2014 submitted block "
+                           "may not match node's current round difficulty.",
+                           body_nbits, nDifficultyMetaEcho,
+                           body_nbits ^ nDifficultyMetaEcho);
+        } else {
+            m_logger->debug("[TemplateInterface] \u2713 Stateless metadata nBits matches body: 0x{:08x}",
+                            body_nbits);
+        }
+
+        // Diagnostic 2: metadata unified_height vs body nHeight
+        // Contract: nUnifiedHeightMeta is the CURRENT tip; body.nHeight is the NEXT block (tip+1).
+        const uint32_t body_height = m_current_template.block.nHeight;
+        const uint32_t expected_body_height = nUnifiedHeightMeta + 1;
+        if (body_height != expected_body_height) {
+            m_stateless_height_divergence_count.fetch_add(1, std::memory_order_relaxed);
+            m_logger->warn("[TemplateInterface] \u26a0 STATELESS METADATA DIVERGENCE (height): "
+                           "metadata.unified_height={} \u2192 expected body.nHeight={} but body.nHeight={} "
+                           "(delta={}) \u2014 node BLOCK_DATA composer may be racing chain advance "
+                           "between body capture and metadata capture.",
+                           nUnifiedHeightMeta, expected_body_height, body_height,
+                           static_cast<int64_t>(body_height) - static_cast<int64_t>(expected_body_height));
+        } else {
+            m_logger->debug("[TemplateInterface] \u2713 Stateless metadata height consistent: "
+                            "tip={} body={} (tip+1)", nUnifiedHeightMeta, body_height);
+        }
+
+        // Diagnostic 3: channel_height sanity (must not exceed unified_height)
+        // NOTE: body.nChannelHeight is still 0 at this point (set later by set_channel_height()),
+        // so we only check the internal consistency of the metadata fields themselves.
+        // Do NOT compare against m_current_channel_height here — that field may be stale.
+        if (nChannelHeightMeta > nUnifiedHeightMeta) {
+            m_stateless_channel_sanity_violations.fetch_add(1, std::memory_order_relaxed);
+            m_logger->warn("[TemplateInterface] \u26a0 STATELESS METADATA SANITY (channel > unified): "
+                           "channel_height={} > unified_height={} \u2014 node payload composer emitted "
+                           "an impossible state.",
+                           nChannelHeightMeta, nUnifiedHeightMeta);
+        }
     }
 
     return result;
@@ -904,6 +955,9 @@ MiningTemplateInterface::TemplateStats MiningTemplateInterface::get_stats() cons
     stats.total_validation_time_us = m_total_validation_time_us.load(std::memory_order_relaxed);
     stats.templates_expired_age = m_templates_expired_age.load(std::memory_order_relaxed);
     stats.templates_expired_height = m_templates_expired_height.load(std::memory_order_relaxed);
+    stats.stateless_nbits_divergence_count = m_stateless_nbits_divergence_count.load(std::memory_order_relaxed);
+    stats.stateless_height_divergence_count = m_stateless_height_divergence_count.load(std::memory_order_relaxed);
+    stats.stateless_channel_sanity_violations = m_stateless_channel_sanity_violations.load(std::memory_order_relaxed);
     return stats;
 }
 
@@ -920,6 +974,9 @@ void MiningTemplateInterface::reset_stats()
     m_total_validation_time_us.store(0, std::memory_order_relaxed);
     m_templates_expired_age.store(0, std::memory_order_relaxed);
     m_templates_expired_height.store(0, std::memory_order_relaxed);
+    m_stateless_nbits_divergence_count.store(0, std::memory_order_relaxed);
+    m_stateless_height_divergence_count.store(0, std::memory_order_relaxed);
+    m_stateless_channel_sanity_violations.store(0, std::memory_order_relaxed);
     
     m_logger->debug("[TemplateInterface] Statistics reset");
 }
