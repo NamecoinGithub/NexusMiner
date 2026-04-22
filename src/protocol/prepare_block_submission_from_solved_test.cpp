@@ -55,6 +55,10 @@ static uint8_t be_byte(uint32_t v, int i) {
     return static_cast<uint8_t>((v >> (24 - 8 * i)) & 0xFF);
 }
 
+static uint8_t le_byte(uint64_t v, int i) {
+    return static_cast<uint8_t>((v >> (8 * i)) & 0xFF);
+}
+
 /**
  * Build a minimal valid 228-byte STATELESS_GET_BLOCK payload for the given height.
  * Uses a distinct hashPrevBlock pattern so tests can detect which template was used.
@@ -188,8 +192,14 @@ static void test_preserves_worker_nheight_under_template_advance() {
                      (std::memcmp(payload.data() + 200,
                                   &worker_snap.nHeight,
                                   sizeof(worker_snap.nHeight)) == 0);
+    bool height_bytes_ok = not_empty && (payload.size() >= 204) &&
+                           payload[200] == le_byte(worker_snap.nHeight, 0) &&
+                           payload[201] == le_byte(worker_snap.nHeight, 1) &&
+                           payload[202] == le_byte(worker_snap.nHeight, 2) &&
+                           payload[203] == le_byte(worker_snap.nHeight, 3);
 
     print_result("Test 1: worker nHeight preserved in payload under template advance", height_ok);
+    print_result("Test 1b: canonical payload stores worker nHeight as explicit LE bytes", height_bytes_ok);
 }
 
 /**
@@ -225,7 +235,13 @@ static void test_preserves_worker_prev_block_under_template_advance() {
     const auto expected = nexusminer::GetBlockHeaderBytes(make_block_from_snapshot(worker_snap), false);
     bool prev_ok = payload.size() >= expected.size() &&
                    std::equal(expected.begin(), expected.end(), payload.begin());
+    bool prev_bytes_ok = payload.size() >= 132;
+    for (size_t i = 0; i < 128 && prev_bytes_ok; ++i) {
+        prev_bytes_ok = (payload[4 + i] == WORKER_PREV_FILL);
+    }
     print_result("Test 2: worker hashPrevBlock preserved in payload under template advance", prev_ok);
+    print_result("Test 2b: hashPrevBlock region stays byte-exact at [4..131]", prev_bytes_ok);
+    print_result("Test 2c: GetBlockHeaderBytes matches canonical submit prefix", prev_ok);
 }
 
 /**
@@ -312,15 +328,22 @@ static void test_prime_channel_voffsets_appended() {
     bool size_correct    = base_nonempty && with_nonempty &&
                            (with_offsets.size() == without_offsets.size() + TEST_VOFFSETS.size());
 
-    // Verify the appended bytes are the exact offset values.
+    const auto header_bytes = nexusminer::GetBlockHeaderBytes(make_block_from_snapshot(worker_snap), false);
+
+    // Verify the appended bytes are the exact offset values and start immediately
+    // after the canonical nVersion..nNonce prefix.
     bool offsets_correct = size_correct;
     if (offsets_correct) {
-        size_t base = without_offsets.size();
+        size_t base = header_bytes.size();
         for (size_t i = 0; i < TEST_VOFFSETS.size(); ++i) {
             if (with_offsets[base + i] != TEST_VOFFSETS[i]) { offsets_correct = false; break; }
         }
     }
+    bool prefix_ok = with_nonempty &&
+                     with_offsets.size() >= header_bytes.size() &&
+                     std::equal(header_bytes.begin(), header_bytes.end(), with_offsets.begin());
     print_result("Test 5: Prime channel vOffsets appended correctly", size_correct && offsets_correct);
+    print_result("Test 5b: Prime payload keeps canonical header prefix before vOffsets", prefix_ok);
 }
 
 /**
