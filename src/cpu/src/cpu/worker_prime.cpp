@@ -149,39 +149,9 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 
 	try {
 		m_logger->debug("Worker_prime::set_block: Setting new block for worker {}", m_config.m_id);
-
-		// Update work data atomically and signal worker thread
-		{
-			std::scoped_lock<std::mutex> lck(m_mtx);
-			m_found_nonce_callback = result;
-			m_block = Block_data{ block };
-			if (nbits != 0)	// take nBits provided from pool
-			{
-				m_pool_nbits = nbits;
-			}
-
-			m_difficulty = m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
-			m_base_hash = m_block.GetPrimeBaseHash();
-			//Now we have the hash of the block header.  We use this to feed the miner.
-
-			//set the starting nonce for each worker to something different that won't overlap with the others
-			m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
-			m_nonce = m_starting_nonce;
-
-			// NOTE: Sieve initialization (set_sieve_start, clear_chains,
-			// calculate_starting_multiples) is intentionally NOT done here.
-			// It runs on the worker thread in run() to eliminate the race condition
-			// where set_block() could mutate the sieve while run() is using it.
-
-			// Signal new work is available
-			m_stop = true;
-			m_new_work = true;
-			m_running = true;
-		}
-
-		// Wake up the worker thread
-		m_cv.notify_one();
-		m_logger->debug("Worker_prime::set_block: New work signaled for worker {}", m_config.m_id);
+		Block_data block_data{ block };
+		const auto base_hash = block_data.GetPrimeBaseHash();
+		set_block_impl(std::move(block_data), nbits, base_hash, std::move(result));
 
 	} catch (const std::exception& e) {
 		m_logger->error("Worker_prime::set_block: Exception for worker {}: {}", m_config.m_id, e.what());
@@ -201,60 +171,83 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 
 	try {
 		m_logger->debug("Worker_prime::set_block: Setting new block for worker {} (optimized)", m_config.m_id);
-
-		// Update work data atomically and signal worker thread
-		{
-			std::scoped_lock<std::mutex> lck(m_mtx);
-			m_found_nonce_callback = result;
-
-			// Use precomputed data from WorkPackage
-			const auto& block = work_package->get_block();
-			m_block = Block_data{ block };
-
-			std::uint32_t nbits = work_package->get_nbits();
-			if (nbits != 0)	// take nBits provided from pool
-			{
-				m_pool_nbits = nbits;
-			}
-
-			m_difficulty = m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
-
-			// Optimization: Use precomputed base hash from WorkPackage if available
-			const auto& precomputed_hash = work_package->get_prime_base_hash();
-			if (precomputed_hash.has_value()) {
-				// Use shared precomputed hash (computed once in Worker_manager)
-				m_base_hash = precomputed_hash.value();
-				m_logger->debug("Worker_prime::set_block: Using precomputed base hash from WorkPackage");
-			} else {
-				// Fallback: Compute hash locally (backward compatibility)
-				m_logger->debug("Worker_prime::set_block: Computing base hash locally (no precomputed hash)");
-				m_base_hash = m_block.GetPrimeBaseHash();
-			}
-			//Now we have the hash of the block header.  We use this to feed the miner.
-
-			//set the starting nonce for each worker to something different that won't overlap with the others
-			m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
-			m_nonce = m_starting_nonce;
-
-			// NOTE: Sieve initialization (set_sieve_start, clear_chains,
-			// calculate_starting_multiples) is intentionally NOT done here.
-			// It runs on the worker thread in run() to eliminate the race condition
-			// where set_block() could mutate the sieve while run() is using it.
-
-			// Signal new work is available
-			m_stop = true;
-			m_new_work = true;
-			m_running = true;
+		const auto& block = work_package->get_block();
+		Block_data block_data{ block };
+		const auto& precomputed_hash = work_package->get_prime_base_hash();
+		if (precomputed_hash.has_value()) {
+			m_logger->debug("Worker_prime::set_block: Using precomputed base hash from WorkPackage");
+			set_block_impl(std::move(block_data), work_package->get_nbits(), precomputed_hash.value(), std::move(result));
+		} else {
+			m_logger->debug("Worker_prime::set_block: Computing base hash locally (no precomputed hash)");
+			const auto base_hash = block_data.GetPrimeBaseHash();
+			set_block_impl(std::move(block_data), work_package->get_nbits(), base_hash, std::move(result));
 		}
-
-		// Wake up the worker thread
-		m_cv.notify_one();
-		m_logger->debug("Worker_prime::set_block: New work signaled for worker {}", m_config.m_id);
 
 	} catch (const std::exception& e) {
 		m_logger->error("Worker_prime::set_block: Exception for worker {}: {}", m_config.m_id, e.what());
 	} catch (...) {
 		m_logger->error("Worker_prime::set_block: Unknown exception for worker {}", m_config.m_id);
+	}
+}
+
+void Worker_prime::set_block_impl(Block_data block_data,
+                                  std::uint32_t nbits,
+                                  const uint1k& base_hash,
+                                  Worker::Block_found_handler result)
+{
+	bool notify_worker = false;
+
+	{
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		m_found_nonce_callback = std::move(result);
+
+		if (nbits != 0)	// take nBits provided from pool
+		{
+			m_pool_nbits = nbits;
+		}
+
+		const auto new_difficulty = m_pool_nbits != 0 ? m_pool_nbits : block_data.nBits;
+		// same_active_search: the worker is already mining this exact proof-hash space,
+		// so restarting would only throw away current sieve/segment progress.
+		const bool same_active_search = !m_new_work && m_has_active_cycle && base_hash == m_active_base_hash;
+		// same_queued_work: an identical template is already pending for the worker
+		// thread, so avoid stacking another redundant restart request on top of it.
+		const bool same_queued_work = m_new_work && base_hash == m_base_hash;
+
+		// Preserve current search progress when the incoming template maps to the
+		// exact same prime proof-hash space. Restarting would only throw away work.
+		if (same_active_search || same_queued_work) {
+			m_block = std::move(block_data);
+			m_difficulty = new_difficulty;
+			m_base_hash = base_hash;
+			m_logger->debug("Worker_prime::set_block: Preserving current search for worker {} (duplicate prime proof-hash work)",
+			                m_config.m_id);
+			return;
+		}
+
+		m_block = std::move(block_data);
+		m_difficulty = new_difficulty;
+		m_base_hash = base_hash;
+
+		// set the starting nonce for each worker to something different that won't overlap with the others
+		m_starting_nonce = static_cast<uint64_t>(m_config.m_internal_id) << 48;
+		m_nonce = m_starting_nonce;
+
+		// NOTE: Sieve initialization (set_sieve_start, clear_chains,
+		// calculate_starting_multiples) is intentionally NOT done here.
+		// It runs on the worker thread in run() to eliminate the race condition
+		// where set_block() could mutate the sieve while run() is using it.
+
+		// Signal new work is available
+		m_stop = true;
+		m_new_work = true;
+		m_running = true;
+		notify_worker = true;
+	}
+
+	if (notify_worker) {
+		m_cv.notify_one();
+		m_logger->debug("Worker_prime::set_block: New work signaled for worker {}", m_config.m_id);
 	}
 }
 
@@ -364,6 +357,8 @@ void Worker_prime::run()
 			local_block = m_block;
 			local_base_hash = m_base_hash;
 			local_nonce = m_nonce;
+			m_active_base_hash = local_base_hash;
+			m_has_active_cycle = true;
 		}
 		// Initialize the sieve on the worker thread only — set_block() no longer mutates
 		// m_segmented_sieve, so all sieve operations are exclusively on this thread,
@@ -428,7 +423,6 @@ void Worker_prime::run()
 		auto sieve_stop = std::chrono::steady_clock::now();
 		auto sieve_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(sieve_stop - sieve_start);
 		sieving_ms += sieve_elapsed.count();
-		if (m_stop) break;  // Check after expensive sieve_segment() operation
 		auto find_chains_start = std::chrono::steady_clock::now();
 		m_segmented_sieve->find_chains(low, false);
 		auto find_chains_stop = std::chrono::steady_clock::now();
@@ -562,6 +556,13 @@ void Worker_prime::run()
 			std::cout << std::endl;
 		}
 	}
+
+		{
+			std::scoped_lock<std::mutex> lck(m_mtx);
+			// Clear the active-cycle marker once the loop yields so a later duplicate
+			// template is compared against the next live search, not stale prior state.
+			m_has_active_cycle = false;
+		}
 
 		m_logger->info(m_log_leader + "Mining stopped, waiting for new work...");
 	}  // End of persistent thread loop
