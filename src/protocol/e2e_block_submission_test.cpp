@@ -31,7 +31,9 @@
 #include "protocol/height_tracker.hpp"
 #include "protocol/packet_builder.hpp"
 #include "protocol/falcon_constants.hpp"
+#include "worker/block_header_utils.hpp"
 #include "miner_opcodes.hpp"
+#include <algorithm>
 #include <iostream>
 #include <cassert>
 #include <cstdint>
@@ -283,6 +285,45 @@ static void test_prime_payload_size() {
     bool ok = submit.valid &&
               (plaintext.size() == StatelessBlockUtility::BLOCK_BODY_SIZE + vOffsets.size());
     print_result("E2E Prime: decrypted payload = 216 + vOffsets.size() bytes", ok);
+}
+
+// Test 4b: Hash submit payload prefix exactly matches GetBlockHeaderBytes()
+static void test_hash_submit_matches_header_bytes() {
+    auto mti  = make_loaded_mti(2);
+    auto blk  = make_solved_block(2);
+    auto snap = make_snapshot();
+
+    auto submit = StatelessBlockUtility::encode_submit(
+        *mti, blk, {}, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+    auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
+    const auto header = nexusminer::GetBlockHeaderBytes(blk, false);
+
+    bool ok = submit.valid &&
+              plaintext.size() == header.size() &&
+              std::equal(header.begin(), header.end(), plaintext.begin());
+    print_result("E2E Hash: submit payload exactly matches GetBlockHeaderBytes()", ok);
+}
+
+// Test 4c: Prime vOffsets follow the canonical header immediately
+static void test_prime_submit_places_voffsets_after_header() {
+    auto mti  = make_loaded_mti(1);
+    auto blk  = make_solved_block(1);
+    auto snap = make_snapshot();
+    std::vector<uint8_t> vOffsets = {0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40};
+
+    auto submit = StatelessBlockUtility::encode_submit(
+        *mti, blk, vOffsets, nullptr, ProtocolLane::STATELESS, snap, nullptr);
+    auto plaintext = strip_wire_header(*submit.wire_bytes, ProtocolLane::STATELESS);
+    const auto header = nexusminer::GetBlockHeaderBytes(blk, false);
+
+    bool prefix_ok = submit.valid &&
+                     plaintext.size() == header.size() + vOffsets.size() &&
+                     std::equal(header.begin(), header.end(), plaintext.begin());
+    bool offsets_ok = prefix_ok &&
+                      std::equal(vOffsets.begin(), vOffsets.end(),
+                                 plaintext.begin() + static_cast<std::ptrdiff_t>(header.size()));
+    print_result("E2E Prime: vOffsets begin immediately after canonical header bytes",
+                 prefix_ok && offsets_ok);
 }
 
 // Test 5: vOffsets bytes survive the full pipeline (byte-exact)
@@ -731,6 +772,8 @@ int main() {
     test_e2e_prime_channel_voffsets_round_trip();// 2
     test_hash_payload_size();                    // 3
     test_prime_payload_size();                   // 4
+    test_hash_submit_matches_header_bytes();     // 4b
+    test_prime_submit_places_voffsets_after_header(); // 4c
     test_voffsets_byte_exact();                  // 5
 
     std::cout << "\n--- Crypto Correctness ---\n";

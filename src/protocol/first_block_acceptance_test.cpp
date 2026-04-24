@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -185,12 +186,9 @@ uint32_t extract_serialized_block_height(const std::vector<uint8_t>& block_paylo
         return 0;
     }
 
-    // Tritium submit payload serializes nHeight as a big-endian uint32 at bytes
-    // [200..203], matching the existing block serialization contract.
-    return (static_cast<uint32_t>(block_payload[TRITIUM_HEIGHT_OFFSET]) << 24) |
-           (static_cast<uint32_t>(block_payload[TRITIUM_HEIGHT_OFFSET + 1]) << 16) |
-           (static_cast<uint32_t>(block_payload[TRITIUM_HEIGHT_OFFSET + 2]) << 8) |
-            static_cast<uint32_t>(block_payload[TRITIUM_HEIGHT_OFFSET + 3]);
+    uint32_t height = 0;
+    std::memcpy(&height, block_payload.data() + TRITIUM_HEIGHT_OFFSET, sizeof(height));
+    return height;
 }
 
 struct AcceptedSubmissionTracker

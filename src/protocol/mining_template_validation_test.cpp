@@ -15,11 +15,14 @@
 #include "protocol/height_tracker.hpp"
 #include "LLP/block.hpp"
 #include "LLP/miner_opcodes.hpp"
-#include <iostream>
+#include "worker/block_header_utils.hpp"
+#include <algorithm>
 #include <cassert>
-#include <cstdint>
-#include <memory>
 #include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <memory>
 #include <thread>
 
 // Mock logger for testing
@@ -43,6 +46,10 @@ void print_test_result(const char* name, bool passed) {
         tests_failed++;
         std::cout << "  [FAIL] " << name << std::endl;
     }
+}
+
+static uint8_t le_byte(uint64_t value, int index) {
+    return static_cast<uint8_t>((value >> (8 * index)) & 0xFF);
 }
 
 // Helper to create a mock block template
@@ -535,33 +542,51 @@ int main()
             // Prepare a fake 64-byte merkle root (non-zero)
             std::vector<uint8_t> merkle_root(64, 0xAB);
 
-            // prepare_block_submission() serializes the solved block (Tritium 216-byte format)
-            // Tritium layout: nVersion(4) + hashPrevBlock(128) + hashMerkleRoot(64) +
-            //                 nChannel(4) + nHeight(4) + nBits(4) + nNonce(8) = 216 bytes
-            // nHeight is at offset 200 (big-endian uint32)
+            // prepare_block_submission() emits the canonical raw CBlock bytes.
             uint64_t nonce = 0xDEADBEEFCAFEBABEULL;
             auto payload = tmpl_interface.prepare_block_submission(merkle_root, nonce);
 
             print_test_result("prepare_block_submission() returns 216-byte payload",
                 payload.size() == 216);
 
-            if (payload.size() >= 204) {
-                // Read nHeight from serialized payload at offset 200 (big-endian)
-                uint32_t serialized_height =
-                    (static_cast<uint32_t>(payload[200]) << 24) |
-                    (static_cast<uint32_t>(payload[201]) << 16) |
-                    (static_cast<uint32_t>(payload[202]) << 8)  |
-                     static_cast<uint32_t>(payload[203]);
+            if (payload.size() >= 216) {
+                ::LLP::CBlock expected_block = tmpl_interface.get_current_template()->block;
+                expected_block.hashMerkleRoot.SetBytes(merkle_root);
+                expected_block.nNonce = nonce;
+                const auto expected_payload = nexusminer::GetBlockHeaderBytes(expected_block, false);
 
                 print_test_result("block.nHeight (unified) preserved in payload[200-203]",
-                    serialized_height == unified_height);
-
-                // Also verify nNonce at offset 208 (little-endian uint64 — Nexus node reads nNonce as LE)
-                uint64_t serialized_nonce = 0;
-                for (int i = 0; i < 8; ++i)
-                    serialized_nonce |= static_cast<uint64_t>(payload[208 + i]) << (i * 8);
+                    std::memcmp(payload.data() + 200, &expected_block.nHeight, sizeof(expected_block.nHeight)) == 0);
                 print_test_result("nNonce preserved in payload[208-215] (little-endian)",
-                    serialized_nonce == nonce);
+                    std::memcmp(payload.data() + 208, &expected_block.nNonce, sizeof(expected_block.nNonce)) == 0);
+                print_test_result("Canonical submit scalar bytes are explicit little-endian",
+                    payload[0]   == le_byte(expected_block.nVersion, 0) &&
+                    payload[1]   == le_byte(expected_block.nVersion, 1) &&
+                    payload[2]   == le_byte(expected_block.nVersion, 2) &&
+                    payload[3]   == le_byte(expected_block.nVersion, 3) &&
+                    payload[196] == le_byte(expected_block.nChannel, 0) &&
+                    payload[197] == le_byte(expected_block.nChannel, 1) &&
+                    payload[198] == le_byte(expected_block.nChannel, 2) &&
+                    payload[199] == le_byte(expected_block.nChannel, 3) &&
+                    payload[200] == le_byte(expected_block.nHeight, 0) &&
+                    payload[201] == le_byte(expected_block.nHeight, 1) &&
+                    payload[202] == le_byte(expected_block.nHeight, 2) &&
+                    payload[203] == le_byte(expected_block.nHeight, 3) &&
+                    payload[204] == le_byte(expected_block.nBits, 0) &&
+                    payload[205] == le_byte(expected_block.nBits, 1) &&
+                    payload[206] == le_byte(expected_block.nBits, 2) &&
+                    payload[207] == le_byte(expected_block.nBits, 3) &&
+                    payload[208] == le_byte(expected_block.nNonce, 0) &&
+                    payload[209] == le_byte(expected_block.nNonce, 1) &&
+                    payload[210] == le_byte(expected_block.nNonce, 2) &&
+                    payload[211] == le_byte(expected_block.nNonce, 3) &&
+                    payload[212] == le_byte(expected_block.nNonce, 4) &&
+                    payload[213] == le_byte(expected_block.nNonce, 5) &&
+                    payload[214] == le_byte(expected_block.nNonce, 6) &&
+                    payload[215] == le_byte(expected_block.nNonce, 7));
+                print_test_result("Canonical submit payload matches raw CBlock bytes",
+                    payload.size() == expected_payload.size() &&
+                    std::equal(expected_payload.begin(), expected_payload.end(), payload.begin()));
             }
         }
     }
@@ -637,20 +662,29 @@ int main()
 
             print_test_result("prepare_block_submission() returns 216-byte payload", payload.size() == 216);
 
-            // 5. Verify payload[4..131] matches the original hashPrevBlock bytes.
+            // 5. Verify payload[4..131] matches the canonical raw CBlock bytes.
             if (payload.size() == 216) {
-                bool payload_prev_ok = true;
-                for (int i = 0; i < 128 && payload_prev_ok; ++i) {
-                    payload_prev_ok = (payload[4 + i] == static_cast<uint8_t>((i + 1) & 0xFF));
-                }
+                ::LLP::CBlock expected_block = tmpl->block;
+                expected_block.hashMerkleRoot.SetBytes(merkle_root);
+                expected_block.nNonce = nonce;
+                const auto expected_payload = nexusminer::GetBlockHeaderBytes(expected_block, false);
+                const auto* raw_prev = reinterpret_cast<const uint8_t*>(&expected_block.hashPrevBlock);
+                bool payload_prev_bytes_ok = std::equal(raw_prev,
+                                                        raw_prev + 128,
+                                                        payload.begin() + 4);
+                bool payload_prev_ok = payload.size() == expected_payload.size() &&
+                    std::equal(expected_payload.begin(), expected_payload.end(), payload.begin());
+                print_test_result("✓ hashPrevBlock bytes remain byte-exact in canonical raw-byte order", payload_prev_bytes_ok);
                 print_test_result("✓ hashPrevBlock preserved at payload[4-131]", payload_prev_ok);
             } else {
+                print_test_result("✓ hashPrevBlock bytes remain byte-exact in canonical raw-byte order", false);
                 print_test_result("✓ hashPrevBlock preserved at payload[4-131]", false);
             }
         } else {
             // Skip dependent sub-tests
             print_test_result("block.hashPrevBlock matches input bytes after read_template()", false);
             print_test_result("prepare_block_submission() returns 216-byte payload", false);
+            print_test_result("✓ hashPrevBlock bytes remain byte-exact in canonical raw-byte order", false);
             print_test_result("✓ hashPrevBlock preserved at payload[4-131]", false);
         }
     }

@@ -659,6 +659,32 @@ inline std::vector<std::uint8_t> serialize_full_block(::LLP::CBlock const& block
     return data;
 }
 
+/**
+ * Serialize a solved block for outbound SUBMIT_BLOCK payloads using the node's
+ * canonical in-memory field layout.
+ *
+ * This mirrors the raw nVersion..nNonce / nVersion..nTime span that the node
+ * hashes and serializes internally, avoiding per-field manual byte writes in
+ * the submit path. Prime-channel vOffsets, when present, are carried inside the
+ * serialized Tritium block tail with no extra internal length prefix.
+ */
+inline std::vector<std::uint8_t> serialize_submit_block(::LLP::CBlock const& block,
+                                                        bool is_tritium,
+                                                        const std::vector<std::uint8_t>& vOffsets = {})
+{
+    const auto* begin = reinterpret_cast<const std::uint8_t*>(BEGIN(block.nVersion));
+    const auto* end   = reinterpret_cast<const std::uint8_t*>(
+        is_tritium ? END(block.nNonce) : END(block.nTime));
+
+    std::vector<std::uint8_t> data(begin, end);
+
+    if (is_tritium && block.nChannel == 1 && !vOffsets.empty()) {
+        data.insert(data.end(), vOffsets.begin(), vOffsets.end());
+    }
+
+    return data;
+}
+
 } // namespace llp_utils
 } // namespace nexusminer
 

@@ -33,6 +33,7 @@ namespace MinerLLP = nexusminer::LLP;
 static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
+static constexpr uint8_t ZERO_DIFF_PUSH_PREV_HASH_FILL = 0x42;
 
 void print_test_result(const char* name, bool passed) {
     tests_run++;
@@ -146,8 +147,13 @@ network::Payload create_template_delivery_payload(uint32_t unified_height,
                                                   uint32_t channel_height,
                                                   uint32_t difficulty,
                                                   uint32_t block_height,
-                                                  uint8_t channel = 2)
+                                                  uint8_t channel = 2,
+                                                  uint32_t block_nBits = 0)
 {
+    if (block_nBits == 0) {
+        block_nBits = difficulty;
+    }
+
     network::Payload payload(12, 0);
     auto write_u32_be = [&](size_t offset, uint32_t value) {
         payload[offset + 0] = static_cast<uint8_t>((value >> 24) & 0xFF);
@@ -160,7 +166,7 @@ network::Payload create_template_delivery_payload(uint32_t unified_height,
     write_u32_be(4, channel_height);
     write_u32_be(8, difficulty);
 
-    auto block = create_mock_template(block_height, difficulty, channel);
+    auto block = create_mock_template(block_height, block_nBits, channel);
     payload.insert(payload.end(), block.begin(), block.end());
     return payload;
 }
@@ -1312,6 +1318,89 @@ int main()
 
         print_test_result("Second cross-channel push at same unified=101 returns false (liveness only)",
             !work_29_second);
+    }
+
+    // ====================================================================
+    // Test 30: Zero-difficulty push metadata discards current template
+    // ====================================================================
+    std::cout << "\nTest 30: Zero-difficulty push metadata discards current template" << std::endl;
+    {
+        protocol::PushNotificationHandler handler(logger, static_cast<uint8_t>(mining::CHANNEL_HASH));
+        protocol::MiningTemplateInterface tmpl_iface(static_cast<uint8_t>(mining::CHANNEL_HASH), 0);
+        protocol::HeightTracker tracker;
+
+        auto template_data = create_mock_template(9601, 0x1d00ffff, 2);
+        auto res = tmpl_iface.read_template(template_data, "test_node", false);
+        print_test_result("Zero-difficulty push setup template valid", res.is_valid);
+
+        network::Payload payload = create_extended_push_payload(
+            9600, 100, 0x00000000, ZERO_DIFF_PUSH_PREV_HASH_FILL);
+        Packet pkt(MinerLLP::MirrorOpcode(MinerLLP::HASH_BLOCK_AVAILABLE), payload);
+
+        bool update_called = false;
+        bool push_processed = handler.handle_push_notification(
+            pkt,
+            mining::CHANNEL_HASH,
+            ProtocolLane::STATELESS,
+            &tmpl_iface,
+            &tracker,
+            [&](uint32_t, uint32_t, uint32_t) { update_called = true; });
+
+        print_test_result("Zero-difficulty push returns processed=true", push_processed);
+        print_test_result("Zero-difficulty push does not update heights", !update_called);
+        print_test_result("Zero-difficulty push discards current template", !tmpl_iface.has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 31: Legacy BLOCK_DATA rejects zero-difficulty metadata even when
+    //          body nBits remains valid
+    // ====================================================================
+    std::cout << "\nTest 31: Legacy BLOCK_DATA rejects zero-difficulty metadata" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::LEGACY);
+
+        bool block_handler_called = false;
+        solo.set_block_handler([&block_handler_called](const ::LLP::CBlock&, uint32_t) {
+            block_handler_called = true;
+        });
+
+        network::Payload payload = create_template_delivery_payload(
+            9700, 100, 0x00000000, 9701, 2, 0x1d00ffff);
+        Packet packet(static_cast<uint8_t>(Packet::BLOCK_DATA), payload);
+        solo.process_messages(packet, nullptr);
+
+        print_test_result("Legacy BLOCK_DATA zero metadata does not feed template", !block_handler_called);
+        print_test_result("Legacy BLOCK_DATA zero metadata leaves no valid template",
+            !solo.get_template_interface()->has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 32: Stateless GET_BLOCK rejects zero-difficulty metadata even when
+    //          body nBits remains valid
+    // ====================================================================
+    std::cout << "\nTest 32: Stateless GET_BLOCK rejects zero-difficulty metadata" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::STATELESS);
+
+        bool block_handler_called = false;
+        solo.set_block_handler([&block_handler_called](const ::LLP::CBlock&, uint32_t) {
+            block_handler_called = true;
+        });
+
+        network::Payload payload = create_template_delivery_payload(
+            9800, 100, 0x00000000, 9801, 2, 0x1d00ffff);
+        Packet packet(MinerLLP::MirrorOpcode(MinerLLP::GET_BLOCK), payload);
+        solo.process_messages(packet, nullptr);
+
+        print_test_result("Stateless GET_BLOCK zero metadata does not feed template", !block_handler_called);
+        print_test_result("Stateless GET_BLOCK zero metadata leaves no valid template",
+            !solo.get_template_interface()->has_valid_template());
     }
 
     std::cout << "\n========================================" << std::endl;

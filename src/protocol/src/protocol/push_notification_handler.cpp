@@ -67,6 +67,18 @@ bool PushNotificationHandler::handle_push_notification(
     uint32_t notification_channel_height = bytes2uint(*packet.m_data, CHANNEL_HEIGHT_OFFSET);
     uint32_t notification_difficulty     = bytes2uint(*packet.m_data, DIFFICULTY_OFFSET);
 
+    if (notification_difficulty == 0)
+    {
+        m_logger->error("[Solo Push] Invalid push metadata difficulty 0x00000000 — discarding current template and waiting for a fresh BLOCK_DATA");
+        if (height_tracker) {
+            height_tracker->OnPushLiveness();
+        }
+        if (template_interface) {
+            template_interface->discard_template("zero_difficulty_push_metadata");
+        }
+        return true;
+    }
+
     /* Validate channel — since node now broadcasts BOTH channels on every push update,
      * receiving a push for the non-subscribed channel is expected.  Record push liveness
      * so degraded-mode recovery knows the node is actively communicating.
