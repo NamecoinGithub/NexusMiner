@@ -18,14 +18,13 @@
 #include "protocol/mining_template_interface.hpp"
 #include "worker/worker.hpp"
 #include "LLP/block.hpp"
-#include <algorithm>
+#include <iostream>
 #include <cassert>
 #include <cstdint>
-#include <cstring>
-#include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/null_sink.h"
@@ -53,10 +52,6 @@ static void print_result(const char* name, bool passed) {
 
 static uint8_t be_byte(uint32_t v, int i) {
     return static_cast<uint8_t>((v >> (24 - 8 * i)) & 0xFF);
-}
-
-static uint8_t le_byte(uint64_t v, int i) {
-    return static_cast<uint8_t>((v >> (8 * i)) & 0xFF);
 }
 
 /**
@@ -137,17 +132,14 @@ static nexusminer::Block_data make_worker_snapshot(uint32_t nHeight,
     return bd;
 }
 
-static ::LLP::CBlock make_block_from_snapshot(const nexusminer::Block_data& bd)
-{
-    ::LLP::CBlock block;
-    block.nVersion = bd.nVersion;
-    block.hashPrevBlock = bd.previous_hash;
-    block.hashMerkleRoot = bd.merkle_root;
-    block.nChannel = bd.nChannel;
-    block.nHeight = bd.nHeight;
-    block.nBits = bd.nBits;
-    block.nNonce = bd.nNonce;
-    return block;
+/**
+ * Decode the big-endian uint32 at payload[offset..offset+3].
+ */
+static uint32_t read_be_u32(const std::vector<uint8_t>& payload, size_t offset) {
+    return (static_cast<uint32_t>(payload[offset])     << 24)
+         | (static_cast<uint32_t>(payload[offset + 1]) << 16)
+         | (static_cast<uint32_t>(payload[offset + 2]) <<  8)
+         |  static_cast<uint32_t>(payload[offset + 3]);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -187,19 +179,11 @@ static void test_preserves_worker_nheight_under_template_advance() {
     auto payload = mti.prepare_block_submission_from_solved(worker_snap);
 
     bool not_empty = !payload.empty();
-    // Canonical submit serialization mirrors raw CBlock bytes at [200..203].
+    // Tritium: nHeight is big-endian uint32 at bytes [200-203].
     bool height_ok = not_empty && (payload.size() >= 204) &&
-                     (std::memcmp(payload.data() + 200,
-                                  &worker_snap.nHeight,
-                                  sizeof(worker_snap.nHeight)) == 0);
-    bool height_bytes_ok = not_empty && (payload.size() >= 204) &&
-                           payload[200] == le_byte(worker_snap.nHeight, 0) &&
-                           payload[201] == le_byte(worker_snap.nHeight, 1) &&
-                           payload[202] == le_byte(worker_snap.nHeight, 2) &&
-                           payload[203] == le_byte(worker_snap.nHeight, 3);
+                     (read_be_u32(payload, 200) == WORKER_HEIGHT);
 
     print_result("Test 1: worker nHeight preserved in payload under template advance", height_ok);
-    print_result("Test 1b: canonical payload stores worker nHeight as explicit LE bytes", height_bytes_ok);
 }
 
 /**
@@ -232,16 +216,12 @@ static void test_preserves_worker_prev_block_under_template_advance() {
         return;
     }
 
-    const auto expected = nexusminer::GetBlockHeaderBytes(make_block_from_snapshot(worker_snap), false);
-    bool prev_ok = payload.size() >= expected.size() &&
-                   std::equal(expected.begin(), expected.end(), payload.begin());
-    bool prev_bytes_ok = payload.size() >= 132;
-    for (size_t i = 0; i < 128 && prev_bytes_ok; ++i) {
-        prev_bytes_ok = (payload[4 + i] == WORKER_PREV_FILL);
+    // Tritium: hashPrevBlock is 128 bytes at [4..131].
+    bool prev_ok = true;
+    for (size_t i = 0; i < 128; ++i) {
+        if (payload[4 + i] != WORKER_PREV_FILL) { prev_ok = false; break; }
     }
     print_result("Test 2: worker hashPrevBlock preserved in payload under template advance", prev_ok);
-    print_result("Test 2b: hashPrevBlock region stays byte-exact at [4..131]", prev_bytes_ok);
-    print_result("Test 2c: GetBlockHeaderBytes matches canonical submit prefix", prev_ok);
 }
 
 /**
@@ -328,22 +308,15 @@ static void test_prime_channel_voffsets_appended() {
     bool size_correct    = base_nonempty && with_nonempty &&
                            (with_offsets.size() == without_offsets.size() + TEST_VOFFSETS.size());
 
-    const auto header_bytes = nexusminer::GetBlockHeaderBytes(make_block_from_snapshot(worker_snap), false);
-
-    // Verify the appended bytes are the exact offset values and start immediately
-    // after the canonical nVersion..nNonce prefix.
+    // Verify the appended bytes are the exact offset values.
     bool offsets_correct = size_correct;
     if (offsets_correct) {
-        size_t base = header_bytes.size();
+        size_t base = without_offsets.size();
         for (size_t i = 0; i < TEST_VOFFSETS.size(); ++i) {
             if (with_offsets[base + i] != TEST_VOFFSETS[i]) { offsets_correct = false; break; }
         }
     }
-    bool prefix_ok = with_nonempty &&
-                     with_offsets.size() >= header_bytes.size() &&
-                     std::equal(header_bytes.begin(), header_bytes.end(), with_offsets.begin());
     print_result("Test 5: Prime channel vOffsets appended correctly", size_correct && offsets_correct);
-    print_result("Test 5b: Prime payload keeps canonical header prefix before vOffsets", prefix_ok);
 }
 
 /**

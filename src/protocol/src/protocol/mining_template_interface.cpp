@@ -2,7 +2,6 @@
 #include "protocol/protocol_constants.hpp"
 #include "LLP/block_utils.hpp"
 #include "worker/worker.hpp"
-#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstring>
@@ -321,19 +320,6 @@ MiningTemplateInterface::read_stateless_payload(const network::Payload& payload2
                     "metadata unified={} channel={} nBits=0x{:08x}",
                     nUnifiedHeightMeta, nChannelHeightMeta, nDifficultyMetaEcho);
 
-    if (nDifficultyMetaEcho == 0) {
-        ValidationResult result;
-        result.is_valid = false;
-        result.bits_valid = false;
-        result.error_message = "Invalid STATELESS_GET_BLOCK metadata nBits (difficulty) value: 0";
-        m_logger->error("[TemplateInterface] read_stateless_payload: {}", result.error_message);
-        discard_template("zero_difficulty_stateless_metadata");
-        if (m_validation_failure_handler) {
-            m_validation_failure_handler(result);
-        }
-        return result;
-    }
-
     // ── Delegate the 216-byte block body to the canonical read_template() ────
     network::Payload block_body(payload228.begin() + METADATA_SIZE, payload228.end());
     auto result = read_template(block_body, source_endpoint, auto_feed);
@@ -645,7 +631,7 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
     bool is_tritium = (m_current_template.format == BlockFormat::TRITIUM);
     
     // Serialize the full block
-    auto payload = llp_utils::serialize_submit_block(solved_block, is_tritium);
+    auto payload = llp_utils::serialize_full_block(solved_block, is_tritium);
     
     // SUBMISSION AUDIT: Log solved block fields for ProofHash cross-reference with node.
     // The node calls pBlock->ProofHash() on nVersion..nBits. These must match for
@@ -680,17 +666,34 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission(
             return {};
         }
         
-        if (is_tritium) {
-            const auto raw_header = GetBlockHeaderBytes(solved_block, false);
-            const bool canonical_match =
-                payload.size() >= raw_header.size() &&
-                std::equal(raw_header.begin(), raw_header.end(), payload.begin());
-            if (!canonical_match) {
-                m_logger->error("[SUBMIT AUDIT]   ❌ CRITICAL: canonical Tritium serialization mismatch "
-                                "(payload prefix does not match raw CBlock bytes)");
-            } else {
-                m_logger->info("[SUBMIT AUDIT]   ✅ canonical Tritium serialization matches raw CBlock bytes");
-            }
+        // Verify nHeight survives serialization at offset 200 (Tritium: big-endian uint32 at [200-203])
+        if (is_tritium && payload.size() >= 204)
+        {
+            uint32_t nHeightSerialized =
+                (static_cast<uint32_t>(payload[200]) << 24) |
+                (static_cast<uint32_t>(payload[201]) << 16) |
+                (static_cast<uint32_t>(payload[202]) << 8) |
+                static_cast<uint32_t>(payload[203]);
+            if (nHeightSerialized != solved_block.nHeight)
+                m_logger->error("[SUBMIT AUDIT]   ❌ CRITICAL: nHeight serialization mismatch! "
+                    "block.nHeight={} but serialized[200-203]={}",
+                    solved_block.nHeight, nHeightSerialized);
+            else
+                m_logger->info("[SUBMIT AUDIT]   ✅ nHeight verified in serialized payload: {}", nHeightSerialized);
+        }
+        
+        // Verify nNonce survives serialization at offset 208 (Tritium: little-endian uint64 at [208-215])
+        if (is_tritium && payload.size() >= 216)
+        {
+            uint64_t nNonceSerialized = 0;
+            for (int i = 0; i < 8; ++i)
+                nNonceSerialized |= static_cast<uint64_t>(payload[208 + i]) << (i * 8);
+            if (nNonceSerialized != nonce)
+                m_logger->error("[SUBMIT AUDIT]   ❌ CRITICAL: nNonce serialization mismatch! "
+                    "expected=0x{:016x} but serialized[208-215]=0x{:016x}",
+                    nonce, nNonceSerialized);
+            else
+                m_logger->info("[SUBMIT AUDIT]   ✅ nNonce verified in serialized payload[208-215]: 0x{:016x}", nNonceSerialized);
         }
     }
     
@@ -758,7 +761,7 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission_from_solv
     }
 
     // Serialize using the worker's snapshot fields.
-    auto payload = llp_utils::serialize_submit_block(submit_block, is_tritium);
+    auto payload = llp_utils::serialize_full_block(submit_block, is_tritium);
 
     // Option C drift guard: non-tautological comparison of worker snapshot vs.
     // current template.  Logs a warning but does NOT abort — the worker's PoW was
@@ -800,17 +803,34 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission_from_solv
         m_logger->info("[SUBMIT AUDIT]   block.nNonce       = 0x{:016x}", submit_block.nNonce);
         m_logger->info("[SUBMIT AUDIT]   serialized size    = {} bytes (expected 216 for Tritium)", payload.size());
 
-        if (is_tritium) {
-            const auto raw_header = GetBlockHeaderBytes(submit_block, false);
-            const bool canonical_match =
-                payload.size() >= raw_header.size() &&
-                std::equal(raw_header.begin(), raw_header.end(), payload.begin());
-            if (!canonical_match) {
-                m_logger->error("[SUBMIT AUDIT]   ❌ CRITICAL: canonical Tritium serialization mismatch "
-                                "(payload prefix does not match raw CBlock bytes)");
-            } else {
-                m_logger->info("[SUBMIT AUDIT]   ✅ canonical Tritium serialization matches raw CBlock bytes");
-            }
+        // Verify nHeight survives serialization at offset 200 (Tritium: big-endian uint32 at [200-203])
+        if (is_tritium && payload.size() >= 204)
+        {
+            uint32_t nHeightSerialized =
+                (static_cast<uint32_t>(payload[200]) << 24) |
+                (static_cast<uint32_t>(payload[201]) << 16) |
+                (static_cast<uint32_t>(payload[202]) << 8) |
+                static_cast<uint32_t>(payload[203]);
+            if (nHeightSerialized != submit_block.nHeight)
+                m_logger->error("[SUBMIT AUDIT]   ❌ CRITICAL: nHeight serialization mismatch! "
+                    "block.nHeight={} but serialized[200-203]={}",
+                    submit_block.nHeight, nHeightSerialized);
+            else
+                m_logger->info("[SUBMIT AUDIT]   ✅ nHeight verified in serialized payload: {}", nHeightSerialized);
+        }
+
+        // Verify nNonce survives serialization at offset 208 (Tritium: little-endian uint64 at [208-215])
+        if (is_tritium && payload.size() >= 216)
+        {
+            uint64_t nNonceSerialized = 0;
+            for (int i = 0; i < 8; ++i)
+                nNonceSerialized |= static_cast<uint64_t>(payload[208 + i]) << (i * 8);
+            if (nNonceSerialized != submit_block.nNonce)
+                m_logger->error("[SUBMIT AUDIT]   ❌ CRITICAL: nNonce serialization mismatch! "
+                    "expected=0x{:016x} but serialized[208-215]=0x{:016x}",
+                    submit_block.nNonce, nNonceSerialized);
+            else
+                m_logger->info("[SUBMIT AUDIT]   ✅ nNonce verified in serialized payload[208-215]: 0x{:016x}", nNonceSerialized);
         }
     }
 

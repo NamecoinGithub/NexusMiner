@@ -348,7 +348,7 @@ static void test_decode_block_fields() {
 static void test_decode_channel_consistent() {
     // mining channel 1 (Prime) but block says 2 (Hash) -> inconsistent
     MiningTemplateInterface mti(1, 0); // configured for Prime
-    auto payload = make_template_payload(6000000, 2000000, DEFAULT_DIFFICULTY, 8, 2, 6000001);
+    auto payload = make_template_payload(6000000, 2000000, 0, 8, 2, 6000001);
     auto result = StatelessBlockUtility::decode_template(mti, payload, /*mining_channel=*/1, nullptr);
     bool ok = result.valid && !result.channel_consistent;
     print_result("decode_template(): channel_consistent=false when nChannel "
