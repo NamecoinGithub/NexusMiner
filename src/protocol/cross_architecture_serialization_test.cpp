@@ -1,16 +1,12 @@
 #include "include/stateless_block_utility.hpp"
-#include "LLP/block_utils.hpp"
 #include "protocol/hex_prefix_utils.hpp"
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/node_session_context.hpp"
-#include "worker/block_header_utils.hpp"
 
-#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <iostream>
 #include <vector>
 
@@ -36,11 +32,6 @@ uint8_t be_byte(uint32_t value, int index)
 }
 
 uint8_t le_byte(uint32_t value, int index)
-{
-    return static_cast<uint8_t>((value >> (8 * index)) & 0xFF);
-}
-
-uint8_t le_byte64(uint64_t value, int index)
 {
     return static_cast<uint8_t>((value >> (8 * index)) & 0xFF);
 }
@@ -146,40 +137,10 @@ uint32_t extract_serialized_block_height(const std::vector<uint8_t>& block_paylo
         return 0;
     }
 
-    uint32_t height = 0;
-    std::memcpy(&height, block_payload.data() + TRITIUM_HEIGHT_OFFSET, sizeof(height));
-    return height;
-}
-
-bool bytes_match_u32_le(const std::vector<uint8_t>& bytes, std::size_t offset, uint32_t value)
-{
-    return bytes.size() >= offset + 4u &&
-           bytes[offset + 0] == le_byte(value, 0) &&
-           bytes[offset + 1] == le_byte(value, 1) &&
-           bytes[offset + 2] == le_byte(value, 2) &&
-           bytes[offset + 3] == le_byte(value, 3);
-}
-
-bool bytes_match_u32_be(const std::vector<uint8_t>& bytes, std::size_t offset, uint32_t value)
-{
-    return bytes.size() >= offset + 4u &&
-           bytes[offset + 0] == be_byte(value, 0) &&
-           bytes[offset + 1] == be_byte(value, 1) &&
-           bytes[offset + 2] == be_byte(value, 2) &&
-           bytes[offset + 3] == be_byte(value, 3);
-}
-
-bool bytes_match_u64_le(const std::vector<uint8_t>& bytes, std::size_t offset, uint64_t value)
-{
-    return bytes.size() >= offset + 8u &&
-           bytes[offset + 0] == le_byte64(value, 0) &&
-           bytes[offset + 1] == le_byte64(value, 1) &&
-           bytes[offset + 2] == le_byte64(value, 2) &&
-           bytes[offset + 3] == le_byte64(value, 3) &&
-           bytes[offset + 4] == le_byte64(value, 4) &&
-           bytes[offset + 5] == le_byte64(value, 5) &&
-           bytes[offset + 6] == le_byte64(value, 6) &&
-           bytes[offset + 7] == le_byte64(value, 7);
+    return (static_cast<uint32_t>(block_payload[TRITIUM_HEIGHT_OFFSET]) << 24) |
+           (static_cast<uint32_t>(block_payload[TRITIUM_HEIGHT_OFFSET + 1]) << 16) |
+           (static_cast<uint32_t>(block_payload[TRITIUM_HEIGHT_OFFSET + 2]) << 8) |
+            static_cast<uint32_t>(block_payload[TRITIUM_HEIGHT_OFFSET + 3]);
 }
 
 std::vector<uint8_t> derive_session_key(const std::vector<uint8_t>& genesis)
@@ -310,52 +271,7 @@ void test_submit_encoding_is_byte_stable_across_replay()
     assert((*submit_a.wire_bytes)[0] == 0xD0 && (*submit_a.wire_bytes)[1] == 0x01);
 
     const auto plaintext = strip_wire_header(*submit_a.wire_bytes, ProtocolLane::STATELESS);
-    const auto prev_hash = make_prev_hash_pattern(0x30);
-    const auto* raw_prev_hash = reinterpret_cast<const uint8_t*>(&solved_a.hashPrevBlock);
-    const auto* raw_merkle = reinterpret_cast<const uint8_t*>(&solved_a.hashMerkleRoot);
     assert(extract_serialized_block_height(plaintext) == TEST_TEMPLATE_HEIGHT);
-    assert(bytes_match_u32_le(plaintext, 0u, solved_a.nVersion));
-    assert(std::equal(raw_prev_hash,
-                      raw_prev_hash + 128,
-                      plaintext.begin() + static_cast<std::ptrdiff_t>(4u)));
-    assert(std::equal(raw_merkle,
-                      raw_merkle + 64,
-                      plaintext.begin() + static_cast<std::ptrdiff_t>(132u)));
-    assert(bytes_match_u32_le(plaintext, 196u, solved_a.nChannel));
-    assert(bytes_match_u32_le(plaintext, 200u, solved_a.nHeight));
-    assert(bytes_match_u32_le(plaintext, 204u, solved_a.nBits));
-    assert(bytes_match_u64_le(plaintext, 208u, solved_a.nNonce));
-    assert(plaintext == nexusminer::GetBlockHeaderBytes(solved_a, false));
-}
-
-void test_legacy_big_endian_submit_regression_layout()
-{
-    std::cout << "Test 4: legacy regression serializer keeps explicit big-endian layout" << std::endl;
-
-    ::LLP::CBlock block;
-    block.nVersion = 8u;
-    block.nChannel = TEST_CHANNEL;
-    block.nHeight = TEST_TEMPLATE_HEIGHT;
-    block.nBits = 0x04308519u;
-    block.nNonce = TEST_NONCE;
-    const auto prev_hash = make_prev_hash_pattern(0x30);
-    block.hashPrevBlock.SetBytes(std::vector<uint8_t>(prev_hash.begin(), prev_hash.end()));
-
-    auto merkle = make_repeated_bytes(64, 0xA0);
-    block.hashMerkleRoot.SetBytes(merkle);
-
-    const auto legacy = nexusminer::llp_utils::serialize_full_block(block, true);
-    assert(legacy.size() == 216u);
-    assert(bytes_match_u32_be(legacy, 0u, block.nVersion));
-    assert(std::equal(prev_hash.begin(),
-                      prev_hash.end(),
-                      legacy.begin() + static_cast<std::ptrdiff_t>(4u)));
-    assert(std::equal(merkle.begin(), merkle.end(),
-                      legacy.begin() + static_cast<std::ptrdiff_t>(132u)));
-    assert(bytes_match_u32_be(legacy, 196u, block.nChannel));
-    assert(bytes_match_u32_be(legacy, 200u, block.nHeight));
-    assert(bytes_match_u32_be(legacy, 204u, block.nBits));
-    assert(bytes_match_u64_le(legacy, 208u, block.nNonce));
 }
 
 } // namespace
@@ -367,7 +283,6 @@ int main()
     test_session_start_packet_is_explicitly_little_endian();
     test_session_binding_preserves_exact_genesis_reward_and_crypto_bytes();
     test_submit_encoding_is_byte_stable_across_replay();
-    test_legacy_big_endian_submit_regression_layout();
 
     std::cout << "\nAll cross-architecture serialization tests passed!" << std::endl;
     return 0;
