@@ -45,6 +45,10 @@ public:
 private:
 
     void run();
+    void set_block_impl(Block_data block_data,
+                        std::uint32_t nbits,
+                        const uint1k& base_hash,
+                        Worker::Block_found_handler result);
     double getDifficulty(const uint1k& p);
     double getNetworkDifficulty();
     bool difficulty_check(const uint1k& p);
@@ -83,6 +87,8 @@ private:
 
     std::uint64_t m_nonce = 0;
     uint1k m_base_hash;
+    uint1k m_active_base_hash{};
+    bool m_has_active_cycle = false;
 
 
     void generate_seive(uint1k);
