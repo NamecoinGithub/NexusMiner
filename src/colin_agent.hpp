@@ -47,7 +47,7 @@ public:
         const DualConnectionManager* dcm,
         std::shared_ptr<stats::Collector> stats,
         std::shared_ptr<spdlog::logger> logger,
-        uint32_t report_interval_seconds = 60);
+        uint32_t report_interval_seconds = 180);
 
     void start();
     void stop();
@@ -196,8 +196,6 @@ private:
     void schedule_next();
     void run_diagnostics();
 
-    std::string assess_primary_lane() const;
-    std::string assess_secondary_lane() const;
     void emit_report(std::vector<std::string>& warnings,
                      std::vector<std::string>& recommendations,
                      const stats::Global& gs);

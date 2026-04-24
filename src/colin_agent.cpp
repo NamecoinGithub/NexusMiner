@@ -188,20 +188,6 @@ std::string ColinAgent::check_failover_active(bool using_failover, uint64_t acti
            " — primary " + standby_ep + " unreachable";
 }
 
-// ── Lane assessment ───────────────────────────────────────────────────────────
-
-std::string ColinAgent::assess_primary_lane() const
-{
-    if (!m_dcm) return "UNKNOWN";
-    return m_dcm->is_stateless_alive() ? "✅ HEALTHY" : "❌ DOWN";
-}
-
-std::string ColinAgent::assess_secondary_lane() const
-{
-    if (!m_dcm) return "UNKNOWN";
-    return m_dcm->is_legacy_alive() ? "✅ HEALTHY" : "❌ DOWN";
-}
-
 // ── Main diagnostic run ───────────────────────────────────────────────────────
 
 void ColinAgent::run_diagnostics()

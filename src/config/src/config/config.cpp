@@ -25,7 +25,7 @@ namespace config
 		, m_log_level{2}	// info level
 		, m_logfile{""}		// no logfile usage, default
 		, m_connection_retry_interval{5}
-		, m_print_statistics_interval{5}
+		, m_print_statistics_interval{15}
 		, m_get_height_interval{2}
 		, m_ping_interval{10}
 		, m_miner_falcon_pubkey{""}
@@ -45,7 +45,7 @@ namespace config
 		, m_enable_sim_link{true}  // Default: SIM Link enabled (dual stateless+legacy connection)
 		, m_get_block_interval_ms{1000}  // Default: 1000ms (aligned with LLL-TAO AutoCoolDown redesign)
 		, m_colin_enabled{true}  // Default: Colin diagnostic agent enabled
-		, m_colin_report_interval_seconds{60}  // Default: report every 60 seconds
+		, m_colin_report_interval_seconds{180}  // Default: report every 180 seconds
 	{
 	}
 
