@@ -1266,7 +1266,10 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         }
 
         // Start GET_ROUND timer (uses Worker_manager to fetch current connection on each tick)
-        constexpr uint16_t GET_ROUND_TIMER_INTERVAL = 1;
+        static_assert(protocol::Solo::POLL_INTERVAL_MIN_MS % 1000 == 0,
+            "GET_ROUND timer tick expects whole-second poll intervals");
+        constexpr uint16_t GET_ROUND_TIMER_INTERVAL =
+            static_cast<uint16_t>(protocol::Solo::POLL_INTERVAL_MIN_MS / 1000);
         if (!self->m_get_round_timer_started)
         {
             self->m_get_round_timer_started = true;
@@ -1280,7 +1283,7 @@ bool Worker_manager::connect(network::Endpoint const& wallet_endpoint)
         }
 
         // Start lane health check timer
-        constexpr uint16_t LANE_HEALTH_INTERVAL = 30;
+        constexpr uint16_t LANE_HEALTH_INTERVAL = 120;
         if (!self->m_lane_health_timer_started)
         {
             self->m_lane_health_timer_started = true;

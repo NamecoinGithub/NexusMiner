@@ -122,8 +122,8 @@ public:
 
     // GET_ROUND polling configuration (public so callers can log the intervals)
     static constexpr bool POLLING_ENABLED = true;              // Enabled: GET_ROUND sanity probe for both lanes
-    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 15000;    // 15 seconds — Stake block detection cadence
-    static constexpr uint32_t POLL_INTERVAL_MAX_MS = 15000;    // Same: backoff disabled, fixed 15s interval
+    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 20000;    // 20 seconds — Stake block detection cadence
+    static constexpr uint32_t POLL_INTERVAL_MAX_MS = 20000;    // Same: backoff disabled, fixed 20s interval
     // Minimum push-silence duration before GET_ROUND fallback may trigger GET_BLOCK.
     // Policy: while PUSH is active, GET_ROUND is informational only. Once PUSH has
     // been silent for this threshold, each GET_ROUND poll (POLL_INTERVAL_MIN_MS minimum
