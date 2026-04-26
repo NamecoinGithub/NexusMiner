@@ -1,4 +1,5 @@
 #include "chain_sieve.hpp"
+#include "sieving_prime_table.hpp"
 #include <primesieve.hpp>
 #include <vector>
 #include <queue>
@@ -189,23 +190,17 @@ namespace nexusminer {
 
         void Sieve::generate_sieving_primes()
         {
-            //generate sieving primes
-            m_logger->info("Generating sieving primes up to {}...", sieving_prime_limit);
-            auto start = std::chrono::steady_clock::now();
-            std::vector<uint32_t> temp_primes;
-            primesieve::generate_primes(sieving_start_prime, sieving_prime_limit, &temp_primes);
-            auto end = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-            std::stringstream ss;
-            ss << "Done. " << temp_primes.size() << " primes generated in " << std::fixed << std::setprecision(3) << elapsed.count() / 1000.0 << " seconds.";
-            m_logger->info(ss.str());
-
-            // Build AoS from temporary vector
-            m_primes_aos.clear();
-            m_primes_aos.reserve(temp_primes.size());
-            for (uint32_t p : temp_primes)
+            // Stone 1: the prime list lives in a process-wide singleton.  We
+            // only need to (re)size our parallel mutable wheel state to match.
+            const auto& shared = Sieving_prime_table::instance().primes();
+            if (m_prime_state.size() != shared.size())
             {
-                m_primes_aos.push_back({p, 0, 0});
+                m_prime_state.assign(shared.size(), SievePrimeState{0, 0});
+            }
+            else
+            {
+                std::fill(m_prime_state.begin(), m_prime_state.end(),
+                          SievePrimeState{0, 0});
             }
         }
 
@@ -224,32 +219,57 @@ namespace nexusminer {
             return m_sieve_start;
         }
 
+        boost::multiprecision::uint1024_t Sieve::prepare(
+            boost::multiprecision::uint1024_t sieve_start)
+        {
+            // Stone 2: single entry point that bundles align-to-30 +
+            // clear_chains + calculate_starting_multiples and returns the
+            // rounded start so callers can adjust their nonce bookkeeping.
+            set_sieve_start(sieve_start);
+            clear_chains();
+            calculate_starting_multiples(m_sieve_start);
+            return m_sieve_start;
+        }
+
         void Sieve::calculate_starting_multiples()
+        {
+            // Stone 2: legacy no-arg overload — forwards to the cached value
+            // populated by set_sieve_start().
+            calculate_starting_multiples(m_sieve_start);
+        }
+
+        void Sieve::calculate_starting_multiples(
+            const boost::multiprecision::uint1024_t& sieve_start)
         {
             //generate starting multiples of the sieving primes
             m_logger->info("Calculating starting multiples.");
-            for (auto& sp : m_primes_aos)
+            const auto& shared_primes = Sieving_prime_table::instance().primes();
+            // Defensive: if generate_sieving_primes() was not called yet, do it
+            // now so the parallel arrays line up.
+            if (m_prime_state.size() != shared_primes.size())
             {
-                uint32_t m = get_offset_to_next_multiple(m_sieve_start, sp.prime);
-                sp.multiple = m;
-                //where is the starting multiple relative to the wheel
-                int wheel_index = (boost::integer::mod_inverse((int)sp.prime, 30) * m) % 30;
-                sp.wheel_index = sieve30_index[wheel_index];
+                m_prime_state.assign(shared_primes.size(), SievePrimeState{0, 0});
             }
 
-            // Sort large-prime-first: large primes advance the multiple pointer the fastest
-            // through the sieve bitmap, reducing the number of inner-loop iterations for
-            // the first N primes and improving cache hit rate on the sieve[] array.
-            auto sort_start = std::chrono::steady_clock::now();
-            std::sort(m_primes_aos.begin(), m_primes_aos.end(),
-                [](const SievePrime& a, const SievePrime& b) { return a.prime > b.prime; });
-            auto sort_end = std::chrono::steady_clock::now();
+            const auto sort_start = std::chrono::steady_clock::now();
+            for (std::size_t i = 0; i < shared_primes.size(); ++i)
+            {
+                const uint32_t prime = shared_primes[i];
+                uint32_t m = get_offset_to_next_multiple(sieve_start, prime);
+                m_prime_state[i].multiple = m;
+                //where is the starting multiple relative to the wheel
+                int wheel_index = (boost::integer::mod_inverse(static_cast<int>(prime), 30) * m) % 30;
+                m_prime_state[i].wheel_index = sieve30_index[wheel_index];
+            }
+            const auto sort_end = std::chrono::steady_clock::now();
 
-            // Update diagnostic: record sort latency for the stats thread (relaxed — no fence needed)
+            // Note: with Stone 1 the prime list is pre-sorted (large-prime-first)
+            // by Sieving_prime_table — no per-cycle sort needed.  We keep the
+            // diagnostic to preserve [Sieve Diag] output continuity.
             uint64_t sort_us = std::chrono::duration_cast<std::chrono::microseconds>(
                 sort_end - sort_start).count();
             m_diag_sort_us.store(sort_us, std::memory_order_relaxed);
-            m_diag_prime_count.store(static_cast<uint32_t>(m_primes_aos.size()),
+            m_diag_prime_count.store(static_cast<uint32_t>(m_prime_state.size()),
                                       std::memory_order_relaxed);
         }
 
@@ -259,9 +279,14 @@ namespace nexusminer {
             const uint32_t segment_bytes = m_segment_size / 30;
             uint64_t seg_hits = 0;
 
-            for (auto& sp : m_primes_aos)
+            // Stone 1: prime values come from the process-shared table; mutable
+            // wheel state is per-worker in m_prime_state, parallel-indexed.
+            const auto& shared_primes = Sieving_prime_table::instance().primes();
+            const std::size_t prime_count = m_prime_state.size();
+            for (std::size_t pi = 0; pi < prime_count; ++pi)
             {
-                const uint32_t k = sp.prime;
+                SievePrimeState& sp = m_prime_state[pi];
+                const uint32_t k = shared_primes[pi];
                 int wheel_index  = sp.wheel_index;
 
                 // ── Precompute wheel step table for this prime ────────────────────
@@ -465,8 +490,14 @@ namespace nexusminer {
             m_chain_in_process = true;
         }
 
-        //get the next prime to test from each chain 
+        //get the next prime to test from each chain
         void Sieve::test_chains()
+        {
+            // Stone 2: legacy no-arg overload — forwards to the cached value.
+            test_chains(m_sieve_start);
+        }
+
+        void Sieve::test_chains(const boost::multiprecision::uint1024_t& sieve_start)
         {
             for (auto i = 0; i < m_chain.size(); i++)
             {
@@ -478,7 +509,7 @@ namespace nexusminer {
                 {
                     if (m_chain[i].get_next_fermat_candidate(base_offset, offset))
                     {
-                        boost::multiprecision::uint1024_t candidate = m_sieve_start + base_offset + offset;
+                        boost::multiprecision::uint1024_t candidate = sieve_start + base_offset + offset;
                         bool is_prime = primality_test(candidate);
                         m_chain[i].update_fermat_status(is_prime);
                         if (is_prime)
@@ -493,11 +524,11 @@ namespace nexusminer {
                 {
                     int length;
                     m_chain[i].get_best_fermat_chain(base_offset, offset, length);
-                    
+
                     //collect stats
                     int count = std::min(static_cast<size_t>(length), m_chain_histogram.size());
                     m_chain_histogram[count]++;
-                    
+
                     if (length >= m_chain[i].m_min_chain_report_length)
                     {
                         //we found a long chain.  save it.
@@ -506,9 +537,9 @@ namespace nexusminer {
 
                     }
                 }
-                
+
             }
-        
+
         }
 
 

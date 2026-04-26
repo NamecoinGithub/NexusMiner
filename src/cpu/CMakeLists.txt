@@ -1,7 +1,7 @@
 add_library(cpu STATIC src/cpu/worker_hash.cpp src/cpu/thread_utils.cpp)
 
 if(WITH_PRIME)
-    target_sources(cpu PRIVATE src/cpu/worker_prime.cpp src/cpu/prime/prime.cpp src/cpu/prime/chain_sieve.cpp src/cpu/prime_validation.cpp)
+    target_sources(cpu PRIVATE src/cpu/worker_prime.cpp src/cpu/prime/prime.cpp src/cpu/prime/chain_sieve.cpp src/cpu/prime/sieving_prime_table.cpp src/cpu/prime/segment_allocator.cpp src/cpu/prime_validation.cpp)
 endif()
                     
 target_include_directories(cpu

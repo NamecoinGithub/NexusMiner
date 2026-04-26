@@ -27,6 +27,7 @@ namespace cpu
     using uint1k = boost::multiprecision::uint1024_t;
     class Prime;
     class Sieve;
+    class Segment_allocator;
 class Worker_prime : public Worker, public std::enable_shared_from_this<Worker_prime>
 {
 public:
@@ -70,6 +71,7 @@ private:
     std::vector<std::thread> m_worker_threads;  // For multi-threading support
     Worker::Block_found_handler m_found_nonce_callback;
     std::unique_ptr<Sieve> m_segmented_sieve;
+    std::unique_ptr<Segment_allocator> m_segment_allocator;
 
     Block_data m_block;
     std::mutex m_mtx;
