@@ -16,7 +16,7 @@
  *  8.  AAD mismatch (non-empty vs empty) → decrypt fails
  *  9.  STATELESS lane: final SUBMIT_BLOCK packet has correct structure
  * 10.  LEGACY lane: final SUBMIT_BLOCK packet has correct structure
- * 11.  Prime-channel vOffsets flow through prepare_block_submission()
+ * 11.  Prime-channel vOffsets flow through prepare_block_submission_from_solved()
  * 12.  Empty vOffsets for Hash channel (no extra bytes appended)
  * 13.  SubmitBlockPayloadInfo: Hash Falcon-1024 fixed-size (pt=1803, enc=1831)
  * 14.  SubmitBlockPayloadInfo: Prime + 10 offsets (pt=1813, enc=1841)
@@ -31,6 +31,7 @@
 #include "protocol/height_tracker.hpp"
 #include "protocol/packet_builder.hpp"
 #include "protocol/falcon_constants.hpp"
+#include "worker/worker.hpp"
 #include "miner_opcodes.hpp"
 #include <iostream>
 #include <cassert>
@@ -440,8 +441,8 @@ static void test_legacy_submit_packet_structure() {
     print_result("E2E LEGACY: SUBMIT_BLOCK packet = [0x01][len][nonce(12)][ct+tag]", ok);
 }
 
-// Test 11: vOffsets flow through prepare_block_submission (Prime channel)
-static void test_voffsets_flow_prepare_block_submission() {
+// Test 11: vOffsets flow through prepare_block_submission_from_solved (Prime channel)
+static void test_voffsets_flow_prepare_block_submission_from_solved() {
     MiningTemplateInterface mti_prime(1, 0);
     auto payload = make_template_payload(6000000, 2000000, DEFAULT_DIFFICULTY,
                                          8, 1, 6000001, DEFAULT_DIFFICULTY, 0);
@@ -454,14 +455,16 @@ static void test_voffsets_flow_prepare_block_submission() {
     }
 
     std::vector<uint8_t> vOffsets = {0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40};
+    Block_data solved_block(tmpl->block);
+    solved_block.nNonce = 0xDEADBEEFCAFEBABEULL;
 
-    // prepare_block_submission with vOffsets (Prime)
-    auto with_offsets = mti_prime.prepare_block_submission(
-        tmpl->block.hashMerkleRoot.GetBytes(), 0xDEADBEEFCAFEBABEULL, vOffsets);
+    // prepare_block_submission_from_solved with vOffsets (Prime)
+    auto with_offsets = mti_prime.prepare_block_submission_from_solved(
+        solved_block, vOffsets);
 
-    // prepare_block_submission without vOffsets
-    auto without_offsets = mti_prime.prepare_block_submission(
-        tmpl->block.hashMerkleRoot.GetBytes(), 0xDEADBEEFCAFEBABEULL, {});
+    // prepare_block_submission_from_solved without vOffsets
+    auto without_offsets = mti_prime.prepare_block_submission_from_solved(
+        solved_block, {});
 
     // With vOffsets should be exactly vOffsets.size() bytes larger
     bool size_ok = (with_offsets.size() == without_offsets.size() + vOffsets.size());
@@ -474,11 +477,11 @@ static void test_voffsets_flow_prepare_block_submission() {
         tail_ok = (tail == vOffsets);
     }
 
-    print_result("vOffsets flow: prepare_block_submission() appends vOffsets "
+    print_result("vOffsets flow: prepare_block_submission_from_solved() appends vOffsets "
                  "(Prime channel, byte-exact at tail)", size_ok && tail_ok);
 }
 
-// Test 12: Hash channel prepare_block_submission with empty vOffsets
+// Test 12: Hash channel prepare_block_submission_from_solved with empty vOffsets
 static void test_hash_no_voffsets_appended() {
     MiningTemplateInterface mti_hash(2, 0);
     auto payload = make_template_payload(6000000, 2000000, DEFAULT_DIFFICULTY,
@@ -491,11 +494,14 @@ static void test_hash_no_voffsets_appended() {
         return;
     }
 
-    auto result = mti_hash.prepare_block_submission(
-        tmpl->block.hashMerkleRoot.GetBytes(), 0xDEADBEEFCAFEBABEULL, {});
+    Block_data solved_block(tmpl->block);
+    solved_block.nNonce = 0xDEADBEEFCAFEBABEULL;
+
+    auto result = mti_hash.prepare_block_submission_from_solved(
+        solved_block, {});
 
     bool ok = (result.size() == StatelessBlockUtility::BLOCK_BODY_SIZE);
-    print_result("Hash channel: prepare_block_submission() = 216 bytes (no vOffsets)", ok);
+    print_result("Hash channel: prepare_block_submission_from_solved() = 216 bytes (no vOffsets)", ok);
 }
 
 // ── Test 13: SubmitBlockPayloadInfo Hash Falcon-1024 fixed-size ─────────────
@@ -743,7 +749,7 @@ int main() {
     test_legacy_submit_packet_structure();       // 10
 
     std::cout << "\n--- vOffsets Flow ---\n";
-    test_voffsets_flow_prepare_block_submission();// 11
+    test_voffsets_flow_prepare_block_submission_from_solved();// 11
     test_hash_no_voffsets_appended();            // 12
 
     std::cout << "\n--- Channel-Aware Payload Sizing ---\n";

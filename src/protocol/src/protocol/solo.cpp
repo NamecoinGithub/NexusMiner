@@ -1622,6 +1622,11 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         return network::Shared_payload{};
     }
 
+    // worker_manager passes block_data as:
+    //   [216-byte solved block body][optional Prime vOffsets tail]
+    // Solo re-decodes only the fixed 216-byte block body here so the authoritative
+    // header fields (height / prevhash / bits / nonce) come from the worker-owned
+    // snapshot, while the variable-length Prime tail is forwarded unchanged below.
     network::Payload block_body(block_data.begin(),
                                 block_data.begin() + StatelessBlockUtility::BLOCK_BODY_SIZE);
 
@@ -1705,6 +1710,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
 
     // Snapshot submitted block state for the ACCEPT/GOOD_BLOCK handler
     // so it doesn't need to re-read from a potentially-replaced template.
+    // This metadata must mirror the solved snapshot, not the live template.
     m_last_submitted_valid     = true;
     m_last_submitted_owner     = capture_session_ownership();
     m_last_submitted_nonce     = block_to_submit.nNonce;
@@ -1712,8 +1718,11 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     m_last_submitted_height    = block_to_submit.nHeight;
     m_last_submitted_channel   = block_to_submit.nChannel;
 
-    // Extract Prime channel vOffsets from block_data (bytes after 216-byte Tritium body).
-    // For Hash channel block_data is exactly 216 bytes so this is always empty.
+    // Extract Prime channel vOffsets from block_data (bytes after the fixed 216-byte body).
+    // For Hash channel block_data is exactly 216 bytes so this stays empty.
+    // The key rule is "split, do not rebuild": header fields come from block_body above,
+    // variable-length Prime bytes come from this tail, and both originated from the same
+    // worker snapshot in worker_manager.
     std::vector<uint8_t> vOffsets;
     if (block_data.size() > StatelessBlockUtility::BLOCK_BODY_SIZE)
         vOffsets.assign(block_data.begin() + StatelessBlockUtility::BLOCK_BODY_SIZE, block_data.end());

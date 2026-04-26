@@ -190,9 +190,10 @@ SubmitResult StatelessBlockUtility::encode_submit(
     }
 
     // ── Pre-check 7: Delegate serialization to MiningTemplateInterface ────────
-    // Build a worker-style snapshot from the solved block so serialization stays
-    // anchored to the exact header fields the worker proved, even if the live
-    // template refreshes between "found" and "submit".
+    // Re-wrap the solved block in Block_data so the submit path reuses the same
+    // worker-snapshot serializer that worker_manager uses when it first produces
+    // block_data.  This keeps encode_submit() aligned with the authoritative
+    // flow instead of reviving the older "template + merkle_root + nonce" path.
     Block_data solved_snapshot(solved_block);
     auto block_bytes = vOffsets.empty()
         ? tmpl_iface.prepare_block_submission_from_solved(solved_snapshot)

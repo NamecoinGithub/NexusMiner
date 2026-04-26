@@ -736,6 +736,9 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission_from_solv
     }
 
     // Build the submit block directly from the worker's snapshot.
+    // This is the canonical "worker proved these exact bytes" hand-off used by:
+    //   worker -> worker_manager -> prepare_block_submission_from_solved(...) -> Solo
+    //
     // These are the exact field values the worker used when performing primality / hash
     // proof-of-work testing.  Crucially, nHeight comes from the worker, not from
     // m_current_template, so a concurrent template refresh cannot silently advance it.
@@ -761,6 +764,8 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission_from_solv
     }
 
     // Serialize using the worker's snapshot fields.
+    // The payload returned here is the authoritative 216-byte block body that Solo later
+    // re-decodes before signing/encrypting, so any mismatch must be logged immediately.
     auto payload = llp_utils::serialize_full_block(submit_block, is_tritium);
 
     // Option C drift guard: non-tautological comparison of worker snapshot vs.
@@ -852,6 +857,9 @@ std::vector<uint8_t> MiningTemplateInterface::prepare_block_submission_from_solv
 
     // For Prime channel, append Cunningham-chain offsets so the node can verify
     // the prime cluster.  Hash channel vOffsets are always empty — no-op.
+    // These bytes must remain glued to the same solved snapshot because the node
+    // treats the Prime submit plaintext as:
+    //   [216-byte solved block][vOffsets...][timestamp][sig_len][signature]
     // Use solved.nChannel (worker's snapshot) as the source of truth, not m_channel.
     if (!vOffsets.empty() && solved.nChannel == 1) {
         payload.insert(payload.end(), vOffsets.begin(), vOffsets.end());

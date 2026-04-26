@@ -143,7 +143,9 @@ The Mining Template Interface integrates with FALCON authentication to create a 
 
 ## Create Block Verification
 
-The interface provides block creation verification before submission:
+The interface provides block creation verification before submission. The current
+authoritative submit path is built around the worker's solved snapshot, not a
+reconstruction from the latest live template.
 
 ### Verification Process
 
@@ -152,10 +154,31 @@ The interface provides block creation verification before submission:
 bool verify_block_creation(const std::vector<uint8_t>& merkle_root, 
                            uint64_t nonce) const;
 
-// Prepare block for submission
-std::vector<uint8_t> prepare_block_submission(const std::vector<uint8_t>& merkle_root,
-                                               uint64_t nonce);
+// Preferred solved-submit path (worker snapshot stays authoritative)
+std::vector<uint8_t> prepare_block_submission_from_solved(const Block_data& solved);
+
+// Prime variant: append vOffsets after the 216-byte solved block body
+std::vector<uint8_t> prepare_block_submission_from_solved(const Block_data& solved,
+                                                          const std::vector<uint8_t>& vOffsets);
 ```
+
+### Solved-Submit Ownership Flow
+
+```text
+Worker
+  -> Block_data snapshot (exact bytes the worker proved)
+  -> Worker_manager
+  -> prepare_block_submission_from_solved(...)
+  -> Solo::submit_block()
+  -> StatelessBlockUtility::encode_submit()
+  -> ChaCha20/Falcon wrapping
+```
+
+Why this matters:
+
+1. **Height / prevhash stay worker-owned** even if a new BLOCK_DATA template arrives before submit.
+2. **Prime `vOffsets` stay attached** to the same solved snapshot that produced them.
+3. **Solo only splits the payload** into `[216-byte block body]` plus optional Prime tail; it does not rebuild from the current template.
 
 ### Checks Performed
 

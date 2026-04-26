@@ -5,6 +5,7 @@
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/node_session_context.hpp"
 #include "protocol/packet_builder.hpp"
+#include "worker/worker.hpp"
 
 #include <algorithm>
 #include <array>
@@ -435,12 +436,13 @@ HarnessResult run_first_block_acceptance_harness(const HarnessOptions& options)
     result.artifacts.plaintext_submit_size = plaintext_submit.size();
     result.artifacts.submitted_payload_height = extract_serialized_block_height(plaintext_submit);
 
-    auto expected_block_submission = template_interface.prepare_block_submission(
-        current_template->block.hashMerkleRoot.GetBytes(), ACCEPTANCE_NONCE, {});
+    Block_data solved_snapshot(solved_block);
+    auto expected_block_submission = template_interface.prepare_block_submission_from_solved(
+        solved_snapshot, {});
     result.artifacts.submit_validation_matches_template =
         (plaintext_submit == expected_block_submission);
     if (!result.artifacts.submit_validation_matches_template) {
-        return fail("submit plaintext did not match template-backed block serialization");
+        return fail("submit plaintext did not match solved-snapshot block serialization");
     }
 
     std::string validate_reason;

@@ -218,11 +218,11 @@ public:
      * This helper computes expected sizes from real inputs rather than
      * assuming a universal fixed Tritium payload size.  Hash submissions
      * are fixed-size; Prime submissions are variable because
-     * prepare_block_submission() appends vOffsets.
+     * prepare_block_submission_from_solved(..., vOffsets) appends the Prime tail.
      *
      * @param channel          1 = Prime, 2 = Hash
      * @param block_data_size  Total serialized block bytes returned by
-     *                         prepare_block_submission() (includes vOffsets
+     *                         prepare_block_submission_from_solved() (includes vOffsets
      *                         for Prime).  For Hash this is always 216.
      * @param signature_size   Actual Falcon signature length (0 when unsigned).
      * @return Populated SubmitBlockPayloadInfo with all size fields.

@@ -65,7 +65,8 @@ public:
 	// Prime channel offsets (Cunningham chain offsets from ValidatePrimeCandidate).
 	// Empty for Hash channel. CPU and GPU prime workers both populate these from
 	// the shared prime_validation.cpp pathway before firing the callback so that
-	// worker_manager can include them in prepare_block_submission().
+	// worker_manager can forward the exact solved snapshot to
+	// prepare_block_submission_from_solved(...).
 	std::vector<uint8_t> vOffsets;
 
 private:
