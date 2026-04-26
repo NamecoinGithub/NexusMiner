@@ -374,6 +374,7 @@ void Worker_prime::run()
 			m_segmented_sieve->clear_chains();
 			m_segmented_sieve->calculate_starting_multiples();
 		}
+		publish_statistics_snapshot();
 		uint32_t segment_size = m_segmented_sieve->get_segment_size();
 		uint64_t find_chains_ms = 0;
 		uint64_t sieving_ms = 0;
@@ -509,6 +510,7 @@ void Worker_prime::run()
 					actual_difficulty, required_difficulty);
 			}
 		}
+		publish_statistics_snapshot();
 		low += segment_size;
 
 		// Track CPU active time for this iteration (protected by mutex to prevent races with update_statistics)
@@ -623,32 +625,26 @@ uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(const uint1k& p)
 
 void Worker_prime::update_statistics(stats::Collector& stats_collector)
 {
-	auto prime_stats = std::get<stats::Prime>(stats_collector.get_worker_stats(m_config.m_internal_id));
-	prime_stats.m_primes = m_segmented_sieve->m_fermat_prime_count;
-	prime_stats.m_chains = m_segmented_sieve->m_chain_count;
-	prime_stats.m_difficulty = m_difficulty;
-	prime_stats.m_chain_histogram = m_segmented_sieve->m_chain_histogram;
-	prime_stats.m_range_searched = m_range_searched.load();
-	prime_stats.m_most_difficult_chain = m_segmented_sieve->m_best_chain;
+	auto prime_stats = *m_published_stats.load();
 
-	// Calculate CPU load as ratio of active time to total time (protected by mutex)
+	// Keep CPU-load reporting interval-based while leaving histogram/best-chain stats
+	// on the immutable worker snapshot path.
 	{
 		std::scoped_lock<std::mutex> lck(m_mtx);
 		if (m_cpu_total_time.count() > 0) {
 			prime_stats.m_cpu_load = static_cast<double>(m_cpu_active_time.count()) /
 			                          static_cast<double>(m_cpu_total_time.count());
-			// Clamp to [0.0, 1.0]
 			prime_stats.m_cpu_load = std::max(0.0, std::min(1.0, prime_stats.m_cpu_load));
 		} else {
 			prime_stats.m_cpu_load = 0.0;
 		}
+
+		m_cpu_active_time = {};
+		m_cpu_total_time  = {};
+		m_cpu_tracking_start = std::chrono::steady_clock::now();
 	}
 
 	stats_collector.update_worker_stats(m_config.m_internal_id, prime_stats);
-
-	m_primes = 0;
-	m_chains = 0;
-	m_range_searched.store(0);                                     // Reset range delta (atomic)
 
 	// [Sieve Diag] log — emitted on stats thread only, reads atomics with relaxed order
 	{
@@ -662,17 +658,33 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 				sieve_calls, inner_hits,
 				static_cast<double>(inner_hits) / sieve_calls,
 				sort_us / 1000.0,
-				prime_count);
+			prime_count);
+		}
+	}
+}
+
+void Worker_prime::publish_statistics_snapshot()
+{
+	stats::Prime prime_stats;
+	prime_stats.m_primes = stats::saturating_prime_stat(m_segmented_sieve->m_fermat_prime_count);
+	prime_stats.m_chains = stats::saturating_prime_stat(m_segmented_sieve->m_chain_count);
+	prime_stats.m_chain_histogram = stats::copy_prime_histogram(m_segmented_sieve->m_chain_histogram);
+	prime_stats.m_range_searched = m_range_searched.load(std::memory_order_relaxed);
+	prime_stats.m_most_difficult_chain = m_segmented_sieve->m_best_chain;
+
+	{
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		prime_stats.m_difficulty = m_difficulty;
+		if (m_cpu_total_time.count() > 0) {
+			prime_stats.m_cpu_load = static_cast<double>(m_cpu_active_time.count()) /
+			                          static_cast<double>(m_cpu_total_time.count());
+			prime_stats.m_cpu_load = std::max(0.0, std::min(1.0, prime_stats.m_cpu_load));
+		} else {
+			prime_stats.m_cpu_load = 0.0;
 		}
 	}
 
-	// Reset CPU-load tracking under mutex to prevent races with mining loop
-	{
-		std::scoped_lock<std::mutex> lck(m_mtx);
-		m_cpu_active_time = {};                                        // Reset CPU-load numerator
-		m_cpu_total_time  = {};                                        // Reset CPU-load denominator
-		m_cpu_tracking_start = std::chrono::steady_clock::now();       // Restart interval
-	}
+	m_published_stats.store(std::move(prime_stats));
 }
 
 void Worker_prime::fermat_performance_test()

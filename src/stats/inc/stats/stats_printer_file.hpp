@@ -30,6 +30,7 @@ private:
     Collector& m_stats_collector;
     std::shared_ptr<spdlog::logger> m_logger;
     std::chrono::steady_clock::time_point m_last_print_time;
+    std::vector<Prime> m_previous_prime_stats;
 };
 
 template<typename PrinterType>
@@ -40,6 +41,7 @@ inline Printer_file<PrinterType>::Printer_file(std::string const& filename, conf
     , m_stats_collector{ stats_collector }
     , m_logger{ spdlog::basic_logger_mt("statistics_file", filename.empty() ? "stats.log" : filename, true) }
     , m_last_print_time{ std::chrono::steady_clock::now() }
+    , m_previous_prime_stats(worker_config.size())
 {
     m_logger->set_pattern("[%D %H:%M:%S.%e][%^%n%$] %v");
 }
@@ -102,7 +104,11 @@ inline void Printer_file<PrinterType>::print()
             // Show 0.00 GISPS in degraded mode
             double gisps = 0.0;
             if (!global_stats.m_degraded_mode) {
-                gisps = (prime_stats.m_range_searched / (1.0e9 * interval_s));
+                auto const& previous_prime_stats = m_previous_prime_stats[worker_config_index];
+                auto const range_delta = prime_stats.m_range_searched >= previous_prime_stats.m_range_searched
+                    ? (prime_stats.m_range_searched - previous_prime_stats.m_range_searched)
+                    : prime_stats.m_range_searched;
+                gisps = (range_delta / (1.0e9 * interval_s));
             }
             
             ss << gisps << " GISPS";
@@ -116,6 +122,7 @@ inline void Printer_file<PrinterType>::print()
             }
             ss << " Best " << prime_stats.m_most_difficult_chain;
             ss << " Current Difficulty " << prime_stats.m_difficulty / 10000000.0;
+            m_previous_prime_stats[worker_config_index] = prime_stats;
         }
         worker_config_index++;
         if (worker_config_index < workers.size())
