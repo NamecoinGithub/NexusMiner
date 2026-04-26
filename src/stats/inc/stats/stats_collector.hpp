@@ -42,8 +42,8 @@ private:
     Global m_global_stats;
     std::chrono::steady_clock::time_point m_start_time;
 
-    // worker stats are updated in seperate worker threads
-    // the access to the worker data (form stats_printer) has to be protected
+    // worker stats are updated in separate worker threads
+    // the access to the worker data (from stats_printer) has to be protected
     mutable std::mutex m_stats_mutex;
 
 
