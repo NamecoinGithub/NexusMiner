@@ -12,6 +12,7 @@
 #include <boost/multiprecision/cpp_int.hpp>
 #include <spdlog/spdlog.h>
 #include "LLC/types/bignum.h"
+#include "stats/types.hpp"
 #include "stats/prime_stats_snapshot.hpp"
 
 namespace asio { class io_context; }
@@ -80,7 +81,7 @@ private:
 
     //stats
     uint64_t m_range_searched = 0;
-    stats::Atomic_snapshot<stats::Prime> m_published_stats;
+    nexusminer::stats::Atomic_snapshot<nexusminer::stats::Prime> m_published_stats;
 
 };
 }

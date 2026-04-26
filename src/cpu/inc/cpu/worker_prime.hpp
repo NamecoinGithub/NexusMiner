@@ -15,6 +15,7 @@
 #include <spdlog/spdlog.h>
 #include "LLC/types/bignum.h"
 #include "mining/mining_constants.hpp"
+#include "stats/types.hpp"
 #include "stats/prime_stats_snapshot.hpp"
 
 namespace asio { class io_context; }
@@ -126,7 +127,7 @@ private:
     std::chrono::steady_clock::time_point m_cpu_tracking_start;
     std::chrono::milliseconds m_cpu_active_time{0};
     std::chrono::milliseconds m_cpu_total_time{0};
-    stats::Atomic_snapshot<stats::Prime> m_published_stats;
+    nexusminer::stats::Atomic_snapshot<nexusminer::stats::Prime> m_published_stats;
 
 };
 }
