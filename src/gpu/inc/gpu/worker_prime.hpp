@@ -12,6 +12,7 @@
 #include <boost/multiprecision/cpp_int.hpp>
 #include <spdlog/spdlog.h>
 #include "LLC/types/bignum.h"
+#include "stats/prime_stats_snapshot.hpp"
 
 namespace asio { class io_context; }
 
@@ -46,6 +47,7 @@ private:
     double getDifficulty(const uint1k& p);
     double getNetworkDifficulty();
     bool difficulty_check(const uint1k& p);
+    void publish_statistics_snapshot();
    
     std::shared_ptr<asio::io_context> m_io_context;
     std::shared_ptr<spdlog::logger> m_logger;
@@ -78,6 +80,7 @@ private:
 
     //stats
     uint64_t m_range_searched = 0;
+    stats::Atomic_snapshot<stats::Prime> m_published_stats;
 
 };
 }

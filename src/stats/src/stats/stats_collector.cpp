@@ -27,6 +27,7 @@ Collector::Collector(config::Config& config)
 
 void Collector::update_global_stats(Global const& stats)
 {
+    std::scoped_lock lock(m_stats_mutex);
     m_global_stats += stats;
 }
 
@@ -34,7 +35,7 @@ void Collector::update_worker_stats(std::uint16_t internal_worker_id, Hash const
 {
     assert(m_config.get_mining_mode() == config::Mining_mode::HASH);
 
-    std::scoped_lock lock(m_worker_mutex);
+    std::scoped_lock lock(m_stats_mutex);
 
     auto& hash_stats = std::get<Hash>(m_workers[internal_worker_id]);
     hash_stats = stats;
@@ -44,15 +45,45 @@ void Collector::update_worker_stats(std::uint16_t internal_worker_id, Prime cons
 {
     assert(m_config.get_mining_mode() == config::Mining_mode::PRIME);
 
-    std::scoped_lock lock(m_worker_mutex);
+    std::scoped_lock lock(m_stats_mutex);
     
     auto& prime_stats = std::get<Prime>(m_workers[internal_worker_id]);
     prime_stats = stats;
 }
 
+std::vector<std::variant<Hash, Prime>> Collector::get_workers_stats() const
+{
+    std::scoped_lock lock(m_stats_mutex);
+    return m_workers;
+}
+
+std::variant<Hash, Prime> Collector::get_worker_stats(std::uint32_t internal_worker_id) const
+{
+    std::scoped_lock lock(m_stats_mutex);
+    return m_workers[internal_worker_id];
+}
+
+std::chrono::duration<double> Collector::get_elapsed_time_seconds() const
+{
+    std::scoped_lock lock(m_stats_mutex);
+    return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - m_start_time);
+}
+
+Global Collector::get_global_stats() const
+{
+    std::scoped_lock lock(m_stats_mutex);
+    return m_global_stats;
+}
+
+void Collector::reset_start_time()
+{
+    std::scoped_lock lock(m_stats_mutex);
+    m_start_time = std::chrono::steady_clock::now();
+}
+
 void Collector::log_summary()
 {
-    std::scoped_lock lock(m_worker_mutex);
+    std::scoped_lock lock(m_stats_mutex);
     
     auto worker_configs = m_config.get_worker_config();
     for (std::size_t i = 0; i < m_workers.size(); ++i) {
