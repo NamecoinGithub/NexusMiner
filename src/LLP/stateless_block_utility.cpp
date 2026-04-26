@@ -9,7 +9,7 @@
  *
  * All encode/decode logic is delegated to MiningTemplateInterface:
  *   decode_template() -> MiningTemplateInterface::read_stateless_payload()
- *   encode_submit()   -> MiningTemplateInterface::prepare_block_submission()
+ *   encode_submit()   -> MiningTemplateInterface::prepare_block_submission_from_solved()
  * This file provides only the pre-check gate and Falcon-signing layer.
  */
 
@@ -18,6 +18,7 @@
 #include "miner_opcodes.hpp"
 #include "protocol/falcon_wrapper.hpp"
 #include "protocol/packet_builder.hpp"
+#include "worker/worker.hpp"
 #include "spdlog/spdlog.h"
 
 #include <chrono>
@@ -189,11 +190,13 @@ SubmitResult StatelessBlockUtility::encode_submit(
     }
 
     // ── Pre-check 7: Delegate serialization to MiningTemplateInterface ────────
-    // prepare_block_submission(merkle_root, nonce, vOffsets) handles Tritium
-    // format, submit-audit logging, and Prime-channel vOffsets appending.
-    auto merkle_bytes = solved_block.hashMerkleRoot.GetBytes();
-    auto block_bytes = tmpl_iface.prepare_block_submission(
-        merkle_bytes, solved_block.nNonce, vOffsets);
+    // Build a worker-style snapshot from the solved block so serialization stays
+    // anchored to the exact header fields the worker proved, even if the live
+    // template refreshes between "found" and "submit".
+    Block_data solved_snapshot(solved_block);
+    auto block_bytes = vOffsets.empty()
+        ? tmpl_iface.prepare_block_submission_from_solved(solved_snapshot)
+        : tmpl_iface.prepare_block_submission_from_solved(solved_snapshot, vOffsets);
 
     if (block_bytes.empty()) {
         result.rejection_reason =

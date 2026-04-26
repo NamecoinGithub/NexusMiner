@@ -20,8 +20,8 @@
  *
  * Encode (Miner -> Node)
  *   encode_submit() delegates block serialization (including Prime-channel
- *   vOffsets) to MiningTemplateInterface::prepare_block_submission(), then
- *   optionally signs with Disposable Falcon and frames with PacketBuilder.
+ *   vOffsets) to MiningTemplateInterface::prepare_block_submission_from_solved(),
+ *   then optionally signs with Disposable Falcon and frames with PacketBuilder.
  *
  * Namespace separation (canonical vs diagnostic):
  *   Canonical inputs  -- block.nHeight, block.nBits, block.nChannel,
@@ -168,7 +168,7 @@ public:
      * @brief Pre-check and wire-encode a solved block for submission.
      *
      * Block serialization (including Prime-channel vOffsets) is delegated to
-     * tmpl_iface.prepare_block_submission() -- no serialization logic is
+     * tmpl_iface.prepare_block_submission_from_solved() -- no serialization logic is
      * duplicated here.
      *
      * Pre-check sequence (canonical gates, in order):
@@ -177,7 +177,7 @@ public:
      *  3. Height validity:  solved_block.nHeight > 0
      *  4. Staleness (warn, do not block -- node is authoritative)
      *  5. Tip-moved  (warn, do not block)
-     *  6. MiningTemplateInterface::prepare_block_submission(merkle_root, nNonce, vOffsets)
+     *  6. MiningTemplateInterface::prepare_block_submission_from_solved(...)
      *  7. Falcon sign: if falcon != nullptr, sign serialized block bytes and append.
      *  8. PacketBuilder::build(lane, SUBMIT_BLOCK, payload).
      *

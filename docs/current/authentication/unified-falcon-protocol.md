@@ -2,7 +2,12 @@
 
 ## Overview
 
-The Unified Hybrid Falcon Signature Protocol provides a centralized, optimized wrapper for all Falcon-512 signature operations in NexusMiner. This implementation builds upon the Phase 2 Direct MINER_AUTH_RESPONSE protocol and aligns with updated LLL-TAO node-side protocols for seamless integration.
+The Unified Hybrid Falcon Signature Protocol provides a centralized wrapper for Falcon-based
+signature operations in NexusMiner. The miner currently uses **Falcon-1024 by default**
+while preserving **Falcon-512 compatibility** for testing and interoperability.
+
+This implementation builds on the stateless MINER_AUTH_RESPONSE flow and the current
+encrypted submit path shared with the node.
 
 ## Two Types of Falcon Signatures
 
@@ -30,7 +35,7 @@ Physical signatures are the optional dual-signature system that stores the signa
 
 The `FalconSignatureWrapper` class (`src/protocol/inc/protocol/falcon_wrapper.hpp`) provides:
 
-- **Centralized signature operations**: All Falcon-512 signatures go through a single, optimized interface
+- **Centralized signature operations**: Falcon-512 and Falcon-1024 signatures go through a single interface
 - **Multiple signature types**: Authentication, block submission, and generic payload signing
 - **Performance optimization**: Signature caching, timing metrics, and performance statistics
 - **Thread safety**: Safe for multi-worker mining environments
@@ -57,7 +62,8 @@ if (sig_result.success) {
 Core protocol feature for session authentication:
 
 ```cpp
-auto sig_result = wrapper->sign_block(merkle_root, nonce);
+auto sig_result = wrapper->sign_payload(block_bytes_plus_timestamp,
+                                        SignatureType::BLOCK);
 if (sig_result.success) {
     // Included in SUBMIT_BLOCK packet
     // Provides cryptographic proof for this mining session
@@ -65,7 +71,10 @@ if (sig_result.success) {
 }
 ```
 
-**Payload format**: `merkle_root (64 bytes) + nonce (8 bytes LE)`
+**Signed message format**: `serialized_block [+ Prime vOffsets] + timestamp (8 bytes LE)`
+
+**Submit plaintext format**:
+`serialized_block [+ Prime vOffsets] + timestamp (8 bytes LE) + sig_len (2 bytes LE) + signature`
 
 **Note**: Disposable Falcon signatures are **ALWAYS ON** (core protocol). Physical Falcon signatures are optional and configurable separately.
 
@@ -83,7 +92,7 @@ The `Solo` protocol class has been updated to use the wrapper:
 
 1. **Wrapper initialization**: Created when `set_miner_keys()` is called
 2. **Authentication**: `login()` uses wrapper for MINER_AUTH_RESPONSE signatures
-3. **Disposable signatures**: `submit_block()` ALWAYS generates Disposable Falcon signatures (core protocol)
+3. **Disposable signatures**: `submit_block()` always signs the solved submit payload before ChaCha20 wrapping
 4. **Physical signatures**: Optional via `enable_physical_falcon()` API (OFF by default)
 
 ## Configuration
@@ -120,7 +129,7 @@ For Physical Falcon signatures (optional blockchain storage), use the `enable_ph
 
 ### Signature Generation Times
 
-Typical Falcon-512 signature generation time: **~100-500 μs** (depending on CPU)
+Typical signature generation time depends on the configured Falcon key size and CPU.
 
 - Disposable Falcon: Per block submission (always enabled, minimal overhead)
 - Physical Falcon: Per block submission when enabled (optional)
@@ -143,7 +152,7 @@ Statistics are logged periodically by the Solo protocol.
 
 1. **Lazy initialization**: Wrapper created only when Falcon keys are set
 2. **Smart fallback**: Falls back to direct signing if wrapper fails
-3. **Optional block signing**: Disabled by default to minimize overhead
+3. **Submit-path signing**: Always enabled for disposable session signatures
 4. **Memory safety**: Private key automatically cleared on destruction
 
 ## Protocol Flow
@@ -162,24 +171,23 @@ Statistics are logged periodically by the Solo protocol.
 8. Mining begins...
 ```
 
-### Block Submission (with optional signing)
+### Block Submission (current wire shape)
 
-**Default (signing disabled)**:
 ```
-1. Worker finds block
-2. Solo: submit_block(merkle_root, nonce)
-3. Packet: [merkle_root(64)][nonce(8)] = 72 bytes
-4. Node validates and accepts/rejects
+1. Worker finds a block against its solved snapshot
+2. Miner serializes the full 216-byte Tritium block body from that solved snapshot
+3. Prime channel appends vOffsets after the 216-byte block body
+4. Miner appends timestamp (8 LE) + sig_len (2 LE) + Falcon signature
+5. Miner encrypts the plaintext payload with ChaCha20-Poly1305
+6. Node decrypts, validates, and accepts/rejects
 ```
 
-**Enhanced (signing enabled)**:
-```
-1. Worker finds block
-2. Solo: wrapper->sign_block(merkle_root, nonce)
-3. Solo: Append signature to payload
-4. Packet: [merkle_root(64)][nonce(8)][signature(~690)] = ~762 bytes
-5. Node validates signature and accepts/rejects
-```
+Notes:
+
+- **Hash plaintext** = `216-byte block + timestamp + sig_len + signature`
+- **Prime plaintext** = `216-byte block + vOffsets + timestamp + sig_len + signature`
+- **Falcon-1024 is the default**, so Prime submit sizes are larger than the old Falcon-512-era examples
+- Node-side fixed-offset `sig_len` probing is obsolete for Prime because `vOffsets` make the submit payload variable-length
 
 ## Logging
 
@@ -198,13 +206,13 @@ The wrapper provides detailed logging at multiple levels:
 **Example logs**:
 ```
 [FalconWrapper] Initialized successfully
-[FalconWrapper]   - Public key: 897 bytes
-[FalconWrapper]   - Private key: 1281 bytes
+[FalconWrapper]   - Public key: 1793 bytes
+[FalconWrapper]   - Private key: 2305 bytes
 [Solo Auth] Using Falcon Signature Wrapper for authentication
 [Solo Auth] Wrapper signature generated in 234 μs
 [Solo Submit] Block signing enabled - generating signature
 [FalconWrapper] Block signature generated successfully
-[FalconWrapper]   - Signature size: 690 bytes
+[FalconWrapper]   - Signature size: 1577 bytes
 [FalconWrapper]   - Generation time: 187 μs
 ```
 
@@ -237,8 +245,8 @@ FalconSignatureWrapper(const std::vector<uint8_t>& pubkey,
 
 **Methods**:
 - `sign_authentication(address, timestamp)`: Sign auth message for MINER_AUTH_RESPONSE
-- `sign_block(block_data, nonce)`: Sign block for submission validation
-- `sign_payload(data, type)`: Sign arbitrary payload
+- `sign_block(block_data, nonce)`: Legacy helper retained for compatibility
+- `sign_payload(data, type)`: Sign arbitrary payload, including current submit plaintexts
 - `is_valid()`: Check if wrapper is initialized
 - `get_stats()`: Get performance statistics
 - `reset_stats()`: Reset performance counters
@@ -256,8 +264,8 @@ struct SignatureResult {
 ### Solo Protocol Extensions
 
 **New methods**:
-- `enable_block_signing(bool enable)`: Enable/disable optional block signing
-- `is_block_signing_enabled()`: Check block signing status
+- `enable_block_signing(bool enable)`: Backward-compatible no-op for legacy configs
+- `is_block_signing_enabled()`: Reports the disposable-signature compatibility flag
 
 ## Troubleshooting
 
@@ -282,14 +290,13 @@ struct SignatureResult {
 
 ### Performance Impact
 
-**Symptom**: Lower hashrate with block signing enabled
+**Symptom**: Lower hashrate during signature generation
 
-**Expected**: Block signing adds ~100-500 μs per block found (negligible for mining)
+**Expected**: Submit-path signing adds a small per-found-block cost and does not affect steady-state hashing
 
 **Solutions**:
-- Disable block signing: Remove `enable_block_signing` from config
 - Use faster CPU for signature generation
-- Block signing only affects submission, not mining performance
+- Submit-path signing only affects submission, not mining performance
 
 ## Compatibility
 
@@ -304,10 +311,7 @@ struct SignatureResult {
 2. `src/protocol/src/protocol/falcon_wrapper.cpp` - Wrapper implementation (new)
 3. `src/protocol/inc/protocol/solo.hpp` - Added wrapper integration
 4. `src/protocol/src/protocol/solo.cpp` - Use wrapper for signatures
-5. `src/config/inc/config/config.hpp` - Added `enable_block_signing` config
-6. `src/config/src/config/config.cpp` - Parse block signing config
-7. `src/worker_manager.cpp` - Configure block signing from config
-8. `src/protocol/CMakeLists.txt` - Added falcon_wrapper.cpp to build
+5. `src/protocol/CMakeLists.txt` - Added falcon_wrapper.cpp to build
 
 ---
 
