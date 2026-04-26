@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 namespace nexusminer {
@@ -37,19 +38,33 @@ public:
 
     void store(Stats snapshot)
     {
-        std::atomic_store_explicit(
-            &m_snapshot,
+#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
+        m_snapshot.store(
             std::make_shared<const Stats>(std::move(snapshot)),
             std::memory_order_release);
+#else
+        std::scoped_lock lock(m_snapshot_mutex);
+        m_snapshot = std::make_shared<const Stats>(std::move(snapshot));
+#endif
     }
 
     std::shared_ptr<const Stats> load() const
     {
-        return std::atomic_load_explicit(&m_snapshot, std::memory_order_acquire);
+#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
+        return m_snapshot.load(std::memory_order_acquire);
+#else
+        std::scoped_lock lock(m_snapshot_mutex);
+        return m_snapshot;
+#endif
     }
 
 private:
-    mutable std::shared_ptr<const Stats> m_snapshot;
+#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
+    std::atomic<std::shared_ptr<const Stats>> m_snapshot;
+#else
+    mutable std::mutex m_snapshot_mutex;
+    std::shared_ptr<const Stats> m_snapshot;
+#endif
 };
 
 }
