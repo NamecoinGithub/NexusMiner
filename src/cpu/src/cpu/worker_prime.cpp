@@ -625,7 +625,26 @@ uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(const uint1k& p)
 
 void Worker_prime::update_statistics(stats::Collector& stats_collector)
 {
-	stats_collector.update_worker_stats(m_config.m_internal_id, *m_published_stats.load());
+	auto prime_stats = *m_published_stats.load();
+
+	// Keep CPU-load reporting interval-based while leaving histogram/best-chain stats
+	// on the immutable worker snapshot path.
+	{
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		if (m_cpu_total_time.count() > 0) {
+			prime_stats.m_cpu_load = static_cast<double>(m_cpu_active_time.count()) /
+			                          static_cast<double>(m_cpu_total_time.count());
+			prime_stats.m_cpu_load = std::max(0.0, std::min(1.0, prime_stats.m_cpu_load));
+		} else {
+			prime_stats.m_cpu_load = 0.0;
+		}
+
+		m_cpu_active_time = {};
+		m_cpu_total_time  = {};
+		m_cpu_tracking_start = std::chrono::steady_clock::now();
+	}
+
+	stats_collector.update_worker_stats(m_config.m_internal_id, prime_stats);
 
 	// [Sieve Diag] log — emitted on stats thread only, reads atomics with relaxed order
 	{
@@ -647,8 +666,8 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 void Worker_prime::publish_statistics_snapshot()
 {
 	stats::Prime prime_stats;
-	prime_stats.m_primes = static_cast<std::uint32_t>(m_segmented_sieve->m_fermat_prime_count);
-	prime_stats.m_chains = static_cast<std::uint32_t>(m_segmented_sieve->m_chain_count);
+	prime_stats.m_primes = stats::saturating_prime_stat(m_segmented_sieve->m_fermat_prime_count);
+	prime_stats.m_chains = stats::saturating_prime_stat(m_segmented_sieve->m_chain_count);
 	prime_stats.m_chain_histogram = stats::copy_prime_histogram(m_segmented_sieve->m_chain_histogram);
 	prime_stats.m_range_searched = m_range_searched.load(std::memory_order_relaxed);
 	prime_stats.m_most_difficult_chain = m_segmented_sieve->m_best_chain;

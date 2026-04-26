@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -26,6 +27,17 @@ Prime_histogram copy_prime_histogram(const Histogram& histogram)
         snapshot[i] = histogram[i];
     }
     return snapshot;
+}
+
+template <typename Count>
+std::uint32_t saturating_prime_stat(Count count)
+{
+    constexpr auto max_count = std::numeric_limits<std::uint32_t>::max();
+    if (count > max_count)
+    {
+        return max_count;
+    }
+    return static_cast<std::uint32_t>(count);
 }
 
 template <typename Stats>

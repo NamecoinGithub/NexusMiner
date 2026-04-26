@@ -2,6 +2,7 @@
 #include "stats/types.hpp"
 
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace
@@ -54,12 +55,23 @@ void test_atomic_snapshot_keeps_immutable_previous_value()
                         second_snapshot->m_chain_histogram[5] == 9;
     print_result("Atomic snapshot readers keep immutable published values", passed);
 }
+
+void test_saturating_prime_stat_clamps_large_counts()
+{
+    const auto saturated =
+        nexusminer::stats::saturating_prime_stat(std::numeric_limits<std::uint64_t>::max());
+
+    print_result(
+        "Prime stat saturation clamps oversized counters to uint32 max",
+        saturated == std::numeric_limits<std::uint32_t>::max());
+}
 }
 
 int main()
 {
     test_copy_prime_histogram_clamps_and_zero_fills();
     test_atomic_snapshot_keeps_immutable_previous_value();
+    test_saturating_prime_stat_clamps_large_counts();
 
     if (tests_failed != 0)
     {

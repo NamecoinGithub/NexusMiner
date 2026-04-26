@@ -437,8 +437,8 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 void Worker_prime::publish_statistics_snapshot()
 {
 	stats::Prime prime_stats;
-	prime_stats.m_primes = static_cast<std::uint32_t>(m_segmented_sieve->m_fermat_prime_count);
-	prime_stats.m_chains = static_cast<std::uint32_t>(m_segmented_sieve->m_chain_count);
+	prime_stats.m_primes = stats::saturating_prime_stat(m_segmented_sieve->m_fermat_prime_count);
+	prime_stats.m_chains = stats::saturating_prime_stat(m_segmented_sieve->m_chain_count);
 	prime_stats.m_chain_histogram = stats::copy_prime_histogram(m_segmented_sieve->m_chain_histogram);
 	prime_stats.m_range_searched = m_range_searched;
 	prime_stats.m_most_difficult_chain = m_segmented_sieve->m_best_chain;
