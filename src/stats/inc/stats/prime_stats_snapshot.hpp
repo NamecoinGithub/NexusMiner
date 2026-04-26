@@ -62,8 +62,8 @@ private:
 #if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
     std::atomic<std::shared_ptr<const Stats>> m_snapshot;
 #else
-    mutable std::mutex m_snapshot_mutex;
     std::shared_ptr<const Stats> m_snapshot;
+    mutable std::mutex m_snapshot_mutex;
 #endif
 };
 
