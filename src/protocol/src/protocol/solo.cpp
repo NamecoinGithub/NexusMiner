@@ -1602,8 +1602,9 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
 
     // ── Delegate to StatelessBlockUtility::encode_submit() ──────────────────
     // encode_submit() handles all pre-checks (nonce, channel, height, staleness),
-    // Disposable Falcon signing, and PacketBuilder framing (0xD001 vs 0x01).
-    // Solo::submit_block() adds ChaCha20 encryption on top of the signed payload.
+    // worker-snapshot serialization, Disposable Falcon signing, and PacketBuilder
+    // framing (0xD001 vs 0x01). Solo::submit_block() adds ChaCha20 encryption on
+    // top of the signed payload.
     if (!m_template_interface || !m_template_interface->has_valid_template()) {
         m_logger->error("[Solo Submit] No valid template — cannot submit block");
         return network::Shared_payload{};
@@ -1615,12 +1616,36 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         return network::Shared_payload{};
     }
 
-    // Reconstruct the block to submit: current template + found nonce.
-    // block_data[0:216] was serialized from the same template by prepare_block_submission().
-    ::LLP::CBlock block_to_submit = tmpl->block;
-    block_to_submit.nNonce = nonce;
+    if (block_data.size() < StatelessBlockUtility::BLOCK_BODY_SIZE) {
+        m_logger->error("[Solo Submit] Block payload too small: {} bytes (need at least {} for block body)",
+                        block_data.size(), StatelessBlockUtility::BLOCK_BODY_SIZE);
+        return network::Shared_payload{};
+    }
+
+    // worker_manager passes block_data as:
+    //   [216-byte solved block body][optional Prime vOffsets tail]
+    // Solo re-decodes only the fixed 216-byte block body here so the authoritative
+    // header fields (height / prevhash / bits / nonce) come from the worker-owned
+    // snapshot, while the variable-length Prime tail is forwarded unchanged below.
+    network::Payload block_body(block_data.begin(),
+                                block_data.begin() + StatelessBlockUtility::BLOCK_BODY_SIZE);
+
+    ::LLP::CBlock block_to_submit;
+    try {
+        block_to_submit = nexusminer::llp_utils::deserialize_block_header(block_body);
+    } catch (const std::exception& e) {
+        m_logger->error("[Solo Submit] Failed to decode solved block body: {}", e.what());
+        return network::Shared_payload{};
+    }
+
+    if (block_to_submit.nNonce != nonce) {
+        m_logger->error("[Solo Submit] Nonce mismatch between serialized block (0x{:016x}) and callback argument (0x{:016x})",
+                        block_to_submit.nNonce, nonce);
+        return network::Shared_payload{};
+    }
+
     const auto submit_snapshot = m_height_tracker.GetSnapshot();
-    const auto submit_context = capture_submit_context(tmpl->block.nHeight, submit_snapshot.unified_height);
+    const auto submit_context = capture_submit_context(block_to_submit.nHeight, submit_snapshot.unified_height);
     const auto tracker_channel_tip = submit_snapshot.channel_tip_height.get();
     const auto template_channel_target = tmpl->nChannelHeight;
     const auto template_age_seconds = m_template_interface ? m_template_interface->get_template_age() : 0u;
@@ -1668,29 +1693,36 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     }
 
     if (!tmpl->height_guard.matches(block_to_submit)) {
+        // The solved snapshot is authoritative here: worker_manager already serialized
+        // block_data from the exact Block_data snapshot the worker proved. A later
+        // template refresh can legitimately advance the live template between "found"
+        // and "submit" without invalidating the solved bytes, so keep logging the
+        // drift but do not rewrite or discard the worker-owned submission payload.
         const std::string detail =
-            "unified_height=" + std::to_string(block_to_submit.nHeight) +
-            " expected_unified_height=" + std::to_string(tmpl->height_guard.unified_height.get()) +
+            "submit_height=" + std::to_string(block_to_submit.nHeight) +
+            " current_template_height=" + std::to_string(tmpl->height_guard.unified_height.get()) +
             " channel_height=" + std::to_string(tracker_channel_tip) +
             " channel_target=" + std::to_string(template_channel_target) +
             " channel_height_marker=" +
             std::string(is_channel_height(submit_snapshot.channel_tip_height) ? "true" : "false");
-        m_logger->error("[Solo Submit] Height guard rejected submission: {}", detail);
-        record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED, detail);
-        return network::Shared_payload{};
+        m_logger->warn("[Solo Submit] Height guard drift detected — keeping solved snapshot authoritative: {}", detail);
     }
 
     // Snapshot submitted block state for the ACCEPT/GOOD_BLOCK handler
     // so it doesn't need to re-read from a potentially-replaced template.
+    // This metadata must mirror the solved snapshot, not the live template.
     m_last_submitted_valid     = true;
     m_last_submitted_owner     = capture_session_ownership();
-    m_last_submitted_nonce     = nonce;
-    m_last_submitted_prev_hash = tmpl->block.hashPrevBlock;
-    m_last_submitted_height    = tmpl->block.nHeight;
-    m_last_submitted_channel   = tmpl->block.nChannel;
+    m_last_submitted_nonce     = block_to_submit.nNonce;
+    m_last_submitted_prev_hash = block_to_submit.hashPrevBlock;
+    m_last_submitted_height    = block_to_submit.nHeight;
+    m_last_submitted_channel   = block_to_submit.nChannel;
 
-    // Extract Prime channel vOffsets from block_data (bytes after 216-byte Tritium body).
-    // For Hash channel block_data is exactly 216 bytes so this is always empty.
+    // Extract Prime channel vOffsets from block_data (bytes after the fixed 216-byte body).
+    // For Hash channel block_data is exactly 216 bytes so this stays empty.
+    // The key rule is "split, do not rebuild": header fields come from block_body above,
+    // variable-length Prime bytes come from this tail, and both originated from the same
+    // worker snapshot in worker_manager.
     std::vector<uint8_t> vOffsets;
     if (block_data.size() > StatelessBlockUtility::BLOCK_BODY_SIZE)
         vOffsets.assign(block_data.begin() + StatelessBlockUtility::BLOCK_BODY_SIZE, block_data.end());

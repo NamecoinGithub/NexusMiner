@@ -22,6 +22,7 @@
  */
 
 #include "include/stateless_block_utility.hpp"
+#include "LLP/block_utils.hpp"
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/height_tracker.hpp"
 #include "worker/block_header_utils.hpp"
@@ -83,7 +84,9 @@ static network::Payload make_template_payload(
     uint32_t nChannel   = 2,        // Hash
     uint32_t nHeight    = 6000001,  // unified_h + 1
     uint32_t nBits      = DEFAULT_DIFFICULTY,
-    uint64_t nNonce     = 0)
+    uint64_t nNonce     = 0,
+    uint8_t prev_fill   = 0x00,
+    uint8_t merkle_base = 0xA0)
 {
     network::Payload buf(228, 0x00);
 
@@ -101,11 +104,13 @@ static network::Payload make_template_payload(
     buf[b]   = be_byte(nVersion, 0); buf[b+1] = be_byte(nVersion, 1);
     buf[b+2] = be_byte(nVersion, 2); buf[b+3] = be_byte(nVersion, 3);
     b += 4;
-    // hashPrevBlock [4-131] -- leave as zeros
+    // hashPrevBlock [4-131]
+    for (size_t i = 0; i < 128; ++i)
+        buf[b + i] = prev_fill;
     b += 128;
     // hashMerkleRoot [132-195] -- non-zero so MTI validation passes
     for (size_t i = 0; i < 64; ++i)
-        buf[b + i] = static_cast<uint8_t>(0xA0 + (i & 0x0F));
+        buf[b + i] = static_cast<uint8_t>(merkle_base + (i & 0x0F));
     b += 64;
     // nChannel [196-199]
     buf[b]   = be_byte(nChannel, 0); buf[b+1] = be_byte(nChannel, 1);
@@ -170,6 +175,14 @@ static std::vector<unsigned char> get_raw_block_header_bytes(const ::LLP::CBlock
 /** Return a default (zero) HeightTracker::Snapshot for tests that don't need it. */
 static HeightTracker::Snapshot make_snapshot() {
     return HeightTracker::Snapshot{};
+}
+
+static std::vector<uint8_t> strip_wire_header(const std::vector<uint8_t>& wire_bytes,
+                                              ProtocolLane lane) {
+    const size_t header_size = (lane == ProtocolLane::STATELESS) ? 6u : 5u;
+    if (wire_bytes.size() <= header_size)
+        return {};
+    return std::vector<uint8_t>(wire_bytes.begin() + header_size, wire_bytes.end());
 }
 
 static SubmitContext make_submit_context(uint32_t template_height = 6000001,
@@ -419,6 +432,45 @@ static void test_encode_prime_voffsets_appended() {
                  "(Prime payload > Hash payload by vOffsets.size())", ok);
 }
 
+// Test 16 -- encode_submit(): preserve solved snapshot fields under template advance
+static void test_encode_preserves_solved_snapshot_under_template_advance() {
+    MiningTemplateInterface mti(2, 0);
+
+    auto tmpl_n = make_template_payload(6000000, 2000000, DEFAULT_DIFFICULTY,
+                                        8, 2, 6000001, DEFAULT_DIFFICULTY, 0,
+                                        /*prev_fill=*/0x11, /*merkle_base=*/0x70);
+    mti.read_stateless_payload(tmpl_n, "test");
+
+    network::Payload solved_payload(tmpl_n.begin() + StatelessBlockUtility::METADATA_PREFIX_SIZE,
+                                    tmpl_n.begin() + StatelessBlockUtility::TEMPLATE_PAYLOAD_SIZE);
+    auto solved = llp_utils::deserialize_block_header(solved_payload);
+    solved.nNonce = 0x0123456789ABCDEFULL;
+
+    auto tmpl_n1 = make_template_payload(6000001, 2000001, DEFAULT_DIFFICULTY,
+                                         8, 2, 6000002, DEFAULT_DIFFICULTY, 0,
+                                         /*prev_fill=*/0x22, /*merkle_base=*/0x90);
+    mti.read_stateless_payload(tmpl_n1, "test");
+
+    auto result = StatelessBlockUtility::encode_submit(
+        mti, solved, {}, nullptr, ProtocolLane::STATELESS, make_snapshot(), nullptr,
+        make_submit_context(/*template_height=*/6000001, /*chain_height=*/6000000));
+
+    bool ok = false;
+    if (result.valid && result.wire_bytes) {
+        auto plaintext = strip_wire_header(*result.wire_bytes, ProtocolLane::STATELESS);
+        if (plaintext.size() == StatelessBlockUtility::BLOCK_BODY_SIZE) {
+            network::Payload encoded_payload(plaintext.begin(), plaintext.end());
+            auto encoded = llp_utils::deserialize_block_header(encoded_payload);
+            ok = encoded.nHeight == solved.nHeight &&
+                 encoded.hashPrevBlock == solved.hashPrevBlock &&
+                 encoded.hashMerkleRoot == solved.hashMerkleRoot &&
+                 encoded.nNonce == solved.nNonce;
+        }
+    }
+
+    print_result("encode_submit(): solved snapshot survives template advance", ok);
+}
+
 // Test 15 -- read_stateless_payload() + set_channel_height() does not trigger
 // the corruption guard.  The guard fires when block.nHeight != m_last_unified_height.
 // read_stateless_payload() must NOT override m_last_unified_height with the
@@ -520,6 +572,7 @@ int main() {
     test_encode_stale_does_not_block();
     test_encode_rejects_submit_height_mismatch();
     test_encode_prime_voffsets_appended();
+    test_encode_preserves_solved_snapshot_under_template_advance();
     test_set_channel_height_no_corruption_guard();
     test_worker_header_bytes_match_raw_block_with_nonce();
     test_worker_prime_header_bytes_match_raw_block_without_nonce();

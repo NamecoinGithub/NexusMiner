@@ -334,11 +334,19 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                 }
                             }
 
-                            // Prepare full block submission from the worker's solved snapshot.
-                            // Using prepare_block_submission_from_solved() ensures nHeight,
-                            // hashPrevBlock, nBits, and nVersion come from the worker's Block_data
-                            // (the exact bytes it tested) rather than from m_current_template,
-                            // which may have been refreshed by a concurrent BLOCK_DATA push.
+                            // Prepare the canonical submit bytes from the worker-owned snapshot.
+                            // Flow ownership matters here:
+                            //   worker -> Block_data snapshot -> worker_manager ->
+                            //   prepare_block_submission_from_solved(...) -> Solo::submit_block()
+                            //
+                            // The worker snapshot is the exact header the worker proved.  We must
+                            // not rebuild it from m_current_template here because a concurrent
+                            // BLOCK_DATA push can advance height / prevhash after the worker found
+                            // the solution but before the submit path runs.
+                            //
+                            // Prime channel keeps one extra tail: the worker-computed vOffsets.
+                            // Those bytes are appended after the 216-byte Tritium block body so
+                            // the node can validate the prime cluster against the same snapshot.
                             m_logger->info("[Worker_manager] Preparing full block submission");
                             m_logger->info("[Worker_manager]   Height: {}", block_data->nHeight);
                             m_logger->info("[Worker_manager]   Nonce:  0x{:016x}", block_data->nNonce);

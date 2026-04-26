@@ -464,6 +464,15 @@ public:
      * found" and "submit-prep" — this overload builds the serialized payload entirely from
      * the worker's own Block_data snapshot, which is the exact data the worker tested.
      *
+     * Authoritative flow:
+     *   worker -> Block_data snapshot -> worker_manager ->
+     *   prepare_block_submission_from_solved(...) -> Solo::submit_block() ->
+     *   StatelessBlockUtility::encode_submit()
+     *
+     * The first 216 bytes of the returned payload are always the solved Tritium block body.
+     * Prime-only tails such as @p vOffsets are appended by the overload below and must stay
+     * attached to the same solved snapshot all the way through SUBMIT_BLOCK encryption.
+     *
      * An Option-C drift guard compares the worker snapshot against the current template and
      * logs a warning when they differ; submission is NOT aborted so that valid PoW is never
      * discarded because of a benign template refresh.
