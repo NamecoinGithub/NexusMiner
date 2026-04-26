@@ -1688,6 +1688,11 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     }
 
     if (!tmpl->height_guard.matches(block_to_submit)) {
+        // The solved snapshot is authoritative here: worker_manager already serialized
+        // block_data from the exact Block_data snapshot the worker proved. A later
+        // template refresh can legitimately advance the live template between "found"
+        // and "submit" without invalidating the solved bytes, so keep logging the
+        // drift but do not rewrite or discard the worker-owned submission payload.
         const std::string detail =
             "submit_height=" + std::to_string(block_to_submit.nHeight) +
             " current_template_height=" + std::to_string(tmpl->height_guard.unified_height.get()) +

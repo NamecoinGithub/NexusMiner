@@ -177,12 +177,12 @@ static HeightTracker::Snapshot make_snapshot() {
     return HeightTracker::Snapshot{};
 }
 
-static std::vector<uint8_t> strip_wire_header(const std::vector<uint8_t>& framed,
+static std::vector<uint8_t> strip_wire_header(const std::vector<uint8_t>& wire_bytes,
                                               ProtocolLane lane) {
     const size_t header_size = (lane == ProtocolLane::STATELESS) ? 6u : 5u;
-    if (framed.size() <= header_size)
+    if (wire_bytes.size() <= header_size)
         return {};
-    return std::vector<uint8_t>(framed.begin() + header_size, framed.end());
+    return std::vector<uint8_t>(wire_bytes.begin() + header_size, wire_bytes.end());
 }
 
 static SubmitContext make_submit_context(uint32_t template_height = 6000001,
