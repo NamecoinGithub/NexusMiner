@@ -312,25 +312,42 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         return;
                     }
 
-                    // ✅ NEW: Final staleness check before submission (Template Staleness Prevention)
-                    // Use HeightTracker snapshot as single source of truth for age check.
-                    // Channel-height staleness (is_template_stale) was removed: structurally
-                    // false under canonical-only semantics.  Age check is the sole guard.
+                    // ✅ Final validity gate before submission (Template Staleness Prevention)
+                    // Use HeightTracker snapshot as single source of truth.
+                    //
+                    // Authority: the only thing that makes a solution structurally invalid at
+                    // submit time is hashPrevBlock no longer matching the node's tip
+                    // (node-side Guard 2: pBlock->hashPrevBlock == hashBestChain).  The
+                    // worker-snapshot Block_data carries the exact previous_hash the worker
+                    // proved against; the canonical HeightTracker exposes the current tip
+                    // anchor as snap.hash_prev_block (updated only by BLOCK_DATA receipt).
+                    //
+                    // Mismatch → tip moved out from under us, discard + soft-refresh.
+                    // Match → submit, regardless of template age.  At low-rate / solo mining
+                    // a valid template can legitimately sit for >600s on a quiet channel
+                    // without losing validity, so the prior 600s wall-clock gate
+                    // (is_template_age_stale) silently dropped otherwise-valid solutions.
+                    //
+                    // Liveness of the push pipe is now reported as a warn-only diagnostic
+                    // (template_age) instead of being conflated with submit-time validity.
                     auto ht_snap = solo_protocol->get_height_tracker_snapshot();
-
-                    // Age-based staleness (safety net for missed push notifications)
-                    // 600s matches the push-driven era MAX_TEMPLATE_AGE
-                    bool age_stale = ht_snap.is_template_age_stale();
                     uint64_t template_age = ht_snap.get_template_age_seconds();
 
-                    if (age_stale)
+                    const bool tip_known = (ht_snap.hash_prev_block != uint1024_t(0));
+                    const bool prev_hash_mismatch =
+                        tip_known && (block_data->previous_hash != ht_snap.hash_prev_block);
+
+                    if (prev_hash_mismatch)
                     {
-                        const char* soft_refresh_reason = "submit_side_age_stale";
-                        m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: 600s)",
+                        const char* soft_refresh_reason = "submit_side_prev_hash_mismatch";
+                        m_logger->error("[Worker_manager] ❌ Solution found but tip has moved — hashPrevBlock mismatch (age: {}s)",
                                        template_age);
-                        m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
+                        m_logger->error("[Worker_manager]    solved_prev={}... canonical_tip={}...",
+                                       block_data->previous_hash.SubString(),
+                                       ht_snap.hash_prev_block.SubString());
+                        m_logger->error("[Worker_manager]    Discarding stale solution (node would reject as 'stale block')");
                         mark_soft_refresh_requested(soft_refresh_reason);
-                        template_interface->discard_template("Age exceeded 600s before submission");
+                        template_interface->discard_template("hashPrevBlock no longer matches canonical tip");
 
                         // Request fresh work/GET_BLOCK via NodeSession
                         m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK via NodeSession");
@@ -344,7 +361,26 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         return;
                     }
 
-                    m_logger->info("[Worker_manager] 💎 Solution found! Age: {}s, Channel height valid ✅ - SUBMITTING", template_age);
+                    // Warn-only age diagnostic: an old-but-still-valid template means push
+                    // pipe may be quiet (chain has not advanced).  Surface it without
+                    // dropping the solution — node-side Guard 2 is the canonical authority.
+                    //
+                    // Two thresholds (defined in height_tracker.hpp):
+                    //   is_template_age_old()    > 300s — proactive warning (info)
+                    //   is_template_age_stale()  > 600s — push-pipe-likely-dead (warn)
+                    // Neither blocks submission anymore; both are reported for operator
+                    // visibility into push-pipe health on quiet channels.
+                    if (ht_snap.is_template_age_stale()) {
+                        m_logger->warn("[Worker_manager] ⚠️  Submitting solution on aged template ({}s > 600s) — "
+                                       "hashPrevBlock still matches tip; push pipe may be quiet",
+                                       template_age);
+                    } else if (ht_snap.is_template_age_old()) {
+                        m_logger->info("[Worker_manager] Submitting solution on aged template ({}s) — "
+                                       "hashPrevBlock still matches tip",
+                                       template_age);
+                    }
+
+                    m_logger->info("[Worker_manager] 💎 Solution found! Age: {}s, hashPrevBlock matches canonical tip ✅ - SUBMITTING", template_age);
 
                     // Gap 2: Log hashPrevBlock before submission (SUBMIT AUDIT).
                     // Cross-reference: node Guard 2 checks pBlock->hashPrevBlock == hashBestChain.
