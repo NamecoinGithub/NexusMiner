@@ -139,7 +139,7 @@ private:
             ss << " (idle)";
         }
         ss << " Chain Count: ";
-        for (std::size_t i = 5; i < prime_stats.m_chain_histogram.size(); ++i)
+        for (std::size_t i = 5; i < prime_stats.m_chain_histogram.size(); i++)
         {
             ss << i << ":" << prime_stats.m_chain_histogram[i] << " ";
         }
