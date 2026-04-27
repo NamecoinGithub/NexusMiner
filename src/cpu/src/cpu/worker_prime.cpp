@@ -1,6 +1,7 @@
 #include "cpu/worker_prime.hpp"
 #include "cpu/thread_utils.hpp"
 #include "cpu/prime_validation.hpp"
+#include "cpu/prime/prime_mining_engine.hpp"
 #include "config/config.hpp"
 #include "stats/stats_collector.hpp"
 #include "prime/prime.hpp"
@@ -45,7 +46,6 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 	, m_logger{ spdlog::get("logger") }
 	, m_config{ config }
 	, m_prime_helper{std::make_unique<Prime>()}
-	, m_segmented_sieve{std::make_unique<Sieve>()}
 	, m_stop{ true }
 	, m_initialized{ false }
 	, m_log_leader{ "CPU Worker " + m_config.m_id + ": " }
@@ -56,6 +56,16 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 {
 	try {
 		m_logger->debug("Worker_prime constructor: Initializing worker {}", m_config.m_id);
+
+		// Stone 7: capture the prime backend selector once.  Two paths from
+		// here on: "workers" runs today's per-worker mining loop, "engine"
+		// turns this Worker_prime into a thin adapter (no mining thread,
+		// no per-worker Sieve — Worker_manager constructs one
+		// PrimeMiningEngine and registers all CPU prime workers with it).
+		if (std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
+			m_engine_mode = std::get<config::Worker_config_cpu>(m_config.m_worker_mode).m_engine_mode;
+		}
+		const bool engine_mode = (m_engine_mode == "engine");
 
 		// Log CPU-specific configuration for multi-core support
 		if (std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
@@ -72,18 +82,32 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 			}
 		}
 
+		if (engine_mode)
+		{
+			// Stone 7 — adapter mode.  The PrimeMiningEngine (constructed by
+			// Worker_manager after every worker exists) owns the Sieve and
+			// the mining threads.  This worker exists only to carry stats
+			// and identity (m_internal_id, m_config) and to provide the
+			// representative internal_id_for_solution.  No Sieve, no
+			// segment allocator, no fermat_performance_test, no run-thread
+			// spawn.  The vestigial m_segment_allocator member is left null
+			// (Stone 8 cleanup will remove the field entirely).
+			m_initialized = true;
+			m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "engine_mode = \"engine\" — adapter only (no per-worker mining thread)"));
+			return;
+		}
+
+		// ── Legacy "workers" path (unchanged from pre-Stone-7) ──────────
+		m_segmented_sieve = std::make_unique<Sieve>();
+
 		// Initialize segmented sieve with error handling
 		m_segmented_sieve->generate_sieving_primes();
 
 		// Stone 3: build the segment allocator implied by [cpu] engine_mode.
 		// Default ("workers") preserves today's per-worker `low += segment_size`
 		// cursor; "engine" is reserved/forward-compatible (logged + falls back).
-		std::string engine_mode = "workers";
-		if (std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
-			engine_mode = std::get<config::Worker_config_cpu>(m_config.m_worker_mode).m_engine_mode;
-		}
 		m_segment_allocator = make_segment_allocator_for_engine_mode(
-			engine_mode,
+			m_engine_mode,
 			static_cast<std::uint64_t>(m_segmented_sieve->get_segment_size()));
 
 		// Run performance test
@@ -130,7 +154,10 @@ Worker_prime::~Worker_prime() noexcept
 		}
 		m_cv.notify_all();
 
-		// Wait for main thread to complete with timeout protection
+		// Wait for main thread to complete with timeout protection.  Under
+		// engine mode the run-thread was never spawned, so joinable() is
+		// false and this branch is skipped — no work for the destructor to
+		// do beyond clearing the engine binding.
 		if (m_run_thread.joinable())
 		{
 			m_logger->debug("Worker_prime destructor: Waiting for worker {} thread to finish", m_config.m_id);
@@ -161,6 +188,15 @@ Worker_prime::~Worker_prime() noexcept
 
 void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result)
 {
+	// Stone 7: under engine mode the worker is an adapter; the
+	// PrimeMiningEngine subscribes to WorkerTemplateFeed directly.  Worker_manager
+	// already skips the legacy per-worker fanout when uses_template_feed()==true,
+	// but defend in depth in case a code path constructs us directly.
+	if (m_engine_mode == "engine") {
+		(void)block; (void)nbits; (void)result;
+		return;
+	}
+
 	// Validate worker is properly initialized
 	if (!m_initialized) {
 		m_logger->error("Worker_prime::set_block: Worker {} not properly initialized, cannot set block",
@@ -183,6 +219,13 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 
 void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::Block_found_handler result)
 {
+	// Stone 7: see notes on the legacy set_block overload — engine mode
+	// makes this a defensive no-op.
+	if (m_engine_mode == "engine") {
+		(void)work_package; (void)result;
+		return;
+	}
+
 	// Validate worker is properly initialized
 	if (!m_initialized) {
 		m_logger->error("Worker_prime::set_block: Worker {} not properly initialized, cannot set block",
@@ -678,6 +721,44 @@ uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(const uint1k& p)
 
 void Worker_prime::update_statistics(stats::Collector& stats_collector)
 {
+	// Stone 7: under engine mode the worker's stats come from the engine's
+	// snapshot_stats(), partitioned across registered workers via floor +
+	// remainder.  This keeps per-worker GISPS approximately uniform and
+	// the sum equal to the engine total — operators see N workers each at
+	// ~1/N of the cooperative pool's throughput.
+	if (m_engine_mode == "engine")
+	{
+		stats::Prime prime_stats;
+		auto engine = m_prime_engine_weak.lock();
+		if (engine)
+		{
+			const auto snap = engine->snapshot_stats();
+			const std::uint32_t denom = std::max<std::uint32_t>(1, m_engine_share_count);
+			const std::uint32_t idx   = m_engine_share_index;
+
+			auto split = [&](std::uint64_t total) -> std::uint64_t {
+				const std::uint64_t base = total / denom;
+				const std::uint64_t rem  = total % denom;
+				return base + (idx < rem ? 1u : 0u);
+			};
+
+			prime_stats.m_primes        = stats::saturating_prime_stat(split(snap.candidates_dispatched));
+			prime_stats.m_chains        = stats::saturating_prime_stat(split(snap.candidates_dispatched));
+			prime_stats.m_range_searched = split(snap.segments_processed * snap.segment_size);
+			prime_stats.m_difficulty    = snap.nbits;
+			// Engine does not partition Fermat-test or histogram counters
+			// (single-found-block-wins keeps per-thread credit meaningless).
+			// Operators that need cluster-quality detail consult the
+			// engine's own diagnostic counters via logs.
+			prime_stats.m_most_difficult_chain = 0.0;
+			prime_stats.m_cpu_load = 0.0;
+		}
+
+		auto& typed = stats::as_typed<stats::Prime>(stats_collector);
+		typed.update_worker_stats(m_config.m_internal_id, prime_stats);
+		return;
+	}
+
 	auto snapshot = m_published_stats.load();
 	// Issue 3A: typed downcast (mode is invariant by construction).
 	auto& typed = stats::as_typed<stats::Prime>(stats_collector);
@@ -705,6 +786,50 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 			diag.m_starting_multiples_us / 1000.0,
 			diag.m_prime_count);
 	}
+}
+
+void Worker_prime::bind_to_engine(std::weak_ptr<PrimeMiningEngine> engine,
+                                  std::uint32_t share_index,
+                                  std::uint32_t share_count)
+{
+	m_prime_engine_weak = std::move(engine);
+	m_engine_share_index = share_index;
+	m_engine_share_count = share_count;
+	m_engine_bound.store(true, std::memory_order_release);
+}
+
+bool Worker_prime::uses_template_feed() const
+{
+	// Engine mode: the engine subscribes to the feed; this worker must NOT
+	// receive the legacy per-worker set_block fanout (it has no run-thread
+	// to pick the work up).
+	return m_engine_mode == "engine";
+}
+
+void Worker_prime::attach_template_feed(std::shared_ptr<WorkerTemplateFeed> /*feed*/)
+{
+	// Stone 7: explicit no-op.  Under engine mode the PrimeMiningEngine
+	// holds the feed pointer (its own consumer thread is the single
+	// subscriber per channel); the worker exists only to carry stats and
+	// identity, not to consume templates.  Under workers mode this
+	// override still applies, but the legacy mining loop reads work from
+	// the per-worker set_block() shim — not from the feed — so the no-op
+	// is semantically correct in both modes.
+}
+
+bool Worker_prime::is_running() const
+{
+	if (m_engine_mode == "engine")
+	{
+		// "Running" under engine mode == bound to a live engine.  The
+		// engine's lifetime is what actually owns the mining work; the
+		// adapter has no per-worker thread to track.  Return true once
+		// Worker_manager has called bind_to_engine(); the engine is
+		// guaranteed to outlive the worker by the destruction order in
+		// Worker_manager::stop_all_workers (engine reset BEFORE workers).
+		return m_engine_bound.load(std::memory_order_acquire);
+	}
+	return m_running.load();
 }
 
 void Worker_prime::publish_statistics_snapshot()
