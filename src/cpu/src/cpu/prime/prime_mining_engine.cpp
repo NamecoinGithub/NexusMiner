@@ -4,6 +4,8 @@
 #include "cpu/prime_validation.hpp"
 #include "worker/template_feed.hpp"
 
+#include <asio.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -44,6 +46,22 @@ PrimeMiningEngine::PrimeMiningEngine(Engine_config cfg,
     // Resolve pool-thread count up front so it is observable via
     // pool_thread_count() before any pool thread has actually spawned.
     m_pool_thread_count = resolve_pool_thread_count(m_cfg.pool_threads, m_logger);
+
+    // Session-only mode: with no io_context there is nowhere to dispatch
+    // found blocks, so spawning pool threads would just sieve into a void.
+    // Force the count to zero and warn — the consumer thread still runs and
+    // builds sessions, which is exactly what tests / future stages that only
+    // care about session creation need.
+    if (!m_cfg.io_context && m_pool_thread_count > 0)
+    {
+        if (m_logger)
+        {
+            m_logger->warn("[PrimeMiningEngine] io_context is null; running in "
+                           "session-only mode (pool_threads forced from {} to 0)",
+                           m_pool_thread_count);
+        }
+        m_pool_thread_count = 0;
+    }
 
     if (m_logger)
     {

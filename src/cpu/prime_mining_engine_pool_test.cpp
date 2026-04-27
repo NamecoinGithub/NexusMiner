@@ -377,6 +377,42 @@ void test_same_base_republish_preserves_work()
                  engine.segments_discarded_epoch_changed() == discards_before);
 }
 
+void test_session_only_mode_null_io_context()
+{
+    // With a null io_context the engine runs in session-only mode: the
+    // consumer still publishes sessions, but zero pool threads are spawned
+    // and all pool-thread counters stay at zero — even if pool_threads was
+    // configured > 0.  Templates can still be published and observed via
+    // current_session() (Stone 5 surface).
+    auto feed = std::make_shared<WorkerTemplateFeed>();
+    PrimeMiningEngine engine{make_cfg(/*pool_threads=*/4, /*io=*/nullptr), feed};
+    print_result("Session-only mode: pool_thread_count == 0",
+                 engine.pool_thread_count() == 0);
+
+    // Publish one template and confirm the consumer thread still works.
+    boost::multiprecision::uint1024_t base{"0xfacade"};
+    feed->publish(make_epoch(make_work_package(0x1c00ffffu, base, 1)));
+    engine.wait_for_sessions_published_after(0, 2s);
+    print_result("Session-only mode: consumer still publishes sessions",
+                 engine.sessions_published() >= 1);
+
+    // Give any (incorrectly-spawned) pool thread a moment to do work.
+    std::this_thread::sleep_for(50ms);
+
+    print_result("Session-only mode: pool_threads_running == 0",
+                 engine.pool_threads_running() == 0);
+    print_result("Session-only mode: segments_processed == 0",
+                 engine.segments_processed() == 0);
+    print_result("Session-only mode: segments_discarded_epoch_changed == 0",
+                 engine.segments_discarded_epoch_changed() == 0);
+    print_result("Session-only mode: segments_skipped_consumed == 0",
+                 engine.segments_skipped_consumed() == 0);
+    print_result("Session-only mode: candidates_dispatched == 0",
+                 engine.candidates_dispatched() == 0);
+    print_result("Session-only mode: pool_threads_crashed == 0",
+                 engine.pool_threads_crashed() == 0);
+}
+
 }  // namespace
 
 int main()
@@ -397,6 +433,7 @@ int main()
     test_skipped_consumed_advances();
     test_destruction_during_heavy_churn();
     test_same_base_republish_preserves_work();
+    test_session_only_mode_null_io_context();
 
     std::cout << "\nResult: " << (tests_run - tests_failed) << "/" << tests_run << " passed\n";
     return tests_failed == 0 ? 0 : 1;

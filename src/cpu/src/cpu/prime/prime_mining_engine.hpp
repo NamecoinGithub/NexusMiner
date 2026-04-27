@@ -4,7 +4,6 @@
 #include "cpu/prime/engine_session.hpp"
 #include "cpu/prime/segment_allocator.hpp"
 
-#include <asio.hpp>
 #include <spdlog/spdlog.h>
 
 #include <atomic>
@@ -16,6 +15,10 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+
+// Forward-declare asio::io_context to keep <asio.hpp> out of this header
+// (compile-time win — pulled in by the .cpp where it's actually used).
+namespace asio { class io_context; }
 
 namespace nexusminer {
 
@@ -79,11 +82,12 @@ struct Engine_config
     // Stone 6 — io_context for found-block dispatch.  Pool threads MUST NEVER
     // call on_found directly; instead they asio::post(*io_context, ...) so
     // the callback runs on the io_context thread and the sieve pipeline
-    // never blocks on network/submission I/O.  Required when pool threads
-    // are spawned (i.e. in production); tests that exercise the engine with
-    // pool_threads == 0 may leave it null.  Stored as shared_ptr so the
-    // engine keeps the io_context alive for the duration of any in-flight
-    // posted callbacks.
+    // never blocks on network/submission I/O.  When this is null the engine
+    // runs in **session-only mode**: pool threads are NOT spawned (regardless
+    // of `pool_threads`), only the consumer thread runs, and all pool-thread
+    // diagnostic counters stay at zero.  Stored as shared_ptr so the engine
+    // keeps the io_context alive for the duration of any in-flight posted
+    // callbacks.
     std::shared_ptr<asio::io_context> io_context;
 
     // ── Test seams (defaults match production behaviour) ────────────────────
