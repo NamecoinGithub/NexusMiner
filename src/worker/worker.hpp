@@ -25,6 +25,7 @@
 
 namespace nexusminer {
 namespace stats { class Collector; }
+class WorkerTemplateFeed;  // Stone 4: shared template publication; defined in worker/template_feed.hpp
 
 class Block_data
 {
@@ -160,6 +161,21 @@ public:
         // Default fallback: extract block and nbits from WorkPackage
         set_block(work_package->get_block(), work_package->get_nbits(), result);
     }
+
+    // Stone 4: Attach a shared WorkerTemplateFeed for lock-free template
+    // publication.  Default is a no-op so subclasses can opt in incrementally:
+    // until a worker overrides this and starts consuming epochs from the feed
+    // in its mining loop, Worker_manager keeps feeding it via the legacy
+    // set_block(WorkPackage,...) shim (now invoked outside m_worker_mutex).
+    // The feed pointer must outlive the worker; Worker_manager owns one feed
+    // per worker batch and tears workers down before releasing the feed.
+    virtual void attach_template_feed(std::shared_ptr<WorkerTemplateFeed> /*feed*/) {}
+
+    // Stone 4: Opt-in marker so Worker_manager can skip the per-worker
+    // set_block() shim once a subclass has been migrated to consume work
+    // exclusively from the WorkerTemplateFeed.  Default false preserves
+    // existing fanout behaviour for unmigrated workers.
+    virtual bool uses_template_feed() const { return false; }
 
     // Returns true if the worker's mining thread is actively running (i.e. set_block() started it).
     // Implementations backed by an m_stop atomic should override this to return !m_stop.
