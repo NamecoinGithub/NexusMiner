@@ -129,7 +129,7 @@ namespace config
 
 			std::string mining_mode = j["mining_mode"];
 			std::for_each(mining_mode.begin(), mining_mode.end(), [](char& c) {
-				c = ::tolower(c);
+				c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
 				});
 
 			if (mining_mode == "prime")

@@ -31,7 +31,7 @@ Falcon keys, and run.
 **RISC-V cross-compile:**
 
 ```bash
-cmake --preset riscv64-cross && cmake --build build-riscv -j$(nproc)
+cmake --preset riscv && cmake --build --preset riscv -j$(nproc)
 ```
 
 ---
