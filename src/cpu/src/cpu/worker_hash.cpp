@@ -137,6 +137,7 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 		m_stop = true;
 		m_new_work = true;
 		m_running = true;
+		m_template_consumed = false;  // Option D: fresh template, allow mining again
 	}
 
 	// Wake up the worker thread
@@ -212,6 +213,7 @@ void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::B
 		m_stop = true;
 		m_new_work = true;
 		m_running = true;
+		m_template_consumed = false;  // Option D: fresh template, allow mining again
 	}
 
 	// Wake up the worker thread
@@ -395,7 +397,7 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 		std::optional<NexusSkein> local_skein_opt;
 		{
 			std::unique_lock<std::mutex> lck(m_mtx);
-			if (m_new_work)
+			if (m_new_work || m_template_consumed)
 				break;
 			local_skein_opt.emplace(m_skein);  // copy-construct: nonce + midstate
 			m_skein.setNonce(m_skein.getNonce() + total_threads);  // advance shared nonce
@@ -482,6 +484,14 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 								self->m_found_nonce_callback(self->m_config.m_internal_id, 
 									std::make_unique<Block_data>(self->m_block));
 							});
+							// Option D: stop grinding this template — the next
+							// loop iteration's check at the top of mine_loop
+							// will observe m_template_consumed and break out,
+							// dropping the worker into m_cv.wait until the
+							// next set_block.  We still hold m_mtx here so
+							// the flag is published under the same lock that
+							// the loop's predicate check takes.
+							m_template_consumed = true;
 						}
 						else
 						{

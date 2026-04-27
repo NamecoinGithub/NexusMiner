@@ -281,9 +281,42 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // also makes future Stone-5 migrations of individual worker
                 // subclasses transparent — they pull the same handler from the
                 // published epoch.
+                //
+                // Option D: the handler captures a weak_ptr to its own epoch
+                // so the FIRST find on this template can mark_consumed() at
+                // the top of the lambda.  This is the cross-worker /
+                // cross-epoch source of truth that future feed-consumer
+                // workers will gate on via WorkerTemplateFeed::latest_unconsumed().
+                // Legacy workers also self-track an equivalent per-worker
+                // flag in their own mining loops; the two work together.
+                //
+                // The epoch_ptr is built BEFORE on_found so on_found can
+                // capture a weak_ptr; ownership is then transferred into the
+                // feed (or — when no feed exists — destroyed at the end of
+                // this scope, in which case the lambda's weak_ptr expires and
+                // mark_consumed() degrades to a no-op, but the per-worker
+                // flag still fires the consume on the legacy path).
+                auto epoch_ptr = std::make_shared<TemplateEpoch>();
+                epoch_ptr->work_package = work_package;
+                std::weak_ptr<const TemplateEpoch> epoch_weak = epoch_ptr;
+
                 Worker::Block_found_handler on_found =
-                    [this](std::uint32_t id, std::unique_ptr<Block_data> block_data)
+                    [this, epoch_weak](std::uint32_t id, std::unique_ptr<Block_data> block_data)
                 {
+                    // Option D: mark the epoch consumed BEFORE the validity
+                    // gate.  Even if the prev-hash check below discards the
+                    // solution, the worker should not keep grinding the same
+                    // template — a "tip moved out from under us" mismatch
+                    // means the template is structurally spent regardless of
+                    // whether THIS solution submits.
+                    if (auto epoch = epoch_weak.lock()) {
+                        const bool was_already = epoch->mark_consumed();
+                        if (!was_already) {
+                            m_logger->debug("[Worker_manager] Epoch #{} marked consumed by worker {}",
+                                            epoch->epoch_id, id);
+                        }
+                    }
+
                     m_logger->info("════════════════════════════════════════════════════════");
                     m_logger->info("💎 BLOCK FOUND CALLBACK INVOKED!");
                     m_logger->info("   Worker ID:  {}", id);
@@ -312,25 +345,42 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         return;
                     }
 
-                    // ✅ NEW: Final staleness check before submission (Template Staleness Prevention)
-                    // Use HeightTracker snapshot as single source of truth for age check.
-                    // Channel-height staleness (is_template_stale) was removed: structurally
-                    // false under canonical-only semantics.  Age check is the sole guard.
+                    // ✅ Final validity gate before submission (Template Staleness Prevention)
+                    // Use HeightTracker snapshot as single source of truth.
+                    //
+                    // Authority: the only thing that makes a solution structurally invalid at
+                    // submit time is hashPrevBlock no longer matching the node's tip
+                    // (node-side Guard 2: pBlock->hashPrevBlock == hashBestChain).  The
+                    // worker-snapshot Block_data carries the exact previous_hash the worker
+                    // proved against; the canonical HeightTracker exposes the current tip
+                    // anchor as snap.hash_prev_block (updated only by BLOCK_DATA receipt).
+                    //
+                    // Mismatch → tip moved out from under us, discard + soft-refresh.
+                    // Match → submit, regardless of template age.  At low-rate / solo mining
+                    // a valid template can legitimately sit for >600s on a quiet channel
+                    // without losing validity, so the prior 600s wall-clock gate
+                    // (is_template_age_stale) silently dropped otherwise-valid solutions.
+                    //
+                    // Liveness of the push pipe is now reported as a warn-only diagnostic
+                    // (template_age) instead of being conflated with submit-time validity.
                     auto ht_snap = solo_protocol->get_height_tracker_snapshot();
-
-                    // Age-based staleness (safety net for missed push notifications)
-                    // 600s matches the push-driven era MAX_TEMPLATE_AGE
-                    bool age_stale = ht_snap.is_template_age_stale();
                     uint64_t template_age = ht_snap.get_template_age_seconds();
 
-                    if (age_stale)
+                    const bool tip_known = (ht_snap.hash_prev_block != uint1024_t(0));
+                    const bool prev_hash_mismatch =
+                        tip_known && (block_data->previous_hash != ht_snap.hash_prev_block);
+
+                    if (prev_hash_mismatch)
                     {
-                        const char* soft_refresh_reason = "submit_side_age_stale";
-                        m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: 600s)",
+                        const char* soft_refresh_reason = "submit_side_prev_hash_mismatch";
+                        m_logger->error("[Worker_manager] ❌ Solution found but tip has moved — hashPrevBlock mismatch (age: {}s)",
                                        template_age);
-                        m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
+                        m_logger->error("[Worker_manager]    solved_prev={}... canonical_tip={}...",
+                                       block_data->previous_hash.SubString(),
+                                       ht_snap.hash_prev_block.SubString());
+                        m_logger->error("[Worker_manager]    Discarding stale solution (node would reject as 'stale block')");
                         mark_soft_refresh_requested(soft_refresh_reason);
-                        template_interface->discard_template("Age exceeded 600s before submission");
+                        template_interface->discard_template("hashPrevBlock no longer matches canonical tip");
 
                         // Request fresh work/GET_BLOCK via NodeSession
                         m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK via NodeSession");
@@ -344,7 +394,26 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         return;
                     }
 
-                    m_logger->info("[Worker_manager] 💎 Solution found! Age: {}s, Channel height valid ✅ - SUBMITTING", template_age);
+                    // Warn-only age diagnostic: an old-but-still-valid template means push
+                    // pipe may be quiet (chain has not advanced).  Surface it without
+                    // dropping the solution — node-side Guard 2 is the canonical authority.
+                    //
+                    // Two thresholds (defined in height_tracker.hpp):
+                    //   is_template_age_old()    > 300s — proactive warning (info)
+                    //   is_template_age_stale()  > 600s — push-pipe-likely-dead (warn)
+                    // Neither blocks submission anymore; both are reported for operator
+                    // visibility into push-pipe health on quiet channels.
+                    if (ht_snap.is_template_age_stale()) {
+                        m_logger->warn("[Worker_manager] ⚠️  Submitting solution on aged template ({}s > 600s) — "
+                                       "hashPrevBlock still matches tip; push pipe may be quiet",
+                                       template_age);
+                    } else if (ht_snap.is_template_age_old()) {
+                        m_logger->info("[Worker_manager] Submitting solution on aged template ({}s) — "
+                                       "hashPrevBlock still matches tip",
+                                       template_age);
+                    }
+
+                    m_logger->info("[Worker_manager] 💎 Solution found! Age: {}s, hashPrevBlock matches canonical tip ✅ - SUBMITTING", template_age);
 
                     // Gap 2: Log hashPrevBlock before submission (SUBMIT AUDIT).
                     // Cross-reference: node Guard 2 checks pBlock->hashPrevBlock == hashBestChain.
@@ -407,13 +476,16 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // without any per-worker mutex acquisition by the manager.
                 [[maybe_unused]] std::uint64_t published_epoch_id = 0;
                 if (feed_snapshot) {
-                    auto epoch = std::make_shared<TemplateEpoch>();
-                    epoch->work_package = work_package;
-                    epoch->on_found = on_found;  // shared by all consumers of this epoch
-                    published_epoch_id = feed_snapshot->publish(std::move(epoch));
+                    epoch_ptr->on_found = on_found;  // shared by all consumers of this epoch
+                    published_epoch_id = feed_snapshot->publish(std::move(epoch_ptr));
                     m_logger->debug("[Worker_manager] Published TemplateEpoch #{} to feed",
                                     published_epoch_id);
                 }
+                // If feed_snapshot is null, epoch_ptr falls out of scope here
+                // and the on_found lambda's weak_ptr expires.  That's fine —
+                // legacy workers self-mark their own per-worker consumed flag
+                // and the cross-epoch consumed signal is unused without a
+                // feed-consumer worker to read it.
 
                 // Fan out to workers that have not yet been migrated to consume
                 // from the feed.  This loop runs OUTSIDE m_worker_mutex, so the

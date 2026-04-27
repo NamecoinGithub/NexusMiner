@@ -293,6 +293,72 @@ void test_reset_for_new_batch_clears_slot_and_counter()
     assert(feed.latest_epoch_id() == 1);
 }
 
+// ── Option D: epoch consumed flag tests ─────────────────────────────────────
+
+void test_epoch_consumed_flag_defaults_false()
+{
+    WorkerTemplateFeed feed;
+    feed.publish(make_epoch());
+    auto loaded = feed.load();
+    assert(loaded != nullptr);
+    assert(!loaded->is_consumed());
+}
+
+void test_mark_consumed_is_idempotent_and_returns_previous()
+{
+    WorkerTemplateFeed feed;
+    feed.publish(make_epoch());
+    auto loaded = feed.load();
+    assert(loaded != nullptr);
+
+    // First mark transitions false → true; returns the previous (false).
+    bool was_already = loaded->mark_consumed();
+    assert(!was_already);
+    assert(loaded->is_consumed());
+
+    // Second mark is a no-op; returns the previous (true).
+    was_already = loaded->mark_consumed();
+    assert(was_already);
+    assert(loaded->is_consumed());
+}
+
+void test_latest_unconsumed_returns_null_after_consume()
+{
+    WorkerTemplateFeed feed;
+    assert(feed.latest_unconsumed() == nullptr);  // empty feed
+
+    feed.publish(make_epoch());
+    auto fresh = feed.latest_unconsumed();
+    assert(fresh != nullptr);
+    assert(fresh->epoch_id == 1);
+
+    fresh->mark_consumed();
+    assert(feed.latest_unconsumed() == nullptr);
+
+    // load() still returns the (consumed) epoch — only latest_unconsumed()
+    // gates on the consumed flag.  This separation matters for diagnostics
+    // that want to inspect the spent epoch.
+    auto raw = feed.load();
+    assert(raw != nullptr);
+    assert(raw->is_consumed());
+}
+
+void test_publishing_new_epoch_clears_latest_unconsumed_view()
+{
+    WorkerTemplateFeed feed;
+    feed.publish(make_epoch());
+    auto first = feed.load();
+    first->mark_consumed();
+    assert(feed.latest_unconsumed() == nullptr);
+
+    // A new publish replaces the slot with a fresh, unconsumed epoch.
+    feed.publish(make_epoch());
+    auto second = feed.latest_unconsumed();
+    assert(second != nullptr);
+    assert(second->epoch_id == 2);
+    assert(!second->is_consumed());
+}
+
 }  // namespace
 
 int main()
@@ -308,5 +374,9 @@ int main()
     test_work_package_round_trips_through_publish();
     test_publish_count_tracks_publishes();
     test_reset_for_new_batch_clears_slot_and_counter();
+    test_epoch_consumed_flag_defaults_false();
+    test_mark_consumed_is_idempotent_and_returns_previous();
+    test_latest_unconsumed_returns_null_after_consume();
+    test_publishing_new_epoch_clears_latest_unconsumed_view();
     return 0;
 }

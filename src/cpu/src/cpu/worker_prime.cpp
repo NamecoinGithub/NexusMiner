@@ -263,6 +263,7 @@ void Worker_prime::set_block_impl(Block_data block_data,
 		m_stop = true;
 		m_new_work = true;
 		m_running = true;
+		m_template_consumed = false;  // Option D: fresh template, allow mining again
 		notify_worker = true;
 	}
 
@@ -427,10 +428,14 @@ void Worker_prime::run()
 
 	while (!m_stop)
 	{
-		// Check for new work at the top of the loop
+		// Check for new work at the top of the loop.
+		// Option D: also exit when m_template_consumed — the worker has
+		// already dispatched a found-block for this template and should
+		// idle (via the outer m_cv.wait) until set_block delivers fresh
+		// work, instead of re-sieving the spent base hash.
 		{
 			std::unique_lock<std::mutex> lck(m_mtx);
-			if (m_new_work)
+			if (m_new_work || m_template_consumed)
 			{
 				break;
 			}
@@ -535,6 +540,15 @@ void Worker_prime::run()
 							self->m_found_nonce_callback(self->m_config.m_internal_id,
 								std::move(bd));
 						});
+						// Option D: stop grinding this template — flag is
+						// observed at the top of the outer mining loop, which
+						// then drops the worker into m_cv.wait until the
+						// next set_block.  Brief lock keeps the flag write
+						// ordered with the loop's predicate read under m_mtx.
+						{
+							std::scoped_lock<std::mutex> lck(m_mtx);
+							m_template_consumed = true;
+						}
 					}
 					else
 					{
