@@ -35,6 +35,15 @@ public:
     Worker_prime(std::shared_ptr<asio::io_context> io_context, config::Worker_config& config);
     ~Worker_prime() noexcept override;
 
+    // Force-initialise the process-shared CPU sieving prime table on the calling
+    // thread.  Worker_prime constructors otherwise trigger this lazily on the
+    // first worker that is spawned, which on a high-core-count machine means N
+    // workers race into the C++ magic-static once-init in parallel.  Calling
+    // this once from Worker_manager (main thread) before spawning prime workers
+    // keeps the one-time generate_primes() pass on a deterministic thread and
+    // produces a clean startup log, with no behavioural change.
+    static void prewarm_shared_state();
+
     void set_block(::LLP::CBlock block, std::uint32_t nbits, Worker::Block_found_handler result) override;
 
     // Optimized version: accepts shared WorkPackage to eliminate repeated block data construction

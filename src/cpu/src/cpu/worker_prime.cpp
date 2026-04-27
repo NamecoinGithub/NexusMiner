@@ -6,6 +6,7 @@
 #include "prime/prime.hpp"
 #include "prime/chain_sieve.hpp"
 #include "prime/segment_allocator.hpp"
+#include "prime/sieving_prime_table.hpp"
 #include "block.hpp"
 #include <asio.hpp>
 #include <primesieve.hpp>
@@ -29,6 +30,14 @@ bool has_expected_prime_offsets(const std::vector<uint8_t>& offsets)
 {
 	return offsets.size() == kMaxSerializedPrimeOffsets;
 }
+}
+
+void Worker_prime::prewarm_shared_state()
+{
+	// Touching the singleton once here forces the one-time
+	// primesieve::generate_primes() pass to run on the caller's thread.
+	// Subsequent calls (including the per-worker constructors) become O(1).
+	(void)Sieving_prime_table::instance();
 }
 
 Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config::Worker_config& config)
