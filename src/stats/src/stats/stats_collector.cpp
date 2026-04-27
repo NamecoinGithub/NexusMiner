@@ -27,7 +27,26 @@ Collector::Collector(config::Config& config)
 
 void Collector::update_global_stats(Global const& stats)
 {
+    std::scoped_lock lock(m_worker_mutex);
     m_global_stats += stats;
+}
+
+Global Collector::get_global_stats() const
+{
+    std::scoped_lock lock(m_worker_mutex);
+    return m_global_stats;
+}
+
+std::vector<std::variant<Hash, Prime>> Collector::get_workers_stats() const
+{
+    std::scoped_lock lock(m_worker_mutex);
+    return m_workers;
+}
+
+std::variant<Hash, Prime> Collector::get_worker_stats(std::uint32_t internal_worker_id) const
+{
+    std::scoped_lock lock(m_worker_mutex);
+    return m_workers[internal_worker_id];
 }
 
 void Collector::update_worker_stats(std::uint16_t internal_worker_id, Hash const& stats)

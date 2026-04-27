@@ -47,7 +47,7 @@ The following CMake options control which features are built:
 | `WITH_PRIME` | OFF | Prime mining (requires Boost + GMP/MPIR) |
 | `WITH_GPU_CUDA` | OFF | Nvidia GPU mining (requires CUDA Toolkit) |
 | `WITH_GPU_AMD` | OFF | AMD GPU mining (requires HIP + ROCm) |
-| `STATIC_OPENSSL` | ON | Link OpenSSL statically |
+| `NEXUSMINER_STATIC_OPENSSL` | ON (OFF on macOS) | Link OpenSSL statically |
 
 ## Build Commands
 

@@ -186,7 +186,8 @@ namespace nexusminer
 	network::Endpoint Miner::get_local_ip()
 	{
 		std::string local_ip = m_config.get_local_ip();
-		std::for_each(local_ip.begin(), local_ip.end(), [](char& c) { c = ::tolower(c); });
+		std::for_each(local_ip.begin(), local_ip.end(),
+			[](char& c) { c = static_cast<char>(::tolower(static_cast<unsigned char>(c))); });
 
 		if (local_ip == "auto")
 		{
@@ -197,41 +198,13 @@ namespace nexusminer
 				return network::Endpoint{ network::Transport_protocol::tcp, "127.0.0.1", 0 };
 			}
 
-			try 
-			{
-				asio::error_code error;
-				asio::ip::udp::resolver resolver(*m_io_context);
-				auto results = resolver.resolve("google.com", "80", error);
-				
-				if (error)
-				{
-					m_logger->warn("Failed to resolve DNS for google.com: {}. Fallback to 127.0.0.1.", error.message());
-					return network::Endpoint{ network::Transport_protocol::tcp, "127.0.0.1", 0 };
-				}
-				
-				if (results.empty())
-				{
-					m_logger->warn("DNS resolution returned no results. Fallback to 127.0.0.1.");
-					return network::Endpoint{ network::Transport_protocol::tcp, "127.0.0.1", 0 };
-				}
-				
-				for (auto const& endpoint : results)
-				{
-					asio::ip::udp::socket socket(*m_io_context);
-					socket.connect(endpoint);
-					asio::ip::address addr = socket.local_endpoint().address();
-					m_logger->debug("Auto-detected local IP: {}", addr.to_string());
-					return network::Endpoint{ network::Transport_protocol::tcp, addr.to_string(), 0 };
-				}
-
-				m_logger->warn("Failed to determine local IP from DNS resolution. Fallback to 127.0.0.1.");
-				return network::Endpoint{ network::Transport_protocol::tcp, "127.0.0.1", 0 };
-			}
-			catch (std::exception& e) 
-			{
-				m_logger->error("Exception during local IP auto-detection. Fallback to 127.0.0.1. Exception: {}", e.what());
-				return network::Endpoint{ network::Transport_protocol::tcp, "127.0.0.1", 0};
-			}
+			// Bind to the unspecified address (0.0.0.0) and let the OS choose
+			// the source IP at connect() time based on the routing table.  This
+			// is the canonical way to "auto" pick a local IP without depending
+			// on an external DNS lookup, which is brittle in offline / private
+			// environments.
+			m_logger->debug("Local IP: 'auto' — binding to 0.0.0.0 and letting the OS pick the source address");
+			return network::Endpoint{ network::Transport_protocol::tcp, "0.0.0.0", 0 };
 		}
 		else
 		{

@@ -40,7 +40,7 @@ NodeSession::NodeSession(
     , m_node_label(node_label)
     , m_dcm(dcm)
 {
-    m_logger = spdlog::get("miner");
+    m_logger = spdlog::get("logger");
     if (!m_logger) {
         m_logger = spdlog::default_logger();
     }

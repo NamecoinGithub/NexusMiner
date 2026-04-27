@@ -58,7 +58,7 @@ bool Validator::check(std::string const& config_file)
             // check content of mining_mode
             mining_mode = j["mining_mode"];
             std::for_each(mining_mode.begin(), mining_mode.end(), [](char & c) {
-                c = ::tolower(c);
+                c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
     	    });
             if(mining_mode != "prime" && mining_mode != "hash")
             {

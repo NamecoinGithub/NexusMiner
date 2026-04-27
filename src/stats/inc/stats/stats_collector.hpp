@@ -21,13 +21,13 @@ public:
     void update_global_stats(Global const& stats);
     void update_worker_stats(std::uint16_t internal_worker_id, Hash const& stats);
     void update_worker_stats(std::uint16_t internal_worker_id, Prime const& stats);
-    // copy of workers stats
-    std::vector<std::variant<Hash, Prime>> get_workers_stats() const { return m_workers; }
-    std::variant<Hash, Prime> get_worker_stats(std::uint32_t internal_worker_id) { return m_workers[internal_worker_id]; }
+    // copy of workers stats (locked snapshot)
+    std::vector<std::variant<Hash, Prime>> get_workers_stats() const;
+    std::variant<Hash, Prime> get_worker_stats(std::uint32_t internal_worker_id) const;
     std::chrono::duration<double> get_elapsed_time_seconds() const { return 
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - m_start_time); }
 
-    Global get_global_stats() const { return m_global_stats; }
+    Global get_global_stats() const;
 
     // Reset start time for elapsed time calculation (e.g., after recovery from degraded mode)
     void reset_start_time() { m_start_time = std::chrono::steady_clock::now(); }
@@ -44,9 +44,9 @@ private:
     Global m_global_stats;
     std::chrono::steady_clock::time_point m_start_time;
 
-    // worker stats are updated in seperate worker threads
-    // the access to the worker data (form stats_printer) has to be protected
-    std::mutex m_worker_mutex;
+    // Worker stats and global stats are updated from worker threads and read
+    // from printer/timer threads — all access goes through m_worker_mutex.
+    mutable std::mutex m_worker_mutex;
 
 
 };

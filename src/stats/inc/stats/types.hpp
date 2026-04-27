@@ -60,7 +60,7 @@ struct Hash
         m_best_leading_zeros += std::max(m_best_leading_zeros, other.m_best_leading_zeros);
         m_met_difficulty_count += other.m_met_difficulty_count;
         m_nonce_candidates_recieved += other.m_nonce_candidates_recieved;
-        m_hash_error_count += m_hash_error_count;
+        m_hash_error_count += other.m_hash_error_count;
         return *this;
     }
 };
