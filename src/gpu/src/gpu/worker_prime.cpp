@@ -431,7 +431,9 @@ uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(const uint1k& p)
 
 void Worker_prime::update_statistics(stats::Collector& stats_collector)
 {
-	stats_collector.update_worker_stats(m_config.m_internal_id, *m_published_stats.load());
+	// Issue 3A: typed downcast (mode is invariant by construction).
+	auto& typed = stats::as_typed<stats::Prime>(stats_collector);
+	typed.update_worker_stats(m_config.m_internal_id, *m_published_stats.load());
 }
 
 void Worker_prime::publish_statistics_snapshot()

@@ -536,12 +536,16 @@ void Worker_hash::update_statistics(stats::Collector& stats_collector)
 {
 	std::scoped_lock<std::mutex> lck(m_mtx);
 
-	auto hash_stats = std::get<stats::Hash>(stats_collector.get_worker_stats(m_config.m_internal_id));
+	// Issue 3A: typed downcast — the worker knows it's a HASH-mode worker
+	// at compile time, and Worker_manager pairs HASH workers with a
+	// Hash_collector, so the cast is invariant by construction.
+	auto& typed = stats::as_typed<stats::Hash>(stats_collector);
+	auto hash_stats = typed.get_worker_stats(m_config.m_internal_id);
 	hash_stats.m_hash_count = m_hash_count;
 	hash_stats.m_best_leading_zeros = m_best_leading_zeros;
 	hash_stats.m_met_difficulty_count = m_met_difficulty_count;
 
-	stats_collector.update_worker_stats(m_config.m_internal_id, hash_stats);
+	typed.update_worker_stats(m_config.m_internal_id, hash_stats);
 
 }
 

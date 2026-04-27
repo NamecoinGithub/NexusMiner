@@ -3,13 +3,14 @@
 
 #include "stats/stats_printer.hpp"
 #include "stats/stats_collector.hpp"
+#include "stats/prime_view.hpp"
 #include "config/worker_config.hpp"
 #include <spdlog/spdlog.h>
+#include <cassert>
 #include <chrono>
 #include <iomanip>
 #include <memory>
 #include <sstream>
-#include <variant>
 #include <vector>
 
 namespace nexusminer {
@@ -20,6 +21,16 @@ namespace stats
 // only differ in (a) which spdlog logger they own and (b) whether they flush
 // after each emit, so the entire formatting and worker-iteration body lives
 // here in one place.
+//
+// Issue 3A: this used to iterate over std::vector<std::variant<Hash, Prime>>
+// and dispatch with std::get<>. It now downcasts the (mode-tagged) base
+// Collector to its typed Worker_stats_collector<T> and iterates over a
+// concrete std::vector<T>. The downcast is safe because the mode is fixed at
+// Collector construction (make_collector(config)).
+//
+// Issue 5A: the prime-mode formatter funnels GISPS/difficulty/cpu_load math
+// through stats::compute_prime_view() so future consumers (JSON, monitoring)
+// share the exact same derivation.
 template<typename PrinterType>
 class Printer_base : public Printer {
 public:
@@ -37,6 +48,10 @@ public:
         , m_flush_after_emit{ flush_after_emit }
     {
         m_logger->set_pattern("[%D %H:%M:%S.%e][%^%n%$] %v");
+        // Defensive: the printer's runtime mode must match the collector
+        // it was constructed against. Worker_manager wires these together
+        // in lockstep; the assert catches future misconfiguration early.
+        assert(m_mining_mode == m_stats_collector.get_mining_mode());
     }
 
     void print() override
@@ -45,10 +60,8 @@ public:
         double interval_s = std::chrono::duration<double>(now - m_last_print_time).count();
         if (interval_s < 1.0) interval_s = 1.0;
 
-        // Check for degraded mode
         auto const global_stats = m_stats_collector.get_global_stats();
 
-        // If in degraded mode, display prominent warning banner
         if (global_stats.m_degraded_mode) {
             m_logger->warn("╔═══════════════════════════════════════════════════════╗");
             m_logger->warn("║ ⚠️  MINING STOPPED - WAITING FOR VALID TEMPLATE     ║");
@@ -57,27 +70,13 @@ public:
 
         auto const globals_string = PrinterType::print_global(m_stats_collector);
 
-        auto const workers = m_stats_collector.get_workers_stats();
         std::stringstream ss;
         ss << globals_string;
 
-        auto worker_config_index = 0U;
-        for (auto const& worker : workers)
-        {
-            ss << "Worker " << m_worker_config[worker_config_index].m_id << " stats: ";
-            if (m_mining_mode == config::Mining_mode::HASH)
-            {
-                format_hash_worker(ss, std::get<Hash>(worker), worker_config_index, global_stats, interval_s);
-            }
-            else
-            {
-                format_prime_worker(ss, std::get<Prime>(worker), worker_config_index, global_stats, interval_s);
-            }
-            worker_config_index++;
-            if (worker_config_index < workers.size())
-            {
-                ss << std::endl;
-            }
+        if (m_mining_mode == config::Mining_mode::HASH) {
+            format_hash_workers(ss, global_stats, interval_s);
+        } else {
+            format_prime_workers(ss, global_stats, interval_s);
         }
 
         m_logger->info(ss.str());
@@ -88,15 +87,29 @@ public:
     }
 
 private:
-    // Inline formatters as templates to avoid needing a separate .cpp; the
-    // small surface and header-only nature matches the prior printer files.
-    void format_hash_worker(std::stringstream& ss,
-                            Hash const& hash_stats,
-                            unsigned worker_config_index,
-                            Global const& global_stats,
-                            double interval_s)
+    void format_hash_workers(std::stringstream& ss,
+                             Global const& global_stats,
+                             double interval_s)
     {
-        // Show 0.00 hashrate in degraded mode
+        // Issue 3A: typed downcast — no more std::variant / std::get<>.
+        auto& typed = as_typed<Hash>(m_stats_collector);
+        auto const workers = typed.get_workers_stats();
+
+        for (std::size_t i = 0; i < workers.size(); ++i) {
+            ss << "Worker " << m_worker_config[i].m_id << " stats: ";
+            format_one_hash_worker(ss, workers[i], i, global_stats, interval_s);
+            if (i + 1 < workers.size()) {
+                ss << std::endl;
+            }
+        }
+    }
+
+    void format_one_hash_worker(std::stringstream& ss,
+                                Hash const& hash_stats,
+                                std::size_t worker_config_index,
+                                Global const& global_stats,
+                                double interval_s)
+    {
         double hashrate = 0.0;
         if (!global_stats.m_degraded_mode) {
             hashrate = (hash_stats.m_hash_count / interval_s) / 1.0e6;
@@ -116,25 +129,37 @@ private:
         }
     }
 
-    void format_prime_worker(std::stringstream& ss,
-                             Prime const& prime_stats,
-                             unsigned worker_config_index,
-                             Global const& global_stats,
-                             double interval_s)
+    void format_prime_workers(std::stringstream& ss,
+                              Global const& global_stats,
+                              double interval_s)
     {
-        ss << std::setprecision(2) << std::fixed;
+        auto& typed = as_typed<Prime>(m_stats_collector);
+        auto const workers = typed.get_workers_stats();
 
-        // Show 0.00 GISPS in degraded mode
-        double gisps = 0.0;
-        if (!global_stats.m_degraded_mode) {
-            auto const& previous_prime_stats = m_previous_prime_stats[worker_config_index];
-            auto const range_delta = prime_stats.m_range_searched >= previous_prime_stats.m_range_searched
-                ? (prime_stats.m_range_searched - previous_prime_stats.m_range_searched)
-                : prime_stats.m_range_searched;
-            gisps = (range_delta / (1.0e9 * interval_s));
+        for (std::size_t i = 0; i < workers.size(); ++i) {
+            ss << "Worker " << m_worker_config[i].m_id << " stats: ";
+            format_one_prime_worker(ss, workers[i], i, global_stats, interval_s);
+            if (i + 1 < workers.size()) {
+                ss << std::endl;
+            }
         }
+    }
 
-        ss << gisps << " GISPS";
+    void format_one_prime_worker(std::stringstream& ss,
+                                 Prime const& prime_stats,
+                                 std::size_t worker_config_index,
+                                 Global const& global_stats,
+                                 double interval_s)
+    {
+        // Issue 5A: single source of truth for derived prime view values.
+        Prime_view const view = compute_prime_view(
+            prime_stats,
+            m_previous_prime_stats[worker_config_index],
+            interval_s,
+            global_stats.m_degraded_mode);
+
+        ss << std::setprecision(2) << std::fixed;
+        ss << view.gisps << " GISPS";
         if (global_stats.m_degraded_mode) {
             ss << " (idle)";
         }
@@ -144,7 +169,8 @@ private:
             ss << i << ":" << prime_stats.m_chain_histogram[i] << " ";
         }
         ss << " Best " << prime_stats.m_most_difficult_chain;
-        ss << " Current Difficulty " << prime_stats.m_difficulty / 10000000.0;
+        ss << " Current Difficulty " << view.difficulty;
+
         m_previous_prime_stats[worker_config_index] = prime_stats;
     }
 

@@ -13,3 +13,9 @@ add_nexusminer_test(
     SOURCES     prime_stats_snapshot_test.cpp
     LINK_LIBS   stats
 )
+
+add_nexusminer_test(
+    NAME        stats_collector_typed_test
+    SOURCES     stats_collector_typed_test.cpp
+    LINK_LIBS   stats config spdlog::spdlog
+)

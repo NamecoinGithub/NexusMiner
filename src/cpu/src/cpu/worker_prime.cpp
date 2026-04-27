@@ -665,7 +665,9 @@ uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(const uint1k& p)
 void Worker_prime::update_statistics(stats::Collector& stats_collector)
 {
 	auto snapshot = m_published_stats.load();
-	stats_collector.update_worker_stats(m_config.m_internal_id, *snapshot);
+	// Issue 3A: typed downcast (mode is invariant by construction).
+	auto& typed = stats::as_typed<stats::Prime>(stats_collector);
+	typed.update_worker_stats(m_config.m_internal_id, *snapshot);
 
 	// [Sieve Diag] log — emitted on stats thread, reads exclusively from the
 	// immutable published snapshot so no live sieve state is touched here.
