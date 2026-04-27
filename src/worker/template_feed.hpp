@@ -82,12 +82,12 @@ public:
         const std::uint64_t next_id = m_latest_epoch_id.load(std::memory_order_relaxed) + 1;
         epoch->epoch_id = next_id;
 
-        // C++17 free-function atomic shared_ptr ops give us a wait-free
-        // single-publisher / many-reader handoff without any shared mutex.
-        // (Deprecated in C++20 but still supported; the project is C++17.)
-        std::atomic_store_explicit(&m_slot,
-                                   std::shared_ptr<const TemplateEpoch>(std::move(epoch)),
-                                   std::memory_order_release);
+        // C++20 std::atomic<std::shared_ptr<T>> gives us a wait-free
+        // single-publisher / many-reader handoff without any shared mutex
+        // and without the deprecated free-function atomic_store/load APIs
+        // (those were marked deprecated in C++20 and slated for removal).
+        m_slot.store(std::shared_ptr<const TemplateEpoch>(std::move(epoch)),
+                     std::memory_order_release);
         m_latest_epoch_id.store(next_id, std::memory_order_release);
 
         // Wake any worker waiting in wait_for_epoch_after().
@@ -114,7 +114,7 @@ public:
     // nothing has been published yet.
     std::shared_ptr<const TemplateEpoch> load() const
     {
-        return std::atomic_load_explicit(&m_slot, std::memory_order_acquire);
+        return m_slot.load(std::memory_order_acquire);
     }
 
     // Latest epoch_id without dereferencing the slot (useful for fast-path
@@ -157,8 +157,10 @@ public:
     }
 
 private:
-    // Atomic slot updated via std::atomic_store on shared_ptr (C++17).
-    std::shared_ptr<const TemplateEpoch> m_slot;
+    // C++20 typed atomic shared_ptr — wait-free single-publisher / many-reader
+    // slot.  Replaces the C++17 free-function atomic_store/load APIs that
+    // were deprecated in C++20.
+    std::atomic<std::shared_ptr<const TemplateEpoch>> m_slot;
 
     // Mirrors m_slot->epoch_id for fast staleness checks without a shared_ptr
     // load.  Updated after the slot is stored so a reader that sees a newer

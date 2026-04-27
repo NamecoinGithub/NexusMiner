@@ -5,7 +5,7 @@ set(CMAKE_LIBRARY_PATH "${CMAKE_SOURCE_DIR}/libs")
 
 project(NexusMiner VERSION 1.5 LANGUAGES CXX C)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 configure_file(src/version.h.in version.h)
