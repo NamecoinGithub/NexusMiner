@@ -1,9 +1,16 @@
 #include "cpu/prime/prime_mining_engine.hpp"
 
+#include "cpu/prime/chain_sieve.hpp"
+#include "cpu/prime_validation.hpp"
 #include "worker/template_feed.hpp"
 
+#include <asio.hpp>
+
 #include <algorithm>
+#include <chrono>
+#include <cstring>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace nexusminer {
@@ -28,30 +35,69 @@ PrimeMiningEngine::PrimeMiningEngine(Engine_config cfg,
         throw std::invalid_argument{"PrimeMiningEngine requires segment_size > 0"};
     }
 
-    // Seed the cooperative cursor at the channel's starting nonce so any
-    // pool thread that calls next_segment_start() before the first template
-    // arrives still gets a sensible offset (it will be discarded by the
-    // first session rebind anyway, but this keeps the contract clean).
-    m_segment_allocator->reset(m_cfg.channel_starting_nonce);
+    // Stone 6 — cursor domain is RELATIVE.  The cooperative cursor always
+    // starts at 0 on a new template; pool threads add `session->starting_nonce`
+    // (== Engine_config::channel_starting_nonce) themselves at use time.
+    // Seeding at 0 here is defensive: a pool thread that races to
+    // next_segment_start() before any session arrives still gets a sensible
+    // relative offset (the value will be re-reset on the first publish).
+    m_segment_allocator->reset(0);
+
+    // Resolve pool-thread count up front so it is observable via
+    // pool_thread_count() before any pool thread has actually spawned.
+    m_pool_thread_count = resolve_pool_thread_count(m_cfg.pool_threads, m_logger);
+
+    // Session-only mode: with no io_context there is nowhere to dispatch
+    // found blocks, so spawning pool threads would just sieve into a void.
+    // Force the count to zero and warn — the consumer thread still runs and
+    // builds sessions, which is exactly what tests / future stages that only
+    // care about session creation need.
+    if (!m_cfg.io_context && m_pool_thread_count > 0)
+    {
+        if (m_logger)
+        {
+            m_logger->warn("[PrimeMiningEngine] io_context is null; running in "
+                           "session-only mode (pool_threads forced from {} to 0)",
+                           m_pool_thread_count);
+        }
+        m_pool_thread_count = 0;
+    }
 
     if (m_logger)
     {
         m_logger->info("[PrimeMiningEngine] starting consumer thread "
                        "(segment_size={}, channel_starting_nonce={}, "
-                       "internal_id_for_solution={})",
+                       "internal_id_for_solution={}, pool_threads={})",
                        m_cfg.segment_size,
                        m_cfg.channel_starting_nonce,
-                       m_cfg.internal_id_for_solution);
+                       m_cfg.internal_id_for_solution,
+                       m_pool_thread_count);
     }
 
-    // Spawn the consumer last so all members are fully constructed before
-    // run_consumer() can observe them.
+    // Spawn the consumer first so all members are fully constructed before
+    // it can observe them.
     m_consumer = std::thread{&PrimeMiningEngine::run_consumer, this};
+
+    // Spawn the pool threads AFTER the consumer is running.  Pool threads must
+    // observe a fully-constructed engine; spawning them last guarantees this.
+    m_pool_threads.reserve(m_pool_thread_count);
+    for (std::uint32_t i = 0; i < m_pool_thread_count; ++i)
+    {
+        m_pool_threads.emplace_back(&PrimeMiningEngine::run_pool_thread, this, i);
+    }
 }
 
 PrimeMiningEngine::~PrimeMiningEngine()
 {
     m_shutdown.store(true, std::memory_order_release);
+
+    // Wake pool threads parked on m_pool_cv waiting for a usable session.
+    // This is required even when no template was ever published — the
+    // destructor MUST be safe to call on an idle engine.
+    {
+        std::lock_guard<std::mutex> lock(m_pool_mtx);
+    }
+    m_pool_cv.notify_all();
 
     // Wake the consumer if it is parked in WorkerTemplateFeed::wait_for_epoch_after.
     // The feed may have been reset by Worker_manager already in pathological
@@ -69,6 +115,18 @@ PrimeMiningEngine::~PrimeMiningEngine()
     }
     m_publish_cv.notify_all();
 
+    // Join pool threads BEFORE the consumer.  The consumer publishes sessions
+    // that pool threads rely on; if it died first, pool threads might be
+    // observing a torn-down engine.  Pool-threads-first keeps the dependency
+    // graph clean.
+    for (auto& th : m_pool_threads)
+    {
+        if (th.joinable())
+        {
+            th.join();
+        }
+    }
+
     if (m_consumer.joinable())
     {
         m_consumer.join();
@@ -76,12 +134,20 @@ PrimeMiningEngine::~PrimeMiningEngine()
 
     if (m_logger)
     {
-        m_logger->info("[PrimeMiningEngine] consumer joined "
+        m_logger->info("[PrimeMiningEngine] joined "
                        "(sessions_published={}, allocator_resets={}, "
-                       "same_base_short_circuits={})",
+                       "same_base_short_circuits={}, segments_processed={}, "
+                       "segments_discarded_epoch_changed={}, "
+                       "segments_skipped_consumed={}, candidates_dispatched={}, "
+                       "pool_threads_crashed={})",
                        m_sessions_published.load(std::memory_order_relaxed),
                        m_allocator_resets.load(std::memory_order_relaxed),
-                       m_same_base_short_circuits.load(std::memory_order_relaxed));
+                       m_same_base_short_circuits.load(std::memory_order_relaxed),
+                       m_segments_processed.load(std::memory_order_relaxed),
+                       m_segments_discarded_epoch_changed.load(std::memory_order_relaxed),
+                       m_segments_skipped_consumed.load(std::memory_order_relaxed),
+                       m_candidates_dispatched.load(std::memory_order_relaxed),
+                       m_pool_threads_crashed.load(std::memory_order_relaxed));
     }
 }
 
@@ -173,7 +239,10 @@ void PrimeMiningEngine::run_consumer()
 
         if (!same_base)
         {
-            m_segment_allocator->reset(m_cfg.channel_starting_nonce);
+            // Stone 6 — RELATIVE cursor: always restart at 0 on a new
+            // template.  Pool threads add `session->starting_nonce` themselves
+            // when computing the absolute sieve start.
+            m_segment_allocator->reset(0);
             m_allocator_resets.fetch_add(1, std::memory_order_relaxed);
         }
         else
@@ -191,7 +260,318 @@ void PrimeMiningEngine::run_consumer()
             m_sessions_published.fetch_add(1, std::memory_order_release);
         }
         m_publish_cv.notify_all();
+
+        // Stone 6 — wake pool threads parked waiting for a usable session.
+        // Every publish wakes them: the post-segment session re-check then
+        // tells each thread whether to continue (epoch_id matches) or
+        // discard-and-rebind (different epoch / different base).
+        {
+            std::lock_guard<std::mutex> lock(m_pool_mtx);
+        }
+        m_pool_cv.notify_all();
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stone 6 — pool sieve thread implementation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+using uint1k = boost::multiprecision::uint1024_t;
+
+// Local boost-uint1024 → LLC uint1024 conversion.  Worker_prime owns the
+// canonical implementation as a private member (verified by
+// prime_validation_test); duplicating the limb copy here keeps the engine
+// from depending on Worker_prime internals while Stone 7 wiring is pending.
+uint1024_t boost_uint1k_to_uint1024(const uint1k& p)
+{
+    constexpr std::size_t kLimbBytes = sizeof(boost::multiprecision::limb_type);
+    uint1024_t result{};
+    const auto limb_bytes = p.backend().size() * kLimbBytes;
+    if (limb_bytes > sizeof(result))
+    {
+        throw std::runtime_error("Boost uint1024 limb storage exceeds LLC uint1024_t size");
+    }
+    std::memcpy(&result, p.backend().limbs(), limb_bytes);
+    return result;
+}
+
+constexpr std::size_t kPrimeOffsetFractionBytes = sizeof(std::uint32_t);
+constexpr std::size_t kMaxSerializedPrimeOffsets = 10;
+
+}  // namespace
+
+std::uint32_t PrimeMiningEngine::resolve_pool_thread_count(
+    std::uint32_t configured,
+    std::shared_ptr<spdlog::logger>& logger)
+{
+    const std::uint32_t hw = std::max<std::uint32_t>(1, std::thread::hardware_concurrency());
+    if (configured == 0)
+    {
+        return std::min<std::uint32_t>(hw, pool_threads_max_auto_cap);
+    }
+    if (configured > hw && logger)
+    {
+        logger->warn("[PrimeMiningEngine] pool_threads={} exceeds "
+                     "hardware_concurrency={}; honoring as-is",
+                     configured, hw);
+    }
+    return configured;
+}
+
+void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
+{
+    m_pool_threads_running.fetch_add(1, std::memory_order_relaxed);
+
+    try
+    {
+        // Per-thread Sieve owned in this stack frame (Option A — one Sieve
+        // per pool thread).  Allocated lazily so test_skip_sieve avoids the
+        // (heavy) Sieve construction entirely.
+        std::unique_ptr<Sieve> sieve;
+        if (!m_cfg.test_skip_sieve)
+        {
+            sieve = std::make_unique<Sieve>();
+        }
+
+        // Per-thread per-session bookkeeping.  Reset on every session rebind
+        // so each new template re-runs the sieve prepare path.
+        std::uint64_t bound_epoch = 0;
+        uint1k bound_base_hash{};
+        std::uint64_t local_nonce = 0;        // session->starting_nonce, rounded
+        uint1k local_sieve_start{};            // == bound_base_hash + local_nonce, rounded
+        bool bound = false;
+
+        while (!m_shutdown.load(std::memory_order_acquire))
+        {
+            // ── Acquire-load the latest session (single re-load gives us a
+            // consistent (epoch_id, is_consumed) tuple snapshot).
+            auto session = current_session();
+            if (!session || session->is_consumed())
+            {
+                // Idle.  When the session is consumed (vs. simply not yet
+                // published), record the skipped-segment counter so operators
+                // can distinguish "engine has spent template" from "engine
+                // hasn't started yet".
+                if (session && session->is_consumed())
+                {
+                    m_segments_skipped_consumed.fetch_add(1, std::memory_order_relaxed);
+                }
+                bound = false;
+                std::unique_lock<std::mutex> lock(m_pool_mtx);
+                m_pool_cv.wait_for(lock, std::chrono::milliseconds{50}, [&] {
+                    if (m_shutdown.load(std::memory_order_acquire))
+                        return true;
+                    auto s = m_session.load(std::memory_order_acquire);
+                    return s && !s->is_consumed();
+                });
+                continue;
+            }
+
+            // ── Capture base_hash up front, BEFORE drawing a segment.  This is
+            // the discriminator that decides whether the post-segment re-check
+            // discards: a same-base republish (different epoch_id, same
+            // base_hash) preserves the cooperative cursor on the consumer
+            // side, so the pool thread's in-flight segment is STILL valid
+            // for the proof-hash space and must be dispatched against the
+            // fresh session's block_data — not discarded.
+            const std::uint64_t my_epoch = session->epoch_id;
+            const uint1k my_base_hash = session->base_hash;
+
+            // ── Rebind on base-hash change.  Same-base republishes (epoch
+            // advances but base_hash unchanged) do NOT need a sieve re-prepare
+            // because local_sieve_start is determined entirely by
+            // (base_hash, starting_nonce).
+            if (!bound || my_base_hash != bound_base_hash)
+            {
+                if (sieve)
+                {
+                    const uint1k startprime = my_base_hash + session->starting_nonce;
+                    local_sieve_start = sieve->prepare(startprime);
+                    local_nonce = static_cast<std::uint64_t>(local_sieve_start - my_base_hash);
+                }
+                else
+                {
+                    local_nonce = session->starting_nonce;
+                    local_sieve_start = my_base_hash + session->starting_nonce;
+                }
+                bound_base_hash = my_base_hash;
+                bound = true;
+            }
+            bound_epoch = my_epoch;
+
+            // ── Pull next segment offset (RELATIVE to local_sieve_start).
+            const std::uint64_t low = m_segment_allocator->next_segment_start();
+
+            // ── Run the sieve pipeline (or skip in test mode).
+            std::vector<std::uint64_t> segment_chain_offsets;
+            if (sieve)
+            {
+                sieve->reset_sieve();
+                if (m_shutdown.load(std::memory_order_acquire)) break;
+                sieve->clear_chains();
+                if (m_shutdown.load(std::memory_order_acquire)) break;
+                // Per-segment recompute of starting multiples for THIS
+                // thread's `low`.  Required for cooperative pool-thread
+                // consumption: Sieve::sieve_segment() advances
+                // m_prime_state[i].multiple under the contiguous-segment
+                // assumption (sp.multiple -= m_segment_size at end), but
+                // pool threads draw non-contiguous segments via the shared
+                // cursor — another thread may have consumed the segments
+                // between this thread's previous and current `low`.
+                // Recomputing per segment keeps each prime's wheel state
+                // anchored to the actual `low` we are about to sieve.
+                // (Worker_prime is single-thread per allocator, so it can
+                // skip this; PR #667 documents the why.)
+                {
+                    const uint1k segment_start =
+                        local_sieve_start + static_cast<std::uint64_t>(low);
+                    sieve->calculate_starting_multiples(segment_start);
+                }
+                sieve->sieve_segment();
+                sieve->find_chains(low, false);
+                sieve->test_chains(local_sieve_start);
+                segment_chain_offsets = sieve->m_long_chain_starts;
+            }
+
+            if (m_cfg.test_force_candidate_per_segment)
+            {
+                // Synthetic candidate at the segment's start.  Only meaningful
+                // for tests that bypass the real sieve.
+                segment_chain_offsets.push_back(low);
+            }
+
+            // ── Test seam: simulated_segment_latency widens the race window
+            // between segment draw and the post-segment session re-check so
+            // tests like test_heavy_churn_drives_discards are deterministic
+            // even when the sieve pipeline is skipped (test_skip_sieve).
+            // Production callers leave this at zero.
+            if (m_cfg.simulated_segment_latency.count() > 0)
+            {
+                std::this_thread::sleep_for(m_cfg.simulated_segment_latency);
+            }
+
+            // ── REQUIRED post-segment re-check.  Re-load the session via a
+            // single acquire-load so (base_hash, is_consumed) is a consistent
+            // tuple snapshot.  Discriminator is base_hash (not epoch_id):
+            // same-base republishes preserve the cooperative cursor on the
+            // consumer side, so the in-flight segment is still valid for the
+            // proof-hash space and just needs the fresh session's block_data
+            // for dispatch attribution.  Different-base republishes invalidate
+            // the segment (it was sieved against the wrong base_hash) and
+            // submitting would be incorrect.
+            auto fresh = current_session();
+            if (!fresh || fresh->base_hash != bound_base_hash
+                || fresh->is_consumed())
+            {
+                m_segments_discarded_epoch_changed.fetch_add(1, std::memory_order_relaxed);
+                bound = false;  // force rebind on next iteration
+                continue;
+            }
+            (void)my_epoch;  // captured for traceability/future logging
+
+            // ── Dispatch each chain candidate via asio::post.
+            const bool dispatch_real = !m_cfg.test_skip_sieve;
+            for (auto x : segment_chain_offsets)
+            {
+                Block_data candidate_block = fresh->block_data;
+                candidate_block.nNonce = local_nonce + x;
+
+                std::vector<std::uint8_t> offsets;
+                bool is_valid = false;
+                double actual_difficulty = 0.0;
+
+                if (dispatch_real)
+                {
+                    const uint1k chain_start = bound_base_hash + candidate_block.nNonce;
+                    const uint1024_t hashPrime = boost_uint1k_to_uint1024(chain_start);
+                    // Required network difficulty derived from the session's
+                    // nBits the same way Worker_prime::getNetworkDifficulty()
+                    // does it (nbits / 10'000'000.0).  Without this, every
+                    // Fermat-passing candidate would be flagged "valid" and
+                    // dispatched, flooding the engine with false positives.
+                    const double required_difficulty =
+                        static_cast<double>(fresh->nbits) / 10000000.0;
+                    is_valid = nexusminer::prime::ValidatePrimeCandidate(
+                        hashPrime,
+                        required_difficulty,
+                        offsets,
+                        actual_difficulty);
+                    if (is_valid && offsets.size() != kMaxSerializedPrimeOffsets)
+                    {
+                        if (m_logger)
+                        {
+                            m_logger->error("[PrimeMiningEngine] pool[{}] rejecting "
+                                            "candidate with malformed offsets ({} bytes)",
+                                            pool_index, offsets.size());
+                        }
+                        is_valid = false;
+                    }
+                }
+                else
+                {
+                    // Test seam: no real validation; force-success path.
+                    is_valid = m_cfg.test_force_candidate_per_segment;
+                    offsets.assign(kMaxSerializedPrimeOffsets, 0);
+                }
+
+                if (!is_valid)
+                {
+                    continue;
+                }
+
+                // Mark the session consumed BEFORE asio::post so other pool
+                // threads, on their next session re-check, observe the
+                // consumed bit and idle.  Single-found-block-wins.
+                fresh->mark_consumed();
+                m_candidates_dispatched.fetch_add(1, std::memory_order_relaxed);
+
+                if (fresh->on_found && m_cfg.io_context)
+                {
+                    auto session_for_dispatch = fresh;
+                    auto block_copy = candidate_block;
+                    auto captured_offsets = std::move(offsets);
+                    ::asio::post(*m_cfg.io_context,
+                        [session_for_dispatch,
+                         block_copy,
+                         captured_offsets = std::move(captured_offsets)]() mutable {
+                            auto bd = std::make_unique<Block_data>(block_copy);
+                            bd->vOffsets = std::move(captured_offsets);
+                            session_for_dispatch->on_found(
+                                session_for_dispatch->internal_id_for_solution,
+                                std::move(bd));
+                        });
+                }
+
+                // After dispatch the session is consumed; break out of the
+                // candidate loop and let the outer loop re-check and idle.
+                break;
+            }
+
+            m_segments_processed.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        m_pool_threads_crashed.fetch_add(1, std::memory_order_relaxed);
+        if (m_logger)
+        {
+            m_logger->error("[PrimeMiningEngine] pool thread {} crashed: {}",
+                            pool_index, e.what());
+        }
+    }
+    catch (...)
+    {
+        m_pool_threads_crashed.fetch_add(1, std::memory_order_relaxed);
+        if (m_logger)
+        {
+            m_logger->error("[PrimeMiningEngine] pool thread {} crashed (unknown exception)",
+                            pool_index);
+        }
+    }
+
+    m_pool_threads_running.fetch_sub(1, std::memory_order_relaxed);
 }
 
 } // namespace cpu

@@ -63,4 +63,11 @@ if(WITH_PRIME)
         LINK_LIBS   cpu spdlog::spdlog
         INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
+
+    add_nexusminer_test(
+        NAME        prime_mining_engine_pool_test
+        SOURCES     prime_mining_engine_pool_test.cpp
+        LINK_LIBS   cpu spdlog::spdlog
+        INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
 endif()

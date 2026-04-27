@@ -6,6 +6,7 @@
 
 #include <boost/multiprecision/cpp_int.hpp>
 
+#include <atomic>
 #include <cstdint>
 
 namespace nexusminer {
@@ -72,6 +73,32 @@ struct EngineSession
     // (lowest-numbered registered Worker_prime) — per-thread attribution
     // loses meaning when N threads cooperate on one nonce space.
     std::uint32_t internal_id_for_solution{0};
+
+    // Stone 6 — found-block consumed signal, mirroring TemplateEpoch::consumed.
+    //
+    // The first pool thread to dispatch a found block from this session calls
+    // mark_consumed() *before* asio::post() so every other pool thread, on its
+    // next session re-check, observes is_consumed() == true and idles instead
+    // of grinding the spent template.  This is the single-found-block-wins
+    // contract: one solution drains the entire pool for this session.
+    //
+    // mutable + atomic for the same reason as TemplateEpoch::consumed: the
+    // EngineSession is published as shared_ptr<const EngineSession> so the
+    // immutable work payload is read wait-free, but the consumed transition
+    // (false → true, one-way) is allowed to race past const-correctness.
+    mutable std::atomic<bool> consumed{false};
+
+    bool is_consumed() const noexcept
+    {
+        return consumed.load(std::memory_order_acquire);
+    }
+
+    // Idempotent — calling more than once is harmless.  Returns the previous
+    // value so callers can implement "first observer" semantics if desired.
+    bool mark_consumed() const noexcept
+    {
+        return consumed.exchange(true, std::memory_order_acq_rel);
+    }
 };
 
 } // namespace cpu

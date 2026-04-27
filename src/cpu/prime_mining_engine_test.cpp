@@ -108,12 +108,11 @@ void test_lifecycle_no_publish()
                      engine.allocator_resets() == 0);
         print_result("Empty engine same_base_short_circuits() == 0",
                      engine.same_base_short_circuits() == 0);
-        // The allocator is seeded at the channel starting nonce so a pool
-        // thread that calls next_segment_start() before any template arrives
-        // still gets a sensible offset (the value is overwritten on the first
-        // session anyway).
-        print_result("Allocator seeded at channel_starting_nonce",
-                     engine.segment_allocator().current() == kStartingNonce);
+        // Stone 6 (cursor amendment): cooperative cursor is RELATIVE — it
+        // always seeds at 0 on a fresh engine.  Pool threads add
+        // session->starting_nonce themselves at use time.
+        print_result("Allocator seeded at relative 0",
+                     engine.segment_allocator().current() == 0);
     }
     // Destructor must join the consumer thread cleanly — if it doesn't, the
     // test process will hang here forever, which CTest will flag as a timeout.
@@ -166,8 +165,9 @@ void test_first_publish_builds_session()
                  engine.allocator_resets() == 1);
     print_result("First publish did not short-circuit",
                  engine.same_base_short_circuits() == 0);
-    print_result("Allocator cursor reset to channel_starting_nonce",
-                 engine.segment_allocator().current() == kStartingNonce);
+    // Stone 6 cursor amendment: reset takes the cursor to 0 (relative).
+    print_result("Allocator cursor reset to relative 0",
+                 engine.segment_allocator().current() == 0);
 }
 
 void test_same_base_hash_short_circuit()
@@ -187,8 +187,9 @@ void test_same_base_hash_short_circuit()
     (void)alloc.next_segment_start();
     (void)alloc.next_segment_start();
     const auto cursor_before_repub = alloc.current();
+    // Stone 6 cursor amendment: relative cursor advances 0 → 3*S.
     print_result("Cursor advanced 3*S after three next_segment_start() calls",
-                 cursor_before_repub == kStartingNonce + 3 * kSegmentSize);
+                 cursor_before_repub == 3 * kSegmentSize);
 
     // Republish with the same base_hash but a different block height — the
     // engine should keep the cursor where it is.
@@ -223,8 +224,9 @@ void test_different_base_hash_resets_cursor()
     auto& alloc = engine.segment_allocator();
     (void)alloc.next_segment_start();
     (void)alloc.next_segment_start();
+    // Stone 6 cursor amendment: relative cursor advances 0 → 2*S.
     print_result("Cursor advanced 2*S after pool draws",
-                 alloc.current() == kStartingNonce + 2 * kSegmentSize);
+                 alloc.current() == 2 * kSegmentSize);
 
     feed->publish(make_epoch(make_work_package(0x1c00ffffu, h2, 2)));
     auto p2 = engine.wait_for_sessions_published_after(p1, 2s);
@@ -234,8 +236,9 @@ void test_different_base_hash_resets_cursor()
                  engine.allocator_resets() == 2);
     print_result("same_base_short_circuits() stayed at 0",
                  engine.same_base_short_circuits() == 0);
-    print_result("Cursor reset to channel_starting_nonce on new base",
-                 alloc.current() == kStartingNonce);
+    // Stone 6 cursor amendment: reset is to relative 0.
+    print_result("Cursor reset to relative 0 on new base",
+                 alloc.current() == 0);
 }
 
 void test_null_payload_publish_is_noop()

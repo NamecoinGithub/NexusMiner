@@ -26,3 +26,4 @@ _codeql_build_dir/
 test_nchannel
 test_nchannel_fix.cpp
 *.md.legacy
+build-prime/
