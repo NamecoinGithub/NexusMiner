@@ -35,4 +35,25 @@ if(WITH_PRIME)
         SOURCES     prime_validation_test.cpp
         LINK_LIBS   cpu LLC spdlog::spdlog
     )
+
+    add_nexusminer_test(
+        NAME        sieving_prime_table_test
+        SOURCES     sieving_prime_table_test.cpp
+        LINK_LIBS   cpu spdlog::spdlog
+        INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+
+    add_nexusminer_test(
+        NAME        segment_allocator_test
+        SOURCES     segment_allocator_test.cpp
+        LINK_LIBS   cpu spdlog::spdlog
+        INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+
+    add_nexusminer_test(
+        NAME        chain_sieve_test
+        SOURCES     chain_sieve_test.cpp
+        LINK_LIBS   cpu spdlog::spdlog
+        INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
 endif()
