@@ -81,10 +81,10 @@ three:
                 │   │              │   start()       │     │
                 │   │   ┌──────────┴──────────┐      │     │
                 │   │   │  N pool sieve       │      │     │
-                │   │   │  threads (auto =    │      │     │
-                │   │   │  hw_concurrency,    │      │     │
-                │   │   │  cap 32). Each owns │      │     │
-                │   │   │  its own Sieve.     │      │     │
+                │   │   │  threads (== TOML   │      │     │
+                │   │   │  [workers] count;   │      │     │
+                │   │   │  auto-cap 32). Each │      │     │
+                │   │   │  owns its own Sieve.│      │     │
                 │   │   └──────────┬──────────┘      │     │
                 │   │              │ on_found        │     │
                 │   │              │ asio::post      │     │
@@ -177,8 +177,10 @@ The orchestrator:
 * **Consumer thread** (one): owns the feed subscription, builds the next
   `EngineSession`, decides cursor reset vs preservation, atomic-swaps the
   session, notifies pool threads.
-* **Pool sieve threads** (N, auto-derived from `hardware_concurrency()`,
-  capped at `pool_threads_max_auto_cap = 32`): each owns its own `Sieve`,
+* **Pool sieve threads** (N == `[workers] count` from TOML, capped at
+  `pool_threads_max_auto_cap = 32` if explicitly configured to 0 — but
+  Worker_manager always passes the worker count, so the auto-derive cap
+  only applies to direct library users): each owns its own `Sieve`,
   loops `current_session() → draw segment → sieve → mid-segment session
   re-check → dispatch via asio::post`. Crash-isolated: a thrown exception
   increments `m_pool_threads_crashed` and exits that thread; the rest of the
@@ -233,7 +235,12 @@ PRIME_ENABLED guarded). Construction in `create_workers_locked` follows the
 `internal_id`:
 * `channel_starting_nonce = lowest_id << 48`
 * `internal_id_for_solution = lowest_id`
-* `pool_threads = 0` (auto-derive — Stone 8 may add a TOML knob)
+* `pool_threads = prime_workers.size()` — i.e. the `[workers] count = N`
+  value from TOML. This preserves the historic meaning of `count`: under
+  legacy `"workers"` mode it sets the per-worker mining-thread count;
+  under `"engine"` mode it sets the cooperative sieve pool size. Without
+  this, `count` would silently become meaningless for compute under
+  engine mode (the engine would auto-derive `min(hw_concurrency, 32)`).
 * `io_context = m_io_context`
 * `segment_size = Sieve::get_segment_size()` (matches the per-worker convention)
 
@@ -417,15 +424,19 @@ per-thread attribution would defeat the cooperative-cursor design.
 
 ```toml
 [cpu]
-threads     = N
+threads     = N         # under engine mode this is the cooperative pool
+                        # sieve-thread count (one Sieve per pool thread);
+                        # i.e. count keeps its historic "this many cores
+                        # busy mining" meaning under both modes.
 engine_mode = "engine"   # activates this architecture
                          # default: "workers" (legacy path; both coexist
                          # for at least one release after Stone 7)
 ```
 
-* `engine_pool_threads` is **not yet a TOML knob** — Stone 7 hard-codes
-  `pool_threads = 0` (auto-derive: `min(hardware_concurrency(), 32)`).
-  Stone 8 may add the knob.
+* `engine_pool_threads` is **not** a separate TOML knob — `[workers] count`
+  IS the pool-thread count under engine mode. Stone 8 may add an explicit
+  override knob if operators want pool-size decoupled from stats-shell
+  count, but the default makes `count` mean what it always meant.
 * The factory `make_segment_allocator_for_engine_mode("engine", ...)` still
   returns the legacy `Per_worker_segment_allocator` (vestigial under engine
   mode — Worker_prime never calls `next_segment_start()`). Stone 8 cleanup

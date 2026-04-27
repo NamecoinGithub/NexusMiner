@@ -1125,7 +1125,18 @@ void Worker_manager::create_workers_locked()
                 // convention lifted to the channel level).
                 cfg.channel_starting_nonce  = static_cast<std::uint64_t>(lowest_internal_id) << 48;
                 cfg.internal_id_for_solution = lowest_internal_id;
-                cfg.pool_threads            = 0;  // auto-derive; Stone 8 may add a TOML knob
+                // Honor the operator's intent: under engine mode, the
+                // [workers] count = N value (== prime_workers.size()) is
+                // the pool_threads count.  Without this, count = N would
+                // become meaningless for compute (only stats-display
+                // partitioning would care about it) and the engine would
+                // silently spawn min(hardware_concurrency(), 32) sieve
+                // threads instead — a real behavioural surprise on a
+                // 16-core box where the operator wrote count = 4 because
+                // they wanted 4 cores busy.  prime_workers is non-empty
+                // here (guarded above), so this is always >= 1.
+                cfg.pool_threads            =
+                    static_cast<std::uint32_t>(prime_workers.size());
                 cfg.io_context              = m_io_context;
 
                 try {
@@ -1141,8 +1152,10 @@ void Worker_manager::create_workers_locked()
                         prime_workers[i].worker->bind_to_engine(m_prime_engine, i, share_count);
                     }
                     m_logger->info("[Worker_manager] PrimeMiningEngine wired ({} workers, "
-                                   "internal_id_for_solution={}, segment_size={})",
-                                   share_count, lowest_internal_id, segment_size);
+                                   "internal_id_for_solution={}, segment_size={}, "
+                                   "pool_threads={} (== [workers] count))",
+                                   share_count, lowest_internal_id, segment_size,
+                                   share_count);
                 } catch (const std::exception& e) {
                     m_logger->error("[Worker_manager] Failed to construct PrimeMiningEngine: {} — "
                                     "engine-mode Worker_prime instances have no run-thread; "
