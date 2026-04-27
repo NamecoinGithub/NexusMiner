@@ -44,6 +44,7 @@ namespace config
         int cpu_power_limit = 100;  // Default: 100%
         bool cpu_hyperthreading = true;
         int cpu_target_hashrate = 0;  // Default: 0 = max
+        std::string cpu_engine_mode = "workers";  // Stone 3: prime backend selector
         std::string worker_hardware = "cpu";  // Default hardware type
         int gpu_device = 0;  // Default GPU device
         bool stats_console = false;  // Default: no stats printer
@@ -185,6 +186,16 @@ namespace config
                     else if (key == "target_hashrate")
                     {
                         cpu_target_hashrate = parse_int_value(value);
+                    }
+                    else if (key == "engine_mode")
+                    {
+                        cpu_engine_mode = parse_string_value(value);
+                        if (cpu_engine_mode != "workers" && cpu_engine_mode != "engine")
+                        {
+                            m_logger->warn("Invalid engine_mode '{}' (expected 'workers' or 'engine'); using 'workers'.",
+                                           cpu_engine_mode);
+                            cpu_engine_mode = "workers";
+                        }
                     }
                 }
                 else if (current_section == "gpu")
@@ -414,6 +425,7 @@ namespace config
                         cpu_config.m_power_limit_percent = static_cast<std::uint8_t>(cpu_power_limit);
                         cpu_config.m_enable_hyperthreading = cpu_hyperthreading;
                         cpu_config.m_target_hashrate = static_cast<std::uint32_t>(cpu_target_hashrate);
+                        cpu_config.m_engine_mode = cpu_engine_mode;
                         
                         worker_config.m_worker_mode = cpu_config;
                         config.m_worker_config.push_back(worker_config);
