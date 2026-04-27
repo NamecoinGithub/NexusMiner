@@ -57,13 +57,20 @@ Worker_stats_collector<T>::Worker_stats_collector(config::Config& config)
 {
 }
 
+// Out-of-range worker ids are programming errors (the worker id space is
+// fixed at construction from the worker config). We use a consistent
+// "assert in debug, safe-fallback in release" stance on both the write and
+// read paths: debug builds catch the bug at the call site, release builds
+// degrade gracefully (silent drop on write, default-constructed T on read)
+// instead of dereferencing past the end of m_workers.
 template<typename T>
 void Worker_stats_collector<T>::update_worker_stats(std::uint16_t internal_worker_id,
                                                     T const& stats)
 {
     std::scoped_lock lock(m_worker_mutex);
+    assert(internal_worker_id < m_workers.size());
     if (internal_worker_id >= m_workers.size()) {
-        return;  // defensive — out-of-range worker id is silently dropped
+        return;
     }
     m_workers[internal_worker_id] = stats;
 }
@@ -73,6 +80,9 @@ T Worker_stats_collector<T>::get_worker_stats(std::uint16_t internal_worker_id) 
 {
     std::scoped_lock lock(m_worker_mutex);
     assert(internal_worker_id < m_workers.size());
+    if (internal_worker_id >= m_workers.size()) {
+        return T{};
+    }
     return m_workers[internal_worker_id];
 }
 

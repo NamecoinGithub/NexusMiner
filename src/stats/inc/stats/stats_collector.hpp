@@ -101,6 +101,9 @@ using Prime_collector = Worker_stats_collector<Prime>;
 template<typename T>
 inline Worker_stats_collector<T>& as_typed(Collector& c) noexcept
 {
+    static_assert(std::is_same_v<T, Hash> || std::is_same_v<T, Prime>,
+        "as_typed<T>: T must be one of the registered worker stats types "
+        "(stats::Hash or stats::Prime).");
 #ifndef NDEBUG
     if constexpr (std::is_same_v<T, Hash>) {
         assert(c.get_mining_mode() == config::Mining_mode::HASH);

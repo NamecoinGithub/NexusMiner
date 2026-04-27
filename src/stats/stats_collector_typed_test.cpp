@@ -122,12 +122,24 @@ void test_out_of_range_worker_id_does_not_crash()
     nexusminer::stats::Hash h{};
     h.m_hash_count = 99;
 
-    // Should not throw / crash; defensive update is silently dropped.
     hc.update_worker_stats(0, h);
-    hc.update_worker_stats(99, h);  // out of range
 
-    bool passed = hc.get_worker_stats(0).m_hash_count == 99;
-    print_result("Out-of-range worker_id update is silently dropped (no crash)", passed);
+    // Out-of-range worker ids are programming errors: debug builds assert
+    // (see Worker_stats_collector::update_worker_stats / get_worker_stats),
+    // release builds fall back safely (silent drop on write,
+    // default-constructed T on read). Only the release-mode safe-fallback
+    // is exercisable as a unit test — under debug the assert is the
+    // documented contract.
+#ifdef NDEBUG
+    hc.update_worker_stats(99, h);                                  // silent drop
+    bool oob_get_safe = hc.get_worker_stats(99).m_hash_count == 0;  // default T{}
+#else
+    bool oob_get_safe = true;
+#endif
+
+    bool in_range_ok = hc.get_worker_stats(0).m_hash_count == 99;
+    print_result("Out-of-range worker_id is safe in release (assert in debug)",
+                 in_range_ok && oob_get_safe);
 }
 
 // ----------------------------------------------------------------------
