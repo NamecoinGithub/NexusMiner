@@ -17,6 +17,17 @@ namespace stats
 inline constexpr std::size_t kPrimeHistogramBuckets = 11;
 using Prime_histogram = std::array<std::uint32_t, kPrimeHistogramBuckets>;
 
+// Snapshot of per-worker sieve diagnostic counters. Published from the worker
+// thread alongside the rest of the Prime snapshot so the stats path never has
+// to read live (mutable) sieve atomics directly.
+struct Prime_sieve_diag
+{
+    std::uint64_t m_sieve_calls{0};
+    std::uint64_t m_inner_hits{0};
+    std::uint64_t m_starting_multiples_us{0};
+    std::uint32_t m_prime_count{0};
+};
+
 template <typename Histogram>
 Prime_histogram copy_prime_histogram(const Histogram& histogram)
 {

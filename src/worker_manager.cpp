@@ -99,7 +99,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 , m_config{config}
 , m_socket{std::move(socket)}
 , m_logger{spdlog::get("logger")}
-, m_stats_collector{std::make_shared<stats::Collector>(m_config)}
+, m_stats_collector{stats::make_collector(m_config)}
 , m_timer_manager{std::move(timer_factory)}
 {
     // Falcon miner authentication is mandatory for solo mining

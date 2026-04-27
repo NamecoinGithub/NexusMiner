@@ -181,7 +181,7 @@ std::shared_ptr<NodeSession> make_node_session(const std::shared_ptr<asio::io_co
                                                const std::string& label,
                                                DualConnectionManager* dcm = nullptr)
 {
-    auto stats_collector = std::make_shared<stats::Collector>(config);
+    auto stats_collector = stats::make_collector(config);
     return std::make_shared<NodeSession>(io_context, config, socket, stats_collector, label, dcm);
 }
 
