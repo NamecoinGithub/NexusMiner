@@ -1,2 +1,0 @@
-/usr/bin/ar qc libnode_session.a CMakeFiles/node_session.dir/src/node_session/node_session.cpp.o
-/usr/bin/ranlib libnode_session.a

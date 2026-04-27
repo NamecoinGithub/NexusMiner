@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -Wl,--dependency-file=CMakeFiles/dual_connection_manager_test.dir/link.d CMakeFiles/dual_connection_manager_test.dir/src/dual_connection_manager_test.cpp.o CMakeFiles/dual_connection_manager_test.dir/src/dual_connection_manager.cpp.o -o dual_connection_manager_test   -L/home/runner/work/NexusMiner/NexusMiner/libs
