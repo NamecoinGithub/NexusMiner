@@ -208,6 +208,74 @@ void test_wait_returns_immediately_if_already_advanced()
     assert(observed == 1);
 }
 
+void test_work_package_round_trips_through_publish()
+{
+    WorkerTemplateFeed feed;
+
+    // Build a real WorkPackage and publish it; weak_ptr lets us verify the
+    // payload's lifetime is governed exclusively by the feed's slot once the
+    // local strong references go out of scope.
+    auto wp = std::make_shared<WorkPackage>(::LLP::CBlock{}, /*nbits=*/0x1d00ffffu);
+    std::weak_ptr<WorkPackage> wp_weak = wp;
+
+    {
+        auto epoch = std::make_shared<TemplateEpoch>();
+        epoch->work_package = wp;
+        feed.publish(std::move(epoch));
+    }
+    wp.reset();  // feed slot is now the only owner of the WorkPackage
+
+    // Loading the slot must yield the same WorkPackage and keep it alive.
+    auto loaded = feed.load();
+    assert(loaded != nullptr);
+    assert(loaded->work_package);
+    assert(loaded->work_package.get() == wp_weak.lock().get());
+    assert(loaded->work_package->get_nbits() == 0x1d00ffffu);
+    assert(!wp_weak.expired());
+
+    // Once we drop the loaded reference and overwrite the slot with a fresh
+    // epoch (no work_package), the original WorkPackage must be destroyed.
+    loaded.reset();
+    feed.publish(make_epoch());
+    assert(wp_weak.expired());
+}
+
+void test_publish_count_tracks_publishes()
+{
+    WorkerTemplateFeed feed;
+    assert(feed.publish_count() == 0);
+
+    feed.publish(make_epoch());
+    feed.publish(make_epoch());
+    assert(feed.publish_count() == 2);
+
+    // Null publish is a no-op and must not advance the counter.
+    feed.publish(nullptr);
+    assert(feed.publish_count() == 2);
+
+    feed.publish(make_epoch());
+    assert(feed.publish_count() == 3);
+}
+
+void test_reset_for_new_batch_clears_slot_and_counter()
+{
+    WorkerTemplateFeed feed;
+    feed.publish(make_epoch());
+    feed.publish(make_epoch());
+    assert(feed.latest_epoch_id() == 2);
+    assert(feed.load() != nullptr);
+
+    feed.reset_for_new_batch();
+    assert(feed.latest_epoch_id() == 0);
+    assert(feed.publish_count() == 0);
+    assert(feed.load() == nullptr);
+
+    // Subsequent publish must restart the monotonic sequence at 1.
+    auto id = feed.publish(make_epoch());
+    assert(id == 1);
+    assert(feed.latest_epoch_id() == 1);
+}
+
 }  // namespace
 
 int main()
@@ -220,5 +288,8 @@ int main()
     test_wait_for_epoch_wakes_on_publish();
     test_notify_wake_unblocks_without_publish();
     test_wait_returns_immediately_if_already_advanced();
+    test_work_package_round_trips_through_publish();
+    test_publish_count_tracks_publishes();
+    test_reset_for_new_batch_clears_slot_and_counter();
     return 0;
 }

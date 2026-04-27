@@ -142,6 +142,40 @@ public:
         return m_latest_epoch_id.load(std::memory_order_acquire);
     }
 
+    // Total number of successful publishes since construction (or since the
+    // last reset_for_new_batch()).  Currently identical to latest_epoch_id()
+    // because epoch_id is advanced exactly once per non-null publish, but
+    // exposed as a separate API for stats / diagnostic correlation (e.g.
+    // template-churn-vs-stats-output dashboards) so callers don't have to
+    // assume the two will stay coupled forever.
+    std::uint64_t publish_count() const
+    {
+        return m_latest_epoch_id.load(std::memory_order_acquire);
+    }
+
+    // Drop the currently-published epoch and reset the monotonic counter to 0,
+    // making the feed indistinguishable from a freshly-constructed instance
+    // for the next worker batch.  Used when the feed is reused across batches
+    // (today Worker_manager destroys and recreates the feed in
+    // stop_all_workers, which is equivalent; this method makes the intent
+    // explicit for future single-feed-across-batches code paths).
+    //
+    // Must be called only when no worker is consuming from the feed (i.e. all
+    // readers have been joined or have observed the wake_predicate).  The
+    // wake mutex is taken to serialise with any straggling waiter still
+    // inside wait_for_epoch_after, and notify_all() lets that waiter re-
+    // evaluate its wake_predicate (typically `m_shutdown`) cleanly.
+    void reset_for_new_batch()
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_wake_mtx);
+            m_slot.store(std::shared_ptr<const TemplateEpoch>{},
+                         std::memory_order_release);
+            m_latest_epoch_id.store(0, std::memory_order_release);
+        }
+        m_wake_cv.notify_all();
+    }
+
     // Wake any waiters without publishing a new epoch.  Used by Worker_manager
     // during shutdown so workers blocked in wait_for_epoch_after() can re-
     // evaluate their wake_predicate (typically an m_shutdown flag).
