@@ -85,7 +85,8 @@ struct Test_io_context
 
 Engine_config make_cfg(std::uint32_t pool_threads,
                        std::shared_ptr<asio::io_context> io,
-                       bool force_candidate = false)
+                       bool force_candidate = false,
+                       std::chrono::microseconds simulated_latency = std::chrono::microseconds{0})
 {
     Engine_config cfg;
     cfg.segment_size = kSegmentSize;
@@ -95,6 +96,7 @@ Engine_config make_cfg(std::uint32_t pool_threads,
     cfg.io_context = std::move(io);
     cfg.test_skip_sieve = true;
     cfg.test_force_candidate_per_segment = force_candidate;
+    cfg.simulated_segment_latency = simulated_latency;
     return cfg;
 }
 
@@ -181,7 +183,15 @@ void test_heavy_churn_drives_discards()
 {
     Test_io_context io;
     auto feed = std::make_shared<WorkerTemplateFeed>();
-    PrimeMiningEngine engine{make_cfg(4, io.ctx), feed};
+    // 2ms simulated per-segment latency widens the race window between
+    // segment draw and the post-segment session re-check, making the
+    // discard observation deterministic on fast hosts.  Without this,
+    // the test_skip_sieve pool loop completes faster than the publisher
+    // can rotate base_hash and the test can pass with zero discards.
+    PrimeMiningEngine engine{
+        make_cfg(/*pool_threads=*/4, io.ctx, /*force_candidate=*/false,
+                 /*simulated_latency=*/std::chrono::milliseconds{2}),
+        feed};
 
     // Publish many distinct base hashes back-to-back.  Each different base
     // forces an allocator reset on the consumer side; the post-segment

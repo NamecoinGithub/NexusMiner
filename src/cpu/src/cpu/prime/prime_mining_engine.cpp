@@ -394,6 +394,23 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                 if (m_shutdown.load(std::memory_order_acquire)) break;
                 sieve->clear_chains();
                 if (m_shutdown.load(std::memory_order_acquire)) break;
+                // Per-segment recompute of starting multiples for THIS
+                // thread's `low`.  Required for cooperative pool-thread
+                // consumption: Sieve::sieve_segment() advances
+                // m_prime_state[i].multiple under the contiguous-segment
+                // assumption (sp.multiple -= m_segment_size at end), but
+                // pool threads draw non-contiguous segments via the shared
+                // cursor — another thread may have consumed the segments
+                // between this thread's previous and current `low`.
+                // Recomputing per segment keeps each prime's wheel state
+                // anchored to the actual `low` we are about to sieve.
+                // (Worker_prime is single-thread per allocator, so it can
+                // skip this; PR #667 documents the why.)
+                {
+                    const uint1k segment_start =
+                        local_sieve_start + static_cast<std::uint64_t>(low);
+                    sieve->calculate_starting_multiples(segment_start);
+                }
                 sieve->sieve_segment();
                 sieve->find_chains(low, false);
                 sieve->test_chains(local_sieve_start);
@@ -405,6 +422,16 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                 // Synthetic candidate at the segment's start.  Only meaningful
                 // for tests that bypass the real sieve.
                 segment_chain_offsets.push_back(low);
+            }
+
+            // ── Test seam: simulated_segment_latency widens the race window
+            // between segment draw and the post-segment session re-check so
+            // tests like test_heavy_churn_drives_discards are deterministic
+            // even when the sieve pipeline is skipped (test_skip_sieve).
+            // Production callers leave this at zero.
+            if (m_cfg.simulated_segment_latency.count() > 0)
+            {
+                std::this_thread::sleep_for(m_cfg.simulated_segment_latency);
             }
 
             // ── REQUIRED post-segment re-check.  Re-load the session via a

@@ -101,6 +101,19 @@ struct Engine_config
     // dispatched test assert exact counts without depending on the actual
     // prime distribution of an arbitrary base hash.
     bool test_force_candidate_per_segment{false};
+
+    // Test seam: artificially widen the race window between drawing a
+    // segment from the cooperative cursor and the post-segment session
+    // re-check.  Pool threads sleep for this duration immediately AFTER
+    // sieve_segment() / find_chains() / test_chains() but BEFORE the
+    // re-load of current_session().  Defaults to zero (no latency).
+    //
+    // Used by prime_mining_engine_pool_test::test_heavy_churn_drives_discards
+    // to make the discard race deterministic on fast hosts: without it, a
+    // pool thread can complete the (no-op test) sieve faster than the
+    // publisher can rotate base_hash, producing zero discards and a flaky
+    // failure.  Production callers must leave this at zero.
+    std::chrono::microseconds simulated_segment_latency{0};
 };
 
 class PrimeMiningEngine
