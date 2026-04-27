@@ -742,14 +742,25 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 				return base + (idx < rem ? 1u : 0u);
 			};
 
-			prime_stats.m_primes        = stats::saturating_prime_stat(split(snap.candidates_dispatched));
-			prime_stats.m_chains        = stats::saturating_prime_stat(split(snap.candidates_dispatched));
+			// Bug-sweep fix: m_primes and m_chains are SEMANTICALLY DIFFERENT
+			// counters in the legacy path — m_primes counts Fermat-passing
+			// numbers, m_chains counts long chains.  The engine snapshot
+			// exposes neither separately; it only knows how many candidates
+			// it dispatched (a chain is dispatched iff it passed Fermat
+			// validation and met required difficulty).  Map candidates_
+			// dispatched to m_chains only; leave m_primes at 0 to avoid
+			// inflating the per-worker prime count by 2x, which would
+			// confuse the stats display.  Operators wanting Fermat detail
+			// in engine mode read the engine's own diagnostic counters.
+			//
+			// `share` is computed once and reused (was: split(...) twice).
+			const std::uint64_t share_candidates = split(snap.candidates_dispatched);
+			prime_stats.m_primes        = 0;
+			prime_stats.m_chains        = stats::saturating_prime_stat(share_candidates);
 			prime_stats.m_range_searched = split(snap.segments_processed * snap.segment_size);
 			prime_stats.m_difficulty    = snap.nbits;
 			// Engine does not partition Fermat-test or histogram counters
 			// (single-found-block-wins keeps per-thread credit meaningless).
-			// Operators that need cluster-quality detail consult the
-			// engine's own diagnostic counters via logs.
 			prime_stats.m_most_difficult_chain = 0.0;
 			prime_stats.m_cpu_load = 0.0;
 		}
@@ -834,6 +845,17 @@ bool Worker_prime::is_running() const
 
 void Worker_prime::publish_statistics_snapshot()
 {
+	// Stone 7 defensive guard: under engine_mode == "engine" the per-worker
+	// Sieve is never constructed (the PrimeMiningEngine owns one Sieve per
+	// pool thread).  publish_statistics_snapshot() is only ever called from
+	// the legacy run() loop, which is itself never spawned in engine mode,
+	// so reaching here with a null m_segmented_sieve indicates a future
+	// regression — fail soft (no stats) rather than dereferencing null.
+	if (!m_segmented_sieve)
+	{
+		return;
+	}
+
 	stats::Prime prime_stats;
 	prime_stats.m_primes = stats::saturating_prime_stat(m_segmented_sieve->m_fermat_prime_count);
 	prime_stats.m_chains = stats::saturating_prime_stat(m_segmented_sieve->m_chain_count);
