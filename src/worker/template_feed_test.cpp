@@ -99,6 +99,10 @@ void test_multi_reader_visibility()
                 auto loaded = feed.load();
                 if (loaded && loaded->epoch_id > local_max) {
                     local_max = loaded->epoch_id;
+                    // Publish progress continuously so the publisher side can
+                    // deadline-poll for "at least one reader has caught up to
+                    // the final epoch" instead of relying on a fixed sleep.
+                    highest_seen[i].store(local_max, std::memory_order_release);
                 }
             }
             // Final read after stop to capture the last published epoch.
@@ -113,8 +117,21 @@ void test_multi_reader_visibility()
     for (std::uint64_t e = 1; e <= target_epochs; ++e) {
         feed.publish(make_epoch());
     }
-    // Allow readers a brief window to observe the final publish.
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Wait until at least one reader has observed the final epoch, with a
+    // generous deadline.  A fixed sleep here is flake-prone under heavy CI
+    // load; deadline-polling decouples test runtime from scheduler jitter.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+        bool seen_last = false;
+        for (int i = 0; i < num_readers; ++i) {
+            if (highest_seen[i].load(std::memory_order_acquire) == target_epochs) {
+                seen_last = true;
+                break;
+            }
+        }
+        if (seen_last) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     stop.store(true, std::memory_order_release);
     for (auto& t : readers) t.join();
 

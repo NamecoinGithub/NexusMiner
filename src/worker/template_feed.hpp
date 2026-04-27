@@ -131,6 +131,14 @@ public:
     //   * `wake_predicate()` returns true (e.g. worker shutdown signalled).
     //
     // Returns the latest epoch_id observed when the wait completes.
+    //
+    // Lock-order note: `wake_predicate` is invoked while m_wake_mtx is held
+    // (std::condition_variable::wait re-checks the predicate under the lock).
+    // The intended use case is a trivial atomic load such as
+    // `[&]{ return m_shutdown.load(); }` which takes no further lock; if a
+    // future caller passes a predicate that acquires another mutex, that
+    // mutex must be ordered AFTER m_wake_mtx everywhere else it is held to
+    // avoid an inversion deadlock.
     template <typename Predicate>
     std::uint64_t wait_for_epoch_after(std::uint64_t last_seen, Predicate wake_predicate)
     {

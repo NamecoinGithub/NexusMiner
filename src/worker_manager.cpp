@@ -260,11 +260,17 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // set_block() shim calls (for unmigrated subclasses) run
                     // *outside* the parent mutex so the stats path no longer
                     // contends with N CV notifications during template handoff.
-                    worker_snapshot.reserve(m_workers.size());
-                    for (auto const& w : m_workers) {
-                        if (w) worker_snapshot.push_back(w);
+                    //
+                    // Note: we snapshot the full vector (including any nulls)
+                    // so the loop index below still matches each worker's
+                    // original m_workers position — the warn() messages are
+                    // diagnostic and need that mapping to stay aligned with
+                    // m_internal_id (== creation index).
+                    worker_snapshot = m_workers;
+                    total_worker_count = 0;
+                    for (auto const& w : worker_snapshot) {
+                        if (w) ++total_worker_count;
                     }
-                    total_worker_count = worker_snapshot.size();
                     feed_snapshot = m_template_feed;
                 }  // ── m_worker_mutex released here ───────────────────────────
 
@@ -399,7 +405,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // Workers that consume from the feed (uses_template_feed() == true)
                 // will observe this epoch on their next mining-loop iteration
                 // without any per-worker mutex acquisition by the manager.
-                std::uint64_t published_epoch_id = 0;
+                [[maybe_unused]] std::uint64_t published_epoch_id = 0;
                 if (feed_snapshot) {
                     auto epoch = std::make_shared<TemplateEpoch>();
                     epoch->work_package = work_package;
@@ -415,6 +421,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // CV notifications take effect.  Once a worker subclass is
                 // migrated and starts returning uses_template_feed() == true,
                 // it is skipped here automatically.
+                //
+                // `i` here is the worker's original m_workers index, which is
+                // assigned to m_config.m_internal_id at construction time, so
+                // diagnostic warn() messages stay aligned with the internal id
+                // operators see in other logs.
                 for (size_t i = 0; i < worker_snapshot.size(); ++i) {
                     auto& worker = worker_snapshot[i];
                     if (!worker) {
@@ -428,8 +439,24 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         workers_fed++;
                         m_logger->debug("[Worker_manager] Template sent to worker {}/{}",
                                        workers_fed, total_worker_count);
+                    } else if (!worker->uses_template_feed()) {
+                        // Only meaningful for legacy shim path: set_block() was
+                        // expected to wake the worker.  Feed-consuming workers
+                        // observe epochs lock-free at their natural rebind
+                        // point, so is_running()==false here is unrelated to
+                        // the template handoff and would be a misleading warn.
+                        m_logger->warn(
+                            "[Worker_manager] Worker {} did not start after set_block() — not counted",
+                            i);
                     } else {
-                        m_logger->warn("[Worker_manager] Worker {} did not start after set_block() — not counted", i);
+                        // Feed-consuming worker not currently running; not an
+                        // error in the template-handoff sense, but worth
+                        // flagging at debug level since it won't pick up the
+                        // freshly-published epoch until it transitions back
+                        // to running.
+                        m_logger->debug(
+                            "[Worker_manager] Feed-consuming worker {} not running — epoch #{} will be picked up on next start",
+                            i, published_epoch_id);
                     }
                 }
                 
