@@ -948,6 +948,13 @@ void Worker_manager::create_workers_locked()
     // been migrated keep the default no-op attach_template_feed() and continue
     // to receive work via the legacy set_block(WorkPackage,...) shim, which
     // Worker_manager now invokes outside m_worker_mutex.
+    //
+    // NOTE: this runs AFTER every worker constructor has returned, and several
+    // worker subclasses start their mining thread inside the constructor.  An
+    // override that wants to read the feed from that already-running thread
+    // MUST publish the pointer through a thread-safe slot (atomic shared_ptr)
+    // and treat "not yet attached" as idle — see the contract on
+    // Worker::attach_template_feed in src/worker/worker.hpp for details.
     for (auto& worker : m_workers) {
         if (worker) {
             worker->attach_template_feed(m_template_feed);
