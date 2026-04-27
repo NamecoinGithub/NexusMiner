@@ -10,10 +10,15 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
+
+// Forward declaration keeps <asio.hpp> out of this widely-included header.
+// shared_ptr<asio::io_context> only requires the type be declared.
+namespace asio { class io_context; }
 
 namespace nexusminer {
 
@@ -63,6 +68,66 @@ struct Engine_config
     // Stone 7 will normally set this to the lowest registered worker's
     // m_internal_id; tests can pass any sentinel value.
     std::uint32_t internal_id_for_solution{0};
+
+    // ── Stone 6 — pool sieve threads ──────────────────────────────────────
+    //
+    // io_context onto which a pool thread posts the found-block callback.
+    // The pool thread MUST NEVER call on_found directly: doing so would
+    // block the sieve pipeline on network/submission I/O and defeat the
+    // entire point of the engine.  When io_context is null the engine runs
+    // in session-only mode (no pool spawned) — used by Stone 5 unit tests
+    // that exercise the consumer thread without driving any sieve work.
+    std::shared_ptr<asio::io_context> io_context;
+
+    // Number of pool sieve threads to spawn.  0 means "auto-derive from
+    // hardware concurrency" (capped at pool_threads_max_cap to avoid
+    // pathological stack/memory blowup on very large machines).  A non-zero
+    // value is honoured as-is, with a warning logged if it exceeds
+    // std::thread::hardware_concurrency().
+    std::uint32_t pool_threads{0};
+
+    // Cap applied to the auto-derived count when pool_threads == 0.  Made
+    // configurable so tests can verify the cap without depending on the
+    // host's actual hardware_concurrency value.
+    std::uint32_t pool_threads_max_cap{32};
+
+    // ── Test seam (Stone 6) ───────────────────────────────────────────────
+    // Optional override of the per-segment work performed by a pool thread.
+    // When non-null, the engine pool calls this in place of the real
+    // Sieve + ValidatePrimeCandidate + asio::post pipeline, then accounts
+    // for the segment using the returned outcome (counters and consume).
+    //
+    // This exists exclusively so the Stone 6 test suite can drive pool
+    // bookkeeping (segments_processed, candidates_dispatched,
+    // segments_discarded_epoch_changed, segments_skipped_consumed) without
+    // standing up the full Sieving_prime_table singleton, which is slow to
+    // initialise and depends on real CPU work.  Production callers leave
+    // this null and get the real sieve loop.
+    struct Pool_segment_test_outcome
+    {
+        // How many candidates the test wants the engine to count as
+        // dispatched for this segment.  Each one will be incremented onto
+        // m_candidates_dispatched (and posted to io_context if non-null,
+        // mirroring the real path's accounting).
+        std::uint64_t candidates_to_dispatch{0};
+
+        // If true, the engine marks the (post-segment, possibly fresh)
+        // session consumed after a successful dispatch — emulating the
+        // "found block wins for the entire pool" path.
+        bool mark_session_consumed{false};
+
+        // Optional sleep after the segment work is "done" but BEFORE the
+        // mid-segment epoch re-check, so churn tests can deterministically
+        // race a session republish into the segment window.
+        std::chrono::milliseconds simulated_segment_latency{0};
+    };
+
+    using Pool_segment_test_hook = std::function<
+        Pool_segment_test_outcome(const EngineSession& bound_session,
+                                  std::uint64_t low,
+                                  std::uint32_t pool_id)>;
+
+    Pool_segment_test_hook pool_segment_test_hook{};
 };
 
 class PrimeMiningEngine
@@ -119,6 +184,36 @@ public:
         return m_allocator_resets.load(std::memory_order_relaxed);
     }
 
+    // ── Stone 6 — pool diagnostics ────────────────────────────────────────
+    // All counters use relaxed memory order; they are advisory diagnostic
+    // signals fed into the eventual stats-printer "engine churn" rows and
+    // must not be used to synchronise other state.
+
+    std::uint64_t segments_processed() const
+    {
+        return m_segments_processed.load(std::memory_order_relaxed);
+    }
+    std::uint64_t segments_discarded_epoch_changed() const
+    {
+        return m_segments_discarded_epoch_changed.load(std::memory_order_relaxed);
+    }
+    std::uint64_t segments_skipped_consumed() const
+    {
+        return m_segments_skipped_consumed.load(std::memory_order_relaxed);
+    }
+    std::uint64_t candidates_dispatched() const
+    {
+        return m_candidates_dispatched.load(std::memory_order_relaxed);
+    }
+    std::uint64_t pool_threads_running() const
+    {
+        return m_pool_threads_running.load(std::memory_order_relaxed);
+    }
+    // Number of pool threads the engine actually spawned at construction.
+    // Reflects auto-derivation / cap clamping.  Zero in session-only mode
+    // (no io_context).
+    std::uint32_t pool_thread_count() const { return m_pool_thread_count; }
+
     // Block until the consumer thread has processed at least one publish
     // event whose epoch_id is greater than `last_seen`.  Returns the latest
     // sessions_published() count once the wait completes.  Used by tests to
@@ -129,6 +224,15 @@ public:
 
 private:
     void run_consumer();
+    void run_pool_thread(std::uint32_t pool_id);
+
+    // Compute the effective pool thread count from cfg (auto-derive when
+    // cfg.pool_threads == 0; otherwise honour cfg.pool_threads with a
+    // warning if it exceeds hardware concurrency).  Returns 0 when no pool
+    // should be spawned (io_context is null).
+    static std::uint32_t derive_pool_thread_count(
+        const Engine_config& cfg,
+        const std::shared_ptr<spdlog::logger>& logger);
 
     Engine_config                          m_cfg;
     std::shared_ptr<WorkerTemplateFeed>    m_feed;
@@ -156,10 +260,38 @@ private:
     std::atomic<std::uint64_t>             m_same_base_short_circuits{0};
     std::atomic<std::uint64_t>             m_allocator_resets{0};
 
+    // ── Stone 6 — pool diagnostics ────────────────────────────────────────
+    // Updated on the pool threads (relaxed, advisory only).
+    std::atomic<std::uint64_t>             m_segments_processed{0};
+    std::atomic<std::uint64_t>             m_segments_discarded_epoch_changed{0};
+    std::atomic<std::uint64_t>             m_segments_skipped_consumed{0};
+    std::atomic<std::uint64_t>             m_candidates_dispatched{0};
+    std::atomic<std::uint64_t>             m_pool_threads_running{0};
+
     // Consumer-thread shutdown flag + condvar for the wait-for-publish helper.
     std::atomic<bool>                      m_shutdown{false};
     mutable std::mutex                     m_publish_mtx;
     std::condition_variable                m_publish_cv;
+
+    // ── Stone 6 — pool wake/park primitives ──────────────────────────────
+    // Pool threads park on m_pool_cv when no session has been published
+    // yet, when the current session is already consumed, or when shutdown
+    // is signalled.  The consumer notifies after every successful publish;
+    // the destructor notifies on shutdown.  Bounded waits keep the pool
+    // responsive even if a notify is missed during a torn-down race.
+    mutable std::mutex                     m_pool_mtx;
+    std::condition_variable                m_pool_cv;
+
+    // Snapshot of the spawned pool size.  Read by tests and the destructor.
+    std::uint32_t                          m_pool_thread_count{0};
+
+    // Pool sieve threads.  Constructed strictly AFTER m_consumer (so they
+    // observe a fully-built engine) and destructed/joined strictly BEFORE
+    // m_consumer is joined (so they never observe a torn-down consumer).
+    // The destructor body enforces this order explicitly; the member
+    // declaration order would tear them down in reverse, which is also
+    // safe because pool threads sit before the consumer field below.
+    std::vector<std::thread>               m_pool;
 
     // Consumer thread.  Must be the LAST member so it is destroyed first
     // (and joined by the destructor body, not by the implicit member dtor).

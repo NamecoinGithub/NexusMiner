@@ -6,6 +6,7 @@
 
 #include <boost/multiprecision/cpp_int.hpp>
 
+#include <atomic>
 #include <cstdint>
 
 namespace nexusminer {
@@ -72,6 +73,40 @@ struct EngineSession
     // (lowest-numbered registered Worker_prime) — per-thread attribution
     // loses meaning when N threads cooperate on one nonce space.
     std::uint32_t internal_id_for_solution{0};
+
+    // ── Stone 6 — cross-pool "stop grinding this template" signal ──────────
+    // Set by a pool thread immediately after it dispatches a found-block via
+    // asio::post(*io_context, on_found, ...).  Sibling pool threads observe
+    // this on their next session re-check (top of loop) and idle, instead of
+    // burning cycles on a template that already produced a solution.  This is
+    // the engine-internal counterpart to TemplateEpoch::consumed (which lives
+    // on the WorkerTemplateFeed slot and stops the legacy set_block fanout).
+    //
+    // Both flags exist because EngineSession is built per-publish and may
+    // outlive its originating TemplateEpoch (the session is what pool threads
+    // load via the engine's atomic shared_ptr; the epoch is what the consumer
+    // received from the feed).  Consumer-thread reset is unnecessary: each
+    // new EngineSession is freshly constructed with consumed=false.
+    //
+    // mutable + atomic for the same reason as TemplateEpoch::consumed: the
+    // session is held as shared_ptr<const EngineSession> for wait-free
+    // reader access, but the consumed transition is a one-way relaxed
+    // signalling bit that does not affect the immutability of the work
+    // payload.
+    mutable std::atomic<bool> consumed{false};
+
+    bool is_consumed() const noexcept
+    {
+        return consumed.load(std::memory_order_acquire);
+    }
+
+    // Idempotent.  Returns the previous value so the caller can act on
+    // first-observer semantics (e.g. only the first dispatcher logs the
+    // "found block" line at info level).
+    bool mark_consumed() const noexcept
+    {
+        return consumed.exchange(true, std::memory_order_acq_rel);
+    }
 };
 
 } // namespace cpu
