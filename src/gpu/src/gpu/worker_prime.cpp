@@ -209,6 +209,7 @@ void Worker_prime::run()
 		//copy starting multiples to the sieve
 		m_segmented_sieve->gpu_sieve_init();
 		m_segmented_sieve->gpu_fermat_test_set_base_int(m_segmented_sieve->get_sieve_start());
+		publish_statistics_snapshot();
 		uint64_t sieve_batch_range = m_segmented_sieve->m_sieve_range;
 		uint64_t find_chains_ms = 0;
 		uint64_t sieving_ms = 0;
@@ -334,6 +335,7 @@ void Worker_prime::run()
 			}
 		}
 		m_segmented_sieve->gpu_get_stats();
+		publish_statistics_snapshot();
 		m_segmented_sieve->m_long_chain_starts = {};
 		low += sieve_batch_range;
 		if (m_stop) break;
@@ -429,18 +431,22 @@ uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(const uint1k& p)
 
 void Worker_prime::update_statistics(stats::Collector& stats_collector)
 {
-	auto prime_stats = std::get<stats::Prime>(stats_collector.get_worker_stats(m_config.m_internal_id));
-	prime_stats.m_primes = m_segmented_sieve->m_fermat_prime_count;
-	prime_stats.m_chains = m_segmented_sieve->m_chain_count;
-	prime_stats.m_difficulty = m_difficulty;
-	prime_stats.m_chain_histogram = m_segmented_sieve->m_chain_histogram;
+	stats_collector.update_worker_stats(m_config.m_internal_id, *m_published_stats.load());
+}
+
+void Worker_prime::publish_statistics_snapshot()
+{
+	stats::Prime prime_stats;
+	prime_stats.m_primes = stats::saturating_prime_stat(m_segmented_sieve->m_fermat_prime_count);
+	prime_stats.m_chains = stats::saturating_prime_stat(m_segmented_sieve->m_chain_count);
+	prime_stats.m_chain_histogram = stats::copy_prime_histogram(m_segmented_sieve->m_chain_histogram);
 	prime_stats.m_range_searched = m_range_searched;
 	prime_stats.m_most_difficult_chain = m_segmented_sieve->m_best_chain;
-	stats_collector.update_worker_stats(m_config.m_internal_id, prime_stats);
-
-	m_primes = 0;
-	m_chains = 0;
-	m_range_searched = 0;   // Reset delta counter after each stats snapshot
+	{
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		prime_stats.m_difficulty = m_difficulty;
+	}
+	m_published_stats.store(std::move(prime_stats));
 }
 
 

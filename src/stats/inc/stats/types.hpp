@@ -1,12 +1,10 @@
 #ifndef NEXUSMINER_STATS_TYPES_HPP
 #define NEXUSMINER_STATS_TYPES_HPP
 
-#include <memory>
-#include <vector>
 #include <array>
 #include <variant>
 #include <chrono>
-#include <mutex>
+#include "stats/prime_stats_snapshot.hpp"
 
 namespace nexusminer {
 namespace stats
@@ -73,7 +71,7 @@ struct Prime
     std::uint64_t m_range_searched { 0 };
     double m_most_difficult_chain{ 0.0 };
     double m_cpu_load{ 0.0 };  // estimated CPU load in [0.0, 1.0]
-    std::vector<std::uint32_t> m_chain_histogram{0,0,0,0,0,0,0,0,0,0};
+    Prime_histogram m_chain_histogram{};
 
     Prime& operator+=(Prime const& other)
     {
