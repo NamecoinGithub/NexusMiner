@@ -669,6 +669,18 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 	auto& typed = stats::as_typed<stats::Prime>(stats_collector);
 	typed.update_worker_stats(m_config.m_internal_id, *snapshot);
 
+	// Reset the CPU-load accumulators here (the read side) so the next
+	// publish_statistics_snapshot() begins a fresh interval. Resetting on
+	// every publish would clobber the cumulative ratio (publishes happen
+	// every mining iteration; reads happen every print_statistics_interval
+	// seconds), pinning m_cpu_load near 1.0 in the latest snapshot.
+	{
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		m_cpu_active_time = {};
+		m_cpu_total_time  = {};
+		m_cpu_tracking_start = std::chrono::steady_clock::now();
+	}
+
 	// [Sieve Diag] log — emitted on stats thread, reads exclusively from the
 	// immutable published snapshot so no live sieve state is touched here.
 	const auto& diag = snapshot->m_sieve_diag;
@@ -706,10 +718,17 @@ void Worker_prime::publish_statistics_snapshot()
 		std::scoped_lock<std::mutex> lck(m_mtx);
 		prime_stats.m_difficulty = m_difficulty;
 
-		// CPU-load is computed and reset here so the published snapshot owns
-		// the entire stat surface; update_statistics() becomes a pure copy.
-		// The reported value is "load over the interval since the last
-		// publish" which matches every other cumulative-since-publish field.
+		// CPU-load is computed (but NOT reset) here. publish_statistics_snapshot()
+		// runs at the end of every mining iteration, while update_statistics()
+		// only runs on the stats-printer interval (~15s). If we reset on publish,
+		// every snapshot would only capture the single iteration that just
+		// completed — and since that iteration was actively running mining
+		// work, m_cpu_load would always pin near 1.0.
+		//
+		// Both numerator (m_cpu_active_time) and denominator (m_cpu_total_time)
+		// grow together between the resets owned by update_statistics(), so the
+		// cumulative ratio published here is the correct "load over the current
+		// stats interval".
 		if (m_cpu_total_time.count() > 0) {
 			prime_stats.m_cpu_load = static_cast<double>(m_cpu_active_time.count()) /
 			                          static_cast<double>(m_cpu_total_time.count());
@@ -717,9 +736,6 @@ void Worker_prime::publish_statistics_snapshot()
 		} else {
 			prime_stats.m_cpu_load = 0.0;
 		}
-		m_cpu_active_time = {};
-		m_cpu_total_time  = {};
-		m_cpu_tracking_start = std::chrono::steady_clock::now();
 	}
 
 	m_published_stats.store(std::move(prime_stats));
