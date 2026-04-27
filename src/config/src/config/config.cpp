@@ -425,6 +425,19 @@ namespace config
 						cpu_config.m_enable_efficiency_cores = worker_mode_json["efficiency_cores"];
 					if (worker_mode_json.count("target_hashrate") != 0)
 						cpu_config.m_target_hashrate = worker_mode_json["target_hashrate"];
+					if (worker_mode_json.count("engine_mode") != 0)
+					{
+						std::string engine_mode = worker_mode_json["engine_mode"].get<std::string>();
+						if (engine_mode == "workers" || engine_mode == "engine")
+						{
+							cpu_config.m_engine_mode = engine_mode;
+						}
+						else
+						{
+							m_logger->warn("Invalid engine_mode '{}' (expected 'workers' or 'engine'); using 'workers'.",
+							               engine_mode);
+						}
+					}
 					
 					worker_config.m_worker_mode = cpu_config;
 				}

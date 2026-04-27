@@ -70,10 +70,33 @@ namespace nexusminer {
 		{
 		public:
 			Sieve();
+
+			// Stone 1: kept for backward compatibility — first call resolves the
+			// process-shared sieving prime table and sizes the per-worker mutable
+			// wheel state (m_prime_state) accordingly.  Subsequent calls are
+			// cheap (no re-generation, no extra allocation).
 			void generate_sieving_primes();
+
+			// Stone 2: prefer prepare(sieve_start).  set_sieve_start() still
+			// rounds the start to a multiple of 30 and stores it as a fallback
+			// for legacy callers that go on to invoke the no-arg overloads.
 			void set_sieve_start(boost::multiprecision::uint1024_t);
 			boost::multiprecision::uint1024_t get_sieve_start();
+
+			// Stone 2: parameterised entry points.  These never read m_sieve_start;
+			// the caller threads the base hash explicitly.  The no-arg overloads
+			// below remain for legacy callers and forward to the cached value.
+			//
+			// prepare() bundles set_sieve_start + clear_chains +
+			// calculate_starting_multiples and returns the rounded start that the
+			// sieve actually uses (callers compare against the requested start to
+			// adjust their nonce bookkeeping).
+			boost::multiprecision::uint1024_t prepare(boost::multiprecision::uint1024_t sieve_start);
+			void calculate_starting_multiples(const boost::multiprecision::uint1024_t& sieve_start);
 			void calculate_starting_multiples();
+			void test_chains(const boost::multiprecision::uint1024_t& sieve_start);
+			void test_chains();
+
 			void sieve_segment();
 			void sieve_batch(uint64_t low);
 			void sieve_batch_cpu(uint64_t low);
@@ -86,7 +109,6 @@ namespace nexusminer {
 			void find_chains(uint64_t low, bool batch_sieve_mode);
 			uint64_t count_fermat_primes(uint64_t sieve_size, uint64_t low);
 			bool primality_test(boost::multiprecision::uint1024_t p);
-			void test_chains();
 			void primality_batch_test();
 			void primality_batch_test_cpu();
 			void clean_chains();
@@ -110,7 +132,7 @@ namespace nexusminer {
 			// .load(std::memory_order_relaxed) — no synchronisation needed beyond atomicity.
 			std::atomic<uint64_t> m_diag_sieve_calls{0};   // total sieve_segment() calls since last reset
 			std::atomic<uint64_t> m_diag_inner_hits{0};    // total inner-loop sieve-write hits since last reset
-			std::atomic<uint64_t> m_diag_sort_us{0};       // µs for the last calculate_starting_multiples sort
+			std::atomic<uint64_t> m_diag_starting_multiples_us{0};  // µs spent in calculate_starting_multiples (no sort since Stone 1)
 			std::atomic<uint32_t> m_diag_prime_count{0};   // count of sieving primes in m_primes_aos
 
 		private:
@@ -177,10 +199,12 @@ namespace nexusminer {
 			  4, 5, 5, 6, 5, 6, 6, 7, 5, 6, 6, 7, 6, 7, 7, 8
 			};
 
-			/// Array-of-Structs sieving prime record — keeps prime + multiple + wheel index
-			/// co-located for better cache locality during sieve_segment().
-			struct SievePrime {
-				uint32_t prime;        ///< the sieving prime value
+			/// Stone 1: per-worker mutable wheel state for one sieving prime.
+			/// The prime *value* lives in the process-shared
+			/// Sieving_prime_table — only the per-worker (multiple, wheel_index)
+			/// pair is duplicated across workers.  Order matches
+			/// Sieving_prime_table::primes() (large-prime-first).
+			struct SievePrimeState {
 				uint32_t multiple;     ///< current multiple (updated each segment)
 				int32_t  wheel_index;  ///< index into sieve30_offsets[] / unset_bit_mask[]
 			};
@@ -195,7 +219,10 @@ namespace nexusminer {
 
 			//the sieve.  each bit that is set represents a possible prime.
 			std::vector<uint8_t> m_sieve;
-			std::vector<SievePrime> m_primes_aos;
+			// Stone 1: per-worker mutable wheel state, indexed parallel to
+			// Sieving_prime_table::instance().primes().  The prime values
+			// themselves are not duplicated here.
+			std::vector<SievePrimeState> m_prime_state;
 			std::vector<Chain> m_chain;
 			std::vector<uint8_t> m_sieve_results;  //accumulated results of sieving
 			boost::multiprecision::uint1024_t m_sieve_start;  //starting integer for the sieve.  This must be a multiple of 30.

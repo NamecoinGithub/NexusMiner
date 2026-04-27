@@ -5,6 +5,8 @@
 #include "stats/stats_collector.hpp"
 #include "prime/prime.hpp"
 #include "prime/chain_sieve.hpp"
+#include "prime/segment_allocator.hpp"
+#include "prime/sieving_prime_table.hpp"
 #include "block.hpp"
 #include <asio.hpp>
 #include <primesieve.hpp>
@@ -28,6 +30,14 @@ bool has_expected_prime_offsets(const std::vector<uint8_t>& offsets)
 {
 	return offsets.size() == kMaxSerializedPrimeOffsets;
 }
+}
+
+void Worker_prime::prewarm_shared_state()
+{
+	// Touching the singleton once here forces the one-time
+	// primesieve::generate_primes() pass to run on the caller's thread.
+	// Subsequent calls (including the per-worker constructors) become O(1).
+	(void)Sieving_prime_table::instance();
 }
 
 Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config::Worker_config& config)
@@ -64,6 +74,17 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 
 		// Initialize segmented sieve with error handling
 		m_segmented_sieve->generate_sieving_primes();
+
+		// Stone 3: build the segment allocator implied by [cpu] engine_mode.
+		// Default ("workers") preserves today's per-worker `low += segment_size`
+		// cursor; "engine" is reserved/forward-compatible (logged + falls back).
+		std::string engine_mode = "workers";
+		if (std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
+			engine_mode = std::get<config::Worker_config_cpu>(m_config.m_worker_mode).m_engine_mode;
+		}
+		m_segment_allocator = make_segment_allocator_for_engine_mode(
+			engine_mode,
+			static_cast<std::uint64_t>(m_segmented_sieve->get_segment_size()));
 
 		// Run performance test
 		fermat_performance_test();
@@ -363,18 +384,28 @@ void Worker_prime::run()
 		// Initialize the sieve on the worker thread only — set_block() no longer mutates
 		// m_segmented_sieve, so all sieve operations are exclusively on this thread,
 		// eliminating the race condition that caused the segfault at template transitions.
+		uint1k local_sieve_start;
 		{
 			uint1k startprime = local_base_hash + local_nonce;
-			m_segmented_sieve->set_sieve_start(startprime);
+			// Stone 2: prepare() bundles set_sieve_start + clear_chains +
+			// calculate_starting_multiples and returns the rounded start so we
+			// can recover the exact nonce that the sieve will use.
+			local_sieve_start = m_segmented_sieve->prepare(startprime);
 			// Update local_nonce to reflect the actual sieve start position chosen by the sieve.
 			// We do NOT write back to m_nonce here: set_block() always resets m_nonce to
 			// m_starting_nonce before run() reads it, so the adjusted value is only needed
 			// locally within this mining cycle.
-			local_nonce = static_cast<uint64_t>(m_segmented_sieve->get_sieve_start() - local_base_hash);
-			m_segmented_sieve->clear_chains();
-			m_segmented_sieve->calculate_starting_multiples();
+			local_nonce = static_cast<uint64_t>(local_sieve_start - local_base_hash);
 		}
+		publish_statistics_snapshot();
 		uint32_t segment_size = m_segmented_sieve->get_segment_size();
+		// Stone 3: route the per-segment cursor through the allocator.  The
+		// per-worker default keeps the existing seed (internal_id<<48 baseline,
+		// then sequential).  reset() takes the worker-local start so the
+		// returned segment offsets are *relative to local_sieve_start* — i.e.
+		// the same domain that find_chains(low,...) and the candidate offset
+		// arithmetic expect.
+		m_segment_allocator->reset(0);
 		uint64_t find_chains_ms = 0;
 		uint64_t sieving_ms = 0;
 		uint64_t test_chains_ms = 0;
@@ -412,6 +443,12 @@ void Worker_prime::run()
 		m_segmented_sieve->clear_chains();
 		if (m_stop) break;  // Check if new work arrived during clear_chains()
 
+		// Stone 3: ask the allocator for the next segment offset (relative to
+		// local_sieve_start).  The default per-worker allocator simply hands
+		// out monotonically increasing multiples of segment_size, exactly
+		// matching the previous `low += segment_size` cursor.
+		low = m_segment_allocator->next_segment_start();
+
 		// current segment = [low, high]
 		high = low + segment_size - 1;
 		uint64_t sieve_size = (high - low) / 30 + 1;
@@ -429,7 +466,9 @@ void Worker_prime::run()
 		auto find_chains_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(find_chains_stop - find_chains_start);
 		find_chains_ms += find_chains_elapsed.count();
 		auto test_chains_start = std::chrono::steady_clock::now();
-		m_segmented_sieve->test_chains();
+		// Stone 2: pass the worker-owned sieve_start explicitly so the sieve no
+		// longer has to remember it across calls.
+		m_segmented_sieve->test_chains(local_sieve_start);
 		auto test_chains_stop = std::chrono::steady_clock::now();
 		auto test_chains_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(test_chains_stop - test_chains_start);
 		test_chains_ms += test_chains_elapsed.count();
@@ -509,7 +548,9 @@ void Worker_prime::run()
 					actual_difficulty, required_difficulty);
 			}
 		}
-		low += segment_size;
+		publish_statistics_snapshot();
+		// Stone 3: cursor advance is owned by the segment allocator; the
+		// previous `low += segment_size` write is no longer needed here.
 
 		// Track CPU active time for this iteration (protected by mutex to prevent races with update_statistics)
 		auto iteration_end = std::chrono::steady_clock::now();
@@ -623,56 +664,66 @@ uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(const uint1k& p)
 
 void Worker_prime::update_statistics(stats::Collector& stats_collector)
 {
-	auto prime_stats = std::get<stats::Prime>(stats_collector.get_worker_stats(m_config.m_internal_id));
-	prime_stats.m_primes = m_segmented_sieve->m_fermat_prime_count;
-	prime_stats.m_chains = m_segmented_sieve->m_chain_count;
-	prime_stats.m_difficulty = m_difficulty;
-	prime_stats.m_chain_histogram = m_segmented_sieve->m_chain_histogram;
-	prime_stats.m_range_searched = m_range_searched.load();
-	prime_stats.m_most_difficult_chain = m_segmented_sieve->m_best_chain;
+	auto prime_stats = *m_published_stats.load();
 
-	// Calculate CPU load as ratio of active time to total time (protected by mutex)
+	// Keep CPU-load reporting interval-based while leaving histogram/best-chain stats
+	// on the immutable worker snapshot path.
 	{
 		std::scoped_lock<std::mutex> lck(m_mtx);
 		if (m_cpu_total_time.count() > 0) {
 			prime_stats.m_cpu_load = static_cast<double>(m_cpu_active_time.count()) /
 			                          static_cast<double>(m_cpu_total_time.count());
-			// Clamp to [0.0, 1.0]
+			prime_stats.m_cpu_load = std::max(0.0, std::min(1.0, prime_stats.m_cpu_load));
+		} else {
+			prime_stats.m_cpu_load = 0.0;
+		}
+
+		m_cpu_active_time = {};
+		m_cpu_total_time  = {};
+		m_cpu_tracking_start = std::chrono::steady_clock::now();
+	}
+
+	stats_collector.update_worker_stats(m_config.m_internal_id, prime_stats);
+
+	// [Sieve Diag] log — emitted on stats thread only, reads atomics with relaxed order
+	{
+		auto sieve_calls = m_segmented_sieve->m_diag_sieve_calls.load(std::memory_order_relaxed);
+		auto inner_hits  = m_segmented_sieve->m_diag_inner_hits.load(std::memory_order_relaxed);
+		auto starting_multiples_us = m_segmented_sieve->m_diag_starting_multiples_us.load(std::memory_order_relaxed);
+		auto prime_count = m_segmented_sieve->m_diag_prime_count.load(std::memory_order_relaxed);
+
+		if (sieve_calls > 0) {
+			m_logger->debug("[Sieve Diag] calls={} hits={} hits/call={:.1f} start_mult={:.2f}ms primes={}",
+				sieve_calls, inner_hits,
+				static_cast<double>(inner_hits) / sieve_calls,
+				starting_multiples_us / 1000.0,
+			prime_count);
+		}
+	}
+}
+
+void Worker_prime::publish_statistics_snapshot()
+{
+	stats::Prime prime_stats;
+	prime_stats.m_primes = stats::saturating_prime_stat(m_segmented_sieve->m_fermat_prime_count);
+	prime_stats.m_chains = stats::saturating_prime_stat(m_segmented_sieve->m_chain_count);
+	prime_stats.m_chain_histogram = stats::copy_prime_histogram(m_segmented_sieve->m_chain_histogram);
+	prime_stats.m_range_searched = m_range_searched.load(std::memory_order_relaxed);
+	prime_stats.m_most_difficult_chain = m_segmented_sieve->m_best_chain;
+
+	{
+		std::scoped_lock<std::mutex> lck(m_mtx);
+		prime_stats.m_difficulty = m_difficulty;
+		if (m_cpu_total_time.count() > 0) {
+			prime_stats.m_cpu_load = static_cast<double>(m_cpu_active_time.count()) /
+			                          static_cast<double>(m_cpu_total_time.count());
 			prime_stats.m_cpu_load = std::max(0.0, std::min(1.0, prime_stats.m_cpu_load));
 		} else {
 			prime_stats.m_cpu_load = 0.0;
 		}
 	}
 
-	stats_collector.update_worker_stats(m_config.m_internal_id, prime_stats);
-
-	m_primes = 0;
-	m_chains = 0;
-	m_range_searched.store(0);                                     // Reset range delta (atomic)
-
-	// [Sieve Diag] log — emitted on stats thread only, reads atomics with relaxed order
-	{
-		auto sieve_calls = m_segmented_sieve->m_diag_sieve_calls.load(std::memory_order_relaxed);
-		auto inner_hits  = m_segmented_sieve->m_diag_inner_hits.load(std::memory_order_relaxed);
-		auto sort_us     = m_segmented_sieve->m_diag_sort_us.load(std::memory_order_relaxed);
-		auto prime_count = m_segmented_sieve->m_diag_prime_count.load(std::memory_order_relaxed);
-
-		if (sieve_calls > 0) {
-			m_logger->debug("[Sieve Diag] calls={} hits={} hits/call={:.1f} sort={:.2f}ms primes={}",
-				sieve_calls, inner_hits,
-				static_cast<double>(inner_hits) / sieve_calls,
-				sort_us / 1000.0,
-				prime_count);
-		}
-	}
-
-	// Reset CPU-load tracking under mutex to prevent races with mining loop
-	{
-		std::scoped_lock<std::mutex> lck(m_mtx);
-		m_cpu_active_time = {};                                        // Reset CPU-load numerator
-		m_cpu_total_time  = {};                                        // Reset CPU-load denominator
-		m_cpu_tracking_start = std::chrono::steady_clock::now();       // Restart interval
-	}
+	m_published_stats.store(std::move(prime_stats));
 }
 
 void Worker_prime::fermat_performance_test()

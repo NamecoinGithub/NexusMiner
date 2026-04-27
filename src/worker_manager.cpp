@@ -802,6 +802,27 @@ void Worker_manager::create_workers_locked()
         return;
     }
 
+#ifdef PRIME_ENABLED
+    // Stone 1 hardening: pre-touch the process-shared CPU sieving prime table
+    // on the manager thread before spawning workers.  Without this, on
+    // high-core-count machines all prime workers race into the magic-static
+    // once-init in parallel during construction.  This call is cheap on
+    // subsequent invocations (per-epoch worker recreation just reuses the
+    // already-built singleton).
+    if (m_config.get_mining_mode() == config::Mining_mode::PRIME) {
+        bool has_cpu_prime_worker = false;
+        for (const auto& worker_config : m_config.get_worker_config()) {
+            if (worker_config.m_mode == config::Worker_mode::CPU) {
+                has_cpu_prime_worker = true;
+                break;
+            }
+        }
+        if (has_cpu_prime_worker) {
+            cpu::Worker_prime::prewarm_shared_state();
+        }
+    }
+#endif
+
     auto internal_id = 0U;
     for(auto& worker_config : m_config.get_worker_config())
     {

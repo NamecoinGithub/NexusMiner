@@ -7,3 +7,9 @@ target_include_directories(stats
 )
 
 target_link_libraries(stats PRIVATE config spdlog::spdlog)
+
+add_nexusminer_test(
+    NAME        prime_stats_snapshot_test
+    SOURCES     prime_stats_snapshot_test.cpp
+    LINK_LIBS   stats
+)

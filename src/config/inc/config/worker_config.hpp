@@ -25,6 +25,13 @@ struct Worker_config_cpu
 	bool m_enable_hyperthreading{true};           // Use SMT/HT threads (auto-disables if false)
 	bool m_enable_efficiency_cores{true};         // For hybrid CPUs (P-cores/E-cores)
 	std::uint32_t m_target_hashrate{0};           // 0=max
+
+	// Stone 3: prime-channel mining backend selector.
+	// "workers" (default) — today's N independent single-threaded Worker_prime
+	//                       instances, each with its own Sieve and segment cursor.
+	// "engine"            — reserved for the upcoming PrimeMiningEngine
+	//                       (Option 3).  Currently logs and falls back to "workers".
+	std::string m_engine_mode{"workers"};
 };
 
 struct Worker_config_fpga
