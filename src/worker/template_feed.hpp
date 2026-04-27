@@ -76,7 +76,9 @@ public:
     {
         if (!epoch)
         {
-            return m_latest_epoch_id.load(std::memory_order_acquire);
+            // No state mutation on the null path — relaxed read is sufficient
+            // and matches the relaxed load below that seeds `next_id`.
+            return m_latest_epoch_id.load(std::memory_order_relaxed);
         }
 
         const std::uint64_t next_id = m_latest_epoch_id.load(std::memory_order_relaxed) + 1;
