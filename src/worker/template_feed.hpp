@@ -91,6 +91,17 @@ public:
         m_latest_epoch_id.store(next_id, std::memory_order_release);
 
         // Wake any worker waiting in wait_for_epoch_after().
+        //
+        // The empty critical section is intentional: the predicate
+        // (m_latest_epoch_id) is updated above WITHOUT holding m_wake_mtx,
+        // so a waiter that has just observed the old predicate value but has
+        // not yet parked on m_wake_cv could otherwise miss the notify_all()
+        // (classic lost-wakeup race).  Briefly acquiring m_wake_mtx here
+        // serialises with the waiter's `cv.wait(lock, predicate)` block: by
+        // the time we own the lock, the waiter is either (a) still in its
+        // predicate re-evaluation under the same lock and will observe the
+        // new id when we release, or (b) fully parked on the CV and will
+        // be reached by the notify_all() below.
         {
             std::lock_guard<std::mutex> lock(m_wake_mtx);
         }
@@ -132,6 +143,11 @@ public:
     // Wake any waiters without publishing a new epoch.  Used by Worker_manager
     // during shutdown so workers blocked in wait_for_epoch_after() can re-
     // evaluate their wake_predicate (typically an m_shutdown flag).
+    //
+    // The empty critical section is intentional for the same reason as in
+    // publish() — the wake_predicate is flipped by the caller WITHOUT holding
+    // m_wake_mtx, so we briefly take the lock here to close the gap between
+    // a waiter's predicate check and its park-on-CV (lost-wakeup race).
     void notify_wake()
     {
         {
