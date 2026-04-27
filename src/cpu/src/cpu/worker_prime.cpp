@@ -689,14 +689,14 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 	{
 		auto sieve_calls = m_segmented_sieve->m_diag_sieve_calls.load(std::memory_order_relaxed);
 		auto inner_hits  = m_segmented_sieve->m_diag_inner_hits.load(std::memory_order_relaxed);
-		auto sort_us     = m_segmented_sieve->m_diag_sort_us.load(std::memory_order_relaxed);
+		auto starting_multiples_us = m_segmented_sieve->m_diag_starting_multiples_us.load(std::memory_order_relaxed);
 		auto prime_count = m_segmented_sieve->m_diag_prime_count.load(std::memory_order_relaxed);
 
 		if (sieve_calls > 0) {
-			m_logger->debug("[Sieve Diag] calls={} hits={} hits/call={:.1f} sort={:.2f}ms primes={}",
+			m_logger->debug("[Sieve Diag] calls={} hits={} hits/call={:.1f} start_mult={:.2f}ms primes={}",
 				sieve_calls, inner_hits,
 				static_cast<double>(inner_hits) / sieve_calls,
-				sort_us / 1000.0,
+				starting_multiples_us / 1000.0,
 			prime_count);
 		}
 	}

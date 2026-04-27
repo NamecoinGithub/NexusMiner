@@ -251,7 +251,10 @@ namespace nexusminer {
                 m_prime_state.assign(shared_primes.size(), SievePrimeState{0, 0});
             }
 
-            const auto sort_start = std::chrono::steady_clock::now();
+            // With Stone 1 the prime list is pre-sorted (large-prime-first) by
+            // Sieving_prime_table, so this loop only computes per-prime
+            // starting multiples + wheel indices — no sort happens here.
+            const auto starting_multiples_start = std::chrono::steady_clock::now();
             for (std::size_t i = 0; i < shared_primes.size(); ++i)
             {
                 const uint32_t prime = shared_primes[i];
@@ -261,14 +264,12 @@ namespace nexusminer {
                 int wheel_index = (boost::integer::mod_inverse(static_cast<int>(prime), 30) * m) % 30;
                 m_prime_state[i].wheel_index = sieve30_index[wheel_index];
             }
-            const auto sort_end = std::chrono::steady_clock::now();
+            const auto starting_multiples_end = std::chrono::steady_clock::now();
 
-            // Note: with Stone 1 the prime list is pre-sorted (large-prime-first)
-            // by Sieving_prime_table — no per-cycle sort needed.  We keep the
-            // diagnostic to preserve [Sieve Diag] output continuity.
-            uint64_t sort_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                sort_end - sort_start).count();
-            m_diag_sort_us.store(sort_us, std::memory_order_relaxed);
+            uint64_t starting_multiples_us =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    starting_multiples_end - starting_multiples_start).count();
+            m_diag_starting_multiples_us.store(starting_multiples_us, std::memory_order_relaxed);
             m_diag_prime_count.store(static_cast<uint32_t>(m_prime_state.size()),
                                       std::memory_order_relaxed);
         }
@@ -379,7 +380,7 @@ namespace nexusminer {
             m_chain_candidate_total_length = 0;
             m_diag_sieve_calls.store(0, std::memory_order_relaxed);
             m_diag_inner_hits.store(0, std::memory_order_relaxed);
-            m_diag_sort_us.store(0, std::memory_order_relaxed);
+            m_diag_starting_multiples_us.store(0, std::memory_order_relaxed);
             m_diag_prime_count.store(0, std::memory_order_relaxed);
         }
 

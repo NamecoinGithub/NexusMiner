@@ -132,7 +132,7 @@ namespace nexusminer {
 			// .load(std::memory_order_relaxed) — no synchronisation needed beyond atomicity.
 			std::atomic<uint64_t> m_diag_sieve_calls{0};   // total sieve_segment() calls since last reset
 			std::atomic<uint64_t> m_diag_inner_hits{0};    // total inner-loop sieve-write hits since last reset
-			std::atomic<uint64_t> m_diag_sort_us{0};       // µs for the last calculate_starting_multiples sort
+			std::atomic<uint64_t> m_diag_starting_multiples_us{0};  // µs spent in calculate_starting_multiples (no sort since Stone 1)
 			std::atomic<uint32_t> m_diag_prime_count{0};   // count of sieving primes in m_primes_aos
 
 		private:
