@@ -61,14 +61,14 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 		if (std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
 			auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
 			if (cpu_cfg.m_threads > 1) {
-				m_logger->info(m_log_leader + "Multi-core configuration: {} thread(s)", cpu_cfg.m_threads);
-				m_logger->info(m_log_leader + "Note: Multi-threading support is available");
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Multi-core configuration: {} thread(s)"), cpu_cfg.m_threads);
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Note: Multi-threading support is available"));
 			}
 			if (cpu_cfg.m_affinity_mask > 0) {
-				m_logger->info(m_log_leader + "CPU affinity mask: 0x{:016x}", cpu_cfg.m_affinity_mask);
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "CPU affinity mask: 0x{:016x}"), cpu_cfg.m_affinity_mask);
 			}
 			if (cpu_cfg.m_priority_level != 2) {
-				m_logger->info(m_log_leader + "Thread priority: {}", cpu_cfg.m_priority_level);
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Thread priority: {}"), cpu_cfg.m_priority_level);
 			}
 		}
 
@@ -100,7 +100,7 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 		// Start persistent thread
 		m_shutdown = false;
 		m_run_thread = std::thread(&Worker_prime::run, this);
-		m_logger->info(m_log_leader + "Persistent worker thread started");
+		m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Persistent worker thread started"));
 
 	} catch (const std::exception& e) {
 		m_logger->error("Worker_prime constructor: Failed to initialize worker {}: {}",
@@ -276,7 +276,7 @@ void Worker_prime::run()
 {
 	// Get CPU configuration
 	if (!std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
-		m_logger->error(m_log_leader + "Invalid worker mode for CPU worker");
+		m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Invalid worker mode for CPU worker"));
 		return;
 	}
 
@@ -286,12 +286,12 @@ void Worker_prime::run()
 	// Prime mining currently supports single-threaded mode only
 	// Multi-threading requires sieve partitioning which is more complex
 	if (num_threads > 1) {
-		m_logger->warn(m_log_leader + "Multi-threading requested ({} threads) but prime mining currently supports only single thread", num_threads);
-		m_logger->warn(m_log_leader + "Falling back to single-threaded mode");
+		m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Multi-threading requested ({} threads) but prime mining currently supports only single thread"), num_threads);
+		m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Falling back to single-threaded mode"));
 		num_threads = 1;
 	}
 
-	m_logger->info(m_log_leader + "Persistent worker thread ready, waiting for work...");
+	m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Persistent worker thread ready, waiting for work..."));
 
 	// Persistent thread loop - runs until shutdown
 	while (true) {
@@ -302,7 +302,7 @@ void Worker_prime::run()
 
 			// Check for shutdown
 			if (m_shutdown) {
-				m_logger->info(m_log_leader + "Worker thread shutting down");
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Worker thread shutting down"));
 				break;
 			}
 
@@ -314,9 +314,9 @@ void Worker_prime::run()
 
 		// Apply thread settings for mining
 		if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
-			m_logger->info(m_log_leader + "Thread priority set to level {}", cpu_cfg.m_priority_level);
+			m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Thread priority set to level {}"), cpu_cfg.m_priority_level);
 		} else {
-			m_logger->warn(m_log_leader + "Failed to set thread priority to level {}", cpu_cfg.m_priority_level);
+			m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Failed to set thread priority to level {}"), cpu_cfg.m_priority_level);
 		}
 
 		// Apply hyperthreading and efficiency cores filtering
@@ -330,7 +330,7 @@ void Worker_prime::run()
 				uint32_t physical_cores = cpu::get_physical_core_count();
 				bool smt_enabled = cpu::is_smt_enabled();
 
-				m_logger->info(m_log_leader + "Core detection: {} logical cores, {} physical cores, SMT {}",
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Core detection: {} logical cores, {} physical cores, SMT {}"),
 				              total_cores, physical_cores, smt_enabled ? "enabled" : "disabled");
 
 				// Build affinity mask based on settings
@@ -339,7 +339,7 @@ void Worker_prime::run()
 					for (uint32_t i = 0; i < physical_cores; i++) {
 						effective_affinity |= (1ULL << i);
 					}
-					m_logger->info(m_log_leader + "Hyperthreading disabled, using physical cores only: 0x{:016x}",
+					m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Hyperthreading disabled, using physical cores only: 0x{:016x}"),
 					              effective_affinity);
 				}
 
@@ -351,10 +351,10 @@ void Worker_prime::run()
 						for (auto core : p_cores) {
 							effective_affinity |= (1ULL << core);
 						}
-						m_logger->info(m_log_leader + "E-cores disabled, using P-cores only: 0x{:016x}",
+						m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "E-cores disabled, using P-cores only: 0x{:016x}"),
 						              effective_affinity);
 					} else {
-						m_logger->warn(m_log_leader + "Could not detect P-cores, using all cores");
+						m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Could not detect P-cores, using all cores"));
 					}
 				}
 			}
@@ -362,9 +362,9 @@ void Worker_prime::run()
 
 		if (effective_affinity != 0) {
 			if (cpu::set_thread_affinity(effective_affinity)) {
-				m_logger->info(m_log_leader + "Thread affinity set to 0x{:016x}", effective_affinity);
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Thread affinity set to 0x{:016x}"), effective_affinity);
 			} else {
-				m_logger->warn(m_log_leader + "Failed to set thread affinity to 0x{:016x}", effective_affinity);
+				m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Failed to set thread affinity to 0x{:016x}"), effective_affinity);
 			}
 		}
 
@@ -498,7 +498,7 @@ void Worker_prime::run()
 					"Expected 10 total bytes (6 prime-gap bytes + 4-byte LE fraction)");
 				if (!has_expected_prime_offsets(offsets))
 				{
-					m_logger->error(m_log_leader + "Rejecting prime candidate with malformed serialized offsets ({} bytes, expected {} total bytes = {} prime-gap bytes + {}-byte LE fraction)",
+					m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Rejecting prime candidate with malformed serialized offsets ({} bytes, expected {} total bytes = {} prime-gap bytes + {}-byte LE fraction)"),
 						offsets.size(),
 						kMaxSerializedPrimeOffsets,
 						kMaxSerializedPrimeOffsets - kPrimeOffsetFractionBytes,
@@ -517,14 +517,14 @@ void Worker_prime::run()
 				}
 				offsets_str << "]";
 
-				m_logger->info(m_log_leader + "✓ FOUND VALID PRIME BLOCK! Difficulty: {:.6f} (required: {:.6f}), Chain length: {}, Offsets: {}",
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "✓ FOUND VALID PRIME BLOCK! Difficulty: {:.6f} (required: {:.6f}), Chain length: {}, Offsets: {}"),
 					actual_difficulty, required_difficulty, offsets.size(), offsets_str.str());
 
 				//we found a valid chain.  submit it.
 				{
 					if (m_found_nonce_callback)
 					{
-						m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
+						m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "💎 Block found! Posting to main io_context..."));
 						// Capture block and offsets by value to avoid dangling references
 						auto block_copy = local_block;
 						auto captured_offsets = std::move(offsets);
@@ -538,13 +538,13 @@ void Worker_prime::run()
 					}
 					else
 					{
-						m_logger->debug(m_log_leader + "Miner callback function not set.");
+						m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Miner callback function not set."));
 					}
 				}
 			}
 			else
 			{
-				m_logger->debug(m_log_leader + "Candidate validation failed (difficulty {:.6f} < {:.6f} or invalid prime), continuing...",
+				m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Candidate validation failed (difficulty {:.6f} < {:.6f} or invalid prime), continuing..."),
 					actual_difficulty, required_difficulty);
 			}
 		}
@@ -605,7 +605,7 @@ void Worker_prime::run()
 			m_has_active_cycle = false;
 		}
 
-		m_logger->info(m_log_leader + "Mining stopped, waiting for new work...");
+		m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Mining stopped, waiting for new work..."));
 	}  // End of persistent thread loop
 }
 
