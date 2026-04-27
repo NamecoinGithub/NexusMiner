@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/falcon_qtv_parity_test.dir/link.d CMakeFiles/falcon_qtv_parity_test.dir/falcon_qtv_parity_test.cpp.o -o falcon_qtv_parity_test   -L/home/runner/work/NexusMiner/NexusMiner/libs  -Wl,-rpath,/home/runner/work/NexusMiner/NexusMiner/libs /usr/lib/x86_64-linux-gnu/libssl.a /usr/lib/x86_64-linux-gnu/libcrypto.a -ldl
