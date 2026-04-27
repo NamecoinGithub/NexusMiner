@@ -79,6 +79,24 @@ void test_factory_workers_mode()  { verify_factory_yields_per_worker_semantics("
 void test_factory_engine_mode()   { verify_factory_yields_per_worker_semantics("engine");  }
 void test_factory_garbage_mode()  { verify_factory_yields_per_worker_semantics("garbage"); }
 void test_factory_empty_mode()    { verify_factory_yields_per_worker_semantics("");        }
+
+void test_shared_smoke_reset_then_three_advances()
+{
+    constexpr std::uint64_t S = 2048;
+    constexpr std::uint64_t N = 99'000;
+    nexusminer::cpu::Shared_segment_allocator alloc{S};
+    alloc.reset(N);
+
+    const auto a = alloc.next_segment_start();
+    const auto b = alloc.next_segment_start();
+    const auto c = alloc.next_segment_start();
+
+    print_result("Shared reset(N) → next_segment_start() returns N",  a == N);
+    print_result("Shared second next_segment_start() returns N + S",  b == N + S);
+    print_result("Shared third  next_segment_start() returns N + 2S", c == N + 2 * S);
+    print_result("Shared current() points at next pending offset",
+                 alloc.current() == N + 3 * S);
+}
 } // namespace
 
 int main()
@@ -98,6 +116,7 @@ int main()
     test_factory_engine_mode();
     test_factory_garbage_mode();
     test_factory_empty_mode();
+    test_shared_smoke_reset_then_three_advances();
 
     std::cout << "\nResult: " << (tests_run - tests_failed) << "/" << tests_run << " passed\n";
     return tests_failed == 0 ? 0 : 1;

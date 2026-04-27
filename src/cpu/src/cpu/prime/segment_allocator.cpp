@@ -24,6 +24,31 @@ std::uint64_t Per_worker_segment_allocator::next_segment_start()
     return out;
 }
 
+Shared_segment_allocator::Shared_segment_allocator(std::uint64_t segment_size)
+    : m_segment_size{segment_size}
+{
+}
+
+void Shared_segment_allocator::reset(std::uint64_t starting_nonce)
+{
+    // Single-writer (the engine consumer thread) on a new template; release
+    // so that pool threads which subsequently observe the published
+    // EngineSession (acquire) also see the reset cursor value.
+    m_cursor.store(starting_nonce, std::memory_order_release);
+}
+
+std::uint64_t Shared_segment_allocator::next_segment_start()
+{
+    // Wait-free hot path: relaxed is sufficient because the cursor value is
+    // not used to synchronise other state — it is the data being protected.
+    return m_cursor.fetch_add(m_segment_size, std::memory_order_relaxed);
+}
+
+std::uint64_t Shared_segment_allocator::current() const
+{
+    return m_cursor.load(std::memory_order_acquire);
+}
+
 std::unique_ptr<Segment_allocator>
 make_segment_allocator_for_engine_mode(const std::string& engine_mode,
                                        std::uint64_t segment_size)

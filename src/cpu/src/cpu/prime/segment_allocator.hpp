@@ -1,6 +1,7 @@
 #ifndef NEXUSMINER_CPU_PRIME_SEGMENT_ALLOCATOR_HPP
 #define NEXUSMINER_CPU_PRIME_SEGMENT_ALLOCATOR_HPP
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 
@@ -52,6 +53,33 @@ public:
 private:
     std::uint64_t m_segment_size;
     std::uint64_t m_cursor{0};
+};
+
+// Stone 5: cooperative cursor for the upcoming PrimeMiningEngine pool.
+//
+// One instance is owned by the engine and shared across N pool sieve threads.
+// reset() is called by the engine consumer thread on a new template (single
+// writer); next_segment_start() is called by every pool thread on the hot path
+// (many concurrent callers).  Implemented as a single std::atomic<uint64_t>
+// fetch_add — wait-free, no mutex on the hot path.
+//
+// The engine never calls reset() while a pool thread is mid-segment: pool
+// threads observe the new EngineSession at the top of their loop and that
+// observation is sequenced after the engine's session publish, which is in
+// turn published *after* reset() has run on the consumer thread.  Pool threads
+// therefore never see a partially-reset cursor for the new session.
+class Shared_segment_allocator : public Segment_allocator
+{
+public:
+    explicit Shared_segment_allocator(std::uint64_t segment_size);
+
+    void reset(std::uint64_t starting_nonce) override;
+    std::uint64_t next_segment_start() override;
+    std::uint64_t current() const override;
+
+private:
+    std::uint64_t m_segment_size;
+    std::atomic<std::uint64_t> m_cursor{0};
 };
 
 // Factory: returns the allocator implied by Worker_config_cpu::m_engine_mode.
