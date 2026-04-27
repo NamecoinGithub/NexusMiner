@@ -468,9 +468,13 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                 {
                     const uint1k chain_start = bound_base_hash + candidate_block.nNonce;
                     const uint1024_t hashPrime = boost_uint1k_to_uint1024(chain_start);
-                    // Required difficulty is sourced from the session's nbits;
-                    // Stone 7 will plumb network difficulty through here.
-                    const double required_difficulty = 0.0;
+                    // Required network difficulty derived from the session's
+                    // nBits the same way Worker_prime::getNetworkDifficulty()
+                    // does it (nbits / 10'000'000.0).  Without this, every
+                    // Fermat-passing candidate would be flagged "valid" and
+                    // dispatched, flooding the engine with false positives.
+                    const double required_difficulty =
+                        static_cast<double>(fresh->nbits) / 10000000.0;
                     is_valid = nexusminer::prime::ValidatePrimeCandidate(
                         hashPrime,
                         required_difficulty,
