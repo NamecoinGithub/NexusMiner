@@ -664,41 +664,18 @@ uint1024_t Worker_prime::boost_uint1024_t_to_uint1024_t(const uint1k& p)
 
 void Worker_prime::update_statistics(stats::Collector& stats_collector)
 {
-	auto prime_stats = *m_published_stats.load();
+	auto snapshot = m_published_stats.load();
+	stats_collector.update_worker_stats(m_config.m_internal_id, *snapshot);
 
-	// Keep CPU-load reporting interval-based while leaving histogram/best-chain stats
-	// on the immutable worker snapshot path.
-	{
-		std::scoped_lock<std::mutex> lck(m_mtx);
-		if (m_cpu_total_time.count() > 0) {
-			prime_stats.m_cpu_load = static_cast<double>(m_cpu_active_time.count()) /
-			                          static_cast<double>(m_cpu_total_time.count());
-			prime_stats.m_cpu_load = std::max(0.0, std::min(1.0, prime_stats.m_cpu_load));
-		} else {
-			prime_stats.m_cpu_load = 0.0;
-		}
-
-		m_cpu_active_time = {};
-		m_cpu_total_time  = {};
-		m_cpu_tracking_start = std::chrono::steady_clock::now();
-	}
-
-	stats_collector.update_worker_stats(m_config.m_internal_id, prime_stats);
-
-	// [Sieve Diag] log — emitted on stats thread only, reads atomics with relaxed order
-	{
-		auto sieve_calls = m_segmented_sieve->m_diag_sieve_calls.load(std::memory_order_relaxed);
-		auto inner_hits  = m_segmented_sieve->m_diag_inner_hits.load(std::memory_order_relaxed);
-		auto starting_multiples_us = m_segmented_sieve->m_diag_starting_multiples_us.load(std::memory_order_relaxed);
-		auto prime_count = m_segmented_sieve->m_diag_prime_count.load(std::memory_order_relaxed);
-
-		if (sieve_calls > 0) {
-			m_logger->debug("[Sieve Diag] calls={} hits={} hits/call={:.1f} start_mult={:.2f}ms primes={}",
-				sieve_calls, inner_hits,
-				static_cast<double>(inner_hits) / sieve_calls,
-				starting_multiples_us / 1000.0,
-			prime_count);
-		}
+	// [Sieve Diag] log — emitted on stats thread, reads exclusively from the
+	// immutable published snapshot so no live sieve state is touched here.
+	const auto& diag = snapshot->m_sieve_diag;
+	if (diag.m_sieve_calls > 0) {
+		m_logger->debug("[Sieve Diag] calls={} hits={} hits/call={:.1f} start_mult={:.2f}ms primes={}",
+			diag.m_sieve_calls, diag.m_inner_hits,
+			static_cast<double>(diag.m_inner_hits) / diag.m_sieve_calls,
+			diag.m_starting_multiples_us / 1000.0,
+			diag.m_prime_count);
 	}
 }
 
@@ -711,9 +688,26 @@ void Worker_prime::publish_statistics_snapshot()
 	prime_stats.m_range_searched = m_range_searched.load(std::memory_order_relaxed);
 	prime_stats.m_most_difficult_chain = m_segmented_sieve->m_best_chain;
 
+	// Snapshot the sieve diagnostic counters here (worker thread) so the stats
+	// thread reads a coherent set from the immutable snapshot rather than
+	// racing the live atomics.
+	prime_stats.m_sieve_diag.m_sieve_calls =
+		m_segmented_sieve->m_diag_sieve_calls.load(std::memory_order_relaxed);
+	prime_stats.m_sieve_diag.m_inner_hits =
+		m_segmented_sieve->m_diag_inner_hits.load(std::memory_order_relaxed);
+	prime_stats.m_sieve_diag.m_starting_multiples_us =
+		m_segmented_sieve->m_diag_starting_multiples_us.load(std::memory_order_relaxed);
+	prime_stats.m_sieve_diag.m_prime_count =
+		m_segmented_sieve->m_diag_prime_count.load(std::memory_order_relaxed);
+
 	{
 		std::scoped_lock<std::mutex> lck(m_mtx);
 		prime_stats.m_difficulty = m_difficulty;
+
+		// CPU-load is computed and reset here so the published snapshot owns
+		// the entire stat surface; update_statistics() becomes a pure copy.
+		// The reported value is "load over the interval since the last
+		// publish" which matches every other cumulative-since-publish field.
 		if (m_cpu_total_time.count() > 0) {
 			prime_stats.m_cpu_load = static_cast<double>(m_cpu_active_time.count()) /
 			                          static_cast<double>(m_cpu_total_time.count());
@@ -721,6 +715,9 @@ void Worker_prime::publish_statistics_snapshot()
 		} else {
 			prime_stats.m_cpu_load = 0.0;
 		}
+		m_cpu_active_time = {};
+		m_cpu_total_time  = {};
+		m_cpu_tracking_start = std::chrono::steady_clock::now();
 	}
 
 	m_published_stats.store(std::move(prime_stats));

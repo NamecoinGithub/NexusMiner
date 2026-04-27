@@ -40,19 +40,31 @@ void test_atomic_snapshot_keeps_immutable_previous_value()
     nexusminer::stats::Prime first;
     first.m_range_searched = 11;
     first.m_chain_histogram[5] = 7;
+    first.m_cpu_load = 0.25;
+    first.m_sieve_diag.m_sieve_calls = 100;
+    first.m_sieve_diag.m_inner_hits = 4242;
     snapshot_store.store(first);
     auto first_snapshot = snapshot_store.load();
 
     nexusminer::stats::Prime second = first;
     second.m_range_searched = 42;
     second.m_chain_histogram[5] = 9;
+    second.m_cpu_load = 0.75;
+    second.m_sieve_diag.m_sieve_calls = 200;
+    second.m_sieve_diag.m_inner_hits = 9999;
     snapshot_store.store(second);
     auto second_snapshot = snapshot_store.load();
 
     const bool passed = first_snapshot->m_range_searched == 11 &&
                         first_snapshot->m_chain_histogram[5] == 7 &&
+                        first_snapshot->m_cpu_load == 0.25 &&
+                        first_snapshot->m_sieve_diag.m_sieve_calls == 100 &&
+                        first_snapshot->m_sieve_diag.m_inner_hits == 4242 &&
                         second_snapshot->m_range_searched == 42 &&
-                        second_snapshot->m_chain_histogram[5] == 9;
+                        second_snapshot->m_chain_histogram[5] == 9 &&
+                        second_snapshot->m_cpu_load == 0.75 &&
+                        second_snapshot->m_sieve_diag.m_sieve_calls == 200 &&
+                        second_snapshot->m_sieve_diag.m_inner_hits == 9999;
     print_result("Atomic snapshot readers keep immutable published values", passed);
 }
 

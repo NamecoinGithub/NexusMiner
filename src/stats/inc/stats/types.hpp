@@ -72,6 +72,7 @@ struct Prime
     double m_most_difficult_chain{ 0.0 };
     double m_cpu_load{ 0.0 };  // estimated CPU load in [0.0, 1.0]
     Prime_histogram m_chain_histogram{};
+    Prime_sieve_diag m_sieve_diag{};
 
     Prime& operator+=(Prime const& other)
     {
