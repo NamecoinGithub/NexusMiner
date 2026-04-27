@@ -1,4 +1,5 @@
 #include "worker_manager.hpp"
+#include "worker/template_feed.hpp"
 #include "colin_agent.hpp"
 #include "cpu/worker_hash.hpp"
 
@@ -217,6 +218,10 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // starts mining threads; without this the template is silently dropped and
                 // workers_fed falsely reads 0 keeping the miner in a doom loop.
                 size_t workers_fed = 0;
+                size_t total_worker_count = 0;
+                std::vector<std::shared_ptr<Worker>> worker_snapshot;
+                std::shared_ptr<WorkPackage> work_package;
+                std::shared_ptr<WorkerTemplateFeed> feed_snapshot;
                 {
                     std::lock_guard<std::mutex> lock(m_worker_mutex);
                     if (is_degraded() && !m_recovery_workers_spawned && m_workers.empty()) {
@@ -234,7 +239,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     }
 
                     /* Create shared WorkPackage once for all workers */
-                    auto work_package = std::make_shared<WorkPackage>(block, nBits);
+                    work_package = std::make_shared<WorkPackage>(block, nBits);
                     m_logger->debug("[Worker_manager] Created shared WorkPackage (block height: {}, nBits: 0x{:08x})",
                                     block.nHeight, nBits);
 
@@ -249,138 +254,209 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     }
 #endif
 
-                    /* Distribute template to all worker threads */
-                    for (size_t i = 0; i < m_workers.size(); ++i) {
-                        auto& worker = m_workers[i];
-                        if (worker) {
-                            worker->set_block(work_package, [this](auto id, auto block_data)
-                            {
-                            m_logger->info("════════════════════════════════════════════════════════");
-                            m_logger->info("💎 BLOCK FOUND CALLBACK INVOKED!");
-                            m_logger->info("   Worker ID:  {}", id);
-                            m_logger->info("   Height:     {}", block_data->nHeight);
-                            m_logger->info("   Nonce:      0x{:016x}", block_data->nNonce);
-                            m_logger->info("════════════════════════════════════════════════════════");
+                    // Stone 4: snapshot the worker vector and the feed pointer under
+                    // m_worker_mutex, then release it before fanning out.  The
+                    // shared template feed is published into below; per-worker
+                    // set_block() shim calls (for unmigrated subclasses) run
+                    // *outside* the parent mutex so the stats path no longer
+                    // contends with N CV notifications during template handoff.
+                    //
+                    // Note: we snapshot the full vector (including any nulls)
+                    // so the loop index below still matches each worker's
+                    // original m_workers position — the warn() messages are
+                    // diagnostic and need that mapping to stay aligned with
+                    // m_internal_id (== creation index).
+                    worker_snapshot = m_workers;
+                    total_worker_count = 0;
+                    for (auto const& w : worker_snapshot) {
+                        if (w) ++total_worker_count;
+                    }
+                    feed_snapshot = m_template_feed;
+                }  // ── m_worker_mutex released here ───────────────────────────
 
-                            if (!m_primary_node_session || !m_primary_node_session->is_authenticated())
-                            {
-                                m_logger->error("[Worker_manager] No authenticated session. Can't submit block.");
-                                return;
+                // Build the found-block callback ONCE per template (instead of
+                // re-capturing it per worker as the prior fanout did).  Both
+                // the WorkerTemplateFeed publish path and the legacy per-worker
+                // set_block() shim path share the same handler instance, which
+                // also makes future Stone-5 migrations of individual worker
+                // subclasses transparent — they pull the same handler from the
+                // published epoch.
+                Worker::Block_found_handler on_found =
+                    [this](std::uint32_t id, std::unique_ptr<Block_data> block_data)
+                {
+                    m_logger->info("════════════════════════════════════════════════════════");
+                    m_logger->info("💎 BLOCK FOUND CALLBACK INVOKED!");
+                    m_logger->info("   Worker ID:  {}", id);
+                    m_logger->info("   Height:     {}", block_data->nHeight);
+                    m_logger->info("   Nonce:      0x{:016x}", block_data->nNonce);
+                    m_logger->info("════════════════════════════════════════════════════════");
+
+                    if (!m_primary_node_session || !m_primary_node_session->is_authenticated())
+                    {
+                        m_logger->error("[Worker_manager] No authenticated session. Can't submit block.");
+                        return;
+                    }
+
+                    // Get the mining template interface to prepare full block submission
+                    auto solo_protocol = m_primary_node_session->get_primary_protocol();
+                    if (!solo_protocol)
+                    {
+                        m_logger->error("[Worker_manager] Failed to get protocol from NodeSession");
+                        return;
+                    }
+
+                    auto* template_interface = solo_protocol->get_template_interface();
+                    if (!template_interface)
+                    {
+                        m_logger->error("[Worker_manager] Template interface not available");
+                        return;
+                    }
+
+                    // ✅ NEW: Final staleness check before submission (Template Staleness Prevention)
+                    // Use HeightTracker snapshot as single source of truth for age check.
+                    // Channel-height staleness (is_template_stale) was removed: structurally
+                    // false under canonical-only semantics.  Age check is the sole guard.
+                    auto ht_snap = solo_protocol->get_height_tracker_snapshot();
+
+                    // Age-based staleness (safety net for missed push notifications)
+                    // 600s matches the push-driven era MAX_TEMPLATE_AGE
+                    bool age_stale = ht_snap.is_template_age_stale();
+                    uint64_t template_age = ht_snap.get_template_age_seconds();
+
+                    if (age_stale)
+                    {
+                        const char* soft_refresh_reason = "submit_side_age_stale";
+                        m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: 600s)",
+                                       template_age);
+                        m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
+                        mark_soft_refresh_requested(soft_refresh_reason);
+                        template_interface->discard_template("Age exceeded 600s before submission");
+
+                        // Request fresh work/GET_BLOCK via NodeSession
+                        m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK via NodeSession");
+                        auto work_payload = m_primary_node_session->request_work(protocol::GetBlockReason::HEALTH_CHANNEL_STALE);
+                        if (work_payload && !work_payload->empty()) {
+                            if (m_primary_node_session->transmit(work_payload)) {
+                                auto proto = m_primary_node_session->get_active_protocol();
+                                if (proto) proto->mark_get_block_pending(protocol::GetBlockReason::HEALTH_CHANNEL_STALE);
                             }
-
-                            // Get the mining template interface to prepare full block submission
-                            auto solo_protocol = m_primary_node_session->get_primary_protocol();
-                            if (!solo_protocol)
-                            {
-                                m_logger->error("[Worker_manager] Failed to get protocol from NodeSession");
-                                return;
-                            }
-
-                            auto* template_interface = solo_protocol->get_template_interface();
-                            if (!template_interface)
-                            {
-                                m_logger->error("[Worker_manager] Template interface not available");
-                                return;
-                            }
-
-                            // ✅ NEW: Final staleness check before submission (Template Staleness Prevention)
-                            // Use HeightTracker snapshot as single source of truth for age check.
-                            // Channel-height staleness (is_template_stale) was removed: structurally
-                            // false under canonical-only semantics.  Age check is the sole guard.
-                            auto ht_snap = solo_protocol->get_height_tracker_snapshot();
-
-                            // Age-based staleness (safety net for missed push notifications)
-                            // 600s matches the push-driven era MAX_TEMPLATE_AGE
-                            bool age_stale = ht_snap.is_template_age_stale();
-                            uint64_t template_age = ht_snap.get_template_age_seconds();
-
-                            if (age_stale)
-                            {
-                                const char* soft_refresh_reason = "submit_side_age_stale";
-                                m_logger->error("[Worker_manager] ❌ Solution found but template too old: {}s (max: 600s)",
-                                               template_age);
-                                m_logger->error("[Worker_manager]    Push notifications likely missed - discarding");
-                                mark_soft_refresh_requested(soft_refresh_reason);
-                                template_interface->discard_template("Age exceeded 600s before submission");
-
-                                // Request fresh work/GET_BLOCK via NodeSession
-                                m_logger->info("[Worker_manager] Requesting fresh work/GET_BLOCK via NodeSession");
-                                auto work_payload = m_primary_node_session->request_work(protocol::GetBlockReason::HEALTH_CHANNEL_STALE);
-                                if (work_payload && !work_payload->empty()) {
-                                    if (m_primary_node_session->transmit(work_payload)) {
-                                        auto proto = m_primary_node_session->get_active_protocol();
-                                        if (proto) proto->mark_get_block_pending(protocol::GetBlockReason::HEALTH_CHANNEL_STALE);
-                                    }
-                                }
-                                return;
-                            }
-
-                            m_logger->info("[Worker_manager] 💎 Solution found! Age: {}s, Channel height valid ✅ - SUBMITTING", template_age);
-
-                            // Gap 2: Log hashPrevBlock before submission (SUBMIT AUDIT).
-                            // Cross-reference: node Guard 2 checks pBlock->hashPrevBlock == hashBestChain.
-                            // If node rejects "stale block", compare this log against node's hashBestChain.
-                            {
-                                auto const* submit_tmpl = template_interface->get_current_template();
-                                if (submit_tmpl) {
-                                    auto prev_bytes = submit_tmpl->block.hashPrevBlock.GetBytes();
-                                    std::string prev_hex;
-                                    for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i) {
-                                        char buf[3];
-                                        snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
-                                        prev_hex += buf;
-                                    }
-                                    m_logger->info("[SUBMIT AUDIT]   block.hashPrevBlock = {}... (tip anchor — node Guard 2 will verify this == hashBestChain)", prev_hex);
-                                }
-                            }
-
-                            // Prepare the canonical submit bytes from the worker-owned snapshot.
-                            // Flow ownership matters here:
-                            //   worker -> Block_data snapshot -> worker_manager ->
-                            //   prepare_block_submission_from_solved(...) -> Solo::submit_block()
-                            //
-                            // The worker snapshot is the exact header the worker proved.  We must
-                            // not rebuild it from m_current_template here because a concurrent
-                            // BLOCK_DATA push can advance height / prevhash after the worker found
-                            // the solution but before the submit path runs.
-                            //
-                            // Prime channel keeps one extra tail: the worker-computed vOffsets.
-                            // Those bytes are appended after the 216-byte Tritium block body so
-                            // the node can validate the prime cluster against the same snapshot.
-                            m_logger->info("[Worker_manager] Preparing full block submission");
-                            m_logger->info("[Worker_manager]   Height: {}", block_data->nHeight);
-                            m_logger->info("[Worker_manager]   Nonce:  0x{:016x}", block_data->nNonce);
-                            if (!block_data->vOffsets.empty())
-                                m_logger->info("[Worker_manager]   vOffsets: {} bytes (Prime channel)",
-                                               block_data->vOffsets.size());
-
-                            auto full_block_bytes = (block_data->nChannel == 1 && !block_data->vOffsets.empty())
-                                ? template_interface->prepare_block_submission_from_solved(*block_data, block_data->vOffsets)
-                                : template_interface->prepare_block_submission_from_solved(*block_data);
-
-                            if (full_block_bytes.empty())
-                            {
-                                m_logger->error("[Worker_manager] Failed to prepare block submission - empty payload");
-                                m_logger->error("[Worker_manager]   This indicates template or block data is invalid");
-                                return;
-                            }
-
-                            m_logger->info("[Worker_manager] Full block serialized: {} bytes", full_block_bytes.size());
-                            m_logger->info("[Worker_manager] Submitting block to protocol layer...");
-
-                            // Submit the full block via NodeSession
-                                submit_solution(full_block_bytes, block_data->nNonce);
-                            });
-                            if (worker->is_running()) {
-                                workers_fed++;
-                                m_logger->debug("[Worker_manager] Template sent to worker {}/{}", 
-                                               workers_fed, m_workers.size());
-                            } else {
-                                m_logger->warn("[Worker_manager] Worker {} did not start after set_block() — not counted", i);
-                            }
-                        } else {
-                            m_logger->warn("[Worker_manager] Skipping null worker at index {}", i);
                         }
+                        return;
+                    }
+
+                    m_logger->info("[Worker_manager] 💎 Solution found! Age: {}s, Channel height valid ✅ - SUBMITTING", template_age);
+
+                    // Gap 2: Log hashPrevBlock before submission (SUBMIT AUDIT).
+                    // Cross-reference: node Guard 2 checks pBlock->hashPrevBlock == hashBestChain.
+                    // If node rejects "stale block", compare this log against node's hashBestChain.
+                    {
+                        auto const* submit_tmpl = template_interface->get_current_template();
+                        if (submit_tmpl) {
+                            auto prev_bytes = submit_tmpl->block.hashPrevBlock.GetBytes();
+                            std::string prev_hex;
+                            for (size_t i = 0; i < std::min(prev_bytes.size(), size_t(8)); ++i) {
+                                char buf[3];
+                                snprintf(buf, sizeof(buf), "%02x", prev_bytes[i]);
+                                prev_hex += buf;
+                            }
+                            m_logger->info("[SUBMIT AUDIT]   block.hashPrevBlock = {}... (tip anchor — node Guard 2 will verify this == hashBestChain)", prev_hex);
+                        }
+                    }
+
+                    // Prepare the canonical submit bytes from the worker-owned snapshot.
+                    // Flow ownership matters here:
+                    //   worker -> Block_data snapshot -> worker_manager ->
+                    //   prepare_block_submission_from_solved(...) -> Solo::submit_block()
+                    //
+                    // The worker snapshot is the exact header the worker proved.  We must
+                    // not rebuild it from m_current_template here because a concurrent
+                    // BLOCK_DATA push can advance height / prevhash after the worker found
+                    // the solution but before the submit path runs.
+                    //
+                    // Prime channel keeps one extra tail: the worker-computed vOffsets.
+                    // Those bytes are appended after the 216-byte Tritium block body so
+                    // the node can validate the prime cluster against the same snapshot.
+                    m_logger->info("[Worker_manager] Preparing full block submission");
+                    m_logger->info("[Worker_manager]   Height: {}", block_data->nHeight);
+                    m_logger->info("[Worker_manager]   Nonce:  0x{:016x}", block_data->nNonce);
+                    if (!block_data->vOffsets.empty())
+                        m_logger->info("[Worker_manager]   vOffsets: {} bytes (Prime channel)",
+                                       block_data->vOffsets.size());
+
+                    auto full_block_bytes = (block_data->nChannel == 1 && !block_data->vOffsets.empty())
+                        ? template_interface->prepare_block_submission_from_solved(*block_data, block_data->vOffsets)
+                        : template_interface->prepare_block_submission_from_solved(*block_data);
+
+                    if (full_block_bytes.empty())
+                    {
+                        m_logger->error("[Worker_manager] Failed to prepare block submission - empty payload");
+                        m_logger->error("[Worker_manager]   This indicates template or block data is invalid");
+                        return;
+                    }
+
+                    m_logger->info("[Worker_manager] Full block serialized: {} bytes", full_block_bytes.size());
+                    m_logger->info("[Worker_manager] Submitting block to protocol layer...");
+
+                    // Submit the full block via NodeSession
+                    submit_solution(full_block_bytes, block_data->nNonce);
+                };
+
+                // Stone 4: publish a single TemplateEpoch into the shared feed.
+                // Workers that consume from the feed (uses_template_feed() == true)
+                // will observe this epoch on their next mining-loop iteration
+                // without any per-worker mutex acquisition by the manager.
+                [[maybe_unused]] std::uint64_t published_epoch_id = 0;
+                if (feed_snapshot) {
+                    auto epoch = std::make_shared<TemplateEpoch>();
+                    epoch->work_package = work_package;
+                    epoch->on_found = on_found;  // shared by all consumers of this epoch
+                    published_epoch_id = feed_snapshot->publish(std::move(epoch));
+                    m_logger->debug("[Worker_manager] Published TemplateEpoch #{} to feed",
+                                    published_epoch_id);
+                }
+
+                // Fan out to workers that have not yet been migrated to consume
+                // from the feed.  This loop runs OUTSIDE m_worker_mutex, so the
+                // stats path is no longer blocked while N per-worker mutexes +
+                // CV notifications take effect.  Once a worker subclass is
+                // migrated and starts returning uses_template_feed() == true,
+                // it is skipped here automatically.
+                //
+                // `i` here is the worker's original m_workers index, which is
+                // assigned to m_config.m_internal_id at construction time, so
+                // diagnostic warn() messages stay aligned with the internal id
+                // operators see in other logs.
+                for (size_t i = 0; i < worker_snapshot.size(); ++i) {
+                    auto& worker = worker_snapshot[i];
+                    if (!worker) {
+                        m_logger->warn("[Worker_manager] Skipping null worker at index {}", i);
+                        continue;
+                    }
+                    if (!worker->uses_template_feed()) {
+                        worker->set_block(work_package, on_found);
+                    }
+                    if (worker->is_running()) {
+                        workers_fed++;
+                        m_logger->debug("[Worker_manager] Template sent to worker {}/{}",
+                                       workers_fed, total_worker_count);
+                    } else if (!worker->uses_template_feed()) {
+                        // Only meaningful for legacy shim path: set_block() was
+                        // expected to wake the worker.  Feed-consuming workers
+                        // observe epochs lock-free at their natural rebind
+                        // point, so is_running()==false here is unrelated to
+                        // the template handoff and would be a misleading warn.
+                        m_logger->warn(
+                            "[Worker_manager] Worker {} did not start after set_block() — not counted",
+                            i);
+                    } else {
+                        // Feed-consuming worker not currently running; not an
+                        // error in the template-handoff sense, but worth
+                        // flagging at debug level since it won't pick up the
+                        // freshly-published epoch until it transitions back
+                        // to running.
+                        m_logger->debug(
+                            "[Worker_manager] Feed-consuming worker {} not running — epoch #{} will be picked up on next start",
+                            i, published_epoch_id);
                     }
                 }
                 
@@ -824,6 +900,13 @@ void Worker_manager::create_workers_locked()
 #endif
 
     auto internal_id = 0U;
+    // Stone 4: ensure a shared template feed exists for this worker batch.
+    // Created lazily here (instead of in the constructor) so stop_all_workers
+    // can release it together with the workers, guaranteeing the feed always
+    // outlives any worker holding a shared_ptr to it.
+    if (!m_template_feed) {
+        m_template_feed = std::make_shared<WorkerTemplateFeed>();
+    }
     for(auto& worker_config : m_config.get_worker_config())
     {
         worker_config.m_internal_id = internal_id;
@@ -884,6 +967,25 @@ void Worker_manager::create_workers_locked()
             }
         }
         internal_id++;
+    }
+
+    // Stone 4: attach the shared template feed to every worker so subclasses
+    // that have been migrated to consume work via WorkerTemplateFeed (see
+    // Worker::uses_template_feed()) bind to it.  Subclasses that have not
+    // been migrated keep the default no-op attach_template_feed() and continue
+    // to receive work via the legacy set_block(WorkPackage,...) shim, which
+    // Worker_manager now invokes outside m_worker_mutex.
+    //
+    // NOTE: this runs AFTER every worker constructor has returned, and several
+    // worker subclasses start their mining thread inside the constructor.  An
+    // override that wants to read the feed from that already-running thread
+    // MUST publish the pointer through a thread-safe slot (atomic shared_ptr)
+    // and treat "not yet attached" as idle — see the contract on
+    // Worker::attach_template_feed in src/worker/worker.hpp for details.
+    for (auto& worker : m_workers) {
+        if (worker) {
+            worker->attach_template_feed(m_template_feed);
+        }
     }
 }
 
@@ -1982,6 +2084,16 @@ void Worker_manager::stop_all_workers()
         }
     }
 
+    // Stone 4: wake any worker blocked in WorkerTemplateFeed::wait_for_epoch_after
+    // so it can observe its own m_shutdown / m_stop flag and exit cleanly before
+    // its destructor joins the mining thread below.  We notify *before* resetting
+    // the workers (the destructors below set those flags and join), but the feed
+    // shared_ptr is kept alive by both us and each worker, so the wake call is
+    // safe even if a worker has already begun teardown on another thread.
+    if (m_template_feed) {
+        m_template_feed->notify_wake();
+    }
+
     // Reset all worker instances so that the next create_workers() call starts fresh
     // without duplicating existing workers.  The shared_ptr reset() destroys the Worker
     // object (and joins its mining thread in the destructor), effectively stopping it.
@@ -1989,6 +2101,14 @@ void Worker_manager::stop_all_workers()
         worker.reset();
     }
     m_workers.clear();
+
+    // Stone 4: now that every worker has been destroyed (and joined its mining
+    // thread), it is safe to release the feed.  A fresh feed will be created on
+    // the next create_workers_locked() so the next worker batch starts at
+    // epoch_id 1 rather than inheriting a stale epoch counter from the prior
+    // generation (workers compare the loaded epoch_id against their last-seen
+    // value, and a fresh feed gives them a clean baseline).
+    m_template_feed.reset();
 
     // Clear the recovery gate so the next epoch can re-create workers
     m_recovery_workers_spawned = false;

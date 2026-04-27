@@ -31,6 +31,7 @@ namespace config { class Config; }
 namespace stats { class Collector; }
 namespace protocol { class Protocol; class Solo; }
 class Worker;
+class WorkerTemplateFeed;  // Stone 4: defined in worker/template_feed.hpp
 class ColinAgent;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -287,6 +288,14 @@ private:
     // Time of the most recent escalation (epoch N → epoch N+1: stop workers + hard recovery).
     std::vector<std::shared_ptr<stats::Printer>> m_stats_printers;
     std::vector<std::shared_ptr<Worker>> m_workers;
+
+    // Stone 4: Shared template publication slot.  Worker_manager publishes one
+    // TemplateEpoch per validated template into this feed; workers consume the
+    // latest epoch lock-free from their own threads (migration is incremental
+    // — see Worker::uses_template_feed()).  Owned here so the feed outlives
+    // every worker that holds a shared_ptr to it; reset only in stop_all_workers
+    // after every worker has been destroyed.
+    std::shared_ptr<WorkerTemplateFeed> m_template_feed;
 
     // ── Lane Health Monitor and diagnostic tools ────────────────────────────
     DualConnectionManager m_sim_link;  // Lane state bookkeeper (SIM Link removed; lane monitor only)

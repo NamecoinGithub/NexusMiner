@@ -28,27 +28,27 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
 , m_met_difficulty_count {0}
 , m_pool_nbits{0}
 {
-	m_logger->info(m_log_leader + "Initialized (Internal ID: {})", m_config.m_internal_id);
+	m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Initialized (Internal ID: {})"), m_config.m_internal_id);
 
 	// Log CPU-specific configuration for multi-core support
 	if (std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
 		auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
 		if (cpu_cfg.m_threads > 1) {
-			m_logger->info(m_log_leader + "Multi-core configuration: {} thread(s)", cpu_cfg.m_threads);
-			m_logger->info(m_log_leader + "Note: Multi-threading support is available");
+			m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Multi-core configuration: {} thread(s)"), cpu_cfg.m_threads);
+			m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Note: Multi-threading support is available"));
 		}
 		if (cpu_cfg.m_affinity_mask > 0) {
-			m_logger->info(m_log_leader + "CPU affinity mask: 0x{:016x}", cpu_cfg.m_affinity_mask);
+			m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "CPU affinity mask: 0x{:016x}"), cpu_cfg.m_affinity_mask);
 		}
 		if (cpu_cfg.m_priority_level != 2) {
-			m_logger->info(m_log_leader + "Thread priority: {}", cpu_cfg.m_priority_level);
+			m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Thread priority: {}"), cpu_cfg.m_priority_level);
 		}
 	}
 
 	// Start persistent thread immediately
 	m_shutdown = false;
 	m_run_thread = std::thread(&Worker_hash::run, this);
-	m_logger->info(m_log_leader + "Persistent worker thread started");
+	m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Persistent worker thread started"));
 }
 
 Worker_hash::~Worker_hash()
@@ -94,17 +94,17 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 			// Validate nbits consistency
 			if (m_pool_nbits != 0 && m_pool_nbits != nbits)
 			{
-				m_logger->warn(m_log_leader + "m_pool_nbits changed from 0x{:08x} to 0x{:08x}", m_pool_nbits, nbits);
+				m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "m_pool_nbits changed from 0x{:08x} to 0x{:08x}"), m_pool_nbits, nbits);
 			}
 			m_pool_nbits = nbits;
-			m_logger->info(m_log_leader + "Set m_pool_nbits to 0x{:08x} (from pool)", m_pool_nbits);
+			m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Set m_pool_nbits to 0x{:08x} (from pool)"), m_pool_nbits);
 		}
 		else
 		{
 			// Use block's nBits when pool doesn't provide one
 			if (m_pool_nbits != 0)
 			{
-				m_logger->info(m_log_leader + "Resetting m_pool_nbits (was 0x{:08x}, using block nBits 0x{:08x})",
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Resetting m_pool_nbits (was 0x{:08x}, using block nBits 0x{:08x})"),
 					m_pool_nbits, m_block.nBits);
 			}
 			m_pool_nbits = 0;
@@ -115,11 +115,11 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 		// Validate header payload before processing
 		if (headerB.empty())
 		{
-			m_logger->error(m_log_leader + "GetHeaderBytes() returned empty payload!");
+			m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "GetHeaderBytes() returned empty payload!"));
 			throw std::runtime_error("Empty header payload");
 		}
 
-		m_logger->debug(m_log_leader + "Header payload size: {} bytes (expected: 216 for hash, 208 for prime)",
+		m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Header payload size: {} bytes (expected: 216 for hash, 208 for prime)"),
 			headerB.size());
 
 		//calculate midstate
@@ -142,7 +142,7 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 	// Wake up the worker thread
 	m_cv.notify_one();
 
-	m_logger->info(m_log_leader + "New work set (Starting nonce: 0x{:016x}, nBits: 0x{:08x})",
+	m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "New work set (Starting nonce: 0x{:016x}, nBits: 0x{:08x})"),
 		m_starting_nonce, m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits);
 }
 
@@ -168,17 +168,17 @@ void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::B
 			// Validate nbits consistency
 			if (m_pool_nbits != 0 && m_pool_nbits != nbits)
 			{
-				m_logger->warn(m_log_leader + "m_pool_nbits changed from 0x{:08x} to 0x{:08x}", m_pool_nbits, nbits);
+				m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "m_pool_nbits changed from 0x{:08x} to 0x{:08x}"), m_pool_nbits, nbits);
 			}
 			m_pool_nbits = nbits;
-			m_logger->info(m_log_leader + "Set m_pool_nbits to 0x{:08x} (from pool)", m_pool_nbits);
+			m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Set m_pool_nbits to 0x{:08x} (from pool)"), m_pool_nbits);
 		}
 		else
 		{
 			// Use block's nBits when pool doesn't provide one
 			if (m_pool_nbits != 0)
 			{
-				m_logger->info(m_log_leader + "Resetting m_pool_nbits (was 0x{:08x}, using block nBits 0x{:08x})",
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Resetting m_pool_nbits (was 0x{:08x}, using block nBits 0x{:08x})"),
 					m_pool_nbits, m_block.nBits);
 			}
 			m_pool_nbits = 0;
@@ -190,11 +190,11 @@ void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::B
 		// Validate header payload before processing
 		if (headerB.empty())
 		{
-			m_logger->error(m_log_leader + "GetHeaderBytes() returned empty payload!");
+			m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "GetHeaderBytes() returned empty payload!"));
 			throw std::runtime_error("Empty header payload");
 		}
 
-		m_logger->debug(m_log_leader + "Header payload size: {} bytes (expected: 216 for hash, 208 for prime)",
+		m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Header payload size: {} bytes (expected: 216 for hash, 208 for prime)"),
 			headerB.size());
 
 		//calculate midstate using precomputed header bytes
@@ -217,7 +217,7 @@ void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::B
 	// Wake up the worker thread
 	m_cv.notify_one();
 
-	m_logger->info(m_log_leader + "New work set (Starting nonce: 0x{:016x}, nBits: 0x{:08x})",
+	m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "New work set (Starting nonce: 0x{:016x}, nBits: 0x{:08x})"),
 		m_starting_nonce, m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits);
 }
 
@@ -225,14 +225,14 @@ void Worker_hash::run()
 {
 	// Get CPU configuration
 	if (!std::holds_alternative<config::Worker_config_cpu>(m_config.m_worker_mode)) {
-		m_logger->error(m_log_leader + "Invalid worker mode for CPU worker");
+		m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Invalid worker mode for CPU worker"));
 		return;
 	}
 
 	auto const& cpu_cfg = std::get<config::Worker_config_cpu>(m_config.m_worker_mode);
 	uint32_t num_threads = (cpu_cfg.m_threads > 0) ? cpu_cfg.m_threads : 1;
 
-	m_logger->info(m_log_leader + "Persistent worker thread ready, waiting for work...");
+	m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Persistent worker thread ready, waiting for work..."));
 
 	// Persistent thread loop - runs until shutdown
 	while (true) {
@@ -243,7 +243,7 @@ void Worker_hash::run()
 
 			// Check for shutdown
 			if (m_shutdown) {
-				m_logger->info(m_log_leader + "Worker thread shutting down");
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Worker thread shutting down"));
 				break;
 			}
 
@@ -253,7 +253,7 @@ void Worker_hash::run()
 		}
 
 		// Start mining with the new work
-		m_logger->info(m_log_leader + "Starting {} mining thread(s)", num_threads);
+		m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Starting {} mining thread(s)"), num_threads);
 
 		// Clear any existing worker threads
 		m_worker_threads.clear();
@@ -269,7 +269,7 @@ void Worker_hash::run()
 				uint32_t physical_cores = cpu::get_physical_core_count();
 				bool smt_enabled = cpu::is_smt_enabled();
 
-				m_logger->info(m_log_leader + "Core detection: {} logical cores, {} physical cores, SMT {}",
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Core detection: {} logical cores, {} physical cores, SMT {}"),
 				              total_cores, physical_cores, smt_enabled ? "enabled" : "disabled");
 
 				// Build affinity mask based on settings
@@ -278,7 +278,7 @@ void Worker_hash::run()
 					for (uint32_t i = 0; i < physical_cores; i++) {
 						effective_affinity |= (1ULL << i);
 					}
-					m_logger->info(m_log_leader + "Hyperthreading disabled, using physical cores only: 0x{:016x}",
+					m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Hyperthreading disabled, using physical cores only: 0x{:016x}"),
 					              effective_affinity);
 				}
 
@@ -290,10 +290,10 @@ void Worker_hash::run()
 						for (auto core : p_cores) {
 							effective_affinity |= (1ULL << core);
 						}
-						m_logger->info(m_log_leader + "E-cores disabled, using P-cores only: 0x{:016x}",
+						m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "E-cores disabled, using P-cores only: 0x{:016x}"),
 						              effective_affinity);
 					} else {
-						m_logger->warn(m_log_leader + "Could not detect P-cores, using all cores");
+						m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Could not detect P-cores, using all cores"));
 					}
 				}
 			}
@@ -301,8 +301,8 @@ void Worker_hash::run()
 
 		// Spawn mining threads
 		if (num_threads > 1) {
-			m_logger->info(m_log_leader + "Multi-threading enabled with {} threads", num_threads);
-			m_logger->info(m_log_leader + "Nonce space will be partitioned across threads");
+			m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Multi-threading enabled with {} threads"), num_threads);
+			m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Nonce space will be partitioned across threads"));
 
 			for (uint32_t i = 0; i < num_threads; i++) {
 				m_worker_threads.emplace_back([this, i, num_threads, &cpu_cfg, effective_affinity]() {
@@ -324,7 +324,7 @@ void Worker_hash::run()
 							thread_affinity = 1ULL << available_cores[core_idx];
 
 							if (cpu::set_thread_affinity(thread_affinity)) {
-								m_logger->info(m_log_leader + "Thread {} pinned to core {}",
+								m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Thread {} pinned to core {}"),
 								              i, available_cores[core_idx]);
 							}
 						}
@@ -332,10 +332,10 @@ void Worker_hash::run()
 
 					// Set thread priority
 					if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
-						m_logger->debug(m_log_leader + "Thread {} priority set to level {}",
+						m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Thread {} priority set to level {}"),
 						               i, cpu_cfg.m_priority_level);
 					} else {
-						m_logger->warn(m_log_leader + "Thread {} failed to set priority", i);
+						m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Thread {} failed to set priority"), i);
 					}
 
 					// Run mining loop for this thread
@@ -354,16 +354,16 @@ void Worker_hash::run()
 			// Single thread mode
 			// Apply thread settings
 			if (cpu::set_thread_priority(cpu_cfg.m_priority_level)) {
-				m_logger->info(m_log_leader + "Thread priority set to level {}", cpu_cfg.m_priority_level);
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Thread priority set to level {}"), cpu_cfg.m_priority_level);
 			} else {
-				m_logger->warn(m_log_leader + "Failed to set thread priority to level {}", cpu_cfg.m_priority_level);
+				m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Failed to set thread priority to level {}"), cpu_cfg.m_priority_level);
 			}
 
 			if (effective_affinity != 0) {
 				if (cpu::set_thread_affinity(effective_affinity)) {
-					m_logger->info(m_log_leader + "Thread affinity set to 0x{:016x}", effective_affinity);
+					m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Thread affinity set to 0x{:016x}"), effective_affinity);
 				} else {
-					m_logger->warn(m_log_leader + "Failed to set thread affinity to 0x{:016x}", effective_affinity);
+					m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Failed to set thread affinity to 0x{:016x}"), effective_affinity);
 				}
 			}
 
@@ -371,13 +371,13 @@ void Worker_hash::run()
 			mine_loop(0, 1);
 		}
 
-		m_logger->info(m_log_leader + "All mining threads stopped, waiting for new work...");
+		m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "All mining threads stopped, waiting for new work..."));
 	}
 }
 
 void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 {
-	m_logger->info(m_log_leader + "Mining thread {} of {} started", thread_id, total_threads);
+	m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Mining thread {} of {} started"), thread_id, total_threads);
 	uint64_t last_log_hash_count = 0;
 	constexpr uint64_t log_interval = mining::HASH_LOG_INTERVAL;
 	constexpr int max_retries = 3;
@@ -419,7 +419,7 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 				if (!validate_skein_output(skeinHash))
 				{
 					++payload_validation_failures;
-					m_logger->warn(m_log_leader + "Thread {} Skein payload validation failed for nonce 0x{:016x}", 
+					m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Thread {} Skein payload validation failed for nonce 0x{:016x}"), 
 					              thread_id, local_skein.getNonce());
 					throw std::runtime_error("Invalid Skein output payload");
 				}
@@ -439,7 +439,7 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 				if (!validate_keccak_output(keccakHash))
 				{
 					++payload_validation_failures;
-					m_logger->warn(m_log_leader + "Thread {} Keccak payload validation failed for nonce 0x{:016x}", 
+					m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Thread {} Keccak payload validation failed for nonce 0x{:016x}"), 
 					              thread_id, local_skein.getNonce());
 					throw std::runtime_error("Invalid Keccak output payload");
 				}
@@ -451,7 +451,7 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 				if (should_cross_validate && !cross_validate_hashes(skeinHash, keccakHash))
 				{
 					++hash_mismatches;
-					m_logger->error(m_log_leader + "Thread {} Hash cross-validation failed for nonce 0x{:016x} - skipping nonce", 
+					m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Thread {} Hash cross-validation failed for nonce 0x{:016x} - skipping nonce"), 
 					               thread_id, local_skein.getNonce());
 					// Log detailed mismatch info for debugging
 					log_hash_mismatch(skeinHash, keccakHash, local_skein.getNonce());
@@ -465,7 +465,7 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 				// Check the result for leading zeros
 				if ((keccakHash & leading_zero_mask()) == 0)
 				{
-					m_logger->info(m_log_leader + "Thread {} found a nonce candidate {}", thread_id, nonce);
+					m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Thread {} found a nonce candidate {}"), thread_id, nonce);
 					// Verify the difficulty — requires shared state; take lock briefly
 					std::unique_lock<std::mutex> lck(m_mtx);
 					m_skein.setNonce(nonce);  // restore candidate nonce for difficulty_check()
@@ -476,7 +476,7 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 						m_block.nNonce = nonce;
 						if (m_found_nonce_callback)
 						{
-							m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
+							m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "💎 Block found! Posting to main io_context..."));
 							::asio::post(*m_io_context, [self = shared_from_this()]()
 							{
 								self->m_found_nonce_callback(self->m_config.m_internal_id, 
@@ -485,7 +485,7 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 						}
 						else
 						{
-							m_logger->debug(m_log_leader + "Miner callback function not set.");
+							m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Miner callback function not set."));
 						}
 					}
 				}
@@ -500,11 +500,11 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 				// Log progress periodically with enhanced diagnostics
 				if (thread_hash_count - last_log_hash_count >= log_interval)
 				{
-					m_logger->debug(m_log_leader + "Thread {} hashing progress: {} hashes computed, current nonce: 0x{:016x}", 
+					m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Thread {} hashing progress: {} hashes computed, current nonce: 0x{:016x}"), 
 					               thread_id, thread_hash_count, nonce);
 					if (payload_validation_failures > 0 || hash_mismatches > 0)
 					{
-						m_logger->info(m_log_leader + "Thread {} diagnostics: {} payload validation failures, {} hash mismatches", 
+						m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Thread {} diagnostics: {} payload validation failures, {} hash mismatches"), 
 						              thread_id, payload_validation_failures, hash_mismatches);
 					}
 					last_log_hash_count = thread_hash_count;
@@ -515,20 +515,20 @@ void Worker_hash::mine_loop(uint32_t thread_id, uint32_t total_threads)
 				++retry_count;
 				if (retry_count < max_retries)
 				{
-					m_logger->warn(m_log_leader + "Thread {} hash calculation failed (attempt {}/{}): {}. Retrying...", 
+					m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Thread {} hash calculation failed (attempt {}/{}): {}. Retrying..."), 
 					              thread_id, retry_count, max_retries, e.what());
 					std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				}
 				else
 				{
-					m_logger->error(m_log_leader + "Thread {} hash calculation failed after {} retries: {}. Skipping nonce.", 
+					m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Thread {} hash calculation failed after {} retries: {}. Skipping nonce."), 
 					               thread_id, max_retries, e.what());
 					// Nonce was already advanced at the top of the outer loop; just continue.
 				}
 			}
 		}
 	}
-	m_logger->info(m_log_leader + "Thread {} stopped. Hashes: {}, Payload failures: {}, Hash mismatches: {}", 
+	m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Thread {} stopped. Hashes: {}, Payload failures: {}, Hash mismatches: {}"), 
 	              thread_id, thread_hash_count, payload_validation_failures, hash_mismatches);
 }
 
@@ -559,7 +559,7 @@ bool Worker_hash::difficulty_check()
 	
 	if (m_pool_nbits != 0 && m_block.nBits != 0 && m_pool_nbits != m_block.nBits)
 	{
-		m_logger->debug(m_log_leader + "Using pool nBits 0x{:08x} (block nBits: 0x{:08x})", 
+		m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Using pool nBits 0x{:08x} (block nBits: 0x{:08x})"), 
 			m_pool_nbits, m_block.nBits);
 	}
 
@@ -575,7 +575,7 @@ bool Worker_hash::difficulty_check()
 	// Validate Skein output in difficulty check
 	if (!validate_skein_output(skeinHash))
 	{
-		m_logger->error(m_log_leader + "Skein validation failed in difficulty_check");
+		m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Skein validation failed in difficulty_check"));
 		return false;
 	}
 	
@@ -587,24 +587,24 @@ bool Worker_hash::difficulty_check()
 	// Validate Keccak output in difficulty check
 	if (!validate_keccak_output(keccakHash))
 	{
-		m_logger->error(m_log_leader + "Keccak validation failed in difficulty_check");
+		m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Keccak validation failed in difficulty_check"));
 		return false;
 	}
 	
 	int hashActualLeadingZeros = 63 - findMSB(keccakHash);
-	m_logger->info(m_log_leader + "Difficulty check: Leading Zeros Found/Required {}/{}, nBits: 0x{:08x}", 
+	m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Difficulty check: Leading Zeros Found/Required {}/{}, nBits: 0x{:08x}"), 
 		hashActualLeadingZeros, leadingZerosRequired, nbits_to_use);
 	
 	if (hashActualLeadingZeros > m_best_leading_zeros)
 	{
 		m_best_leading_zeros = hashActualLeadingZeros;
-		m_logger->info(m_log_leader + "New best leading zeros: {}", m_best_leading_zeros);
+		m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "New best leading zeros: {}"), m_best_leading_zeros);
 	}
 	
 	//check the hash result is less than the difficulty.  We truncate to just use the upper 64 bits for easier calculation.
 	if (keccakHash <= difficultyTest64)
 	{
-		m_logger->info(m_log_leader + "Nonce passes difficulty check (hash: 0x{:016x} <= difficulty: 0x{:016x})", 
+		m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Nonce passes difficulty check (hash: 0x{:016x} <= difficulty: 0x{:016x})"), 
 			keccakHash, difficultyTest64);
 		
 		// Log detailed payload information for successful nonce
@@ -614,7 +614,7 @@ bool Worker_hash::difficulty_check()
 	}
 	else
 	{
-		m_logger->debug(m_log_leader + "Nonce fails difficulty check (hash: 0x{:016x} > difficulty: 0x{:016x})", 
+		m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Nonce fails difficulty check (hash: 0x{:016x} > difficulty: 0x{:016x})"), 
 			keccakHash, difficultyTest64);
 		return false;
 	}
@@ -653,7 +653,7 @@ bool Worker_hash::validate_skein_output(const NexusSkein::stateType& skeinHash) 
 	
 	if (all_zeros)
 	{
-		m_logger->error(m_log_leader + "Skein output is all zeros (invalid state)");
+		m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Skein output is all zeros (invalid state)"));
 		return false;
 	}
 	
@@ -661,7 +661,7 @@ bool Worker_hash::validate_skein_output(const NexusSkein::stateType& skeinHash) 
 	// (all same value, which would indicate a calculation error)
 	if (all_same && first_val != 0)
 	{
-		m_logger->warn(m_log_leader + "Skein output has suspicious pattern (all values = 0x{:016x})", first_val);
+		m_logger->warn(spdlog::fmt_lib::runtime(m_log_leader + "Skein output has suspicious pattern (all values = 0x{:016x})"), first_val);
 		// Don't reject, but log for debugging
 	}
 	
@@ -693,7 +693,7 @@ bool Worker_hash::cross_validate_hashes(const NexusSkein::stateType& skeinHash, 
 	
 	if (keccak_verify_result != keccakHash)
 	{
-		m_logger->error(m_log_leader + "Cross-validation failed: Keccak hash mismatch (expected: 0x{:016x}, got: 0x{:016x})",
+		m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Cross-validation failed: Keccak hash mismatch (expected: 0x{:016x}, got: 0x{:016x})"),
 			keccak_verify_result, keccakHash);
 		return false;
 	}
@@ -705,21 +705,21 @@ void Worker_hash::log_skein_state(const NexusSkein::stateType& skeinHash, uint64
 {
 	static constexpr size_t SKEIN_LOG_WORDS = 4;  // Number of words to log from Skein output
 	
-	m_logger->debug(m_log_leader + "Skein output for nonce 0x{:016x}:", nonce);
+	m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Skein output for nonce 0x{:016x}:"), nonce);
 	std::stringstream ss;
 	ss << std::hex << std::setfill('0');
 	for (size_t i = 0; i < std::min(SKEIN_LOG_WORDS, skeinHash.size()); ++i)
 	{
 		ss << "0x" << std::setw(16) << skeinHash[i] << " ";
 	}
-	m_logger->debug(m_log_leader + "  First {} words: {}", SKEIN_LOG_WORDS, ss.str());
+	m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "  First {} words: {}"), SKEIN_LOG_WORDS, ss.str());
 }
 
 void Worker_hash::log_hash_mismatch(const NexusSkein::stateType& skeinHash, uint64_t keccakHash, uint64_t nonce) const
 {
 	static constexpr size_t SKEIN_LOG_WORDS = 4;  // Number of words to log from Skein output
 	
-	m_logger->error(m_log_leader + "Hash mismatch detected for nonce 0x{:016x}", nonce);
+	m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Hash mismatch detected for nonce 0x{:016x}"), nonce);
 	
 	// Log Skein output
 	std::stringstream ss_skein;
@@ -728,13 +728,13 @@ void Worker_hash::log_hash_mismatch(const NexusSkein::stateType& skeinHash, uint
 	{
 		ss_skein << "0x" << std::setw(16) << skeinHash[i] << " ";
 	}
-	m_logger->error(m_log_leader + "  Skein output (first {} words): {}", SKEIN_LOG_WORDS, ss_skein.str());
+	m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "  Skein output (first {} words): {}"), SKEIN_LOG_WORDS, ss_skein.str());
 	
 	// Log Keccak result
-	m_logger->error(m_log_leader + "  Keccak result: 0x{:016x}", keccakHash);
+	m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "  Keccak result: 0x{:016x}"), keccakHash);
 	
 	// Log current m_pool_nbits for context
-	m_logger->error(m_log_leader + "  Current m_pool_nbits: 0x{:08x}", m_pool_nbits);
+	m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "  Current m_pool_nbits: 0x{:08x}"), m_pool_nbits);
 }
 
 void Worker_hash::log_midstate_calculation()
@@ -745,7 +745,7 @@ void Worker_hash::log_midstate_calculation()
 	auto key2 = m_skein.getKey2();
 	auto msg2 = m_skein.getMessage2();
 	
-	m_logger->debug(m_log_leader + "Midstate calculated:");
+	m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Midstate calculated:"));
 	
 	// Log first few words of key2
 	std::stringstream ss_key;
@@ -754,7 +754,7 @@ void Worker_hash::log_midstate_calculation()
 	{
 		ss_key << "0x" << std::setw(16) << key2[i] << " ";
 	}
-	m_logger->debug(m_log_leader + "  Key2 (first {} words): {}", SKEIN_LOG_WORDS, ss_key.str());
+	m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "  Key2 (first {} words): {}"), SKEIN_LOG_WORDS, ss_key.str());
 	
 	// Log first few words of message2
 	std::stringstream ss_msg;
@@ -763,7 +763,7 @@ void Worker_hash::log_midstate_calculation()
 	{
 		ss_msg << "0x" << std::setw(16) << msg2[i] << " ";
 	}
-	m_logger->debug(m_log_leader + "  Message2 (first {} words): {}", SKEIN_LOG_WORDS, ss_msg.str());
+	m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "  Message2 (first {} words): {}"), SKEIN_LOG_WORDS, ss_msg.str());
 }
 
 }

@@ -25,6 +25,7 @@
 
 namespace nexusminer {
 namespace stats { class Collector; }
+class WorkerTemplateFeed;  // Stone 4: shared template publication; defined in worker/template_feed.hpp
 
 class Block_data
 {
@@ -160,6 +161,48 @@ public:
         // Default fallback: extract block and nbits from WorkPackage
         set_block(work_package->get_block(), work_package->get_nbits(), result);
     }
+
+    // Stone 4: Attach a shared WorkerTemplateFeed for lock-free template
+    // publication.  Default is a no-op so subclasses can opt in incrementally:
+    // until a worker overrides this and starts consuming epochs from the feed
+    // in its mining loop, Worker_manager keeps feeding it via the legacy
+    // set_block(WorkPackage,...) shim (now invoked outside m_worker_mutex).
+    // The feed pointer must outlive the worker; Worker_manager owns one feed
+    // per worker batch and tears workers down before releasing the feed.
+    //
+    // CONTRACT FOR OVERRIDES (Stones 5–7 worker migrations, READ THIS):
+    //
+    //   This method is invoked by Worker_manager::create_workers_locked()
+    //   AFTER every worker constructor has returned.  Several existing worker
+    //   subclasses (Worker_hash, future migrated Worker_prime, …) start their
+    //   mining thread inside the constructor, so by the time attach_template_feed
+    //   runs the consumer thread is ALREADY RUNNING.  An override that simply
+    //   stores the feed in a non-atomic member therefore races with the worker
+    //   loop reading it.
+    //
+    //   Overrides MUST therefore:
+    //     1. Store the feed in a thread-safe slot
+    //        (e.g. std::atomic<std::shared_ptr<WorkerTemplateFeed>>) and use
+    //        acquire/release ordering so the consumer can publish the pointer
+    //        to its own loop without a mutex.
+    //     2. Treat a not-yet-attached feed as "no work yet" — the worker loop
+    //        must idle (or fall back to the legacy m_new_work CV) until the
+    //        atomic load returns a non-null pointer, NOT crash on null deref.
+    //     3. Be idempotent: Worker_manager calls attach_template_feed() exactly
+    //        once per batch today, but the contract permits re-attachment on
+    //        future restarts.
+    //
+    //   The cleaner long-term shape (deferred to a follow-up) is constructor
+    //   injection of the feed into migrated workers so the thread can never
+    //   start before the feed is bound.  Until then, the atomic-slot rule
+    //   above is the supported pattern.
+    virtual void attach_template_feed(std::shared_ptr<WorkerTemplateFeed> /*feed*/) {}
+
+    // Stone 4: Opt-in marker so Worker_manager can skip the per-worker
+    // set_block() shim once a subclass has been migrated to consume work
+    // exclusively from the WorkerTemplateFeed.  Default false preserves
+    // existing fanout behaviour for unmigrated workers.
+    virtual bool uses_template_feed() const { return false; }
 
     // Returns true if the worker's mining thread is actively running (i.e. set_block() started it).
     // Implementations backed by an m_stop atomic should override this to return !m_stop.
