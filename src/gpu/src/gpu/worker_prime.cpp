@@ -51,7 +51,7 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 	// Start persistent thread
 	m_shutdown = false;
 	m_run_thread = std::thread(&Worker_prime::run, this);
-	m_logger->info(m_log_leader + "Persistent worker thread started");
+	m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Persistent worker thread started"));
 }
 
 Worker_prime::~Worker_prime() noexcept
@@ -156,7 +156,7 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 
 void Worker_prime::run()
 {
-	m_logger->info(m_log_leader + "Persistent worker thread ready, waiting for work...");
+	m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Persistent worker thread ready, waiting for work..."));
 
 	// Persistent thread loop - runs until shutdown
 	while (true) {
@@ -167,7 +167,7 @@ void Worker_prime::run()
 
 			// Check for shutdown
 			if (m_shutdown) {
-				m_logger->info(m_log_leader + "Worker thread shutting down");
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Worker thread shutting down"));
 				break;
 			}
 
@@ -183,12 +183,12 @@ void Worker_prime::run()
 				m_segmented_sieve->gpu_sieve_load(worker_config_gpu.m_device);
 				m_segmented_sieve->gpu_fermat_test_init(worker_config_gpu.m_device);
 				m_gpu_initialized = true;
-				m_logger->info(m_log_leader + "GPU memory initialized");
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "GPU memory initialized"));
 			}
 		}
 
 		// Start mining with the new work
-		m_logger->info(m_log_leader + "Starting GPU mining");
+		m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Starting GPU mining"));
 
 		// Make local copies of block data to avoid race conditions
 		// These copies are made once per work unit and remain stable during mining
@@ -306,7 +306,7 @@ void Worker_prime::run()
 					"Expected 10 total bytes (6 prime-gap bytes + 4-byte LE fraction)");
 				if (!has_expected_prime_offsets(offsets))
 				{
-					m_logger->error(m_log_leader + "Rejecting prime candidate with malformed serialized offsets ({} bytes, expected {} total bytes = {} prime-gap bytes + {}-byte LE fraction)",
+					m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Rejecting prime candidate with malformed serialized offsets ({} bytes, expected {} total bytes = {} prime-gap bytes + {}-byte LE fraction)"),
 						offsets.size(),
 						kMaxSerializedPrimeOffsets,
 						kMaxSerializedPrimeOffsets - kPrimeOffsetFractionBytes,
@@ -317,7 +317,7 @@ void Worker_prime::run()
 				//we found a valid chain.  submit it.
 				if (m_found_nonce_callback)
 				{
-					m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
+					m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "💎 Block found! Posting to main io_context..."));
 					auto captured_offsets = std::move(offsets);
 					auto block_copy = local_block;
 					::asio::post(*m_io_context, [self = shared_from_this(), block_copy, captured_offsets = std::move(captured_offsets)]()
@@ -330,7 +330,7 @@ void Worker_prime::run()
 				}
 				else
 				{
-					m_logger->debug(m_log_leader + "Miner callback function not set.");
+					m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Miner callback function not set."));
 				}
 			}
 		}
@@ -374,7 +374,7 @@ void Worker_prime::run()
 		}
 	}
 
-		m_logger->info(m_log_leader + "Mining stopped, waiting for new work...");
+		m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Mining stopped, waiting for new work..."));
 	}  // End of persistent thread loop
 }
 

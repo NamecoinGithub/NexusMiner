@@ -84,7 +84,7 @@ Worker_hash::Worker_hash(std::shared_ptr<asio::io_context> io_context, Worker_co
     // Start persistent thread
     m_shutdown = false;
     m_run_thread = std::thread(&Worker_hash::run, this);
-    m_logger->info(m_log_leader + "Persistent worker thread started");
+    m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Persistent worker thread started"));
 }
 
 Worker_hash::~Worker_hash()
@@ -166,7 +166,7 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
 
     // Wake up the worker thread
     m_cv.notify_one();
-    m_logger->info(m_log_leader + "New work set");
+    m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "New work set"));
 }
 
 void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::Block_found_handler result)
@@ -225,12 +225,12 @@ void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::B
 
     // Wake up the worker thread
     m_cv.notify_one();
-    m_logger->info(m_log_leader + "New work set");
+    m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "New work set"));
 }
 
 void Worker_hash::run()
 {
-    m_logger->info(m_log_leader + "Persistent worker thread ready, waiting for work...");
+    m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Persistent worker thread ready, waiting for work..."));
 
     if (!bind_device_context("worker thread start"))
     {
@@ -247,7 +247,7 @@ void Worker_hash::run()
 
             // Check for shutdown
             if (m_shutdown) {
-                m_logger->info(m_log_leader + "Worker thread shutting down");
+                m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Worker thread shutting down"));
                 break;
             }
 
@@ -257,7 +257,7 @@ void Worker_hash::run()
         }
 
         // Start mining with the new work
-        m_logger->info(m_log_leader + "Starting GPU mining");
+        m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Starting GPU mining"));
 
         while (!m_stop)
         {
@@ -301,7 +301,7 @@ void Worker_hash::run()
 
                 if (m_found_nonce_callback)
                 {
-                    m_logger->info(m_log_leader + "💎 Block found! Posting to main io_context...");
+                    m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "💎 Block found! Posting to main io_context..."));
                     ::asio::post(*m_io_context, [self = shared_from_this()]()
                     {
                         self->m_found_nonce_callback(self->m_config.m_internal_id,
@@ -310,14 +310,14 @@ void Worker_hash::run()
                 }
                 else
                 {
-                    m_logger->debug(m_log_leader + "Miner callback function not set.");
+                    m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Miner callback function not set."));
                 }
 
                 m_stop = true;
             }
         }
 
-        m_logger->info(m_log_leader + "Mining stopped, waiting for new work...");
+        m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "Mining stopped, waiting for new work..."));
     }  // End of persistent thread loop
 }
 
