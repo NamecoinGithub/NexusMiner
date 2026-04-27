@@ -215,10 +215,12 @@ void test_engine_mode_adapter_surface()
                  !e.worker->is_running());
 
     auto feed2 = std::make_shared<WorkerTemplateFeed>();
-    auto engine = std::make_shared<PrimeMiningEngine>(make_cfg(0, io.ctx, 3), feed2);
+    auto engine = std::make_shared<PrimeMiningEngine>(make_cfg(1, io.ctx, 3), feed2);
     e.worker->bind_to_engine(engine, 0, 1);
+    // is_running() now reports engine->pool_threads_running() > 0 (not just
+    // the bound flag), so wait briefly for the pool thread to register.
     print_result("engine-mode is_running() == true after bind_to_engine",
-                 e.worker->is_running());
+                 wait_until(2s, [&] { return e.worker->is_running(); }));
 }
 
 void test_register_worker_null_guard()
@@ -381,8 +383,8 @@ void test_engine_destruction_before_workers_safe()
     print_result("update_statistics() after engine destroyed does not throw",
                  no_throw);
 
-    print_result("is_running() after engine destroyed still true (bound flag)",
-                 e0.worker->is_running() && e1.worker->is_running());
+    print_result("is_running() after engine destroyed == false (engine gone)",
+                 !e0.worker->is_running() && !e1.worker->is_running());
 }
 
 }  // namespace

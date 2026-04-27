@@ -198,11 +198,16 @@ Under `engine_mode == "engine"` the Worker_prime constructor:
 * **Skips** Sieve construction, `fermat_performance_test()`, run-thread spawn.
 * **Overrides** `uses_template_feed() → true` and `attach_template_feed()` as
   an explicit no-op (the engine is the sole feed subscriber per channel).
-* **`is_running()`** returns `m_engine_bound.load(...)`. Worker_manager calls
-  `bind_to_engine(engine_weak, share_index, share_count)` after the engine is
-  constructed and every worker has been registered; the engine outlives the
-  workers per the destruction ordering rule below, so the simpler bound-flag
-  is sufficient.
+* **`is_running()`** returns `false` if not yet bound, `false` if the bound
+  engine has been destroyed (weak_ptr expired — happens during teardown
+  per the engine-before-workers ordering rule below), and otherwise
+  `engine->pool_threads_running() > 0`. The pool-thread check surfaces
+  Stone 6's `pool_threads_crashed` counter through the per-worker stats
+  display: if every pool sieve thread crashes, the channel goes silent
+  and the printer correctly reports "0 workers running" instead of
+  showing a sticky "N running" from a stale bound flag. Worker_manager
+  calls `bind_to_engine(engine_weak, share_index, share_count)` after the
+  engine is constructed and every worker has been registered.
 * **`update_statistics()`** reads `engine->snapshot_stats()` and partitions
   the counters across registered workers via floor + remainder so per-worker
   GISPS is uniform and the sum equals the engine's total. Mapping:

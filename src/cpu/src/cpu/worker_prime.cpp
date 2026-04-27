@@ -832,13 +832,26 @@ bool Worker_prime::is_running() const
 {
 	if (m_engine_mode == "engine")
 	{
-		// "Running" under engine mode == bound to a live engine.  The
-		// engine's lifetime is what actually owns the mining work; the
-		// adapter has no per-worker thread to track.  Return true once
-		// Worker_manager has called bind_to_engine(); the engine is
-		// guaranteed to outlive the worker by the destruction order in
-		// Worker_manager::stop_all_workers (engine reset BEFORE workers).
-		return m_engine_bound.load(std::memory_order_acquire);
+		// Engine-mode "running" = bound to a live engine AND that engine
+		// has at least one pool sieve thread alive.  Stone 6 added the
+		// pool_threads_crashed counter for fault visibility; this hook
+		// surfaces it through the per-worker stats display.  Without
+		// this, if every pool thread crashed the channel would be
+		// silently idle while the printer kept showing "N workers
+		// running" (the bound flag is sticky).
+		if (!m_engine_bound.load(std::memory_order_acquire))
+		{
+			return false;
+		}
+		auto engine = m_prime_engine_weak.lock();
+		if (!engine)
+		{
+			// Engine destroyed (e.g. during teardown — engine reset
+			// BEFORE workers per Worker_manager::stop_all_workers, or
+			// any post-shutdown stats poll).  No live work.
+			return false;
+		}
+		return engine->pool_threads_running() > 0;
 	}
 	return m_running.load();
 }
