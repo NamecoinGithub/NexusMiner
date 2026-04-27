@@ -247,7 +247,10 @@ PRIME_ENABLED guarded). Construction in `create_workers_locked` follows the
   this, `count` would silently become meaningless for compute under
   engine mode (the engine would auto-derive `min(hw_concurrency, 32)`).
 * `io_context = m_io_context`
-* `segment_size = Sieve::get_segment_size()` (matches the per-worker convention)
+* `segment_size = cpu::Sieve::get_segment_size()` — `static constexpr` accessor
+  for the compile-time `m_segment_size` constant; no Sieve instance is
+  constructed in `Worker_manager` (the Sieve constructor allocates
+  non-trivial per-thread buffers).
 
 ---
 

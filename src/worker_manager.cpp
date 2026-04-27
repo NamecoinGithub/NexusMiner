@@ -1105,17 +1105,12 @@ void Worker_manager::create_workers_locked()
                     lowest_internal_id = std::min<std::uint32_t>(lowest_internal_id, e.internal_id);
                 }
 
-                // Use the standard Sieve segment_size as the cooperative
-                // segment length (matches the per-worker convention from
-                // worker_prime.cpp: `Sieve::get_segment_size()`).  Build
-                // a throwaway Sieve here just to read the value — the
-                // getter is constexpr-light and does not invoke
-                // generate_sieving_primes().
-                std::uint64_t segment_size = 0;
-                {
-                    cpu::Sieve probe;
-                    segment_size = probe.get_segment_size();
-                }
+                // Stone 7 cleanup: cpu::Sieve::get_segment_size() is now
+                // a static constexpr accessor for the compile-time
+                // m_segment_size constant, so we no longer need to
+                // construct a throwaway Sieve (whose ctor allocates
+                // non-trivial per-thread buffers) just to read it.
+                const std::uint64_t segment_size = cpu::Sieve::get_segment_size();
 
                 cpu::Engine_config cfg;
                 cfg.segment_size            = segment_size;

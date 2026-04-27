@@ -100,7 +100,13 @@ namespace nexusminer {
 			void sieve_segment();
 			void sieve_batch(uint64_t low);
 			void sieve_batch_cpu(uint64_t low);
-			std::uint32_t get_segment_size();
+			// Stone 7: returns the compile-time segment size constant.
+			// Made static + constexpr so callers (e.g. Worker_manager
+			// during PrimeMiningEngine wiring) can read it without
+			// instantiating a Sieve — Sieve's constructor allocates
+			// non-trivial buffers.  Existing instance-style callers
+			// (sieve->get_segment_size()) continue to compile.
+			static constexpr std::uint32_t get_segment_size() { return m_segment_size; }
 			std::uint32_t get_segment_batch_size();
 			void reset_sieve();
 			void reset_sieve_batch(uint64_t low);

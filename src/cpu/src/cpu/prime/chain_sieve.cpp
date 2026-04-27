@@ -346,11 +346,6 @@ namespace nexusminer {
             }
         }
 
-        std::uint32_t Sieve::get_segment_size()
-        {
-            return m_segment_size;
-        }
-
         void Sieve::reset_sieve()
         {
             //fill the sieve with default values (all ones)
