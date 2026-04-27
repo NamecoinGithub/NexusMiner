@@ -55,6 +55,38 @@ struct TemplateEpoch
     // Found-block callback shared across all workers consuming this epoch.
     // Captured once per template instead of re-captured per worker.
     Worker::Block_found_handler on_found;
+
+    // ── Stone "Option D" — explicit epoch-consumed signal ────────────────────
+    // Set true the moment any worker (legacy set_block shim path or future
+    // feed-consumer path) dispatches a found-block for this epoch.  Flipped
+    // by Worker_manager's on_found handler via mark_consumed() so that all
+    // observers — including this same epoch still sitting in the feed slot —
+    // see the transition atomically.
+    //
+    // Future feed-consumer workers consult is_consumed() (or
+    // WorkerTemplateFeed::latest_unconsumed()) at the top of their mining
+    // loop and idle until a fresh epoch is published, instead of grinding
+    // the spent template waiting for the next BLOCK_DATA push.  Legacy
+    // workers self-track an equivalent per-worker flag in their own loops;
+    // this one is the cross-worker / cross-epoch source of truth.
+    //
+    // mutable + atomic: the slot in WorkerTemplateFeed is held as
+    // shared_ptr<const TemplateEpoch> for wait-free reader access, but the
+    // consumed transition is one-way (false → true) and may be observed
+    // racily by readers without breaking immutability of the work payload.
+    mutable std::atomic<bool> consumed{false};
+
+    bool is_consumed() const noexcept
+    {
+        return consumed.load(std::memory_order_acquire);
+    }
+
+    // Idempotent — calling more than once is harmless.  Returns the previous
+    // value so callers can log "first observer" semantics if desired.
+    bool mark_consumed() const noexcept
+    {
+        return consumed.exchange(true, std::memory_order_acq_rel);
+    }
 };
 
 class WorkerTemplateFeed
@@ -117,6 +149,25 @@ public:
     std::shared_ptr<const TemplateEpoch> load() const
     {
         return m_slot.load(std::memory_order_acquire);
+    }
+
+    // Wait-free read of the latest published epoch IFF it has not yet been
+    // marked consumed via TemplateEpoch::mark_consumed().  Returns nullptr
+    // when nothing has been published yet OR when the latest epoch's
+    // found-block handler has already fired.
+    //
+    // Intended for Option D feed-consumer workers: they call this at the
+    // top of each mining-loop iteration and idle (via
+    // wait_for_epoch_after) instead of hashing the spent template.  Legacy
+    // workers that go through the per-worker set_block shim use their own
+    // per-worker consumed flag and need not call this.
+    std::shared_ptr<const TemplateEpoch> latest_unconsumed() const
+    {
+        auto epoch = m_slot.load(std::memory_order_acquire);
+        if (!epoch || epoch->is_consumed()) {
+            return nullptr;
+        }
+        return epoch;
     }
 
     // Latest epoch_id without dereferencing the slot (useful for fast-path

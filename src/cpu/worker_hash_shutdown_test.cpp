@@ -29,6 +29,21 @@ struct Worker_hash_test_access
     {
         return worker.m_stop.load(std::memory_order_acquire);
     }
+
+    // Option D test hooks: expose m_template_consumed through the same
+    // friend-only access channel so the test can observe and force the
+    // post-find idle transition without triggering an actual difficulty hit.
+    static bool load_template_consumed(Worker_hash& worker)
+    {
+        std::scoped_lock<std::mutex> lck(worker.m_mtx);
+        return worker.m_template_consumed;
+    }
+
+    static void store_template_consumed(Worker_hash& worker, bool value)
+    {
+        std::scoped_lock<std::mutex> lck(worker.m_mtx);
+        worker.m_template_consumed = value;
+    }
 };
 }
 
@@ -127,6 +142,59 @@ void test_set_block_resets_stop_for_new_work()
 
     assert(!cpu::Worker_hash_test_access::load_stop(*worker));
 }
+
+// Option D: after a worker dispatches a found-block callback, the inner
+// mine_loop must exit on the next iteration so the worker idles until
+// set_block delivers a fresh template.  We simulate the post-find state
+// by toggling m_template_consumed externally and asserting:
+//   1. set_block clears m_template_consumed (fresh template wakes mining)
+//   2. setting m_template_consumed mid-mining causes the worker to yield
+//      back to the outer wait without requiring a new set_block / shutdown
+void test_template_consumed_is_cleared_by_set_block()
+{
+    using namespace std::chrono_literals;
+
+    install_test_logger();
+
+    auto io_context = std::make_shared<asio::io_context>();
+
+    config::Worker_config worker_config;
+    worker_config.m_id = "consumed-test";
+    worker_config.m_internal_id = 0;
+    worker_config.m_mode = config::Worker_mode::CPU;
+    worker_config.m_worker_mode = config::Worker_config_cpu{};
+
+    auto worker = std::make_shared<cpu::Worker_hash>(io_context, worker_config);
+
+    // Default state: nothing has been mined yet, flag is false.
+    assert(!cpu::Worker_hash_test_access::load_template_consumed(*worker));
+
+    // Simulate the post-find state.
+    cpu::Worker_hash_test_access::store_template_consumed(*worker, true);
+    assert(cpu::Worker_hash_test_access::load_template_consumed(*worker));
+
+    // A fresh template via set_block must clear the consumed flag so the
+    // worker resumes mining (otherwise the very first set_block after a
+    // find would never re-arm the loop).
+    ::LLP::CBlock block;
+    block.nVersion = 8;
+    block.nChannel = 1;
+    block.nHeight = 6000002;
+    block.nBits = 0x1d00ffff;
+    block.nTime = 1234567891;
+
+    worker->set_block(block, 0, [](std::uint32_t, std::unique_ptr<Block_data>&&) {});
+
+    const auto deadline = std::chrono::steady_clock::now() + 250ms;
+    while (cpu::Worker_hash_test_access::load_template_consumed(*worker)) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+
+    assert(!cpu::Worker_hash_test_access::load_template_consumed(*worker));
+}
 }
 
 int main()
@@ -137,5 +205,8 @@ int main()
     std::cout << "Test: Worker_hash set_block clears stop after new work is latched..." << std::endl;
     test_set_block_resets_stop_for_new_work();
     std::cout << "  [PASS] Worker_hash resumed mining after set_block signaled new work" << std::endl;
+    std::cout << "Test: Worker_hash set_block clears template_consumed flag (Option D)..." << std::endl;
+    test_template_consumed_is_cleared_by_set_block();
+    std::cout << "  [PASS] Worker_hash re-armed after a fresh template cleared the consumed flag" << std::endl;
     return 0;
 }

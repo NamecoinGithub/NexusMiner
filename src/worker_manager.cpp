@@ -281,9 +281,42 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // also makes future Stone-5 migrations of individual worker
                 // subclasses transparent — they pull the same handler from the
                 // published epoch.
+                //
+                // Option D: the handler captures a weak_ptr to its own epoch
+                // so the FIRST find on this template can mark_consumed() at
+                // the top of the lambda.  This is the cross-worker /
+                // cross-epoch source of truth that future feed-consumer
+                // workers will gate on via WorkerTemplateFeed::latest_unconsumed().
+                // Legacy workers also self-track an equivalent per-worker
+                // flag in their own mining loops; the two work together.
+                //
+                // The epoch_ptr is built BEFORE on_found so on_found can
+                // capture a weak_ptr; ownership is then transferred into the
+                // feed (or — when no feed exists — destroyed at the end of
+                // this scope, in which case the lambda's weak_ptr expires and
+                // mark_consumed() degrades to a no-op, but the per-worker
+                // flag still fires the consume on the legacy path).
+                auto epoch_ptr = std::make_shared<TemplateEpoch>();
+                epoch_ptr->work_package = work_package;
+                std::weak_ptr<const TemplateEpoch> epoch_weak = epoch_ptr;
+
                 Worker::Block_found_handler on_found =
-                    [this](std::uint32_t id, std::unique_ptr<Block_data> block_data)
+                    [this, epoch_weak](std::uint32_t id, std::unique_ptr<Block_data> block_data)
                 {
+                    // Option D: mark the epoch consumed BEFORE the validity
+                    // gate.  Even if the prev-hash check below discards the
+                    // solution, the worker should not keep grinding the same
+                    // template — a "tip moved out from under us" mismatch
+                    // means the template is structurally spent regardless of
+                    // whether THIS solution submits.
+                    if (auto epoch = epoch_weak.lock()) {
+                        const bool was_already = epoch->mark_consumed();
+                        if (!was_already) {
+                            m_logger->debug("[Worker_manager] Epoch #{} marked consumed by worker {}",
+                                            epoch->epoch_id, id);
+                        }
+                    }
+
                     m_logger->info("════════════════════════════════════════════════════════");
                     m_logger->info("💎 BLOCK FOUND CALLBACK INVOKED!");
                     m_logger->info("   Worker ID:  {}", id);
@@ -443,13 +476,16 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // without any per-worker mutex acquisition by the manager.
                 [[maybe_unused]] std::uint64_t published_epoch_id = 0;
                 if (feed_snapshot) {
-                    auto epoch = std::make_shared<TemplateEpoch>();
-                    epoch->work_package = work_package;
-                    epoch->on_found = on_found;  // shared by all consumers of this epoch
-                    published_epoch_id = feed_snapshot->publish(std::move(epoch));
+                    epoch_ptr->on_found = on_found;  // shared by all consumers of this epoch
+                    published_epoch_id = feed_snapshot->publish(std::move(epoch_ptr));
                     m_logger->debug("[Worker_manager] Published TemplateEpoch #{} to feed",
                                     published_epoch_id);
                 }
+                // If feed_snapshot is null, epoch_ptr falls out of scope here
+                // and the on_found lambda's weak_ptr expires.  That's fine —
+                // legacy workers self-mark their own per-worker consumed flag
+                // and the cross-epoch consumed signal is unused without a
+                // feed-consumer worker to read it.
 
                 // Fan out to workers that have not yet been migrated to consume
                 // from the feed.  This loop runs OUTSIDE m_worker_mutex, so the

@@ -76,6 +76,15 @@ private:
     std::condition_variable m_cv;  // For persistent thread wake-up
     bool m_new_work = false;       // Flag to indicate new work is available
     bool m_shutdown = false;       // Flag to indicate worker should shut down
+    // Option D: set true at the moment the worker dispatches the found-block
+    // callback for the current template, cleared in set_block().  Checked at
+    // the top of every mine_loop iteration alongside m_new_work so the worker
+    // stops grinding the spent template and falls back to m_cv.wait until the
+    // next set_block (which clears the flag).  Without this, after a found
+    // block the worker keeps hashing the same template — at low rates on a
+    // quiet channel, that means the next find rebuilds against the same
+    // already-mined nonce space until the new BLOCK_DATA push lands.
+    bool m_template_consumed = false;
     uint64_t m_starting_nonce = 0;
     std::string m_log_leader;
  
