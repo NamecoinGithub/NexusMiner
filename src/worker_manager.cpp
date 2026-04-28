@@ -12,6 +12,8 @@
 #endif
 #ifdef PRIME_ENABLED
 #include "cpu/worker_prime.hpp"
+#include "cpu/prime/prime_mining_engine.hpp"
+#include "cpu/prime/chain_sieve.hpp"
 #endif
 #include "packet.hpp"
 #include "config/config.hpp"
@@ -29,6 +31,7 @@
 #include <asio/steady_timer.hpp>
 #include <variant>
 #include <algorithm>
+#include <limits>
 #include <random>
 #include <iomanip>
 #include <sstream>
@@ -1040,6 +1043,125 @@ void Worker_manager::create_workers_locked()
         }
         internal_id++;
     }
+
+#ifdef PRIME_ENABLED
+    // ── Stone 7: PrimeMiningEngine wiring ─────────────────────────────────
+    //
+    // When [cpu] engine_mode = "engine" and any CPU prime worker exists,
+    // construct one PrimeMiningEngine for the channel.  The engine owns the
+    // sieve pool threads + consumer thread; Worker_prime instances under
+    // engine mode are thin adapters registered with the engine for stats
+    // fan-in.
+    //
+    // Construction order (matches Stone 7 brief):
+    //   1. feed exists (guaranteed above)
+    //   2. workers exist (just constructed)
+    //   3. construct engine from lowest internal_id Worker_prime's config
+    //   4. register every Worker_prime with the engine
+    //   5. bind_to_engine on every Worker_prime so update_statistics can
+    //      pull from the engine snapshot
+    //   6. attach_template_feed loop runs below (existing — engine-mode
+    //      Worker_prime overrides attach_template_feed as a no-op).
+    //
+    // Lowest internal_id is the channel's representative worker (gets credit
+    // on found blocks via EngineSession::internal_id_for_solution).
+    if (m_config.get_mining_mode() == config::Mining_mode::PRIME)
+    {
+        // Collect (worker, internal_id) pairs for every CPU prime worker.
+        // m_internal_id was assigned to each worker_config above as
+        // creation-order, so the parallel walk over m_workers and
+        // get_worker_config() yields a stable (worker, id) zip.
+        struct PrimeWorkerEntry {
+            std::shared_ptr<cpu::Worker_prime> worker;
+            std::uint32_t internal_id;
+        };
+        std::vector<PrimeWorkerEntry> prime_workers;
+        const auto& worker_configs = m_config.get_worker_config();
+        const std::size_t pair_count = std::min(m_workers.size(), worker_configs.size());
+        for (std::size_t i = 0; i < pair_count; ++i) {
+            if (auto wp = std::dynamic_pointer_cast<cpu::Worker_prime>(m_workers[i])) {
+                prime_workers.push_back({wp, worker_configs[i].m_internal_id});
+            }
+        }
+        if (!prime_workers.empty())
+        {
+            // Resolve engine_mode from the FIRST CPU prime worker's config
+            // (engine_mode is a [cpu] section key, not per-worker — all
+            // CPU prime workers in the same TOML batch share the value).
+            std::string engine_mode = "workers";
+            for (const auto& wc : worker_configs) {
+                if (wc.m_mode == config::Worker_mode::CPU
+                    && std::holds_alternative<config::Worker_config_cpu>(wc.m_worker_mode))
+                {
+                    engine_mode = std::get<config::Worker_config_cpu>(wc.m_worker_mode).m_engine_mode;
+                    break;
+                }
+            }
+
+            if (engine_mode == "engine")
+            {
+                std::uint32_t lowest_internal_id = std::numeric_limits<std::uint32_t>::max();
+                for (const auto& e : prime_workers) {
+                    lowest_internal_id = std::min<std::uint32_t>(lowest_internal_id, e.internal_id);
+                }
+
+                // Stone 7 cleanup: cpu::Sieve::get_segment_size() is now
+                // a static constexpr accessor for the compile-time
+                // m_segment_size constant, so we no longer need to
+                // construct a throwaway Sieve (whose ctor allocates
+                // non-trivial per-thread buffers) just to read it.
+                const std::uint64_t segment_size = cpu::Sieve::get_segment_size();
+
+                cpu::Engine_config cfg;
+                cfg.segment_size            = segment_size;
+                // Channel-level starting nonce baseline: lowest registered
+                // worker's `internal_id << 48`.  Pool threads add this when
+                // computing the absolute sieve start (matches the per-worker
+                // convention lifted to the channel level).
+                cfg.channel_starting_nonce  = static_cast<std::uint64_t>(lowest_internal_id) << 48;
+                cfg.internal_id_for_solution = lowest_internal_id;
+                // Honor the operator's intent: under engine mode, the
+                // [workers] count = N value (== prime_workers.size()) is
+                // the pool_threads count.  Without this, count = N would
+                // become meaningless for compute (only stats-display
+                // partitioning would care about it) and the engine would
+                // silently spawn min(hardware_concurrency(), 32) sieve
+                // threads instead — a real behavioural surprise on a
+                // 16-core box where the operator wrote count = 4 because
+                // they wanted 4 cores busy.  prime_workers is non-empty
+                // here (guarded above), so this is always >= 1.
+                cfg.pool_threads            =
+                    static_cast<std::uint32_t>(prime_workers.size());
+                cfg.io_context              = m_io_context;
+
+                try {
+                    m_prime_engine = std::make_shared<cpu::PrimeMiningEngine>(
+                        cfg, m_template_feed);
+
+                    for (auto& e : prime_workers) {
+                        m_prime_engine->register_worker(e.worker);
+                    }
+                    const std::uint32_t share_count =
+                        static_cast<std::uint32_t>(prime_workers.size());
+                    for (std::uint32_t i = 0; i < share_count; ++i) {
+                        prime_workers[i].worker->bind_to_engine(m_prime_engine, i, share_count);
+                    }
+                    m_logger->info("[Worker_manager] PrimeMiningEngine wired ({} workers, "
+                                   "internal_id_for_solution={}, segment_size={}, "
+                                   "pool_threads={} (== [workers] count))",
+                                   share_count, lowest_internal_id, segment_size,
+                                   share_count);
+                } catch (const std::exception& e) {
+                    m_logger->error("[Worker_manager] Failed to construct PrimeMiningEngine: {} — "
+                                    "engine-mode Worker_prime instances have no run-thread; "
+                                    "workers will be inert until engine_mode is set back to \"workers\".",
+                                    e.what());
+                    m_prime_engine.reset();
+                }
+            }
+        }
+    }
+#endif
 
     // Stone 4: attach the shared template feed to every worker so subclasses
     // that have been migrated to consume work via WorkerTemplateFeed (see
@@ -2165,6 +2287,27 @@ void Worker_manager::stop_all_workers()
     if (m_template_feed) {
         m_template_feed->notify_wake();
     }
+
+#ifdef PRIME_ENABLED
+    // Stone 7: Reset the PrimeMiningEngine BEFORE workers and BEFORE the feed.
+    //
+    //   * BEFORE workers — engine pool threads dispatch on_found via
+    //     asio::post(io_context); the captured lambda touches Worker_manager
+    //     state.  Joining the engine here drains in-flight dispatches so
+    //     workers and Worker_manager state are still alive while they run.
+    //
+    //   * BEFORE the feed — the engine consumer thread parks inside
+    //     WorkerTemplateFeed::wait_for_epoch_after.  Engine destructor calls
+    //     m_feed->notify_wake() to unpark it; the feed must therefore be alive.
+    //
+    // Engine destructor sets shutdown, wakes pool CV, joins pool threads
+    // (Stone 6 ordering), then joins consumer.  No work for us beyond this
+    // shared_ptr reset.
+    if (m_prime_engine) {
+        m_logger->info("[Worker_manager] Tearing down PrimeMiningEngine");
+        m_prime_engine.reset();
+    }
+#endif
 
     // Reset all worker instances so that the next create_workers() call starts fresh
     // without duplicating existing workers.  The shared_ptr reset() destroys the Worker

@@ -161,6 +161,33 @@ void PrimeMiningEngine::register_worker(std::shared_ptr<Worker_prime> worker)
     m_registered.emplace_back(std::move(worker));
 }
 
+PrimeMiningEngine::Engine_stats_snapshot PrimeMiningEngine::snapshot_stats() const
+{
+    Engine_stats_snapshot snap{};
+    snap.segments_processed   = m_segments_processed.load(std::memory_order_relaxed);
+    snap.candidates_dispatched = m_candidates_dispatched.load(std::memory_order_relaxed);
+    snap.segment_size         = m_cfg.segment_size;
+    snap.sessions_published   = m_sessions_published.load(std::memory_order_relaxed);
+    snap.pool_thread_count    = m_pool_thread_count;
+
+    if (auto session = m_session.load(std::memory_order_acquire))
+    {
+        snap.nbits = session->nbits;
+    }
+    return snap;
+}
+
+std::size_t PrimeMiningEngine::registered_worker_count() const
+{
+    std::lock_guard<std::mutex> lock(m_registered_mtx);
+    std::size_t live = 0;
+    for (const auto& w : m_registered)
+    {
+        if (!w.expired()) ++live;
+    }
+    return live;
+}
+
 std::uint64_t PrimeMiningEngine::wait_for_sessions_published_after(
     std::uint64_t last_seen,
     std::chrono::milliseconds timeout)

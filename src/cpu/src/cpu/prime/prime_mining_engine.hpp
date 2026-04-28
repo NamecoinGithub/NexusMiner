@@ -205,6 +205,35 @@ public:
     }
     std::uint32_t pool_thread_count() const { return m_pool_thread_count; }
 
+    // ── Stone 7 — stats fan-in snapshot ────────────────────────────────────
+    //
+    // Aggregated counters published once per snapshot, designed to be split
+    // across registered Worker_prime instances using a floor-plus-remainder
+    // partition.  Worker_prime's update_statistics() (under engine mode)
+    // calls this and computes its own share — no per-thread attribution is
+    // attempted (cooperative pool sieving makes per-thread credit
+    // meaningless, see EngineSession comments).
+    struct Engine_stats_snapshot
+    {
+        std::uint64_t segments_processed{0};
+        std::uint64_t candidates_dispatched{0};
+        std::uint64_t segment_size{0};      // copied from Engine_config
+        std::uint64_t sessions_published{0};
+        std::uint32_t nbits{0};             // current session nBits, 0 if none
+        std::uint32_t pool_thread_count{0};
+    };
+
+    Engine_stats_snapshot snapshot_stats() const;
+
+    // Number of currently-registered Worker_prime instances (live weak_ptrs
+    // are counted; expired ones are not).  Used by the stats fan-in path
+    // when the manager needs the live denominator without locking.
+    std::size_t registered_worker_count() const;
+
+    // Accessor for the channel-level representative worker id (== lowest
+    // registered Worker_prime's m_internal_id at construction time).
+    std::uint32_t internal_id_for_solution() const { return m_cfg.internal_id_for_solution; }
+
     // Block until the consumer thread has processed at least one publish
     // event whose epoch_id is greater than `last_seen`.  Returns the latest
     // sessions_published() count once the wait completes.  Used by tests to

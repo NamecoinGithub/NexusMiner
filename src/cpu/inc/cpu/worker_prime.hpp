@@ -30,6 +30,7 @@ namespace cpu
     class Prime;
     class Sieve;
     class Segment_allocator;
+    class PrimeMiningEngine;
 class Worker_prime : public Worker, public std::enable_shared_from_this<Worker_prime>
 {
 public:
@@ -51,7 +52,34 @@ public:
     // Optimized version: accepts shared WorkPackage to eliminate repeated block data construction
     void set_block(std::shared_ptr<WorkPackage> work_package, Worker::Block_found_handler result) override;
 
-    bool is_running() const override { return m_running.load(); }
+    // ── Stone 7 — engine-mode adapter API ─────────────────────────────────
+    //
+    // Under engine_mode == "engine" the worker is a thin adapter that owns
+    // no mining thread and no sieve.  Worker_manager calls bind_to_engine()
+    // after the engine is constructed and every worker has been registered;
+    // the worker stores a weak_ptr for stats fan-in (it deliberately does
+    // NOT take a shared_ptr so the engine can be torn down before workers).
+    //
+    // share_index ∈ [0, share_count): which slot of the floor+remainder
+    //   partition this worker owns.  share_count is the total number of
+    //   registered Worker_prime instances; both are stable for the engine
+    //   lifetime under Stone 7.
+    void bind_to_engine(std::weak_ptr<class PrimeMiningEngine> engine,
+                        std::uint32_t share_index,
+                        std::uint32_t share_count);
+
+    // Stone 7 — opt out of the legacy per-worker set_block() shim.  In
+    // engine mode the engine subscribes to WorkerTemplateFeed itself; the
+    // worker would otherwise receive a redundant template and have no
+    // mining thread to consume it.
+    bool uses_template_feed() const override;
+
+    // Stone 7 — explicit no-op override.  The feed pointer is held by the
+    // engine, not the worker.  Documented inline so future readers don't
+    // mistake the empty body for a missing implementation.
+    void attach_template_feed(std::shared_ptr<WorkerTemplateFeed> feed) override;
+
+    bool is_running() const override;
     void update_statistics(stats::Collector& stats_collector) override;
 
 private:
@@ -145,6 +173,22 @@ private:
     std::chrono::milliseconds m_cpu_active_time{0};
     std::chrono::milliseconds m_cpu_total_time{0};
     nexusminer::stats::Atomic_snapshot<nexusminer::stats::Prime> m_published_stats;
+
+    // ── Stone 7 — engine-mode adapter state ───────────────────────────────
+    // m_engine_mode is "workers" (legacy mining loop) or "engine" (thin
+    // adapter — engine owns the mining threads, this worker is just a
+    // stats/identity shell).  Captured once at construction from
+    // Worker_config_cpu::m_engine_mode and never re-read.
+    std::string m_engine_mode{"workers"};
+
+    // Engine reference (weak so engine teardown ordering — engine BEFORE
+    // workers, see Worker_manager::stop_all_workers — does not crash here).
+    // Set by bind_to_engine(); read by update_statistics() and is_running()
+    // under engine mode.
+    std::weak_ptr<class PrimeMiningEngine> m_prime_engine_weak;
+    std::uint32_t m_engine_share_index{0};
+    std::uint32_t m_engine_share_count{0};
+    std::atomic<bool> m_engine_bound{false};
 
 };
 }

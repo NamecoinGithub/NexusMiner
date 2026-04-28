@@ -33,6 +33,7 @@ namespace protocol { class Protocol; class Solo; }
 class Worker;
 class WorkerTemplateFeed;  // Stone 4: defined in worker/template_feed.hpp
 class ColinAgent;
+namespace cpu { class PrimeMiningEngine; }  // Stone 7: defined in cpu/prime/prime_mining_engine.hpp
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ⚡ Explicit Recovery State Machine
@@ -296,6 +297,24 @@ private:
     // every worker that holds a shared_ptr to it; reset only in stop_all_workers
     // after every worker has been destroyed.
     std::shared_ptr<WorkerTemplateFeed> m_template_feed;
+
+#ifdef PRIME_ENABLED
+    // Stone 7: The cooperative PrimeMiningEngine for the CPU prime channel,
+    // constructed in create_workers_locked() when [cpu] engine_mode = "engine"
+    // and at least one CPU prime worker exists.  Owns its own consumer +
+    // pool sieve threads; Worker_prime instances under engine mode become
+    // thin adapters registered with the engine for stats fan-in.
+    //
+    // Lifetime / destruction order is critical (see stop_all_workers):
+    //   1. notify_wake() the feed
+    //   2. reset m_prime_engine BEFORE workers (engine pool dispatches
+    //      asio::post → io_context with state captured from Worker_manager;
+    //      workers must outlive any in-flight dispatch)
+    //   3. destroy workers
+    //   4. reset m_template_feed (engine consumer thread parks inside the
+    //      feed; the feed must outlive the engine)
+    std::shared_ptr<cpu::PrimeMiningEngine> m_prime_engine;
+#endif
 
     // ── Lane Health Monitor and diagnostic tools ────────────────────────────
     DualConnectionManager m_sim_link;  // Lane state bookkeeper (SIM Link removed; lane monitor only)

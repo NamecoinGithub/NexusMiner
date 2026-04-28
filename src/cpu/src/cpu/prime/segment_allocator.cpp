@@ -55,15 +55,13 @@ make_segment_allocator_for_engine_mode(const std::string& engine_mode,
 {
     if (engine_mode == "engine")
     {
-        // Forward-compat: the cooperative engine path (Stones 5-7) is not yet
-        // wired in.  Log once at construction and fall back to the per-worker
-        // allocator so today's behaviour is preserved.
-        if (auto logger = spdlog::get("logger"))
-        {
-            logger->warn("[cpu] engine_mode = \"engine\" is reserved for the upcoming "
-                         "PrimeMiningEngine and is not yet active. Falling back to the "
-                         "per-worker segment allocator.");
-        }
+        // Stone 7: the cooperative PrimeMiningEngine path is now active and
+        // owns its own Shared_segment_allocator.  Worker_prime under engine
+        // mode never calls next_segment_start() on the per-worker allocator
+        // returned here — it is a vestigial member kept for ABI/constructor
+        // compatibility and will be removed in Stone 8.  No warning is
+        // emitted; the engine startup banner ([PrimeMiningEngine] ...) is
+        // the user-visible signal that engine mode is live.
     }
     else if (!engine_mode.empty() && engine_mode != "workers")
     {

@@ -8,7 +8,12 @@ target_include_directories(cpu
     PUBLIC 
         $<INSTALL_INTERFACE:inc>    
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>
-    PRIVATE src
+        # Stone 7: expose the prime engine headers (live in src/cpu/prime/)
+        # so Worker_manager — which constructs/owns one PrimeMiningEngine
+        # per CPU prime channel — can include them.  Internal-only headers
+        # remain implementation-private; the engine just happens to need
+        # public visibility for the integration in Stone 7.
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
 )
 
 # TODO reduce dependencies
@@ -69,5 +74,20 @@ if(WITH_PRIME)
         SOURCES     prime_mining_engine_pool_test.cpp
         LINK_LIBS   cpu spdlog::spdlog
         INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+
+    # Stone 7 — integration test for the engine-mode adapter surface
+    # (Worker_prime engine mode + PrimeMiningEngine register_worker / stats
+    # fan-in / found-block credit).  Links against cpu (Worker_prime,
+    # PrimeMiningEngine) plus stats and config for the typed-Collector test.
+    add_nexusminer_test(
+        NAME        prime_engine_integration_test
+        SOURCES     prime_engine_integration_test.cpp
+        LINK_LIBS   cpu stats config spdlog::spdlog
+        INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/inc
+                     ${CMAKE_CURRENT_SOURCE_DIR}/src
+                     ${CMAKE_SOURCE_DIR}/src/config/inc
+                     ${CMAKE_SOURCE_DIR}/src/stats/inc
+                     ${CMAKE_SOURCE_DIR}/src/worker/inc
     )
 endif()
