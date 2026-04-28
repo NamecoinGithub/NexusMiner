@@ -767,9 +767,13 @@ void Worker_prime::update_statistics(stats::Collector& stats_collector)
 			// consistent chain-row in the stats printer regardless of
 			// engine_mode.
 			prime_stats.m_chain_histogram = snap.chain_histogram;
+			// Stone 6.8 — best chain difficulty is also a channel-wide truth
+			// (cooperative pool sieving), so every worker publishes the same
+			// value.  Operators see Best lift in lockstep when any pool
+			// thread finds a winner.
+			prime_stats.m_most_difficult_chain = snap.best_difficulty;
 			// Engine does not partition Fermat-test counters either
 			// (single-found-block-wins keeps per-thread credit meaningless).
-			prime_stats.m_most_difficult_chain = 0.0;
 			prime_stats.m_cpu_load = 0.0;
 		}
 

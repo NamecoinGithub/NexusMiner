@@ -227,6 +227,7 @@ PrimeMiningEngine::Engine_stats_snapshot PrimeMiningEngine::snapshot_stats() con
     snap.pool_threads_crashed =
         m_pool_threads_crashed.load(std::memory_order_relaxed);
     snap.pool_chunk_segments  = m_pool_chunk_segments;
+    snap.best_difficulty      = m_best_difficulty.load(std::memory_order_relaxed);
 
     if (auto session = m_session.load(std::memory_order_acquire))
     {
@@ -733,6 +734,28 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                     if (!is_valid)
                     {
                         continue;
+                    }
+
+                    // Stone 6.8 — channel-wide best-difficulty fan-in.  Mirror
+                    // the legacy Worker_prime path: m_segmented_sieve->m_best_chain
+                    // is updated with std::max(actual_difficulty, ...) only on
+                    // valid candidates (i.e. those that meet required network
+                    // difficulty).  Engine mode tracks the same value as a
+                    // single channel-wide atomic so every registered
+                    // Worker_prime can publish it as its "Best".  std::atomic
+                    // <double> has no fetch_max, hence the CAS loop.
+                    {
+                        double current = m_best_difficulty.load(std::memory_order_relaxed);
+                        while (actual_difficulty > current &&
+                               !m_best_difficulty.compare_exchange_weak(
+                                   current, actual_difficulty,
+                                   std::memory_order_relaxed,
+                                   std::memory_order_relaxed))
+                        {
+                            // current was reloaded by compare_exchange_weak;
+                            // loop until either we win the CAS or another
+                            // thread has installed a value >= ours.
+                        }
                     }
 
                     // Mark the session consumed BEFORE asio::post so other pool

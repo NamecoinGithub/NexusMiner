@@ -269,6 +269,18 @@ public:
         // partitioned across registered Worker_prime instances — every worker
         // sees the same aggregated view.
         stats::Prime_histogram chain_histogram{};
+
+        // Stone 6.8 — channel-wide best chain difficulty observed since the
+        // engine started.  Updated by pool threads via a CAS-loop max
+        // whenever ValidatePrimeCandidate flags a candidate as meeting the
+        // network's required difficulty (the same condition that triggers
+        // m_segmented_sieve->m_best_chain updates in legacy workers mode).
+        // Like chain_histogram, this is intentionally NOT partitioned across
+        // registered Worker_prime instances — pool threads cooperate on a
+        // single cursor, so "best" is a channel-wide truth and every worker
+        // reports the same value (which matches operator expectations: a
+        // freshly-accepted block lifts everyone's "Best" line at once).
+        double best_difficulty{0.0};
     };
 
     Engine_stats_snapshot snapshot_stats() const;
@@ -333,6 +345,12 @@ private:
     // Stone 6.5 — chunk-amortisation diagnostic counters.
     std::atomic<std::uint64_t>             m_chunks_drawn{0};
     std::atomic<std::uint64_t>             m_starting_multiples_calls{0};
+
+    // Stone 6.8 — channel-wide best chain difficulty observed since engine
+    // startup.  std::atomic<double> in C++20 supports load/store/compare-
+    // exchange but no fetch_max, so pool threads update via a CAS loop
+    // (see prime_mining_engine.cpp run_pool_thread, after is_valid).
+    std::atomic<double>                    m_best_difficulty{0.0};
 
     // Consumer-thread shutdown flag + condvar for the wait-for-publish helper.
     std::atomic<bool>                      m_shutdown{false};
