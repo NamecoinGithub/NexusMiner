@@ -89,6 +89,18 @@ PrimeMiningEngine::PrimeMiningEngine(Engine_config cfg,
     // it can observe them.
     m_consumer = std::thread{&PrimeMiningEngine::run_consumer, this};
 
+    // Stone 6.8 — allocate the per-pool-thread Sieve registry BEFORE pool
+    // threads are launched so the very first pool-thread iteration can safely
+    // publish its slot.  std::make_unique<std::atomic<Sieve*>[]>(n) value-
+    // initialises every slot, which is zero-init for atomic pointer types
+    // under C++20 — no explicit per-slot store() loop is needed.  Pool
+    // threads CAS their own Sieve* in once construction completes and clear
+    // it on exit.
+    if (m_pool_thread_count > 0)
+    {
+        m_pool_sieves = std::make_unique<std::atomic<Sieve*>[]>(m_pool_thread_count);
+    }
+
     // Spawn the pool threads AFTER the consumer is running.  Pool threads must
     // observe a fully-constructed engine; spawning them last guarantees this.
     m_pool_threads.reserve(m_pool_thread_count);
@@ -215,11 +227,39 @@ PrimeMiningEngine::Engine_stats_snapshot PrimeMiningEngine::snapshot_stats() con
     snap.pool_threads_crashed =
         m_pool_threads_crashed.load(std::memory_order_relaxed);
     snap.pool_chunk_segments  = m_pool_chunk_segments;
+    snap.best_difficulty      = m_best_difficulty.load(std::memory_order_relaxed);
 
     if (auto session = m_session.load(std::memory_order_acquire))
     {
         snap.nbits = session->nbits;
     }
+
+    // Stone 6.8 — fan-in chain histogram across every live pool thread's
+    // Sieve.  Each pool thread publishes its Sieve* into m_pool_sieves[i]
+    // and clears it on exit; the destructor joins all pool threads BEFORE
+    // the engine itself goes away, so a non-null slot is guaranteed to
+    // outlive this read.  Buckets are saturating-summed into the fixed-size
+    // stats::Prime_histogram array (any over-length input buckets beyond
+    // the array's capacity are dropped — they cannot occur today since the
+    // CPU Sieve sizes m_chain_histogram to 10 < kPrimeHistogramBuckets).
+    if (m_pool_sieves)
+    {
+        for (std::uint32_t i = 0; i < m_pool_thread_count; ++i)
+        {
+            Sieve* s = m_pool_sieves[i].load(std::memory_order_acquire);
+            if (!s) continue;
+            const auto local = s->snapshot_chain_histogram();
+            const std::size_t n = std::min(local.size(), snap.chain_histogram.size());
+            for (std::size_t b = 0; b < n; ++b)
+            {
+                const std::uint64_t sum =
+                    static_cast<std::uint64_t>(snap.chain_histogram[b])
+                  + static_cast<std::uint64_t>(local[b]);
+                snap.chain_histogram[b] = stats::saturating_prime_stat(sum);
+            }
+        }
+    }
+
     return snap;
 }
 
@@ -454,6 +494,28 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
             sieve = std::make_unique<Sieve>();
         }
 
+        // Stone 6.8 — publish this pool thread's Sieve* into its registry slot
+        // so PrimeMiningEngine::snapshot_stats() can fan-in the chain
+        // histogram.  Slot is owned exclusively by this thread (no contention
+        // with peer pool threads); the snapshot reader only ever loads.
+        // Guard with a scope-exit-style RAII helper so the slot is cleared
+        // even on exception unwinding through the run_pool_thread try block.
+        struct Sieve_slot_guard {
+            std::atomic<Sieve*>* slot{nullptr};
+            ~Sieve_slot_guard()
+            {
+                if (slot)
+                {
+                    slot->store(nullptr, std::memory_order_release);
+                }
+            }
+        } sieve_slot_guard;
+        if (m_pool_sieves && pool_index < m_pool_thread_count)
+        {
+            m_pool_sieves[pool_index].store(sieve.get(), std::memory_order_release);
+            sieve_slot_guard.slot = &m_pool_sieves[pool_index];
+        }
+
         // Per-thread per-session bookkeeping.  Reset on every session rebind
         // so each new template re-runs the sieve prepare path.
         std::uint64_t bound_epoch = 0;
@@ -672,6 +734,28 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                     if (!is_valid)
                     {
                         continue;
+                    }
+
+                    // Stone 6.8 — channel-wide best-difficulty fan-in.  Mirror
+                    // the legacy Worker_prime path: m_segmented_sieve->m_best_chain
+                    // is updated with std::max(actual_difficulty, ...) only on
+                    // valid candidates (i.e. those that meet required network
+                    // difficulty).  Engine mode tracks the same value as a
+                    // single channel-wide atomic so every registered
+                    // Worker_prime can publish it as its "Best".  std::atomic
+                    // <double> has no fetch_max, hence the CAS loop.
+                    {
+                        double current = m_best_difficulty.load(std::memory_order_relaxed);
+                        while (actual_difficulty > current &&
+                               !m_best_difficulty.compare_exchange_weak(
+                                   current, actual_difficulty,
+                                   std::memory_order_relaxed,
+                                   std::memory_order_relaxed))
+                        {
+                            // current was reloaded by compare_exchange_weak;
+                            // loop until either we win the CAS or another
+                            // thread has installed a value >= ours.
+                        }
                     }
 
                     // Mark the session consumed BEFORE asio::post so other pool

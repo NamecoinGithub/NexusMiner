@@ -3,6 +3,7 @@
 
 #include "cpu/prime/engine_session.hpp"
 #include "cpu/prime/segment_allocator.hpp"
+#include "stats/prime_stats_snapshot.hpp"
 
 #include <spdlog/spdlog.h>
 
@@ -27,6 +28,7 @@ class WorkerTemplateFeed;  // worker/template_feed.hpp
 namespace cpu {
 
 class Worker_prime;  // forward decl — registered for stats fan-in (Stone 7).
+class Sieve;         // forward decl — per-pool-thread sieve owner (Stone 6.8 fan-in).
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Stone 5 — PrimeMiningEngine: session creation
@@ -258,6 +260,27 @@ public:
         std::uint64_t pool_threads_running{0};
         std::uint64_t pool_threads_crashed{0};
         std::uint32_t pool_chunk_segments{0};
+
+        // Stone 6.8 — chain-length histogram aggregated bucket-wise across
+        // every live pool thread's Sieve::m_chain_histogram.  Buckets are
+        // saturating-summed into stats::Prime_histogram so the stats printer
+        // can render the same chain row in engine mode that it does in legacy
+        // workers mode.  Histograms are diagnostic and intentionally NOT
+        // partitioned across registered Worker_prime instances — every worker
+        // sees the same aggregated view.
+        stats::Prime_histogram chain_histogram{};
+
+        // Stone 6.8 — channel-wide best chain difficulty observed since the
+        // engine started.  Updated by pool threads via a CAS-loop max
+        // whenever ValidatePrimeCandidate flags a candidate as meeting the
+        // network's required difficulty (the same condition that triggers
+        // m_segmented_sieve->m_best_chain updates in legacy workers mode).
+        // Like chain_histogram, this is intentionally NOT partitioned across
+        // registered Worker_prime instances — pool threads cooperate on a
+        // single cursor, so "best" is a channel-wide truth and every worker
+        // reports the same value (which matches operator expectations: a
+        // freshly-accepted block lifts everyone's "Best" line at once).
+        double best_difficulty{0.0};
     };
 
     Engine_stats_snapshot snapshot_stats() const;
@@ -323,6 +346,12 @@ private:
     std::atomic<std::uint64_t>             m_chunks_drawn{0};
     std::atomic<std::uint64_t>             m_starting_multiples_calls{0};
 
+    // Stone 6.8 — channel-wide best chain difficulty observed since engine
+    // startup.  std::atomic<double> in C++20 supports load/store/compare-
+    // exchange but no fetch_max, so pool threads update via a CAS loop
+    // (see prime_mining_engine.cpp run_pool_thread, after is_valid).
+    std::atomic<double>                    m_best_difficulty{0.0};
+
     // Consumer-thread shutdown flag + condvar for the wait-for-publish helper.
     std::atomic<bool>                      m_shutdown{false};
     mutable std::mutex                     m_publish_mtx;
@@ -342,6 +371,20 @@ private:
 
     // Stone 6.5 — resolved chunk size (validated to [1, 1024] in ctor).
     std::uint32_t                          m_pool_chunk_segments{0};
+
+    // Stone 6.8 — per-pool-thread Sieve registry for chain-histogram fan-in.
+    // Sized to m_pool_thread_count in the constructor (after pool_thread_count
+    // is resolved).  Each pool thread atomically publishes its Sieve* into
+    // its own slot when the Sieve is constructed, and clears it back to null
+    // before the run_pool_thread() stack frame unwinds (the destructor joins
+    // every pool thread before the engine itself goes away, so snapshot_stats
+    // never observes a dangling pointer).  Slot ownership is per-index, so
+    // writers and readers never contend on the same atomic — readers simply
+    // skip null slots (test_skip_sieve mode, pool thread not yet started, or
+    // pool thread has already cleared its slot).  std::atomic is neither
+    // copy- nor move-constructible, so we hold the slots in a heap array via
+    // unique_ptr rather than std::vector.
+    std::unique_ptr<std::atomic<Sieve*>[]> m_pool_sieves;
 
     // Stone 6.5 — periodic engine-stats info-level log line (every 30s).
     void                                   run_stats_logger();
