@@ -77,6 +77,21 @@ public:
     std::uint64_t next_segment_start() override;
     std::uint64_t current() const override;
 
+    // Stone 6.5: atomically reserve a CHUNK of `chunk_segments` contiguous
+    // segments and return the base offset of the chunk.  The returned value
+    // is the start of `chunk_segments * segment_size` bytes of cursor space
+    // owned exclusively by the calling thread — no other thread will draw any
+    // segment in [base, base + chunk_segments * segment_size).  This is the
+    // contract that lets the chunk-internal Sieve::sieve_segment() calls
+    // advance the wheel safely (contiguous-segment assumption holds within
+    // the chunk).
+    //
+    // Implemented as a single atomic fetch_add with the chunk-sized stride —
+    // wait-free, no mutex.  `chunk_segments` must be > 0; passing 0 is a
+    // programmer error and yields undefined-but-safe behaviour (returns the
+    // current cursor without advancing it).
+    std::uint64_t next_segment_chunk(std::uint64_t chunk_segments);
+
 private:
     std::uint64_t m_segment_size;
     std::atomic<std::uint64_t> m_cursor{0};

@@ -25,6 +25,7 @@
 
 #include "cpu/prime/prime_mining_engine.hpp"
 #include "cpu/prime/segment_allocator.hpp"
+#include "cpu/prime/chain_sieve.hpp"
 #include "worker/template_feed.hpp"
 #include "worker.hpp"
 #include "block.hpp"
@@ -413,6 +414,145 @@ void test_session_only_mode_null_io_context()
                  engine.pool_threads_crashed() == 0);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Stone 6.5 — regression test: chunk-based amortisation of
+// Sieve::calculate_starting_multiples() under the REAL sieve path.
+//
+// This test would FAIL on the Stone 6 codebase (which called
+// calculate_starting_multiples() per segment) and PASSES on Stone 6.5
+// (one call per chunk).  It is the test-coverage gap that allowed the
+// production performance regression to ship.
+//
+// Unlike every other test in this file, this one does NOT set
+// test_skip_sieve.  It pays the cost of the real sieving-primes singleton
+// build (~2s on first construction) so it can observe the actual ratio
+// of starting_multiples_calls : segments_processed.
+// ─────────────────────────────────────────────────────────────────────────────
+void test_chunk_amortizes_starting_multiples_calls()
+{
+    // Populate the sieving-primes singleton once on a throwaway Sieve.
+    // Subsequent Sieves (one per pool thread) share the populated table.
+    {
+        Sieve seed_sieve;
+        seed_sieve.generate_sieving_primes();
+    }
+
+    Test_io_context io;
+    auto feed = std::make_shared<WorkerTemplateFeed>();
+
+    // Use the production default chunk size (64) and a small pool so the
+    // test runs in bounded time even with the real (heavy) sieve.
+    Engine_config cfg;
+    cfg.segment_size = Sieve::get_segment_size();
+    cfg.channel_starting_nonce = kStartingNonce;
+    cfg.internal_id_for_solution = kRepWorkerId;
+    cfg.pool_threads = 2;
+    cfg.io_context = io.ctx;
+    cfg.test_skip_sieve = false;                     // ← REAL sieve path
+    cfg.test_force_candidate_per_segment = false;
+    // Stone 6.5: smaller-than-default chunk size keeps per-chunk wall-clock
+    // bounded under the test's grind window while still demonstrating the
+    // amortisation ratio.  Production default is 64; here we use 4 so the
+    // test completes in well under 30 seconds even on a modest CI runner
+    // and still distinguishes Stone 6 (1:1 ratio → would FAIL this assertion
+    // by a factor of 4) from Stone 6.5 (~1:4 ratio → PASSES with margin).
+    cfg.pool_chunk_segments = 4;
+    const std::uint64_t chunk_size = cfg.pool_chunk_segments;
+
+    PrimeMiningEngine engine{cfg, feed};
+
+    // Publish a single template; let pool threads grind for a bounded time.
+    boost::multiprecision::uint1024_t base{
+        "0x123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"};
+    feed->publish(make_epoch(make_work_package(0x1c00ffffu, base, 1)));
+    engine.wait_for_sessions_published_after(0, 2s);
+
+    // Bounded grind window.  The real sieve is heavy (each segment_size
+    // covers ~30 MB of wheel-30 odds and includes a Sieve::sieve_segment +
+    // find_chains + test_chains pass), so we wait long enough that several
+    // full chunks complete on each pool thread and partial-chunk overhead
+    // does not dominate the ratio.
+    std::this_thread::sleep_for(30s);
+
+    const auto snap = engine.snapshot_stats();
+
+    // Sanity: the engine is doing real work.
+    print_result("Stone 6.5 regression: segments_processed > 0",
+                 snap.segments_processed > 0);
+
+    // Core assertion: chunk amortisation is in effect.
+    //
+    //   starting_multiples_calls * pool_chunk_segments  ≤  segments_processed * 1.5
+    //
+    // The 1.5× slack accounts for partial chunks at session boundaries and
+    // re-bind on base-hash changes.  Pre-fix this ratio would have been ~1:1
+    // (one calculate_starting_multiples call per segment), so the assertion
+    // would fail by a ~64× margin.
+    const std::uint64_t lhs = snap.starting_multiples_calls * chunk_size;
+    const std::uint64_t rhs_15x = (snap.segments_processed * 3) / 2;
+    const bool amortized = lhs <= rhs_15x;
+    if (!amortized)
+    {
+        std::cout << "    [diag] segments_processed=" << snap.segments_processed
+                  << " starting_multiples_calls=" << snap.starting_multiples_calls
+                  << " chunks_drawn=" << snap.chunks_drawn
+                  << " chunk_size=" << chunk_size
+                  << " lhs=" << lhs << " rhs(1.5x)=" << rhs_15x
+                  << '\n';
+    }
+    print_result("Stone 6.5 regression: chunk amortisation holds "
+                 "(starting_multiples_calls * chunk_size ≤ segments_processed * 1.5)",
+                 amortized);
+
+    // Pool did not crash on the real sieve.
+    print_result("Stone 6.5 regression: pool_threads_crashed == 0",
+                 engine.pool_threads_crashed() == 0);
+
+    // chunks_drawn > 0 — confirms next_segment_chunk() is in use.
+    print_result("Stone 6.5 regression: chunks_drawn > 0",
+                 snap.chunks_drawn > 0);
+}
+
+void test_invalid_chunk_size_rejected()
+{
+    Test_io_context io;
+    auto feed = std::make_shared<WorkerTemplateFeed>();
+
+    // 0 is rejected.
+    bool threw_zero = false;
+    try
+    {
+        Engine_config cfg = make_cfg(1, io.ctx);
+        cfg.pool_chunk_segments = 0;
+        PrimeMiningEngine engine{cfg, feed};
+    }
+    catch (const std::invalid_argument&) { threw_zero = true; }
+    print_result("pool_chunk_segments=0 rejected", threw_zero);
+
+    // > 1024 is rejected.
+    bool threw_huge = false;
+    try
+    {
+        Engine_config cfg = make_cfg(1, io.ctx);
+        cfg.pool_chunk_segments = 1025;
+        PrimeMiningEngine engine{cfg, feed};
+    }
+    catch (const std::invalid_argument&) { threw_huge = true; }
+    print_result("pool_chunk_segments=1025 rejected", threw_huge);
+
+    // 1 is allowed (regression-test-only seam).
+    bool ok_one = false;
+    try
+    {
+        Engine_config cfg = make_cfg(1, io.ctx);
+        cfg.pool_chunk_segments = 1;
+        PrimeMiningEngine engine{cfg, feed};
+        ok_one = engine.pool_chunk_segments() == 1;
+    }
+    catch (...) { ok_one = false; }
+    print_result("pool_chunk_segments=1 accepted (regression-test seam)", ok_one);
+}
+
 }  // namespace
 
 int main()
@@ -434,6 +574,8 @@ int main()
     test_destruction_during_heavy_churn();
     test_same_base_republish_preserves_work();
     test_session_only_mode_null_io_context();
+    test_invalid_chunk_size_rejected();
+    test_chunk_amortizes_starting_multiples_calls();
 
     std::cout << "\nResult: " << (tests_run - tests_failed) << "/" << tests_run << " passed\n";
     return tests_failed == 0 ? 0 : 1;

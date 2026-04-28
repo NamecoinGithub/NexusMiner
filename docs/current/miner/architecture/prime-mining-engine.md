@@ -189,7 +189,15 @@ The orchestrator:
   `sessions_published`, `same_base_short_circuits`, `allocator_resets`,
   `segments_processed`, `segments_discarded_epoch_changed`,
   `segments_skipped_consumed`, `candidates_dispatched`,
-  `pool_threads_running`, `pool_threads_crashed`.
+  `pool_threads_running`, `pool_threads_crashed`,
+  `chunks_drawn` *(Stone 6.5)*, `starting_multiples_calls` *(Stone 6.5)*.
+* **Periodic stats log line** (Stone 6.5): a low-frequency timer thread
+  emits a single `info`-level `[PrimeMiningEngine] stats: ...` line every
+  30 seconds with all of the above counters. Operators can confirm the
+  Stone 6.5 fix is live by checking that
+  `starting_multiples_calls ≈ chunks_drawn` (NOT `≈ segments_processed`).
+  Pre-Stone-6.5 the ratio was ~1:1 with `segments_processed`; post-fix it
+  is ~1:`pool_chunk_segments` (default 64).
 
 ### 3.5 `Worker_prime` (engine-mode adapter)  *(Stone 7 — `src/cpu/src/cpu/worker_prime.cpp`)*
 
@@ -296,6 +304,16 @@ are counted via `m_segments_discarded_epoch_changed`.
 
 ## 5. Sequence: pool thread per-segment loop
 
+Stone 6.5 restructured this loop into a **two-level** chunk/segment shape.
+The outer level draws a chunk of `pool_chunk_segments` (default 64) contiguous
+segments from the cooperative cursor and runs the expensive
+`Sieve::calculate_starting_multiples()` setup **once per chunk**. The inner
+level iterates the chunk's contiguous segments — each call to
+`Sieve::sieve_segment()` advances the wheel by one segment, which is correct
+because the segments inside a chunk are contiguous (no other thread can
+draw a segment in `[chunk_base, chunk_base + chunk_segments * segment_size)`,
+guaranteed by `Shared_segment_allocator::next_segment_chunk()`).
+
 ```
  pool thread N
        │
@@ -315,35 +333,41 @@ are counted via `m_segments_discarded_epoch_changed`.
        │     bound_base_hash   = my_base
        │     bound = true
        │
-       │   low = m_segment_allocator.next_segment_start()   ← cooperative cursor
+       │   ── Stone 6.5: draw a CHUNK of contiguous segments ──
+       │   chunk_base = m_segment_allocator.next_segment_chunk(pool_chunk_segments)
+       │   ++m_chunks_drawn
+       │   sieve.calculate_starting_multiples(local_sieve_start + chunk_base)  ← ONCE per chunk
+       │   ++m_starting_multiples_calls
        │
-       │   sieve.reset_sieve(); sieve.clear_chains()
-       │   sieve.calculate_starting_multiples(local_sieve_start + low)
-       │   sieve.sieve_segment()
-       │   sieve.find_chains(low, false)
-       │   sieve.test_chains(local_sieve_start)
-       │   chain_offsets = sieve.m_long_chain_starts
+       │   for seg_index in 0 .. pool_chunk_segments:
+       │     low = chunk_base + seg_index * segment_size
+       │     sieve.reset_sieve(); sieve.clear_chains()
+       │     sieve.sieve_segment()    ← wheel advances contiguously
+       │     sieve.find_chains(low, false)
+       │     sieve.test_chains(local_sieve_start)
+       │     chain_offsets = sieve.m_long_chain_starts
        │
-       │   ── REQUIRED post-segment re-check ──
-       │   fresh = current_session()
-       │   if (!fresh || fresh->base_hash != bound_base_hash || fresh->is_consumed()):
-       │     ++m_segments_discarded_epoch_changed
-       │     bound = false; continue
+       │     ── REQUIRED post-segment re-check (per SEGMENT, not per chunk) ──
+       │     fresh = current_session()
+       │     if (!fresh || fresh->base_hash != bound_base_hash || fresh->is_consumed()):
+       │       ++m_segments_discarded_epoch_changed
+       │       bound = false; abandon rest of chunk; break
        │
-       │   for each x in chain_offsets:
-       │     candidate.nNonce = local_nonce + x
-       │     if ValidatePrimeCandidate(base+nNonce, nbits/1e7, offsets, diff):
-       │       fresh.mark_consumed()                ← single-found-block-wins
-       │       ++m_candidates_dispatched
-       │       asio::post(io_context,
-       │         [session_for_dispatch, block_copy, captured_offsets] {
-       │           on_found(session->internal_id_for_solution, std::move(bd))
-       │         })
-       │       break                                ← session is spent
-       │   ++m_segments_processed
+       │     for each x in chain_offsets:
+       │       candidate.nNonce = local_nonce + x
+       │       if ValidatePrimeCandidate(base+nNonce, nbits/1e7, offsets, diff):
+       │         fresh.mark_consumed()                ← single-found-block-wins
+       │         ++m_candidates_dispatched
+       │         asio::post(io_context,
+       │           [session_for_dispatch, block_copy, captured_offsets] {
+       │             on_found(session->internal_id_for_solution, std::move(bd))
+       │           })
+       │         break                                ← session is spent
+       │     ++m_segments_processed
+       │     if session was consumed by this segment: abandon rest of chunk
 ```
 
-Two design rules to preserve:
+Three design rules to preserve:
 
 1. **base_hash is the discriminator, NOT epoch_id.** Same-base republishes
    preserve cursor on the consumer side, so the in-flight segment is still
@@ -355,6 +379,53 @@ Two design rules to preserve:
    consumed *after* the post, two threads could observe a non-consumed
    session, both find a candidate, and both submit duplicate blocks for the
    same template.
+3. **Mid-segment session re-check runs per SEGMENT, not per chunk.** A new
+   template can land at any time and a chunk represents up to
+   `pool_chunk_segments × segment_size` of cursor space. If `base_hash`
+   changes mid-chunk, the remaining segments in the chunk are abandoned
+   (counted via `m_segments_discarded_epoch_changed`) and the thread re-
+   enters the outer loop where the rebind happens. Without this rule, a
+   thread could grind 64 stale segments after a new template lands.
+
+### 5.1 Performance note: why chunk-based draws
+
+The pre-Stone-6.5 version of this loop drew **one segment at a time** from
+the cooperative cursor and called `Sieve::calculate_starting_multiples()`
+*before every* `Sieve::sieve_segment()`. That call is `O(N_primes)`
+(iterates millions of sieving-prime-table entries, doing a Boost
+`uint1024_t` modular reduction and a 30-wheel mod-inverse per entry) and
+under engine mode was firing once per segment per pool thread. Setup work
+dominated; actual sieving was starved; throughput collapsed from the legacy
+~50–500 GISPS/worker baseline to ~0.05 GISPS/worker (~1000× regression).
+
+Stone 6.5 fixes this by changing the cooperative-cursor draw granularity
+from "one segment" to "`pool_chunk_segments` contiguous segments" (default
+64). Inside a chunk the segments are contiguous, so
+`Sieve::sieve_segment()`'s wheel-advance-by-one save-back is valid (the
+contiguous-segment assumption that the Stone 6 fix correctly identified as
+the original bug now *holds* because the allocator guarantees no other
+thread draws into the chunk's range). `calculate_starting_multiples()`
+therefore only needs to run **once per chunk**, amortising its cost by 64×
+and putting engine throughput back into the legacy `engine_mode = "workers"`
+performance band.
+
+The cooperative cursor still hands out chunks atomically; pool threads still
+rebalance work (a slow thread completes fewer chunks than a fast one); the
+single-found-block-wins discipline still holds (the per-segment session
+re-check inside the chunk catches mid-chunk template changes and consumed-
+session transitions). Only the granularity changes. The chunk size is
+hard-coded for Stone 6.5; a future stone may add an `engine_pool_chunk_segments`
+TOML knob if soak runs justify operator tuning.
+
+Per-segment alternatives that were considered and rejected:
+
+* **Per-thread sub-cursors with no rebalancing.** Reverts the cooperative
+  cursor; loses work-stealing under load imbalance; a slow thread holds
+  back the channel.
+* **A cheaper `O(segment_size)` `calculate_starting_multiples()` variant
+  exploiting adjacent-segment relationships.** Would be a much larger
+  surgical change to the Sieve internals and is not required if chunk
+  amortisation hits the throughput target. Deferred.
 
 ---
 
@@ -474,11 +545,11 @@ On Ctrl-C / shutdown:
 | Test binary | Cases | What it covers |
 |-------------|------:|----------------|
 | `template_feed_test` | — | Stone 4 atomic publish/wait_for/notify_wake semantics. |
-| `segment_allocator_test` | — | Per-worker and shared (cooperative) cursor disciplines. |
+| `segment_allocator_test` | — | Per-worker and shared (cooperative) cursor disciplines, including Stone 6.5 `next_segment_chunk()` concurrent partition correctness. |
 | `chain_sieve_test` | — | Sieve correctness on known intervals. |
 | `prime_validation_test` | — | Boost↔LLC limb conversion + Fermat path. |
 | `prime_mining_engine_test` | 46 | Stones 4–5: session creation, atomic publish, same-base short-circuit, register_worker stub, cursor reset rule. |
-| `prime_mining_engine_pool_test` | 31 | Stone 6: pool threads, mid-segment re-check, single-found-block-wins, crash isolation, cooperative cursor under churn. |
+| `prime_mining_engine_pool_test` | 38 | Stone 6 + **Stone 6.5**: pool threads, mid-segment re-check, single-found-block-wins, crash isolation, cooperative cursor under churn, **chunk-amortisation regression test (real sieve, asserts `starting_multiples_calls × pool_chunk_segments ≤ segments_processed × 1.5`)**, `pool_chunk_segments` range validation. |
 | `prime_engine_integration_test` | 15 | **Stone 7:** adapter surface (`uses_template_feed`/`attach_template_feed` no-op/`is_running` after `bind_to_engine`), `register_worker` null-guard + live-count weak_ptr decay, `internal_id_for_solution` preservation, stats partition (sum == engine total; max-min ≤ 1), found-block credit to the representative worker via the asio::post path, engine-destruction-before-workers safety. |
 
 All seven binaries pass under `ctest --test-dir build-prime` after

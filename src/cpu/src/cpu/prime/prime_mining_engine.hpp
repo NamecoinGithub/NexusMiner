@@ -90,6 +90,18 @@ struct Engine_config
     // callbacks.
     std::shared_ptr<asio::io_context> io_context;
 
+    // Stone 6.5 — number of contiguous segments drawn atomically from the
+    // cooperative cursor per pull.  Chunking amortises the expensive
+    // Sieve::calculate_starting_multiples() call over `pool_chunk_segments`
+    // segments instead of paying it once per segment, which is what tanked
+    // Stone 6 throughput in production.  Default is 64 (≈64× amortisation
+    // while keeping cooperative-cursor latency response under a few hundred
+    // milliseconds — one chunk worth of work).  Validated to [1, 1024] in
+    // the engine constructor; a value of 1 reproduces the (broken) per-
+    // segment behaviour and exists ONLY as a regression-test seam.  This is
+    // NOT a TOML knob and NOT an operator-facing setting.
+    std::uint32_t pool_chunk_segments{64};
+
     // ── Test seams (defaults match production behaviour) ────────────────────
     //
     // Bypass the real Sieve construction and pipeline in pool threads.  The
@@ -205,6 +217,21 @@ public:
     }
     std::uint32_t pool_thread_count() const { return m_pool_thread_count; }
 
+    // Stone 6.5 — chunk-amortisation diagnostic counters.  Operators can
+    // confirm the fix is live by checking that
+    //   starting_multiples_calls ≈ chunks_drawn          (NOT segments_processed)
+    // Pre-fix the ratio was ~1:1 with segments_processed; post-fix it is
+    // ~1:pool_chunk_segments.
+    std::uint64_t chunks_drawn() const
+    {
+        return m_chunks_drawn.load(std::memory_order_relaxed);
+    }
+    std::uint64_t starting_multiples_calls() const
+    {
+        return m_starting_multiples_calls.load(std::memory_order_relaxed);
+    }
+    std::uint32_t pool_chunk_segments() const { return m_pool_chunk_segments; }
+
     // ── Stone 7 — stats fan-in snapshot ────────────────────────────────────
     //
     // Aggregated counters published once per snapshot, designed to be split
@@ -221,6 +248,16 @@ public:
         std::uint64_t sessions_published{0};
         std::uint32_t nbits{0};             // current session nBits, 0 if none
         std::uint32_t pool_thread_count{0};
+        // Stone 6.5 — chunk-amortisation diagnostics.
+        std::uint64_t chunks_drawn{0};
+        std::uint64_t starting_multiples_calls{0};
+        std::uint64_t segments_discarded_epoch_changed{0};
+        std::uint64_t segments_skipped_consumed{0};
+        std::uint64_t same_base_short_circuits{0};
+        std::uint64_t allocator_resets{0};
+        std::uint64_t pool_threads_running{0};
+        std::uint64_t pool_threads_crashed{0};
+        std::uint32_t pool_chunk_segments{0};
     };
 
     Engine_stats_snapshot snapshot_stats() const;
@@ -282,6 +319,10 @@ private:
     std::atomic<std::uint64_t>             m_pool_threads_running{0};
     std::atomic<std::uint64_t>             m_pool_threads_crashed{0};
 
+    // Stone 6.5 — chunk-amortisation diagnostic counters.
+    std::atomic<std::uint64_t>             m_chunks_drawn{0};
+    std::atomic<std::uint64_t>             m_starting_multiples_calls{0};
+
     // Consumer-thread shutdown flag + condvar for the wait-for-publish helper.
     std::atomic<bool>                      m_shutdown{false};
     mutable std::mutex                     m_publish_mtx;
@@ -298,6 +339,13 @@ private:
     // engine's lifetime; exposed via pool_thread_count() for tests.
     std::uint32_t                          m_pool_thread_count{0};
     std::vector<std::thread>               m_pool_threads;
+
+    // Stone 6.5 — resolved chunk size (validated to [1, 1024] in ctor).
+    std::uint32_t                          m_pool_chunk_segments{0};
+
+    // Stone 6.5 — periodic engine-stats info-level log line (every 30s).
+    void                                   run_stats_logger();
+    std::thread                            m_stats_logger;
 
     // Consumer thread.  Must be the LAST member so it is destroyed first
     // (and joined by the destructor body, not by the implicit member dtor).
