@@ -125,6 +125,22 @@ namespace nexusminer {
 
 			//stats
 			std::vector<std::uint32_t> m_chain_histogram;
+
+			// Stone 6.8: read-side snapshot of m_chain_histogram for cross-thread
+			// readers (the PrimeMiningEngine pool-thread fan-in path).  Returns a
+			// by-value copy so callers never observe a torn vector mid-resize.
+			// Mining-thread writes to m_chain_histogram are non-atomic uint32_t
+			// increments; reading a copy element-by-element is benign on the
+			// hardware we target (x86_64 / ARMv8) — the worst case is a slightly
+			// stale bucket count, which is acceptable for diagnostic histograms.
+			// Do NOT call this from the same thread that owns the Sieve while
+			// reset_stats()/clear_chains() may be re-sizing the vector; the engine
+			// invokes it only on its consumer/stats thread, never inside the pool
+			// thread that owns the Sieve.
+			std::vector<std::uint32_t> snapshot_chain_histogram() const
+			{
+				return m_chain_histogram;
+			}
 			uint64_t m_fermat_test_count = 0;
 			uint64_t m_fermat_prime_count = 0;
 			uint64_t m_chain_count = 0;
