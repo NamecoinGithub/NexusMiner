@@ -129,14 +129,24 @@ namespace nexusminer {
 			// Stone 6.8: read-side snapshot of m_chain_histogram for cross-thread
 			// readers (the PrimeMiningEngine pool-thread fan-in path).  Returns a
 			// by-value copy so callers never observe a torn vector mid-resize.
-			// Mining-thread writes to m_chain_histogram are non-atomic uint32_t
-			// increments; reading a copy element-by-element is benign on the
-			// hardware we target (x86_64 / ARMv8) — the worst case is a slightly
-			// stale bucket count, which is acceptable for diagnostic histograms.
-			// Do NOT call this from the same thread that owns the Sieve while
-			// reset_stats()/clear_chains() may be re-sizing the vector; the engine
-			// invokes it only on its consumer/stats thread, never inside the pool
-			// thread that owns the Sieve.
+			//
+			// Calling contract (relied on by PrimeMiningEngine::snapshot_stats):
+			//   * The Sieve's m_chain_histogram is sized exactly ONCE — in
+			//     reset_stats(), invoked from the Sieve constructor — and never
+			//     resized again for the lifetime of the Sieve.  The engine pool
+			//     thread does NOT call reset_stats() during sieving (find_chains
+			//     only does in-place bucket increments), so the vector's
+			//     size/capacity / data pointer are stable against an external
+			//     reader once the Sieve has been published into the engine's
+			//     m_pool_sieves slot.
+			//   * Bucket increments are non-atomic uint32_t fetch-add reads,
+			//     which on x86_64 / ARMv8 cannot tear a single 32-bit word; the
+			//     worst observable case is a slightly stale bucket count, which
+			//     is acceptable for a diagnostic histogram.
+			// Callers outside the engine fan-in path that DO resize the
+			// histogram (legacy Worker_prime same-thread snapshot) must call
+			// from the Sieve-owning thread; cross-thread callers must NOT call
+			// reset_stats()/clear_chains() concurrently.
 			std::vector<std::uint32_t> snapshot_chain_histogram() const
 			{
 				return m_chain_histogram;

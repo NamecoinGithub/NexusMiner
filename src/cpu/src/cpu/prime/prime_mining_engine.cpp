@@ -91,16 +91,14 @@ PrimeMiningEngine::PrimeMiningEngine(Engine_config cfg,
 
     // Stone 6.8 — allocate the per-pool-thread Sieve registry BEFORE pool
     // threads are launched so the very first pool-thread iteration can safely
-    // publish its slot.  Slots are zero-initialised (std::atomic<T*> default
-    // ctor zero-initialises the contained pointer); pool threads CAS their
-    // own Sieve* in once construction completes and clear it on exit.
+    // publish its slot.  std::make_unique<std::atomic<Sieve*>[]>(n) value-
+    // initialises every slot, which is zero-init for atomic pointer types
+    // under C++20 — no explicit per-slot store() loop is needed.  Pool
+    // threads CAS their own Sieve* in once construction completes and clear
+    // it on exit.
     if (m_pool_thread_count > 0)
     {
         m_pool_sieves = std::make_unique<std::atomic<Sieve*>[]>(m_pool_thread_count);
-        for (std::uint32_t i = 0; i < m_pool_thread_count; ++i)
-        {
-            m_pool_sieves[i].store(nullptr, std::memory_order_relaxed);
-        }
     }
 
     // Spawn the pool threads AFTER the consumer is running.  Pool threads must
