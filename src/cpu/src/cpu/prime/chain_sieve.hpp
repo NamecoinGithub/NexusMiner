@@ -139,7 +139,7 @@ namespace nexusminer {
 			//     size/capacity / data pointer are stable against an external
 			//     reader once the Sieve has been published into the engine's
 			//     m_pool_sieves slot.
-			//   * Bucket increments are non-atomic uint32_t fetch-add reads,
+			//   * Bucket increments are non-atomic uint32_t fetch-add writes,
 			//     which on x86_64 / ARMv8 cannot tear a single 32-bit word; the
 			//     worst observable case is a slightly stale bucket count, which
 			//     is acceptable for a diagnostic histogram.
