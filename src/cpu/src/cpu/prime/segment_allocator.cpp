@@ -49,6 +49,16 @@ std::uint64_t Shared_segment_allocator::current() const
     return m_cursor.load(std::memory_order_acquire);
 }
 
+std::uint64_t Shared_segment_allocator::next_segment_chunk(std::uint64_t chunk_segments)
+{
+    // Wait-free hot path: relaxed is sufficient because the cursor value is
+    // not used to synchronise other state — it is the data being protected.
+    // Stride is chunk_segments * m_segment_size so the returned base value
+    // owns exactly that many contiguous segments.
+    return m_cursor.fetch_add(chunk_segments * m_segment_size,
+                              std::memory_order_relaxed);
+}
+
 std::unique_ptr<Segment_allocator>
 make_segment_allocator_for_engine_mode(const std::string& engine_mode,
                                        std::uint64_t segment_size)

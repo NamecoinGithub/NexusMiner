@@ -242,7 +242,13 @@ namespace nexusminer {
             const boost::multiprecision::uint1024_t& sieve_start)
         {
             //generate starting multiples of the sieving primes
-            m_logger->info("Calculating starting multiples.");
+            // Stone 6.5: demoted from info to debug.  Under engine_mode the
+            // PrimeMiningEngine pool path calls calculate_starting_multiples()
+            // once per chunk per pool thread, which on an 18-core box can
+            // still fire many times per second.  Under legacy workers mode it
+            // fires once per template (correct cadence at info level).  Debug
+            // keeps the diagnostic available without flooding production logs.
+            m_logger->debug("Calculating starting multiples.");
             const auto& shared_primes = Sieving_prime_table::instance().primes();
             // Defensive: if generate_sieving_primes() was not called yet, do it
             // now so the parallel arrays line up.
