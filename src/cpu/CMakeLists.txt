@@ -39,6 +39,7 @@ if(WITH_PRIME)
         NAME        prime_validation_test
         SOURCES     prime_validation_test.cpp
         LINK_LIBS   cpu LLC spdlog::spdlog
+        INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/src/protocol/inc
     )
 
     add_nexusminer_test(
