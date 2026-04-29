@@ -26,6 +26,14 @@ namespace nexusminer {
 		class Chain
 		{
 		public:
+			// Stone 6.9 — once the chain has accumulated this many proven
+			// Fermat primes, is_there_still_hope() returns true unconditionally
+			// so the histogram's upper buckets keep growing (matches GPU's
+			// cuda_chain.cu behaviour: "if we've already found 4, keep
+			// counting regardless").  Public so tests can lock down the value
+			// without duplicating the magic number.
+			static constexpr int kHopeKeepaliveThreshold = 4;
+
 			enum class Chain_state {
 				open, //immature chain empty or in process of being built
 				closed, //chain is complete and available for fermat testing

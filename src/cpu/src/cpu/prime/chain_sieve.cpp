@@ -92,14 +92,14 @@ namespace nexusminer {
 
             // Stone 6.9 — Mirror the GPU implementation in cuda_chain.cu.
             //
-            // (a) Stats keepalive: once we've already proven 4 Fermat primes
-            //     in this chain, keep testing regardless of the cheap
+            // (a) Stats keepalive: once we've already proven N (== 4) Fermat
+            //     primes in this chain, keep testing regardless of the cheap
             //     totals/contiguous predicates.  This is what populates the
             //     bucket-6 / bucket-7 cells of the chain histogram (without
             //     it those cells are deterministically empty whenever the
             //     target length is > 4).  GPU has shown this has negligible
             //     throughput cost.
-            if (m_prime_count >= 4)
+            if (m_prime_count >= kHopeKeepaliveThreshold)
             {
                 return true;
             }
@@ -107,12 +107,28 @@ namespace nexusminer {
             // (b) Cheap upper-bound prune on totals.  If even assuming every
             //     untested slot passes Fermat we can't reach m_min_chain_length
             //     primes total, give up.  Necessary but not sufficient.
-            if ((m_prime_count + m_untested_count) < m_min_chain_length)
+            const int upper_bound = m_prime_count + m_untested_count;
+            if (upper_bound < m_min_chain_length)
             {
                 return false;
             }
 
-            // (c) Tighter prune that respects the predicate/scorer agreement
+            // (c) Fast path — no failures yet, so every slot is either pass
+            //     or untested.  The chain is still contiguous (the sieve
+            //     guarantees the slots themselves are within maxGap; failures
+            //     are the only way contiguity is broken), so the totals
+            //     bound IS exact and the expensive Chain-copy walk in (d)
+            //     would just confirm it.  Skipping the allocation here is
+            //     measurable: prior to the keepalive most chains take this
+            //     path before the first failure.
+            const int failure_count = static_cast<int>(m_offsets.size())
+                                    - m_prime_count - m_untested_count;
+            if (failure_count == 0)
+            {
+                return true;  // upper_bound >= m_min_chain_length already checked
+            }
+
+            // (d) Tighter prune that respects the predicate/scorer agreement
             //     we want: the scorer (get_best_fermat_chain) only credits
             //     contiguous, gap-bounded runs, but the totals predicate above
             //     ignores both the gap and the already-broken-up structure of
@@ -561,9 +577,13 @@ namespace nexusminer {
                 // reflects "no length-7 candidates" vs "every length-7
                 // candidate aborted before reaching length 7".
                 {
-                    int bucket_index = std::min(
-                        static_cast<size_t>(m_current_chain.length()),
-                        m_chain_histogram_attempted.size() - 1);
+                    // Defensive bounds: length() returns int(m_offsets.size()) and
+                    // m_chain_histogram_attempted is sized at >=1 in reset_stats,
+                    // so neither degenerate value can occur in production — but
+                    // the explicit max(0, …) keeps the negative→huge-unsigned
+                    // pitfall from sneaking back in if length() is ever changed.
+                    const int hist_max = static_cast<int>(m_chain_histogram_attempted.size()) - 1;
+                    const int bucket_index = std::max(0, std::min(m_current_chain.length(), hist_max));
                     m_chain_histogram_attempted[bucket_index]++;
                 }
             }
@@ -624,8 +644,9 @@ namespace nexusminer {
                     int length;
                     m_chain[i].get_best_fermat_chain(base_offset, offset, length);
 
-                    //collect stats
-                    int bucket_index = std::min(static_cast<size_t>(length), m_chain_histogram.size() - 1);
+                    //collect stats — see close_chain bucket-index comment.
+                    const int hist_max = static_cast<int>(m_chain_histogram.size()) - 1;
+                    const int bucket_index = std::max(0, std::min(length, hist_max));
                     m_chain_histogram[bucket_index]++;
 
                     // Stone 6.9 — push only candidates that meet the
@@ -697,8 +718,9 @@ namespace nexusminer {
                     chain.get_best_fermat_chain(base_offset, offset, length);
                     if (length > 0)
                     {
-                        //collect stats
-                        int bucket_index = std::min(static_cast<size_t>(length), m_chain_histogram.size() - 1);
+                        //collect stats — see close_chain bucket-index comment.
+                        const int hist_max = static_cast<int>(m_chain_histogram.size()) - 1;
+                        const int bucket_index = std::max(0, std::min(length, hist_max));
                         m_chain_histogram[bucket_index]++;
                     }
                     // Stone 6.9 — same target gate as test_chains() (see
