@@ -120,6 +120,28 @@ namespace nexusminer {
 			// pre-Stone behaviour for legacy callers (Worker_prime).
 			void set_target_length(int target_length);
 			int  get_target_length() const { return m_target_chain_length; }
+
+			// Stone 6.9.1 — slack between the sieve-time slot filter and the
+			// Fermat-time target.  To realistically catch a length-T Fermat run we
+			// need at least T + kSlotFilterSlack sieve-survivor slots so Fermat is
+			// allowed to fail in `kSlotFilterSlack` of them.  At target=7,
+			// Fermat-pass probability is ~0.14% per slot; with zero slack a length-7
+			// run requires every one of 7 slots to pass, which is statistically
+			// impossible.  Empirically slack=1 reproduces pre-Stone-6.9 throughput
+			// at target=7; it also generalises correctly when difficulty moves to
+			// target=8 (slot filter = 9) without the silent regression #672 caused.
+			//
+			// Public so tests can lock down the value without duplicating the magic
+			// number.
+			static constexpr int kSlotFilterSlack = 1;
+
+			// Minimum slot count for a chain candidate to be kept by close_chain()
+			// and for find_chains() to consider a 120-integer window worth scanning.
+			// Always >= 2 so a degenerate target_length never disables the filter.
+			int slot_filter_min() const
+			{
+				return std::max(2, m_target_chain_length + kSlotFilterSlack);
+			}
 			void calculate_starting_multiples(const boost::multiprecision::uint1024_t& sieve_start);
 			void calculate_starting_multiples();
 			void test_chains(const boost::multiprecision::uint1024_t& sieve_start);

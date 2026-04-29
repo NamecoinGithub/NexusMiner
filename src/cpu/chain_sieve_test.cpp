@@ -265,6 +265,30 @@ void test_is_there_still_hope_fake_pass_walk_rejects_broken_chain()
     print_result("fake-pass walk: same chain with target 5 → hope=true",
                  c2.is_there_still_hope() == true);
 }
+
+void test_slot_filter_slack_invariant()
+{
+    nexusminer::cpu::Sieve s;
+    s.set_target_length(7);
+    print_result("slot_filter_min() == target + kSlotFilterSlack at target=7",
+                 s.slot_filter_min() == 7 + nexusminer::cpu::Sieve::kSlotFilterSlack);
+
+    s.set_target_length(8);
+    print_result("slot_filter_min() == target + kSlotFilterSlack at target=8",
+                 s.slot_filter_min() == 8 + nexusminer::cpu::Sieve::kSlotFilterSlack);
+
+    // Degenerate clamp: target=2 is the sieve floor; slot filter must
+    // remain >= 2 + slack and must NEVER drop below 2 even if slack
+    // hypothetically went negative in a future refactor.
+    s.set_target_length(2);
+    print_result("slot_filter_min() >= 2 even at minimum target",
+                 s.slot_filter_min() >= 2);
+
+    // Pin the constant value itself so any change is forced through code
+    // review with this test failing.
+    print_result("kSlotFilterSlack pinned to 1",
+                 nexusminer::cpu::Sieve::kSlotFilterSlack == 1);
+}
 } // namespace
 
 int main()
@@ -289,6 +313,7 @@ int main()
     test_is_there_still_hope_totals_prune();
     test_is_there_still_hope_fast_path_no_failures();
     test_is_there_still_hope_fake_pass_walk_rejects_broken_chain();
+    test_slot_filter_slack_invariant();
 
     std::cout << "\nResult: " << (tests_run - tests_failed) << "/" << tests_run << " passed\n";
     return tests_failed == 0 ? 0 : 1;
