@@ -659,18 +659,24 @@ namespace nexusminer {
                     const int bucket_index = std::max(0, std::min(length, hist_max));
                     m_chain_histogram[bucket_index]++;
 
-                    // Stone 6.9 — push only candidates that meet the
-                    // per-session target chain length.  Pushing shorter ones
-                    // (the legacy m_min_chain_report_length=4 behaviour) just
-                    // floods the dispatch loop with candidates that are
-                    // provably below network difficulty, costing one
-                    // ValidatePrimeCandidate (Fermat + offset walk) per
-                    // wasted candidate and obscuring real dispatch failures.
-                    if (length >= m_target_chain_length)
+                    // Stone 6.9 — push gate is min(per-session target, the
+                    // chain's own m_min_chain_report_length).  This preserves
+                    // legacy Worker_prime behaviour (callers that never call
+                    // set_target_length() keep the historical report-length
+                    // floor of 5 and continue to emit "Found a fermat chain"
+                    // info-lines for length-5..7 runs) while engine mode's
+                    // downstream dispatch is still difficulty-gated, so the
+                    // extra short-chain pushes are observed by
+                    // m_diag_validate_rejected_below_diff rather than silently
+                    // dropped.  The funnel counters localize the loss either
+                    // way; truncating here would just hide diagnostic info.
+                    const int push_gate = std::min(m_target_chain_length,
+                                                   m_chain[i].m_min_chain_report_length);
+                    if (length >= push_gate)
                     {
                         //we found a long chain.  save it.
-                        m_logger->info("Found a fermat chain of length {} (target={}).",
-                                       length, m_target_chain_length);
+                        m_logger->info("Found a fermat chain of length {} (target={}, gate={}).",
+                                       length, m_target_chain_length, push_gate);
                         m_long_chain_starts.push_back(base_offset + offset);
                         m_diag_chains_pushed_long.fetch_add(1, std::memory_order_relaxed);
                     }
@@ -733,16 +739,18 @@ namespace nexusminer {
                         const int bucket_index = std::max(0, std::min(length, hist_max));
                         m_chain_histogram[bucket_index]++;
                     }
-                    // Stone 6.9 — same target gate as test_chains() (see
-                    // chain_sieve.cpp test_chains comment).  m_min_chain_report_length
-                    // remains as a fall-back ONLY for callers that bypassed
-                    // set_target_length(); under engine mode the two thresholds
-                    // are the same.
-                    if (length >= m_target_chain_length)
+                    // Stone 6.9 — same min(target, report_length) gate as
+                    // test_chains() (see the longer comment there).  Restores
+                    // legacy Worker_prime length-5..7 "Found a fermat chain"
+                    // diagnostic noise while engine mode's downstream
+                    // dispatch is still difficulty-gated.
+                    const int push_gate = std::min(m_target_chain_length,
+                                                   chain.m_min_chain_report_length);
+                    if (length >= push_gate)
                     {
                         //we found a long chain.  save it.
-                        m_logger->info("Found a fermat chain of length {} (target={}).",
-                                       length, m_target_chain_length);
+                        m_logger->info("Found a fermat chain of length {} (target={}, gate={}).",
+                                       length, m_target_chain_length, push_gate);
                         m_long_chain_starts.push_back(base_offset + offset);
                         m_diag_chains_pushed_long.fetch_add(1, std::memory_order_relaxed);
                     }
